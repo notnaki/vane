@@ -148,8 +148,8 @@ private struct BlockRule: Codable, Equatable {
                     guard refreshState.isCurrent(generation) else { return }
                     // Keep accepted base rules available for site troubleshooting even
                     // when a legacy source disappears. No private host is in this snapshot.
-                    try FileManager.default.createDirectory(at: snapshotURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try JSONEncoder().encode(Snapshot(json: fresh.json, report: fresh.report)).write(to: snapshotURL, options: .atomic)
+                    let snapshot = Snapshot(json: fresh.json, report: fresh.report)
+                    try await writeSnapshot(snapshot, generation: generation)
                     guard refreshState.finish(.success(fresh.base), generation: generation) else { return }
                     profileLists = fresh.profiles
                     UserDefaults.vane.set(fresh.base.identifier, forKey: "blockerLastGoodList")
@@ -214,38 +214,27 @@ private struct BlockRule: Codable, Equatable {
         guard panel.runModal() == .OK, let file = panel.url else { return }
 
         let alert = NSAlert()
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else {
-            alert.alertStyle = .warning
-            alert.messageText = "Could not read that file."
-            alert.informativeText = "It has to be a plain-text filter list."
-            alert.runModal()
-            return
-        }
-        let result = convert(text)
-        guard result.rules > 0 else {
-            alert.alertStyle = .warning
-            alert.messageText = "No usable rules in that file."
-            alert.informativeText = "\(result.skipped) line(s) were skipped. "
-                + "Is it really an EasyList-syntax filter list?"
-            alert.runModal()
-            return
-        }
         Task {
             await compileGate.acquire()
             defer { compileGate.release() }
             var validationID: String?
+            var importReport: BlockerReport?
             do {
                 guard let ruleStore = WKContentRuleListStore.default() else {
                     throw BlockerFiles.Failure("WebKit’s content-blocking store is unavailable.")
                 }
-                let candidate = convertSources(try sources() + [text]).json
-                let candidateID = "vane-\(hash(candidate))"
+                let currentSources = try await Task.detached(priority: .utility) { try sources() }.value
+                let prepared = try await prepareImportedFile(file, sources: currentSources)
+                let (text, report, candidate, candidateID) = prepared
+                importReport = report
                 validationID = candidateID
                 guard try await ruleStore.compileContentRuleList(forIdentifier: candidateID,
                                                                  encodedContentRuleList: candidate) != nil else {
                     throw BlockerFiles.Failure("WebKit could not compile that filter list.")
                 }
-                let name = try BlockerFiles.importList(text, into: importedDirectory)
+                let name = try await Task.detached(priority: .utility) {
+                    try BlockerFiles.importList(text, into: importedDirectory)
+                }.value
                 var names = UserDefaults.vane.stringArray(forKey: "blockerImportedLists") ?? []
                 if !names.contains(name) { names.append(name) }
                 UserDefaults.vane.set(names, forKey: "blockerImportedLists")
@@ -262,11 +251,26 @@ private struct BlockRule: Codable, Equatable {
             }
             refresh()
 
-            let success = makeImportSuccessAlert(result.report)
+            guard let report = importReport else { return }
+            let success = makeImportSuccessAlert(report)
             if success.runModal() == .alertSecondButtonReturn {
-                BlockerSettingsSection.showReport(result.report, title: file.lastPathComponent)
+                BlockerSettingsSection.showReport(report, title: file.lastPathComponent)
             }
         }
+    }
+
+    /// Kept separate from presentation so the file read/converter worker is exercised
+    /// without opening a panel, granting a real file, or invoking WebKit.
+    static func prepareImportedFile(_ file: URL, sources: [String]) async throws -> (String, BlockerReport, String, String) {
+        try await Task.detached(priority: .utility) {
+            let accessed = file.startAccessingSecurityScopedResource()
+            defer { if accessed { file.stopAccessingSecurityScopedResource() } }
+            let text = try BlockerFiles.readText(file)
+            let result = try convertBoundedSources([text])
+            guard result.rules > 0 else { throw BlockerFiles.Failure("That file contains no usable EasyList rules. " + result.report.summary) }
+            let candidate = try convertBoundedSources(sources + [text]).json
+            return (text, result.report, candidate, "vane-\(hash(candidate))")
+        }.value
     }
 
     static func makeImportSuccessAlert(_ report: BlockerReport) -> NSAlert {
@@ -304,7 +308,17 @@ private struct BlockRule: Codable, Equatable {
         var json: String
         var sourceFailure: String?
     }
-    private struct Snapshot: Codable {
+    private static let snapshotGate = BlockerAsyncGate()
+    private static func writeSnapshot(_ snapshot: Snapshot, generation: UInt64) async throws {
+        await snapshotGate.acquire()
+        defer { snapshotGate.release() }
+        guard refreshState.isCurrent(generation) else { return }
+        try await Task.detached(priority: .utility) {
+            try FileManager.default.createDirectory(at: snapshotURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(snapshot).write(to: snapshotURL, options: .atomic)
+        }.value
+    }
+    private struct Snapshot: Codable, Sendable {
         var json: String
         var report: BlockerReport
     }
@@ -392,7 +406,9 @@ private struct BlockRule: Codable, Equatable {
             return try await compile(text)
         } catch {
             let failure = error.localizedDescription
-            guard let snapshot = try? JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: snapshotURL)) else { throw error }
+            guard let snapshot = try? await Task.detached(priority: .utility, operation: {
+                try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: snapshotURL))
+            }).value else { throw error }
             var recovered = try await compile(base: BlockerConversion(json: snapshot.json, report: snapshot.report))
             recovered.sourceFailure = failure
             return recovered
@@ -408,11 +424,13 @@ private struct BlockRule: Codable, Equatable {
             try sources(includeSubscriptions: false) + items.map(\.text)
         }.value
         _ = try await compile(text)
-        try FilterSubscriptions.write(items, directory: FilterSubscriptions.directory)
+        try await Task.detached(priority: .utility) {
+            try FilterSubscriptions.write(items, directory: FilterSubscriptions.directory)
+        }.value
     }
 
     private static func compile(_ texts: [String]) async throws -> Compilation {
-        let base = await Task.detached(priority: .utility) { convertSources(texts) }.value
+        let base = try await Task.detached(priority: .utility) { try convertBoundedSources(texts) }.value
         return try await compile(base: base)
     }
 
@@ -441,7 +459,7 @@ private struct BlockRule: Codable, Equatable {
             let json = try await Task.detached(priority: .utility) { try excluding(hosts, from: base.json) }.value
             let variantStore: WKContentRuleListStore
             if profile == Profile.incognito.id {
-                if privateCache == nil { privateCache = try BlockerPrivateCache() }
+                if privateCache == nil { privateCache = try await BlockerPrivateCache.create() }
                 guard let privateCache else { throw BlockerFiles.Failure("The private filter store is unavailable.") }
                 variantStore = privateCache.store
             } else { variantStore = store }
@@ -481,6 +499,34 @@ private struct BlockRule: Codable, Equatable {
     /// unrecognised one drops the whole line.
     nonisolated static func convert(_ text: String, excludingHosts: [String] = []) -> BlockerConversion {
         convertSources([text], excludingHosts: excludingHosts)
+    }
+
+    /// Admission before allocating line arrays/rules. Reject the whole candidate so a
+    /// limit never silently drops part of an installed blocking policy.
+    nonisolated static func convertBoundedSources(_ texts: [String]) throws -> BlockerConversion {
+        var bytes = 0
+        var lines = 0
+        for text in texts {
+            bytes += text.utf8.count
+            guard bytes <= 64 * 1024 * 1024 else { throw BlockerFiles.Failure("Combined filter lists exceed the 64 MB limit. Previous rules remain active.") }
+            var lineLength = 0
+            var previousWasCR = false
+            for byte in text.utf8 {
+                if byte == 10 || byte == 13 {
+                    if byte != 10 || !previousWasCR { lines += 1 }
+                    previousWasCR = byte == 13
+                    lineLength = 0
+                    guard lines <= 1_000_000 else { throw BlockerFiles.Failure("Combined filter lists exceed the one million line limit. Previous rules remain active.") }
+                } else {
+                    previousWasCR = false
+                    lineLength += 1
+                    guard lineLength <= 64 * 1024 else { throw BlockerFiles.Failure("A filter rule exceeds the 64 KB line limit. Previous rules remain active.") }
+                }
+            }
+            lines += 1
+        }
+        guard lines <= 1_000_000 else { throw BlockerFiles.Failure("Combined filter lists exceed the one million line limit. Previous rules remain active.") }
+        return convertSources(texts)
     }
 
     nonisolated static func convertSources(_ texts: [String], excludingHosts: [String] = []) -> BlockerConversion {
@@ -1001,6 +1047,23 @@ enum BlockerFiles {
         var errorDescription: String? { message }
     }
 
+    static let sourceByteLimit = 8 * 1024 * 1024
+
+    static func readText(_ file: URL) throws -> String {
+        // Read at most limit+1, even if the file grows after opening or its metadata lies.
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var data = Data()
+        while data.count <= sourceByteLimit {
+            let chunk = try handle.read(upToCount: min(64 * 1024, sourceByteLimit + 1 - data.count)) ?? Data()
+            if chunk.isEmpty { break }
+            data.append(chunk)
+        }
+        guard data.count <= sourceByteLimit else { throw Failure("Filter list exceeds the 8 MB limit.") }
+        guard let text = String(data: data, encoding: .utf8) else { throw Failure("Filter list is not UTF-8 text.") }
+        return text
+    }
+
     static func importList(_ text: String, into directory: URL) throws -> String {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let name = UUID().uuidString + ".txt"
@@ -1014,8 +1077,15 @@ enum BlockerFiles {
 
     static func sourceTexts(builtin: String, files: [URL]) throws -> [String] {
         var result = [builtin]
+        var bytes = builtin.utf8.count
         for file in files {
-            do { result.append(try String(contentsOf: file, encoding: .utf8)) }
+            do {
+                let text = try readText(file)
+                bytes += text.utf8.count
+                guard bytes <= 64 * 1024 * 1024 else { throw Failure("Combined filter lists exceed the 64 MB limit. Previous rules remain active.") }
+                result.append(text)
+            }
+            catch let failure as Failure { throw Failure("Couldn’t use filter list “\(file.lastPathComponent)”. " + failure.localizedDescription) }
             catch { throw Failure("Couldn’t read filter list “\(file.lastPathComponent)”. Restore that file or reconnect its drive, then retry.") }
         }
         return result

@@ -56,32 +56,88 @@ enum AppIconPersistence {
         return string as String?
     }
 
-    /// Synchronous like NSWorkspace.setIcon: the stamp completes before the user can quit.
-    static func setIcon(_ image: Data?) -> Bool {
-        let service = Bundle.main.bundleURL.appendingPathComponent("Contents/XPCServices/\(serviceName).xpc")
-        guard let requirement = signingRequirement(for: service) else { return false }
-        let connection = NSXPCConnection(serviceName: serviceName)
-        connection.remoteObjectInterface = NSXPCInterface(with: VaneIconPersisting.self)
-        connection.setCodeSigningRequirement(requirement)
-        connection.resume()
-        defer { connection.invalidate() }
-        let result = Reply()
-        let proxy = connection.remoteObjectProxyWithErrorHandler { _ in result.finish(false) }
-        guard let service = proxy as? VaneIconPersisting else { return false }
-        service.setIcon(image) { result.finish($0) }
-        // A failed helper must not leave Settings or startup waiting indefinitely.
-        guard result.ready.wait(timeout: .now() + 3) == .success else { return false }
-        return result.value
+    /// XPC setup/signature reads and the helper reply never block the app's actor.
+    static func setIcon(_ image: Data?) async -> Bool {
+        await Task.detached(priority: .utility) {
+            let service = Bundle.main.bundleURL.appendingPathComponent("Contents/XPCServices/\(serviceName).xpc")
+            guard let requirement = signingRequirement(for: service) else { return false }
+            let connection = NSXPCConnection(serviceName: serviceName)
+            connection.remoteObjectInterface = NSXPCInterface(with: VaneIconPersisting.self)
+            connection.setCodeSigningRequirement(requirement)
+            connection.resume()
+            defer { connection.invalidate() }
+            let session = Connection(connection)
+            return await request { finish in
+                let proxy = session.connection.remoteObjectProxyWithErrorHandler { _ in finish(false) }
+                guard let service = proxy as? VaneIconPersisting else { finish(false); return }
+                service.setIcon(image, withReply: finish)
+            }
+        }.value
+    }
+
+    /// A helper can fail, disconnect, reply twice, or never reply. Finish exactly once;
+    /// timeout releases the continuation and connection without occupying any actor.
+    static func request(timeout: TimeInterval = 3,
+                        start: @escaping @Sendable (@escaping @Sendable (Bool) -> Void) -> Void) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let reply = Reply(continuation)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) { reply.finish(false) }
+            start { reply.finish($0) }
+        }
+    }
+
+    /// Configuration finishes before publication; subsequent proxy/invalidate calls use
+    /// NSXPCConnection's thread-safe message API, never mutable UI state.
+    private final class Connection: @unchecked Sendable {
+        let connection: NSXPCConnection
+        init(_ connection: NSXPCConnection) { self.connection = connection }
     }
 
     private final class Reply: @unchecked Sendable {
-        let ready = DispatchSemaphore(value: 0)
         private let lock = NSLock()
-        private var stored = false
-        var value: Bool { lock.withLock { stored } }
+        private var continuation: CheckedContinuation<Bool, Never>?
+        init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
         func finish(_ value: Bool) {
-            lock.withLock { stored = value }
-            ready.signal()
+            let pending = lock.withLock {
+                let pending = continuation
+                continuation = nil
+                return pending
+            }
+            pending?.resume(returning: value)
         }
+    }
+}
+
+/// The app updates its Dock tile immediately, while Finder stamps stay ordered across
+/// startup/settings. A durability boundary waits for the final selection and its result.
+@MainActor final class AppIconPersistenceQueue {
+    private var task: Task<Bool, Never>?
+    private var generation: UInt64 = 0
+    private var succeeded = true
+    private var latestStamp: (@MainActor () async -> Bool)?
+    var pending: Bool { task != nil }
+
+    func enqueue(_ stamp: @escaping @MainActor () async -> Bool) {
+        latestStamp = stamp
+        let previous = task
+        generation &+= 1
+        let current = generation
+        task = Task {
+            _ = await previous?.value
+            let success = await stamp()
+            if current == generation {
+                succeeded = success
+                task = nil
+                if !success { NSLog("[vane] Couldn’t persist the selected Finder icon.") }
+            }
+            return success
+        }
+    }
+
+    func flush() async -> Bool {
+        // A later quit attempt retries a helper that recovered after a failed stamp.
+        if task == nil, !succeeded, let latestStamp { enqueue(latestStamp) }
+        while let task { _ = await task.value }
+        return succeeded
     }
 }

@@ -11,32 +11,64 @@ import WebKit
     let store: WKContentRuleListStore
     private var owner: Int32
 
-    init(root: URL = BlockerPrivateCache.root) throws {
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let global = try Self.lock(root.appendingPathComponent(".lock"), nonblocking: false)
-        defer { flock(global, LOCK_UN); Darwin.close(global) }
-        try Self.sweepLocked(root: root)
-        directory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        owner = try Self.lock(directory.appendingPathComponent(".owner"), nonblocking: false)
+    /// Transfer an exclusively owned directory from the IO worker to WebKit's actor.
+    private final class Prepared: @unchecked Sendable {
+        let directory: URL
+        var owner: Int32
+        init(directory: URL, owner: Int32) { self.directory = directory; self.owner = owner }
+        deinit {
+            if owner >= 0 { flock(owner, LOCK_UN); Darwin.close(owner) }
+        }
+    }
+
+    static func create(root: URL = BlockerPrivateCache.root) async throws -> BlockerPrivateCache {
+        let prepared = try await Task.detached(priority: .utility) { try prepare(root: root) }.value
+        return try BlockerPrivateCache(prepared: prepared)
+    }
+
+    /// Retained for isolated cache checks; production uses `create` to keep disk IO off UI.
+    convenience init(root: URL = BlockerPrivateCache.root) throws {
+        try self.init(prepared: Self.prepare(root: root))
+    }
+
+    private init(prepared: Prepared) throws {
+        directory = prepared.directory
         guard let store = WKContentRuleListStore(url: directory) else {
-            flock(owner, LOCK_UN); Darwin.close(owner)
-            try? FileManager.default.removeItem(at: directory)
             throw BlockerFiles.Failure("WebKit’s private filter store is unavailable.")
         }
         self.store = store
+        owner = prepared.owner
+        prepared.owner = -1
+    }
+
+    private nonisolated static func prepare(root: URL) throws -> Prepared {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        // Busy means recoverable unavailability, never a wait for another Vane copy.
+        let global = try lock(root.appendingPathComponent(".lock"), nonblocking: true)
+        defer { flock(global, LOCK_UN); Darwin.close(global) }
+        let directory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        do { return Prepared(directory: directory, owner: try lock(directory.appendingPathComponent(".owner"), nonblocking: true)) }
+        catch { try? FileManager.default.removeItem(at: directory); throw error }
     }
 
     func close(removeFiles: Bool = true) {
         guard owner >= 0 else { return }
-        // Remove while still owning the lock; another process cannot sweep a live cache.
-        if removeFiles { try? FileManager.default.removeItem(at: directory) }
-        flock(owner, LOCK_UN); Darwin.close(owner); owner = -1
+        let descriptor = owner
+        owner = -1
+        if removeFiles {
+            let directory = directory
+            Task.detached(priority: .utility) {
+                // Keep the owner lock until recursive removal finishes.
+                try? FileManager.default.removeItem(at: directory)
+                flock(descriptor, LOCK_UN); Darwin.close(descriptor)
+            }
+        } else { flock(descriptor, LOCK_UN); Darwin.close(descriptor) }
     }
 
     nonisolated static func sweep(root: URL = BlockerPrivateCache.root) throws {
         guard FileManager.default.fileExists(atPath: root.path) else { return }
-        let global = try lock(root.appendingPathComponent(".lock"), nonblocking: false)
+        let global = try lock(root.appendingPathComponent(".lock"), nonblocking: true)
         defer { flock(global, LOCK_UN); Darwin.close(global) }
         try sweepLocked(root: root)
     }

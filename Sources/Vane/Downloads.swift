@@ -24,6 +24,9 @@ import CryptoKit
     static func forget(_ id: UUID, in dir: URL = Store.directory) {
         if let manager = cache[id] {
             manager.invalidated = true
+            manager.destinationRefreshGeneration &+= 1
+            manager.destinationRefresh?.cancel()
+            manager.destinationRefresh = nil
             for download in manager.pendingDownloads.values {
                 download.delegate = nil
                 download.cancel { _ in }
@@ -35,6 +38,7 @@ import CryptoKit
                 if item.status.isLive { manager.cancel(item) }
                 item.operation = UUID()
                 ScopedPaths.releaseBookmark(owner: item.scopeOwner)
+                item.destinationLease = nil
             }
             manager.items = []
             manager.retryOrigins = [:]
@@ -60,6 +64,10 @@ import CryptoKit
     private let locationDefaults: UserDefaults?
     private var privateResumeData: [UUID: Data] = [:]
     private var invalidated = false
+    private var destinationRefresh: Task<Void, Never>?
+    private var destinationRefreshGeneration: UInt64 = 0
+    private let destinationProbe: @Sendable (DestinationRequest) -> DestinationResult
+    private let asynchronousDestinationInspection: Bool
     private var pendingDownloads: [ObjectIdentifier: WKDownload] = [:]
     /// Reservations span profiles until WebKit creates a file that the filesystem can
     /// protect. They never create placeholder files, which WKDownload rejects.
@@ -78,17 +86,20 @@ import CryptoKit
     init(profileID: UUID = ProfileManager.defaultID,
          directory: URL = Store.directory,
          sandboxed: Bool = false,
-         locationDefaults: UserDefaults? = nil) {
+         locationDefaults: UserDefaults? = nil,
+         destinationProbe: (@Sendable (DestinationRequest) -> DestinationResult)? = nil) {
         self.profileID = profileID
         self.directory = directory
         self.sandboxed = sandboxed
+        self.destinationProbe = destinationProbe ?? Self.inspectDestination
+        self.asynchronousDestinationInspection = !sandboxed || destinationProbe != nil
         self.locationDefaults = profileID == Profile.incognito.id ? nil
             : locationDefaults ?? (sandboxed ? nil : .vane)
         super.init()
         // History, resumed transfers and Finder actions inspect saved destination URLs
         // before the next download asks for a destination. Reopen the folder's sandbox
         // grant before `load()` decides that a finished file has gone missing.
-        if let locationDefaults = self.locationDefaults {
+        if sandboxed, let locationDefaults = self.locationDefaults {
             _ = DownloadLocation.directory(for: profileID, defaults: locationDefaults)
         }
         load()
@@ -125,6 +136,7 @@ import CryptoKit
         fileprivate var privateStore: WKWebsiteDataStore?
         fileprivate var privateResumer: WKWebView?
         fileprivate var resumePending = false
+        fileprivate var destinationResumeOperation: UUID?
         fileprivate var partialIdentity: FileIdentity?
         @Published var fraction = 0.0
         @Published var state: State = .running
@@ -148,6 +160,9 @@ import CryptoKit
         fileprivate var destinationBookmark: Data?
         /// Save panels grant the selected file, not its containing directory.
         fileprivate var destinationBookmarkIsFile: Bool?
+        fileprivate var destinationLease: DownloadDestinationLease?
+        fileprivate var inspectedDestination: DestinationRequest?
+        fileprivate var resumeAvailable = false
         /// Distinguishes "the user pressed pause" from "the network fell over" — the two
         /// need different words when the resume data turns out not to exist.
         fileprivate var pausedByUser = false
@@ -268,7 +283,7 @@ import CryptoKit
     /// One row on disk. Filename, destination, source, size, bytes received, state and
     /// completion date, per the brief; plus the name of the resume blob in `resumeDir`
     /// and a folder bookmark so this row remains accessible after the profile moves on.
-    struct Record: Codable, Equatable {
+    struct Record: Codable, Equatable, Sendable {
         var id = UUID()
         var name: String
         var destination: URL?
@@ -289,7 +304,7 @@ import CryptoKit
         var resumeChecksum: String?
     }
 
-    struct FileIdentity: Codable, Equatable {
+    struct FileIdentity: Codable, Equatable, Sendable {
         var device: UInt64
         var inode: UInt64
         nonisolated static func at(_ url: URL) -> FileIdentity? {
@@ -349,6 +364,7 @@ import CryptoKit
             // History whose file the user has since deleted or moved must not offer a
             // broken "Show in Finder".
             let item = Item(record: r)
+            if !sandboxed { return item }
             // Older indexes have no row bookmark. While the current folder's grant is
             // still available, give those rows their own copy before the user changes it.
             if item.destinationBookmark == nil, item.destinationBookmarkIsFile != true,
@@ -384,6 +400,10 @@ import CryptoKit
                 if let i { self?.capturePartialIdentity(i) }
                 self?.throttledSave()
             }
+        }
+        if !sandboxed {
+            refreshMissing()
+            return
         }
         if backfillPendingRows() {
             upgraded = true
@@ -488,6 +508,7 @@ import CryptoKit
         for e in evicted {
             deleteResume(e)
             ScopedPaths.releaseBookmark(owner: e.scopeOwner)
+            e.destinationLease = nil
         }
         if !evicted.isEmpty { items = keep }
         guard profileID != Profile.incognito.id else { return }
@@ -530,27 +551,147 @@ import CryptoKit
         for i in items where !i.status.isLive {
             deleteResume(i)
             ScopedPaths.releaseBookmark(owner: i.scopeOwner)
+            i.destinationLease = nil
         }
         items = items.filter(\.status.isLive)
         save()
     }
 
-    /// Re-checks every finished row against the filesystem. Cheap enough to call whenever
-    /// the downloads popover opens.
+    struct DestinationRequest: Sendable, Equatable {
+        var id: UUID
+        var operation: UUID
+        var record: Record
+        var resumeDirectory: URL
+        var fallbackGrants: [Data]
+        var inMemoryResumeData: Data? = nil
+    }
+    struct DestinationResult: Sendable {
+        var request: DestinationRequest
+        var url: URL?
+        var bookmark: Data?
+        var lease: DownloadDestinationLease?
+        var readable = false
+        var unavailable = false
+        var resumeIssue: String?
+        var resumeData: Data?
+    }
+
+    private func destinationRequest(_ item: Item) -> DestinationRequest {
+        var grants: [Data] = []
+        if let defaults = locationDefaults {
+            grants = (defaults.array(forKey: DownloadLocation.pendingDirectoryKey(profileID)) as? [Data]) ?? []
+            grants += (defaults.array(forKey: DownloadLocation.directoryKey(profileID)) as? [Data]) ?? []
+        }
+        return DestinationRequest(id: item.id, operation: item.operation, record: item.record,
+            resumeDirectory: Self.resumeDir(for: profileID, in: directory), fallbackGrants: grants,
+            inMemoryResumeData: privateResumeData[item.id])
+    }
+
+    nonisolated static func inspectDestination(_ request: DestinationRequest) -> DestinationResult {
+        let record = request.record
+        var result = DestinationResult(request: request, bookmark: record.destinationBookmark)
+        guard let saved = record.destination else { return result }
+        // Migrate legacy rows on the worker without discarding unavailable grants.
+        if result.bookmark == nil, record.destinationBookmarkIsFile != true {
+            for grant in request.fallbackGrants {
+                guard let lease = DownloadDestinationLease(grant),
+                      lease.url.resolvingSymlinksInPath().path == saved.deletingLastPathComponent().resolvingSymlinksInPath().path else { continue }
+                result.bookmark = grant; result.lease = lease
+                break
+            }
+        }
+        if let bookmark = result.bookmark {
+            guard let lease = result.lease ?? DownloadDestinationLease(bookmark) else { result.unavailable = true; return result }
+            result.lease = lease
+            if record.destinationBookmarkIsFile == true { result.url = lease.url }
+            else {
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: lease.url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                    result.unavailable = true; return result
+                }
+                result.url = lease.url.appendingPathComponent(saved.lastPathComponent)
+            }
+        } else if record.destinationBookmarkIsFile != true { result.url = saved }
+        else { result.unavailable = true; return result }
+        result.readable = result.url.flatMap { validFileSize($0) } != nil
+        if record.state == "paused" {
+            if let identity = record.partialIdentity, let url = result.url, FileIdentity.at(url) != identity {
+                result.resumeIssue = "Cannot resume: the partial file was moved or replaced. Retry starts from the beginning."
+            } else {
+                let data = request.inMemoryResumeData ?? record.resumeFile.flatMap { name -> Data? in
+                    guard URL(fileURLWithPath: name).lastPathComponent == name else { return nil }
+                    return try? Data(contentsOf: request.resumeDirectory.appendingPathComponent(name))
+                }
+                result.resumeData = data
+                if let expected = record.resumeChecksum, let data, checksum(data) != expected {
+                    result.resumeIssue = "Cannot resume: the saved resume data is damaged. Retry starts from the beginning."
+                } else { result.resumeIssue = resumeBlocker(destination: result.url, resumeData: data) }
+            }
+        }
+        return result
+    }
+
+    /// Opening/hovering downloads only snapshots row values. Bookmark resolution,
+    /// external metadata/readability and paused-blob checks all run on the worker.
     func refreshMissing() {
+        guard !invalidated else { return }
+        // Offline `check()` deliberately runs without an event loop; keep its existing
+        // synchronous fixture behavior. Production and injected latency checks use IO workers.
+        if !asynchronousDestinationInspection { refreshMissingForOfflineCheck(); return }
+        guard destinationRefresh == nil else { return }
+        destinationRefreshGeneration &+= 1
+        let generation = destinationRefreshGeneration
+        let requests = items.filter { $0.status == .done || $0.status == .missing || $0.status == .paused }
+            .map(destinationRequest)
+        let probe = destinationProbe
+        destinationRefresh = Task {
+            let results = await Task.detached(priority: .utility) { requests.map(probe) }.value
+            guard !invalidated, generation == destinationRefreshGeneration else { return }
+            var changed = false
+            for result in results {
+                guard let item = items.first(where: { $0.id == result.request.id }),
+                      destinationRequest(item) == result.request else { continue }
+                if item.url != result.url, let url = result.url { item.url = url; changed = true }
+                if item.destinationBookmark != result.bookmark, let bookmark = result.bookmark {
+                    item.destinationBookmark = bookmark; changed = true
+                }
+                item.destinationLease = result.lease
+                item.resumeAvailable = !result.unavailable && result.resumeIssue == nil && result.readable
+                if item.status == .done || item.status == .missing {
+                    let want: Item.Status = result.readable ? .done : .missing
+                    if item.status != want {
+                        item.status = want
+                        item.state = result.readable ? .done : .failed(Self.missingText)
+                        changed = true
+                    }
+                } else if item.status == .paused {
+                    if result.unavailable { item.state = .failed("Download folder unavailable. Reconnect it to resume.") }
+                    else if let issue = result.resumeIssue { item.state = .failed(issue) }
+                    else { item.state = .failed("Paused") }
+                }
+                item.inspectedDestination = destinationRequest(item)
+            }
+            destinationRefresh = nil
+            if changed { save() }
+        }
+    }
+
+    private func refreshMissingForOfflineCheck() {
         var changed = backfillPendingRows()
-        for i in items where i.status == .done || i.status == .missing {
-            let there = restoredDestination(i)
-                .map { Self.validFileSize($0) != nil } ?? false
+        for item in items where item.status == .done || item.status == .missing {
+            let there = restoredDestination(item).map { Self.validFileSize($0) != nil } ?? false
             let want: Item.Status = there ? .done : .missing
-            if i.status != want {
-                i.status = want
-                i.state = there ? .done : .failed(Self.missingText)
+            if item.status != want {
+                item.status = want
+                item.state = there ? .done : .failed(Self.missingText)
                 changed = true
             }
         }
         if changed { save() }
     }
+
+    /// Durability/test seam: wait for the current inspection; no filesystem work on UI.
+    func waitForDestinationRefresh() async { await destinationRefresh?.value }
 
     // MARK: Destination policy
 
@@ -559,6 +700,7 @@ import CryptoKit
     /// Reopen the grant attached to this row, then follow the bookmark if the folder was
     /// moved. A temporarily disconnected volume returns nil without discarding the grant.
     private func restoredDestination(_ item: Item) -> URL? {
+        if !sandboxed, item.inspectedDestination == destinationRequest(item) { return item.destinationLease == nil && item.destinationBookmark != nil ? nil : item.url }
         guard let saved = item.url else { return nil }
         guard let bookmark = item.destinationBookmark else {
             return item.destinationBookmarkIsFile == true ? nil : saved
@@ -778,6 +920,7 @@ import CryptoKit
         }
         i.pausedByUser = false
         save()
+        if !sandboxed { refreshMissing() }
     }
 
     /// A Save panel may authorize a new path before the file exists. Capture its file
@@ -883,7 +1026,12 @@ import CryptoKit
 
     /// Anything the user could still finish: paused, or interrupted with a blob on disk.
     func canResume(_ item: Item) -> Bool {
-        !invalidated && items.contains(where: { $0 === item }) && item.status == .paused
+        if !sandboxed {
+            return !invalidated && items.contains(where: { $0 === item }) && item.status == .paused
+                && item.download == nil && !item.resumePending
+                && item.inspectedDestination == destinationRequest(item) && item.resumeAvailable
+        }
+        return !invalidated && items.contains(where: { $0 === item }) && item.status == .paused
             && item.download == nil && !item.resumePending && resumeProblem(item) == nil
     }
 
@@ -933,6 +1081,43 @@ import CryptoKit
     func resume(_ item: Item) -> Bool {
         guard !invalidated, items.contains(where: { $0 === item }), item.status == .paused,
               item.download == nil, !item.resumePending else { return false }
+        if asynchronousDestinationInspection {
+            item.resumePending = true
+            item.operation = UUID()
+            let request = destinationRequest(item)
+            item.destinationResumeOperation = request.operation
+            let probe = destinationProbe
+            Task {
+                let result = await Task.detached(priority: .utility) { probe(request) }.value
+                guard !invalidated, items.contains(where: { $0 === item }),
+                      item.resumePending, destinationRequest(item) == request else {
+                    if item.destinationResumeOperation == request.operation {
+                        item.destinationResumeOperation = nil
+                        item.resumePending = false
+                    }
+                    return
+                }
+                item.destinationResumeOperation = nil
+                item.resumePending = false
+                if result.unavailable {
+                    item.state = .failed("Download folder unavailable. Reconnect it to resume.")
+                    save()
+                    return
+                }
+                guard result.resumeIssue == nil, let data = result.resumeData else {
+                    deleteResume(item)
+                    item.status = .failed
+                    item.state = .failed(result.resumeIssue ?? "Cannot resume: saved resume data is unavailable.")
+                    save()
+                    return
+                }
+                if let url = result.url { item.url = url }
+                if let bookmark = result.bookmark { item.destinationBookmark = bookmark }
+                item.destinationLease = result.lease
+                startResume(item, data: data, operation: request.operation)
+            }
+            return true
+        }
         if item.destinationBookmark != nil && restoredDestination(item) == nil {
             item.status = .paused
             item.state = .failed("Download folder unavailable. Reconnect it to resume.")
@@ -948,13 +1133,17 @@ import CryptoKit
             return false
         }
         item.operation = UUID()
-        let operation = item.operation
+        startResume(item, data: data!, operation: item.operation)
+        return true
+    }
+
+    private func startResume(_ item: Item, data: Data, operation: UUID) {
         item.status = .running
         item.state = .running
         item.pausedByUser = false
         save()
         item.resumePending = true
-        resumeWebView(for: item).resumeDownload(fromResumeData: data!) { [weak self] d in
+        resumeWebView(for: item).resumeDownload(fromResumeData: data) { [weak self] d in
             item.resumePending = false
             guard let self, item.operation == operation, item.status.isLive,
                   self.items.contains(where: { $0 === item }) else {
@@ -969,7 +1158,6 @@ import CryptoKit
                 self.pause(item)
             }
         }
-        return true
     }
 
     /// Quit is the common interruption, and `cancel` hands back its resume data
@@ -1046,6 +1234,10 @@ import CryptoKit
     func cancel(_ item: Item) {
         guard items.contains(where: { $0 === item }), item.status.isLive || item.retryPending else { return }
         item.operation = UUID()
+        if item.destinationResumeOperation != nil {
+            item.destinationResumeOperation = nil
+            item.resumePending = false
+        }
         item.pausedByUser = false
         item.retryPending = false
         for (key, origin) in retryOrigins.filter({ $0.value.item === item }) {
@@ -1069,6 +1261,7 @@ import CryptoKit
                 Self.pendingDestinations[item.scopeOwner] = nil
                 if !items.contains(where: { $0 === item }) {
                     ScopedPaths.releaseBookmark(owner: item.scopeOwner)
+                    item.destinationLease = nil
                 }
             }
             item.unwatch()
@@ -1091,6 +1284,7 @@ import CryptoKit
         item.operation = UUID()
         deleteResume(item)
         ScopedPaths.releaseBookmark(owner: item.scopeOwner)
+        item.destinationLease = nil
         items.removeAll { $0 === item }
         save()
     }
@@ -1105,6 +1299,7 @@ import CryptoKit
 
     /// Clicking a finished download opens it, the way it does in Arc's Library.
     func open(_ item: Item) {
+        if asynchronousDestinationInspection { inspectForFileAction(item, reveal: false); return }
         guard let url = restoredDestination(item),
               FileManager.default.fileExists(atPath: url.path) else {
             markMissing(item)
@@ -1114,6 +1309,7 @@ import CryptoKit
     }
 
     func reveal(_ item: Item) {
+        if asynchronousDestinationInspection { inspectForFileAction(item, reveal: true); return }
         // The row may have been finished weeks ago; do not open Finder onto nothing.
         guard let url = restoredDestination(item),
               FileManager.default.fileExists(atPath: url.path) else {
@@ -1121,6 +1317,25 @@ import CryptoKit
             return
         }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    private func inspectForFileAction(_ item: Item, reveal: Bool) {
+        guard !invalidated, items.contains(where: { $0 === item }) else { return }
+        let request = destinationRequest(item)
+        let probe = destinationProbe
+        Task {
+            let result = await Task.detached(priority: .utility) { probe(request) }.value
+            guard !invalidated, items.contains(where: { $0 === item }),
+                  destinationRequest(item) == request else { return }
+            guard result.readable, let url = result.url else { markMissing(item); return }
+            item.url = url
+            if let bookmark = result.bookmark { item.destinationBookmark = bookmark }
+            item.destinationLease = result.lease
+            item.inspectedDestination = destinationRequest(item)
+            save()
+            if reveal { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            else { NSWorkspace.shared.open(url) }
+        }
     }
 
     // MARK: Words

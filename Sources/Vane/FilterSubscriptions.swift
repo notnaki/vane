@@ -32,17 +32,18 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
     private struct Document: Codable { var version = 1; var items: [FilterSubscription] }
     nonisolated static var directory: URL { Store.directory.appendingPathComponent("FilterSubscriptions", isDirectory: true) }
     static let shared = FilterSubscriptions(directory: directory, fetch: download,
-        validate: { _ in }, transaction: { try await Blocker.commitSubscriptions($0, items: $1) }, changed: { Blocker.refresh() })
+        validate: { _ in }, transaction: { try await Blocker.commitSubscriptions($0, items: $1) }, changed: { Blocker.refresh() }, deferLoad: true)
 
     @Published private(set) var items: [FilterSubscription] = []
     @Published private(set) var updating: Set<UUID> = []
     @Published private(set) var storageError: String?
     private let fetch: (FilterSubscription) async throws -> Response
     private let validate: (String) async throws -> Void
-    private let persist: ([FilterSubscription]) throws -> Void
+    private let persist: ([FilterSubscription]) async throws -> Void
     private let changed: () -> Void
     private let transaction: ((String, [FilterSubscription]) async throws -> Void)?
     private let gate = BlockerAsyncGate()
+    private var loading: Task<[FilterSubscription], Error>?
     private var loadFailed = false
     private var timer: Timer?
     private var wakeObserver: NSObjectProtocol?
@@ -50,12 +51,27 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
     init(directory: URL, fetch: @escaping (FilterSubscription) async throws -> Response,
          validate: @escaping (String) async throws -> Void,
          persist: (([FilterSubscription]) throws -> Void)? = nil,
-         transaction: ((String, [FilterSubscription]) async throws -> Void)? = nil, changed: @escaping () -> Void = {}) {
+         transaction: ((String, [FilterSubscription]) async throws -> Void)? = nil, changed: @escaping () -> Void = {}, deferLoad: Bool = false) {
         self.fetch = fetch; self.validate = validate
-        self.persist = persist ?? { try Self.write($0, directory: directory) }
+        if let persist { self.persist = { try persist($0) } }
+        else {
+            self.persist = { items in
+                try await Task.detached(priority: .utility) { try Self.write(items, directory: directory) }.value
+            }
+        }
         self.changed = changed; self.transaction = transaction
-        do { items = try Self.read(directory: directory) }
+        if deferLoad { loading = Task.detached(priority: .utility) { try Self.read(directory: directory) } }
+        else {
+            do { items = try Self.read(directory: directory) }
+            catch { loadFailed = true; storageError = error.localizedDescription }
+        }
+    }
+
+    private func finishLoading() async {
+        guard let loading else { return }
+        do { items = try await loading.value }
         catch { loadFailed = true; storageError = error.localizedDescription }
+        self.loading = nil
     }
 
     func start() {
@@ -73,6 +89,7 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
     func add(_ url: URL) async throws {
         await gate.acquire()
         defer { gate.release() }
+        await finishLoading()
         guard !loadFailed else { throw BlockerFiles.Failure(storageError ?? "Restore the subscription store first.") }
         guard url.scheme?.lowercased() == "https", url.host != nil, url.user == nil, url.password == nil, url.fragment == nil else {
             throw BlockerFiles.Failure("Use an HTTPS filter-list URL without a username, password, or fragment.")
@@ -80,7 +97,7 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
         guard !items.contains(where: { $0.url == url }) else { throw BlockerFiles.Failure("That URL is already subscribed.") }
         let item = FilterSubscription(url: url)
         let candidate = items + [item]
-        try persist(candidate)
+        try await persist(candidate)
         items = candidate; storageError = nil
         await updateLocked(item.id)
     }
@@ -88,6 +105,7 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
     func remove(_ id: UUID) async {
         await gate.acquire()
         defer { gate.release() }
+        await finishLoading()
         guard !loadFailed else { return }
         do {
             let candidate = items.filter { $0.id != id }
@@ -100,12 +118,14 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
     func update(_ id: UUID) async {
         await gate.acquire()
         defer { gate.release() }
+        await finishLoading()
         await updateLocked(id)
     }
 
     func updateDue(now: Date = Date(), force: Bool = false) async {
         await gate.acquire()
         defer { gate.release() }
+        await finishLoading()
         for id in items.filter({ force || $0.isDue(at: now) }).map(\.id) { await updateLocked(id) }
     }
 
@@ -122,8 +142,7 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
                 guard !accepted.text.isEmpty else { throw BlockerFiles.Failure("The server returned Not Modified before a working list was saved. Retry the update.") }
             } else {
                 let conversion = try await Task.detached(priority: .utility) {
-                    let text = try Self.usableText(response)
-                    return (text, Blocker.convert(text).report)
+                    try Self.preparedResponse(response)
                 }.value
                 updated.text = conversion.0
                 updated.report = conversion.1
@@ -133,7 +152,7 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
             updated.lastSuccess = Date(); updated.lastError = nil
             var candidate = items; candidate[index] = updated
             // Never change in-memory accepted text or validators before the write succeeds.
-            if response.status == 304 { try persist(candidate) }
+            if response.status == 304 { try await persist(candidate) }
             else { try await commit(candidate) }
             items = candidate; storageError = nil
             changed()
@@ -142,27 +161,34 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
             failed.lastAttempt = updated.lastAttempt
             failed.lastError = error.localizedDescription
             var candidate = items; candidate[index] = failed
-            do { try persist(candidate); items = candidate; storageError = nil }
+            do { try await persist(candidate); items = candidate; storageError = nil }
             catch { storageError = error.localizedDescription }
         }
     }
 
     private func commit(_ candidate: [FilterSubscription]) async throws {
-        let text = candidate.map(\.text).joined(separator: "\n")
+        let text = await Task.detached(priority: .utility) { candidate.map(\.text).joined(separator: "\n") }.value
         if let transaction { try await transaction(text, candidate) }
-        else { try await validate(text); try persist(candidate) }
+        else { try await validate(text); try await persist(candidate) }
     }
 
     nonisolated static func usableText(_ response: Response) throws -> String {
+        try preparedResponse(response).0
+    }
+
+    private nonisolated static func preparedResponse(_ response: Response) throws -> (String, BlockerReport) {
         guard response.status == 200 else { throw BlockerFiles.Failure("Filter server returned HTTP \(response.status).") }
+        guard response.text.utf8.count <= BlockerFiles.sourceByteLimit else { throw BlockerFiles.Failure("Filter list exceeds the 8 MB limit.") }
         let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard balancedConditionals(text) else { throw BlockerFiles.Failure("Filter list contains unbalanced conditional directives. Previous rules remain active.") }
         guard text.utf8.count <= 8 * 1024 * 1024 else { throw BlockerFiles.Failure("Filter list exceeds the 8 MB limit.") }
         guard !text.isEmpty, !text.lowercased().contains("<html"), !text.lowercased().contains("<!doctype html"),
-              !text.contains("\0"), Blocker.convert(text).rules > 0 else {
+              !text.contains("\0") else {
             throw BlockerFiles.Failure("The response is not a usable UTF-8 filter list. Previous rules remain active.")
         }
-        return text
+        let conversion = try Blocker.convertBoundedSources([text])
+        guard conversion.rules > 0 else { throw BlockerFiles.Failure("The response contains no usable filter rules. Previous rules remain active.") }
+        return (text, conversion.report)
     }
 
     private nonisolated static func balancedConditionals(_ text: String) -> Bool {
@@ -218,9 +244,7 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
         guard http.statusCode == 200 else { throw BlockerFiles.Failure("Filter server returned HTTP \(http.statusCode).") }
         let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard size <= 8 * 1024 * 1024 else { throw BlockerFiles.Failure("Filter list exceeds the 8 MB limit.") }
-        guard let text = String(data: try Data(contentsOf: file), encoding: .utf8) else {
-            throw BlockerFiles.Failure("Filter list is not UTF-8 text.")
-        }
+        let text = try BlockerFiles.readText(file)
         return Response(status: 200, text: text, etag: http.value(forHTTPHeaderField: "ETag"),
                         lastModified: http.value(forHTTPHeaderField: "Last-Modified"))
     }

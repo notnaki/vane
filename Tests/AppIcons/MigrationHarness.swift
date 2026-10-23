@@ -20,7 +20,7 @@ extension UserDefaults {
     @objc static func fetchCurrentIconAppearanceConfiguration() -> NSObject { NSObject() }
 }
 @main @MainActor struct IconMigrationHarness {
-    static func main() {
+    static func main() async {
         defer {
             if !CommandLine.arguments.contains("--persistence") {
                 UserDefaults.vane.removePersistentDomain(forName: UserDefaults.iconTestDomain)
@@ -67,7 +67,7 @@ extension UserDefaults {
             expect(AppIcon.isSandboxed == CommandLine.arguments.contains("--sandboxed"),
                    "fixture exercises the intended sandbox path")
             if choice == "cleanup" {
-                if AppIcon.isSandboxed { _ = AppIconPersistence.setIcon(nil) }
+                if AppIcon.isSandboxed { _ = await AppIconPersistence.setIcon(nil) }
                 else { _ = NSWorkspace.shared.setIcon(nil, forFile: Bundle.main.bundlePath, options: []) }
                 UserDefaults.vane.removePersistentDomain(forName: UserDefaults.iconTestDomain)
                 exit(0)
@@ -80,10 +80,13 @@ extension UserDefaults {
                 AppIcon.restoreAtLaunch()
                 expect(AppIcon.current == "Dark", "removed custom icons revert to Dark")
             } else if choice == "invalid-data" {
-                expect(!AppIconPersistence.setIcon(Data([0, 1, 2])), "helper refuses malformed image data")
+                let stamped = await AppIconPersistence.setIcon(Data([0, 1, 2]))
+                expect(!stamped, "helper refuses malformed image data")
             } else if choice != "verify" {
                 AppIcon.apply(choice)
             }
+            let persisted = await AppIcon.flushPersistence()
+            expect(persisted, "last queued icon completes before checking Finder or quitting")
             UserDefaults.vane.synchronize()
             var finderInfo = [UInt8](repeating: 0, count: 32)
             let count = getxattr(Bundle.main.bundlePath, "com.apple.FinderInfo", &finderInfo, 32, 0, 0)
@@ -128,6 +131,7 @@ extension UserDefaults {
                 expect(AppIcon.current == variant.name, "selecting \(variant.name) persists its choice")
             }
         }
+        _ = await AppIcon.flushPersistence()
         failures.forEach { print("FAIL: \($0)") }
         if !failures.isEmpty { exit(1) }
         print("PASS: icon catalogue, migration, and \(packaged ? "bundled selection" : "missing-asset fallback")")

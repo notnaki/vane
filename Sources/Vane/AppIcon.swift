@@ -61,7 +61,8 @@ import AppKit
 
     /// Switch to the icon named `name`: the live Dock tile, the persisted choice, and — when
     /// the bundle can take it — the icon Finder keeps while Vane is quit. Returns whether
-    /// that last part happened; the first two always do.
+    /// a persistence request was queued; the first two always happen immediately.
+    /// `flushPersistence` reports the helper result at quit or another durability boundary.
     @discardableResult
     static func apply(_ name: String) -> Bool {
         let name = canonicalName(name)
@@ -81,13 +82,26 @@ import AppKit
                 plate.lockFocus()
                 image.draw(in: NSRect(x: 0, y: 0, width: 512, height: 512))
                 plate.unlockFocus()
-                guard let encoded = plate.tiffRepresentation else { return false }
+                guard let encoded = plate.tiffRepresentation else {
+                    enqueuePersistence { false }
+                    return false
+                }
                 data = encoded
             } else { data = nil }
-            return AppIconPersistence.setIcon(data)
+            enqueuePersistence { await AppIconPersistence.setIcon(data) }
+        } else {
+            enqueuePersistence { AppIconPersistence.stamp(image, at: Bundle.main.bundleURL) }
         }
-        return AppIconPersistence.stamp(image, at: Bundle.main.bundleURL)
+        return true
     }
+
+    private static let persistence = AppIconPersistenceQueue()
+    static var persistencePending: Bool { persistence.pending }
+    private static func enqueuePersistence(_ stamp: @escaping @MainActor () async -> Bool) {
+        persistence.enqueue(stamp)
+    }
+
+    static func flushPersistence() async -> Bool { await persistence.flush() }
 
     /// Called once at launch, before the first window. The Dock tile belongs to the running
     /// process, so a chosen icon has to be put back every time — and `Updater` replaces the
