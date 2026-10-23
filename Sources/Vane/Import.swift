@@ -102,7 +102,16 @@ enum PasswordImport {
 
     @discardableResult
     static func importFile(_ url: URL, existing: @autoclosure () -> Set<String> = [],
-                           checkCancellation: () throws -> Void = { try Task.checkCancellation() },
+                           save: (Entry) -> Bool = {
+                               Passwords.save(origin: $0.origin, account: $0.account,
+                                              password: $0.password, replacingExisting: false)
+                           }) throws -> (imported: Int, skipped: Int, failed: Int) {
+        try importFile(url, existing: existing(), checkCancellation: { try Task.checkCancellation() }, save: save)
+    }
+
+    @discardableResult
+    static func importFile(_ url: URL, existing: @autoclosure () -> Set<String> = [],
+                           checkCancellation: () throws -> Void,
                            save: (Entry) -> Bool = {
                                Passwords.save(origin: $0.origin, account: $0.account,
                                               password: $0.password, replacingExisting: false)
@@ -128,25 +137,35 @@ enum PasswordImport {
 
     // MARK: UI
 
+    struct BatchOperations: Sendable {
+        var existing: @Sendable (UUID) -> Set<String> = { Set(Passwords.all(profileID: $0).map(\.id)) }
+        var save: @Sendable (Entry, UUID) -> Bool = {
+            Passwords.save(origin: $0.origin, account: $0.account, password: $0.password,
+                           profileID: $1, replacingExisting: false)
+        }
+    }
+
     /// Keep the whole batch ordered with credential edits/deletion. A profile retired
     /// during source parsing cannot be recreated by a later per-entry Keychain save.
-    @MainActor static func importFileAsync(_ file: URL, profileID: UUID) async throws
+    @MainActor static func importFileAsync(_ file: URL, profileID: UUID,
+                                          operations: BatchOperations = BatchOperations()) async throws
         -> (imported: Int, skipped: Int, failed: Int) {
-        let destination = Store.store(for: profileID)
-        let cancellation = StoreImportCancellation()
-        return try await withTaskCancellationHandler {
-            try await Passwords.perform {
-                guard !destination.isRetired else { throw CancellationError() }
-                return try importFile(file, existing: Set(Passwords.all(profileID: profileID).map(\.id)),
-                                      checkCancellation: {
-                    if cancellation.isCancelled { throw CancellationError() }
-                }, save: {
-                    guard !destination.isRetired else { return false }
-                    return Passwords.save(origin: $0.origin, account: $0.account, password: $0.password,
-                                          profileID: profileID, replacingExisting: false)
-                })
-            }
-        } onCancel: { cancellation.cancel() }
+        try await ImportOperations.run { _ in
+            let destination = Store.store(for: profileID)
+            let cancellation = StoreImportCancellation()
+            return try await withTaskCancellationHandler {
+                try await Passwords.perform {
+                    guard !destination.isRetired else { throw CancellationError() }
+                    return try importFile(file, existing: operations.existing(profileID),
+                                          checkCancellation: {
+                        if cancellation.isCancelled { throw CancellationError() }
+                    }, save: {
+                        guard !destination.isRetired else { return false }
+                        return operations.save($0, profileID)
+                    })
+                }
+            } onCancel: { cancellation.cancel() }
+        }
     }
 
     @MainActor static func chooseAndImport(profileID: UUID = ProfileManager.activeProfileID) {
@@ -208,10 +227,12 @@ enum BookmarkImport {
     }
 
     @MainActor static func importFileAsync(_ url: URL, profileID: UUID) async throws -> BookmarkImportResult {
-        let destination = Store.store(for: profileID)
-        let items = try await ImportWork.run { try readItems(url) }
-        try Task.checkCancellation()
-        return try await destination.importBookmarksAsync(items)
+        try await ImportOperations.run { admission in
+            let destination = Store.store(for: profileID)
+            let items = try await ImportWork.run { try readItems(url) }
+            try Task.checkCancellation()
+            return try await destination.importBookmarksAsync(items, admission: admission)
+        }
     }
 
     @MainActor static func chooseAndImport(profileID: UUID = ProfileManager.activeProfileID) {
@@ -263,5 +284,45 @@ enum ImportWork {
         }
         guard let text = String(data: data, encoding: .utf8) else { throw PasswordImport.Failure("The import file is not valid UTF-8.") }
         return text
+    }
+}
+
+/// Tracks an entire accepted import intent, including source work before any credential
+/// or SQLite mutation and all later cookie publication. Lifecycle drains intent, not just
+/// whichever service operation happened to be queued when the drain began.
+@MainActor enum ImportOperations {
+    struct Admission: Sendable { fileprivate let id: UUID }
+    private static var active: Set<UUID> = []
+    private static var waiters: [CheckedContinuation<Void, Never>] = []
+    static var hasPendingOperations: Bool { !active.isEmpty }
+
+    static func isActive(_ admission: Admission?) -> Bool {
+        admission.map { active.contains($0.id) } ?? false
+    }
+
+    static func run<Value>(_ existing: Admission? = nil,
+                           operation: @MainActor (Admission) async throws -> Value) async throws -> Value {
+        if let existing {
+            guard isActive(existing) else { throw CancellationError() }
+            return try await operation(existing)
+        }
+        guard !Store.admissionPaused else {
+            throw PasswordImport.Failure("Imports are paused while Vane prepares to quit or restore a backup.")
+        }
+        try Task.checkCancellation()
+        let admission = Admission(id: UUID())
+        active.insert(admission.id)
+        defer {
+            active.remove(admission.id)
+            if active.isEmpty {
+                let ready = waiters; waiters.removeAll()
+                for waiter in ready { waiter.resume() }
+            }
+        }
+        return try await operation(admission)
+    }
+
+    static func drain() async {
+        while !active.isEmpty { await withCheckedContinuation { waiters.append($0) } }
     }
 }

@@ -934,12 +934,12 @@ enum ArcImport {
     }
 
     @MainActor private static func write(logins: [(origin: PasswordOrigin, account: String, password: String)],
-                                         into profileID: UUID, counts: inout Counts) async {
+                                         into profileID: UUID, counts: inout Counts) async throws {
         guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else {
             counts.refused += logins.count; return
         }
         let destination = Store.store(for: profileID)
-        let result = (try? await Passwords.perform {
+        let result = try await Passwords.perform {
             var imported = Counts()
             guard !destination.isRetired else { imported.refused += logins.count; return imported }
             importLogins(logins, existing: Set(Passwords.all(profileID: profileID).map(\.id)), counts: &imported) {
@@ -947,16 +947,28 @@ enum ArcImport {
                 return Passwords.save(origin: $0, account: $1, password: $2, profileID: profileID, replacingExisting: false)
             }
             return imported
-        }) ?? Counts()
+        }
         counts.passwords += result.passwords
         counts.passwordsAlready += result.passwordsAlready
         counts.refused += result.refused
     }
 
-    @MainActor private static func write(cookies: [HTTPCookie], into profileID: UUID) async -> Int {
+    @MainActor private static func write(cookies: [HTTPCookie], into profileID: UUID) async throws -> Int {
         let store = ProfileManager.dataStore(for: profileID).httpCookieStore
-        for cookie in cookies { await store.setCookie(cookie) }
+        for cookie in cookies {
+            try Task.checkCancellation()
+            await store.setCookie(cookie)
+        }
         return cookies.count
+    }
+
+    @MainActor static func publishCookiesAfterCredentials(
+        _ credentials: @MainActor () async throws -> Void,
+        publishCookies: @MainActor () async throws -> Int
+    ) async throws -> Int {
+        try await credentials()
+        try Task.checkCancellation()
+        return try await publishCookies()
     }
 
     /// The whole import, in the order the design calls for: profiles, then spaces, then
@@ -964,24 +976,33 @@ enum ArcImport {
     ///
     /// One profile throwing never stops the next: a locked `History` in Arc's work profile
     /// must not cost the user the personal profile's spaces.
-    @MainActor static func apply(_ scan: Scan) async -> Counts {
+    @MainActor static func apply(_ scan: Scan) async throws -> Counts {
+        try await ImportOperations.run { admission in try await applyAccepted(scan, admission: admission) }
+    }
+
+    @MainActor private static func applyAccepted(_ scan: Scan, admission: ImportOperations.Admission) async throws -> Counts {
         var counts = Counts()
         let ids = profileIDs(for: scan, counts: &counts)
         let key = await Task.detached(priority: .userInitiated) { safeStorageKey() }.value
+        try Task.checkCancellation()
         counts.noKey = key == nil
 
         var gained: Set<UUID> = []
+        defer { refreshSpaces(afterImporting: gained) }
         for space in scan.sidebar.spaces {
+            try Task.checkCancellation()
             guard let profileID = ids[space.profileDirectory],
                   ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
             if write(space, into: profileID, counts: &counts) { gained.insert(profileID) }
         }
         for (directory, urls) in scan.sidebar.favourites.sorted(by: { $0.key < $1.key }) {
+            try Task.checkCancellation()
             guard let profileID = ids[directory],
                   ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
             write(favourites: urls, into: profileID, counts: &counts)
         }
         for (directory, vault) in scan.vaults.sorted(by: { $0.key < $1.key }) {
+            try Task.checkCancellation()
             guard let profileID = ids[directory],
                   ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
             counts.unreadable += vault.unreadable
@@ -993,9 +1014,14 @@ enum ArcImport {
                 counts.passwordsSkipped += opened.skipped
                 counts.locked += opened.locked
                 counts.cookiesSkipped += opened.cookiesSkipped
-                await write(logins: opened.logins, into: profileID, counts: &counts)
-                guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
-                counts.cookies += await write(cookies: opened.cookies, into: profileID)
+                try Task.checkCancellation()
+                let published = try await publishCookiesAfterCredentials({
+                    try await write(logins: opened.logins, into: profileID, counts: &counts)
+                }, publishCookies: {
+                    guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { return 0 }
+                    return try await write(cookies: opened.cookies, into: profileID)
+                })
+                counts.cookies += published
             }
             let (hasHistory, hasBookmarks) = await Task.detached(priority: .userInitiated) {
                 let fm = FileManager.default
@@ -1009,16 +1035,17 @@ enum ArcImport {
             // `importAll` reaches the right profile's Store because it was given one to reach;
             // before Import from Arc it always wrote into whichever profile was on screen.
             do {
-                let done = try await BrowserImport.importAllAsync(from: profile, profileID: profileID)
+                let done = try await BrowserImport.importAllAsync(from: profile, profileID: profileID, admission: admission)
                 counts.history += done.history
                 counts.bookmarks += done.bookmarks
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 counts.historyImportFailures.append("History and bookmarks for \(directory) could not be imported: \(error.localizedDescription)")
             }
         }
         // The selector reads every profile's spaces.json. Publish the import to every
         // ordinary window, including windows whose own profile gained no Spaces.
-        refreshSpaces(afterImporting: gained)
         return counts
     }
 
@@ -1076,8 +1103,12 @@ enum ArcImport {
             // Said before the work rather than only after it: the sessions go in one cookie
             // at a time and a big Arc is a few seconds of nothing happening otherwise.
             Toasts.show("Importing from Arc…")
-            let counts = await apply(scan)
-            Toasts.show(report(counts))
+            do {
+                let counts = try await apply(scan)
+                Toasts.show(report(counts))
+            } catch is CancellationError {
+                Toasts.show("Arc import cancelled. Completed changes were kept.")
+            } catch { Toasts.show("Could not import from Arc: \(error.localizedDescription)") }
             rebuild()                       // the History and Bookmarks menus are snapshots
             BookmarkManager.refresh(profileID: ProfileManager.activeProfileID)
         }

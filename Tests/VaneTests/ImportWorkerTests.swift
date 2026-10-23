@@ -281,4 +281,169 @@ import SQLite3
         XCTAssertEqual(checks, 2)
     }
 
+    func testInvalidQueuedEditsRejectBeforeAdmissionAndDoNotBlockNavigationOrRetry() async throws {
+        let (store, file) = try fixture()
+        let one = try XCTUnwrap(store.createBookmarkFolder(named: "One"))
+        let two = try XCTUnwrap(store.createBookmarkFolder(named: "Two"))
+        let a = URL(string: "https://first-existing.invalid/")!, b = URL(string: "https://second-existing.invalid/")!
+        _ = store.addBookmarks([(a, "A"), (b, "B")])
+        let mark = try XCTUnwrap(store.managedBookmarks().first { $0.url == a.absoluteString })
+        let db = try open(file); defer { sqlite3_close(db) }
+        try sql(db, "BEGIN IMMEDIATE")
+        let task = Task { try await store.importBrowserDataAsync(visits: [], bookmarks: []) }
+        await waitForGate(store)
+        XCTAssertFalse(store.renameBookmarkFolder(one.id, to: "  "))
+        XCTAssertFalse(store.renameBookmarkFolder(one.id, to: two.name))
+        XCTAssertFalse(store.updateBookmark(mark.id, url: b, title: "Collision", folderID: nil))
+        XCTAssertFalse(store.updateBookmark(mark.id, url: URL(string: "file:///invalid")!, title: "Invalid", folderID: nil))
+        XCTAssertTrue(store.renameBookmarkFolder(one.id, to: "Corrected"))
+        XCTAssertTrue(store.record(a, title: "Navigation survives rejection"))
+        try sql(db, "COMMIT")
+        _ = try await task.value
+        XCTAssertFalse(store.hasPendingWrites)
+        XCTAssertEqual(store.history(limit: 20).map(\.title), ["Navigation survives rejection"])
+        XCTAssertTrue(store.bookmarkFolders().contains { $0.name == "Corrected" })
+    }
+
+    func testQueuedDeleteAddAndURLEditAreVisibleToFollowingToggle() async throws {
+        let (store, file) = try fixture()
+        let a = URL(string: "https://delete-then-toggle.invalid/")!, b = URL(string: "https://edited.invalid/")!
+        let added = URL(string: "https://add-then-toggle.invalid/")!
+        _ = store.addBookmarks([(a, "Original")])
+        let mark = try XCTUnwrap(store.managedBookmarks().first)
+        let db = try open(file); defer { sqlite3_close(db) }
+        try sql(db, "BEGIN IMMEDIATE")
+        let task = Task { try await store.importBrowserDataAsync(visits: [], bookmarks: []) }
+        await waitForGate(store)
+        XCTAssertTrue(store.deleteBookmarks([mark.id]))
+        XCTAssertFalse(store.isBookmarked(a))
+        XCTAssertTrue(store.toggleBookmark(a, title: "Restored"))
+        _ = store.addBookmarks([(added, "Added")])
+        XCTAssertTrue(store.isBookmarked(added))
+        XCTAssertFalse(store.toggleBookmark(added, title: "Remove added"))
+        let restored = try XCTUnwrap(store.managedBookmarks().first { $0.url == a.absoluteString })
+        XCTAssertTrue(store.updateBookmark(restored.id, url: b, title: "Moved URL", folderID: nil))
+        XCTAssertFalse(store.isBookmarked(a))
+        XCTAssertTrue(store.isBookmarked(b))
+        XCTAssertTrue(store.toggleBookmark(a, title: "New old URL"))
+        XCTAssertFalse(store.toggleBookmark(b, title: "Remove edited"))
+        try sql(db, "COMMIT")
+        _ = try await task.value
+        XCTAssertFalse(store.hasPendingWrites)
+        XCTAssertTrue(store.isBookmarked(a))
+        XCTAssertFalse(store.isBookmarked(b))
+        XCTAssertFalse(store.isBookmarked(added))
+        XCTAssertEqual(store.managedBookmarks().map(\.title), ["New old URL"])
+    }
+
+    func testAcceptedImportIntentDrainsAcrossPreServiceAwaitAndPauseRejectsNewIntent() async throws {
+        let latch = ImportIntentLatch()
+        var completed = false, drained = false
+        let task = Task {
+            try await ImportOperations.run { _ in
+                await latch.wait()
+                completed = true
+            }
+        }
+        while !ImportOperations.hasPendingOperations { await Task.yield() }
+        Store.setAdmissionPaused(true)
+        defer { Store.setAdmissionPaused(false) }
+        let drain = Task { await ImportOperations.drain(); drained = true }
+        await Task.yield()
+        XCTAssertFalse(drained)
+        do { try await ImportOperations.run { _ in XCTFail("Paused intent was admitted") }; XCTFail("Expected rejection") }
+        catch { }
+        XCTAssertFalse(completed)
+        await latch.release()
+        try await task.value
+        await drain.value
+        XCTAssertTrue(completed)
+        XCTAssertTrue(drained)
+        XCTAssertFalse(ImportOperations.hasPendingOperations)
+    }
+
+    func testCancelledArcCredentialStageNeverPublishesCookies() async throws {
+        var published = false
+        do {
+            _ = try await ArcImport.publishCookiesAfterCredentials({ throw CancellationError() }, publishCookies: {
+                published = true; return 1
+            })
+            XCTFail("Credential cancellation must propagate")
+        } catch is CancellationError { }
+        XCTAssertFalse(published)
+    }
+
+    func testReplayTerminalNameConflictReportsRejectionAndStillDrainsHistory() async throws {
+        let (store, file) = try fixture()
+        let folder = try XCTUnwrap(store.createBookmarkFolder(named: "Original"))
+        let db = try open(file); defer { sqlite3_close(db) }
+        try sql(db, "BEGIN IMMEDIATE")
+        let imported = URL(string: "https://folder-conflict.invalid/")!
+        let task = Task { try await store.importBrowserDataAsync(visits: [], bookmarks: [
+            BookmarkImportItem(url: imported, title: "Import", folder: "Created during import")]) }
+        await waitForGate(store)
+        XCTAssertTrue(store.renameBookmarkFolder(folder.id, to: "Created during import"))
+        XCTAssertTrue(store.record(imported, title: "Normal write after terminal conflict"))
+        try sql(db, "COMMIT")
+        _ = try await task.value
+        XCTAssertFalse(store.hasPendingWrites)
+        XCTAssertNotNil(store.lastHistoryError)
+        XCTAssertEqual(store.history(limit: 20).map(\.title), ["Normal write after terminal conflict"])
+        XCTAssertTrue(store.renameBookmarkFolder(folder.id, to: "Corrective edit"))
+        XCTAssertFalse(store.hasPendingWrites)
+    }
+
+    func testAcceptedCSVBatchBlocksLifecycleDrainUntilAllInjectedSavesComplete() async throws {
+        TestEnvironment.prepare()
+        let (_, database) = try fixture()
+        let file = database.deletingLastPathComponent().appendingPathComponent("registered.csv")
+        try Data("url,username,password\nhttps://example.invalid,synthetic,example-only\n".utf8).write(to: file)
+        let profile = UUID()
+        addTeardownBlock { await Store.forgetAsync(profile) }
+        let gate = ImportBatchGate()
+        let operations = PasswordImport.BatchOperations(existing: { _ in gate.block(); return [] }, save: { _, _ in gate.saved(); return true })
+        let task = Task { try await PasswordImport.importFileAsync(file, profileID: profile, operations: operations) }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !gate.entered, ContinuousClock.now < deadline { await Task.yield() }
+        XCTAssertTrue(gate.entered)
+        XCTAssertTrue(ImportOperations.hasPendingOperations)
+        Store.setAdmissionPaused(true)
+        defer { gate.release(); Store.setAdmissionPaused(false) }
+        var drained = false
+        let drain = Task { await ImportOperations.drain(); drained = true }
+        await Task.yield()
+        XCTAssertFalse(drained)
+        do {
+            _ = try await PasswordImport.importFileAsync(file, profileID: profile, operations: operations)
+            XCTFail("New credential imports must reject during persistence exit")
+        } catch { }
+        gate.release()
+        let result = try await task.value
+        await drain.value
+        XCTAssertEqual(result.imported, 1)
+        XCTAssertEqual(gate.saves, 1)
+        XCTAssertTrue(drained)
+        XCTAssertFalse(ImportOperations.hasPendingOperations)
+    }
+
+}
+
+private actor ImportIntentLatch {
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        if !released { await withCheckedContinuation { continuation = $0 } }
+    }
+    func release() { released = true; continuation?.resume(); continuation = nil }
+}
+
+private final class ImportBatchGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var didEnter = false, count = 0
+    var entered: Bool { lock.withLock { didEnter } }
+    var saves: Int { lock.withLock { count } }
+    func block() { lock.withLock { didEnter = true }; _ = semaphore.wait(timeout: .now() + 5) }
+    func release() { semaphore.signal() }
+    func saved() { lock.withLock { count += 1 } }
 }

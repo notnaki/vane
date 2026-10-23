@@ -180,13 +180,16 @@ enum BrowserImport {
         return (result.history, result.bookmarks.imported)
     }
 
-    @MainActor static func importAllAsync(from p: BrowserProfile, profileID: UUID) async throws
+    @MainActor static func importAllAsync(from p: BrowserProfile, profileID: UUID,
+                                           admission: ImportOperations.Admission? = nil) async throws
         -> (history: Int, bookmarks: Int) {
-        let destination = Store.store(for: profileID)
-        let source = try await ImportWork.run { try readSource(from: p) }
-        try Task.checkCancellation()
-        let result = try await destination.importBrowserDataAsync(visits: source.visits, bookmarks: source.bookmarks)
-        return (result.history, result.bookmarks.imported)
+        try await ImportOperations.run(admission) { accepted in
+            let destination = Store.store(for: profileID)
+            let source = try await ImportWork.run { try readSource(from: p) }
+            try Task.checkCancellation()
+            let result = try await destination.importBrowserDataAsync(visits: source.visits, bookmarks: source.bookmarks, admission: accepted)
+            return (result.history, result.bookmarks.imported)
+        }
     }
 
     /// A folder the user picked in the panel. Its family is sniffed from what is inside it,

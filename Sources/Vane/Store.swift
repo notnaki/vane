@@ -79,7 +79,7 @@ struct BookmarkImportResult: Equatable, Sendable {
     /// Quit/restore stop new user imports, while late accepted navigation/title changes
     /// enter the replay log. The lifecycle owner drains and checks this log before exit.
     private(set) static var admissionPaused = false
-    static var hasUnflushedWrites: Bool { !retirements.isEmpty || cache.values.contains { $0.hasPendingWrites } }
+    static var hasUnflushedWrites: Bool { ImportOperations.hasPendingOperations || !retirements.isEmpty || cache.values.contains { $0.hasPendingWrites } }
 
     static func setAdmissionPaused(_ paused: Bool) {
         admissionPaused = paused
@@ -169,8 +169,12 @@ struct BookmarkImportResult: Equatable, Sendable {
     private var replaying = false
     private var replayWaiters: [CheckedContinuation<Void, Never>] = []
     private var importWaiters: [CheckedContinuation<Void, Never>] = []
-    private var projectedBookmarks: [String: Bool] = [:]
-    private var projectedFolders: [BookmarkFolder] = []
+    private var bookmarkOverrides: [Int64: Bookmark] = [:]
+    private var projectedURLIDs: [String: Int64] = [:]
+    private var deletedBookmarkIDs: Set<Int64> = []
+    private var nextProjectedID: Int64 = -1
+    private var projectedFolders: [String: BookmarkFolder] = [:]
+    private var deletedFolderIDs: Set<String> = []
     private(set) var lastHistoryError: String?
 
     init(path: String? = nil, profileID: UUID? = nil) {
@@ -216,6 +220,7 @@ struct BookmarkImportResult: Equatable, Sendable {
         while replaying { await withCheckedContinuation { replayWaiters.append($0) } }
         replaying = true
         var replayed = false
+        var rejected: [String] = []
         defer {
             if replayed, let profileID {
                 BookmarkManager.refresh(profileID: profileID)
@@ -230,9 +235,11 @@ struct BookmarkImportResult: Equatable, Sendable {
             pending.removeAll()
             let result = await writer.replay(writes)
             replayed = replayed || result.completed > 0
+            rejected += result.rejected
             if result.completed < writes.count {
                 pending.insert(contentsOf: writes.dropFirst(result.completed), at: 0)
-                lastHistoryError = result.error ?? "Queued browsing changes could not be saved. Try again."
+                lastHistoryError = (result.error ?? "Queued browsing changes could not be saved. Try again.")
+                    + (rejected.isEmpty ? "" : " " + rejected.joined(separator: " "))
                 NSLog("Vane queued history write failed: %@", lastHistoryError!)
                 if Windows.current != nil {
                     Toasts.show("Browsing changes are waiting to be saved", action: ("Retry", { [weak self] in
@@ -244,8 +251,13 @@ struct BookmarkImportResult: Equatable, Sendable {
             }
             if result.changed { NotificationCenter.default.post(name: Self.historyChanged, object: self) }
         }
-        projectedBookmarks.removeAll(); projectedFolders.removeAll()
-        lastHistoryError = nil
+        bookmarkOverrides.removeAll(); projectedURLIDs.removeAll(); deletedBookmarkIDs.removeAll()
+        projectedFolders.removeAll(); deletedFolderIDs.removeAll()
+        lastHistoryError = rejected.first
+        if !rejected.isEmpty {
+            NotificationCenter.default.post(name: Self.historyChanged, object: self)
+            if Windows.current != nil { Toasts.show("A bookmark change could not be applied: " + rejected[0]) }
+        }
         return true
     }
 
@@ -259,6 +271,7 @@ struct BookmarkImportResult: Equatable, Sendable {
     /// when a queued write still cannot be committed. Successful enqueue is not durability.
     static func flushAllPendingWrites() async throws {
         while true {
+            await ImportOperations.drain()
             for retirement in Array(retirements.values) { await retirement.value }
             let stores = Array(cache.values)
             for store in stores {
@@ -274,11 +287,12 @@ struct BookmarkImportResult: Equatable, Sendable {
     /// This connection belongs to the worker for its entire transaction. MainActor never
     /// waits for its SQLite lock; mutations arriving during the import enter the replay log.
     func importBrowserDataAsync(visits: [(url: URL, title: String, at: Date)],
-                                bookmarks: [BookmarkImportItem]) async throws
+                                bookmarks: [BookmarkImportItem],
+                                admission: ImportOperations.Admission? = nil) async throws
         -> (history: Int, bookmarks: BookmarkImportResult) {
         try Task.checkCancellation()
         guard !discarding else { throw CancellationError() }
-        guard !Self.admissionPaused else {
+        guard !Self.admissionPaused || ImportOperations.isActive(admission) else {
             throw BrowserImport.Failure("Imports are paused while Vane prepares to quit or restore a backup. Try again when that operation finishes.")
         }
         imports += 1
@@ -306,8 +320,8 @@ struct BookmarkImportResult: Equatable, Sendable {
         throw BrowserImport.Failure(result.error ?? "Could not save the imported browsing data.")
     }
 
-    func importBookmarksAsync(_ items: [BookmarkImportItem]) async throws -> BookmarkImportResult {
-        try await importBrowserDataAsync(visits: [], bookmarks: items).bookmarks
+    func importBookmarksAsync(_ items: [BookmarkImportItem], admission: ImportOperations.Admission? = nil) async throws -> BookmarkImportResult {
+        try await importBrowserDataAsync(visits: [], bookmarks: items, admission: admission).bookmarks
     }
 
     @discardableResult func record(_ url: URL, title: String) -> Bool {
@@ -332,20 +346,61 @@ struct BookmarkImportResult: Equatable, Sendable {
     @discardableResult func clearHistory(since: Date? = nil) -> Bool {
         mutate(true, rejected: false, operation: { $0.clearHistory(since: since) }, immediate: { $0.clearHistory(since: since) })
     }
-    @discardableResult func toggleBookmark(_ url: URL, title: String) -> Bool {
-        let added = !isBookmarked(url)
-        if gated { projectedBookmarks[url.absoluteString] = added }
-        return mutate(added, rejected: false, operation: { db in
-            // A toggle's meaning is fixed when the user clicked, even if the import adds
-            // the same URL before replay starts.
-            db.setBookmark(url, title: title, saved: added)
-        }, immediate: { $0.toggleBookmark(url, title: title) })
+    private func projectedBookmark(id: Int64) -> Bookmark? {
+        guard !deletedBookmarkIDs.contains(id) else { return nil }
+        return bookmarkOverrides[id] ?? connection.bookmark(id: id)
     }
-    func isBookmarked(_ url: URL) -> Bool { projectedBookmarks[url.absoluteString] ?? connection.isBookmarked(url) }
+
+    private func projectedBookmarkID(url: String) -> Int64? {
+        if let id = projectedURLIDs[url] { return deletedBookmarkIDs.contains(id) ? nil : id }
+        guard let id = connection.bookmarkID(url: url), !deletedBookmarkIDs.contains(id) else { return nil }
+        if let changed = bookmarkOverrides[id], changed.url != url { return nil }
+        return id
+    }
+
+    private func project(_ bookmark: Bookmark) {
+        if let previous = bookmarkOverrides[bookmark.id], previous.url != bookmark.url { projectedURLIDs[previous.url] = nil }
+        bookmarkOverrides[bookmark.id] = bookmark
+        projectedURLIDs[bookmark.url] = bookmark.id
+        deletedBookmarkIDs.remove(bookmark.id)
+    }
+
+    private func projectDeletion(_ id: Int64) {
+        if let saved = bookmarkOverrides[id] { projectedURLIDs[saved.url] = nil }
+        bookmarkOverrides[id] = nil
+        deletedBookmarkIDs.insert(id)
+    }
+
+    private func projectedNewBookmark(_ url: URL, title: String, folderID: String?) -> Bookmark {
+        let result = Bookmark(id: nextProjectedID, url: url.absoluteString, title: title, at: .now, folderID: folderID)
+        nextProjectedID -= 1
+        return result
+    }
+
+    @discardableResult func toggleBookmark(_ url: URL, title: String) -> Bool {
+        guard !discarding else { return false }
+        guard gated else { let result = connection.toggleBookmark(url, title: title); publish(); return result }
+        if let id = projectedBookmarkID(url: url.absoluteString) {
+            projectDeletion(id)
+            return mutate(false, rejected: false, operation: { $0.deleteBookmarks([id]) }, immediate: { _ in false })
+        }
+        let added = projectedNewBookmark(url, title: title, folderID: nil)
+        project(added)
+        return mutate(true, rejected: false, operation: { $0.addProjectedBookmarks([added]) }, immediate: { _ in true })
+    }
+    func isBookmarked(_ url: URL) -> Bool { projectedBookmarkID(url: url.absoluteString) != nil }
     @discardableResult func addBookmarks(_ marks: [(url: URL, title: String)]) -> Int { addBookmarks(marks, to: nil) }
     @discardableResult func addBookmarks(_ marks: [(url: URL, title: String)], to folderID: String?) -> Int {
-        mutate(0, rejected: 0, operation: { $0.addBookmarksChecked(marks, to: folderID) },
-               immediate: { $0.addBookmarks(marks, to: folderID) })
+        guard !discarding else { return 0 }
+        guard gated else { return connection.addBookmarks(marks, to: folderID) }
+        var additions: [Bookmark] = []
+        for mark in marks where mark.url.scheme == "http" || mark.url.scheme == "https" {
+            guard projectedBookmarkID(url: mark.url.absoluteString) == nil else { continue }
+            let added = projectedNewBookmark(mark.url, title: mark.title, folderID: folderID)
+            project(added); additions.append(added)
+        }
+        let accepted = additions
+        return mutate(0, rejected: 0, operation: { $0.addProjectedBookmarks(accepted) }, immediate: { _ in 0 })
     }
     func importBookmarks(_ source: [BookmarkImportItem]) -> BookmarkImportResult? {
         guard !gated else { lastHistoryError = "An import is already in progress."; return nil }
@@ -356,30 +411,56 @@ struct BookmarkImportResult: Equatable, Sendable {
         guard !gated else { lastHistoryError = "An import is already in progress."; return nil }
         let result = connection.importBrowserData(visits: visits, bookmarks: bookmarks); publish(); return result
     }
-    func bookmarkFolders() -> [BookmarkFolder] { connection.bookmarkFolders() + projectedFolders }
+    func bookmarkFolders() -> [BookmarkFolder] {
+        let saved = connection.bookmarkFolders()
+        guard !projectedFolders.isEmpty || !deletedFolderIDs.isEmpty else { return saved }
+        var out = saved.filter { !deletedFolderIDs.contains($0.id) }
+            .map { projectedFolders[$0.id] ?? $0 }
+        let savedIDs = Set(out.map(\.id))
+        out += projectedFolders.values.filter { !savedIDs.contains($0.id) && !deletedFolderIDs.contains($0.id) }
+        return out.sorted { $0.position < $1.position }
+    }
     @discardableResult func createBookmarkFolder(named rawName: String) -> BookmarkFolder? {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, !bookmarkFolders().contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { return nil }
+        guard !discarding, !name.isEmpty, !bookmarkFolders().contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { return nil }
         let folder = BookmarkFolder(id: UUID().uuidString, name: name, position: (bookmarkFolders().map(\.position).max() ?? -1) + 1)
-        if gated { projectedFolders.append(folder) }
+        if gated { projectedFolders[folder.id] = folder }
         return mutate(folder, rejected: nil, operation: { $0.ensureBookmarkFolder(named: name, id: folder.id) },
                       immediate: { $0.createBookmarkFolder(named: name, id: folder.id) })
     }
     @discardableResult func renameBookmarkFolder(_ id: String, to rawName: String) -> Bool {
-        mutate(true, rejected: false, operation: { $0.renameBookmarkFolder(id, to: rawName) }, immediate: { $0.renameBookmarkFolder(id, to: rawName) })
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let folders = bookmarkFolders()
+        guard !discarding, !name.isEmpty, let folder = folders.first(where: { $0.id == id }),
+              !folders.contains(where: { $0.id != id && $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { return false }
+        if gated { projectedFolders[id] = BookmarkFolder(id: id, name: name, position: folder.position) }
+        return mutate(true, rejected: false, operation: { $0.renameBookmarkFolder(id, to: name) }, immediate: { $0.renameBookmarkFolder(id, to: name) })
     }
     @discardableResult func deleteBookmarkFolder(_ id: String) -> Bool {
-        mutate(true, rejected: false, operation: { $0.deleteBookmarkFolder(id) }, immediate: { $0.deleteBookmarkFolder(id) })
+        if gated { projectedFolders[id] = nil; deletedFolderIDs.insert(id) }
+        return mutate(true, rejected: false, operation: { $0.deleteBookmarkFolder(id) }, immediate: { $0.deleteBookmarkFolder(id) })
     }
     @discardableResult func updateBookmark(_ id: Int64, url: URL, title: String, folderID: String?) -> Bool {
-        mutate(true, rejected: false, operation: { $0.updateBookmark(id, url: url, title: title, folderID: folderID) },
+        guard !discarding, url.scheme == "http" || url.scheme == "https",
+              let saved = projectedBookmark(id: id),
+              projectedBookmarkID(url: url.absoluteString).map({ $0 == id }) ?? true else { return false }
+        if gated { project(Bookmark(id: id, url: url.absoluteString, title: title.trimmingCharacters(in: .whitespacesAndNewlines), at: saved.at, folderID: folderID)) }
+        return mutate(true, rejected: false, operation: { $0.updateBookmark(id, url: url, title: title, folderID: folderID) },
                       immediate: { $0.updateBookmark(id, url: url, title: title, folderID: folderID) })
     }
     @discardableResult func moveBookmarks(_ ids: Set<Int64>, to folderID: String?) -> Bool {
-        mutate(true, rejected: false, operation: { $0.moveBookmarks(ids, to: folderID) }, immediate: { $0.moveBookmarks(ids, to: folderID) })
+        if gated {
+            let untouched = ids.subtracting(Set(bookmarkOverrides.keys)).subtracting(deletedBookmarkIDs)
+            let rows = connection.bookmarks(ids: untouched) + ids.compactMap { bookmarkOverrides[$0] }
+            for saved in rows {
+                project(Bookmark(id: saved.id, url: saved.url, title: saved.title, at: saved.at, folderID: folderID))
+            }
+        }
+        return mutate(true, rejected: false, operation: { $0.moveBookmarks(ids, to: folderID) }, immediate: { $0.moveBookmarks(ids, to: folderID) })
     }
     @discardableResult func deleteBookmarks(_ ids: Set<Int64>) -> Bool {
-        mutate(true, rejected: false, operation: { $0.deleteBookmarks(ids) }, immediate: { $0.deleteBookmarks(ids) })
+        if gated { for id in ids { projectDeletion(id) } }
+        return mutate(true, rejected: false, operation: { $0.deleteBookmarks(ids) }, immediate: { $0.deleteBookmarks(ids) })
     }
     func title(for url: URL) -> String? { connection.title(for: url) }
     func recent(limit: Int = 100) -> [Suggestion] { connection.recent(limit: limit) }
@@ -391,11 +472,33 @@ struct BookmarkImportResult: Equatable, Sendable {
     }
     func bookmarks(limit: Int = 500) -> [Suggestion] { connection.bookmarks(limit: limit) }
     func managedBookmarks(matching query: String = "", folderID: String? = nil, unfiledOnly: Bool = false, limit: Int = .max) -> [Bookmark] {
-        connection.managedBookmarks(matching: query, folderID: folderID, unfiledOnly: unfiledOnly, limit: limit)
+        let extra = bookmarkOverrides.count + deletedBookmarkIDs.count
+        let readLimit = limit == .max ? Int.max : limit.addingReportingOverflow(extra).overflow ? Int.max : limit + extra
+        var saved = connection.managedBookmarks(matching: query, folderID: folderID, unfiledOnly: unfiledOnly, limit: readLimit)
+        if unfiledOnly {
+            for deleted in deletedFolderIDs {
+                saved += connection.managedBookmarks(matching: query, folderID: deleted, limit: readLimit)
+            }
+        }
+        return projectBookmarks(saved, query: query, folderID: folderID, unfiledOnly: unfiledOnly, limit: limit)
     }
     func managedBookmarksAsync(matching query: String = "", folderID: String? = nil, unfiledOnly: Bool = false, limit: Int = .max) async -> [Bookmark] {
         guard let bookmarkReader else { return managedBookmarks(matching: query, folderID: folderID, unfiledOnly: unfiledOnly, limit: limit) }
-        return await bookmarkReader.bookmarks(query, folderID: folderID, unfiledOnly: unfiledOnly, limit: limit)
+        let saved = await bookmarkReader.bookmarks(query, folderID: folderID, unfiledOnly: unfiledOnly, limit: limit)
+        return projectBookmarks(saved, query: query, folderID: folderID, unfiledOnly: unfiledOnly, limit: limit)
+    }
+    private func projectBookmarks(_ saved: [Bookmark], query: String, folderID: String?, unfiledOnly: Bool, limit: Int) -> [Bookmark] {
+        guard !bookmarkOverrides.isEmpty || !deletedBookmarkIDs.isEmpty || !deletedFolderIDs.isEmpty else { return saved }
+        var rows = saved.filter { bookmarkOverrides[$0.id] == nil && !deletedBookmarkIDs.contains($0.id) }
+        rows += bookmarkOverrides.values
+        let query = query.trimmingCharacters(in: .whitespaces)
+        return Array(rows.map { row in
+            deletedFolderIDs.contains(row.folderID ?? "")
+                ? Bookmark(id: row.id, url: row.url, title: row.title, at: row.at, folderID: nil) : row
+        }.filter {
+            (folderID == nil || $0.folderID == folderID) && (!unfiledOnly || $0.folderID == nil)
+                && (query.isEmpty || $0.url.range(of: query, options: [.caseInsensitive]) != nil || $0.title.range(of: query, options: [.caseInsensitive]) != nil)
+        }.sorted { $0.at > $1.at }.prefix(max(0, limit)))
     }
     func suggest(_ query: String, limit: Int = 8) -> [Suggestion] { connection.suggest(query, limit: limit) }
     func suggestAsync(_ query: String, limit: Int = 8, scopedTo engine: SearchEngine? = nil) async -> [Suggestion] {
@@ -409,6 +512,8 @@ private final class StoreConnection {
     private var db: OpaquePointer?
     var historyDidChange = false
     var folderAliases: [String: String] = [:]
+    var bookmarkAliases: [Int64: Int64] = [:]
+    var semanticRejection: String?
 
     init(path: String, initialize: Bool = true) {
         sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI, nil)
@@ -825,10 +930,11 @@ private final class StoreConnection {
     @discardableResult func renameBookmarkFolder(_ id: String, to rawName: String) -> Bool {
         let id = folderAliases[id] ?? id
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return false }
+        guard !name.isEmpty else { return rejectSemantic("A bookmark folder needs a name.") }
         var collision = false
         guard run("SELECT 1 FROM bookmark_folders WHERE name = ? COLLATE NOCASE AND id <> ? LIMIT 1",
-                  [name, id], { _ in collision = true }), !collision else { return false }
+                  [name, id], { _ in collision = true }) else { return false }
+        guard !collision else { return rejectSemantic("A bookmark folder already has that name.") }
         return run("UPDATE bookmark_folders SET name = ? WHERE id = ?", [name, id])
     }
 
@@ -846,10 +952,12 @@ private final class StoreConnection {
 
     @discardableResult func updateBookmark(_ id: Int64, url: URL, title: String,
                                            folderID: String?) -> Bool {
-        guard url.scheme == "http" || url.scheme == "https" else { return false }
+        let id = bookmarkAliases[id] ?? id
+        guard url.scheme == "http" || url.scheme == "https" else { return rejectSemantic("The bookmark URL is not a web address.") }
         var collision = false
         guard run("SELECT 1 FROM bookmarks WHERE url = ? AND id <> ? LIMIT 1",
-                  [url.absoluteString, id], { _ in collision = true }), !collision else { return false }
+                  [url.absoluteString, id], { _ in collision = true }) else { return false }
+        guard !collision else { return rejectSemantic("That URL is already bookmarked.") }
         let folder: Any = folderID.map { (folderAliases[$0] ?? $0) as Any } ?? NSNull()
         return run("UPDATE bookmarks SET url = ?, title = ?, folder_id = ? WHERE id = ?",
                    [url.absoluteString, title.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -858,7 +966,7 @@ private final class StoreConnection {
 
     @discardableResult func moveBookmarks(_ ids: Set<Int64>, to folderID: String?) -> Bool {
         guard !ids.isEmpty else { return true }
-        let marks = ids.sorted()
+        let marks = ids.map { bookmarkAliases[$0] ?? $0 }.sorted()
         let folder: Any = folderID.map { (folderAliases[$0] ?? $0) as Any } ?? NSNull()
         return transaction {
             for chunk in marks.chunked(max: self.variableChunkSize(reserving: 1)) {
@@ -872,7 +980,7 @@ private final class StoreConnection {
 
     @discardableResult func deleteBookmarks(_ ids: Set<Int64>) -> Bool {
         guard !ids.isEmpty else { return true }
-        let marks = ids.sorted()
+        let marks = ids.map { bookmarkAliases[$0] ?? $0 }.sorted()
         return transaction {
             for chunk in marks.chunked(max: self.variableChunkSize()) {
                 let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
@@ -883,28 +991,50 @@ private final class StoreConnection {
         }
     }
 
-    func setBookmark(_ url: URL, title: String, saved: Bool) -> Bool {
-        if saved {
-            return run("INSERT OR IGNORE INTO bookmarks (url, title, at) VALUES (?, ?, ?)",
-                       [url.absoluteString, title, Date.now.timeIntervalSince1970])
-        }
-        return run("DELETE FROM bookmarks WHERE url = ?", [url.absoluteString])
+    func bookmarkID(url: String) -> Int64? {
+        var result: Int64?
+        run("SELECT id FROM bookmarks WHERE url = ? LIMIT 1", [url]) { result = sqlite3_column_int64($0, 0) }
+        return result
     }
 
-    func addBookmarksChecked(_ marks: [(url: URL, title: String)], to folderID: String?) -> Bool {
-        // The folder-aware importer returns nil on transaction failure, including a batch
-        // consisting entirely of already-saved URLs (where a successful count is zero).
-        guard exec("BEGIN IMMEDIATE") else { return false }
-        var committed = false
-        defer { if !committed && sqlite3_get_autocommit(db) == 0 { exec("ROLLBACK") } }
-        let folder: Any = folderID.map { (folderAliases[$0] ?? $0) as Any } ?? NSNull()
-        for mark in marks where mark.url.scheme == "http" || mark.url.scheme == "https" {
-            guard run("INSERT OR IGNORE INTO bookmarks (url, title, at, folder_id) VALUES (?, ?, ?, ?)",
-                      [mark.url.absoluteString, mark.title, Date.now.timeIntervalSince1970, folder]) else { return false }
+    func bookmark(id: Int64) -> Bookmark? { bookmark(whereSQL: "id = ?", binds: [bookmarkAliases[id] ?? id]) }
+    func bookmark(url: String) -> Bookmark? { bookmark(whereSQL: "url = ?", binds: [url]) }
+    private func bookmark(whereSQL: String, binds: [Any]) -> Bookmark? {
+        var result: Bookmark?
+        run("SELECT id, url, title, at, folder_id FROM bookmarks WHERE \(whereSQL) LIMIT 1", binds) { st in
+            result = Bookmark(id: sqlite3_column_int64(st, 0), url: self.text(st, 1), title: self.text(st, 2),
+                              at: Date(timeIntervalSince1970: sqlite3_column_double(st, 3)),
+                              folderID: sqlite3_column_type(st, 4) == SQLITE_NULL ? nil : self.text(st, 4))
         }
-        guard exec("COMMIT") else { return false }
-        committed = true
-        return true
+        return result
+    }
+
+    func bookmarks(ids: Set<Int64>) -> [Bookmark] {
+        var result: [Bookmark] = []
+        for chunk in ids.sorted().chunked(max: variableChunkSize()) {
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            run("SELECT id, url, title, at, folder_id FROM bookmarks WHERE id IN (\(placeholders))", chunk.map { $0 as Any }) { st in
+                result.append(Bookmark(id: sqlite3_column_int64(st, 0), url: self.text(st, 1), title: self.text(st, 2),
+                                       at: Date(timeIntervalSince1970: sqlite3_column_double(st, 3)),
+                                       folderID: sqlite3_column_type(st, 4) == SQLITE_NULL ? nil : self.text(st, 4)))
+            }
+        }
+        return result
+    }
+
+    private func rejectSemantic(_ message: String) -> Bool { semanticRejection = message; return false }
+
+    func addProjectedBookmarks(_ bookmarks: [Bookmark]) -> Bool {
+        transaction {
+            for mark in bookmarks {
+                let folder: Any = mark.folderID.map { (self.folderAliases[$0] ?? $0) as Any } ?? NSNull()
+                guard self.run("INSERT OR IGNORE INTO bookmarks (url, title, at, folder_id) VALUES (?, ?, ?, ?)",
+                               [mark.url, mark.title, mark.at.timeIntervalSince1970, folder]),
+                      let saved = self.bookmark(url: mark.url) else { return false }
+                self.bookmarkAliases[mark.id] = saved.id
+            }
+            return true
+        }
     }
 
     // MARK: Address bar
@@ -932,6 +1062,7 @@ final class StoreImportCancellation: @unchecked Sendable {
 private actor StoreBulkWriter {
     private let path: String
     private var folderAliases: [String: String] = [:]
+    private var bookmarkAliases: [Int64: Int64] = [:]
     init(path: String) { self.path = path }
 
     struct ImportResult: Sendable {
@@ -944,24 +1075,29 @@ private actor StoreBulkWriter {
         guard !cancellation.isCancelled else { return ImportResult(value: nil, error: "Import cancelled.") }
         let db = StoreConnection(path: path, initialize: false)
         db.folderAliases = folderAliases
-        defer { folderAliases = db.folderAliases }
+        db.bookmarkAliases = bookmarkAliases
+        defer { folderAliases = db.folderAliases; bookmarkAliases = db.bookmarkAliases }
         db.historyDidChange = false
         let result = db.importBrowserData(visits: visits, bookmarks: bookmarks, cancelled: { cancellation.isCancelled })
         return ImportResult(value: result, error: db.lastHistoryError)
     }
 
-    struct ReplayResult: Sendable { let completed: Int; let changed: Bool; let error: String? }
+    struct ReplayResult: Sendable { let completed: Int; let changed: Bool; let error: String?; let rejected: [String] }
     func replay(_ writes: [StorePendingWrite]) -> ReplayResult {
         let db = StoreConnection(path: path, initialize: false)
         db.folderAliases = folderAliases
-        defer { folderAliases = db.folderAliases }
+        db.bookmarkAliases = bookmarkAliases
+        defer { folderAliases = db.folderAliases; bookmarkAliases = db.bookmarkAliases }
         db.historyDidChange = false
+        var rejected: [String] = []
         for (index, write) in writes.enumerated() {
+            db.semanticRejection = nil
             guard write.operation(db) else {
-                return ReplayResult(completed: index, changed: db.historyDidChange, error: db.lastHistoryError)
+                if let semantic = db.semanticRejection { rejected.append(semantic); continue }
+                return ReplayResult(completed: index, changed: db.historyDidChange, error: db.lastHistoryError, rejected: rejected)
             }
         }
-        return ReplayResult(completed: writes.count, changed: db.historyDidChange, error: nil)
+        return ReplayResult(completed: writes.count, changed: db.historyDidChange, error: nil, rejected: rejected)
     }
 }
 
