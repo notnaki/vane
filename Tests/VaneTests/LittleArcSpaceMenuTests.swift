@@ -106,4 +106,69 @@ import XCTest
             XCTAssertTrue(store.active === page)
         }
     }
+
+    func testChromeFollowsTheOpenInDestinationWithoutJoiningItsSpace() throws {
+        let (store, spaces) = fixture()
+        var sky = spaces[1]
+        sky.colorHex = "#2988DA"
+        sky.colors = ["#2988DA", "#C58BDA"]
+        sky.tint = 0.7
+        sky.grain = 0.4
+        sky.appearance = "light"
+        XCTAssertTrue(ProfileManager.shared.updateSpace(sky))
+        let (_, window) = browser(in: sky)
+        let littleWindow = NSWindow()
+        littleWindow.isReleasedWhenClosed = false
+        store.window = littleWindow
+
+        withExtendedLifetime((window, littleWindow)) {
+            LittleArc.refreshDestination(for: store)
+
+            XCTAssertEqual(store.chromeSpace, sky)
+            XCTAssertEqual(store.window?.appearance?.name, .aqua)
+            XCTAssertNil(store.currentSpaceID, "The floating page must stay outside the saved Space")
+            XCTAssertNil(store.currentSpace)
+            XCTAssertTrue(store.tabs.isEmpty)
+        }
+    }
+
+    func testChromeRefreshesAfterDestinationThemeEditsAndDeletion() {
+        let (store, spaces) = fixture()
+        UserDefaults.vane.set(spaces[1].id.uuidString, forKey: TabStore.lastSpaceKey(store.profileID))
+        LittleArc.refreshDestination(for: store)
+        XCTAssertEqual(store.chromeSpace?.id, spaces[1].id)
+
+        var edited = spaces[1]
+        edited.colorHex = "#EC6740"
+        edited.appearance = "dark"
+        XCTAssertTrue(ProfileManager.shared.updateSpace(edited))
+        LittleArc.refreshDestination(for: store)
+        XCTAssertEqual(store.chromeSpace?.colorHex, "#EC6740")
+        XCTAssertEqual(store.chromeSpace?.appearance, "dark")
+
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([spaces[0]], for: store.profileID))
+        LittleArc.refreshDestination(for: store)
+        XCTAssertEqual(store.chromeSpace?.id, spaces[0].id)
+
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([], for: store.profileID))
+        LittleArc.refreshDestination(for: store)
+        XCTAssertNil(store.chromeSpace)
+    }
+
+    func testPrivateLittleVaneDoesNotInheritASavedSpaceTheme() {
+        let (store, _) = fixture()
+        let privateStore = TabStore(isPrivate: true, profileID: store.profileID, isLittle: true, session: [])
+        let window = NSWindow()
+        window.isReleasedWhenClosed = false
+        privateStore.window = window
+        defer {
+            privateStore.window = nil
+            TabStore.all.removeAll { $0 === privateStore }
+        }
+
+        LittleArc.refreshDestination(for: privateStore)
+
+        XCTAssertNil(privateStore.chromeSpace)
+        XCTAssertEqual(window.appearance?.name, .darkAqua)
+    }
 }

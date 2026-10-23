@@ -580,7 +580,7 @@ struct SpaceGround: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let here = gesture.outgoing?.space ?? store.swipeSpace
+        let here = gesture.outgoing?.space ?? (store.isLittle ? store.chromeSpace : store.swipeSpace)
         let systemDark = here?.appearance == nil ? scheme == .dark
             : NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         let mine = surface(of: here, systemDark: systemDark)
@@ -596,6 +596,7 @@ struct SpaceGround: View {
         // direct Space change or a theme edit needs a local animation.
         .animation(reduceMotion || gesture.swiping ? nil : Look.spaceSlide, value: store.currentSpaceID)
         .animation(reduceMotion ? nil : Look.appear, value: store.spaceRevision)
+        .animation(reduceMotion ? nil : Look.appear, value: store.littleDestinationSpace)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -633,8 +634,11 @@ struct WebCard: View {
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ObservedObject private var profileManager = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Little Vane matches this gap to the inset above its toolbar pills.
+    /// Clearance between the chrome and the page; Little Vane uses no gap.
     var topGap: CGFloat = Look.cardGap
+    /// Little Vane's document meets the native window edges beneath its toolbar.
+    var edgeToEdge = false
+    private var radius: CGFloat { edgeToEdge ? 0 : Look.pageRadius }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -668,7 +672,7 @@ struct WebCard: View {
                 // the bare card is the one part of the page area that can take one: dropping
                 // a PDF on a window showing nothing is not ambiguous. Everywhere else files
                 // go to the sidebar — see `SidebarDrop`.
-                EmptyPane()
+                EmptyPane(radius: radius)
                     .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                         Files.openDropped(providers, in: store)
                         return true
@@ -721,27 +725,29 @@ struct WebCard: View {
         }
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
-        .clipShape(.rect(cornerRadius: Look.pageRadius))
+        .clipShape(.rect(cornerRadius: radius))
         .background {
-            RoundedRectangle(cornerRadius: Look.pageRadius)
+            RoundedRectangle(cornerRadius: radius)
                 .stroke(Look.pageShadow, lineWidth: 1)
                 .blur(radius: Look.pageShadowRadius)
                 .offset(y: 1)
+                .opacity(edgeToEdge ? 0 : 1)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: Look.pageRadius)
+            RoundedRectangle(cornerRadius: radius)
                 .strokeBorder(Look.pageRim, lineWidth: 1)
+                .opacity(edgeToEdge ? 0 : 1)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
-        .padding(.leading, libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
+        .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
         .padding(.top, topGap)
-        .padding([.trailing, .bottom], Look.cardGap)
+        .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
     }
 }
 
@@ -758,10 +764,11 @@ struct WebCard: View {
 /// ponytail: a shape, not a `Color` with a `.background` and a `.hairline` — a fill and a
 /// stroke on one rounded rectangle is the whole of it.
 struct EmptyPane: View {
+    var radius: CGFloat = Look.pageRadius
     var body: some View {
-        RoundedRectangle(cornerRadius: Look.pageRadius)
+        RoundedRectangle(cornerRadius: radius)
             .fill(Look.emptyPaneFill)
-            .hairline(radius: Look.pageRadius)
+            .hairline(radius: radius)
             // Decoration. The window already says it has no tabs — the sidebar's empty list
             // and the command bar over it — and a second element saying so is noise.
             .accessibilityHidden(true)
@@ -1152,12 +1159,13 @@ private struct NavigationTarget: ViewModifier {
 /// Loaded pages show the host, with copy and site controls available on hover.
 struct AddressPill: View {
     let tab: Tab?
+    var showsProfile = false
 
     var body: some View {
         if let tab {
-            LiveAddressPill(tab: tab)
+            LiveAddressPill(tab: tab, showsProfile: showsProfile)
         } else {
-            PillBody(tab: nil, host: "", address: "")
+            PillBody(tab: nil, host: "", address: "", showsProfile: showsProfile)
         }
     }
 }
@@ -1165,6 +1173,7 @@ struct AddressPill: View {
 /// Split from `PillBody` only so the tab can be observed; the empty pill has none.
 private struct LiveAddressPill: View {
     @ObservedObject var tab: Tab
+    var showsProfile = false
     /// The site-controls badge is not on the tab: it is a remembered permission, written by
     /// a modal prompt that has no route back into this view. See `SiteChanges`.
     @ObservedObject private var changes = SiteChanges.shared
@@ -1177,7 +1186,7 @@ private struct LiveAddressPill: View {
         let site = SiteControlModel(tab)
         PillBody(tab: tab, host: host, address: tab.address,
                  site: site,
-                 zoom: PillState.zoomLabel(tab.zoom))
+                 zoom: PillState.zoomLabel(tab.zoom), showsProfile: showsProfile)
     }
 
     /// The host alone, the way Arc shows it — or a local file's own name. See
@@ -1204,22 +1213,39 @@ private struct PillBody: View {
     var site = SiteControlModel()
     /// "125%" while the page is zoomed, nil at 100 %. Clicking it puts the page back.
     var zoom: String?
+    var showsProfile = false
     @State private var hovering = false
     @State private var showingSiteControls = false
     @StateObject private var overflowAnchor = ActionAnchor()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    var body: some View {
+    private var field: some View {
         content
         .buttonStyle(TactileButtonStyle())
         .font(Look.pillGlyph)
-        .foregroundStyle(Look.inkSecondary)
+        .foregroundStyle(showsProfile ? Color.white.opacity(0.95) : Look.inkSecondary)
         .padding(.horizontal, Look.pillInset)
         .frame(height: Look.pillHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
         // A step up under the pointer, the way a row does: the pill is a button, and a
         // button that does not react reads as a label.
-        .background(hovering ? chromeTheme.selected : chromeTheme.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+        .background {
+            if showsProfile {
+                RoundedRectangle(cornerRadius: Look.pillRadius)
+                    .fill(chromeTheme.bubble.opacity(0.8))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Look.pillRadius)
+                            .fill(.white.opacity(hovering ? 0.08 : 0))
+                    }
+            } else {
+                RoundedRectangle(cornerRadius: Look.pillRadius)
+                    .fill(hovering ? chromeTheme.selected : chromeTheme.pillFill)
+            }
+        }
+    }
+
+    var body: some View {
+        field
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
                    value: compact)
@@ -1255,7 +1281,9 @@ private struct PillBody: View {
     }
 
     @ViewBuilder private var content: some View {
-        if compact {
+        if showsProfile {
+            profileContent
+        } else if compact {
             HStack(spacing: Look.pillGlyphGap) {
                 if address.isEmpty {
                     Image(systemName: "magnifyingglass").accessibilityHidden(true)
@@ -1269,6 +1297,54 @@ private struct PillBody: View {
             }
         } else {
             fullContent
+        }
+    }
+
+    /// Little Vane keeps identity and page actions inside one wide address field.
+    /// Navigation lives in the profile menu, leaving the centered host room to breathe.
+    private var profileContent: some View {
+        LittleArcAddressLayout() {
+            Menu {
+                Text(store.profile.name)
+                Divider()
+                Button("Back") { tab?.back() }.disabled(tab?.canGoBack != true)
+                Button("Forward") { tab?.forward() }.disabled(tab?.canGoForward != true)
+                Button(tab?.loading == true ? "Stop Loading" : "Reload Page") {
+                    if tab?.loading == true { tab?.stop() } else { tab?.reload() }
+                }.disabled(tab == nil)
+                Button("Browser Settings") { SettingsWindow.show() }
+            } label: {
+                HStack(spacing: Look.captionGap) {
+                    Image(systemName: store.isPrivate ? "eye.slash" : "person.crop.circle")
+                    Text(store.profile.name).lineLimit(1).truncationMode(.tail)
+                        .frame(maxWidth: 100)
+                }
+                .font(Look.footnote.weight(.semibold))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .tint(.white)
+            .padding(.horizontal, Look.captionGap)
+            .padding(.vertical, Look.captionGap)
+            .background(.white.opacity(0.12), in: .capsule)
+            .fixedSize()
+            .accessibilityLabel("\(store.profile.name) profile and navigation")
+
+            Text(address.isEmpty ? "Search or Enter URL…" : host)
+                .font(Look.text).lineLimit(1).truncationMode(.middle)
+                .vaneTooltip(address)
+            HStack(spacing: Look.pillGlyphGap) {
+                if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
+                overflowMenu
+                if !address.isEmpty, let tab, tab.easelID == nil {
+                    Button(action: copyLink) {
+                        Image(systemName: "link").frame(width: Look.control, height: Look.control)
+                    }
+                    .vaneTooltip("Copy Link", shortcut: Keybindings.binding(for: .copyPageURL).display)
+                    .accessibilityLabel("Copy Link")
+                }
+                PinnedExtensions(store: store, tab: tab)
+            }
         }
     }
 
@@ -1294,7 +1370,7 @@ private struct PillBody: View {
         } label: {
             Image(systemName: "ellipsis")
         }
-        .menuStyle(.borderlessButton).tint(Look.inkSecondary)
+        .menuStyle(.borderlessButton).tint(showsProfile ? .white : Look.inkSecondary)
         .menuIndicator(.hidden)
         .fixedSize()
         .actionAnchor(overflowAnchor)

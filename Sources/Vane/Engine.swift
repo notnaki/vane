@@ -2365,6 +2365,9 @@ struct Stash {
     let profileID: UUID
     /// Which space this window is showing, if any. A window shows one space at a time.
     @Published private(set) var currentSpaceID: UUID?
+    /// Presentation only: a Little Vane borrows its Open in destination's look without
+    /// joining that Space, restoring its tabs, or changing the page's browsing identity.
+    @Published var littleDestinationSpace: Space?
     weak var window: NSWindow?
     /// The window this store is parked behind while that window shows another profile.
     ///
@@ -3473,6 +3476,8 @@ struct Stash {
         return spaces.first { $0.id == currentSpaceID }
     }
 
+    var chromeSpace: Space? { isLittle ? littleDestinationSpace : currentSpace }
+
     /// A space being edited right now and not yet written down. The theme editor puts every
     /// frame of a drag here so the window's ground follows the fingers, and writes the space
     /// once when they leave: spaces.json is not a place to put sixty frames a second, and
@@ -3633,7 +3638,7 @@ struct Stash {
     /// A space can pin its window to light or dark; nil follows the system, which is what
     /// every window did before spaces had a look.
     func applySpaceAppearance() {
-        switch isPrivate ? "dark" : currentSpace?.appearance {
+        switch isPrivate ? "dark" : chromeSpace?.appearance {
         case "light": window?.appearance = NSAppearance(named: .aqua)
         case "dark":  window?.appearance = NSAppearance(named: .darkAqua)
         default:      window?.appearance = nil

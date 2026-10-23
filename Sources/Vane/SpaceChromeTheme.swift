@@ -82,7 +82,7 @@ private struct SpaceChromeModifier: ViewModifier {
     @ObservedObject private var profiles = ProfileManager.shared
 
     func body(content: Content) -> some View {
-        let theme = SpaceChromeTheme(space: store.currentSpace, fallback: store.profile.colorHex)
+        let theme = SpaceChromeTheme(space: store.chromeSpace, fallback: store.profile.colorHex)
         content.environment(\.spaceChromeTheme, theme)
             .tint(theme.accent)
             .accentColor(theme.accent)

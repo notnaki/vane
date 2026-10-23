@@ -98,6 +98,7 @@ import SwiftUI
     /// same window in every respect but what is in it.
     @discardableResult
     private static func present(_ store: TabStore, focus: Bool = true) -> TabStore {
+        refreshDestination(for: store)
         let window = VaneWindow(
             contentRect: NSRect(x: 0, y: 0, width: Look.littleWidth, height: Look.littleHeight),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -286,6 +287,16 @@ import SwiftUI
                         last: TabStore.lastSpaceID(for: store.profileID),
                         isPrivate: store.isPrivate)
         return spaces.first { $0.id == id }
+    }
+
+    /// The toolbar label, ground, accents, and native light/dark appearance share one
+    /// destination snapshot. Refresh on focus and saved Space edits, never on hover.
+    static func refreshDestination(for store: TabStore) {
+        let destination = targetSpace(for: store)
+        if store.littleDestinationSpace != destination {
+            store.littleDestinationSpace = destination
+        }
+        store.applySpaceAppearance()
     }
 
     /// ⌘O and a click on the button's label: the Space the button is naming, or — for a
@@ -578,10 +589,10 @@ extension TabStore {
 
 // MARK: - The window
 
-/// A Little Arc window: the same ground as the browser window, one bar, and the page as the
-/// same floating card. No sidebar, so nothing here is a list.
+/// A Little Vane window: one themed toolbar above an edge-to-edge document.
 struct LittleArcView: View {
     @EnvironmentObject var store: TabStore
+    @EnvironmentObject private var profiles: ProfileManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -590,7 +601,8 @@ struct LittleArcView: View {
             SpaceGround()
             VStack(spacing: 0) {
                 LittleArcBar()
-                WebCard(topGap: Look.littleTopInset)
+                    .padding(.bottom, Look.littleTopInset)
+                WebCard(topGap: 0, edgeToEdge: true)
             }
             // Last, so ⌘L's bar composites over the bar as well as the page.
             if let mode = store.palette {
@@ -602,7 +614,13 @@ struct LittleArcView: View {
         // would push the bar below the traffic lights instead of around them.
         .ignoresSafeArea()
         .animation(reduceMotion ? nil : Look.appear, value: store.palette == nil)
-        .onAppear { store.applySpaceAppearance() }
+        .onAppear { LittleArc.refreshDestination(for: store) }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            LittleArc.refreshDestination(for: store)
+        }
+        .onChange(of: profiles.spacesRevision) { LittleArc.refreshDestination(for: store) }
+        .onChange(of: profiles.profiles) { LittleArc.refreshDestination(for: store) }
+        .vaneMotionPolicy()
         .environmentObject(store.spaceGesture)
         // Costs no layout, and is the only thing that hears a title arrive.
         .background { if let tab = store.active { TitleSync(tab: tab) } }
@@ -626,18 +644,18 @@ private struct TitleSync: View {
     }
 }
 
-/// Little Arc's one row of chrome: the traffic lights, the page's own back/forward, the same
-/// address pill the sidebar has, and Arc's "Open in ▸". Laid out so the pill's centre lands
+/// Little Arc's one row of chrome: traffic lights, a profile/address field, and
+/// "Open in ▸". Laid out so the pill's centre lands
 /// on `Look.lightsCentre` — the lights are the row, the same way they are in the sidebar.
 struct LittleArcBar: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Look.inset) {
             Spacer().frame(width: 62)          // traffic lights
-            NavButtons(tab: store.active)
-            AddressPill(tab: store.active)
+            AddressPill(tab: store.active, showsProfile: true)
             OpenInButton()
+                .layoutPriority(1)
         }
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
@@ -651,35 +669,60 @@ struct LittleArcBar: View {
     }
 }
 
+/// Keep the host at the field's true center while reserving enough room on both
+/// sides for the wider of the profile badge and the live page actions.
+struct LittleArcAddressLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let side = max(sizes[0].width, sizes[2].width) + Look.pillGlyphGap
+        let minimum = side * 2 + Look.control
+        return CGSize(width: max(minimum, proposal.width ?? side * 2 + sizes[1].width),
+                      height: sizes.map(\.height).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let leading = subviews[0].sizeThatFits(.unspecified)
+        let trailing = subviews[2].sizeThatFits(.unspecified)
+        let side = max(leading.width, trailing.width) + Look.pillGlyphGap
+        subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+                          proposal: ProposedViewSize(leading))
+        subviews[1].place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center,
+                          proposal: ProposedViewSize(width: max(0, bounds.width - side * 2), height: bounds.height))
+        subviews[2].place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing,
+                          proposal: ProposedViewSize(trailing))
+    }
+}
+
 /// "Open in ⟨Space⟩ ⌄": the one way a Little Arc's page becomes a tab you keep. The label
 /// names the Space the page would land in — the one the browser window is showing — and
 /// pressing it puts the tab there; the chevron opens the list of every saved Space,
 /// with that one ticked. ⌘O and ⌥⌘O are the same two things from the keyboard.
 ///
-/// One pill with two halves rather than two buttons: it is one control, and the split is
-/// only about which of the two things a click means. Flat, in the sidebar's own pill.
+/// One pill with two halves: the label moves the page and the chevron chooses a Space.
 private struct OpenInButton: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @State private var hovering = false
-    /// The Space's name, read when the window appears and again whenever a window takes the
-    /// focus — which is what happens between "switch the browser window to Work" and
-    /// "come back to the Little Vane". Not read in `body`: `store.spaces` decodes
-    /// spaces.json on every touch, and this label is drawn on every hover.
-    @State private var space: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var title: String {
-        LittleArc.openInTitle(space: space, isPrivate: store.isPrivate)
+        LittleArc.openInTitle(space: store.littleDestinationSpace?.name, isPrivate: store.isPrivate)
     }
     private var named: String {
-        store.isPrivate ? "a Private Window" : (space ?? "a Space")
+        store.isPrivate ? "a Private Window" : (store.littleDestinationSpace?.name ?? "a Space")
     }
 
     var body: some View {
         HStack(spacing: 0) {
             Button { LittleArc.openInCurrentSpace(store) } label: {
-                Text(title).font(Look.text).lineLimit(1)
+                HStack(spacing: Look.pillGlyphGap) {
+                    Text(title).font(Look.heading).lineLimit(1).truncationMode(.middle)
+                    Text("⌘O").font(Look.footnote.weight(.semibold))
+                        .padding(.horizontal, Look.captionGap)
+                        .padding(.vertical, 2)
+                        .background(.white.opacity(0.1), in: .rect(cornerRadius: 4))
+                        .accessibilityHidden(true)
+                }
                     .padding(.leading, Look.rowInset)
                     .padding(.trailing, store.isPrivate ? Look.rowInset : Look.captionGap)
                     .frame(height: Look.pillHeight)
@@ -691,6 +734,8 @@ private struct OpenInButton: View {
             // No chevron on a private one: Arc's incognito has no Spaces, so there is
             // nothing to choose and a menu with one row in it would be a lie about that.
             if !store.isPrivate {
+                Rectangle().fill(.white.opacity(0.16)).frame(width: 1, height: Look.sectionGap)
+                    .accessibilityHidden(true)
                 Button { LittleArc.pickSpace(store) } label: {
                     Image(systemName: "chevron.down").font(Look.caption)
                         .padding(.leading, Look.captionGap)
@@ -703,9 +748,11 @@ private struct OpenInButton: View {
                 .accessibilityHint("Lists every Space this page can be opened in.")
             }
         }
-        .foregroundStyle(Look.inkPrimary)
-        .background(hovering ? chromeTheme.selected : chromeTheme.pillFill,
-                    in: .rect(cornerRadius: Look.pillRadius))
+        .foregroundStyle(.white)
+        .background {
+            chromeTheme.bubble.overlay(hovering ? Color.white.opacity(0.1) : .clear)
+        }
+        .clipShape(.rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .onHover { hovering = $0 }
         .help(store.isPrivate
@@ -718,14 +765,5 @@ private struct OpenInButton: View {
                 Button("Choose a Space") { LittleArc.pickSpace(store) }
             }
         }
-        .onAppear { refresh() }
-        // SwiftUI owns this subscription. A raw NotificationCenter block captured this
-        // view/store and could keep both alive without delivering onDisappear on close.
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
-            refresh()
-        }
     }
-
-    /// Nil for a private window, which names no Space — and so never reads spaces.json.
-    private func refresh() { space = LittleArc.targetSpace(for: store)?.name }
 }
