@@ -316,9 +316,20 @@ import SwiftUI
         // it never falls through to an ordinary window, which would write the page into
         // history and keep its cookies.
         let isPrivate = store.isPrivate
-        let existing = Windows.current(in: store.profileID, isPrivate: isPrivate)
+        let profile: Profile
+        if let space, !isPrivate {
+            let manager = ProfileManager.shared
+            guard let owner = manager.profiles.first(where: { $0.id == space.profileID }),
+                  manager.spaces(for: owner.id).contains(where: { $0.id == space.id }) else { return }
+            profile = owner
+        } else {
+            profile = store.profile
+        }
+        // The selected Space owns the destination's profile and website data, even when
+        // the floating page came from another profile.
+        let existing = Windows.current(in: profile.id, isPrivate: isPrivate)
         let target = existing ?? Windows.open(isPrivate: isPrivate, urls: [page.url],
-                                              profile: store.profile, space: space)
+                                              profile: profile, space: space)
         // A Private Window holds no Space, and `switchTo` refuses on one — so it is not
         // asked, rather than asked and quietly ignored.
         if let space, !isPrivate, target.currentSpaceID != space.id { target.switchTo(space: space) }
@@ -380,12 +391,10 @@ import SwiftUI
         let menu = NSMenu(title: "Open in")
         // Spaces only. There is no "Open in Window" row any more: a browser window is always
         // in a Space, so "put this in a window" and "put this in a Space" are the same
-        // question, and the answer this window is offering is which Space. `ensureSpaces`
-        // is what makes the list never empty.
-        let spaces = ProfileManager.shared.ensureSpaces(for: store.profile)
-        let showing = target(spaces: spaces.map(\.id),
-                             showing: Windows.current(in: store.profileID)?.currentSpaceID,
-                             last: TabStore.lastSpaceID(for: store.profileID))
+        // question, and the answer this window is offering is which Space. Include other
+        // profiles too, in the same order as the sidebar's Space strip.
+        let showing = targetSpace(for: store)?.id
+        let spaces = ProfileManager.shared.allSpaces
         // Every row hands the page to an ordinary window, which is what this menu is for;
         // a private store never gets here (`pickSpace` answers it before this is built).
         for space in spaces {
@@ -644,7 +653,7 @@ struct LittleArcBar: View {
 
 /// "Open in ⟨Space⟩ ⌄": the one way a Little Arc's page becomes a tab you keep. The label
 /// names the Space the page would land in — the one the browser window is showing — and
-/// pressing it puts the tab there; the chevron opens the list of every Space of the profile,
+/// pressing it puts the tab there; the chevron opens the list of every saved Space,
 /// with that one ticked. ⌘O and ⌥⌘O are the same two things from the keyboard.
 ///
 /// One pill with two halves rather than two buttons: it is one control, and the split is
