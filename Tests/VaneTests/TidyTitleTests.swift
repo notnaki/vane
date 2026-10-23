@@ -57,6 +57,34 @@ import XCTest
         XCTAssertEqual(TidyTitles.title(for: tab), "Project Notes")
     }
 
+    func testExistingSavedTabsRefreshNamesWhenHomeTitleArrives() async {
+        TestEnvironment.prepare()
+        let wasEnabled = TidyTitles.enabled
+        let wasAIEnabled = UserDefaults.vane.object(forKey: "appleAI")
+        TidyTitles.enabled = true
+        UserDefaults.vane.set(false, forKey: "appleAI")
+        defer {
+            TidyTitles.enabled = wasEnabled
+            UserDefaults.vane.set(wasAIEnabled, forKey: "appleAI")
+        }
+        for kind in [TabKind.favourite, .pinned] {
+            let profile = UUID(), url = URL(string: "https://example.com/notes")!
+            let tab = Tab(profileID: profile)
+            defer { tab.tearDown(); TidyTitles.forget(profile) }
+            tab.restore(url: url, home: nil, parked: Parked(title: "Project Notes - Example"))
+            tab.kind = kind
+            XCTAssertNotNil(TidyTitles.pinnedName(for: url, in: profile))
+            TidyTitles.note(tab)
+            let cacheKey = ProfileManager.defaultsKey("tidyTitleCacheV2", profile)
+            for _ in 0..<50 {
+                if UserDefaults.vane.dictionary(forKey: cacheKey) != nil { break }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(UserDefaults.vane.dictionary(forKey: cacheKey)?[url.absoluteString] as? String,
+                           "Project Notes", "Saved rows must fill the new cache on their next home title")
+        }
+    }
+
     func testOnDeviceNamingAcceptsShortTitlesButSkipsEmptyTitles() {
         XCTAssertTrue(AppleAI.worthNaming("Vane"))
         XCTAssertTrue(AppleAI.worthNaming("Project Notes"))

@@ -412,13 +412,15 @@ import Foundation
     /// since wandered is never renamed after the page it went to; only a row still at home,
     /// with nothing recorded, records anything here.
     ///
-    /// It also gives `refresh` the retitling caller its own doc claims: the page that has
-    /// just named itself is the page the chip is about to show.
+    /// Every eligible home title also refreshes the generated name when its cache is empty,
+    /// including saved rows whose original pinned name has already been recorded.
     static func note(_ tab: Tab) {
         guard tab.stays, !tab.isPrivate, tab.atHome, let home = tab.homeURL,
-              realTitle(tab.title, at: home),
-              pinnedName(for: home, in: tab.profileID) == nil else { return }
-        recordPinnedName(tab.title, for: home, in: tab.profileID)
+              realTitle(tab.title, at: home) else { return }
+        if pinnedName(for: home, in: tab.profileID) == nil {
+            recordPinnedName(tab.title, for: home, in: tab.profileID)
+        }
+        // Existing pins need a chance to refill an invalidated generated-name cache too.
         refresh(tab)
     }
 
