@@ -970,11 +970,11 @@ private struct MaxPane: View {
                 SettingsRow("Rename messy downloads") {
                     Toggle("", isOn: $tidyDownloads).labelsHidden().disabled(off)
                 }
-                SettingsRow("Shorten pinned tab titles") {
+                SettingsRow("Rename favorite and pinned tab titles") {
                     Toggle("", isOn: $tidyTitles).labelsHidden().disabled(off)
                 }
                 Footnote(BrowserAI.unavailableReason
-                         ?? "Names and groups use your selected AI provider. Grouping runs when you choose Tidy Tabs; download naming and pinned title shortening use the switches above.")
+                         ?? "Names and groups use your selected AI provider. Grouping runs when you choose Tidy Tabs. The switches above control download naming and favorite and pinned tab naming.")
             }
 
             SettingsCard {

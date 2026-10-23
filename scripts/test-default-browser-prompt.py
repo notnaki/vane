@@ -47,7 +47,7 @@ done
 """)
     executable(commands / "codesign", """
 if [ "$1" = -d ] && [ "${@: -1}" = Vane.app ]; then
-  echo 'com.apple.security.app-sandbox temporary-exception.files.absolute-path.read-write'
+  echo 'com.apple.security.app-sandbox temporary-exception.files.absolute-path.read-only temporary-exception.files.home-relative-path.read-only'
 fi
 """)
     cases = [

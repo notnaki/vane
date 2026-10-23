@@ -169,6 +169,7 @@ enum Passwords {
                             profileID: UUID, replacingExisting: Bool = true) throws {
         return try serviceLane.sync {
             defer { invalidate() }
+            guard origin != IntegrationTokens.legacyOrigin else { throw Failure(status: errSecParam) }
             var add = query(origin: origin, account: account, profileID: profileID)
             if !origin.isDefaultPort { add[kSecAttrPort as String] = origin.port }
             add[kSecValueData as String] = Data(password.utf8)
@@ -193,6 +194,8 @@ enum Passwords {
                             password: String, profileID: UUID) throws {
         return try serviceLane.sync {
             defer { invalidate() }
+            guard origin != IntegrationTokens.legacyOrigin, login.origin != IntegrationTokens.legacyOrigin
+            else { throw Failure(status: errSecParam) }
             guard let ref = try referenceChecked(origin: login.origin, account: login.account, profileID: profileID)
             else { throw Failure(status: errSecItemNotFound) }
             try checkServiceCancellation()
@@ -206,19 +209,6 @@ enum Passwords {
             if origin == login.origin {
                 renameUse(origin: origin, from: login.account, to: account, profileID: profileID)
             } else { forgetUse(origin: login.origin, account: login.account, profileID: profileID) }
-        }
-    }
-
-    /// Persist an integration credential and make it the deterministic fresh-read choice.
-    /// The preference is written only after Keychain accepted the secret, so a later failure
-    /// to remove duplicate accounts cannot revive an older credential on the next launch.
-    static func savePreferredCredential(host: String, account: String, password: String,
-                                        profileID: UUID) -> Bool {
-        return serviceLane.sync {
-            guard save(host: host, account: account, password: password, profileID: profileID)
-            else { return false }
-            recordUse(host: host, account: account, profileID: profileID)
-            return true
         }
     }
 
@@ -238,103 +228,9 @@ enum Passwords {
         case unavailable(OSStatus)
     }
 
-    /// Immutable service endpoints let the integration use the production async path
-    /// with an isolated store, while real callers keep the creator/profile Keychain rules.
-    struct CredentialAccess: Sendable {
-        var read: @Sendable (String, UUID) -> CredentialRead = { readCredential(host: $0, profileID: $1) }
-        var delete: @Sendable (String, String, UUID) -> Bool = { Passwords.delete(host: $0, account: $1, profileID: $2) }
-    }
-
     enum CredentialCleanup: Sendable {
         case complete
         case unavailable(OSStatus)
-    }
-
-    private enum CredentialItems {
-        case found([[String: Any]])
-        case missing
-        case unavailable(OSStatus)
-    }
-
-    /// Fresh metadata for one service, narrowed by the same creator/profile rules as every
-    /// password read. Keeping the status is what lets callers distinguish no item from a
-    /// Keychain they could not inspect.
-    private static func credentialItems(host: String, profileID: UUID) -> CredentialItems {
-        var q = query(host: host, profileID: profileID)
-        q[kSecReturnAttributes as String] = true
-        q[kSecReturnPersistentRef as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitAll
-        var out: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &out)
-        if status == errSecItemNotFound { return .missing }
-        guard status == errSecSuccess else { return .unavailable(status) }
-        guard let items = out as? [[String: Any]] else { return .unavailable(errSecDecode) }
-        let scope = domain(profileID)
-        return .found(items.filter {
-            owns(scope: scope, itemDomain: $0[kSecAttrSecurityDomain as String] as? String)
-                && PasswordOrigin(attributes: $0) == PasswordOrigin(host: host)
-        })
-    }
-
-    /// A fresh, scoped read for service credentials. Attribute-list caches are intended
-    /// for the password UI, not deciding whether a persisted integration is signed in.
-    /// A locked/temporarily inaccessible keychain is not a missing credential.
-    static func readCredential(host: String, profileID: UUID) -> CredentialRead {
-        let items: [[String: Any]]
-        switch credentialItems(host: host, profileID: profileID) {
-        case .missing: return .missing
-        case .unavailable(let status): return .unavailable(status)
-        case .found(let found): items = found
-        }
-        let logins = items.map {
-            Login(host: host, account: $0[kSecAttrAccount as String] as? String ?? "")
-        }
-        guard let account = rank(logins, used: lastUsed(profileID: profileID)).first?.account,
-              let item = items.first(where: { $0[kSecAttrAccount as String] as? String == account })
-        else { return .missing }
-        guard let ref = item[kSecValuePersistentRef as String] as? Data,
-              !account.isEmpty else { return .unavailable(errSecDecode) }
-        var out: CFTypeRef?
-        let readStatus = SecItemCopyMatching([
-            kSecClass as String: kSecClassInternetPassword,
-            kSecValuePersistentRef as String: ref,
-            kSecReturnData as String: true,
-        ] as CFDictionary, &out)
-        guard readStatus == errSecSuccess else { return .unavailable(readStatus) }
-        guard let data = out as? Data, let password = String(data: data, encoding: .utf8), !password.isEmpty
-        else { return .unavailable(errSecDecode) }
-        return .found(account: account, password: password)
-    }
-
-    /// Enforce the integration's one-token-per-profile rule after its replacement is safely
-    /// stored. Every deletion uses an owned persistent reference; failure leaves the new
-    /// credential intact and is returned to the caller instead of being mistaken for success.
-    static func deleteOtherCredentials(host: String, keeping account: String,
-                                       profileID: UUID) -> CredentialCleanup {
-        return serviceLane.sync {
-            let items: [[String: Any]]
-            switch credentialItems(host: host, profileID: profileID) {
-            case .missing: return .complete
-            case .unavailable(let status): return .unavailable(status)
-            case .found(let found): items = found
-            }
-            for item in items {
-                guard let other = item[kSecAttrAccount as String] as? String,
-                      other != account,
-                      let ref = item[kSecValuePersistentRef as String] as? Data else { continue }
-                let status = SecItemDelete([
-                    kSecClass as String: kSecClassInternetPassword,
-                    kSecValuePersistentRef as String: ref,
-                ] as CFDictionary)
-                guard status == errSecSuccess || status == errSecItemNotFound else {
-                    invalidate()
-                    return .unavailable(status)
-                }
-                forgetUse(host: host, account: other, profileID: profileID)
-            }
-            invalidate()
-            return .complete
-        }
     }
 
     /// Every saved login for one host, best first: whatever was filled here most recently,
@@ -372,6 +268,7 @@ enum Passwords {
 
     static func passwordChecked(origin: PasswordOrigin, account: String, profileID: UUID,
         copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching) throws -> String? {
+        guard origin != IntegrationTokens.legacyOrigin else { return nil }
         guard let ref = try referenceChecked(origin: origin, account: account, profileID: profileID, copyMatching: copyMatching)
         else { return nil }
         try checkServiceCancellation()
@@ -445,6 +342,7 @@ enum Passwords {
             }
             var entries: [PasswordImport.Entry] = []
             for item in items where owns(scope: scope, itemDomain: item[kSecAttrSecurityDomain as String] as? String) {
+                if PasswordOrigin(attributes: item) == IntegrationTokens.legacyOrigin { continue }
                 guard let origin = PasswordOrigin(attributes: item),
                       let ref = item[kSecValuePersistentRef as String] as? Data else {
                     throw PasswordImport.Failure("A saved login has unsupported attributes. No file was exported.")
@@ -497,7 +395,7 @@ enum Passwords {
         guard let items = out as? [[String: Any]] else { throw Failure(status: errSecDecode) }
 
         return items.compactMap { item -> Login? in
-            guard let origin = PasswordOrigin(attributes: item),
+            guard let origin = PasswordOrigin(attributes: item), origin != IntegrationTokens.legacyOrigin,
                   owns(scope: scope, itemDomain: item[kSecAttrSecurityDomain as String] as? String)
             else { return nil }
             return Login(origin: origin, account: item[kSecAttrAccount as String] as? String ?? "")
@@ -565,6 +463,10 @@ enum Passwords {
     }
     private static let serviceLane = ServiceLane()
 
+    static func serialized<Value>(_ operation: () throws -> Value) rethrows -> Value {
+        try serviceLane.sync(operation)
+    }
+
     static func perform<Value: Sendable>(_ operation: @escaping @Sendable () throws -> Value) async throws -> Value {
         let cancellation = Cancellation()
         return try await withTaskCancellationHandler {
@@ -622,7 +524,7 @@ enum Passwords {
         }
     }
 
-    private static func checkServiceCancellation() throws {
+    static func checkServiceCancellation() throws {
         try Task.checkCancellation()
         if DispatchQueue.getSpecific(key: serviceLane.cancellationKey)?.cancelled == true {
             throw CancellationError()
@@ -834,50 +736,71 @@ enum Passwords {
         }
     }
 
-    /// Every Internet password Vane has ever filed, whatever profile or domain — the GitHub
-    /// token Live Folders keeps under the same creator included. For `EraseEverything`.
-    static func deleteEverything() {
-        return serviceLane.sync {
+    /// Erasing one instance must leave every other data directory's credentials alone.
+    /// Enumerate metadata first, then delete exact owned references, including legacy tokens.
+    static func deleteEverything(dataDir: String? = Store.overrideDirectory,
+                                 keychain: IntegrationTokens.Keychain = .system) {
+        return serialized {
             defer { invalidate() }
-            SecItemDelete([
-                kSecClass as String: kSecClassInternetPassword,
-                kSecAttrCreator as String: creator,
-            ] as CFDictionary)
+            guard deleteOwnedInternetPasswords(profileID: nil, dataDir: dataDir, keychain: keychain) else { return }
+            if !IntegrationTokens.deleteEverything(dataDir: dataDir, keychain: keychain) {
+                NSLog("[vane] Native integration credentials could not be erased")
+            }
         }
     }
 
-    /// Every credential belonging to one profile, for when that profile is deleted.
-    /// A non-default profile is one SecItemDelete against its security domain. The default
-    /// profile has no domain to key on, so its items are enumerated and the ones carrying
-    /// somebody else's domain are skipped.
-    static func deleteAll(profileID: UUID) {
-        return serviceLane.sync {
+    static func deleteAll(profileID: UUID, dataDir: String? = Store.overrideDirectory,
+                          keychain: IntegrationTokens.Keychain = .system) {
+        return serialized {
             defer { invalidate() }
-            if let d = domain(profileID) {
-                SecItemDelete([
-                    kSecClass as String: kSecClassInternetPassword,
-                    kSecAttrCreator as String: creator,
-                    kSecAttrSecurityDomain as String: d,
-                    kSecMatchLimit as String: kSecMatchLimitAll,
-                ] as CFDictionary)
-                return
-            }
-            var out: CFTypeRef?
-            let all: [String: Any] = [
-                kSecClass as String: kSecClassInternetPassword,
-                kSecAttrCreator as String: creator,
-                kSecReturnAttributes as String: true,
-                kSecMatchLimit as String: kSecMatchLimitAll,
-            ]
-            guard SecItemCopyMatching(all as CFDictionary, &out) == errSecSuccess,
-                  let items = out as? [[String: Any]] else { return }
-            for item in items {
-                guard owns(scope: nil, itemDomain: item[kSecAttrSecurityDomain as String] as? String),
-                      let origin = PasswordOrigin(attributes: item),
-                      let account = item[kSecAttrAccount as String] as? String else { continue }
-                delete(origin: origin, account: account, profileID: profileID)
+            guard deleteOwnedInternetPasswords(profileID: profileID, dataDir: dataDir, keychain: keychain) else { return }
+            if !IntegrationTokens(profileID: profileID, dataDir: dataDir, keychain: keychain, lastUsed: [:]).deleteAll() {
+                NSLog("[vane] Profile integration credentials could not be erased")
             }
         }
+    }
+
+    private static func ownsInstance(dataDir: String?, itemDomain: String?) -> Bool {
+        let value = itemDomain ?? ""
+        if let dataDir {
+            let base = namespace(profileID: ProfileManager.defaultID, dataDir: dataDir)!
+            if value == base { return true }
+            guard value.hasPrefix(base + "-") else { return false }
+            return UUID(uuidString: String(value.dropFirst(base.count + 1))) != nil
+        }
+        if value.isEmpty { return true }
+        guard value.hasPrefix("vane-") else { return false }
+        return UUID(uuidString: String(value.dropFirst(5))) != nil
+    }
+
+    private static func deleteOwnedInternetPasswords(profileID: UUID?, dataDir: String?,
+                                                      keychain: IntegrationTokens.Keychain) -> Bool {
+        var query: [String: Any] = [kSecClass as String: kSecClassInternetPassword,
+            kSecAttrCreator as String: creator, kSecReturnAttributes as String: true,
+            kSecReturnPersistentRef as String: true, kSecMatchLimit as String: kSecMatchLimitAll]
+        let scope = profileID.flatMap { namespace(profileID: $0, dataDir: dataDir) }
+        if let scope { query[kSecAttrSecurityDomain as String] = scope }
+        var output: CFTypeRef?
+        let status = keychain.copy(query as CFDictionary, &output)
+        if status == errSecItemNotFound { return true }
+        guard status == errSecSuccess, let items = output as? [[String: Any]] else {
+            NSLog("[vane] Credentials could not be enumerated for deletion (status %d)", status)
+            return false
+        }
+        for item in items {
+            let itemDomain = item[kSecAttrSecurityDomain as String] as? String
+            let owned = profileID != nil ? owns(scope: scope, itemDomain: itemDomain)
+                : ownsInstance(dataDir: dataDir, itemDomain: itemDomain)
+            guard owned else { continue }
+            guard let reference = item[kSecValuePersistentRef as String] as? Data else { return false }
+            let deleted = keychain.delete([kSecClass as String: kSecClassInternetPassword,
+                kSecValuePersistentRef as String: reference] as CFDictionary)
+            guard deleted == errSecSuccess || deleted == errSecItemNotFound else {
+                NSLog("[vane] Credential deletion failed (status %d)", deleted)
+                return false
+            }
+        }
+        return true
     }
 
     // MARK: check

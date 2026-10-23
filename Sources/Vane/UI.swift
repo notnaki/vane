@@ -427,6 +427,7 @@ struct BrowserWindow: View {
         // safe area at the top. Without this the sidebar's first row sits *below* the
         // traffic lights instead of beside them, and the card loses its top inset.
         .ignoresSafeArea()
+        .modifier(PeekContentTracking(area: store.peekContent))
         .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
@@ -739,6 +740,7 @@ struct WebCard: View {
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
+        .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
         .padding(.leading, libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
         .padding(.top, topGap)
         .padding([.trailing, .bottom], Look.cardGap)
@@ -3578,11 +3580,14 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
         .frame(width: morph?.width, height: morph?.height ?? Look.rowHeight)
         .background {
             RoundedRectangle(cornerRadius: Look.pillRadius)
-                .fill(fill.opacity(1 - (morph?.progress ?? 0)))
-                // Animate the selection ink alone: titles, inline editors and hit targets
-                // stay at their final geometry and actions take effect synchronously.
-                .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: selected)
-                .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovering)
+                // Fade one ink colour rather than interpolating toward transparent black.
+                .fill(Look.ink(1))
+                .opacity(highlightOpacity * (1 - (morph?.progress ?? 0)))
+                // Clear the old highlight promptly as the pointer moves to another row.
+                // Titles, inline editors and hit targets keep their final geometry.
+                .animation(reduceMotion || batterySaver.isActive ? nil
+                           : .easeOut(duration: highlightOpacity == 0 ? 0.08 : 0.12),
+                           value: highlightOpacity)
                 .id(reduceMotion || batterySaver.isActive)
         }
         .hairline(radius: Look.pillRadius, ticked && selected
@@ -3602,8 +3607,8 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
         .environment(\.rowHovering, held || hovering)
     }
 
-    private var fill: Color {
-        selected || ticked ? chromeTheme.selected : (held || hovering ? chromeTheme.hovered : .clear)
+    private var highlightOpacity: Double {
+        selected || ticked ? Look.selectedAlpha : (held || hovering ? Look.hoveredAlpha : 0)
     }
 }
 
@@ -4826,35 +4831,39 @@ private struct TabRowTrailing: View {
                 .vaneTooltip(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
                 .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
             }
-            if hovering {
-                // On a split's row the glyph is about the *pane*, which is closed whatever
-                // section its tab is in — a pane is not a pin. The table knows that; it is
-                // an input to it rather than a special case around it, so `TabStore.close`
-                // reaches the same answer for the same row.
-                let glyph = TabRowGlyph.decide(kind: closing.kind, suspended: closing.suspended,
-                                               pane: pane, atHome: closing.atHome)
-                Button { store.close(closing.id) } label: {
-                    Image(systemName: glyph.symbol)
-                        .font(.system(size: 13, weight: .semibold))
-                        .rowTarget()
-                        .background {
-                            RoundedRectangle(cornerRadius: Look.cardRadius, style: .continuous)
-                                .fill(closeHovering ? chromeTheme.controlFill : .clear)
-                                .animation(reduced ? nil : Look.quick, value: closeHovering)
-                        }
-                }
-                .onHover { closeHovering = $0 }
-                .onDisappear { closeHovering = false }
-                .vaneTooltip(pane ? "Close Pane" : glyph.verb, shortcut: "⌘W")
-                .accessibilityLabel((pane ? "Close pane " : glyph.spoken)
-                                    + TidyTitles.title(for: closing))
-                // A pinned row's glyph changes under the pointer the moment its page is
-                // unloaded, so the swap is the same fade the rest of the row uses rather
-                // than a cut from − to ×.
-                .contentTransition(reduced ? .identity : .symbolEffect(.replace))
-                // Grows in under the pointer rather than popping: the row's own hover
-                // animation carries it.
-                .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))
+            // On a split's row the glyph is about the *pane*, which is closed whatever
+            // section its tab is in — a pane is not a pin. The table knows that; it is
+            // an input to it rather than a special case around it, so `TabStore.close`
+            // reaches the same answer for the same row.
+            let glyph = TabRowGlyph.decide(kind: closing.kind, suspended: closing.suspended,
+                                           pane: pane, atHome: closing.atHome)
+            Button { store.close(closing.id) } label: {
+                Image(systemName: glyph.symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .rowTarget()
+                    .background {
+                        RoundedRectangle(cornerRadius: Look.cardRadius, style: .continuous)
+                            .fill(closeHovering ? chromeTheme.controlFill : .clear)
+                            .animation(reduced ? nil : Look.quick, value: closeHovering)
+                    }
+            }
+            .onHover { closeHovering = $0 }
+            .onDisappear { closeHovering = false }
+            .vaneTooltip(pane ? "Close Pane" : glyph.verb, shortcut: "⌘W")
+            .accessibilityLabel((pane ? "Close pane " : glyph.spoken)
+                                + TidyTitles.title(for: closing))
+            // A pinned row's glyph changes under the pointer the moment its page is
+            // unloaded, so the swap is the same fade the rest of the row uses rather
+            // than a cut from − to ×.
+            .contentTransition(reduced ? .identity : .symbolEffect(.replace))
+            // Reserve the target so revealing it cannot retruncate the title.
+            // Hidden controls never take input or keyboard focus.
+            .opacity(hovering ? 1 : 0)
+            .allowsHitTesting(hovering)
+            .disabled(!hovering)
+            .accessibilityHidden(!hovering)
+            .onChange(of: hovering) { _, inside in
+                if !inside { closeHovering = false }
             }
         }
         .buttonStyle(TactileButtonStyle())

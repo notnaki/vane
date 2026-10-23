@@ -61,8 +61,16 @@ shasum -a 256 "$ZIP" | tee "$EVIDENCE/SHA256SUMS"
 sw_vers | tee "$EVIDENCE/system.txt"
 launchctl print "gui/$(id -u)" > "$EVIDENCE/graphical-session.txt" 2>&1 \
   || { echo "no logged-in graphical session for the release check" >&2; exit 1; }
-ditto -x -k "$ZIP" "$WORK"
-APP="$WORK/Vane.app"
+# Exercise the exact production archive policy too: an otherwise valid signed bundle
+# is unusable as an update if its ZIP encoding or resource budgets are unsupported.
+cat > "$WORK/main.swift" <<'SWIFT'
+import Foundation
+try UpdateArchive.extract(zip: URL(fileURLWithPath: CommandLine.arguments[1]),
+    to: URL(fileURLWithPath: CommandLine.arguments[2]))
+SWIFT
+xcrun swiftc -swift-version 6 "$ROOT/Sources/Vane/UpdateArchive.swift" "$WORK/main.swift" -lz -o "$WORK/extract"
+"$WORK/extract" "$ZIP" "$WORK/payload"
+APP="$WORK/payload/Vane.app"
 [ -d "$APP" ] || { echo "Vane.zip does not contain Vane.app" >&2; exit 1; }
 
 bundle_manifest "$APP" > "$EVIDENCE/app-tree-before.jsonl"

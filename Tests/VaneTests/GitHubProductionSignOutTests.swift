@@ -19,9 +19,9 @@ private final class SignOutCredentialStore: @unchecked Sendable {
     private func live(_ store: SignOutCredentialStore,
                       send: @escaping GitHubTokenRenewal.Send) -> LiveFolders {
         let profile = UUID()
-        var access = Passwords.CredentialAccess()
-        access.read = { _, candidate in XCTAssertEqual(candidate, profile); return store.read() }
-        access.delete = { _, account, candidate in
+        var access = IntegrationTokens.Access()
+        access.read = { candidate in XCTAssertEqual(candidate, profile); return store.read() }
+        access.delete = { account, candidate in
             XCTAssertFalse(Thread.isMainThread)
             XCTAssertEqual(candidate, profile)
             XCTAssertEqual(account, "fixture")

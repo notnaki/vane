@@ -3,9 +3,9 @@ const captures = [...document.querySelectorAll('[data-capture]')];
 const explanation = document.querySelector('#tour-explanation');
 const panel = document.querySelector('#tour-panel');
 const descriptions = {
-  spaces: 'A Work Space keeps pinned pages and project tabs together, with Personal and Explore a click away.',
-  split: 'Fieldnotes and Project notes, open side by side in a real Vane Split View.',
-  little: 'A Reading list page in Little Vane, alongside the main Work Space. Open a link without leaving your main window.'
+  spaces: 'An Explore Space keeps Wikipedia, MDN, and GitHub pages together, with Work and Personal a click away.',
+  split: 'Wikipedia’s Architecture and Industrial design articles, open side by side in a native Vane Split View.',
+  little: 'MDN Web Docs in Little Vane, alongside Wikipedia in the Explore Space. Open a link without leaving your main window.'
 };
 function select(name, updateHash = true) {
   const feature = tabs.some(tab => tab.dataset.feature === name) ? name : 'spaces';

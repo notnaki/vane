@@ -229,7 +229,7 @@ private struct WelcomeButtonStyle: ButtonStyle {
     static let spaces = load("Spaces", extension: "png")
 
     private static func load(_ name: String, extension ext: String) -> NSImage {
-        guard let url = Bundle.module.url(forResource: name, withExtension: ext, subdirectory: "WelcomeAssets"),
+        guard let url = AppResources.bundle.url(forResource: name, withExtension: ext, subdirectory: "WelcomeAssets"),
               let image = NSImage(contentsOf: url) else { return NSImage(size: .zero) }
         return image
     }

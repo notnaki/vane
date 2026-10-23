@@ -5,11 +5,15 @@ import Foundation
 @objc protocol VaneUpdateInstalling {
     func install(source: URL, target: URL, tag: String, keepPrevious: Bool,
                  withReply reply: @escaping (NSError?) -> Void)
-    func scheduleRelaunch(target: URL, isolatedDirectory: String, parentPID: Int32,
+    func beginLaunch(target: URL, withReply reply: @escaping (Int, NSError?) -> Void)
+    func markHealthy(target: URL, withReply reply: @escaping (Bool, NSError?) -> Void)
+    func scheduleRelaunch(target: URL, isolatedDirectory: String?, parentPID: Int32,
                          withReply reply: @escaping (NSError?) -> Void)
 }
 
 enum UpdateInstaller {
+    // Stable XPC wire values, matching BundleReplacement.Launch.
+    enum Launch: Int, Sendable { case unchanged = 0, waitingForHealth = 1, rolledBack = 2, needsAttention = 3 }
     static let serviceName = "io.github.notnaki.vane.UpdateInstaller"
     static let teamID = "T7X84HN3W3"
     static func requirement(identifier: String) -> String {
@@ -38,9 +42,44 @@ enum UpdateInstaller {
         if let failure { throw failure }
     }
 
+    static func beginLaunch(target: URL) throws -> Launch {
+        var result = Launch.needsAttention.rawValue
+        try withInstaller { installer, fail in
+            installer.beginLaunch(target: target) { value, error in result = value; if let error { fail(error) } }
+        }
+        guard let launch = Launch(rawValue: result) else {
+            throw NSError(domain: serviceName, code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "Invalid update recovery response"])
+        }
+        return launch
+    }
+
+    static func markHealthy(target: URL) throws -> Bool {
+        var healthy = false
+        try withInstaller { installer, fail in
+            installer.markHealthy(target: target) { value, error in healthy = value; if let error { fail(error) } }
+        }
+        return healthy
+    }
+
+    private static func withInstaller(_ body: (VaneUpdateInstalling, @escaping (Error) -> Void) -> Void) throws {
+        let connection = NSXPCConnection(serviceName: serviceName)
+        connection.remoteObjectInterface = NSXPCInterface(with: VaneUpdateInstalling.self)
+        connection.setCodeSigningRequirement(requirement(identifier: serviceName))
+        connection.resume()
+        defer { connection.invalidate() }
+        var failure: Error?
+        guard let installer = connection.synchronousRemoteObjectProxyWithErrorHandler({ failure = $0 }) as? VaneUpdateInstalling else {
+            throw NSError(domain: serviceName, code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Update installer unavailable"])
+        }
+        body(installer, { failure = $0 })
+        if let failure { throw failure }
+    }
+
     /// The unsandboxed installer starts a detached worker before this browser exits.
     /// Direct children inherit our sandbox; LaunchServices drops its environment.
-    static func scheduleRelaunch(target: URL, isolatedDirectory: String) throws {
+    static func scheduleRelaunch(target: URL, isolatedDirectory: String?) throws {
         let connection = NSXPCConnection(serviceName: serviceName)
         connection.remoteObjectInterface = NSXPCInterface(with: VaneUpdateInstalling.self)
         connection.setCodeSigningRequirement(requirement(identifier: serviceName))

@@ -36,10 +36,9 @@
        and other files the user explicitly selects. -->
   <key>com.apple.security.files.user-selected.read-write</key><true/>
 
-  <!-- The signed XPC installer publishes updates outside this sandbox so their quarantine
-       can be removed after signature and Gatekeeper validation. Keep Applications access
-       for version inspection and sweeping the old bundle recorded by an atomic swap. -->
-  <key>com.apple.security.temporary-exception.files.absolute-path.read-write</key>
+  <!-- Only the authenticated XPC installer publishes, recovers and cleans up updates.
+       The browser can inspect installed versions and pending transaction records. -->
+  <key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
   <array>
     <string>/Applications/</string>
   </array>
@@ -47,9 +46,10 @@
   <!-- ...and the per-user one beside it, for anyone who keeps their apps in ~/Applications.
        A different key because the sandbox spells a home-relative path differently; the same
        one directory's worth of access. -->
-  <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+  <key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
   <array>
     <string>/Applications/</string>
+    <string>/Library/Application Support/Vane/</string>
   </array>
 
   <!-- ...and this is what makes those picks survive a relaunch. Without it a folder the
@@ -68,10 +68,7 @@
        migration) a release after everyone has launched once. Read-only and scoped to the
        one folder, so it grants nothing else. Not usable for the Mac App Store without
        review justification; fine for Developer ID. -->
-  <key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
-  <array>
-    <string>/Library/Application Support/Vane/</string>
-  </array>
+  <!-- The read-only legacy data path is listed in the home-relative array above. -->
 
   <!-- Safe Browsing. WebKit asks Safari's service whether a URL is a known phishing or
        malware site; the sandbox denies the lookup by name

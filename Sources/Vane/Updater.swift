@@ -515,7 +515,7 @@ extension Release {
     /// Where the new copy went — the same path, or /Applications when it was installed.
     private var installed: URL?
     private var working = false
-    private var progress: NSKeyValueObservation?
+    private var download: UpdateDownload?
     private var poll: Task<Void, Never>?
     private var lastCheck: Date?
     private var backingOff = false
@@ -733,41 +733,32 @@ extension Release {
         // it. It is unpacked, checked and deleted without ever being shown.
         let dest = FileManager.default.temporaryDirectory
             .appendingPathComponent("Vane-update-\(UUID().uuidString).zip")
-        let task = URLSession.shared.downloadTask(with: asset) { tmp, response, error in
-            // The temp file is gone the moment this returns, so everything that inspects it
-            // happens here and the main actor hears about the result, not the file handle.
-            let http = response as? HTTPURLResponse
-            let size = (try? tmp.flatMap {
-                try FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? Int64
-            }) ?? nil
-            guard error == nil, let tmp, let http, (200..<300).contains(http.statusCode),
-                  // GitHub redirects the download to its asset host; the *final* url is the
-                  // one the bytes came from, so it gets the same check the first one did.
-                  Release.trusted(http.url ?? asset) != nil,
-                  http.expectedContentLength <= Release.maxAssetBytes,
-                  let size, size > 0, size <= Release.maxAssetBytes,
-                  http.expectedContentLength < 0 || size == http.expectedContentLength,
-                  (try? FileManager.default.moveItem(at: tmp, to: dest)) != nil
-            else {
-                NSLog("[vane] update: download rejected (status %d, %lld bytes, from %@): %@",
-                      http?.statusCode ?? -1, size ?? -1, (http?.url?.host() ?? "?"),
-                      error.map { String(describing: $0) } ?? "Invalid download response or temporary file")
-                Task { @MainActor in Updater.shared.fail() }
-                return
-            }
-            Task { @MainActor in Updater.shared.install(dest, tag: tag) }
+        do {
+            download = try UpdateDownload.start(url: asset, destination: dest,
+                maxBytes: Release.maxAssetBytes,
+                trusted: { Release.trusted($0) != nil },
+                progress: { bytes, expected in
+                    let fraction = expected > 0 ? min(1, Double(bytes) / Double(expected)) : 0
+                    Task { @MainActor in Updater.shared.downloaded(fraction: fraction) }
+                }, completion: { result in
+                    Task { @MainActor in
+                        Updater.shared.download = nil
+                        switch result {
+                        case .success(let file): Updater.shared.install(file, tag: tag)
+                        case .failure(let error):
+                            NSLog("[vane] update: download rejected: %@", String(describing: error))
+                            Updater.shared.fail()
+                        }
+                    }
+                })
+        } catch {
+            NSLog("[vane] update: could not start download: %@", String(describing: error))
+            fail()
         }
-        // No captures: the observation runs off the main actor and reaches the singleton
-        // through a hop rather than holding a reference across it.
-        progress = task.progress.observe(\.fractionCompleted) { p, _ in
-            let f = p.fractionCompleted
-            Task { @MainActor in Updater.shared.downloaded(fraction: f) }
-        }
-        task.resume()
     }
 
     private func downloaded(fraction: Double) {
-        guard working else { return }
+        guard working, case .downloading = phase else { return }
         set(.downloading(fraction))
     }
 
@@ -792,14 +783,14 @@ extension Release {
         // `working` deliberately stays true across the swap — it is the flag every other
         // entry point checks. Only the detached task below clears it, and only after
         // `unpackAndSwap` has returned one way or the other.
-        progress = nil
+        download = nil
         set(.installing)
         Task.detached(priority: .userInitiated) {
             let (ok, permanent) = Self.unpackAndSwap(zip: zip, target: target, tag: tag)
             await MainActor.run {
                 Updater.shared.working = false
                 // The tag goes with the failure only when the release itself is the problem.
-                // A dropped ditto or a failed rename is bad luck the next check may retry;
+                // A failed extraction or a failed rename is bad luck the next check may retry;
                 // a zip with no Vane in it, or one signed by somebody else, never gets better.
                 guard ok else { return Updater.shared.fail(permanent ? tag : nil) }
                 Updater.shared.pending = nil
@@ -834,14 +825,18 @@ extension Release {
     ///
     /// `permanent` says which kind of failure it was: true when this *release* is the problem
     /// — no Vane.app in the zip, or one signed by somebody who is not us — so the caller can
-    /// refuse the tag for good. Every other way out is a transient one (a dropped `ditto`, a
+    /// refuse the tag for good. Every other way out is a transient one (a failed extraction, a
     /// rename the disk would not do), and the next check is welcome to try the same tag again.
     nonisolated static func unpackAndSwap(zip: URL, target: URL, tag: String)
         -> (ok: Bool, permanent: Bool) {
         let fm = FileManager.default
         let staged = fm.temporaryDirectory.appendingPathComponent("Vane-new-\(UUID().uuidString)")
         defer { try? fm.removeItem(at: staged); try? fm.removeItem(at: zip) }
-        guard run("/usr/bin/ditto", ["-x", "-k", zip.path, staged.path]) else {
+        do {
+            try UpdateArchive.extract(zip: zip, to: staged)
+        } catch {
+            NSLog("[vane] update: archive rejected: %@", String(describing: error))
+            // Malformed or interrupted archives retain the existing retry policy.
             return (false, false)
         }
         let incoming = staged.appendingPathComponent(target.lastPathComponent)
@@ -863,43 +858,22 @@ extension Release {
         }
     }
 
-    /// Run a tool and say what it said. A bare `Bool` here meant a failed unpack was
-    /// indistinguishable from a failed signature check in the one place there is no window
-    /// to look at — so the status and the tail of stderr go to the log, which is where
-    /// anyone debugging a failed update will actually be.
-    @discardableResult
-    nonisolated private static func run(_ path: String, _ args: [String]) -> Bool {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: path)
-        p.arguments = args
-        let errors = Pipe()
-        p.standardError = errors
-        p.standardOutput = FileHandle.nullDevice
-        do { try p.run() } catch {
-            NSLog("[vane] update: could not run %@: %@", path, error.localizedDescription)
-            return false
-        }
-        // Read before waiting: a tool that fills the pipe blocks forever otherwise.
-        let stderr = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else {
-            NSLog("[vane] update: %@ exited %d: %@", path, p.terminationStatus,
-                  String(stderr.suffix(500)))
-            return false
-        }
-        return true
-    }
-
     /// Reconcile a transaction before any window opens. A replacement that crashed during
     /// its previous launch is rolled back while its old bundle is still retained.
     static func recoverAtLaunch() async {
         guard isBundled else { return }
-        let target = Bundle.main.bundleURL, executable = Bundle.main.executableURL
-        let result = await launchWorker.run {
-            BundleReplacement.beginLaunch(at: target, verifyRecovery: verified, verifyPrevious: verifiedPrevious,
-                                          expectedExecutable: executable)
+        let target = Bundle.main.bundleURL
+        let launch: UpdateInstaller.Launch
+        do {
+            launch = try await launchWorker.run {
+                guard BundleReplacement.hasRecoveryWork(at: target) else { return .unchanged }
+                return try UpdateInstaller.beginLaunch(target: target)
+            }
+        } catch {
+            NSLog("[vane] pending update recovery helper unavailable: %@", error.localizedDescription)
+            exit(1)
         }
-        switch result {
+        switch launch {
         case .unchanged:
             break
         case .waitingForHealth:
@@ -921,7 +895,7 @@ extension Release {
                 exit(1)
             }
             do {
-                try launchAfterExit(Bundle.main.bundleURL, recoverUnlaunched: false)
+                try await launchAfterExit(Bundle.main.bundleURL, recoverUnlaunched: false)
                 exit(0)
             } catch {
                 NSLog("[vane] update: old bundle restored, but relaunch failed: %@",
@@ -936,11 +910,14 @@ extension Release {
     /// must never mark the new copy healthy or delete its own backup on termination.
     static func markHealthyLaunchAsync() async {
         guard isBundled, launchedReplacement else { return }
-        let target = Bundle.main.bundleURL, executable = Bundle.main.executableURL
-        await launchWorker.run {
-            BundleReplacement.markHealthy(at: target, verifyRecovery: verified, verifyPrevious: verifiedPrevious,
-                                          expectedExecutable: executable)
-        }
+        let target = Bundle.main.bundleURL
+        do {
+            let healthy = try await launchWorker.run { try UpdateInstaller.markHealthy(target: target) }
+            guard healthy else {
+                NSLog("[vane] update: helper did not accept launch health confirmation")
+                return
+            }
+        } catch { NSLog("[vane] update: health confirmation failed: %@", error.localizedDescription) }
     }
 
     /// `refused` is the tag this copy has decided against and must never be offered again;
@@ -948,7 +925,7 @@ extension Release {
     /// unpack — which the next check is welcome to try again.
     private func fail(_ refused: String? = nil) {
         working = false
-        progress = nil
+        download = nil
         set(.failed(refused))
     }
 
@@ -960,38 +937,46 @@ extension Release {
     /// terminates, and there is no Vane left running at all. `createsNewApplicationInstance`
     /// would avoid that but leaves two instances racing for the same windows file.
     ///
-    /// So the launch happens *after* this process is gone, the way Vesta does it: a detached
-    /// `/bin/sh` waits for the pid to disappear and then opens the bundle. The helper is
-    /// orphaned to launchd when we exit, which is exactly the lifetime needed, and it retries
-    /// rather than leaving the user with no app if the first `open` loses a race with quit.
-    /// `Process` is reachable from inside the sandbox — `ditto` in `unpackAndSwap` is the
-    /// same mechanism — and the child inherits the sandbox, which `open` does not mind.
-    private static func launchAfterExit(_ target: URL, recoverUnlaunched: Bool = true) throws {
-        if let directory = Store.overrideDirectory {
-            try UpdateInstaller.scheduleRelaunch(target: target, isolatedDirectory: directory)
+    /// XPC starts the unsandboxed supervisor before this browser exits. A direct child
+    /// inherits the browser sandbox and cannot perform recovery in Applications.
+    /// After recovery already restored an older bundle, a read-only open-after-exit
+    /// script remains compatible with older helpers lacking the new XPC protocol.
+    private static func launchAfterExit(_ target: URL, recoverUnlaunched: Bool = true) async throws {
+        let isolatedDirectory = Store.overrideDirectory
+        if recoverUnlaunched {
+            try await launchWorker.run {
+                try UpdateInstaller.scheduleRelaunch(target: target, isolatedDirectory: isolatedDirectory)
+            }
             return
         }
         let script = UpdateRelaunch.script(parentPID: getpid(), target: target,
-                                          isolatedDirectory: Store.overrideDirectory,
-                                          recoveryTool: recoverUnlaunched ? target.appendingPathComponent("Contents/XPCServices/\(UpdateInstaller.serviceName).xpc/Contents/MacOS/VaneUpdateInstaller") : nil)
-        let helper = Process()
-        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
-        helper.arguments = ["-c", script]
-        try helper.run()
+                                          isolatedDirectory: isolatedDirectory)
+        try await launchWorker.run {
+            let helper = Process()
+            helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+            helper.arguments = ["-c", script]
+            try helper.run()
+        }
     }
 
+    private var restarting = false
     func restart() {
+        guard !restarting else { return }
+        restarting = true
         let target = installed ?? Bundle.main.bundleURL
-        do {
-            try Self.launchAfterExit(target)
-        } catch {
-            // Could not even start the helper: stay alive and usable rather than quitting
-            // into nothing. The update is installed — it just needs a manual relaunch.
-            NSLog("[vane] relaunch helper failed: \(error.localizedDescription)")
-            Toasts.stick("Update installed — quit and reopen Vane", id: toastID)
-            return
+        Task { [self] in
+            defer { restarting = false }
+            do {
+                try await Self.launchAfterExit(target)
+            } catch {
+                // The supervisor must accept the relaunch before this process quits.
+                // Preserve the installed update and keep the browser usable on failure.
+                NSLog("[vane] relaunch helper failed: \(error.localizedDescription)")
+                Toasts.stick("Update installed — quit and reopen Vane", id: toastID)
+                return
+            }
+            NSApp.terminate(nil)
         }
-        NSApp.terminate(nil)
     }
 
     // MARK: - The toast

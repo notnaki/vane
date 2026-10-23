@@ -29,10 +29,10 @@ struct EaselObjectStyle: Codable, Equatable, Sendable {
 }
 
 @MainActor enum EaselTypography {
-    static let fontURL = Bundle.module.url(forResource: "Excalifont-Regular", withExtension: "ttf", subdirectory: "EaselFonts")
+    static let fontURL = AppResources.bundle.url(forResource: "Excalifont-Regular", withExtension: "ttf", subdirectory: "EaselFonts")
     private static let loaded: Void = {
         for name in ["Excalifont-Regular", "Nunito-Regular", "ComicShanns-Regular"] {
-            if let url = Bundle.module.url(forResource: name, withExtension: "ttf", subdirectory: "EaselFonts") {
+            if let url = AppResources.bundle.url(forResource: name, withExtension: "ttf", subdirectory: "EaselFonts") {
                 CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
             }
         }

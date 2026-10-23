@@ -1,20 +1,9 @@
 import Foundation
 
-/// Arc's "Tidy Tab Titles". A pinned tab is a chip the width of a favicon, and
-/// "Apollo program - Wikipedia, the free encyclopedia" is not a label — it is a paragraph.
-///
-/// Two paths, in this order, and the order is the whole design:
-///
-/// 1. `clean` — a pure string function. No model, no I/O, no await. On the twenty-odd real
-///    titles in `check()` it alone gets nineteen right, in microseconds. Every browser title
-///    is built by the same three or four templates ("page — site", "site | page", "(3) app")
-///    and templates are exactly what a deterministic cleaner eats for breakfast.
-/// 2. `AppleAI.shortTitle` — only when 1 came back still too long or saying nothing. That is
-///    a ~3B model on the neural engine and it costs seconds, so it is the exception, not the
-///    plan. Its answer is validated against the original before it is allowed anywhere near
-///    a tab, and the deterministic answer is the fallback when validation says no.
-///
-/// Nothing here ever touches an unpinned tab, and nothing here can make a title longer.
+/// Concise names for favorite and pinned tabs, regardless of the original title's length.
+/// The deterministic cleaner supplies an immediate label and a fallback if the selected
+/// AI provider is unavailable or its answer fails validation. Generated names stay grounded
+/// in the original title; ordinary Today tabs keep the page's own title.
 @MainActor enum TidyTitles {
 
     /// Off means the raw `Tab.title` everywhere. Manual renames still apply — those are the
@@ -24,8 +13,7 @@ import Foundation
         set { UserDefaults.vane.set(newValue, forKey: "tidyTitles") }
     }
 
-    /// What fits a pinned chip before it starts eating the strip. Also the line between
-    /// "the cheap path was good enough" and "ask the model".
+    /// What fits a pinned chip before it starts eating the strip.
     static let pinnedLimit = 24
 
     /// The model is told "at most four words"; anything past this is it ignoring us.
@@ -222,26 +210,6 @@ import Foundation
         return out
     }
 
-    /// Would this still be a bad chip label? The only reason to spend seconds on the model.
-    static func uninformative(_ s: String, host: String?) -> Bool {
-        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.isEmpty || t.count > pinnedLimit { return true }
-        if squash(t).isEmpty { return true }                                  // all punctuation
-        if t.allSatisfy({ $0.isNumber || $0 == "." || $0 == "," }) { return true }  // a bare number
-        if boilerplate.contains(t.lowercased()) { return true }
-        // Literally the domain — WebKit's own fallback when a page has no <title> at all.
-        //
-        // Whole-string equality, never a prefix: measured, an earlier version compared
-        // "Ars Technica" against arstechnica.com by suffix and declared the site's own
-        // correct name uninformative, which sent a finished title off to spend seven
-        // seconds coming back worse.
-        if let host {
-            let bare = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-            if squash(bare) == squash(t) { return true }
-        }
-        return false
-    }
-
     // MARK: - The model, and the net under it
 
     /// The model has a token budget, so it stops mid-phrase: measured, "Installing Tailwind
@@ -290,15 +258,14 @@ import Foundation
         var fromModel: Bool
     }
 
-    /// The public entry point. Cheap path first, always; the model only when the cheap path
-    /// came back too long or saying nothing.
-    static func tidy(title: String, url: URL) async -> Tidied? {
+    /// Ask for a concise name even when the page title or deterministic label is short.
+    static func tidy(title: String, url: URL,
+                     generate: (String, URL) async -> String? = { await BrowserAI.shortTitle(for: $0, url: $1) }) async -> Tidied? {
         let host = url.host()
         let cleaned = clean(title, host: host)
-        if let c = cleaned, !uninformative(c, host: host) { return Tidied(text: c, fromModel: false) }
         // AppleAI returns nil for every kind of "no answer" — unavailable, off, refused,
         // timed out — and every one of them means the same thing here: keep the cheap one.
-        guard let raw = await BrowserAI.shortTitle(for: title, url: url),
+        guard let raw = await generate(title, url),
               let checked = validate(raw, original: title) else {
             return cleaned.map { Tidied(text: $0, fromModel: false) }
         }
@@ -319,7 +286,9 @@ import Foundation
     // stands aside for (a page that is not http), and a pin an importer brought in from
     // another browser, whose page nothing of ours has ever loaded.
 
-    private static let cacheKey = "tidyTitleCache"
+    // Earlier caches include short titles that never reached the model. Start fresh so
+    // those entries cannot suppress naming under the new policy.
+    private static let cacheKey = "tidyTitleCacheV2"
     private static let overrideKey = "tidyTitleOverrides"
     private static let pinnedKey = "pinnedNames"
 
@@ -443,13 +412,15 @@ import Foundation
     /// since wandered is never renamed after the page it went to; only a row still at home,
     /// with nothing recorded, records anything here.
     ///
-    /// It also gives `refresh` the retitling caller its own doc claims: the page that has
-    /// just named itself is the page the chip is about to show.
+    /// Every eligible home title also refreshes the generated name when its cache is empty,
+    /// including saved rows whose original pinned name has already been recorded.
     static func note(_ tab: Tab) {
         guard tab.stays, !tab.isPrivate, tab.atHome, let home = tab.homeURL,
-              realTitle(tab.title, at: home),
-              pinnedName(for: home, in: tab.profileID) == nil else { return }
-        recordPinnedName(tab.title, for: home, in: tab.profileID)
+              realTitle(tab.title, at: home) else { return }
+        if pinnedName(for: home, in: tab.profileID) == nil {
+            recordPinnedName(tab.title, for: home, in: tab.profileID)
+        }
+        // Existing pins need a chance to refill an invalidated generated-name cache too.
         refresh(tab)
     }
 
@@ -532,7 +503,7 @@ import Foundation
                     raw: raw, host: url.host())
     }
 
-    /// Fill the cache for a pinned tab, asking the model only if it has to. Fire and forget:
+    /// Fill the cache for a favorite or pinned tab. Fire and forget:
     /// call it when a tab is pinned and when a pinned tab finishes retitling.
     ///
     /// The cache is what keeps a pinned tab from re-running a multi-second inference on every
@@ -632,7 +603,7 @@ import Foundation
             // Boilerplate head, and a three-letter host token that must not match loosely.
             ("www.bbc.co.uk", "Home - BBC News", "BBC News"),
             ("www.bbc.co.uk", "BBC Sport - Scores, Fixtures, News - Live Sport", "BBC Sport"),
-            // Already short enough. Left exactly alone, both of them.
+            // The immediate deterministic labels; AI can still refine them.
             ("news.ycombinator.com", "Hacker News", "Hacker News"),
             ("mail.proton.me", "Proton Mail", "Proton Mail"),
             ("developer.apple.com", "View | Apple Developer Documentation", "View"),
@@ -652,34 +623,15 @@ import Foundation
         assert("no real title is ever cleaned to nothing",
                real.allSatisfy { clean($0.1, host: $0.0)?.isEmpty == false })
 
-        // Two real titles the cheap path shortens but cannot finish. This is the *only*
-        // reason the model exists here, and the handoff has to be visible in the check.
+        // Long titles still receive a useful deterministic fallback before AI answers.
         let so = "python - How do I sort a dictionary by value? - Stack Overflow"
         let pr = "GenericSpecializer: support specializing typed throws by eeckstein "
             + "· Pull Request #70000 · swiftlang/swift · GitHub"
-        assert("stack overflow loses its site name but is still too long for a chip",
-               clean(so, host: "stackoverflow.com") == "python - How do I sort a dictionary by value?"
-               && uninformative(clean(so, host: "stackoverflow.com")!, host: "stackoverflow.com"))
-        assert("a github pull request is trimmed twice and still handed to the model",
+        assert("stack overflow loses its site name",
+               clean(so, host: "stackoverflow.com") == "python - How do I sort a dictionary by value?")
+        assert("a github pull request is trimmed twice",
                clean(pr, host: "github.com")
-                   == "GenericSpecializer: support specializing typed throws by eeckstein"
-               && uninformative(clean(pr, host: "github.com")!, host: "github.com"))
-        assert("a title the cheap path finished is never handed to the model",
-               !uninformative("Apollo program", host: "en.wikipedia.org")
-               && !uninformative("Hacker News", host: "news.ycombinator.com"))
-        // Regression: this used to be flagged, because "arstechnicacom" ends with
-        // "arstechnica" + "com". The model was then asked, and answered "Tech News".
-        assert("a site's own name is not mistaken for its bare domain",
-               !uninformative("Ars Technica", host: "arstechnica.com")
-               && !uninformative("Proton Mail", host: "mail.proton.me"))
-
-        // --- Uninformative ---
-        assert("a page with no title, showing its own domain, is uninformative",
-               uninformative("example.com", host: "example.com"))
-        assert("a bare number is uninformative", uninformative("2026", host: "example.com"))
-        assert("an empty or all-punctuation result is uninformative",
-               uninformative("", host: nil) && uninformative("— · —", host: nil))
-        assert("a leftover \"Home\" is uninformative", uninformative("Home", host: "example.com"))
+                   == "GenericSpecializer: support specializing typed throws by eeckstein")
 
         // --- Pieces, so a failure above points somewhere ---
         assert("an unread badge is stripped wherever the site put it",

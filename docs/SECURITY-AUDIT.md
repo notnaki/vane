@@ -70,6 +70,57 @@ that path boundary on the tested system, not the complete distribution update fl
 See [distribution validation](RELEASING.md#updater-and-distribution-validation)
 for the distinction between this fixture and signed sandbox/XPC validation.
 
+### Update resource limits and application access
+
+Downloads now use a separate cookie-free session, validate every redirect hop, enforce
+a total deadline, and stop before writing more than 200 MiB, including responses with
+no declared length. Partial files are removed. ZIP extraction accepts only STORE and
+DEFLATE, with matching local/central records and CRC verification. Actual expanded bytes
+are metered before writing: 1 GiB total, 512 MiB per file, 20,000 filesystem entries
+(including implicit directories), 1,024 path bytes, 32 components and a 120-second
+cooperative extraction deadline. Traversal, links, special files, encryption, ZIP64,
+overlap and filesystem-normalized name collisions are rejected. AppleDouble sidecars
+are checked and counted, then discarded; archive ACLs and ownership are never restored.
+
+The browser's two Applications exceptions are read-only. Authenticated XPC now owns
+startup recovery, launch-health confirmation and cleanup as well as installation.
+Each connection binds mutations to the browser's kernel PID, start time and executable
+path; a displaced old process cannot certify the replacement. Rollback retains the
+failed stage until the restored app starts, preserving the helper's signature for its
+reply; the restored launch removes that stage. Ordinary supervised restart also starts
+through XPC so the supervisor can recover outside the browser sandbox.
+
+Signed headless fixtures on macOS 27.0.1 arm64 reproduced Applications writes with the
+old entitlements, then verified denial of file/directory creation, modification and
+deletion in both `/Applications` and `~/Applications` with the reduced entitlements.
+They exercise real pinned XPC authentication, browser-owned health journals, rollback,
+deferred cleanup, wrong-identity rejection and displaced-executable rejection. A copy
+of the unchanged 20 October notarized release also passed strict signature, Gatekeeper
+and stapled-ticket checks after extraction by the new reader. These fixture results
+do not replace validation of the final release candidate on supported systems.
+
+Native validation also exposed an older published payload's first-run resource lookup
+failure and a fixture that could report success from a database created before a crash.
+Current artwork/font lookups now prefer the packaged `Contents/Resources` bundle before
+the generated SwiftPM fallback; tests relocate a flat bundle away from its build path.
+Upgrade fixtures preserve completed onboarding and require the same browser identity
+to remain alive after bootstrap. Production launch-health timing remains unchanged;
+the fixture allows slow verification to complete without weakening its success checks.
+
+### Certificate evaluation and native tokens
+
+Each server-trust challenge now receives a fresh system evaluation. The previous
+leaf-only session cache could produce stale diagnostics after dates, anchors, chains
+or trust policy changed; cached success still delegated to WebKit, so no TLS bypass
+was established. Tests use the same leaf with different trust dates and anchors.
+
+GitHub integration tokens now use generic Keychain passwords in a separate service,
+scoped to profile and isolated data directory. Existing owned tokens migrate only after
+the new item is stored; failed or locked-Keychain operations preserve the original.
+Legacy token items are excluded from web-password enumeration, export and direct reads
+during migration. Sign-out, profile deletion and erase include native tokens, with
+test-instance isolation. Deterministic Keychain fixtures cover failure and race paths.
+
 ## Existing protections examined
 
 Source inspection found exact-origin and profile checks, isolated password message
@@ -87,18 +138,9 @@ certifications. Previously recorded tests remain scoped to their stated revision
 
 - Verify the unchanged signed/notarized candidate, minimum supported macOS, clean
   installation and upgrade/rollback using the [release checklist](RELEASING.md#release-checklist).
-- Repeat helper workspace isolation and the complete XPC installation/relaunch flow
-  under distribution signing and on macOS 26. The browser retains Applications write exceptions
-  for startup recovery/health mutations; moving those into authenticated XPC would
-  reduce the damage possible after a browser main-process compromise.
-- Bound updater bytes while downloading and expanded ZIP bytes/entries during
-  extraction. Current limits reject oversized compressed input after download;
-  compromised release hosting can consume disk before signature rejection.
-- Replace or bound the leaf-only certificate-evaluation cache. Cached success still
-  delegates to WebKit, so this review did not establish a TLS validation bypass;
-  diagnostics can become stale after certificate validity or trust-store changes.
-- Keep integration tokens separate from autofill-eligible web passwords. No exploit
-  at the GitHub API origin was established in this review.
+- Repeat helper workspace isolation and the complete signed XPC installation/relaunch
+  flow with the final distribution candidate on macOS 26. Local signed fixtures and an
+  older unchanged notarized payload are distinct from that candidate-specific check.
 - Keep macOS/WebKit patched and preserve App Sandbox, Hardened Runtime, fraudulent
   website warnings, and fail-closed permission checks. Signing/notarization alone
   cannot establish browser security or protect against every engine zero-day.

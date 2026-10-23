@@ -56,7 +56,8 @@ publication retry reuses the run’s tag.
 Updater failure checks use disposable directories and child processes. The headless
 recovery suite kills processes at transaction boundaries, verifies retained contents,
 and exercises stale records, retries, rollback and cleanup. The loopback transport suite
-probes actual URLSession cancellation and interrupted/truncated HTTP responses; its host
+probes the production bounded transport, cancellation, hostile redirects, slow responses,
+oversized bodies and interrupted/truncated HTTP responses; its host
 is simulated and never bypasses the production GitHub trust policy.
 
 For real signed/notarized input, pass an unchanged release app to
@@ -71,7 +72,7 @@ The installer first freezes the incoming bundle in a unique workspace under Darw
 per-user temporary directory, validates that copy, assesses Gatekeeper, and removes its
 quarantine there. It then copies the prepared payload into the atomic replacement
 transaction and verifies that final copy. Quarantine removal does not run in an
-Applications sibling that the browser's sandbox can write. The workspace is selected by
+Applications sibling. The workspace is selected by
 the helper, independently of inherited `TMPDIR`, source, and destination paths.
 
 The installer script also runs a standalone preparation regression: real filesystem and
@@ -79,8 +80,8 @@ quarantine operations simulate a client changing an Applications stage at the pr
 boundary, source changes, rejected verification, preparation/publication failure cleanup,
 and symbolic-link source rejection. Its content-verification callback is simulated; it
 does not prove Developer ID trust. A separate native isolation probe on 2026-10-23 used
-macOS 27.0.1 (26A434), arm64, ad-hoc signing with Hardened Runtime, the unchanged
-`Vane.entitlements`, and unique identifier
+macOS 27.0.1 (26A434), arm64, ad-hoc signing with Hardened Runtime, the
+`Vane.entitlements` from revision `24bd504`, and unique identifier
 `io.github.notnaki.vane.workspace-probe.007480f1013e419483a045c431817bba`. An unsandboxed
 driver created a canary in a `Vane-prepared-*` directory under Darwin's per-user temp root.
 The sandboxed probe could create, read, and delete its own temporary file, but opening the
@@ -100,18 +101,30 @@ Its only probe data file was deleted. Never reuse Vane's identity, register the 
 browser, or recursively delete protected container metadata. This probe is opt-in rather
 than part of ordinary installer tests.
 
-This establishes the workspace denial on this OS with the current entitlements and no
-extra user-granted file access. Developer ID authenticated XPC integration, macOS 26, and
+This establishes the workspace denial on that OS with those entitlements and no
+extra user-granted file access. macOS 26 and
 an unchanged notarized release candidate still require their separate checks. The change
 is defense in depth for a compromised browser main process, not evidence of a remotely
-demonstrated sandbox escape. The browser still needs Applications write exceptions for
-startup recovery and health cleanup; moving those mutations into authenticated XPC is
-separate work.
+demonstrated sandbox escape.
 
-Updater resource limits also remain separate work: the compressed asset limit is checked
-after download completion, and extraction has no expanded-size budget. Compromised release
-hosting could therefore consume excessive disk space before payload signatures reject an
-invalid update. Streaming cancellation and bounded extraction need dedicated fixtures.
+The browser now has read-only Applications access. Installation, recovery and health
+cleanup run in the authenticated helper, using the browser's kernel process identity.
+Run `bash scripts/test-update-launch-ownership.sh` for identity/race checks and
+`SIGN_ID=… bash scripts/test-update-launch-xpc.sh` for signed headless tests. The latter
+creates unique canaries in both Applications folders, verifies sandbox write denial,
+and exercises authenticated health, rollback, deferred cleanup and wrong/displaced
+caller rejection. It records and cleans only its disposable client/helper processes.
+
+Run `python3 scripts/test-updater-archive.py` for the production ZIP reader and
+`python3 scripts/test-updater-transport.py` for its downloader. Limits are 200 MiB
+compressed, 1 GiB expanded, 512 MiB per file, 20,000 filesystem entries (including
+implicit directories), 1,024 path bytes, 32 components, and a 120-second cooperative
+extraction deadline. Downloads have an independent total timeout, byte checks before
+writes, and trusted redirects. ZIP64, non-STORE/DEFLATE codecs, encryption, links,
+special files, traversal and ambiguous names are refused. The fixtures include real
+ditto packaging and strict signature verification; validate the unchanged distribution
+candidate as well. An unchanged notarized 20 October release passed extraction,
+strict signature, Gatekeeper and stapled-ticket checks locally on 23 October.
 
 ### Signed native recovery
 
@@ -129,6 +142,15 @@ worker and exact child processes; sandboxed LaunchServices callers drop those ov
 and direct execution from an inherited sandbox fails before main on macOS 27. The
 fixture simulates notarization for the local candidate at the transaction boundary;
 actual distribution verification remains the separate installer/release-candidate check.
+The upgrade fixture preserves completed onboarding and requires the restored browser
+to remain alive after database creation. The published v0.0.34 app can crash in its
+fresh-profile welcome screen because its generated resource accessor looks beside
+the app rather than under `Contents/Resources`; this older-payload issue must not be
+mistaken for a successful first installation. Fresh-profile startup remains part of
+the unchanged candidate check, separately from upgrade/rollback validation.
+Current artwork and font lookups use `AppResources`, preferring the packaged resource
+directory before invoking the generated SwiftPM fallback. Relocation/flat-bundle tests
+cover this fix independently of the installed build directory.
 To test the current XPC helper with an unchanged notarized payload, run `SIGN_ID=…
 scripts/test-update-installer-xpc.sh /path/to/current/Vane.app
 /path/to/notarized/Vane.app`.
@@ -141,7 +163,7 @@ To verify an *unchanged, notarized* release ZIP on a graphical test machine:
 scripts/check-release-candidate.sh Vane.zip /path/to/empty-evidence-directory
 ```
 
-That script checks the archive and bundle contents, signature, stapled ticket,
+That script extracts with the production update reader, then checks bundle contents, signature, stapled ticket,
 Gatekeeper assessment, and WebKit smoke test, and saves evidence. A clean Mac
 installation and upgrade still need to be exercised separately.
 

@@ -204,33 +204,19 @@ import WebKit
     /// else while `judge` has it. Swift has no way to know that, hence the box.
     private struct Chain: @unchecked Sendable { let trust: SecTrust }
 
-    /// The last answer per `host:port`. `SecTrustEvaluateWithError` rebuilds the chain and,
-    /// on a first sight of an issuer, goes to the network for OCSP — and WebKit raises a
-    /// challenge per *connection*, so a page of thirty subresources across six hosts paid
-    /// for thirty of them. Held for the session only, and only for as long as the host keeps
-    /// presenting the same leaf: a swapped certificate is re-evaluated from scratch, which
-    /// is the one case where a stale yes would matter.
-    private static var outcomes: [String: Outcome] = [:]
-
-    /// Evaluate a server trust off the main actor, answering from the session's memory when
-    /// the same host is still presenting the same certificate.
+    /// Every challenge supplies a new trust context: date, chain, policy and revocation
+    /// information may differ even when the host and leaf certificate are unchanged.
+    /// Keep the expensive system evaluation off the main actor, without caching its answer.
     static func evaluate(_ trust: SecTrust, host: String, port: Int) async -> Outcome {
-        let key = "\(host.lowercased()):\(port)"
-        let known = outcomes[key]
         let chain = Chain(trust: trust)
-        let outcome = await Task.detached(priority: .userInitiated) { judge(chain, known: known) }.value
-        outcomes[key] = outcome
-        return outcome
+        return await Task.detached(priority: .userInitiated) { judge(chain) }.value
     }
 
-    /// Off the main actor: hashing the leaf is cheap, the evaluation is not.
-    private nonisolated static func judge(_ chain: Chain, known: Outcome?) -> Outcome {
-        let leaf = (SecTrustCopyCertificateChain(chain.trust) as? [SecCertificate])?.first
-        let fp = leaf.map(fingerprint)
-        if let known, let fp, known.fingerprint == fp { return known }
+    private nonisolated static func judge(_ chain: Chain) -> Outcome {
         var error: CFError?
         let ok = SecTrustEvaluateWithError(chain.trust, &error)
-        return Outcome(fingerprint: fp, ok: ok,
+        let leaf = (SecTrustCopyCertificateChain(chain.trust) as? [SecCertificate])?.first
+        return Outcome(fingerprint: leaf.map(fingerprint), ok: ok,
                        status: OSStatus(error.map { CFErrorGetCode($0) } ?? Int(errSecNotTrusted)))
     }
 

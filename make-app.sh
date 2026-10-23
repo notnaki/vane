@@ -163,10 +163,14 @@ fi
 ENTS="$(codesign -d --entitlements - --xml "$APP" 2>&1)"
 echo "$ENTS" | grep -q "com.apple.security.app-sandbox" \
   || { echo "FAIL: com.apple.security.app-sandbox is not in the signature"; exit 1; }
-# Applications access is still required to inspect the installed version and sweep the
-# displaced bundle on the next launch; publication belongs to the signed XPC installer.
-echo "$ENTS" | grep -q "temporary-exception.files.absolute-path.read-write" \
-  || { echo "FAIL: the /Applications exception the updater needs is not in the signature"; exit 1; }
+# Recovery and cleanup belong to XPC too. Never silently reintroduce broad browser writes.
+echo "$ENTS" | grep -q "temporary-exception.files.absolute-path.read-only" \
+  || { echo "FAIL: read-only /Applications inspection is missing"; exit 1; }
+echo "$ENTS" | grep -q "temporary-exception.files.home-relative-path.read-only" \
+  || { echo "FAIL: read-only user Applications inspection is missing"; exit 1; }
+if echo "$ENTS" | grep -Eq 'temporary-exception.files.(absolute-path|home-relative-path).read-write'; then
+  echo "FAIL: browser has broad application-folder write access"; exit 1
+fi
 
 codesign --verify --deep --strict "$APP"
 INSTALLER_ENTS="$(codesign -d --entitlements - --xml "$INSTALLER" 2>&1)"

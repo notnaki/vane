@@ -14,7 +14,25 @@ enum BundleReplacement {
              afterLaunchJournal, beforeRollback, afterRollback,
              afterHealthyJournal, beforeCleanup, afterCleanup
     }
-    enum Launch: Sendable { case unchanged, waitingForHealth, rolledBack, needsAttention }
+    // Stable wire values also decoded by the browser's UpdateInstaller client.
+    enum Launch: Int, Sendable { case unchanged = 0, waitingForHealth = 1, rolledBack = 2, needsAttention = 3 }
+
+    /// The service derives this identity from its authenticated XPC connection. Keeping
+    /// the validity check live prevents an exited/reused PID or a displaced executable
+    /// from authorizing mutations after waiting for the transaction lock.
+    struct LaunchOwner {
+        let pid: Int32
+        let start: UInt64
+        let isCurrent: () -> Bool
+        var valid: Bool { pid > 0 && start > 0 && isCurrent() }
+
+        static func process(_ pid: Int32, start: UInt64, executable: URL) -> LaunchOwner {
+            LaunchOwner(pid: pid, start: start, isCurrent: {
+                processStart(pid) == start && executing(executable, pid: pid)
+                    && processStart(pid) == start
+            })
+        }
+    }
 
     private enum State: String, Codable { case prepared, launching, healthy }
     private struct Journal: Codable {
@@ -144,9 +162,9 @@ enum BundleReplacement {
 
     /// Kernel vnode path follows an executable when its bundle is atomically exchanged.
     /// argv/Bundle.main paths alone can still name the new copy under an old process.
-    static func executing(_ expected: URL) -> Bool {
+    static func executing(_ expected: URL, pid: Int32 = getpid()) -> Bool {
         var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
-        guard proc_pidpath(getpid(), &path, UInt32(path.count)) > 0 else { return false }
+        guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { return false }
         return URL(fileURLWithPath: String(cString: path)).resolvingSymlinksInPath()
             == expected.resolvingSymlinksInPath()
     }
@@ -238,11 +256,18 @@ enum BundleReplacement {
         try sync(target.deletingLastPathComponent(), directory: true)
     }
 
-    private static func withLock<T>(_ target: URL, _ body: () throws -> T) throws -> T {
+    private static func withLock<T>(_ target: URL, wait: TimeInterval = 0,
+                                    _ body: () throws -> T) throws -> T {
         let descriptor = open(lockURL(target).path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else { throw filesystemError(lockURL(target)) }
         defer { close(descriptor) }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw Fault.busy }
+        let deadline = ProcessInfo.processInfo.systemUptime + wait
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            let error = errno
+            guard error == EWOULDBLOCK || error == EAGAIN else { throw filesystemError(lockURL(target)) }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw Fault.busy }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
         defer { flock(descriptor, LOCK_UN) }
         return try body()
     }
@@ -361,10 +386,19 @@ enum BundleReplacement {
                             verifyRecovery: ((URL) -> Bool)? = nil,
                             verifyPrevious: ((URL) -> Bool)? = nil,
                             expectedExecutable: URL? = nil,
+                            owner: LaunchOwner? = nil,
+                            retainFailedStage: Bool = false,
                             fault: ((Step) -> Bool)? = nil) -> Launch {
+        func ownsLaunch() -> Bool {
+            owner?.valid != false && expectedExecutable.map { executing($0, pid: owner?.pid ?? getpid()) } != false
+        }
+        guard ownsLaunch() else { return .needsAttention }
         guard entryExists(journalURL(target)) else {
             if !orphanStages(target).isEmpty {
-                _ = try? withLock(target) { try removeOrphanStages(target) }
+                do { try withLock(target) {
+                    guard ownsLaunch() else { throw Fault.staleTarget }
+                    try removeOrphanStages(target)
+                } } catch { return .needsAttention }
             }
             return .unchanged
         }
@@ -372,7 +406,7 @@ enum BundleReplacement {
             let fm = FileManager.default
             guard target.standardizedFileURL == target.resolvingSymlinksInPath(),
                   var journal = read(target), let stage = stageURL(target, journal),
-                  expectedExecutable.map(executing) != false else {
+                  ownsLaunch() else {
                 return Launch.needsAttention
             }
             let targetID = fileID(target), stageID = fileID(stage)
@@ -404,12 +438,14 @@ enum BundleReplacement {
                 } else { return Launch.needsAttention }
                 journal.targetPath = target.standardizedFileURL.path
                 journal.volumeID = metadata(target.deletingLastPathComponent(), type: mode_t(S_IFDIR)).map { UInt64($0.st_dev) }
+                guard ownsLaunch() else { return Launch.needsAttention }
                 try write(journal, for: target)
             }
             if targetID == journal.oldID,
                stageID == journal.newID || !entryExists(stage),
                journal.oldID == nil || intact(target, journal.oldDigest) {
                 // The app crashed before the rename; the original installation is intact.
+                guard ownsLaunch() else { return .needsAttention }
                 if stageID != nil { try fm.removeItem(at: stage) }
                 try fm.removeItem(at: journalURL(target))
                 try sync(target.deletingLastPathComponent(), directory: true)
@@ -420,6 +456,7 @@ enum BundleReplacement {
                 // Cleanup may have removed the old bundle and crashed before deleting the
                 // journal. Missing stage is valid only in this already-healthy state.
                 if let stageID, journal.oldID != stageID { return .needsAttention }
+                guard ownsLaunch() else { return .needsAttention }
                 finish(journal, stage: stage, target: target, fault: fault)
                 return .unchanged
             }
@@ -435,21 +472,27 @@ enum BundleReplacement {
                     return .needsAttention
                 }
                 guard intact(stage, journal.oldDigest), previousVerifier?(stage) != false else { return .needsAttention }
+                guard ownsLaunch() else { return .needsAttention }
                 if fault?(.beforeRollback) == true { throw Fault.injected }
                 try swap(target, stage)
                 if fault?(.afterRollback) == true { throw Fault.injected }
                 try sync(target.deletingLastPathComponent(), directory: true)
                 // Only the staged failed version is removed. The restored old app is now
                 // at the original target path and can be opened by the caller.
-                try fm.removeItem(at: stage)
+                // An XPC helper is executing from this failed bundle too. Removing it
+                // invalidates its signature before its rollback reply reaches the browser.
+                // Keep that generated stage as an orphan until the restored app's next
+                // launch; it can then clean it without deleting either current peer.
+                if !retainFailedStage { try fm.removeItem(at: stage) }
                 try fm.removeItem(at: journalURL(target))
                 try sync(target.deletingLastPathComponent(), directory: true)
                 return .rolledBack
             }
             guard intact(target, journal.newDigest), verifyRecovery?(target) != false else { return .needsAttention }
             journal.state = .launching
-            journal.launchPID = getpid()
-            journal.launchStart = processStart(getpid())
+            guard ownsLaunch() else { return .needsAttention }
+            journal.launchPID = owner?.pid ?? getpid()
+            journal.launchStart = owner?.start ?? processStart(getpid())
             journal.launchDeadline = Date().timeIntervalSince1970 + fallbackLease
             try write(journal, for: target)
             if fault?(.afterLaunchJournal) == true { throw Fault.injected }
@@ -461,6 +504,12 @@ enum BundleReplacement {
     }
 
     static func hasPendingRecord(at target: URL) -> Bool { entryExists(journalURL(target)) }
+
+    /// A read-only fast path lets ordinary development bundles start without a pinned
+    /// distribution helper. All cleanup, including abandoned stages, belongs to XPC.
+    static func hasRecoveryWork(at target: URL) -> Bool {
+        hasPendingRecord(at: target) || !orphanStages(target).isEmpty
+    }
 
     /// Serialize detached workers through launch, health and recovery. The normal
     /// transaction lock stays short-lived; this separate lease cannot deadlock it.
@@ -519,7 +568,9 @@ enum BundleReplacement {
 
     static func isRestoredPrevious(at target: URL, witness: LaunchWitness,
                                    verifyPrevious: (URL) -> Bool) -> Bool {
-        (try? withLock(target) {
+        // The helper can remove the journal before its final fsync releases the lock.
+        // Wait for that commit before deciding whether the completion witness matches.
+        (try? withLock(target, wait: 60) {
             witness.oldID != nil && witness.oldDigest != nil
                 && !entryExists(journalURL(target)) && target.path == witness.targetPath
                 && target.standardizedFileURL == target.resolvingSymlinksInPath()
@@ -531,7 +582,10 @@ enum BundleReplacement {
 
     static func hasCompletedReplacement(at target: URL, witness: LaunchWitness,
                                          verifyReplacement: (URL) -> Bool) -> Bool {
-        (try? withLock(target) {
+        // Polling must not contend with the browser's nonblocking launch claim.
+        // This can only reject completion; success still requires all locked checks.
+        if entryExists(journalURL(target)), read(target)?.state != .healthy { return false }
+        return (try? withLock(target, wait: 60) {
             let pending = entryExists(journalURL(target))
             let journal = pending ? read(target) : nil
             if pending {
@@ -551,7 +605,7 @@ enum BundleReplacement {
                               observeStart: (Int32) -> UInt64? = processStart) -> Bool {
         guard let journal = read(target), let recordedStart = journal.launchStart,
               let observedStart = observeStart(pid) else { return false }
-        return bound(journal, to: target) && journal.state == .launching
+        return bound(journal, to: target) && (journal.state == .launching || journal.state == .healthy)
             && journal.launchPID == pid && recordedStart == observedStart
             && fileID(target) == journal.newID
     }
@@ -589,25 +643,30 @@ enum BundleReplacement {
 
     /// Called after AppKit has entered its run loop. A previous copy is retained until
     /// this point; a relocation leaves it on disk for the user, while an update removes it.
+    @discardableResult
     static func markHealthy(at target: URL, verifyRecovery: ((URL) -> Bool)? = nil,
                             verifyPrevious: ((URL) -> Bool)? = nil,
-                            expectedExecutable: URL? = nil, fault: ((Step) -> Bool)? = nil) {
-        guard entryExists(journalURL(target)) else { return }
-        _ = try? withLock(target) {
+                            expectedExecutable: URL? = nil, owner: LaunchOwner? = nil,
+                            fault: ((Step) -> Bool)? = nil) -> Bool {
+        guard owner?.valid != false, entryExists(journalURL(target)) else { return false }
+        return (try? withLock(target) {
             guard var journal = read(target), let stage = stageURL(target, journal),
                   bound(journal, to: target),
                   target.standardizedFileURL == target.resolvingSymlinksInPath(),
                   intact(target, journal.newDigest), verifyRecovery?(target) != false,
-                  expectedExecutable.map(executing) != false,
-                  journal.state == .launching, journal.launchPID == getpid(),
-                  journal.launchStart == processStart(getpid()),
+                  owner?.valid != false,
+                  expectedExecutable.map({ executing($0, pid: owner?.pid ?? getpid()) }) != false,
+                  journal.state == .launching, journal.launchPID == (owner?.pid ?? getpid()),
+                  journal.launchStart == (owner?.start ?? processStart(getpid())),
                   fileID(target) == journal.newID,
-                  journal.oldID == nil || (fileID(stage) == journal.oldID && intact(stage, journal.oldDigest) && (verifyPrevious ?? verifyRecovery)?(stage) != false) else { return }
+                  journal.oldID == nil || (fileID(stage) == journal.oldID && intact(stage, journal.oldDigest) && (verifyPrevious ?? verifyRecovery)?(stage) != false) else { return false }
+            guard owner?.valid != false else { return false }
             journal.state = .healthy
             try write(journal, for: target)
             if fault?(.afterHealthyJournal) == true { throw Fault.injected }
             finish(journal, stage: stage, target: target, fault: fault)
-        }
+            return true
+        }) == true
     }
 
     private static func finish(_ journal: Journal, stage: URL, target: URL,

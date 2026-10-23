@@ -10,6 +10,15 @@ func install(_ source: URL, _ target: URL, fault: ((BundleReplacement.Step) -> B
 }
 if args.count > 1, args[1] == "child" {
     let source = URL(fileURLWithPath: args[3]), target = URL(fileURLWithPath: args[4])
+    if args[2] == "hold-completion-lock" {
+        let lock = target.deletingLastPathComponent().appendingPathComponent(".Vane.app.vane-transaction.lock")
+        let fd = open(lock.path, O_RDWR)
+        guard fd >= 0, flock(fd, LOCK_EX) == 0 else { exit(2) }
+        try Data().write(to: source.appendingPathComponent("locked"))
+        usleep(2_000_000)
+        close(fd)
+        exit(0)
+    }
     if args[2] == "loaded-old" {
         let marker = source.appendingPathComponent("continue")
         while !fm.fileExists(atPath: marker.path) { usleep(10000) }
@@ -297,8 +306,54 @@ do {
     BundleReplacement.markHealthy(at: target, fault: { $0 == .beforeCleanup })
     check("durable health releases supervisor despite interrupted cleanup", BundleReplacement.hasPendingRecord(at: target) && BundleReplacement.hasCompletedReplacement(at: target, witness: witness, verifyReplacement: { label($0) == "new" }))
     check("health witness still requires independent signature", !BundleReplacement.hasCompletedReplacement(at: target, witness: witness, verifyReplacement: { _ in false }))
+    check("retained healthy journal identifies its exact owner", BundleReplacement.launchClaimed(at: target, by: getpid()))
+    check("retained healthy journal cannot certify a new child", !BundleReplacement.launchClaimed(at: target, by: Int32.max))
+    check("retained healthy journal rejects a reused owner PID", !BundleReplacement.launchClaimed(at: target, by: getpid(), observeStart: { _ in 1 }))
     let (_, other) = try scene("supervised-wrong-target")
     check("health witness cannot certify another target", !BundleReplacement.hasCompletedReplacement(at: other, witness: witness, verifyReplacement: { _ in true }))
+}
+for launching in [false, true] {
+    let (source, target) = try scene(launching ? "launching-completion-poll" : "prepared-completion-poll")
+    try install(source, target)
+    let witness = BundleReplacement.launchWitness(at: target)!
+    if launching { _ = BundleReplacement.beginLaunch(at: target) }
+    let holder = Process()
+    holder.executableURL = URL(fileURLWithPath: args[0])
+    holder.arguments = ["child", "hold-completion-lock", source.path, target.path, "none"]
+    try holder.run()
+    let deadline = ProcessInfo.processInfo.systemUptime + 5
+    while !fm.fileExists(atPath: source.appendingPathComponent("locked").path),
+          ProcessInfo.processInfo.systemUptime < deadline { usleep(1000) }
+    check("pending completion fixture holds transaction lock", fm.fileExists(atPath: source.appendingPathComponent("locked").path))
+    let start = ProcessInfo.processInfo.systemUptime
+    check("pre-health transaction cannot certify completion", !BundleReplacement.hasCompletedReplacement(at: target, witness: witness, verifyReplacement: { _ in true }))
+    check("pre-health completion polling avoids transaction lock", ProcessInfo.processInfo.systemUptime - start < 1)
+    holder.waitUntilExit()
+    check("pending completion lock holder exits", holder.terminationStatus == 0)
+}
+for rollback in [true, false] {
+    let (source, target) = try scene(rollback ? "rollback-lock-handoff" : "health-lock-handoff")
+    try install(source, target)
+    let witness = BundleReplacement.launchWitness(at: target)!
+    if rollback {
+        _ = try BundleReplacement.restoreUnlaunched(at: target, verifyPrevious: { label($0) == "old" })
+    } else {
+        _ = BundleReplacement.beginLaunch(at: target)
+        BundleReplacement.markHealthy(at: target)
+    }
+    let holder = Process()
+    holder.executableURL = URL(fileURLWithPath: args[0])
+    holder.arguments = ["child", "hold-completion-lock", source.path, target.path, "none"]
+    try holder.run()
+    let deadline = Date().addingTimeInterval(5)
+    while !fm.fileExists(atPath: source.appendingPathComponent("locked").path), Date() < deadline { usleep(1000) }
+    check("completion fixture holds transaction lock", fm.fileExists(atPath: source.appendingPathComponent("locked").path))
+    let completed = rollback
+        ? BundleReplacement.isRestoredPrevious(at: target, witness: witness, verifyPrevious: { label($0) == "old" })
+        : BundleReplacement.hasCompletedReplacement(at: target, witness: witness, verifyReplacement: { label($0) == "new" })
+    check(rollback ? "rollback completion waits for committing helper lock" : "healthy completion waits for committing helper lock", completed)
+    holder.waitUntilExit()
+    check("completion lock holder exits", holder.terminationStatus == 0)
 }
 check("live originating process delays detached worker", BundleReplacement.parentExit(123, start: 10, observeStart: { _ in 10 }) == .waiting)
 check("reused parent PID does not delay original exit", BundleReplacement.parentExit(123, start: 10, observeStart: { _ in 11 }) == .exited)

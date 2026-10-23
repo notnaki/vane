@@ -251,8 +251,11 @@ optionally restricted to recent activity. Refresh happens every five minutes, wh
 unfolded, or through **Refresh Now**. Taking a row out keeps it excluded.
 
 A release with the optional OAuth client secret supports browser sign-in; ordinary
-source builds use a personal access token. Rejected credentials are retained for
-reconnection.
+source builds use a personal access token. Native GitHub grants use generic-password
+Keychain items scoped to the profile and data directory, separately from web passwords.
+Owned legacy Internet-password tokens migrate only after the native value is stored;
+their origin stays excluded from web autofill and password exports during migration.
+Rejected credentials are retained for reconnection.
 
 Developer credential regressions use the real Live Folder response handler with isolated
 storage:
