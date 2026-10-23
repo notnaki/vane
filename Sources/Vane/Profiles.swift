@@ -508,6 +508,7 @@ struct Space: Identifiable, Codable, Equatable {
     /// A damaged existing list is kept for recovery; no mutation may replace it with a
     /// newly invented default profile.
     private var profileListReadable = true
+    private var deletedProfileIDs = Set<UUID>()
 
     /// The profile everything unqualified resolves to. Falls back to the first profile, so
     /// a stale or deleted selection can never leave the app with no profile at all.
@@ -684,6 +685,7 @@ struct Space: Identifiable, Codable, Equatable {
         remaining.remove(at: i)
         let nextActiveID = activeID == id ? remaining[0].id : activeID
         guard persist(Disk(profiles: remaining, activeID: nextActiveID), deleting: true) else { return false }
+        deletedProfileIDs.insert(id)
         profiles = remaining
         activeID = nextActiveID
         Tab.discardPreparedFirstPage(for: id)
@@ -740,6 +742,7 @@ struct Space: Identifiable, Codable, Equatable {
         remaining.remove(at: i)
         let nextActiveID = activeID == id ? remaining[0].id : activeID
         guard persist(Disk(profiles: remaining, activeID: nextActiveID), deleting: true) else { return false }
+        deletedProfileIDs.insert(id)
         profiles = remaining
         activeID = nextActiveID
         // Invalidate documents before yielding to credential/database workers. A stale
@@ -980,6 +983,8 @@ struct Space: Identifiable, Codable, Equatable {
     /// queuing these bytes could later replay a cancelled deletion or profile transfer.
     @discardableResult
     func saveSpaces(_ spaces: [Space], for profileID: UUID) -> Bool {
+        // Direct metadata writers also reject stale continuations after profile removal.
+        guard !deletedProfileIDs.contains(profileID) else { return false }
         let owned = spaces.filter { $0.profileID == profileID }.map { space in
             var space = space
             if let layout = space.layout, (try? layout.validate()) != nil, !layout.matches(space) {

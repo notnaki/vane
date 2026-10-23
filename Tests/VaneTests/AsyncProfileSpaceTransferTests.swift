@@ -74,6 +74,9 @@ import XCTest
             space: space.id, profileID: victim.id, in: manager.directory))
         gate.resume(); await blocker.value
         let deleted = await deletion.value; XCTAssertTrue(deleted)
+        XCTAssertFalse(manager.updateSpace(space))
+        XCTAssertFalse(manager.saveSpaces([space], for: victim.id))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ProfileManager.spacesURL(for: victim.id, in: manager.directory).path))
         let flushed = await SessionPersistence.shared.flush(); XCTAssertTrue(flushed)
         let sidecar = Suspension.SpaceState.url(for: victim.id, in: manager.directory)
         XCTAssertFalse(FileManager.default.fileExists(atPath: session.path))

@@ -172,9 +172,12 @@ import XCTest
         XCTAssertTrue(field.currentEditor() === window.firstResponder,
                       "The real Easel search autofocus must own the field editor first")
         store.librarySwipeProgress = 0.5
-        let tab = try XCTUnwrap(store.openEasel(create: true))
+        let opened = await store.openEaselAsync(create: true)
+        let tab = try XCTUnwrap(opened)
         let boardID = try XCTUnwrap(tab.easelID)
-        defer { try? EaselStore.shared(profileID: store.profileID, directory: Store.directory).delete(boardID) }
+        addTeardownBlock { @MainActor in
+            try? await EaselStore.shared(profileID: store.profileID, directory: Store.directory).deleteAsync(boardID)
+        }
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(700))
         XCTAssertFalse(store.libraryOpen)

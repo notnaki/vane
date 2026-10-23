@@ -366,7 +366,8 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
 
     func testF6LeavesTheLocalEaselForBrowserControls() async throws {
         let (store, window, _) = fixture(isPrivate: false)
-        let tab = try XCTUnwrap(store.openEasel(create: true))
+        let opened = await store.openEaselAsync(create: true)
+        let tab = try XCTUnwrap(opened)
         let session = try XCTUnwrap(tab.easelSession)
         let page = EaselHostingView(rootView: EaselWorkspace(session: session, browser: store))
         let chrome = NSHostingView(rootView: AddressPill(tab: tab).environmentObject(store))
