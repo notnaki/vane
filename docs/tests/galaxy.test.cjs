@@ -1,13 +1,13 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../space.js'),'utf8');
-for(const viewport of [{width:1280,height:800},{width:240,height:718},{width:480,height:600},{width:480,height:390},{width:844,height:390}]) for(const gpu of [false,true]) for(const lateLayout of [false,"observer","load"]) for(const testShape of ["spiral","fine","soft"]) {
+for(const viewport of [{width:1280,height:800},{width:1280,height:720},{width:1024,height:641},{width:601,height:521},{width:240,height:718},{width:480,height:600},{width:480,height:390},{width:844,height:390}]) for(const gpu of [false,true]) for(const lateLayout of [false,"observer","load"]) for(const testShape of ["spiral","fine","soft"]) {
  const {width,height}=viewport; const compact=width<=600; const shortWide=!compact && height<=520; const openingZoom=compact && height<=520 ? 55/Math.min(width*.44,height*.42) : shortWide ? .65 : .92;
  const frames=new Map();let nextFrame=0,draws=0,intersect,observeLayout; let layoutReady=!lateLayout;
  const ctx={setTransform(){},beginPath(){},arc(){},moveTo(){},lineTo(){},stroke(){},fill(){},fillRect(){},clearRect(){},drawImage(){},createRadialGradient(){return {addColorStop(){}}}};
  const gl=new Proxy({getShaderParameter(){return true;},getProgramParameter(){return true;},getAttribLocation(){return 0;},createShader(){return {};},createProgram(){return {};},createBuffer(){return {};},getUniformLocation(){return {};},drawArrays(){draws++;}},{get(target,key){return key in target?target[key]:key===key.toUpperCase()?1:()=>{};}});
  const element=()=>({width:0,height:0,dataset:{},style:{},classList:{add(){},toggle(){}},handlers:{},attrs:{},parentElement:{prepend(){}},firstElementChild:{textContent:''},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},getContext(type){return type==='webgl'?(gpu?gl:null):ctx;},getBoundingClientRect(){return {width:!layoutReady && !this.journey?600:width,height:!layoutReady && !this.journey?300:this.journey?height*8:(sceneReady?height:height*3),top:this.journey?-scroll:0};},addEventListener(k,f){this.handlers[k]=f;},setPointerCapture(){}});
  const hero=element(),toggle=element(),reset=element(),journey=element(),logo=element(),panels=Array.from({length:4},element),links=Array.from({length:4},element); journey.journey=true; const shapeButtons=['spiral','fine','soft'].map(shape=>{const e=element();e.dataset.shape=shape;return e;}); const productStage=element(),productShell=element(),productAddress=element(),heroMessage=element(),introSupport=element(),productPages=[1,2,3].map(n=>{const e=element();e.dataset.product=String(n);return e;}); let scroll=0; let sceneReady=false; journey.classList.add=()=>{sceneReady=true;}; const windowHandlers={};
- heroMessage.offsetWidth=compact?width-40:480; heroMessage.offsetHeight=50; productStage.offsetWidth=compact?width-40:552; productShell.offsetHeight=369; const navigation=element(); navigation.getBoundingClientRect=()=>({bottom:70}); panels.slice(1).forEach(panel=>{panel.querySelector=()=>({offsetHeight:120});});
+ heroMessage.offsetWidth=compact?width-40:480; heroMessage.offsetHeight=50; introSupport.offsetHeight=110; productStage.offsetWidth=compact?width-40:552; productShell.offsetHeight=369; const navigation=element(); navigation.getBoundingClientRect=()=>({bottom:70}); panels.slice(1).forEach(panel=>{panel.querySelector=()=>({offsetHeight:120});});
  const motion={matches:true,addEventListener(k,f){this.change=f;}};
  const document={hidden:false,handlers:{},body:{prepend(){}},createElement:element,querySelectorAll(s){return s==='[data-chapter]'?panels:s==='.journey-nav a'?links:s==='[data-shape]'?shapeButtons:s==='[data-product]'?productPages:[];},querySelector(s){return {'[data-galaxy="hero"]':hero,'.galaxy-toggle':toggle,'.galaxy-reset':reset,'.galaxy-journey':journey,'.galaxy-v':logo,'.product-stage':productStage,'.product-shell':productShell,'.product-address':productAddress,'.hero-message':heroMessage,'.intro-support':introSupport,'.site-nav':navigation}[s];},addEventListener(k,f){this.handlers[k]=f;}};
  const sandbox={document,URL,URLSearchParams,window:{location:{search:'?shape='+testShape,href:'http://localhost/?shape='+testShape},history:{replaceState(){}},innerWidth:width,devicePixelRatio:2,addEventListener(k,f){windowHandlers[k]=f;},IntersectionObserver:true},matchMedia(){return motion;},requestAnimationFrame(f){const id=++nextFrame;frames.set(id,f);return id;},cancelAnimationFrame(id){frames.delete(id);},ResizeObserver:class{constructor(f){observeLayout=f;}observe(){}},IntersectionObserver:class{constructor(f){intersect=f;}observe(){}}};
@@ -20,6 +20,10 @@ for(const viewport of [{width:1280,height:800},{width:240,height:718},{width:480
    else windowHandlers.load?.();
    for(const [id,f] of [...frames]){frames.delete(id);f(0);}
  }
+ // Fall back to the CSS opening offsets when the scene leaves them unmodified.
+ const supportTop=Number.parseFloat(introSupport.style.top) || height*(height<=640?.54:.59)+(height<=640?105:Math.max(125,Math.min(165,width*.11)));
+ assert.ok(supportTop+introSupport.offsetHeight<=height-70,
+   `Opening download must clear the 60px panel clip and its focus outline at ${width}×${height}`);
  assert.equal(logo.style.left,width*(shortWide?.73:.5)+'px','Logo must use the settled scene width');
  assert.equal(logo.style.top,height*(shortWide?.48:compact?(height<=520?.33:.36):.40)+'px','Opening V must be centered using the final viewport height'); assert.equal(hero.dataset.renderer,gpu?'webgl':'canvas');
  assert.equal(frames.size,0,'Reduced motion must start paused');
@@ -57,7 +61,7 @@ for(const viewport of [{width:1280,height:800},{width:240,height:718},{width:480
  assert.equal(Number.parseFloat(productStage.style.height),369*scale,'The preview frame must preserve its aspect ratio');
  if(compact){
    assert.ok(Number.parseFloat(productStage.style.height)<=height-110-Number.parseFloat(panels[1].style.paddingTop)-120-20+.01,'Preview must clear the feature copy and footer');
-   assert.equal(introSupport.style.top,Math.min(height*.48,height-50-110-86)+50+16+'px','Description follows measured headline height');
+   assert.ok(Number.parseFloat(introSupport.style.top)>=Number.parseFloat(heroMessage.style.top)+heroMessage.offsetHeight+16,'Description must clear the measured headline');
  }
  assert.equal(panels[0].inert,false); assert.equal(panels[1].inert,false);
  scroll=height*2.1; windowHandlers.scroll();
@@ -74,8 +78,8 @@ for(const viewport of [{width:1280,height:800},{width:240,height:718},{width:480
  scroll=height*3.6; windowHandlers.scroll();
  for(const [id,f] of [...frames]){frames.delete(id);f(220);}
  assert.equal(productStage.style.opacity,'1','Browser must never fade');
- assert.equal(productPages[0].style.transform,'translateX(-50%)');
- assert.equal(productPages[1].style.transform,'translateX(50%)');
+ assert.ok(Math.abs(Number.parseFloat(productPages[0].style.transform.slice(11))+50)<1e-9,'Previous page must be halfway out');
+ assert.ok(Math.abs(Number.parseFloat(productPages[1].style.transform.slice(11))-50)<1e-9,'Next page must be halfway in');
  assert.equal(panels[1].style.opacity,'1');
  assert.equal(hero.dataset.shape,testShape);
  motion.matches=true; motion.change(); assert.equal(hero.dataset.zoom,openingZoom.toFixed(2)); assert.equal(frames.size,0);

@@ -354,7 +354,12 @@
       const smallScreen = compact && surface.height<=720;
       let baseTop=surface.height*(compact ? (smallScreen ? .48 : .51) : (surface.height<=640 ? .54 : .59));
       if (shortWide) baseTop=surface.height*.32;
-      if (compact) baseTop=Math.min(baseTop,surface.height-(heroMessage.offsetHeight || 80)-(introSupport.offsetHeight || 110)-86);
+      const headlineHeight=heroMessage.offsetHeight || 80;
+      const supportOffset=compact || shortWide ? headlineHeight+16
+        : Math.max(headlineHeight+16,surface.height<=640 ? 105 : clamp(surface.width*.11,125,165));
+      // Keep the complete download and its focus outline above the 60px panel clip.
+      // Wide windows need the same height constraint as compact ones.
+      baseTop=Math.min(baseTop,surface.height-supportOffset-(introSupport.offsetHeight || 110)-76);
       const titleTop=compact ? ((navigation?.getBoundingClientRect().bottom || 70)+(surface.height<=520 ? 20 : 48)) : surface.height*.32;
       const featureTop=titleTop+(heroMessage.offsetHeight || 80)*(compact ? .57 : .82)+(surface.height<=520 ? 14 : 24);
       panels.slice(1).forEach(panel => { panel.style.paddingTop=compact || surface.height<=520 ? featureTop+'px' : ''; });
@@ -365,8 +370,8 @@
       productShell.style.transform=`scale(${previewScale})`;
       productShell.style.marginLeft=(previewWidth-552*previewScale)/2+'px';
       productStage.style.height=previewHeight*previewScale+'px';
-      if (compact || shortWide) { heroMessage.style.top=baseTop+'px'; introSupport.style.top=baseTop+(heroMessage.offsetHeight || 80)+16+'px'; }
-      else { heroMessage.style.top=''; introSupport.style.top=''; }
+      heroMessage.style.top=baseTop+'px';
+      introSupport.style.top=baseTop+supportOffset+'px';
       const textWidth=heroMessage.offsetWidth || Math.min(480,surface.width-80);
       const textLeft=panels[0].getBoundingClientRect?.().left ?? Math.max(40,(surface.width-1120)/2);
       const shiftX=compact ? 0 : shortWide ? textLeft+textWidth*(1-.18*arrival)/2-surface.width/2 : (textLeft+textWidth*.82/2-surface.width/2)*arrival;
