@@ -187,9 +187,9 @@ import WebKit
                 let canSave = store.map { !$0.isPrivate && !$0.isLittle } == true
                     && source.flatMap { EaselItem.webURL($0.absoluteString) } != nil
                 let boards = canSave ? EaselStore.shared(profileID: self.tab.profileID, directory: Store.directory).boards : []
-                let add: ((UUID?) -> Bool)? = canSave ? { [weak store] id in
+                let add: (@MainActor (UUID?) async -> Bool)? = canSave ? { [weak store] id in
                     guard let store, let source else { return false }
-                    return EaselWindow.addCapture(image, title: title, source: source.absoluteString, to: id, in: store)
+                    return await EaselWindow.addCapture(image, title: title, source: source.absoluteString, to: id, in: store)
                 } : nil
                 CapturePreviewController.present(image: image, png: png, in: window, boards: boards, addToEasel: add)
             } catch {
@@ -314,12 +314,12 @@ import WebKit
     private var picker: NSSharingServicePicker?
 
     static func present(image: NSImage, png: Data, in window: NSWindow,
-                        boards: [EaselBoard] = [], addToEasel: ((UUID?) -> Bool)? = nil) {
+                        boards: [EaselBoard] = [], addToEasel: (@MainActor (UUID?) async -> Bool)? = nil) {
         let controller = CapturePreviewController(image: image, png: png, boards: boards, addToEasel: addToEasel)
         window.beginSheet(controller.panel) { _ in _ = controller }
     }
 
-    init(image: NSImage, png: Data, boards: [EaselBoard], addToEasel: ((UUID?) -> Bool)?) {
+    init(image: NSImage, png: Data, boards: [EaselBoard], addToEasel: (@MainActor (UUID?) async -> Bool)?) {
         self.image = image
         self.png = png
         panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 640, height: 480),
@@ -329,7 +329,7 @@ import WebKit
             copy: { [weak self] in self?.copy() }, save: { [weak self] in self?.save() },
             share: { [weak self] in self?.share() }, close: { [weak self] in self?.close() },
             boards: boards, addToEasel: addToEasel.map { add in { [weak self] id in
-                if add(id) { self?.close() }
+                Task { @MainActor in if await add(id) { self?.close() } }
             } }))
     }
 

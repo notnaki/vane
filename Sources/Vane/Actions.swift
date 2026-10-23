@@ -155,7 +155,10 @@ extension PaletteCommand {
                 PaletteCommand(.closeTab, icon: "archivebox"),
                 PaletteCommand("Duplicate Easel", icon: "plus.square.on.square") {
                     guard let session = tab.easelSession, let board = session.board else { return }
-                    session.perform { store.openEasel(try session.repository.importBoard(JSONEncoder().encode(board)).id) }
+                    session.performAsync {
+                        let bytes = try await Task.detached { try JSONEncoder().encode(board) }.value
+                        _ = await store.openEaselAsync(try await session.repository.importBoardAsync(bytes).id)
+                    }
                 },
             ]
         }
@@ -220,7 +223,7 @@ extension PaletteCommand {
                     out.append(PaletteCommand("Move Tab to \(space.name)",
                                               icon: space.icon ?? "square.on.square",
                                               id: "moveToSpace:" + space.id.uuidString) {
-                        Spaces.move(tab.id, to: space.id, as: .today, from: store)
+                        Task { await Spaces.moveAsync(tab.id, to: space.id, as: .today, from: store) }
                     })
                 }
             }

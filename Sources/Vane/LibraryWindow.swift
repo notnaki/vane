@@ -551,6 +551,76 @@ extension Library {
         // Every window of the profile draws these columns, and `spaces` is a file read.
         for store in TabStore.all where store.profileID == profile { store.spacesChanged() }
     }
+    private static var movingProfiles: Set<UUID> = []
+    private static var moveWaiters: [CheckedContinuation<Void, Never>] = []
+    static func waitForMoves() async {
+        while !movingProfiles.isEmpty { await withCheckedContinuation { moveWaiters.append($0) } }
+    }
+    /// UI transfers persist the destination before removing the source row. The synchronous
+    /// counterpart above remains available to offline layout checks.
+    static func moveAsync(_ url: URL, from source: UUID, to target: UUID,
+                          pinned: Bool, profile: UUID) async {
+        guard !AppLifecycle.shared.persistenceExitInProgress,
+              canMove(from: source, to: target, profile: profile), movingProfiles.insert(profile).inserted else { return }
+        defer {
+            movingProfiles.remove(profile)
+            if movingProfiles.isEmpty { let waiting = moveWaiters; moveWaiters = []; waiting.forEach { $0.resume() } }
+        }
+        let kind: TabKind = pinned ? .pinned : .today
+        if let live = owner(of: source), let tab = live.tabs.first(where: { $0.currentURL == url }) {
+            guard !live.isTabLocked(tab.id) else { return }
+            await Spaces.moveAsync(tab.id, to: target, as: kind, from: live)
+            return
+        }
+        await Suspension.SpaceState.prepare(profiles: [profile], in: Store.directory)
+        let manager = ProfileManager.shared
+        let original = manager.spaces(for: profile)
+        guard var from = original.first(where: { $0.id == source }),
+              var to = original.first(where: { $0.id == target }),
+              TabStore.savedShape(kind, space: source, profileID: profile)?
+                .lockedFolders(for: url.absoluteString, unlocked: []).isEmpty ?? true else { return }
+        var parked = Suspension.SpaceState.load(space: source, profileID: profile, in: Store.directory)
+        let carried = parked.removeValue(forKey: url.absoluteString)
+        let into = owner(of: target)
+        if let into {
+            into.newTab(url)
+            if pinned, let id = into.tabs.last?.id { into.move(id, to: .pinned) }
+            guard into.saveCurrentSpace(), await SessionPersistence.shared.flush() else {
+                Toasts.show("Could not save Space", in: into); return
+            }
+        } else {
+            let previousLanding = Suspension.SpaceState.load(space: target, profileID: profile, in: Store.directory)
+            var landing = previousLanding
+            if let carried { landing[url.absoluteString] = Parked(title: carried.title) }
+            guard await Suspension.SpaceState.saveAsync(landing, space: target, profileID: profile, in: Store.directory) else {
+                Toasts.show("Could not save Space"); return
+            }
+            // A live owner or another metadata edit supersedes this captured transfer.
+            guard manager.spaces(for: profile) == original, owner(of: target) == nil, owner(of: source) == nil else {
+                // Keep any newer sidecar publication. A title-only orphan row is safe;
+                // rolling back a captured document could overwrite a newer live edit.
+                Toasts.show("The Space changed during the move. Try again."); return
+            }
+            switch kind {
+            case .pinned: to.pinnedTabURLs = Spaces.appending(url, to: to.pinnedTabURLs ?? [])
+            default: to.tabURLs = Spaces.appending(url, to: to.tabURLs)
+            }
+            guard manager.updateSpace(to) else { return }
+        }
+        // The destination is durable. Re-resolve the source before removing anything,
+        // keeping a concurrently edited or newly opened source intact.
+        guard owner(of: source) == nil,
+              manager.spaces(for: profile).first(where: { $0.id == source }) == from else {
+            Toasts.show("The source Space changed during the move. Its original tab was kept."); return
+        }
+        from.tabURLs.removeAll { $0 == url }; from.pinnedTabURLs?.removeAll { $0 == url }
+        guard manager.updateSpace(from) else { return }
+        if !(await Suspension.SpaceState.saveAsync(parked, space: source, profileID: profile, in: Store.directory)) {
+            Toasts.show("The tab moved, but its old saved state could not be removed. Try saving again.")
+        }
+        for store in TabStore.all where store.profileID == profile { store.spacesChanged() }
+    }
+
 }
 
 /// The row being dragged between Space columns. `Dragging` carries a live `Tab.ID` and
@@ -1869,7 +1939,7 @@ private struct SpaceCard: View {
                 guard LibraryDragging.shared.url == url,
                       LibraryDragging.shared.from == from else { return }
                 LibraryDragging.shared.clear()
-                Library.move(url, from: from, to: target, pinned: pinned, profile: profile)
+                Task { @MainActor in await Library.moveAsync(url, from: from, to: target, pinned: pinned, profile: profile) }
                 axAnnounce("Moved to \(name).")
             }
         }
@@ -1963,8 +2033,9 @@ private struct PageRow: View {
             Menu("Move to Space") {
                 ForEach(ProfileManager.shared.spaces(for: space.profileID).filter { $0.id != space.id }) { other in
                     Button(other.name) {
-                        Library.move(url, from: space.id, to: other.id,
-                                     pinned: pinned, profile: space.profileID)
+                        Task { @MainActor in
+                            await Library.moveAsync(url, from: space.id, to: other.id, pinned: pinned, profile: space.profileID)
+                        }
                     }
                 }
             }

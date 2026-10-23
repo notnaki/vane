@@ -2,6 +2,18 @@ import Foundation
 
 /// Object geometry uses screen-space drag deltas, converted once to canvas points.
 @MainActor enum EaselItemLayout {
+    /// Apply just this gesture/editor's changed fields to the latest durable item.
+    /// An earlier queued edit may already have changed another field while IO ran.
+    static func merging(_ edited: EaselItem, from original: EaselItem, into current: EaselItem) -> EaselItem {
+        var result = current
+        func patch<Value: Equatable>(_ key: WritableKeyPath<EaselItem, Value>) {
+            if original[keyPath: key] != edited[keyPath: key] { result[keyPath: key] = edited[keyPath: key] }
+        }
+        patch(\.kind); patch(\.text); patch(\.source); patch(\.image); patch(\.points); patch(\.color)
+        patch(\.strokeWidth); patch(\.fillColor); patch(\.fontSize); patch(\.style)
+        patch(\.x); patch(\.y); patch(\.width); patch(\.height)
+        return result
+    }
     enum Corner: String, CaseIterable {
         case topLeading, topTrailing, bottomLeading, bottomTrailing
         var leading: Bool { self == .topLeading || self == .bottomLeading }

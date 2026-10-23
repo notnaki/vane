@@ -44,6 +44,10 @@ struct EaselLibraryEntry: Identifiable, Equatable {
         }
     }
 
+    func waitUntilReady() async {
+        for repository in repositories.values { await repository.waitUntilReady() }
+    }
+
     func repository(for profileID: UUID) -> EaselStore? { repositories[profileID] }
 
     /// Resolve the latest saved board through its owner, never the initiating window.
@@ -57,6 +61,11 @@ struct EaselLibraryEntry: Identifiable, Equatable {
     func delete(_ entry: EaselLibraryEntry) throws {
         _ = try board(for: entry)
         try repositories[entry.profileID]?.delete(entry.board.id)
+    }
+
+    func deleteAsync(_ entry: EaselLibraryEntry) async throws {
+        _ = try board(for: entry)
+        try await repositories[entry.profileID]?.deleteAsync(entry.board.id)
     }
 
     func retry(_ profileID: UUID) { repositories[profileID]?.reload() }

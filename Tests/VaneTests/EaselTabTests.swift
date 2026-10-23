@@ -3,7 +3,7 @@ import XCTest
 @testable import vane
 
 @MainActor final class EaselTabTests: XCTestCase {
-    func testProfileMoveCannotStrandLocalEaselBoards() throws {
+    func testProfileMoveCannotStrandLocalEaselBoards() async throws {
         TestEnvironment.prepare()
         let directory = Store.directory.appendingPathComponent("easel-profile-move-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -30,14 +30,14 @@ import XCTest
         XCTAssertNotNil(manager.moveSpace(space.id, from: source.id, to: destination.id), "Ordinary webpage Spaces can still move")
     }
 
-    func testRealSessionAndSpaceWritersPreserveEaselTabsFoldersAndSelection() throws {
+    func testRealSessionAndSpaceWritersPreserveEaselTabsFoldersAndSelection() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let profile = UUID()
         let space = Space(name: "Canvas", profileID: profile)
         XCTAssertTrue(ProfileManager.shared.saveSpaces([space], for: profile))
         let repository = EaselStore.shared(profileID: profile, directory: Store.directory)
-        let board = try repository.create(title: "Saved research")
+        let board = try await repository.createAsync(title: "Saved research")
         let address = EaselAddress.url(board.id)
         let store = TabStore(profileID: profile, space: space, session: [])
         defer {
@@ -82,14 +82,14 @@ import XCTest
         XCTAssertEqual(restored.pins.folder(holding: tab.id.uuidString)?.id, folder.id)
     }
 
-    func testEaselMovesToAnotherSpaceAndSurvivesStashedSpaceSave() throws {
+    func testEaselMovesToAnotherSpaceAndSurvivesStashedSpaceSave() async throws {
         TestEnvironment.prepare()
         let profile = UUID()
         let first = Space(name: "First", profileID: profile)
         let second = Space(name: "Second", profileID: profile)
         XCTAssertTrue(ProfileManager.shared.saveSpaces([first, second], for: profile))
         let repository = EaselStore.shared(profileID: profile, directory: Store.directory)
-        let board = try repository.create(title: "Move me")
+        let board = try await repository.createAsync(title: "Move me")
         let address = EaselAddress.url(board.id)
         let store = TabStore(profileID: profile, space: first, session: [])
         defer {
@@ -114,12 +114,12 @@ import XCTest
         XCTAssertEqual(Suspension.SpaceState.load(space: second.id, profileID: profile, in: Store.directory)[address.absoluteString]?.title, board.title)
     }
 
-    func testExplicitNavigationLeavesNativeCanvasAndCanReturnToItsPinnedHome() throws {
+    func testExplicitNavigationLeavesNativeCanvasAndCanReturnToItsPinnedHome() async throws {
         TestEnvironment.prepare()
         let profile = UUID()
         let repository = EaselStore.shared(profileID: profile, directory: Store.directory)
         defer { EaselStore.forget(profile, directory: Store.directory) }
-        let board = try repository.create()
+        let board = try await repository.createAsync()
         let tab = Tab(url: EaselAddress.url(board.id), profileID: profile)
         defer { tab.tearDown() }
         tab.kind = .pinned
@@ -131,12 +131,12 @@ import XCTest
         XCTAssertNil(tab.existingWeb)
     }
 
-    func testOpeningAndRestoringAnEaselKeepsNativeContentAndTheBoardAddress() throws {
+    func testOpeningAndRestoringAnEaselKeepsNativeContentAndTheBoardAddress() async throws {
         TestEnvironment.prepare()
         let profile = UUID()
         let repository = EaselStore.shared(profileID: profile, directory: Store.directory)
         defer { EaselStore.forget(profile, directory: Store.directory) }
-        let board = try repository.create(title: "Research board")
+        let board = try await repository.createAsync(title: "Research board")
         let address = URL(string: "vane://easel/\(board.id.uuidString)")!
         let tab = Tab(url: address, profileID: profile)
         defer { tab.tearDown() }
@@ -165,12 +165,12 @@ import XCTest
         let profile = UUID()
         let repository = EaselStore.shared(profileID: profile, directory: Store.directory)
         defer { EaselStore.forget(profile, directory: Store.directory) }
-        var board = try repository.create(title: "Before")
+        var board = try await repository.createAsync(title: "Before")
         let tab = Tab(url: URL(string: "vane://easel/\(board.id.uuidString)")!, profileID: profile)
         defer { tab.tearDown() }
         tab.kind = .pinned
         board.title = "After"
-        try repository.save(board)
+        try await repository.saveAsync(board)
         await Task.yield()
         XCTAssertEqual(tab.title, "After")
         XCTAssertEqual(TidyTitles.title(for: tab), "After")
@@ -199,12 +199,12 @@ import XCTest
         XCTAssertTrue(commands.contains(.showEasels))
     }
 
-    func testNativeCanvasIgnoresWebpageCommandsWithoutCreatingAWebView() throws {
+    func testNativeCanvasIgnoresWebpageCommandsWithoutCreatingAWebView() async throws {
         TestEnvironment.prepare()
         let profile = UUID()
         let repository = EaselStore.shared(profileID: profile, directory: Store.directory)
         defer { EaselStore.forget(profile, directory: Store.directory) }
-        let board = try repository.create()
+        let board = try await repository.createAsync()
         let store = TabStore(profileID: profile, session: [])
         defer {
             store.everyTab.forEach { $0.tearDown() }
@@ -244,14 +244,14 @@ import XCTest
         }
     }
 
-    func testBoardAddressResolvesOnlyInTheTabsProfile() throws {
+    func testBoardAddressResolvesOnlyInTheTabsProfile() async throws {
         TestEnvironment.prepare()
         let source = UUID(), neighbour = UUID()
         defer {
             EaselStore.forget(source, directory: Store.directory)
             EaselStore.forget(neighbour, directory: Store.directory)
         }
-        let board = try EaselStore.shared(profileID: source, directory: Store.directory).create(title: "Private research")
+        let board = try await EaselStore.shared(profileID: source, directory: Store.directory).createAsync(title: "Private research")
         let tab = Tab(url: EaselAddress.url(board.id), profileID: neighbour)
         defer { tab.tearDown() }
         XCTAssertNil(tab.easelSession?.board)
@@ -259,13 +259,13 @@ import XCTest
         XCTAssertNil(tab.existingWeb)
     }
 
-    func testCaptureSavesToChosenBoardWithSourceAndOpensItsNativeTab() throws {
+    func testCaptureSavesToChosenBoardWithSourceAndOpensItsNativeTab() async throws {
         TestEnvironment.prepare()
         let profile = UUID()
         let repository = EaselStore.shared(profileID: profile, directory: Store.directory)
         defer { EaselStore.forget(profile, directory: Store.directory) }
-        let first = try repository.create(title: "First")
-        let target = try repository.create(title: "Chosen")
+        let first = try await repository.createAsync(title: "First")
+        let target = try await repository.createAsync(title: "Chosen")
         let store = TabStore(profileID: profile, session: [])
         defer {
             store.everyTab.forEach { $0.tearDown() }
@@ -273,8 +273,9 @@ import XCTest
         }
         let image = NSImage(size: NSSize(width: 32, height: 32))
         image.lockFocus(); NSColor.blue.setFill(); NSRect(x: 0, y: 0, width: 32, height: 32).fill(); image.unlockFocus()
-        XCTAssertTrue(EaselWindow.addCapture(image, title: "A useful passage", source: "https://example.com/research",
-                                            to: target.id, in: store))
+        let captured = await EaselWindow.addCapture(image, title: "A useful passage", source: "https://example.com/research",
+                                                    to: target.id, in: store)
+        XCTAssertTrue(captured)
         XCTAssertTrue(repository.board(first.id)?.items.isEmpty == true)
         let item = try XCTUnwrap(repository.board(target.id)?.items.first)
         XCTAssertEqual(item.source, "https://example.com/research")
@@ -288,8 +289,9 @@ import XCTest
 
         let privateStore = TabStore(isPrivate: true, session: [])
         defer { TabStore.all.removeAll { $0 === privateStore } }
-        XCTAssertFalse(EaselWindow.addCapture(image, title: "Secret", source: "https://example.com/private",
-                                             to: target.id, in: privateStore))
+        let privateCapture = await EaselWindow.addCapture(image, title: "Secret", source: "https://example.com/private",
+                                                         to: target.id, in: privateStore)
+        XCTAssertFalse(privateCapture)
         XCTAssertTrue(privateStore.tabs.isEmpty)
         XCTAssertEqual(repository.board(target.id)?.items.count, 1)
     }

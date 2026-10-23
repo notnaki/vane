@@ -729,12 +729,14 @@ private struct ProfilesPane: View {
         guard confirm("Delete the profile “\(victim.name)”?", "Delete",
                       "Its history, bookmarks, saved passwords, cookies and extensions are "
                       + "deleted with it. This cannot be undone.") else { return }
-        if manager.delete(victim.id) {
-            selected = manager.active.id
-            _ = Windows.switchTo(profile: manager.active)
-            rebuild()
-        } else {
-            Toasts.show("Couldn’t delete profile. Its data was kept.")
+        Task { @MainActor in
+            if await manager.deleteAsync(victim.id) {
+                selected = manager.active.id
+                _ = Windows.switchTo(profile: manager.active)
+                rebuild()
+            } else {
+                Toasts.show("Couldn’t delete profile. Its data was kept.")
+            }
         }
     }
 
@@ -773,8 +775,10 @@ private struct ProfilesPane: View {
                         // The sidebar's own Delete Space, minus the alert: the pages go to
                         // the Archive and the folder shape is forgotten. This used to call
                         // `deleteSpace` bare, which dropped both.
-                        Spaces.delete(space.id, in: profile.id)
-                        reload(); rebuild()
+                        Task { @MainActor in
+                            _ = await Spaces.deleteAsync(space.id, in: profile.id)
+                            reload(); rebuild()
+                        }
                     } label: { Image(systemName: "minus.circle") }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
                         .accessibilityLabel("Delete the space \(space.name)")

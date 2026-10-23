@@ -2565,7 +2565,7 @@ private struct SpaceMenu: View {
         Button("Edit Theme Color…") { open($theme) }
         Menu("Set Profile") {
             ForEach(ProfileManager.shared.profiles) { profile in
-                Button { moveSpace(space, to: profile, from: store) } label: {
+                Button { Task { @MainActor in await moveSpaceAsync(space, to: profile, from: store) } } label: {
                     if profile.id == space.profileID {
                         Label(profile.name, systemImage: "checkmark")
                     } else {
@@ -2643,7 +2643,7 @@ private struct SpaceMenu: View {
     a.addButton(withTitle: "Delete")
     a.buttons.last?.hasDestructiveAction = true
     guard a.runModal() == .alertSecondButtonReturn else { return }
-    _ = deleteSpaceConfirmed(space, in: store)
+    Task { @MainActor in _ = await deleteSpaceConfirmedAsync(space, in: store) }
 }
 
 /// The destructive half of Delete Space, separate from the alert so the browser smoke can
@@ -2674,6 +2674,32 @@ private struct SpaceMenu: View {
     return true
 }
 
+@discardableResult
+@MainActor func deleteSpaceConfirmedAsync(_ space: Space, in store: TabStore) async -> Bool {
+    let owners = storesShowing(space)
+    guard await saveSpacesAsync(in: owners, reportingIn: store) else { return false }
+    // A hidden Space can still navigate in a stash. Archive its live snapshot when no
+    // store is showing it, before deletion releases the stash.
+    if owners.isEmpty {
+        for owner in TabStore.all where owner.profileID == space.profileID {
+            if await owner.saveStashedSpaceAsync(space.id) { continue }
+            Toasts.show("Could not save Space", in: store)
+            return false
+        }
+    }
+    // Closed profiles are skipped by Session.save. Remove the old row before archiving
+    // its tabs, so a later restore cannot reopen them inside a surviving Space.
+    guard await Session.forgetAsync(space: space.id, in: space.profileID) else {
+        Toasts.show("Could not save session", in: store)
+        return false
+    }
+    guard await Spaces.deleteAsync(space.id, in: space.profileID) else { return false }
+    // `Spaces.delete` has already walked every owner, including parked stores, into a survivor.
+    store.spacesChanged()                  // the strip is a dot shorter
+    rebuild()
+    return true
+}
+
 @MainActor private func storesShowing(_ space: Space) -> [TabStore] {
     TabStore.all.filter { !$0.isPrivate && !$0.isLittle && $0.currentSpaceID == space.id }
 }
@@ -2682,6 +2708,14 @@ private struct SpaceMenu: View {
     for owner in owners where !owner.saveCurrentSpace() {
         Toasts.show("Could not save Space", in: store)
         return false
+    }
+    return true
+}
+
+@MainActor private func saveSpacesAsync(in owners: [TabStore], reportingIn store: TabStore) async -> Bool {
+    guard saveSpaces(in: owners, reportingIn: store) else { return false }
+    guard await SessionPersistence.shared.flush() else {
+        Toasts.show("Could not save Space", in: store); return false
     }
     return true
 }
@@ -2717,6 +2751,50 @@ private struct SpaceMenu: View {
         return
     }
     guard let moved = ProfileManager.shared.moveSpace(space.id, from: space.profileID,
+                                                      to: profile.id) else {
+        Toasts.show("Could not move Space", in: store)
+        return
+    }
+    // Out of the Space *before* it changes profile, so this store leaves it the way it leaves
+    // any Space that has gone from under it — pages down, nothing stashed — rather than being
+    // parked still claiming to be in one its own profile no longer owns.
+    for owner in owners { owner.resolveStaleSpace(); owner.spacesChanged() }
+    store.spacesChanged()
+    if showing { store.switchTo(space: moved) }       // which hops the window to `profile`
+    rebuild()
+    // The crash snapshot may still name the moved Space and carry its tabs under the source
+    // profile. Rewrite both profiles now; waiting for the 30-second timer can resurrect a
+    // duplicate in the source if Vane exits before then.
+    if !Session.save() { Toasts.show("Could not save session", in: store) }
+}
+
+@MainActor func moveSpaceAsync(_ space: Space, to profile: Profile, from store: TabStore) async {
+    guard profile.id != space.profileID else { return }
+    let showing = space.id == store.currentSpaceID
+    let owners = storesShowing(space)
+    guard await saveSpacesAsync(in: owners, reportingIn: store) else { return }
+    // A Space no window is showing may still be alive behind one. Its tabs can navigate
+    // there, after the disk snapshot made on the way out; save that live stash before the
+    // profile transfer drops it. A visible owner remains authoritative when both exist.
+    if owners.isEmpty {
+        for owner in TabStore.all where owner.profileID == space.profileID {
+            if await owner.saveStashedSpaceAsync(space.id) { continue }
+            Toasts.show("Could not save Space", in: store)
+            return
+        }
+    }
+    if let saved = ProfileManager.shared.spaces(for: space.profileID).first(where: { $0.id == space.id }),
+       ProfileManager.shared.spaceContainsEasels(saved) {
+        Toasts.show("Remove this Space’s Easel tabs before moving it to another profile. Its boards stay in Library.", in: store)
+        return
+    }
+    // Prune a prior crash snapshot before the source Space disappears. This also handles a
+    // profile with no open store, which Session.save() below deliberately does not rewrite.
+    guard await Session.forgetAsync(space: space.id, in: space.profileID) else {
+        Toasts.show("Could not save session", in: store)
+        return
+    }
+    guard let moved = await ProfileManager.shared.moveSpaceAsync(space.id, from: space.profileID,
                                                       to: profile.id) else {
         Toasts.show("Could not move Space", in: store)
         return

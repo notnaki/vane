@@ -16,13 +16,57 @@ import UniformTypeIdentifiers
     @discardableResult func perform(_ work: () throws -> Void) -> Bool {
         do { try work(); return true } catch { message = error.localizedDescription; return false }
     }
-    func create() { perform { selected = try repository.create().id } }
-    @discardableResult func edit(_ change: (inout EaselBoard) -> Void) -> Bool {
+    private var pending: Task<Void, Never>?
+    /// Queue user intents, then derive each edit from the last durable board. A failed
+    /// operation leaves the board and its undo stacks intact and reports the error.
+    @discardableResult func performAsync(_ work: @escaping @MainActor () async throws -> Void) -> Bool {
+        guard EaselStore.admittedIntent || !AppLifecycle.shared.persistenceExitInProgress else {
+            message = EaselStore.Failure.exiting.localizedDescription; return false
+        }
+        let previous = pending, intentID = UUID()
+        pending = Task { @MainActor [self] in
+            if let previous { await previous.value }
+            defer { repository.finishIntent(intentID) }
+            do { try await EaselStore.$admittedIntent.withValue(true) { try await work() } } catch { message = error.localizedDescription }
+        }
+        if let pending { repository.trackIntent(pending, id: intentID) }
+        return true
+    }
+    func waitForEdits() async { if let pending { await pending.value } }
+    func create() {
+        if repository.background { performAsync { [self] in selected = try await repository.createAsync().id } }
+        else { perform { selected = try repository.create().id } }
+    }
+    @discardableResult func edit(_ change: @escaping (inout EaselBoard) -> Void) -> Bool {
+        if repository.background {
+            guard selected != nil else { return false }
+            return performAsync { [self] in
+                guard var board else { throw EaselStore.Failure.missing }
+                change(&board)
+                try await repository.saveAsync(board)
+                pruneLiveItems()
+            }
+        }
         guard var board else { return false }
         change(&board)
         let saved = perform { try repository.save(board) }
         if saved { pruneLiveItems() }
         return saved
+    }
+    /// Editors await durability so a failed save keeps their draft on screen.
+    func editPersisted(_ change: @escaping (inout EaselBoard) -> Void) async -> Bool {
+        if !repository.background { return edit(change) }
+        return await withCheckedContinuation { result in
+            let accepted = performAsync { [self] in
+                do {
+                    guard var board else { throw EaselStore.Failure.missing }
+                    change(&board)
+                    try await repository.saveAsync(board)
+                    pruneLiveItems(); result.resume(returning: true)
+                } catch { message = error.localizedDescription; result.resume(returning: false) }
+            }
+            if !accepted { result.resume(returning: false) }
+        }
     }
     func placed(_ item: EaselItem, in board: EaselBoard) -> EaselItem {
         guard ![.drawing, .text, .ellipse, .rectangle, .diamond, .arrow, .line].contains(item.kind) else { return item }
@@ -32,7 +76,7 @@ import UniformTypeIdentifiers
         item.y = min(max(0, insertionPoint.y + stagger), EaselStore.canvasHeight - item.height)
         return item
     }
-    @discardableResult func add(_ item: EaselItem) -> Bool { edit { $0.items.append(placed(item, in: $0)) } }
+    @discardableResult func add(_ item: EaselItem) -> Bool { edit { [self] in $0.items.append(placed(item, in: $0)) } }
     func pruneLiveItems() {
         liveItems.formIntersection(Set((board?.items ?? []).filter { $0.kind == .image && EaselItem.webURL($0.source) != nil }.map(\.id)))
     }
@@ -49,8 +93,14 @@ import UniformTypeIdentifiers
         liveItems.remove(id)
         return true
     }
-    func undo() { if let selected { perform { try repository.undo(selected) }; pruneLiveItems() } }
-    func redo() { if let selected { perform { try repository.redo(selected) }; pruneLiveItems() } }
+    func undo() { if let selected {
+        if repository.background { performAsync { [self] in try await repository.undoAsync(selected); pruneLiveItems() } }
+        else { perform { try repository.undo(selected) }; pruneLiveItems() }
+    } }
+    func redo() { if let selected {
+        if repository.background { performAsync { [self] in try await repository.redoAsync(selected); pruneLiveItems() } }
+        else { perform { try repository.redo(selected) }; pruneLiveItems() }
+    } }
     func paste() {
         let clipboard = NSPasteboard.general
         if let image = NSImage(pasteboard: clipboard) {
@@ -67,10 +117,10 @@ import UniformTypeIdentifiers
     private static var capturing: Set<UUID> = []
 
     @discardableResult static func show(profileID: UUID, boardID: UUID? = nil, create: Bool = false,
-                                       in origin: TabStore? = nil) -> EaselSession? {
+                                       in origin: TabStore? = nil) async -> EaselSession? {
         guard let store = origin ?? BookmarkManager.browserWindow(for: profileID),
               store.profileID == profileID, !store.isPrivate, !store.isLittle,
-              let tab = store.openEasel(boardID, create: create) else { return nil }
+              let tab = await store.openEaselAsync(boardID, create: create) else { return nil }
         store.window?.makeKeyAndOrderFront(nil)
         return tab.easelSession
     }
@@ -95,19 +145,20 @@ import UniformTypeIdentifiers
 
     /// Save first, then reveal the board. The capture preview chooses its destination.
     @discardableResult static func addCapture(_ image: NSImage, title: String, source: String,
-                                             to boardID: UUID?, in store: TabStore) -> Bool {
+                                             to boardID: UUID?, in store: TabStore) async -> Bool {
         guard !store.isPrivate, !store.isLittle, EaselItem.webURL(source) != nil else { return false }
         let repository = EaselStore.shared(profileID: store.profileID, directory: Store.directory)
         do {
+            await repository.waitUntilReady()
             let item = try imageItem(image, title: title, source: source)
             var board: EaselBoard
             if let boardID {
                 guard let existing = repository.board(boardID) else { throw EaselStore.Failure.missing }
                 board = existing
-            } else { board = try repository.create() }
+            } else { board = try await repository.createAsync() }
             let session = store.tabs.first { $0.easelID == board.id }?.easelSession ?? EaselSession(repository)
             board.items.append(session.placed(item, in: board))
-            try repository.save(board)
+            try await repository.saveAsync(board)
             guard let tab = store.openEasel(board.id) else { return false }
             tab.easelSession?.requestedImage = item.id
             return true
@@ -137,7 +188,7 @@ import UniformTypeIdentifiers
                 // A navigation while WebKit was capturing must not label another page's pixels.
                 guard web.url == source else { Toasts.show("The page changed during capture. Try again."); return }
                 guard let image else { Toasts.show(error?.localizedDescription ?? "The page could not be captured."); return }
-                addCapture(image, title: title, source: source.absoluteString, to: targetID, in: store)
+                await addCapture(image, title: title, source: source.absoluteString, to: targetID, in: store)
             }
         }
     }
@@ -207,7 +258,9 @@ struct EaselWorkspace: View {
     }
     var body: some View {
         Group {
-            if let board = session.board {
+            if repository.loading {
+                ProgressView("Loading Easel…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let board = session.board {
                 EaselEditor(session: session, repository: repository, boardID: board.id,
                             openBoard: { browser.openEasel($0) }).id(board.id)
             } else {
@@ -337,8 +390,12 @@ private struct EaselEditor: View {
         }
         .sheet(item: $editing) { item in
             EaselItemEditor(item: item) { updated in
-                if board.items.contains(where: { $0.id == updated.id }) { return changeItem(updated) }
-                let saved = session.add(updated)
+                let saved = await session.editPersisted { board in
+                    if let index = board.items.firstIndex(where: { $0.id == updated.id }) {
+                        board.items[index] = EaselItemLayout.merging(updated, from: item, into: board.items[index])
+                    }
+                    else { board.items.append(session.placed(updated, in: board)) }
+                }
                 if saved { selected = updated.id }
                 return saved
             }
@@ -365,7 +422,11 @@ private struct EaselEditor: View {
                 Button("Paste") { paste() }
                 Divider()
                 Button("Duplicate Easel") {
-                    session.perform { openBoard(try repository.importBoard(JSONEncoder().encode(board)).id) }
+                    session.performAsync {
+                        let snapshot = board
+                        let data = try await Task.detached { try JSONEncoder().encode(snapshot) }.value
+                        openBoard(try await repository.importBoardAsync(data).id)
+                    }
                 }
                 Button("Export PNG…") { exportPNG() }
                 Button("Export Editable Easel…") { exportBoard() }
@@ -465,7 +526,11 @@ private struct EaselEditor: View {
             let step = press.modifiers.contains(.shift) ? 10.0 : 1.0
             let dx = press.key == .leftArrow ? -step : press.key == .rightArrow ? step : 0
             let dy = press.key == .upArrow ? -step : press.key == .downArrow ? step : 0
-            _ = changeItem(EaselItemLayout.moved(item, translation: CGSize(width: dx, height: dy), zoom: 1)); return .handled
+            _ = session.edit { board in
+                guard let index = board.items.firstIndex(where: { $0.id == item.id }) else { return }
+                board.items[index] = EaselItemLayout.moved(board.items[index], translation: CGSize(width: dx, height: dy), zoom: 1)
+            }
+            return .handled
         }
         switch press.characters.lowercased() {
         case "1", "v": selectTool()
@@ -509,8 +574,11 @@ private struct EaselEditor: View {
             .accessibilityAddTraits(active ? [.isSelected] : [])
     }
     @discardableResult private func changeItem(_ item: EaselItem) -> Bool {
-        session.edit { board in
-            if let index = board.items.firstIndex(where: { $0.id == item.id }) { board.items[index] = item }
+        guard let original = board.items.first(where: { $0.id == item.id }) else { return false }
+        return session.edit { board in
+            if let index = board.items.firstIndex(where: { $0.id == item.id }) {
+                board.items[index] = EaselItemLayout.merging(item, from: original, into: board.items[index])
+            }
         }
     }
     private func deleteItem() {
@@ -541,7 +609,10 @@ private struct EaselEditor: View {
     private func exportBoard() {
         let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "Easel.json"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        session.perform { try JSONEncoder().encode(board).write(to: url, options: .atomic) }
+        let snapshot = board
+        session.performAsync {
+            try await Task.detached { try JSONEncoder().encode(snapshot).write(to: url, options: .atomic) }.value
+        }
     }
     private func exportPNG() {
         let panel = NSSavePanel(); panel.allowedContentTypes = [.png]; panel.nameFieldStringValue = "Easel.png"
@@ -553,7 +624,7 @@ private struct EaselEditor: View {
         alert.informativeText = "Its notes, drawings, and images will be removed. Export a copy first if you want to keep it."
         alert.addButton(withTitle: "Delete"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        session.perform { try repository.delete(boardID) }
+        session.performAsync { try await repository.deleteAsync(boardID) }
     }
 }
 
@@ -873,10 +944,11 @@ struct EaselStroke: View {
 
 private struct EaselItemEditor: View {
     @State var item: EaselItem
-    let save: (EaselItem) -> Bool
+    let save: @MainActor (EaselItem) async -> Bool
     @Environment(\.dismiss) private var dismiss
     @State private var invalid = false
     @State private var saveFailed = false
+    @State private var saving = false
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(item.kind == .note ? "Write a note" : "Edit item").font(.title2.weight(.semibold))
@@ -900,8 +972,12 @@ private struct EaselItemEditor: View {
                 Button("Save") {
                     item.source = item.source.trimmingCharacters(in: .whitespacesAndNewlines)
                     if (item.kind == .link || !item.source.isEmpty) && EaselItem.webURL(item.source) == nil { invalid = true; return }
-                    if save(item) { dismiss() } else { saveFailed = true }
-                }.keyboardShortcut(.defaultAction)
+                    saving = true
+                    Task { @MainActor in
+                        if await save(item) { dismiss() } else { saveFailed = true }
+                        saving = false
+                    }
+                }.keyboardShortcut(.defaultAction).disabled(saving)
             }
         }.padding(24).frame(width: 430)
     }
@@ -922,7 +998,7 @@ struct EaselsPane: View {
             creationRepository: repository,
             showProfiles: false,
             open: { store.openEasel($0.board.id) },
-            delete: { try repository.delete($0.board.id) },
+            delete: { try await repository.deleteAsync($0.board.id) },
             retry: { _ in repository.reload() }
         )
     }
@@ -940,7 +1016,7 @@ struct GlobalEaselsPane: View {
             creationRepository: EaselStore.shared(profileID: store.profileID, directory: Store.directory),
             showProfiles: true,
             open: open,
-            delete: { try collection.delete($0) },
+            delete: { try await collection.deleteAsync($0) },
             retry: { collection.retry($0) }
         )
     }
@@ -949,9 +1025,11 @@ struct GlobalEaselsPane: View {
         guard let profile = ProfileManager.shared.profiles.first(where: { $0.id == entry.profileID }),
               (try? collection.board(for: entry)) != nil else { return }
         let target = store.profileID == profile.id ? store : Windows.switchTo(profile: profile)
-        guard target.openEasel(entry.board.id) != nil else { return }
-        Library.close(store)
-        if target !== store { Library.close(target) }
+        Task { @MainActor in
+            guard await target.openEaselAsync(entry.board.id) != nil else { return }
+            Library.close(store)
+            if target !== store { Library.close(target) }
+        }
     }
 }
 
@@ -962,7 +1040,7 @@ private struct EaselLibraryContent: View {
     let creationRepository: EaselStore
     let showProfiles: Bool
     let open: (EaselLibraryEntry) -> Void
-    let delete: (EaselLibraryEntry) throws -> Void
+    let delete: @MainActor (EaselLibraryEntry) async throws -> Void
     let retry: (UUID) -> Void
     @ObservedObject private var library = Library.shared
     @FocusState private var searchFocused: Bool
@@ -1017,9 +1095,11 @@ private struct EaselLibraryContent: View {
                 Button("Cancel", role: .cancel) { deleting = nil }
                 Button("Delete", role: .destructive) {
                     guard let entry = deleting else { return }
-                    do { try Motion.list { try delete(entry) } }
-                    catch { deletionError = error.localizedDescription }
-                    deleting = nil
+                    Task { @MainActor in
+                        do { try await delete(entry) }
+                        catch { deletionError = error.localizedDescription }
+                        deleting = nil
+                    }
                 }
             } message: {
                 Text("“\(deleting?.board.title ?? "Untitled Easel")”\(showProfiles ? " in \(deleting?.profileName ?? "this profile")" : "") and all its content will be deleted from this Mac. This cannot be undone.")
@@ -1040,13 +1120,18 @@ private struct EaselLibraryContent: View {
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        do {
-            guard try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 <= EaselStore.fileLimit else {
-                throw EaselStore.Failure.tooLarge
-            }
-            store.openEasel(try creationRepository.importBoard(Data(contentsOf: url)).id)
-        } catch { Toasts.show(error.localizedDescription) }
+        Task { @MainActor in
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let bytes = try await Task.detached {
+                    guard try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 <= EaselStore.fileLimit else {
+                        throw EaselStore.Failure.tooLarge
+                    }
+                    return try Data(contentsOf: url)
+                }.value
+                store.openEasel(try await creationRepository.importBoardAsync(bytes).id)
+            } catch { Toasts.show(error.localizedDescription) }
+        }
     }
 }
 

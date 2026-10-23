@@ -2,12 +2,12 @@ import AppKit
 import CoreText
 import SwiftUI
 
-struct EaselObjectStyle: Codable, Equatable {
-    enum FontFamily: String, Codable, CaseIterable { case handwritten, normal, code }
-    enum TextAlignment: String, Codable, CaseIterable { case left, center, right }
-    enum Stroke: String, Codable, CaseIterable { case solid, dashed, dotted }
-    enum Fill: String, Codable, CaseIterable { case solid, hachure, crosshatch }
-    enum Edges: String, Codable, CaseIterable { case sharp, round }
+struct EaselObjectStyle: Codable, Equatable, Sendable {
+    enum FontFamily: String, Codable, CaseIterable, Sendable { case handwritten, normal, code }
+    enum TextAlignment: String, Codable, CaseIterable, Sendable { case left, center, right }
+    enum Stroke: String, Codable, CaseIterable, Sendable { case solid, dashed, dotted }
+    enum Fill: String, Codable, CaseIterable, Sendable { case solid, hachure, crosshatch }
+    enum Edges: String, Codable, CaseIterable, Sendable { case sharp, round }
     var fontFamily = FontFamily.normal
     var textAlignment = TextAlignment.left
     var stroke = Stroke.solid

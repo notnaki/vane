@@ -728,6 +728,65 @@ struct Space: Identifiable, Codable, Equatable {
         return true
     }
 
+    /// Deletes the profile and everything that belongs to it. Refuses to delete the last
+    /// one — a browser with no profile has nowhere to put a tab.
+    @discardableResult
+    func deleteAsync(_ id: UUID) async -> Bool {
+        guard !AppLifecycle.shared.persistenceExitInProgress else { return false }
+        activeTransactions += 1; defer { finishTransaction() }
+        guard profiles.count > 1, let i = profiles.firstIndex(where: { $0.id == id }) else { return false }
+        var remaining = profiles
+        remaining.remove(at: i)
+        let nextActiveID = activeID == id ? remaining[0].id : activeID
+        guard persist(Disk(profiles: remaining, activeID: nextActiveID), deleting: true) else { return false }
+        profiles = remaining
+        activeID = nextActiveID
+        // Invalidate documents before yielding to credential/database workers. A stale
+        // window must not enqueue new content for a profile already absent on disk.
+        EaselStore.forget(id, directory: directory)
+        do { try ReadingQueueStore.forget(profileID: id, directory: directory) }
+        catch { Toasts.show("Could not remove offline articles: \(error.localizedDescription)") }
+        Tab.discardPreparedFirstPage(for: id)
+        FavouritePreviews.shared.forget(profileID: id)
+
+        if !sandboxed {
+            // Close the sqlite connection and drop the cached objects before the files go.
+            await Store.forgetAsync(id)
+            Favicons.forget(id)
+            ExtensionHost.forget(id)
+            do { try ExtensionCodeStore.removeProfile(id, directory: directory) }
+            catch { NSLog("[vane] Could not remove deleted profile extension code: %@", error.localizedDescription) }
+            _ = try? await Passwords.perform { Passwords.deleteAll(profileID: id) }
+            SitePermissions.resetAll(profileID: id)
+            for key in ["pinnedTabs", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,
+                        ExtensionHost.identifiersKey, ExtensionHost.namesKey, ExtensionHost.disabledKey, ExtensionHost.bookmarksKey, ExtensionConsent.baseKey,
+                        HTTPSOnly.exceptionsKey] {
+                UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
+            }
+            _ = ScopedPaths.replace(nil, at: DownloadLocation.directoryKey(id))
+            UserDefaults.vane.removeObject(forKey: DownloadLocation.pendingDirectoryKey(id))
+            UserDefaults.vane.removeObject(forKey: DownloadLocation.askKey(id))
+            Self.eraseWebsiteData(for: id)
+        }
+
+        let fm = FileManager.default
+        let db = Self.dbURL(for: id, in: directory).path
+        for path in [db, db + "-wal", db + "-shm"] { try? fm.removeItem(atPath: path) }
+        RecoverySnapshots.forget(profileID: id, in: directory)
+        Downloads.forget(id, in: directory)
+        await EaselStore.waitForRetirement(profileID: id, directory: directory)
+        if !sandboxed { EaselWindow.forget(id) }
+        TidyTitles.forget(id)
+        Zoom.forget(profile: id)
+        SiteBoosts.forget(profile: id)
+        CertificateTrust.forget(profile: id)
+        ExternalApps.forgetAll(profileID: id)
+        try? fm.removeItem(at: WorkspaceTemplates.url(profile: id, directory: directory))
+        try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
+        try? fm.removeItem(at: Self.faviconDir(for: id, in: directory))
+        return true
+    }
+
     /// Cookies, localStorage, IndexedDB, caches — everything WebKit keeps for a profile.
     ///
     /// Two things the original one-liner got wrong, both found by running the deletion path
@@ -1042,6 +1101,7 @@ struct Space: Identifiable, Codable, Equatable {
     @discardableResult
     func moveSpace(_ id: UUID, from source: UUID, to destination: UUID,
                    defaults: UserDefaults = .vane) -> Space? {
+        guard !movingSpace else { return nil }
         let sourceSpaces = spaces(for: source)
         guard source != destination,
               profiles.contains(where: { $0.id == destination }),
@@ -1072,6 +1132,65 @@ struct Space: Identifiable, Codable, Equatable {
             defaults.removeObject(forKey: old)
         }
         _ = Suspension.SpaceState.remove(space: id, profileID: source, in: directory)
+        TabStore.forgetStashes(space: id, profileID: source)
+        return moved
+    }
+
+    private var activeTransactions = 0
+    private var transactionWaiters: [CheckedContinuation<Void, Never>] = []
+    private func finishTransaction() {
+        activeTransactions -= 1
+        guard activeTransactions == 0 else { return }
+        let waiting = transactionWaiters; transactionWaiters = []; waiting.forEach { $0.resume() }
+    }
+    func waitForTransactions() async {
+        while activeTransactions > 0 { await withCheckedContinuation { transactionWaiters.append($0) } }
+    }
+    private var movingSpace = false
+    @discardableResult
+    func moveSpaceAsync(_ id: UUID, from source: UUID, to destination: UUID,
+                   defaults: UserDefaults = .vane) async -> Space? {
+        guard !movingSpace, !AppLifecycle.shared.persistenceExitInProgress else { return nil }
+        activeTransactions += 1; defer { finishTransaction() }
+        movingSpace = true; defer { movingSpace = false }
+        await Suspension.SpaceState.prepare(profiles: [source, destination], in: directory)
+        let sourceSpaces = spaces(for: source)
+        guard source != destination,
+              profiles.contains(where: { $0.id == destination }),
+              let original = sourceSpaces.first(where: { $0.id == id }),
+              !spaceContainsEasels(original) else { return nil }
+        let destinationSpaces = spaces(for: destination)
+        guard !destinationSpaces.contains(where: { $0.id == id }) else { return nil }
+
+        let state = Suspension.SpaceState.load(space: id, profileID: source, in: directory)
+        guard await Suspension.SpaceState.saveAsync(state, space: id, profileID: destination,
+                                         in: directory) else { return nil }
+        // Recheck both inventories after IO before publishing either list. Another
+        // window may have edited a Space or deleted a profile while this task yielded.
+        guard profiles.contains(where: { $0.id == source }), profiles.contains(where: { $0.id == destination }),
+              spaces(for: source) == sourceSpaces, spaces(for: destination) == destinationSpaces else {
+            _ = await Suspension.SpaceState.removeAsync(space: id, profileID: destination, in: directory)
+            return nil
+        }
+        var moved = original
+        moved.profileID = destination
+        guard saveSpaces(destinationSpaces + [moved], for: destination) else {
+            await Suspension.SpaceState.removeAsync(space: id, profileID: destination, in: directory)
+            return nil
+        }
+        guard saveSpaces(sourceSpaces.filter { $0.id != id }, for: source) else {
+            _ = saveSpaces(destinationSpaces, for: destination)
+            await Suspension.SpaceState.removeAsync(space: id, profileID: destination, in: directory)
+            return nil
+        }
+        for kind in [TabKind.pinned, .today] {
+            let old = TabStore.shapeKey(kind, space: id, profileID: source)
+            let new = TabStore.shapeKey(kind, space: id, profileID: destination)
+            if let shape = defaults.data(forKey: old) { defaults.set(shape, forKey: new) }
+            else { defaults.removeObject(forKey: new) }
+            defaults.removeObject(forKey: old)
+        }
+        _ = await Suspension.SpaceState.removeAsync(space: id, profileID: source, in: directory)
         TabStore.forgetStashes(space: id, profileID: source)
         return moved
     }

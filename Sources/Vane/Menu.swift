@@ -359,11 +359,13 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         alert.addButton(withTitle: "Delete")
         alert.buttons.last?.hasDestructiveAction = true
         if alert.runModal() == .alertSecondButtonReturn {
-            if manager.delete(active.id) {
-                _ = Windows.switchTo(profile: manager.active)
-                rebuild()
-            } else {
-                Toasts.show("Couldn’t delete profile. Its data was kept.")
+            Task { @MainActor in
+                if await manager.deleteAsync(active.id) {
+                    _ = Windows.switchTo(profile: manager.active)
+                    rebuild()
+                } else {
+                    Toasts.show("Couldn’t delete profile. Its data was kept.")
+                }
             }
         }
     }

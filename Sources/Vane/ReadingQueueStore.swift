@@ -20,7 +20,8 @@ private struct ReadingQueueScan: Sendable {
         let store = try ReadingQueueStore(profileID: profileID, directory: directory)
         stores[key] = store; return store
     }
-    static func forget(profileID: UUID, directory: URL) throws {
+    static func forget(profileID: UUID, directory: URL,
+                       cleanup: @escaping @Sendable (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) throws {
         guard profileID != Profile.incognito.id else { return }
         let key = ReadingQueueFiles.profileURL(profileID, in: directory).standardizedFileURL
         if let store = stores.removeValue(forKey: key) {
@@ -28,12 +29,39 @@ private struct ReadingQueueScan: Sendable {
         }
         SavedReaderWindow.forget(profileID: profileID)
         try ReadingQueueFiles.checkRoot(directory)
-        if ReadingQueueFiles.exists(key) { try ReadingQueueFiles.check(key, directory: true); try FileManager.default.removeItem(at: key) }
         let stagingRoot = ReadingQueueFiles.root(in: directory).appendingPathComponent(".staging")
         try ReadingQueueFiles.check(stagingRoot, directory: true, mayBeMissing: true)
         let pending = stagingRoot.appendingPathComponent(profileID.uuidString.lowercased())
-        if ReadingQueueFiles.exists(pending) { try ReadingQueueFiles.check(pending, directory: true); try FileManager.default.removeItem(at: pending) }
+        // Rename the two owned roots out of the profile namespace before returning.
+        // Recursive deletion can then take arbitrarily long without holding the UI or
+        // racing a newly created queue with the same profile identity.
+        var retired: [URL] = []
+        for source in [key, pending] where ReadingQueueFiles.exists(source) {
+            try ReadingQueueFiles.check(source, directory: true)
+            try ReadingQueueFiles.ensureDirectory(stagingRoot)
+            let trash = stagingRoot.appendingPathComponent(".deleted-" + UUID().uuidString.lowercased())
+            try FileManager.default.moveItem(at: source, to: trash)
+            retired.append(trash)
+        }
+        guard !retired.isEmpty else { return }
+        let cleanupTask = Task.detached(priority: .utility) { () -> String? in
+            for trash in retired {
+                do { try cleanup(trash) }
+                catch { if ReadingQueueFiles.exists(trash) { return error.localizedDescription } }
+            }
+            return nil
+        }
+        cleanupTasks.append(cleanupTask)
+        Task { @MainActor in
+            if let failure = await cleanupTask.value { Toasts.show("Could not remove offline articles: \(failure)") }
+        }
     }
+    private static var cleanupTasks: [Task<String?, Never>] = []
+    static func waitForProfileCleanup() async {
+        let pending = cleanupTasks; cleanupTasks = []
+        for task in pending { _ = await task.value }
+    }
+
     let profileID: UUID
     let directory: URL
     @Published private(set) var articles: [ReadingArticle] = []
@@ -136,6 +164,15 @@ private struct ReadingQueueScan: Sendable {
         let stagingRoot = ReadingQueueFiles.root(in: directory).appendingPathComponent(".staging")
         if ReadingQueueFiles.exists(stagingRoot) {
             try ReadingQueueFiles.check(stagingRoot, directory: true)
+            for retired in try FileManager.default.contentsOfDirectory(at: stagingRoot, includingPropertiesForKeys: nil)
+                where retired.lastPathComponent.hasPrefix(".deleted-") {
+                try Task.checkCancellation()
+                // Removal only targets the entry itself; it never follows a link.
+                do { try FileManager.default.removeItem(at: retired) }
+                catch {
+                    if ReadingQueueFiles.exists(retired) { result.cleanupError = "Some removed files could not be cleaned up. Choose Retry. \(error.localizedDescription)" }
+                }
+            }
             let staging = stagingRoot.appendingPathComponent(profileID.uuidString.lowercased())
             if ReadingQueueFiles.exists(staging) {
                 try ReadingQueueFiles.check(staging, directory: true)
