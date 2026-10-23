@@ -1013,11 +1013,11 @@ private struct SpaceSwipe: ViewModifier {
     /// Anchor updates invalidate them when the live sidebar or its geometry changes.
     func schedulePreparation(in store: TabStore) {
         guard monitor != nil, self.store === store, !store.spaceSwiping, !landing,
-              !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+              store.palette == nil, !store.libraryOpen, store.librarySwipeProgress == nil else { return }
         invalidatePreparation()
         let work = DispatchWorkItem { [weak self, weak store] in
             guard let self, let store, self.monitor != nil, self.store === store,
-                  !store.spaceSwiping, !self.landing,
+                  !store.spaceSwiping, !self.landing, store.palette == nil,
                   !store.libraryOpen, store.librarySwipeProgress == nil else { return }
             self.discardStalePreparation()
             guard !Motion.spaceReduced,
@@ -1291,6 +1291,14 @@ private struct SpaceSwipe: ViewModifier {
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
         self.store = store
+        // Search owns the input/animation thread until its dismissal fade ends.
+        // Read the publisher's new value: @Published sends before the store changes.
+        preparationObservers.append(store.$palette.removeDuplicates().dropFirst().sink { [weak self] mode in
+            guard mode == nil, let self else { return }
+            let delay = Motion.reduced ? 0 : Look.appearDuration
+            self.preparationNotBefore = max(self.preparationNotBefore,
+                ProcessInfo.processInfo.systemUptime + delay)
+        })
         // Store collections and neighbouring Space metadata can change without updating
         // the geometry anchor. Read their completed state on the next main-loop turn.
         for publisher in [store.objectWillChange, store.spaceGesture.objectWillChange,

@@ -4,7 +4,7 @@ import SwiftUI
 /// How the tab list moves. A Today row fades out while its neighbours slide up into the
 /// gap, a new one grows in under New Tab, a pin lifts a row out
 /// of Today and settles it under the space's name, and Clear sweeps Today away a row at a
-/// time. All of that is one animation (`Look.list`) around every change to `TabStore.tabs`,
+/// time. Rearrangements use `Look.list`; closing uses the shorter `Look.tabClose`,
 /// plus the transitions below on the rows themselves.
 ///
 /// ponytail: `withAnimation` at the mutation, not `.animation(value:)` on the list. The

@@ -3219,7 +3219,7 @@ struct Stash {
                                         isPrivate: isPrivate) { ClosedTabs.push(tab.currentURL) }
             SharedTabs.remove(id, from: self)
             tab.tearDown()
-            Motion.list { _ = tabs.remove(at: i) }
+            Motion.animate(Look.tabClose) { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
             pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it
             // A Today folder does not: it is a grouping of tabs that are still archiving
