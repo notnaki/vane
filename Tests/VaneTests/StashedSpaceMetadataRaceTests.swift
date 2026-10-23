@@ -103,4 +103,46 @@ import XCTest
         XCTAssertEqual(store.stashes[hidden.id]?.tabs.first?.id, tab.id)
         XCTAssertEqual(Suspension.SpaceState.load(space: hidden.id, profileID: store.profileID, in: Store.directory), newer)
     }
+    func testHiddenTabNavigationRejectsStaleCaptureWithoutReleasingPage() async throws {
+        let (store, hidden, tab, url, original) = try await fixture()
+        let entered = expectation(description: "persistence lane held"), release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        SessionPersistence.shared.enqueue(file: Store.directory.appendingPathComponent(UUID().uuidString)) {
+            entered.fulfill(); _ = release.wait(timeout: .now() + 5); return true
+        }
+        await fulfillment(of: [entered], timeout: 2)
+        let operation = Task { await store.saveStashedSpaceAsync(hidden.id) }
+        try await awaitStagedState(store, hidden: hidden, url: url)
+        let destination = URL(string: "https://stash-metadata.invalid/new-page")!
+        tab.park(url: destination, Parked(title: "Latest hidden page", state: Data("new navigation state".utf8)))
+        release.signal()
+        let saved = await operation.value
+        XCTAssertFalse(saved)
+        XCTAssertEqual(ProfileManager.shared.spaces(for: store.profileID).first { $0.id == hidden.id }, hidden)
+        XCTAssertTrue(store.stashes[hidden.id]?.tabs.first === tab)
+        XCTAssertEqual(tab.currentURL, destination)
+        XCTAssertEqual(tab.snapshot.state, Data("new navigation state".utf8))
+        XCTAssertEqual(Suspension.SpaceState.load(space: hidden.id, profileID: store.profileID, in: Store.directory), original)
+    }
+
+    func testSameAddressNewDocumentRejectsStaleOpaqueStateCapture() async throws {
+        let (store, hidden, tab, url, original) = try await fixture()
+        let entered = expectation(description: "persistence lane held"), release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        SessionPersistence.shared.enqueue(file: Store.directory.appendingPathComponent(UUID().uuidString)) {
+            entered.fulfill(); _ = release.wait(timeout: .now() + 5); return true
+        }
+        await fulfillment(of: [entered], timeout: 2)
+        let operation = Task { await store.saveStashedSpaceAsync(hidden.id) }
+        try await awaitStagedState(store, hidden: hidden, url: url)
+        tab.readingDocumentGeneration = UUID()
+        release.signal()
+        let saved = await operation.value
+        XCTAssertFalse(saved)
+        XCTAssertEqual(ProfileManager.shared.spaces(for: store.profileID).first { $0.id == hidden.id }, hidden)
+        XCTAssertTrue(store.stashes[hidden.id]?.tabs.first === tab)
+        XCTAssertEqual(tab.currentURL, url)
+        XCTAssertEqual(Suspension.SpaceState.load(space: hidden.id, profileID: store.profileID, in: Store.directory), original)
+    }
+
 }

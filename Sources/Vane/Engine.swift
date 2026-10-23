@@ -3906,9 +3906,27 @@ struct Stash {
         guard let stash = stashes[id] else { return true }
         guard stash.fingerprint == fingerprint(of: id) else { return true }
         guard let original = ProfileManager.shared.spaces(for: profileID).first(where: { $0.id == id }) else { return false }
+        // A stash holds live Tab objects. Capture values, not their references, so a
+        // hidden navigation/reload or changed opaque state during IO cannot be released
+        // after transferring the older address and document snapshot.
+        struct PageCapture: Equatable {
+            let id: UUID
+            let kind: TabKind
+            let page: URL?
+            let home: URL?
+            let saved: URL?
+            let document: UUID
+            let snapshot: Parked
+        }
+        @MainActor func capture(_ tabs: [Tab]) -> [PageCapture] {
+            tabs.map { PageCapture(id: $0.id, kind: $0.kind, page: $0.currentURL,
+                home: $0.homeURL, saved: $0.pinnedURL, document: $0.readingDocumentGeneration,
+                snapshot: $0.snapshot) }
+        }
+        let capturedPages = capture(stash.tabs)
         var space = original
         func urls(_ kind: TabKind) -> [URL] {
-            stash.tabs.filter { $0.kind == kind }.compactMap(\.pinnedURL)
+            capturedPages.filter { $0.kind == kind }.compactMap(\.saved)
                 .filter { TabAddress.restorable($0) }
         }
         space.tabURLs = urls(.today)
@@ -3918,15 +3936,15 @@ struct Stash {
                 splits: stash.splits, selected: stash.current, profile: profileID)
         }
         var parked: [String: Parked] = [:]
-        for tab in stash.tabs {
-            guard let entry = TabStore.sidecarEntry(page: tab.currentURL, home: tab.homeURL,
+        for tab in capturedPages {
+            guard let entry = TabStore.sidecarEntry(page: tab.page, home: tab.home,
                                                     snapshot: tab.snapshot) else { continue }
             parked[entry.key] = entry.parked
         }
         let staged = await Suspension.SpaceState.stageSave(parked, space: id, profileID: profileID, in: Store.directory)
         guard staged.succeeded,
               let current = stashes[id], current.fingerprint == stash.fingerprint,
-              current.tabs.map(\.id) == stash.tabs.map(\.id), current.pins == stash.pins,
+              capture(current.tabs) == capturedPages, current.pins == stash.pins,
               current.todayShape == stash.todayShape, current.splits == stash.splits, current.current == stash.current,
               fingerprint(of: id) == stash.fingerprint,
               var latest = ProfileManager.shared.spaces(for: profileID).first(where: { $0.id == id }),
