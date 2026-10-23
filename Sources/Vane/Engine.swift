@@ -3427,7 +3427,12 @@ struct Stash {
             space.layout = workspaceLayout()
             space.tabURLs = space.layout!.tabs.filter { $0.kind == .today }.map(\.savedURL)
         }
-        ProfileManager.shared.updateSpace(space)
+        // Folder disclosure is already saved in the shape above. Publishing an identical
+        // Space here invalidates the entire browser while its new rows are animating in.
+        // Layout-backed Spaces still persist their changed folder state through this path.
+        if ProfileManager.shared.spaces(for: profileID).first(where: { $0.id == id }) != space {
+            ProfileManager.shared.updateSpace(space)
+        }
     }
 
     // MARK: Spaces

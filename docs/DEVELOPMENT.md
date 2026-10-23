@@ -179,6 +179,14 @@ VANE_UI_PERFORMANCE=1 VANE_LIBRARY_PERF_TABS=10 swift test --filter 'LibrarySwip
 scroll offsets, and access to the last row. Layout work under 8.33 ms leaves CPU
 headroom for a 120 Hz display; these timings do not establish displayed frame rate.
 
+Folder-opening diagnostics report toggle time, forced layout, run-loop gaps, and
+mounted native tab controls for 20/300-tab folders. They also guard against repeated
+lock scans in an unprotected 3,000-tab strip:
+
+```sh
+VANE_UI_PERFORMANCE=1 swift test --filter FolderOpeningPerformanceTests
+```
+
 Run comparisons on the same quiet logged-in Mac, with the same fixtures and build
 configuration. Coordinate with other profiling/build tasks before collecting
 timings; use `--skip-build` only after building the exact revision to measure.

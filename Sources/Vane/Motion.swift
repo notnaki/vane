@@ -123,12 +123,14 @@ private struct VaneMotionPolicy: ViewModifier {
 }
 
 extension AnyTransition {
-    /// A sidebar row arriving or leaving: it grows from nothing to its full height (and
-    /// back), so the rows around it slide rather than jump, and it fades on the way. The
-    /// negative bottom padding eats the list's gap too, or a removed row leaves a 5pt hop
-    /// behind at the very end.
+    /// Incoming rows retain their full layout height while fading in. Starting them at
+    /// zero height makes LazyVStack realize offscreen folder children to fill its viewport,
+    /// stalling the opening animation. The list transaction moves neighbouring rows.
+    /// Departing rows still collapse; negative padding consumes the list's gap too.
     static var rowCollapse: AnyTransition {
-        .modifier(active: RowCollapse(collapsed: true), identity: RowCollapse(collapsed: false))
+        .asymmetric(insertion: .opacity,
+                    removal: .modifier(active: RowCollapse(collapsed: true),
+                                       identity: RowCollapse(collapsed: false)))
     }
 
     /// Keep departing Today content at full size during its brief fade. The list's
