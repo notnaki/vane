@@ -256,11 +256,18 @@ enum BundleReplacement {
         try sync(target.deletingLastPathComponent(), directory: true)
     }
 
-    private static func withLock<T>(_ target: URL, _ body: () throws -> T) throws -> T {
+    private static func withLock<T>(_ target: URL, wait: TimeInterval = 0,
+                                    _ body: () throws -> T) throws -> T {
         let descriptor = open(lockURL(target).path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else { throw filesystemError(lockURL(target)) }
         defer { close(descriptor) }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw Fault.busy }
+        let deadline = ProcessInfo.processInfo.systemUptime + wait
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            let error = errno
+            guard error == EWOULDBLOCK || error == EAGAIN else { throw filesystemError(lockURL(target)) }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw Fault.busy }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
         defer { flock(descriptor, LOCK_UN) }
         return try body()
     }
@@ -561,7 +568,9 @@ enum BundleReplacement {
 
     static func isRestoredPrevious(at target: URL, witness: LaunchWitness,
                                    verifyPrevious: (URL) -> Bool) -> Bool {
-        (try? withLock(target) {
+        // The helper can remove the journal before its final fsync releases the lock.
+        // Wait for that commit before deciding whether the completion witness matches.
+        (try? withLock(target, wait: 60) {
             witness.oldID != nil && witness.oldDigest != nil
                 && !entryExists(journalURL(target)) && target.path == witness.targetPath
                 && target.standardizedFileURL == target.resolvingSymlinksInPath()
@@ -573,7 +582,7 @@ enum BundleReplacement {
 
     static func hasCompletedReplacement(at target: URL, witness: LaunchWitness,
                                          verifyReplacement: (URL) -> Bool) -> Bool {
-        (try? withLock(target) {
+        (try? withLock(target, wait: 60) {
             let pending = entryExists(journalURL(target))
             let journal = pending ? read(target) : nil
             if pending {
