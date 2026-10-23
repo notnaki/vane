@@ -105,25 +105,34 @@ private final class Task7ReplyGate: @unchecked Sendable {
         XCTAssertEqual(mkfifo(file.path, 0o600), 0)
         let gate = Task7WorkerGate()
         let text = Data(String(repeating: "||fixture.example^\n", count: 50_000).utf8)
-        let writer = Task.detached {
-            let deadline = Date.now.addingTimeInterval(10)
-            var descriptor: Int32 = -1
-            while descriptor < 0, Date.now < deadline {
-                descriptor = Darwin.open(file.path, O_WRONLY | O_NONBLOCK)
-                if descriptor < 0 { Thread.sleep(forTimeInterval: 0.01) }
-            }
-            guard descriptor >= 0 else { return false }
-            defer { Darwin.close(descriptor) }
-            _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) & ~O_NONBLOCK)
-            gate.block()
-            return text.withUnsafeBytes { buffer in
-                var written = 0
-                while written < buffer.count {
-                    let count = Darwin.write(descriptor, buffer.baseAddress!.advanced(by: written), buffer.count - written)
-                    if count <= 0 { return false }
-                    written += count
+        let writer = Task {
+            await withCheckedContinuation { continuation in
+                // FIFO open/write deliberately blocks a real utility thread; do not
+                // occupy Swift's cooperative task executor or replace the IO gate.
+                DispatchQueue.global(qos: .utility).async {
+                    let success: Bool = {
+                        let deadline = Date.now.addingTimeInterval(10)
+                        var descriptor: Int32 = -1
+                        while descriptor < 0, Date.now < deadline {
+                            descriptor = Darwin.open(file.path, O_WRONLY | O_NONBLOCK)
+                            if descriptor < 0 { Thread.sleep(forTimeInterval: 0.01) }
+                        }
+                        guard descriptor >= 0 else { return false }
+                        defer { Darwin.close(descriptor) }
+                        _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) & ~O_NONBLOCK)
+                        gate.block()
+                        return text.withUnsafeBytes { buffer in
+                            var written = 0
+                            while written < buffer.count {
+                                let count = Darwin.write(descriptor, buffer.baseAddress!.advanced(by: written), buffer.count - written)
+                                if count <= 0 { return false }
+                                written += count
+                            }
+                            return true
+                        }
+                    }()
+                    continuation.resume(returning: success)
                 }
-                return true
             }
         }
         let work = Task { try await Blocker.prepareImportedFile(file, sources: []) }
