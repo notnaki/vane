@@ -41,7 +41,7 @@ import UniformTypeIdentifiers
         if repository.background { performAsync { [self] in selected = try await repository.createAsync().id } }
         else { perform { selected = try repository.create().id } }
     }
-    @discardableResult func edit(_ change: @escaping (inout EaselBoard) -> Void) -> Bool {
+    @discardableResult func edit(_ change: @escaping @MainActor (inout EaselBoard) -> Void) -> Bool {
         if repository.background {
             guard selected != nil else { return false }
             return performAsync { [self] in
@@ -57,7 +57,7 @@ import UniformTypeIdentifiers
         return saved
     }
     /// Editors await durability so a failed save keeps their draft on screen.
-    func editPersisted(_ change: @escaping (inout EaselBoard) -> Void) async -> Bool {
+    func editPersisted(_ change: @escaping @MainActor (inout EaselBoard) -> Void) async -> Bool {
         if !repository.background { return edit(change) }
         return await withCheckedContinuation { result in
             let accepted = performAsync { [self] in
