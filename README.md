@@ -1,15 +1,43 @@
-# Vane
+<p align="center">
+  <img src="AppIcons/Previews/Normal.png" width="96" height="96" alt="Vane app icon">
+</p>
 
-Vane is a native macOS browser built with Swift, SwiftUI, AppKit, and WebKit.
-Apple’s `WKWebView` renders pages; Vane adds sidebar tabs, Spaces, profiles,
-reading tools, and browser controls around it.
+<h1 align="center">Vane</h1>
 
-**Requires macOS 26 or later.** Vane is in active development. Read the
-[limitations](#limitations) before relying on it as your only browser.
+<p align="center">
+  A native macOS browser. A little more room for the web.
+</p>
 
-Read the [privacy policy](PRIVACY.md) for local storage, network requests,
-optional services, and data controls. It is also available on the
-[website](https://notnaki.github.io/vane/privacy.html).
+<p align="center">
+  Sidebar tabs · Spaces · Split View · Reader · Easels
+</p>
+
+<p align="center">
+  <a href="https://github.com/notnaki/vane/releases/latest"><strong>Download Vane</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://notnaki.github.io/vane/">Website</a>
+  &nbsp;·&nbsp;
+  <a href="docs/README.md">Documentation</a>
+  &nbsp;·&nbsp;
+  <a href="#contributing">Contribute</a>
+</p>
+
+<p align="center">
+  macOS 26+ &nbsp;·&nbsp; Built with Swift &amp; WebKit &nbsp;·&nbsp; MIT licensed
+</p>
+
+![Vane showing Wikipedia with sidebar tabs and Spaces](docs/media/vane-spaces-dark.png)
+
+<p align="center"><sub>Spaces, favourites, and the web in one native window. <a href="docs/media/README.md">About this screenshot</a>.</sub></p>
+
+Vane is built with Swift, SwiftUI, AppKit, and WebKit. Apple’s `WKWebView`
+renders pages; Vane adds tools to organize, read, and make the browser your own.
+
+> **In active development.** Requires macOS 26 or later. Read the
+> [limitations](#limitations) before relying on Vane as your only browser.
+
+[Explore the features](#feature-overview) · [Get started](#start-browsing) ·
+[Build from source](#build-and-run) · [Privacy policy](PRIVACY.md)
 
 ## Download and install
 
@@ -17,6 +45,9 @@ optional services, and data controls. It is also available on the
    and read its notes and known issues.
 2. Download `Vane.dmg`, open it, and drag Vane to Applications.
 3. Open Vane from Applications. The first-run welcome is skippable.
+
+<details>
+<summary><strong>Updates, signing, and the default browser</strong></summary>
 
 Published releases are built through the signing and notarization workflow.
 That does not establish compatibility with every site or complete clean-Mac
@@ -29,6 +60,68 @@ Merging to `main` does not publish a release.
 Stable release bundles packaged with a Developer ID offer the default-browser
 prompt once. Local, debug, and prerelease builds skip it. The manual
 **Make Vane Default…** action remains available in Settings.
+
+</details>
+
+## Feature overview
+
+| Area | What is implemented |
+| --- | --- |
+| Browsing | Sidebar tabs, Favourites, pinned tabs, folders, multiple windows, private windows, Split View, Peek, and Little Vane. |
+| Organization | Spaces, reusable Space templates, Tidy Tabs with review/undo, bulk tab organization, bookmarks, history search, and Library. |
+| Reading | Reader preferences, an offline article queue, find on page, and page capture. |
+| Media | Custom Picture in Picture, a minimized sidebar player, and embedded-player controls with native PiP fallback. |
+| Visual tools | Easels with notes, drawing, captures, live web views, and editable JSON or PNG export; per-site Boosts for styles, Zap, and opt-in scripts. |
+| Data | Separate profiles, local Keychain passwords and account chooser, browser imports, exports, complete library backups, and local recovery points. |
+| Controls | Custom search engines and site-search shortcuts, keyboard bindings, themes, app icons, Battery Saver, and site controls. |
+| Integrations | Unpacked WebExtensions, EasyList-subset blocking and HTTPS subscriptions, GitHub Live Folders, and optional AI providers using your own keys. |
+
+“Implemented” describes available behavior. Verification is scoped to the
+revision, macOS version, signing, and fixture or service recorded in each audit.
+It is not a guarantee of general website or extension compatibility.
+
+## Start browsing
+
+| Action | Shortcut |
+| --- | --- |
+| Search for a new tab | <kbd>⌘</kbd> <kbd>T</kbd> |
+| Open the address bar | <kbd>⌘</kbd> <kbd>L</kbd> |
+| Reopen a closed tab | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>T</kbd> |
+| Find on the page | <kbd>⌘</kbd> <kbd>F</kbd> |
+| Open Library | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>L</kbd> |
+| Open History | <kbd>⌘</kbd> <kbd>Y</kbd> |
+| Move between the page and browser controls | <kbd>F6</kbd> / <kbd>⇧</kbd> <kbd>F6</kbd> |
+
+Click a Space button or swipe horizontally over the sidebar to switch Spaces.
+Use **Shift+Return** for Instant Links, which opens a DuckDuckGo first result
+regardless of your selected search engine.
+[Details and exceptions](docs/BROWSING.md#search-and-history).
+
+Shortcuts can be changed in Settings; the menu bar shows current bindings.
+[Everyday browsing](docs/BROWSING.md) explains tab organization, shared windows,
+site search, keyboard navigation, downloads, and media.
+
+## Documentation
+
+The [documentation index](docs/README.md) is the starting point for guides,
+troubleshooting, specialist audits, and recorded validation.
+
+| Guide | Covers |
+| --- | --- |
+| [Everyday browsing](docs/BROWSING.md) | Tabs, Spaces, windows, search, shortcuts, Library, downloads, and media. |
+| [Reading and customization](docs/FEATURES.md) | Reader, offline articles, Easels, capture, Boosts, templates, appearance, and Battery Saver. |
+| [Profiles, data, and privacy](docs/DATA-AND-PRIVACY.md) | Passwords, imports/exports, website data, backups, folder locks, and recovery boundaries. |
+| [Extensions and integrations](docs/INTEGRATIONS.md) | Profile extension manager, reviewed updates, access/diagnostics, content blocking, AI keys, and GitHub Live Folders. |
+| [Development](docs/DEVELOPMENT.md) | Setup, CLI, focused tests, graphical smoke checks, project structure, and contribution workflow. |
+| [Releases and distribution](docs/RELEASING.md) | Publishing, signing/notarization, updater checks, and candidate validation. |
+
+Prefer a visual introduction? Browse the
+[website field guide](https://notnaki.github.io/vane/docs.html).
+The Markdown guides above cover current controls and caveats in detail.
+
+The [privacy policy](PRIVACY.md) explains local storage, network requests,
+optional services, and data controls. It is also available on the
+[website](https://notnaki.github.io/vane/privacy.html).
 
 ## Build and run
 
@@ -57,58 +150,6 @@ Use the assembled app for bundled icons and native sandbox/signing behavior.
 Xcode 27 plus macOS 27 is needed for Vane-managed location decisions; the minimum
 runtime remains macOS 26. See [development setup](docs/DEVELOPMENT.md#setup-and-local-builds)
 and [release procedures](docs/RELEASING.md) for testing and distribution.
-
-## Feature overview
-
-| Area | What is implemented |
-| --- | --- |
-| Browsing | Sidebar tabs, Favourites, pinned tabs, folders, multiple windows, private windows, Split View, Peek, and Little Vane. |
-| Organization | Spaces, reusable Space templates, Tidy Tabs with review/undo, bulk tab organization, bookmarks, history search, and Library. |
-| Reading | Reader preferences, an offline article queue, find on page, and page capture. |
-| Media | Custom Picture in Picture, a minimized sidebar player, and embedded-player controls with native PiP fallback. |
-| Visual tools | Easels with notes, drawing, captures, live web views, and editable JSON or PNG export; per-site Boosts for styles, Zap, and opt-in scripts. |
-| Data | Separate profiles, local Keychain passwords and account chooser, browser imports, exports, complete library backups, and local recovery points. |
-| Controls | Custom search engines and site-search shortcuts, keyboard bindings, themes, app icons, Battery Saver, and site controls. |
-| Integrations | Unpacked WebExtensions, EasyList-subset blocking and HTTPS subscriptions, GitHub Live Folders, and optional AI providers using your own keys. |
-
-“Implemented” describes available behavior. Verification is scoped to the
-revision, macOS version, signing, and fixture or service recorded in each audit.
-It is not a guarantee of general website or extension compatibility.
-
-## Start browsing
-
-- **⌘T** opens search for a new tab; **⌘L** opens the address bar.
-- **Shift+Return** uses Instant Links to open a DuckDuckGo first result, regardless of your selected search engine. [Details and exceptions](docs/BROWSING.md#search-and-history).
-- **⇧⌘T** reopens a closed tab; **⌘F** finds text on the page.
-- **⇧⌘L** opens Library; **⌘Y** opens History.
-- Click a Space button or swipe horizontally over the sidebar to switch Spaces.
-- Use **F6** / **⇧F6** to move between the page and browser controls.
-
-Shortcuts can be changed in Settings; the menu bar shows current bindings.
-[Everyday browsing](docs/BROWSING.md) explains tab organization, shared windows,
-site search, keyboard navigation, downloads, and media.
-
-![Vane showing Wikipedia with sidebar tabs and Spaces](docs/media/vane-spaces-dark.png)
-
-The [screenshot notes](docs/media/README.md) describe the isolated demo captures.
-
-## Documentation
-
-The [documentation index](docs/README.md) is the starting point for guides,
-troubleshooting, specialist audits, and recorded validation.
-
-| Guide | Covers |
-| --- | --- |
-| [Everyday browsing](docs/BROWSING.md) | Tabs, Spaces, windows, search, shortcuts, Library, downloads, and media. |
-| [Reading and customization](docs/FEATURES.md) | Reader, offline articles, Easels, capture, Boosts, templates, appearance, and Battery Saver. |
-| [Profiles, data, and privacy](docs/DATA-AND-PRIVACY.md) | Passwords, imports/exports, website data, backups, folder locks, and recovery boundaries. |
-| [Extensions and integrations](docs/INTEGRATIONS.md) | Profile extension manager, reviewed updates, access/diagnostics, content blocking, AI keys, and GitHub Live Folders. |
-| [Development](docs/DEVELOPMENT.md) | Setup, CLI, focused tests, graphical smoke checks, project structure, and contribution workflow. |
-| [Releases and distribution](docs/RELEASING.md) | Publishing, signing/notarization, updater checks, and candidate validation. |
-
-The [website field guide](https://notnaki.github.io/vane/docs.html) provides a
-visual introduction. The Markdown guides above contain detailed current controls
-and caveats; the website keeps its existing layout and navigation.
 
 ## Limitations
 
