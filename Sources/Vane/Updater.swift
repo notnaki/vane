@@ -468,6 +468,7 @@ extension Release {
     static let shared = Updater()
     static let repo = "notnaki/vane"
     private static var launchedReplacement = false
+    private static let launchWorker = BackupWorker()
 
     static var currentVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.1.0"
@@ -891,10 +892,14 @@ extension Release {
 
     /// Reconcile a transaction before any window opens. A replacement that crashed during
     /// its previous launch is rolled back while its old bundle is still retained.
-    static func recoverAtLaunch() {
+    static func recoverAtLaunch() async {
         guard isBundled else { return }
-        switch BundleReplacement.beginLaunch(at: Bundle.main.bundleURL, verifyRecovery: verified, verifyPrevious: verifiedPrevious,
-                                             expectedExecutable: Bundle.main.executableURL) {
+        let target = Bundle.main.bundleURL, executable = Bundle.main.executableURL
+        let result = await launchWorker.run {
+            BundleReplacement.beginLaunch(at: target, verifyRecovery: verified, verifyPrevious: verifiedPrevious,
+                                          expectedExecutable: executable)
+        }
+        switch result {
         case .unchanged:
             break
         case .waitingForHealth:
@@ -929,10 +934,13 @@ extension Release {
     /// Called only by the process that observed a pending replacement at its own startup.
     /// The old process may still be running from the same bundle path after the swap; it
     /// must never mark the new copy healthy or delete its own backup on termination.
-    static func markHealthyLaunch() {
+    static func markHealthyLaunchAsync() async {
         guard isBundled, launchedReplacement else { return }
-        BundleReplacement.markHealthy(at: Bundle.main.bundleURL, verifyRecovery: verified, verifyPrevious: verifiedPrevious,
-                                      expectedExecutable: Bundle.main.executableURL)
+        let target = Bundle.main.bundleURL, executable = Bundle.main.executableURL
+        await launchWorker.run {
+            BundleReplacement.markHealthy(at: target, verifyRecovery: verified, verifyPrevious: verifiedPrevious,
+                                          expectedExecutable: executable)
+        }
     }
 
     /// `refused` is the tag this copy has decided against and must never be offered again;

@@ -1,7 +1,8 @@
 import Foundation
 import Darwin
+import Synchronization
 
-@MainActor final class BackupDirectoryLock {
+final class BackupDirectoryLock: @unchecked Sendable {
     let directory: URL
     private let descriptor: Int32
     init(_ directory: URL) throws {
@@ -18,8 +19,8 @@ import Darwin
     deinit { close(descriptor) }
 }
 
-@MainActor final class BackupRestore {
-    enum Result: Equatable { case none, restored, rolledBack }
+final class BackupRestore {
+    enum Result: Equatable, Sendable { case none, restored, rolledBack }
     private enum Phase: String, Codable { case prepared, applying, committed }
     private struct Journal: Codable {
         var version = 1
@@ -31,7 +32,7 @@ import Darwin
         var preferences: Data
         var files: [BackupArchive.File]
     }
-    private static var instanceLock: BackupDirectoryLock?
+    private static let instanceLock = Mutex<BackupDirectoryLock?>(nil)
     let library: BackupLibrary
     private let checkpoint: (String) throws -> Void
     private let stageCheckpoint: () throws -> Void
@@ -43,11 +44,13 @@ import Darwin
         self.library = library; self.checkpoint = checkpoint; self.stageCheckpoint = stageCheckpoint
     }
     static func claimInstance(_ directory: URL) throws {
-        if instanceLock?.directory == directory.standardizedFileURL { return }
-        instanceLock = try BackupDirectoryLock(directory)
+        try instanceLock.withLock { lock in
+            if lock?.directory == directory.standardizedFileURL { return }
+            lock = try BackupDirectoryLock(directory)
+        }
     }
     private func ownership() throws -> BackupDirectoryLock? {
-        if Self.instanceLock?.directory == library.directory.standardizedFileURL { return nil }
+        if Self.instanceLock.withLock({ $0?.directory == library.directory.standardizedFileURL }) { return nil }
         return try BackupDirectoryLock(library.directory)
     }
     func prepare(_ incoming: BackupArchive) throws {
@@ -92,6 +95,13 @@ import Darwin
             guard BackupCodec.digest(incomingData) == journal.incomingDigest else { throw BackupError.recoveryFailed("The staged backup is damaged.") }
             let incoming = try BackupCodec.decode(incomingData)
             _ = try library.validate(incoming)
+            // Preparation is asynchronous while normal browsing may continue. Save
+            // the final, quiescent launch-time generation too, before replacing data.
+            // This preserves edits made after the preparation recovery point.
+            let finalPoint = try library.capture(reason: .beforeRestore, allowDamaged: true)
+            let recovery = BackupRecovery(library: library)
+            if finalPoint.damage == nil { _ = try recovery.automaticPointIfChanged(finalPoint) }
+            else { try recovery.save(finalPoint) }
             let originals = try preserveOriginals()
             let data = try plist(originals)
             guard data.count <= BackupCodec.limit else { throw BackupError.tooLarge }

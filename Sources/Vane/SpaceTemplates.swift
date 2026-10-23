@@ -248,7 +248,7 @@ enum WorkspaceError: LocalizedError {
     nonisolated static func url(profile: UUID, directory: URL) -> URL {
         directory.appendingPathComponent("space-templates\(ProfileManager.suffix(profile)).json")
     }
-    static func validate(_ data: Data, profile: UUID) throws -> [WorkspaceTemplate] {
+    nonisolated static func validate(_ data: Data, profile: UUID) throws -> [WorkspaceTemplate] {
         let disk: Disk
         do { disk = try JSONDecoder().decode(Disk.self, from: data) }
         catch { throw WorkspaceError.damaged }

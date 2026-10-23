@@ -14,7 +14,12 @@ struct BackupCandidate: Identifiable, Sendable {
     static let shared = BackupController(library: BackupLibrary(directory: Store.directory,
         defaults: .vane, domain: UserDefaults.vaneDomain), flush: {
             let profiles = ProfileManager.shared.retryProfileSave()
-            let session = Session.save()
+            Session.enqueueSave()
+            let session = await Session.flushPersistence()
+            do {
+                try await EaselStore.flushAll(directory: Store.directory)
+                try await Store.flushAllPendingWrites()
+            } catch { return false }
             return profiles && session && ProfileManager.shared.saveFailures.isEmpty
         }, restart: BackupRestart.run)
 
@@ -26,14 +31,16 @@ struct BackupCandidate: Identifiable, Sendable {
     @Published private(set) var points: [BackupPoint] = []
     @Published private(set) var preview: BackupCandidate?
     private let library: BackupLibrary
-    private let flush: @MainActor () -> Bool
+    private let flush: @MainActor () async -> Bool
+    private let worker: BackupWorker
     private let restart: @MainActor () throws -> Void
     private var timer: Timer?
     private var lastAttempt: Date?
     private var restorePending = false
 
-    init(library: BackupLibrary, flush: @escaping @MainActor () -> Bool, restart: @escaping @MainActor () throws -> Void) {
-        self.library = library; self.flush = flush; self.restart = restart
+    init(library: BackupLibrary, flush: @escaping @MainActor () async -> Bool, restart: @escaping @MainActor () throws -> Void,
+         worker: BackupWorker = .shared) {
+        self.library = library; self.flush = flush; self.restart = restart; self.worker = worker
     }
     func begin() {
         guard timer == nil else { return }
@@ -45,7 +52,7 @@ struct BackupCandidate: Identifiable, Sendable {
     func reloadPoints() { Task { await reloadPointsAsync() } }
     private func reloadPointsAsync() async {
         let repository = BackupRecovery(library: library)
-        do { points = try await Task.detached(priority: .utility) { try repository.points() }.value }
+        do { points = try await worker.run { try repository.points() } }
         catch { recoveryError = error.localizedDescription }
     }
     private func start(_ label: String) -> Bool {
@@ -57,11 +64,13 @@ struct BackupCandidate: Identifiable, Sendable {
     func export(to url: URL) async {
         guard start("Saving backup…") else { return }
         defer { finish() }
-        await Task.yield()
         do {
-            guard flush() else { throw BackupError.saveFailed }
-            let archive = try library.capture(reason: .manual)
-            try await Task.detached(priority: .utility) { try BackupCodec.write(archive, to: url) }.value
+            guard await flush() else { throw BackupError.saveFailed }
+            let library = library
+            try await worker.run {
+                let archive = try library.capture(reason: .manual)
+                try BackupCodec.write(archive, to: url)
+            }
             Motion.list { status = "Backup saved to \(url.lastPathComponent)." }
         } catch { self.error = error.localizedDescription }
     }
@@ -69,35 +78,43 @@ struct BackupCandidate: Identifiable, Sendable {
         guard start("Checking backup…") else { return }
         defer { finish() }
         do {
-            let archive = try await Task.detached(priority: .utility) { try BackupCodec.read(url) }.value
-            let incoming = try library.validate(archive)
-            var current: BackupPreview?, currentError: String?
-            do { current = try library.validate(library.capture(reason: .manual)) }
-            catch { currentError = error.localizedDescription }
-            Motion.list { preview = BackupCandidate(archive: archive, incoming: incoming, current: current, currentError: currentError) }
+            let saved = await flush()
+            let library = library
+            let candidate = try await worker.run {
+                let archive = try BackupCodec.read(url)
+                let incoming = try library.validate(archive)
+                var current: BackupPreview?, currentError: String?
+                do {
+                    guard saved else { throw BackupError.saveFailed }
+                    current = try library.validate(library.capture(reason: .manual))
+                }
+                catch { currentError = error.localizedDescription }
+                return BackupCandidate(archive: archive, incoming: incoming, current: current, currentError: currentError)
+            }
+            Motion.list { preview = candidate }
         } catch { self.error = error.localizedDescription }
     }
     func cancelPreview() { guard !busy else { return }; Motion.list { preview = nil } }
     func restorePreview() async {
         guard let candidate = preview, start("Preserving a recovery point…") else { return }
         defer { finish() }
-        await Task.yield()
-        let transaction = BackupRestore(library: library)
+        let library = library
         var staged = false
         do {
-            if !flush() {
+            if !(await flush()) {
                 // A healthy library with unsaved changes must not be silently discarded.
                 // Damaged disk originals must still be repairable with a valid backup.
-                if (try? library.capture(reason: .manual)) != nil { throw BackupError.saveFailed }
+                let current = try await worker.run { try library.capture(reason: .manual, allowDamaged: true) }
+                guard current.damage != nil else { throw BackupError.saveFailed }
             }
-            try transaction.prepare(candidate.archive)
+            try await worker.run { try BackupRestore(library: library).prepare(candidate.archive) }
             staged = true
             restorePending = true
             try restart()
             Motion.list { preview = nil; status = "Restore prepared. Vane is restarting." }
         } catch {
             if staged {
-                do { try transaction.cancelPending(); restorePending = false }
+                do { try await worker.run { try BackupRestore(library: library).cancelPending() }; restorePending = false }
                 catch { self.error = "Restart failed, and the pending restore could not be cancelled: \(error.localizedDescription)"; return }
             }
             self.error = error.localizedDescription
@@ -109,11 +126,13 @@ struct BackupCandidate: Identifiable, Sendable {
         guard !busy, !restorePending, force || BackupSchedule.isDue(lastAttempt: lastAttempt, now: now) else { return }
         busy = true; lastAttempt = now
         defer { finish() }
-        await Task.yield()
         do {
-            guard flush() else { throw BackupError.saveFailed }
-            let archive = try library.capture(reason: .automatic)
-            _ = try await BackupRecovery(library: library).automaticPointIfChangedAsync(archive)
+            guard await flush() else { throw BackupError.saveFailed }
+            let library = library
+            _ = try await worker.run {
+                let archive = try library.capture(reason: .automatic)
+                return try BackupRecovery(library: library).automaticPointIfChanged(archive)
+            }
             recoveryError = nil
         } catch { recoveryError = error.localizedDescription }
         await reloadPointsAsync()

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct BackupPreview: Sendable {
     struct ProfileSummary: Identifiable, Sendable {
@@ -22,9 +23,11 @@ struct BackupPreview: Sendable {
     var readingQueue: Int { profiles.reduce(0) { $0 + $1.readingQueue } }
 }
 
-/// Synchronous capture is one main-actor boundary: no window/profile mutations can
-/// interleave its reads. Expensive archive encoding and writes consume immutable bytes.
-@MainActor struct BackupLibrary {
+/// A capture is accepted only if every owned file and preference has the same
+/// generation before and after its reads. All snapshot/validation work runs on a
+/// worker; concurrent saves cause a retry rather than a mixed-generation backup.
+/// UserDefaults supports concurrent access; no mutable UI model crosses this boundary.
+struct BackupLibrary: @unchecked Sendable {
     let directory: URL
     let defaults: UserDefaults
     let domain: String
@@ -92,7 +95,57 @@ struct BackupPreview: Sendable {
         names += try ReadingQueueFiles.ownedNames(in: directory)
         return names.sorted()
     }
-    func capture(reason: BackupReason, allowDamaged: Bool = false) throws -> BackupArchive {
+    func capture(reason: BackupReason, allowDamaged: Bool = false,
+                 checkpoint: () throws -> Void = {}) throws -> BackupArchive {
+        for _ in 0..<3 {
+            let before = try generations()
+            let preferences = try currentPreferences()
+            let archive: BackupArchive
+            do { archive = try captureUnchecked(reason: reason, allowDamaged: allowDamaged) }
+            catch {
+                // A file replaced during the read can temporarily be absent or fail
+                // decoding. Retry only a proven concurrent save; preserve real errors.
+                if (try? generations()) != before { continue }
+                throw error
+            }
+            try checkpoint()
+            guard try generations() == before,
+                  try equivalentPreferences(preferences, currentPreferences()),
+                  try equivalentPreferences(preferences, archive.preferences) else { continue }
+            return archive
+        }
+        throw BackupError.storage("Your library changed while it was being backed up. Try again after the current changes finish saving.")
+    }
+    private struct Generation: Equatable {
+        var device: Int32
+        var inode: UInt64
+        var size: Int64
+        var modifiedSeconds: Int
+        var modifiedNanoseconds: Int
+        var changedSeconds: Int
+        var changedNanoseconds: Int
+    }
+    private func generations() throws -> [String: Generation] {
+        var result: [String: Generation] = [:]
+        for name in try ownedNames(includeJournals: true) {
+            // Opening read-only SQLite can rebuild the transient shared-memory index.
+            // Committed data lives in the database and WAL, which are both tracked.
+            guard !name.hasSuffix(".db-shm") else { continue }
+            var value = stat()
+            guard lstat(directory.appendingPathComponent(name).path, &value) == 0 else { throw BackupIO.posixError() }
+            guard value.st_mode & S_IFMT == S_IFREG else { throw BackupError.storage("A saved library file is not a regular file.") }
+            result[name] = Generation(device: value.st_dev, inode: value.st_ino, size: value.st_size,
+                modifiedSeconds: value.st_mtimespec.tv_sec, modifiedNanoseconds: value.st_mtimespec.tv_nsec,
+                changedSeconds: value.st_ctimespec.tv_sec, changedNanoseconds: value.st_ctimespec.tv_nsec)
+        }
+        return result
+    }
+    private func equivalentPreferences(_ lhs: Data, _ rhs: Data) throws -> Bool {
+        let left = try PropertyListSerialization.propertyList(from: lhs, format: nil) as AnyObject
+        let right = try PropertyListSerialization.propertyList(from: rhs, format: nil) as AnyObject
+        return (left as? NSDictionary)?.isEqual(right) == true
+    }
+    private func captureUnchecked(reason: BackupReason, allowDamaged: Bool) throws -> BackupArchive {
         let names = try ownedNames()
         // Even a read-only SQLite connection can rebuild its shared-memory file.
         // Preserve raw companions before attempting any snapshot of damaged data.

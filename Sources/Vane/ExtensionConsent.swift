@@ -56,7 +56,7 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
 }
 
 @MainActor enum ExtensionConsent {
-    static let baseKey = "extensionConsent.v1"
+    nonisolated static let baseKey = "extensionConsent.v1"
 
     struct Review {
         let name: String

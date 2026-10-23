@@ -18,7 +18,7 @@ enum BackupSchedule {
     }
 }
 
-@MainActor struct BackupRecovery {
+struct BackupRecovery: Sendable {
     let library: BackupLibrary
     private nonisolated let writer: @Sendable (BackupArchive, URL) throws -> Void
     private nonisolated let remover: @Sendable (URL) throws -> Void
@@ -62,12 +62,7 @@ enum BackupSchedule {
         return try finishSave(archive)
     }
     func saveAsync(_ archive: BackupArchive) async throws -> BackupPoint {
-        try BackupCodec.validate(archive)
-        if archive.damage == nil { _ = try library.validate(archive) }
-        return try await Task.detached(priority: .utility) {
-            try self.writePoint(archive)
-            return try self.finishSave(archive)
-        }.value
+        try await Task.detached(priority: .utility) { try save(archive) }.value
     }
     private nonisolated func writePoint(_ archive: BackupArchive) throws {
         try BackupIO.directory(root); try BackupIO.directory(pointRoot)
@@ -117,18 +112,7 @@ enum BackupSchedule {
         return try save(archive)
     }
     func automaticPointIfChangedAsync(_ archive: BackupArchive) async throws -> BackupPoint? {
-        _ = try library.validate(archive)
-        let changed = try await Task.detached(priority: .utility) {
-            let digest = try Self.contentDigest(archive)
-            if let latest = try self.points().first(where: { $0.diagnostic == nil }) {
-                if digest == (try Self.contentDigest(BackupCodec.read(latest.url))) {
-                    try self.reconcileRetention(keeping: latest.id)
-                    return false
-                }
-            }
-            return true
-        }.value
-        return changed ? try await saveAsync(archive) : nil
+        try await Task.detached(priority: .utility) { try automaticPointIfChanged(archive) }.value
     }
     nonisolated static func contentDigest(_ archive: BackupArchive) throws -> String {
         var hash = SHA256()

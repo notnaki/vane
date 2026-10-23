@@ -38,7 +38,7 @@ import WebKit
     /// the way `CertificateTrust` does it. Per-profile isolation is then structural — there
     /// is no prefix sweep that could reach into another profile's keys — and deleting a
     /// profile is one `removeObject`.
-    static let exceptionsKey = "httpsOnlyExceptions"
+    nonisolated static let exceptionsKey = "httpsOnlyExceptions"
     private static var incognitoExceptions: [String] = []
 
     private static func key(_ profileID: UUID) -> String {

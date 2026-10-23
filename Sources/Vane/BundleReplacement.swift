@@ -14,7 +14,7 @@ enum BundleReplacement {
              afterLaunchJournal, beforeRollback, afterRollback,
              afterHealthyJournal, beforeCleanup, afterCleanup
     }
-    enum Launch { case unchanged, waitingForHealth, rolledBack, needsAttention }
+    enum Launch: Sendable { case unchanged, waitingForHealth, rolledBack, needsAttention }
 
     private enum State: String, Codable { case prepared, launching, healthy }
     private struct Journal: Codable {
