@@ -751,6 +751,7 @@ enum GitHubOAuth {
     private let storeCredential: (String, String) -> Bool
     private let systemStoreCredential: Bool
     private let systemDeleteCredential: Bool
+    private let credentialAccess: Passwords.CredentialAccess
     private let fetchPullRequests: (GitHubQuery, String) async -> Result<[GitHub.PR], GitHub.Trouble>
     private let renewal: GitHubTokenRenewal
     private var credentialVersion = 0
@@ -760,12 +761,14 @@ enum GitHubOAuth {
          readCredential: (() -> Passwords.CredentialRead)? = nil,
          deleteCredential: ((String) -> Bool)? = nil,
          storeCredential: ((String, String) -> Bool)? = nil,
+         credentialAccess: Passwords.CredentialAccess = .init(),
          oauthSecret: (() -> String?)? = nil,
          sendRefresh: GitHubTokenRenewal.Send? = nil,
          fetchPullRequests: ((GitHubQuery, String) async -> Result<[GitHub.PR], GitHub.Trouble>)? = nil) {
         self.profileID = profileID
         self.systemStoreCredential = storeCredential == nil
         self.systemDeleteCredential = deleteCredential == nil
+        self.credentialAccess = credentialAccess
         let host = Self.host
         let read = readCredential ?? {
             Passwords.readCredential(host: LiveFolders.host, profileID: profileID)
@@ -889,10 +892,12 @@ enum GitHubOAuth {
         guard let old = signIn else { return }
         credentialVersion += 1
         let version = credentialVersion
+        let session = GitHubSignedIn(login: old.login,
+            credential: credential.grant ?? GitHubCredential(accessToken: old.token))
         if let lock = try? GitHubRefreshLock.tryAcquire(renewal.lockURL) {
             if systemDeleteCredential {
                 signingOut = true
-                Task { await removeSystemCredential(old.login, token: old.token, holding: lock, version: version) }
+                Task { await removeSystemCredential(session, holding: lock, version: version) }
             } else { removeCredential(old.login, holding: lock) }
             return
         }
@@ -910,18 +915,22 @@ enum GitHubOAuth {
             }
             guard credentialVersion == version else { return }
             if systemDeleteCredential {
-                await removeSystemCredential(old.login, token: old.token, holding: lock, version: version)
+                await removeSystemCredential(session, holding: lock, version: version)
             } else { removeCredential(old.login, holding: lock) }
         }
     }
 
-    private func removeSystemCredential(_ login: String, token: String, holding lock: GitHubRefreshLock, version: Int) async {
+    private func removeSystemCredential(_ session: GitHubSignedIn, holding lock: GitHubRefreshLock, version: Int) async {
         defer { withExtendedLifetime(lock) {} }
-        let host = Self.host, profile = profileID
+        let host = Self.host, profile = profileID, access = credentialAccess
+        // Resolve this only after taking the refresh lock: a rotation that finished
+        // while sign-out waited is still the session the user asked to remove.
+        let authorized = renewal.signOutFingerprints(for: session)
         let removed = (try? await Passwords.perform {
-            guard case let .found(account, value) = Passwords.readCredential(host: host, profileID: profile),
-                  account == login, GitHubCredential.restore(value)?.accessToken == token else { return false }
-            return Passwords.delete(host: host, account: login, profileID: profile)
+            guard case let .found(account, value) = access.read(host, profile),
+                  account == session.login, let credential = GitHubCredential.restore(value),
+                  authorized.contains(GitHubSignedIn(login: account, credential: credential).fingerprint) else { return false }
+            return access.delete(host, account, profile)
         }) ?? false
         guard credentialVersion == version else { return }
         if !removed { say("Vane couldn’t remove your GitHub sign-in. Try signing out again.") }

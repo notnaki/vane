@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 /// One Keychain value holds the rotating pair, so a relaunch cannot combine tokens from
@@ -33,6 +34,14 @@ struct GitHubSignedIn: Sendable {
     let login: String
     let credential: GitHubCredential
     var token: String { credential.accessToken }
+    var fingerprint: Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        var value = Data(login.utf8)
+        value.append(0)
+        value.append(try! encoder.encode(credential))
+        return Data(SHA256.hash(data: value))
+    }
 }
 
 /// The file contains no secrets. flock covers separate processes, while the coordinator's
@@ -78,6 +87,9 @@ final class GitHubRefreshLock {
     /// Rotation consumes the previous refresh token. If Keychain is temporarily unwritable,
     /// retain the new pair in memory and retry saving it rather than spending the old pair.
     private var pending: (previous: GitHubSignedIn, next: GitHubSignedIn)?
+    /// Fingerprints retain proof of the last completed rotation without retaining its
+    /// spent token. A sign-out waiting for our refresh lock may delete that successor.
+    private var lastCommittedRotation: (previous: Data, next: Data)?
 
     init(lockURL: URL, read: @escaping () -> Passwords.CredentialRead,
          write: @escaping (String, String) -> Bool, secret: @escaping () -> String?,
@@ -172,9 +184,17 @@ final class GitHubRefreshLock {
         } catch { return .failure(.offline) }
     }
 
+    func signOutFingerprints(for session: GitHubSignedIn) -> [Data] {
+        let original = session.fingerprint
+        guard let rotation = lastCommittedRotation, rotation.previous == original else { return [original] }
+        return [original, rotation.next]
+    }
+
     private func store(_ next: GitHubSignedIn, replacing previous: GitHubSignedIn) async -> Bool {
-        if let commit { return await commit(previous, next) }
-        return write(next.login, next.credential.stored)
+        let stored = if let commit { await commit(previous, next) }
+            else { write(next.login, next.credential.stored) }
+        if stored { lastCommittedRotation = (previous.fingerprint, next.fingerprint) }
+        return stored
     }
 
     private static func request(_ request: URLRequest) async -> Result<GitHubCredential, GitHub.Trouble> {

@@ -238,6 +238,13 @@ enum Passwords {
         case unavailable(OSStatus)
     }
 
+    /// Immutable service endpoints let the integration use the production async path
+    /// with an isolated store, while real callers keep the creator/profile Keychain rules.
+    struct CredentialAccess: Sendable {
+        var read: @Sendable (String, UUID) -> CredentialRead = { readCredential(host: $0, profileID: $1) }
+        var delete: @Sendable (String, String, UUID) -> Bool = { Passwords.delete(host: $0, account: $1, profileID: $2) }
+    }
+
     enum CredentialCleanup: Sendable {
         case complete
         case unavailable(OSStatus)
