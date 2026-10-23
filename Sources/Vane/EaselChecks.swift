@@ -57,7 +57,7 @@ import Foundation
             do { try failing.save(saved); expect("failed edits preserve the last committed state", false) }
             catch { expect("failed edits preserve the last committed state", failing.board(saved.id)?.title == "Saved edit") }
             let retiredProfile = UUID()
-            let retired = EaselStore.shared(profileID: retiredProfile, directory: root)
+            let retired = EaselStore.shared(profileID: retiredProfile, directory: root, background: false)
             let retiredBoard = try retired.create()
             EaselStore.forget(retiredProfile, directory: root)
             do { try retired.save(retiredBoard); expect("forgotten repositories cannot recreate deleted profile data", false) }

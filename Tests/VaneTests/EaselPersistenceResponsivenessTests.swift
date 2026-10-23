@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import vane
 
@@ -156,6 +157,46 @@ final class EaselWorkerGate: @unchecked Sendable {
         XCTAssertEqual(EaselStore(profileID: profile, directory: directory).boards, store.boards)
         EaselStore.forget(profile, directory: directory)
         await EaselStore.waitForRetirement(profileID: profile, directory: directory)
+    }
+
+    func testTwoSessionsMutateTheLatestBoardInsideTheRepositoryLane() async throws {
+        let directory = try root(), profile = UUID(), gate = EaselWorkerGate("save")
+        let original = EaselBoard(items: [EaselItem(kind: .note, text: "Original")])
+        try JSONEncoder().encode(EaselStore.Archive(boards: [original])).write(to: EaselStore.file(profileID: profile, directory: directory))
+        let repository = EaselStore(profileID: profile, directory: directory, background: true, inspection: gate.inspect)
+        await repository.waitUntilReady()
+        let first = EaselSession(repository), second = EaselSession(repository)
+        first.selected = original.id; second.selected = original.id
+        XCTAssertTrue(first.edit { $0.items[0].text = "First session" })
+        await gate.waitForEntry()
+        XCTAssertTrue(second.edit { $0.items.append(EaselItem(kind: .note, text: "Second session")) })
+        // Observe actual admission of both edits while the first writer is blocked.
+        for await count in repository.$pendingWrites.values { if count >= 2 { break } }
+        gate.resume()
+        await first.waitForEdits(); await second.waitForEdits()
+        let committed = try XCTUnwrap(repository.board(original.id))
+        XCTAssertEqual(committed.items.map(\.text), ["First session", "Second session"])
+        try await repository.undoAsync(original.id)
+        XCTAssertEqual(repository.board(original.id)?.items.map(\.text), ["First session"])
+    }
+    func testSnapshotWaitsForEarlierOtherSessionEditsButNotLaterDependentIntents() async throws {
+        let directory = try root(), profile = UUID(), gate = EaselWorkerGate("save")
+        let original = EaselBoard(title: "Original")
+        try JSONEncoder().encode(EaselStore.Archive(boards: [original])).write(to: EaselStore.file(profileID: profile, directory: directory))
+        let repository = EaselStore(profileID: profile, directory: directory, background: true, inspection: gate.inspect)
+        await repository.waitUntilReady()
+        let editing = EaselSession(repository), exporting = EaselSession(repository)
+        editing.selected = original.id; exporting.selected = original.id
+        XCTAssertTrue(editing.edit { $0.title = "Before export" })
+        await gate.waitForEntry()
+        var snapshot: EaselBoard?
+        exporting.performAsync(mutation: false) { snapshot = try await repository.snapshotAsync(original.id) }
+        // A later same-session mutation waits behind this export, and must not become
+        // a dependency of the snapshot (which would form a cycle).
+        XCTAssertTrue(exporting.edit { $0.title = "After export" })
+        gate.resume(); await exporting.waitForEdits(); await editing.waitForEdits()
+        XCTAssertEqual(snapshot?.title, "Before export")
+        XCTAssertEqual(repository.board(original.id)?.title, "After export")
     }
 
 }

@@ -655,6 +655,7 @@ struct Space: Identifiable, Codable, Equatable {
     @discardableResult
     func create(name: String, colorHex: String? = nil) -> Profile {
         let p = Profile(name: name, colorHex: colorHex ?? Self.palette[profiles.count % Self.palette.count])
+        Suspension.SpaceState.registerNewProfile(profileID: p.id, in: directory)
         profiles.append(p)
         persist()
         return p
@@ -746,6 +747,7 @@ struct Space: Identifiable, Codable, Equatable {
         EaselStore.forget(id, directory: directory)
         do { try ReadingQueueStore.forget(profileID: id, directory: directory) }
         catch { Toasts.show("Could not remove offline articles: \(error.localizedDescription)") }
+        await Suspension.SpaceState.retire(profileID: id, in: directory)
         Tab.discardPreparedFirstPage(for: id)
         FavouritePreviews.shared.forget(profileID: id)
 

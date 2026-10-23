@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import vane
 
@@ -48,4 +49,40 @@ import XCTest
         let cleared = await Suspension.SpaceState.removeAsync(space: space.id, profileID: destination, in: manager.directory)
         XCTAssertTrue(cleared)
     }
+    func testDeletingProfileRetiresBlockedQueuedWritesRetriesAndCaches() async throws {
+        let manager = try manager(), victim = manager.create(name: "Delete")
+        let space = manager.createSpace(name: "Delete state", in: victim.id)
+        let key = "https://delete.example.test/"
+        let saved = await Suspension.SpaceState.saveAsync([key: Parked(title: "Old state")],
+            space: space.id, profileID: victim.id, in: manager.directory)
+        XCTAssertTrue(saved)
+        let session = ProfileManager.sessionURL(for: victim.id, in: manager.directory)
+        // A failed job remains available for flush retry until profile retirement.
+        SessionPersistence.shared.enqueue(file: session) {
+            try? Data("old retry".utf8).write(to: session, options: .atomic)
+            return false
+        }
+        let gate = EaselWorkerGate("session")
+        let blocker = Task { await SessionPersistence.shared.perform { gate.inspect("session") } }
+        await gate.waitForEntry()
+        XCTAssertTrue(Suspension.SpaceState.enqueueSave([key: Parked(title: "Queued stale state")],
+            space: space.id, profileID: victim.id, in: manager.directory))
+        let deletion = Task { await manager.deleteAsync(victim.id) }
+        for await profiles in manager.$profiles.values { if !profiles.contains(where: { $0.id == victim.id }) { break } }
+        // Deletion has yielded at its retirement barrier while the disk lane is blocked.
+        XCTAssertFalse(Suspension.SpaceState.enqueueSave([key: Parked(title: "Too late")],
+            space: space.id, profileID: victim.id, in: manager.directory))
+        gate.resume(); await blocker.value
+        let deleted = await deletion.value; XCTAssertTrue(deleted)
+        let flushed = await SessionPersistence.shared.flush(); XCTAssertTrue(flushed)
+        let sidecar = Suspension.SpaceState.url(for: victim.id, in: manager.directory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: session.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
+        XCTAssertTrue(Suspension.SpaceState.load(space: space.id, profileID: victim.id, in: manager.directory).isEmpty)
+        let rejected = await Suspension.SpaceState.saveAsync([key: Parked(title: "Resurrect")],
+            space: space.id, profileID: victim.id, in: manager.directory)
+        XCTAssertFalse(rejected)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
+    }
+
 }

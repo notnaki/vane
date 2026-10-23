@@ -98,11 +98,11 @@ private actor EaselArchiveWriter {
 @MainActor final class EaselStore: ObservableObject {
     private static var retiredTasks: [URL: Task<Void, Never>] = [:]
     private static var stores: [URL: EaselStore] = [:]
-    static func shared(profileID: UUID, directory: URL,
+    static func shared(profileID: UUID, directory: URL, background: Bool = true,
                        inspection: @escaping @Sendable (String) throws -> Void = { _ in }) -> EaselStore {
         let key = file(profileID: profileID, directory: directory).standardizedFileURL
         if let store = stores[key] { return store }
-        let store = EaselStore(profileID: profileID, directory: directory, background: true,
+        let store = EaselStore(profileID: profileID, directory: directory, background: background,
                                inspection: inspection, predecessor: retiredTasks[key])
         stores[key] = store
         return store
@@ -116,6 +116,11 @@ private actor EaselArchiveWriter {
         // A subsequent repository for this URL waits for this retirement too; deleting
         // an older generation must never remove a replacement store's archive.
         let pending = store?.tail, previous = retiredTasks[key]
+        if pending == nil && previous == nil {
+            // Eager offline stores have no background lane to retire.
+            try? FileManager.default.removeItem(at: key)
+            return
+        }
         retiredTasks[key] = Task.detached(priority: .utility) {
             if let previous { await previous.value }
             if let pending { await pending.value }
@@ -150,6 +155,7 @@ private actor EaselArchiveWriter {
     @Published private(set) var boards: [EaselBoard] = []
     @Published private(set) var error: String?
     @Published private(set) var loading = false
+    @Published private(set) var pendingWrites = 0
     let background: Bool
     private var tail: Task<Void, Never>?
     private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
@@ -227,7 +233,7 @@ private actor EaselArchiveWriter {
         // Include work admitted while waiting, rather than returning an older generation.
         while true {
             let asked = generation
-            for task in intents.values { await task.value }
+            for intent in intents.values { await intent.task.value }
             if let pending = tail { await pending.value }
             if generation == asked { break }
         }
@@ -265,19 +271,25 @@ private actor EaselArchiveWriter {
             waiting.forEach { $0.resume() }
         }
     }
-    private var intents: [UUID: Task<Void, Never>] = [:]
-    func trackIntent(_ task: Task<Void, Never>, id: UUID) { intents[id] = task; generation &+= 1 }
+    private struct Intent { var task: Task<Void, Never>; var order: Int; var mutation: Bool }
+    private var intents: [UUID: Intent] = [:]
+    func reserveIntent() -> Int { generation &+= 1; return generation }
+    func trackIntent(_ task: Task<Void, Never>, id: UUID, order: Int, mutation: Bool) {
+        intents[id] = Intent(task: task, order: order, mutation: mutation)
+    }
     func finishIntent(_ id: UUID) { intents[id] = nil }
     private var generation = 0
     @TaskLocal nonisolated static var admittedIntent = false
-    private func ordered<T: Sendable>(_ work: @escaping @MainActor () async throws -> T) async throws -> T {
+    @TaskLocal nonisolated static var intentOrder: Int?
+    private func ordered<T: Sendable>(mutation: Bool = true, _ work: @escaping @MainActor () async throws -> T) async throws -> T {
         guard Self.admittedIntent || !AppLifecycle.shared.persistenceExitInProgress else { throw Failure.exiting }
-        hasMutationIntent = true
+        if mutation { hasMutationIntent = true; pendingWrites += 1 }
         let previous = tail
         generation &+= 1
         // An admitted mutation belongs to the repository. Cancelling a view task must not
         // interrupt an atomic write or leave disk newer than the published/undo state.
         let task = Task { @MainActor [self] in
+            defer { if mutation { pendingWrites -= 1 } }
             if let previous { await previous.value }
             await waitForResume()
             guard !invalidated else { throw Failure.missing }
@@ -290,6 +302,34 @@ private actor EaselArchiveWriter {
         try await ordered { [self] in
             let board = EaselBoard(title: title)
             try await commitAsync(boards + [board], changed: [board])
+            return board
+        }
+    }
+    /// Resolve user edits inside the repository lane, after every older writer. Sessions
+    /// never carry a pre-write whole-board snapshot across this serialization boundary.
+    @discardableResult func mutateAsync(_ id: UUID, _ change: @escaping @MainActor (inout EaselBoard) throws -> Void) async throws -> EaselBoard {
+        try await ordered { [self] in
+            guard let previous = board(id) else { throw Failure.missing }
+            var updated = previous
+            try change(&updated)
+            guard updated != previous else { return previous }
+            updated.modified = .now
+            try await commitAsync(boards.map { $0.id == id ? updated : $0 }, changed: [updated])
+            past[id, default: []].append(previous)
+            if past[id]!.count > 50 { past[id]!.removeFirst() }
+            future[id] = []
+            return updated
+        }
+    }
+    /// Reads wait for every earlier admitted mutation intent, including another session's
+    /// queued edit. The admission cutoff excludes later actions and prevents wait cycles.
+    func snapshotAsync(_ id: UUID) async throws -> EaselBoard {
+        let cutoff = Self.intentOrder ?? (generation + 1)
+        let earlier = intents.values.filter { $0.mutation && $0.order < cutoff }.map(\.task)
+        for task in earlier { await task.value }
+        return try await ordered(mutation: false) { [self] in
+            if let error { throw NSError(domain: "Vane.Easels", code: 1, userInfo: [NSLocalizedDescriptionKey: error]) }
+            guard let board = board(id) else { throw Failure.missing }
             return board
         }
     }

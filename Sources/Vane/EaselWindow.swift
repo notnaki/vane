@@ -19,17 +19,21 @@ import UniformTypeIdentifiers
     private var pending: Task<Void, Never>?
     /// Queue user intents, then derive each edit from the last durable board. A failed
     /// operation leaves the board and its undo stacks intact and reports the error.
-    @discardableResult func performAsync(_ work: @escaping @MainActor () async throws -> Void) -> Bool {
+    @discardableResult func performAsync(mutation: Bool = true, _ work: @escaping @MainActor () async throws -> Void) -> Bool {
         guard EaselStore.admittedIntent || !AppLifecycle.shared.persistenceExitInProgress else {
             message = EaselStore.Failure.exiting.localizedDescription; return false
         }
-        let previous = pending, intentID = UUID()
+        let previous = pending, intentID = UUID(), order = repository.reserveIntent()
         pending = Task { @MainActor [self] in
             if let previous { await previous.value }
             defer { repository.finishIntent(intentID) }
-            do { try await EaselStore.$admittedIntent.withValue(true) { try await work() } } catch { message = error.localizedDescription }
+            do {
+                try await EaselStore.$admittedIntent.withValue(true) {
+                    try await EaselStore.$intentOrder.withValue(order) { try await work() }
+                }
+            } catch { message = error.localizedDescription }
         }
-        if let pending { repository.trackIntent(pending, id: intentID) }
+        if let pending { repository.trackIntent(pending, id: intentID, order: order, mutation: mutation) }
         return true
     }
     func waitForEdits() async { if let pending { await pending.value } }
@@ -41,9 +45,8 @@ import UniformTypeIdentifiers
         if repository.background {
             guard selected != nil else { return false }
             return performAsync { [self] in
-                guard var board else { throw EaselStore.Failure.missing }
-                change(&board)
-                try await repository.saveAsync(board)
+                guard let selected else { throw EaselStore.Failure.missing }
+                try await repository.mutateAsync(selected, change)
                 pruneLiveItems()
             }
         }
@@ -59,9 +62,8 @@ import UniformTypeIdentifiers
         return await withCheckedContinuation { result in
             let accepted = performAsync { [self] in
                 do {
-                    guard var board else { throw EaselStore.Failure.missing }
-                    change(&board)
-                    try await repository.saveAsync(board)
+                    guard let selected else { throw EaselStore.Failure.missing }
+                    try await repository.mutateAsync(selected, change)
                     pruneLiveItems(); result.resume(returning: true)
                 } catch { message = error.localizedDescription; result.resume(returning: false) }
             }
@@ -157,8 +159,9 @@ import UniformTypeIdentifiers
                 board = existing
             } else { board = try await repository.createAsync() }
             let session = store.tabs.first { $0.easelID == board.id }?.easelSession ?? EaselSession(repository)
-            board.items.append(session.placed(item, in: board))
-            try await repository.saveAsync(board)
+            try await repository.mutateAsync(board.id) { latest in
+                latest.items.append(session.placed(item, in: latest))
+            }
             guard let tab = store.openEasel(board.id) else { return false }
             tab.easelSession?.requestedImage = item.id
             return true
@@ -375,7 +378,7 @@ private struct EaselEditor: View {
                 .background(EaselColors.panel, in: .rect(cornerRadius: 10)).padding(16)
         }
         .overlay(alignment: .bottomTrailing) {
-            Label("Saved locally", systemImage: "internaldrive")
+            Label(repository.pendingWrites > 0 ? "Saving…" : "Saved locally", systemImage: "internaldrive")
                 .font(.caption).foregroundStyle(.secondary).padding(16).allowsHitTesting(false)
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { viewportSize = $0 }
@@ -422,8 +425,8 @@ private struct EaselEditor: View {
                 Button("Paste") { paste() }
                 Divider()
                 Button("Duplicate Easel") {
-                    session.performAsync {
-                        let snapshot = board
+                    session.performAsync(mutation: false) {
+                        let snapshot = try await repository.snapshotAsync(boardID)
                         let data = try await Task.detached { try JSONEncoder().encode(snapshot) }.value
                         openBoard(try await repository.importBoardAsync(data).id)
                     }
@@ -609,15 +612,19 @@ private struct EaselEditor: View {
     private func exportBoard() {
         let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "Easel.json"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let snapshot = board
-        session.performAsync {
+        session.performAsync(mutation: false) {
+            let snapshot = try await repository.snapshotAsync(boardID)
             try await Task.detached { try JSONEncoder().encode(snapshot).write(to: url, options: .atomic) }.value
         }
     }
     private func exportPNG() {
         let panel = NSSavePanel(); panel.allowedContentTypes = [.png]; panel.nameFieldStringValue = "Easel.png"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        session.perform { try EaselWindow.png(for: board, profileID: repository.profileID).write(to: url, options: .atomic) }
+        session.performAsync(mutation: false) {
+            let snapshot = try await repository.snapshotAsync(boardID)
+            let pixels = try EaselWindow.png(for: snapshot, profileID: repository.profileID)
+            try await Task.detached { try pixels.write(to: url, options: .atomic) }.value
+        }
     }
     private func deleteBoard() {
         let alert = NSAlert(); alert.messageText = "Delete this Easel?"

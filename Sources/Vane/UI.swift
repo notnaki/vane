@@ -2809,7 +2809,8 @@ private struct SpaceMenu: View {
     // The crash snapshot may still name the moved Space and carry its tabs under the source
     // profile. Rewrite both profiles now; waiting for the 30-second timer can resurrect a
     // duplicate in the source if Vane exits before then.
-    if !Session.save() { Toasts.show("Could not save session", in: store) }
+    Session.enqueueSave()
+    if !(await SessionPersistence.shared.flush()) { Toasts.show("Could not save session", in: store) }
 }
 
 /// A grid of SF Symbols. ponytail: a fixed list, not a symbol browser — 24 covers what a

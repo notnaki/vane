@@ -154,8 +154,9 @@ extension PaletteCommand {
             out += [
                 PaletteCommand(.closeTab, icon: "archivebox"),
                 PaletteCommand("Duplicate Easel", icon: "plus.square.on.square") {
-                    guard let session = tab.easelSession, let board = session.board else { return }
-                    session.performAsync {
+                    guard let session = tab.easelSession, let id = session.selected else { return }
+                    session.performAsync(mutation: false) {
+                        let board = try await session.repository.snapshotAsync(id)
                         let bytes = try await Task.detached { try JSONEncoder().encode(board) }.value
                         _ = await store.openEaselAsync(try await session.repository.importBoardAsync(bytes).id)
                     }

@@ -184,13 +184,18 @@ import WebKit
                 guard let png = PageCapture.png(image) else { throw CaptureError.encoding }
                 self.cancel()
                 let store = TabStore.all.first { $0.window === window && $0.profileID == self.tab.profileID }
-                let canSave = store.map { !$0.isPrivate && !$0.isLittle } == true
-                    && source.flatMap { EaselItem.webURL($0.absoluteString) } != nil
-                let boards = canSave ? EaselStore.shared(profileID: self.tab.profileID, directory: Store.directory).boards : []
-                let add: (@MainActor (UUID?) async -> Bool)? = canSave ? { [weak store] id in
-                    guard let store, let source else { return false }
-                    return await EaselWindow.addCapture(image, title: title, source: source.absoluteString, to: id, in: store)
-                } : nil
+                var boards: [EaselBoard] = []
+                var add: (@MainActor (UUID?) async -> Bool)?
+                if let store, !store.isPrivate, !store.isLittle, let source,
+                   EaselItem.webURL(source.absoluteString) != nil {
+                    let repository = EaselStore.shared(profileID: self.tab.profileID, directory: Store.directory)
+                    await repository.waitUntilReady()
+                    boards = repository.boards
+                    add = { @MainActor [weak store] id in
+                        guard let store else { return false }
+                        return await EaselWindow.addCapture(image, title: title, source: source.absoluteString, to: id, in: store)
+                    }
+                }
                 CapturePreviewController.present(image: image, png: png, in: window, boards: boards, addToEasel: add)
             } catch {
                 guard self.live, !Task.isCancelled else { return }
