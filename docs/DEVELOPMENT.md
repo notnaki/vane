@@ -224,9 +224,24 @@ closes and its dismissal fade finishes.
 VANE_UI_PERFORMANCE=1 swift test --filter SearchPresentationPerformanceTests
 ```
 
+`LiveSidebarResponsivenessTests` mounts the production browser host with three loaded
+WebKit documents and a selected page in the content card. Its normal run serves a
+150-card HTML document over local HTTP and checks that folder disclosure, search edits,
+and tab selection preserve the page and its input. Timing runs compare 28- and 300-tab
+outlines. To exercise a public website in the content card instead:
+
+```sh
+VANE_UI_PERFORMANCE=1 VANE_LIVE_SITE_URL=https://obsidian.md/ swift test --filter LiveSidebarResponsivenessTests
+```
+
+Only three pages are loaded; the remaining rows are suspended tabs. These timings measure
+native update/layout cost, not displayed frame rate or the cost of loading hundreds of
+websites. Also check the affected profile with its actual pages when diagnosing stutter.
+
 Folder-opening diagnostics report toggle time, opening/closing layout, run-loop gaps, and
 mounted native tab controls for 20/300-tab folders. They also guard against repeated
-lock scans in an unprotected 3,000-tab strip:
+lock scans in an unprotected 3,000-tab strip and inactive-tab scans in the offscreen
+media layer:
 
 ```sh
 VANE_UI_PERFORMANCE=1 swift test --filter FolderOpeningPerformanceTests

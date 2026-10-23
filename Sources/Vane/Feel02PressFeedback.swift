@@ -66,7 +66,9 @@ import SwiftUI
 }
 
 final class Feel02PressAnchorView: NSView {
-    var enabled = true
+    var enabled = true {
+        didSet { if !enabled { pressMonitor?.cancel(for: self) } }
+    }
     var changed: ((Bool) -> Void)?
     weak var pressMonitor: Feel02PressMonitor?
 
@@ -76,6 +78,14 @@ final class Feel02PressAnchorView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        if frame.origin != newOrigin { pressMonitor?.cancel(for: self) }
+        super.setFrameOrigin(newOrigin)
+    }
+    override func setFrameSize(_ newSize: NSSize) {
+        if frame.size != newSize { pressMonitor?.cancel(for: self) }
+        super.setFrameSize(newSize)
+    }
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if window !== newWindow { pressMonitor?.cancel(for: self) }
         super.viewWillMove(toWindow: newWindow)

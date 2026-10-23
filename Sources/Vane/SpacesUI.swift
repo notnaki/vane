@@ -972,13 +972,20 @@ private struct SpaceSwipe: ViewModifier {
     private func invalidatePreparation() {
         preparation?.cancel()
         preparation = nil
+        // Detach and revoke immediately, including protected peer changes. Keep
+        // ownership until idle so the input event does not also destroy SwiftUI's
+        // focus/hover/layout graphs for every captured row.
+        let retired = Array(preparedSlides.values)
         discardPreparation()
+        stalePreparedSlides.append(contentsOf: retired)
     }
 
     /// Hidden hosting trees share the UI thread with visible travel and scrolling.
     /// Keep their work behind a quiet interval, even if another publisher reschedules it.
     func postponePreparation(in store: TabStore, by delay: TimeInterval) {
         preparationNotBefore = max(preparationNotBefore, ProcessInfo.processInfo.systemUptime + delay)
+        preparation?.cancel()
+        preparation = nil
         // Invalidate reuse immediately, but retain the hidden trees until idle: their
         // AppKit/SwiftUI teardown is also expensive on the first scroll event.
         stalePreparedSlides.append(contentsOf: preparedSlides.values)
@@ -1014,8 +1021,25 @@ private struct SpaceSwipe: ViewModifier {
     func schedulePreparation(in store: TabStore) {
         guard monitor != nil, self.store === store, !store.spaceSwiping, !landing,
               store.palette == nil, !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+        // The geometry anchor can acknowledge the same layout several times. Store
+        // and peer mutations already invalidate synchronously through the observers;
+        // keep ready captures when only an unchanged acknowledgement arrives.
+        if !preparedSlides.isEmpty, let host = store.window?.contentView as? BrowserWindowHost,
+           let origin = store.swipeSpace {
+            let strip = store.strip
+            let matches = preparedSlides.allSatisfy { id, slide in
+                guard let target = strip.first(where: { $0.id == id }),
+                      let anchor = target.profileID != store.profileID
+                        ? store.spaceGesture.stripView : store.spaceGesture.sectionsView else { return false }
+                return slide.preparedFor(origin: origin, target: target,
+                    frame: anchor.convert(anchor.bounds, to: host), width: SidebarWidth.shared.width)
+            }
+            if matches { return }
+        }
+        guard preparation == nil else { return }
         invalidatePreparation()
         let work = DispatchWorkItem { [weak self, weak store] in
+            self?.preparation = nil
             guard let self, let store, self.monitor != nil, self.store === store,
                   !store.spaceSwiping, !self.landing, store.palette == nil,
                   !store.libraryOpen, store.librarySwipeProgress == nil else { return }

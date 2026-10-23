@@ -1131,6 +1131,37 @@ import XCTest
         XCTAssertTrue(remaining.allSatisfy { $0.superview == nil })
     }
 
+    func testUnchangedAnchorUpdatesKeepPreparedSidebars() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        for _ in 0..<5 { monitor.schedulePreparation(in: store) }
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                      "Repeated layout acknowledgements must not rebuild identical hidden trees")
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared)
+        window.setContentSize(NSSize(width: 340, height: 500))
+        window.contentView?.layoutSubtreeIfNeeded()
+        monitor.schedulePreparation(in: store)
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        XCTAssertFalse(monitor.preparedSlides[spaces[1].id] === prepared,
+                       "Changed viewport geometry still needs a fresh capture")
+    }
+
+    func testSearchDefersDestructionOfPreparedHostingTrees() async throws {
+        let (store, spaces, _, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        weak var outgoing = monitor.preparedSlides[spaces[1].id]?.outgoing
+        XCTAssertNotNil(outgoing)
+        store.palette = .newTab
+        XCTAssertTrue(monitor.preparedSlides.isEmpty)
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertNotNil(outgoing, "Opening search must retire eligibility without destroying whole SwiftUI trees on the key event")
+        store.palette = nil
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        XCTAssertNil(outgoing, "The retired tree must be released once search dismissal settles")
+    }
+
     private func waitForPreparation(_ monitor: SwipeMonitor, target: UUID) async throws {
         let deadline = ContinuousClock.now + .seconds(2)
         while monitor.preparedSlides[target] == nil, ContinuousClock.now < deadline {

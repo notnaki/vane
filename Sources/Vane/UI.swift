@@ -305,7 +305,9 @@ struct TabPage: View {
                     // once more while removing it after a termination publication.
                     if !tab.needsRecovery {
                         WebView(web: tab.web,
-                            live: keepPages ? store.everyTab.filter { !store.isTabLocked($0.id) && store.ownsPage($0) }.compactMap(\.existingWeb) : [],
+                            live: keepPages ? store.everyTab.filter {
+                                $0.existingWeb != nil && store.ownsPage($0) && !store.isTabLocked($0.id)
+                            }.compactMap(\.existingWeb) : [],
                             offscreen: offscreen, tab: tab, store: store)
                     }
                 }
@@ -3649,6 +3651,7 @@ private struct FolderDrop: DropDelegate {
 /// trailing edge. One shape so the list reads as one list.
 struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.feel02PressFeedbackEnabled) private var interactiveSurface
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let selected: Bool
     /// In a multi-select. It wears the same fill as `selected` — a selection is a selection —
@@ -3671,6 +3674,34 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     @Environment(\.ghostTileMorph) private var morph
 
     var body: some View {
+        if interactiveSurface {
+            surface
+                .modifier(Feel02PressFeedback(enabled: keyboardEnabled && !held))
+                .contentShape(.rect)
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active: if hovering != isEnabled { hovering = isEnabled }
+                    case .ended: if hovering { hovering = false }
+                    }
+                }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in
+                    // AppKit may omit an exit when disclosure/scrolling moves a
+                    // hovered row away from a stationary pointer.
+                    if hovering { hovering = false }
+                }
+                .onDisappear { hovering = false }
+                .onChange(of: isEnabled) { _, enabled in if !enabled { hovering = false } }
+                .onTapGesture { InteractionSounds.play(.press); action() }
+                .vaneKeyboardAction(enabled: keyboardEnabled && !held, action: action)
+                .environment(\.rowHovering, isEnabled && (held || hovering))
+        } else {
+            // Frozen swipe surfaces share the pixels, without installing focus,
+            // pointer and keyboard handlers for each invisible row.
+            surface.environment(\.rowHovering, held)
+        }
+    }
+
+    private var surface: some View {
         // Spacing sits only between the icon and the title. The title runs straight up to
         // the trailing controls, whose pressable squares already hold their glyphs clear.
         HStack(spacing: 0) {
@@ -3712,13 +3743,6 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
                     .position(x: morph.iconX, y: morph.height / 2)
             }
         }
-        .modifier(Feel02PressFeedback(enabled: keyboardEnabled && !held))
-        .contentShape(.rect)
-        .onHover { hovering = $0 && isEnabled }
-        .onChange(of: isEnabled) { _, enabled in if !enabled { hovering = false } }
-        .onTapGesture { InteractionSounds.play(.press); action() }
-        .vaneKeyboardAction(enabled: keyboardEnabled && !held, action: action)
-        .environment(\.rowHovering, isEnabled && (held || hovering))
     }
 
     private var highlightOpacity: Double {
