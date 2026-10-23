@@ -9,6 +9,25 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+@MainActor private final class DisabledKeyboardFixture: ObservableObject {
+    @Published var disabled = false
+    @Published var requestFocus = false
+    var focused = false
+    var presses = 0
+}
+
+private struct DisabledKeyboardSurface: View {
+    @ObservedObject var state: DisabledKeyboardFixture
+
+    var body: some View {
+        Text("Sidebar row")
+            .frame(width: 200, height: 40)
+            .vaneKeyboardAction(requestFocus: $state.requestFocus,
+                                focusChanged: { state.focused = $0 }) { state.presses += 1 }
+            .disabled(state.disabled)
+    }
+}
+
 @MainActor final class KeyboardAccessibilityTests: XCTestCase {
     private func fixture(isPrivate: Bool = true) -> (TabStore, NSWindow, WKWebView) {
         TestEnvironment.prepare()
@@ -249,6 +268,56 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
         window.sendEvent(event)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(presses, 1, "Space activates the focused row")
+    }
+
+    func testDisabledSidebarControlLeavesKeyboardNavigationAndRejectsActivation() async throws {
+        _ = NSApplication.shared
+        let previousPolicy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.accessory)
+        defer { NSApp.setActivationPolicy(previousPolicy) }
+        let state = DisabledKeyboardFixture()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 250, height: 150),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: DisabledKeyboardSurface(state: state))
+        window.contentView = host
+        defer { window.contentView = nil; window.close() }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(150))
+        state.requestFocus = true
+        try await compatibilityWait { state.focused }
+        func pressSpace() throws {
+            window.sendEvent(try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: " ",
+                charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49)))
+        }
+        try pressSpace()
+        XCTAssertEqual(state.presses, 1)
+        state.disabled = true
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(state.focused, "A hidden sidebar must release its focused control")
+        window.makeFirstResponder(nil)
+        window.selectNextKeyView(nil)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(state.focused, "Tab must skip disabled sidebar controls")
+        state.requestFocus = true
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(state.focused, "A queued focus request must not enter a hidden sidebar")
+        try pressSpace()
+        XCTAssertEqual(state.presses, 1, "A hidden row cannot activate")
+        state.requestFocus = false
+        state.disabled = false
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        window.makeFirstResponder(nil)
+        window.selectNextKeyView(nil)
+        try await compatibilityWait { state.focused }
+        try pressSpace()
+        XCTAssertEqual(state.presses, 2, "Revealing the sidebar restores keyboard navigation")
     }
 
 

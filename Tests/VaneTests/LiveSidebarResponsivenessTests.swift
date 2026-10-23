@@ -109,6 +109,16 @@ import XCTest
                 host.layoutSubtreeIfNeeded()
                 let disclosure = start.duration(to: .now)
                 try await Task.sleep(for: .milliseconds(600))
+                let hide = ContinuousClock.now
+                store.sidebarShown = false
+                host.layoutSubtreeIfNeeded()
+                let hiding = hide.duration(to: .now)
+                try await Task.sleep(for: .milliseconds(250))
+                let show = ContinuousClock.now
+                store.sidebarShown = true
+                host.layoutSubtreeIfNeeded()
+                let showing = show.duration(to: .now)
+                try await Task.sleep(for: .milliseconds(250))
                 let open = ContinuousClock.now
                 store.palette = .newTab
                 host.layoutSubtreeIfNeeded()
@@ -133,7 +143,7 @@ import XCTest
                     let draft = try await web.evaluateJavaScript("document.getElementById('draft').value") as? String
                     XCTAssertEqual(draft, "edited draft retained", "Disclosure/search must not reload the live document")
                 }
-                print("LIVE_SIDEBAR tabs=\(count) remote=\(remote != nil) iteration=\(iteration) disclosure=\(disclosure) open=\(opening) typing_max=\(typing) max_gap_ms=\(largestGap * 1000)")
+                print("LIVE_SIDEBAR tabs=\(count) remote=\(remote != nil) iteration=\(iteration) disclosure=\(disclosure) hide=\(hiding) show=\(showing) open=\(opening) typing_max=\(typing) max_gap_ms=\(largestGap * 1000)")
             }
             store.current = tabs[15].id
             host.layoutSubtreeIfNeeded()

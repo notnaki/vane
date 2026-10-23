@@ -62,10 +62,13 @@ private struct KeyboardAction: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .focusable(enabled && isEnabled)
+            .focusable(enabled)
             .focused($focused)
             .focusEffectDisabled()
             .onChange(of: focused) { _, value in focusChanged?(value) }
+            .onChange(of: isEnabled) { _, value in
+                if !value { focused = false }
+            }
             .onChange(of: requestFocus?.wrappedValue, initial: true) { _, requested in
                 guard requested == true, enabled, isEnabled else { return }
                 focusVisibility.showForKeyboard()

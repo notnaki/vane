@@ -4,11 +4,11 @@ import SwiftUI
 /// not the lifetime of every tooltip, focus target and drag destination inside it.
 /// The cache supplies no retained rows for a large outline, preserving virtualization.
 struct SidebarSectionRows<Content: View>: View {
+    @SidebarObserved var store: TabStore
     let snapshot: Feel02SidebarRowsCache.Snapshot
     var collapsed = false
     let transition: AnyTransition
     @ViewBuilder let content: (SidebarRows.Row, Int, Int) -> Content
-    @EnvironmentObject private var store: TabStore
 
     var body: some View {
         let rows = collapsed ? [] : snapshot.rows

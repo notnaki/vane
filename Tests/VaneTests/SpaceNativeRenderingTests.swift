@@ -661,7 +661,7 @@ import XCTest
             NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
             try await Task.sleep(for: .milliseconds(40))
             let showing = TabStore.all.first { $0.window === window }
-            print("RAPID_PROFILE leg=\(leg) actual=\(showing?.profileID == profiles[0].id ? 0 : 1) swiping=\(showing?.spaceSwiping == true) anchor=\(showing?.spaceGesture.stripView?.window === window)")
+            print("RAPID_PROFILE leg=\(leg) actual=\(showing?.profileID == profiles[0].id ? 0 : 1) installed=\(showing?.spaceGesture.monitor.isInstalled == true) swiping=\(showing?.spaceSwiping == true) anchor=\(showing?.spaceGesture.stripView?.window === window)")
             XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID,
                            spaces[leg.isMultiple(of: 2) ? 1 : 0].id,
                            "Every fast boundary crossing and reversal must be accepted")
@@ -1080,6 +1080,23 @@ import XCTest
         XCTAssertNil(host.spaceSlide)
     }
 
+    func testAnotherWindowLosingFocusDoesNotCancelThisWindowsSpaceGesture() throws {
+        let (store, _, window, monitor) = try fixture()
+        monitor.track(-40, width: SidebarWidth.shared.width, in: store)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let slide = try XCTUnwrap(host.spaceSlide)
+        let unrelated = NSWindow(contentRect: .zero, styleMask: .borderless,
+                                 backing: .buffered, defer: false)
+        unrelated.isReleasedWhenClosed = false
+        defer { unrelated.close() }
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: unrelated)
+        XCTAssertTrue(store.spaceSwiping, "Focus notifications belong to their own browser window")
+        XCTAssertTrue(host.spaceSlide === slide)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        XCTAssertFalse(store.spaceSwiping, "This window losing focus must still cancel an uncommitted drag")
+        XCTAssertNil(host.spaceSlide)
+    }
+
     func testDisappearingSourceDoesNotUncoverAVisibleArrivingSidebarBeforeAcknowledgement() async throws {
         let (source, spaces, window, _) = try fixture()
         let (profile, target) = adjacentProfile(to: source, after: spaces.last!)
@@ -1180,9 +1197,56 @@ import XCTest
                       "Search dismissal must reuse the same trees, without another expensive layout")
     }
 
+    func testSidebarHideAndRevealReusePreparedSurfaces() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        for _ in 0..<2 {
+            Motion.instant { store.sidebarShown = false }
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(80))
+            XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                          "Hiding chrome must retain unchanged, hidden Space surfaces")
+            XCTAssertFalse(monitor.mine(ScrollEvent(window: window, phase: .began), store),
+                           "A hidden sidebar cannot claim gestures")
+            Motion.instant { store.sidebarShown = true }
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(450))
+            XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                          "Cmd-S must not rebuild the entire neighboring sidebar graph")
+        }
+        monitor.track(-40, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === prepared,
+                      "The reused surface must still be claimable for a real Space switch")
+    }
+
+    func testHiddenSidebarStillRevokesStructurallyInvalidPreparedSurfaces() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        Motion.instant { store.sidebarShown = false }
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared)
+        store.sidebarPreviewInvalidated.send()
+        XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                      "Protection changes must revoke hidden captures synchronously")
+        XCTAssertNil(prepared.superview)
+        Motion.instant { store.sidebarShown = true }
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        XCTAssertFalse(monitor.preparedSlides[spaces[1].id] === prepared)
+        let ready = Array(monitor.preparedSlides.values)
+        monitor.remove()
+        XCTAssertTrue(monitor.preparedSlides.isEmpty)
+        XCTAssertTrue(ready.allSatisfy { $0.superview == nil },
+                      "Full profile/window teardown must still release retained surfaces")
+    }
+
     func testSearchDefersDestructionOfStructurallyInvalidatedHostingTrees() async throws {
         let (store, spaces, _, monitor) = try fixture()
         try await waitForPreparation(monitor, target: spaces[1].id)
+        weak var retiredCapture = monitor.preparedSlides[spaces[1].id]
         weak var outgoing = monitor.preparedSlides[spaces[1].id]?.outgoing
         XCTAssertNotNil(outgoing)
         store.palette = .newTab
@@ -1192,6 +1256,10 @@ import XCTest
         XCTAssertNotNil(outgoing, "Opening search must retire eligibility without destroying whole SwiftUI trees on the key event")
         store.palette = nil
         try await waitForPreparation(monitor, target: spaces[1].id)
+        XCTAssertNil(retiredCapture, "Idle cleanup must release Vane's retired capture ownership")
+        // AppKit can retain a detached hosting view until its pending display work
+        // drains. Require eventual idle release, rather than same-turn deallocation.
+        try await compatibilityWait { outgoing == nil }
         XCTAssertNil(outgoing, "The retired tree must be released once search dismissal settles")
     }
 

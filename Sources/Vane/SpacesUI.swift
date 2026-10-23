@@ -926,13 +926,17 @@ private struct SpaceSwipe: ViewModifier {
             // lifetime still follows visibility, including cancellation of a live drag.
             .onChange(of: visible) { _, visible in
                 if visible {
-                    if !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35) }
+                    if !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35, preservingSurfaces: true) }
                     monitor.install(store)
-                } else { monitor.remove() }
+                } else if store.profileVisible { monitor.suspend() }
+                else { monitor.remove() }
             }
             .onChange(of: store.sidebarShown) { _, shown in
                 // Docking a peek keeps `visible` true, but still animates the page seam.
-                if shown, !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35) }
+                if shown, !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35, preservingSurfaces: true) }
+            }
+            .onChange(of: store.profileVisible) { _, visible in
+                if !visible { monitor.remove() }
             }
             .onChange(of: reduceMotion) { _, reduced in
                 if reduced { monitor.finishForReducedMotion() }
@@ -949,6 +953,7 @@ private struct SpaceSwipe: ViewModifier {
 /// the ends, the one-commit rule — lives in the pure state machine, where `check()` can hold
 /// it to account.
 @MainActor final class SwipeMonitor {
+    var isInstalled: Bool { monitor != nil }
     private(set) var preparedSlides: [UUID: ProfileSpaceSlide] = [:]
     private var preparation: DispatchWorkItem?
     private var preparationNotBefore: TimeInterval = 0
@@ -1038,33 +1043,42 @@ private struct SpaceSwipe: ViewModifier {
         return slide
     }
 
+    private func preparedGeometryMatches(in store: TabStore) -> Bool {
+        guard !preparedSlides.isEmpty,
+              let host = store.window?.contentView as? BrowserWindowHost,
+              let origin = store.swipeSpace else { return false }
+        let strip = store.strip
+        return preparedSlides.allSatisfy { id, slide in
+            guard let target = strip.first(where: { $0.id == id }),
+                  let anchor = target.profileID != store.profileID
+                    ? store.spaceGesture.stripView : store.spaceGesture.sectionsView else { return false }
+            return slide.preparedFor(origin: origin, target: target,
+                frame: anchor.convert(anchor.bounds, to: host), width: SidebarWidth.shared.width)
+        }
+    }
+
     /// Build adjacent sidebar surfaces while idle, never in the first directional sample.
     /// Anchor updates invalidate them when the live sidebar or its geometry changes.
     func schedulePreparation(in store: TabStore) {
         guard monitor != nil, self.store === store, !store.spaceSwiping, !landing,
               store.palette == nil, !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+        guard preparation == nil else { return }
         // The geometry anchor can acknowledge the same layout several times. Store
         // and peer mutations already invalidate synchronously through the observers;
         // keep ready captures when only an unchanged acknowledgement arrives.
-        if !preparedSlides.isEmpty, let host = store.window?.contentView as? BrowserWindowHost,
-           let origin = store.swipeSpace {
-            let strip = store.strip
-            let matches = preparedSlides.allSatisfy { id, slide in
-                guard let target = strip.first(where: { $0.id == id }),
-                      let anchor = target.profileID != store.profileID
-                        ? store.spaceGesture.stripView : store.spaceGesture.sectionsView else { return false }
-                return slide.preparedFor(origin: origin, target: target,
-                    frame: anchor.convert(anchor.bounds, to: host), width: SidebarWidth.shared.width)
-            }
-            if matches { return }
+        if ProcessInfo.processInfo.systemUptime >= preparationNotBefore {
+            if preparedGeometryMatches(in: store) { return }
+            invalidatePreparation()
         }
-        guard preparation == nil else { return }
-        invalidatePreparation()
         let work = DispatchWorkItem { [weak self, weak store] in
             self?.preparation = nil
             guard let self, let store, self.monitor != nil, self.store === store,
                   !store.spaceSwiping, !self.landing, store.palette == nil,
                   !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+            // Reveal anchors can report intermediate offscreen frames. Validate them
+            // after travel settles; claim-time validation still rejects a mismatch.
+            if self.preparedGeometryMatches(in: store) { return }
+            self.invalidatePreparation()
             self.discardStalePreparation()
             guard !Motion.spaceReduced,
                   store.sidebarShown || (store.window as? VaneWindow)?.peekingSidebar == true,
@@ -1336,10 +1350,17 @@ private struct SpaceSwipe: ViewModifier {
 
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
+        if let previous = self.store, previous !== store { remove() }
         self.store = store
+        if preparationObservers.isEmpty { observePreparation(in: store) }
+        installInput(in: store)
+        schedulePreparation(in: store)
+    }
+
+    private func observePreparation(in store: TabStore) {
         // Search owns the input/animation thread until its dismissal fade ends.
         // Read the publisher's new value: @Published sends before the store changes.
-        preparationObservers.append(store.$palette.removeDuplicates().dropFirst().sink { [weak self] mode in
+        preparationObservers.append(store.$palette.removeDuplicates().dropFirst().sink { [weak self, weak store] mode in
             guard let self else { return }
             self.preparation?.cancel()
             self.preparation = nil
@@ -1367,6 +1388,9 @@ private struct SpaceSwipe: ViewModifier {
                 }
             })
         }
+    }
+
+    private func installInput(in store: TabStore) {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak store] event in
             guard let store else { return event }
             if event.hasPreciseScrollingDeltas, let window = event.window, window === store.window {
@@ -1446,11 +1470,37 @@ private struct SpaceSwipe: ViewModifier {
         // `spaceSwiping` stuck true, and nothing short of another swipe would put it back.
         for name in [NSApplication.didResignActiveNotification, NSWindow.didResignKeyNotification] {
             watchers.append(NotificationCenter.default.addObserver(
-                forName: name, object: nil, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.abort() }
+                forName: name, object: nil, queue: .main) { [weak self] notification in
+                    let notifyingWindow = notification.object as? NSWindow
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        if name == NSWindow.didResignKeyNotification {
+                            guard let window = notifyingWindow,
+                                  window === self.store?.window else { return }
+                        }
+                        self.abort()
+                    }
                 })
         }
-        schedulePreparation(in: store)
+    }
+
+    /// Hiding chrome ends its input lifetime, but not the content of its idle captures.
+    /// Structural and protection observers remain live while the sidebar is hidden.
+    func suspend() {
+        preparation?.cancel()
+        preparation = nil
+        removeInput()
+        if let store, !store.sidebarShown, !store.sidebarPeeking {
+            (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidDisappear(store)
+        }
+        abort()
+    }
+
+    private func removeInput() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        watchers.forEach(NotificationCenter.default.removeObserver)
+        watchers = []
     }
 
     func remove() {
@@ -1462,14 +1512,7 @@ private struct SpaceSwipe: ViewModifier {
         preparationNotBefore = 0
         discardPreparation()
         discardStalePreparation()
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
-        watchers.forEach(NotificationCenter.default.removeObserver)
-        watchers = []
-        if let store, !store.sidebarShown, !store.sidebarPeeking {
-            (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidDisappear(store)
-        }
-        abort()
+        suspend()
         store = nil
     }
 

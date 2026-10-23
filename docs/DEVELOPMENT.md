@@ -223,6 +223,12 @@ closes and its dismissal fade finishes.
 Unchanged prepared sidebars survive search presentation, suggestion updates, and vertical
 scrolling. A claimed Space surface updates its outgoing native scroll viewport before
 travel; structural changes and folder-protection revocation still invalidate immediately.
+Hiding the sidebar suspends its gesture input and keeps valid hidden captures. Revealing
+it validates their geometry after travel; profile/window teardown releases them fully.
+The tab, folder, split and favourite row hierarchy observes `SidebarObservation`, which
+forwards structure, selection, rename and protection changes synchronously. General
+window visibility and search publications do not invalidate that entire hierarchy.
+`SidebarObservationTests` verifies both the publication boundary and mounted-view updates.
 `SpaceNativeRenderingTests` checks cache identity across search/scroll, the actual native
 scroll position, rapid profile reversals, and synchronous protection invalidation. Visible
 animation fixtures activate their test window and restore the prior activation policy.
