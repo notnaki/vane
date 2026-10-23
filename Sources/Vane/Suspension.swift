@@ -372,6 +372,7 @@ extension Prefs {
             fileprivate let rowVersions: [UUID: UInt64]
             fileprivate let previousCacheVersions: [UUID: UInt64]
             fileprivate let cacheVersions: [UUID: UInt64]
+            fileprivate var ownership: SessionPersistence.Ownership?
         }
 
         /// Worker state is confined to the shared persistence lane; UI cache contains
@@ -577,7 +578,7 @@ extension Prefs {
                 cache[file, default: [:]][space.uuidString] = parked
             }
             let priorCacheVersions = previousCacheVersions, stagedCacheVersions = cacheVersions
-            let result = await SessionPersistence.shared.mutate(file: file) {
+            let result = await SessionPersistence.shared.mutate(file: file, ownsResult: { $0.1 != nil }) {
                 () -> (Bool, StagedSave?) in
                 let beforeTable = worker.read(file)
                 let beforePrimary = worker.primary[file], wasDirty = worker.dirty.contains(file)
@@ -604,42 +605,46 @@ extension Prefs {
                     self.cacheVersions[file, default: [:]][space.uuidString] = previousCacheVersions[space]
                 }
             }
-            return result?.value ?? (false, nil)
+            var staged = result?.value ?? (false, nil)
+            staged.1?.ownership = result?.ownership
+            return staged
         }
 
         /// Repair only rows still owned by this staging receipt. A complete unchanged
         /// batch restores exact generation bytes; partial repairs preserve newer rows.
         static func repair(_ change: StagedSave) async -> Bool {
-            guard !retired.contains(change.file) else { return true }
-            let result = await SessionPersistence.shared.perform {
-                () -> (succeeded: Bool, restored: Set<UUID>) in
-                guard !SessionPersistence.shared.isRetired(change.file) else { return (true, []) }
+            guard !retired.contains(change.file), let ownership = change.ownership else { return true }
+            let empty: (succeeded: Bool, restored: Set<UUID>) = (true, [])
+            let result = await SessionPersistence.shared.repair(ownership) { (ownsFile: Bool) -> ((succeeded: Bool, restored: Set<UUID>), SessionPersistence.RepairDisposition) in
                 let owned = change.spaces.filter {
                     worker.rowVersions[change.file]?[$0.uuidString] == change.rowVersions[$0]
                 }
-                guard !owned.isEmpty else { return (true, []) }
-                guard let current = try? RecoverySnapshots.Generations.capture(change.file) else { return (false, []) }
+                guard !owned.isEmpty else { return ((true, []), .unchanged) }
+                guard let current = try? RecoverySnapshots.Generations.capture(change.file) else { return ((false, []), .failed) }
                 let table = worker.read(change.file)
                 let succeeded: Bool
-                if owned == change.spaces, current == change.afterGenerations && table == change.afterTable {
+                let disposition: SessionPersistence.RepairDisposition
+                if ownsFile, owned == change.spaces, current == change.afterGenerations && table == change.afterTable {
                     succeeded = change.beforeGenerations.restore(change.file)
                     if succeeded {
                         worker.tables[change.file] = change.beforeTable
                         worker.primary[change.file] = change.beforePrimary
                         if change.wasDirty { worker.dirty.insert(change.file) } else { worker.dirty.remove(change.file) }
                     }
+                    disposition = succeeded ? .rolledBack : .failed
                 } else {
-                    guard current.current == worker.primary[change.file] else { return (true, []) }
+                    guard current.current == worker.primary[change.file] else { return ((true, []), .unchanged) }
                     let previous = Dictionary(uniqueKeysWithValues: owned.map { ($0, change.beforeTable[$0.uuidString]) })
                     succeeded = worker.update(previous, file: change.file)
+                    disposition = succeeded ? .published : .failed
                 }
                 if succeeded {
                     for space in owned {
                         worker.rowVersions[change.file, default: [:]][space.uuidString] = change.previousRowVersions[space]
                     }
                 }
-                return (succeeded, succeeded ? owned : [])
-            }
+                return ((succeeded, succeeded ? owned : []), disposition)
+            } ?? empty
             for space in result.restored where cacheVersions[change.file]?[space.uuidString] == change.cacheVersions[space] {
                 if let previous = change.beforeTable[space.uuidString] {
                     cache[change.file, default: [:]][space.uuidString] = self.parked([space.uuidString: previous])[space.uuidString]

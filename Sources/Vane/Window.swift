@@ -1624,28 +1624,27 @@ extension TabStore {
     @discardableResult
     static func forget(space id: UUID, in profileID: UUID) -> Bool {
         let destination = file(profileID)
-        return SessionPersistence.shared.sync(file: destination) { forgetFile(space: id, file: destination) }
+        return SessionPersistence.shared.sync(file: destination, requiresPendingWrite: true) { forgetFile(space: id, file: destination) }
     }
 
     @discardableResult
     static func forgetAsync(space id: UUID, in profileID: UUID) async -> Bool {
         let destination = file(profileID)
-        return await SessionPersistence.shared.perform(file: destination) { forgetFile(space: id, file: destination) }
+        return await SessionPersistence.shared.perform(file: destination, requiresPendingWrite: true) { forgetFile(space: id, file: destination) }
     }
 
     struct StagedForget: Sendable {
         fileprivate let file: URL
         fileprivate let before: RecoverySnapshots.Generations
         fileprivate let after: RecoverySnapshots.Generations
-        fileprivate let previousVersion: UInt64
-        fileprivate let version: UInt64
+        fileprivate let ownership: SessionPersistence.Ownership
     }
     static func stageForget(space id: UUID, in profileID: UUID) async -> (succeeded: Bool, change: StagedForget?) {
         await stageForget(spaces: [id], in: profileID)
     }
     static func stageForget(spaces: Set<UUID>, in profileID: UUID) async -> (succeeded: Bool, change: StagedForget?) {
         let destination = file(profileID)
-        let edit = await SessionPersistence.shared.mutate(file: destination) {
+        let edit = await SessionPersistence.shared.mutate(file: destination, requiresPendingWrite: true, ownsResult: { $0.1 != nil && $0.2 != nil }) {
             () -> (Bool, RecoverySnapshots.Generations?, RecoverySnapshots.Generations?) in
             guard let before = try? RecoverySnapshots.Generations.capture(destination) else { return (false, nil, nil) }
             let succeeded = forgetFile(spaces: spaces, file: destination)
@@ -1654,15 +1653,16 @@ extension TabStore {
         guard let edit else { return (false, nil) }
         guard let before = edit.value.1, let after = edit.value.2 else { return (false, nil) }
         return (edit.value.0, StagedForget(file: destination, before: before, after: after,
-            previousVersion: edit.previousVersion, version: edit.version))
+            ownership: edit.ownership))
     }
     static func repair(_ change: StagedForget) async -> Bool {
-        await SessionPersistence.shared.repair(file: change.file, version: change.version,
-                                              previousVersion: change.previousVersion) {
-            guard let current = try? RecoverySnapshots.Generations.capture(change.file) else { return false }
-            guard current == change.after else { return nil }
-            return change.before.restore(change.file)
-        }
+        await SessionPersistence.shared.repair(change.ownership) { ownsFile in
+            guard ownsFile else { return (true, .unchanged) }
+            guard let current = try? RecoverySnapshots.Generations.capture(change.file) else { return (false, .failed) }
+            guard current == change.after else { return (true, .unchanged) }
+            let restored = change.before.restore(change.file)
+            return (restored, restored ? .rolledBack : .failed)
+        } ?? true
     }
 
     private nonisolated static func forgetFile(space id: UUID, file: URL) -> Bool {
