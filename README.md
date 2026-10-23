@@ -88,7 +88,7 @@ Shortcuts can be changed in Settings; the menu bar shows current bindings.
 [Everyday browsing](docs/BROWSING.md) explains tab organization, shared windows,
 site search, keyboard navigation, downloads, and media.
 
-![Vane with sidebar tabs and Spaces](docs/media/vane-spaces-dark.png)
+![Vane showing Wikipedia with sidebar tabs and Spaces](docs/media/vane-spaces-dark.png)
 
 The [screenshot notes](docs/media/README.md) describe the isolated demo captures.
 
