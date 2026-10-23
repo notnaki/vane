@@ -3905,7 +3905,8 @@ struct Stash {
     func saveStashedSpaceAsync(_ id: UUID) async -> Bool {
         guard let stash = stashes[id] else { return true }
         guard stash.fingerprint == fingerprint(of: id) else { return true }
-        guard var space = spaces.first(where: { $0.id == id }) else { return false }
+        guard let original = ProfileManager.shared.spaces(for: profileID).first(where: { $0.id == id }) else { return false }
+        var space = original
         func urls(_ kind: TabKind) -> [URL] {
             stash.tabs.filter { $0.kind == kind }.compactMap(\.pinnedURL)
                 .filter { TabAddress.restorable($0) }
@@ -3922,11 +3923,26 @@ struct Stash {
                                                     snapshot: tab.snapshot) else { continue }
             parked[entry.key] = entry.parked
         }
-        guard await Suspension.SpaceState.saveAsync(parked, space: id, profileID: profileID,
-                                         in: Store.directory),
-              stashes[id]?.fingerprint == stash.fingerprint,
+        let staged = await Suspension.SpaceState.stageSave(parked, space: id, profileID: profileID, in: Store.directory)
+        guard staged.succeeded,
+              let current = stashes[id], current.fingerprint == stash.fingerprint,
+              current.tabs.map(\.id) == stash.tabs.map(\.id), current.pins == stash.pins,
+              current.todayShape == stash.todayShape, current.splits == stash.splits, current.current == stash.current,
               fingerprint(of: id) == stash.fingerprint,
-              ProfileManager.shared.updateSpace(space) else { return false }
+              var latest = ProfileManager.shared.spaces(for: profileID).first(where: { $0.id == id }),
+              latest.layout == original.layout else {
+            if let change = staged.change { _ = await Suspension.SpaceState.repair(change) }
+            return false
+        }
+        // Tabs and layout belong to this captured stash. Rebase only those fields onto
+        // the latest Space so a rename or appearance edit made during IO survives.
+        latest.tabURLs = space.tabURLs
+        latest.pinnedTabURLs = space.pinnedTabURLs
+        latest.layout = space.layout
+        guard ProfileManager.shared.updateSpace(latest) else {
+            if let change = staged.change { _ = await Suspension.SpaceState.repair(change) }
+            return false
+        }
         TabStore.saveShape(stash.pins, from: stash.tabs, kind: .pinned,
                            space: id, profileID: profileID, ownsSection: true)
         TabStore.saveShape(stash.todayShape, from: stash.tabs, kind: .today,
