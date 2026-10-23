@@ -426,6 +426,80 @@ import SQLite3
         XCTAssertFalse(ImportOperations.hasPendingOperations)
     }
 
+    func testCommittedReplayPrefixReconcilesTemporaryIDsBeforeFailedSuffixEdits() async throws {
+        let (store, file) = try fixture()
+        let db = try open(file); defer { sqlite3_close(db) }
+        try sql(db, "CREATE TRIGGER hold_suffix BEFORE INSERT ON visits WHEN NEW.title = 'Retry suffix' BEGIN SELECT RAISE(ABORT, 'synthetic suffix failure'); END; BEGIN IMMEDIATE")
+        let page = URL(string: "https://partial-prefix.invalid/")!
+        let task = Task { try await store.importBrowserDataAsync(visits: [], bookmarks: []) }
+        await waitForGate(store)
+        _ = store.addBookmarks([(page, "Queued addition")])
+        let temporaryID = try XCTUnwrap(store.managedBookmarks().first?.id)
+        XCTAssertLessThan(temporaryID, 0)
+        XCTAssertTrue(store.record(page, title: "Retry suffix"))
+        try sql(db, "COMMIT")
+        _ = try await task.value
+        XCTAssertTrue(store.hasPendingWrites)
+        let committedProjection = store.managedBookmarks()
+        XCTAssertEqual(committedProjection.count, 1, "Committed and projected IDs must describe one bookmark")
+        XCTAssertGreaterThan(try XCTUnwrap(committedProjection.first?.id), 0)
+        XCTAssertTrue(store.updateBookmark(temporaryID, url: page, title: "Old UI ID still resolves", folderID: nil))
+        XCTAssertTrue(store.deleteBookmarks([temporaryID]))
+        XCTAssertFalse(store.isBookmarked(page), "A temporary-ID deletion must hide the committed row too")
+        XCTAssertTrue(store.toggleBookmark(page, title: "Restored after partial replay"))
+        XCTAssertTrue(store.isBookmarked(page))
+        XCTAssertEqual(store.managedBookmarks().count, 1)
+        try sql(db, "DROP TRIGGER hold_suffix")
+        let flushed = await store.flushPendingWrites()
+        XCTAssertTrue(flushed)
+        XCTAssertFalse(store.hasPendingWrites)
+        XCTAssertTrue(store.isBookmarked(page))
+        XCTAssertEqual(store.managedBookmarks().map(\.title), ["Restored after partial replay"])
+        XCTAssertEqual(store.history(limit: 20).map(\.title), ["Retry suffix"])
+    }
+
+    func testArcImportedTitlesAwaitTheSessionLaneWithoutBlockingInputActor() async throws {
+        let (_, database) = try fixture()
+        let directory = database.deletingLastPathComponent(), profile = UUID(), space = UUID()
+        await Suspension.SpaceState.prepare(profiles: [profile], in: directory)
+        let gate = ImportBatchGate()
+        SessionPersistence.shared.enqueue(file: directory.appendingPathComponent("synthetic-lane-gate")) {
+            gate.block(); return true
+        }
+        defer { gate.release() }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !gate.entered, ContinuousClock.now < deadline { await Task.yield() }
+        XCTAssertTrue(gate.entered)
+        var started = false, finished = false
+        let task = Task {
+            started = true
+            try await ArcImport.saveImportedTitles(["https://arc-title.invalid/": Parked(title: "Imported sidecar")],
+                                                    space: space, profileID: profile, in: directory)
+            finished = true
+        }
+        while !started { await Task.yield() }
+        XCTAssertFalse(finished, "The async Arc title writer must yield while the earlier session job is blocked")
+        gate.release()
+        try await task.value
+        XCTAssertTrue(finished)
+        let file = Suspension.SpaceState.url(for: profile, in: directory)
+        XCTAssertTrue(try String(contentsOf: file, encoding: .utf8).contains("Imported sidecar"))
+    }
+
+    func testForgettingSQLiteArtifactsIsIdempotentWhenSidecarsAreAlreadyGone() throws {
+        TestEnvironment.prepare()
+        let profile = UUID(), file = ProfileManager.dbURL(for: profile, in: Store.directory)
+        for path in [file.path, file.path + "-wal", file.path + "-shm"] {
+            XCTAssertTrue(FileManager.default.createFile(atPath: path, contents: Data("synthetic".utf8)))
+        }
+        try FileManager.default.removeItem(atPath: file.path + "-shm")
+        Store.forget(profile)
+        Store.forget(profile)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path + "-wal"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path + "-shm"))
+    }
+
 }
 
 private actor ImportIntentLatch {

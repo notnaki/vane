@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SQLite3
 
 private let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -130,7 +131,14 @@ struct BookmarkImportResult: Equatable, Sendable {
 
     private static func removeFiles(_ profileID: UUID) {
         let path = ProfileManager.dbURL(for: profileID, in: directory).path
-        for p in [path, path + "-wal", path + "-shm"] { try? FileManager.default.removeItem(atPath: p) }
+        for file in [path, path + "-wal", path + "-shm"] {
+            // SQLite may unlink its journals as another owned handle closes. One atomic
+            // unlink tolerates that race without FileManager's metadata/remove sequence.
+            let failure: Int32? = file.withCString { unlink($0) == 0 ? nil : errno }
+            if let failure, failure != ENOENT {
+                NSLog("Vane could not remove browsing database file %@: %@", file, String(cString: strerror(failure)))
+            }
+        }
     }
 
     /// The data dir a second instance was pointed at, if any. A debug build running beside
@@ -170,8 +178,12 @@ struct BookmarkImportResult: Equatable, Sendable {
     private var replayWaiters: [CheckedContinuation<Void, Never>] = []
     private var importWaiters: [CheckedContinuation<Void, Never>] = []
     private var bookmarkOverrides: [Int64: Bookmark] = [:]
+    private var committedBookmarkAliases: [Int64: Int64] = [:]
+    private var bookmarkProjectionVersions: [Int64: UInt64] = [:]
+    private var projectionVersion: UInt64 = 0
     private var projectedURLIDs: [String: Int64] = [:]
     private var deletedBookmarkIDs: Set<Int64> = []
+    private var deletedProjectedURLs: Set<String> = []
     private var nextProjectedID: Int64 = -1
     private var projectedFolders: [String: BookmarkFolder] = [:]
     private var deletedFolderIDs: Set<String> = []
@@ -234,6 +246,7 @@ struct BookmarkImportResult: Equatable, Sendable {
             let writes = pending
             pending.removeAll()
             let result = await writer.replay(writes)
+            reconcileBookmarkAliases(result.bookmarkAliases)
             replayed = replayed || result.completed > 0
             rejected += result.rejected
             if result.completed < writes.count {
@@ -252,6 +265,8 @@ struct BookmarkImportResult: Equatable, Sendable {
             if result.changed { NotificationCenter.default.post(name: Self.historyChanged, object: self) }
         }
         bookmarkOverrides.removeAll(); projectedURLIDs.removeAll(); deletedBookmarkIDs.removeAll()
+        deletedProjectedURLs.removeAll()
+        bookmarkProjectionVersions.removeAll()
         projectedFolders.removeAll(); deletedFolderIDs.removeAll()
         lastHistoryError = rejected.first
         if !rejected.isEmpty {
@@ -346,27 +361,74 @@ struct BookmarkImportResult: Equatable, Sendable {
     @discardableResult func clearHistory(since: Date? = nil) -> Bool {
         mutate(true, rejected: false, operation: { $0.clearHistory(since: since) }, immediate: { $0.clearHistory(since: since) })
     }
+    private func canonicalBookmarkID(_ id: Int64) -> Int64 { committedBookmarkAliases[id] ?? id }
+
+    /// A replay can commit a prefix and retain a later failed write. Publish committed
+    /// aliases before any further UI edit or refresh, preserving the newest projected
+    /// intent when an edit arrived while that prefix was running on the worker.
+    private func reconcileBookmarkAliases(_ aliases: [Int64: Int64]) {
+        guard !aliases.isEmpty else { return }
+        committedBookmarkAliases.merge(aliases) { _, committed in committed }
+        connection.bookmarkAliases = committedBookmarkAliases
+        var overrides: [Int64: Bookmark] = [:], deleted: Set<Int64> = []
+        var versions: [Int64: UInt64] = [:]
+        for (oldID, version) in bookmarkProjectionVersions {
+            let id = canonicalBookmarkID(oldID)
+            guard versions[id].map({ $0 < version }) ?? true else { continue }
+            versions[id] = version
+            if deletedBookmarkIDs.contains(oldID) {
+                overrides[id] = nil; deleted.insert(id)
+            } else if let mark = bookmarkOverrides[oldID] {
+                overrides[id] = Bookmark(id: id, url: mark.url, title: mark.title, at: mark.at, folderID: mark.folderID)
+                deleted.remove(id)
+            }
+        }
+        bookmarkOverrides = overrides
+        deletedBookmarkIDs = deleted
+        bookmarkProjectionVersions = versions
+        projectedURLIDs.removeAll()
+        for (id, _) in versions.sorted(by: { $0.value < $1.value }) {
+            if let mark = overrides[id] { projectedURLIDs[mark.url] = id }
+        }
+    }
+
     private func projectedBookmark(id: Int64) -> Bookmark? {
+        let id = canonicalBookmarkID(id)
         guard !deletedBookmarkIDs.contains(id) else { return nil }
         return bookmarkOverrides[id] ?? connection.bookmark(id: id)
     }
 
     private func projectedBookmarkID(url: String) -> Int64? {
         if let id = projectedURLIDs[url] { return deletedBookmarkIDs.contains(id) ? nil : id }
+        guard !deletedProjectedURLs.contains(url) else { return nil }
         guard let id = connection.bookmarkID(url: url), !deletedBookmarkIDs.contains(id) else { return nil }
         if let changed = bookmarkOverrides[id], changed.url != url { return nil }
         return id
     }
 
-    private func project(_ bookmark: Bookmark) {
-        if let previous = bookmarkOverrides[bookmark.id], previous.url != bookmark.url { projectedURLIDs[previous.url] = nil }
+    private func project(_ source: Bookmark) {
+        let id = canonicalBookmarkID(source.id)
+        let bookmark = Bookmark(id: id, url: source.url, title: source.title, at: source.at, folderID: source.folderID)
+        projectionVersion += 1
+        bookmarkProjectionVersions[id] = projectionVersion
+        if let previous = bookmarkOverrides[bookmark.id], previous.url != bookmark.url {
+            projectedURLIDs[previous.url] = nil
+            deletedProjectedURLs.insert(previous.url)
+        }
+        deletedProjectedURLs.remove(bookmark.url)
         bookmarkOverrides[bookmark.id] = bookmark
         projectedURLIDs[bookmark.url] = bookmark.id
         deletedBookmarkIDs.remove(bookmark.id)
     }
 
-    private func projectDeletion(_ id: Int64) {
-        if let saved = bookmarkOverrides[id] { projectedURLIDs[saved.url] = nil }
+    private func projectDeletion(_ sourceID: Int64) {
+        let id = canonicalBookmarkID(sourceID)
+        projectionVersion += 1
+        bookmarkProjectionVersions[id] = projectionVersion
+        if let saved = bookmarkOverrides[id] {
+            projectedURLIDs[saved.url] = nil
+            deletedProjectedURLs.insert(saved.url)
+        }
         bookmarkOverrides[id] = nil
         deletedBookmarkIDs.insert(id)
     }
@@ -440,7 +502,8 @@ struct BookmarkImportResult: Equatable, Sendable {
         if gated { projectedFolders[id] = nil; deletedFolderIDs.insert(id) }
         return mutate(true, rejected: false, operation: { $0.deleteBookmarkFolder(id) }, immediate: { $0.deleteBookmarkFolder(id) })
     }
-    @discardableResult func updateBookmark(_ id: Int64, url: URL, title: String, folderID: String?) -> Bool {
+    @discardableResult func updateBookmark(_ sourceID: Int64, url: URL, title: String, folderID: String?) -> Bool {
+        let id = canonicalBookmarkID(sourceID)
         guard !discarding, url.scheme == "http" || url.scheme == "https",
               let saved = projectedBookmark(id: id),
               projectedBookmarkID(url: url.absoluteString).map({ $0 == id }) ?? true else { return false }
@@ -448,7 +511,8 @@ struct BookmarkImportResult: Equatable, Sendable {
         return mutate(true, rejected: false, operation: { $0.updateBookmark(id, url: url, title: title, folderID: folderID) },
                       immediate: { $0.updateBookmark(id, url: url, title: title, folderID: folderID) })
     }
-    @discardableResult func moveBookmarks(_ ids: Set<Int64>, to folderID: String?) -> Bool {
+    @discardableResult func moveBookmarks(_ sourceIDs: Set<Int64>, to folderID: String?) -> Bool {
+        let ids = Set(sourceIDs.map(canonicalBookmarkID))
         if gated {
             let untouched = ids.subtracting(Set(bookmarkOverrides.keys)).subtracting(deletedBookmarkIDs)
             let rows = connection.bookmarks(ids: untouched) + ids.compactMap { bookmarkOverrides[$0] }
@@ -458,7 +522,8 @@ struct BookmarkImportResult: Equatable, Sendable {
         }
         return mutate(true, rejected: false, operation: { $0.moveBookmarks(ids, to: folderID) }, immediate: { $0.moveBookmarks(ids, to: folderID) })
     }
-    @discardableResult func deleteBookmarks(_ ids: Set<Int64>) -> Bool {
+    @discardableResult func deleteBookmarks(_ sourceIDs: Set<Int64>) -> Bool {
+        let ids = Set(sourceIDs.map(canonicalBookmarkID))
         if gated { for id in ids { projectDeletion(id) } }
         return mutate(true, rejected: false, operation: { $0.deleteBookmarks(ids) }, immediate: { $0.deleteBookmarks(ids) })
     }
@@ -488,8 +553,11 @@ struct BookmarkImportResult: Equatable, Sendable {
         return projectBookmarks(saved, query: query, folderID: folderID, unfiledOnly: unfiledOnly, limit: limit)
     }
     private func projectBookmarks(_ saved: [Bookmark], query: String, folderID: String?, unfiledOnly: Bool, limit: Int) -> [Bookmark] {
-        guard !bookmarkOverrides.isEmpty || !deletedBookmarkIDs.isEmpty || !deletedFolderIDs.isEmpty else { return saved }
-        var rows = saved.filter { bookmarkOverrides[$0.id] == nil && !deletedBookmarkIDs.contains($0.id) }
+        guard !bookmarkOverrides.isEmpty || !deletedBookmarkIDs.isEmpty || !deletedProjectedURLs.isEmpty || !deletedFolderIDs.isEmpty else { return saved }
+        var rows = saved.filter {
+            bookmarkOverrides[$0.id] == nil && !deletedBookmarkIDs.contains($0.id)
+                && !deletedProjectedURLs.contains($0.url) && projectedURLIDs[$0.url] == nil
+        }
         rows += bookmarkOverrides.values
         let query = query.trimmingCharacters(in: .whitespaces)
         return Array(rows.map { row in
@@ -1082,7 +1150,13 @@ private actor StoreBulkWriter {
         return ImportResult(value: result, error: db.lastHistoryError)
     }
 
-    struct ReplayResult: Sendable { let completed: Int; let changed: Bool; let error: String?; let rejected: [String] }
+    struct ReplayResult: Sendable {
+        let completed: Int
+        let changed: Bool
+        let error: String?
+        let rejected: [String]
+        let bookmarkAliases: [Int64: Int64]
+    }
     func replay(_ writes: [StorePendingWrite]) -> ReplayResult {
         let db = StoreConnection(path: path, initialize: false)
         db.folderAliases = folderAliases
@@ -1092,12 +1166,17 @@ private actor StoreBulkWriter {
         var rejected: [String] = []
         for (index, write) in writes.enumerated() {
             db.semanticRejection = nil
+            let committedAliases = db.bookmarkAliases
+            let committedFolderAliases = db.folderAliases
             guard write.operation(db) else {
+                // Mapping generated inside a rolled-back operation is not committed state.
+                db.bookmarkAliases = committedAliases
+                db.folderAliases = committedFolderAliases
                 if let semantic = db.semanticRejection { rejected.append(semantic); continue }
-                return ReplayResult(completed: index, changed: db.historyDidChange, error: db.lastHistoryError, rejected: rejected)
+                return ReplayResult(completed: index, changed: db.historyDidChange, error: db.lastHistoryError, rejected: rejected, bookmarkAliases: db.bookmarkAliases)
             }
         }
-        return ReplayResult(completed: writes.count, changed: db.historyDidChange, error: nil, rejected: rejected)
+        return ReplayResult(completed: writes.count, changed: db.historyDidChange, error: nil, rejected: rejected, bookmarkAliases: db.bookmarkAliases)
     }
 }
 

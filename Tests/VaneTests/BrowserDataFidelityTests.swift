@@ -400,7 +400,7 @@ import SQLite3
         var reader: OpaquePointer?
         XCTAssertEqual(sqlite3_open(path.path, &reader), SQLITE_OK)
         defer { sqlite3_close(reader) }
-        let writer = try XCTUnwrap(Mirror(reflecting: store).children.first { $0.label == "db" }?.value as? OpaquePointer)
+        let writer = try StoreSQLiteFixture.writer(store)
         XCTAssertEqual(sqlite3_exec(writer, "PRAGMA journal_mode=DELETE", nil, nil, nil), SQLITE_OK)
         XCTAssertEqual(sqlite3_exec(reader, "BEGIN; SELECT * FROM bookmarks", nil, nil, nil), SQLITE_OK)
         let items = [BookmarkImportItem(url: URL(string: "https://fixture.invalid/")!, title: "Keep", folder: "Folder")]

@@ -750,7 +750,7 @@ enum ArcImport {
     /// False for a space that was skipped, so the caller knows whether the profile's window
     /// has anything new to be told about.
     @MainActor private static func write(_ arc: ArcSpace, into profileID: UUID,
-                                         counts: inout Counts) -> Bool {
+                                         counts: inout Counts) async throws -> Bool {
         guard !ProfileManager.shared.spaces(for: profileID)
             .contains(where: { $0.name.caseInsensitiveCompare(arc.title) == .orderedSame })
         else { counts.spacesSkipped += 1; return false }
@@ -790,12 +790,20 @@ enum ArcImport {
         for (url, title) in pinnedTitles.merging(todayTitles, uniquingKeysWith: { a, _ in a }) {
             parked[url] = Parked(title: title)
         }
-        if !parked.isEmpty {
-            Suspension.SpaceState.save(parked, space: space.id, profileID: profileID,
-                                       in: Store.directory)
-        }
+        try await saveImportedTitles(parked, space: space.id, profileID: profileID, in: Store.directory)
         counts.spaces += 1
         return true
+    }
+
+    /// Arc titles share the ordered session lane. Awaiting durability leaves MainActor
+    /// available even when an earlier profile's sidecar write is slow or blocked.
+    @MainActor static func saveImportedTitles(_ parked: [String: Parked], space: UUID,
+                                              profileID: UUID, in directory: URL) async throws {
+        guard !parked.isEmpty else { return }
+        guard await Suspension.SpaceState.saveAsync(parked, space: space, profileID: profileID, in: directory) else {
+            refreshSpaces(afterImporting: [profileID])
+            throw BrowserImport.Failure("The Arc Space was created, but its saved page titles could not be written. Check storage access and try again.")
+        }
     }
 
     /// The profile's favourites grid, appended to rather than replaced: a user who has
@@ -993,7 +1001,7 @@ enum ArcImport {
             try Task.checkCancellation()
             guard let profileID = ids[space.profileDirectory],
                   ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
-            if write(space, into: profileID, counts: &counts) { gained.insert(profileID) }
+            if try await write(space, into: profileID, counts: &counts) { gained.insert(profileID) }
         }
         for (directory, urls) in scan.sidebar.favourites.sorted(by: { $0.key < $1.key }) {
             try Task.checkCancellation()

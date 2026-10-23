@@ -127,7 +127,7 @@ import SQLite3
     func testFailedCommitRollsBackAndAllowsRetry() throws {
         let (store, db) = try fixture()
         // Change the writer's journal mode before the second connection takes a read lock.
-        let writer = try XCTUnwrap(Mirror(reflecting: store).children.first { $0.label == "db" }?.value as? OpaquePointer)
+        let writer = try StoreSQLiteFixture.writer(store)
         execute("PRAGMA journal_mode=DELETE", on: writer)
         execute("BEGIN; SELECT * FROM visits", on: db)
         let notifications = observe(store)
@@ -182,7 +182,7 @@ import SQLite3
 
     func testFailedRollbackClosesTheConnectionBeforeLaterWrites() throws {
         let (store, db) = try fixture()
-        let writer = try XCTUnwrap(Mirror(reflecting: store).children.first { $0.label == "db" }?.value as? OpaquePointer)
+        let writer = try StoreSQLiteFixture.writer(store)
         execute("CREATE TRIGGER reject_import BEFORE INSERT ON visits WHEN NEW.title = 'Reject' BEGIN SELECT RAISE(ABORT, 'blocked row'); END", on: db)
         sqlite3_set_authorizer(writer, { _, action, name, _, _, _ in
             if action == SQLITE_TRANSACTION, let name, String(cString: name) == "ROLLBACK" { return SQLITE_DENY }
@@ -206,7 +206,7 @@ import SQLite3
 
     func testBindingFailureRollsBackEarlierRows() throws {
         let (store, _) = try fixture()
-        let writer = try XCTUnwrap(Mirror(reflecting: store).children.first { $0.label == "db" }?.value as? OpaquePointer)
+        let writer = try StoreSQLiteFixture.writer(store)
         let previous = sqlite3_limit(writer, SQLITE_LIMIT_LENGTH, 100)
         defer { sqlite3_limit(writer, SQLITE_LIMIT_LENGTH, previous) }
         let notifications = observe(store)
