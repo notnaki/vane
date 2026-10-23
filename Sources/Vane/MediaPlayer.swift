@@ -848,9 +848,17 @@ extension MediaTray {
         assert("an empty payload is ignored", info(from: [String: Any]()) == nil)
 
         // MARK: what a page is allowed to put on the tray
-        assert("a title is capped, so a megabyte of it never reaches text layout",
-               info(from: ["playing": true, "title": String(repeating: "a", count: 10_000)])?
-                   .title.count == maxText)
+        assert("an admitted title is capped before it reaches text layout",
+               info(from: ["playing": true, "title": String(repeating: "a", count: maxRawTextBytes)])?
+                   .title == String(repeating: "a", count: maxText))
+        assert("an oversized raw title is rejected before sanitization",
+               info(from: ["playing": true, "title": String(repeating: "a", count: maxRawTextBytes + 1)]) == nil)
+        assert("an oversized raw artist is rejected before sanitization",
+               info(from: ["playing": true, "artist": String(repeating: "a", count: maxRawTextBytes + 1)]) == nil)
+        assert("leading whitespace cannot bypass the raw title limit",
+               info(from: ["playing": true, "title": String(repeating: " ", count: maxRawTextBytes + 1) + "late"]) == nil)
+        assert("the raw title limit also bounds multibyte UTF-8 input",
+               info(from: ["playing": true, "title": String(repeating: "🙂", count: maxRawTextBytes / 2)]) == nil)
         assert("newlines and tabs collapse: the tray is one line",
                clean("Nocturne\n\tin\r\nE-flat") == "Nocturne in E-flat")
         assert("control characters do not survive", clean("Son\u{0}ata") == "Son ata")
