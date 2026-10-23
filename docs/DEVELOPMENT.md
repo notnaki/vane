@@ -176,7 +176,14 @@ VANE_UI_PERFORMANCE=1 VANE_LIBRARY_PERF_TABS=10 swift test --filter 'LibrarySwip
 ```
 
 `SidebarViewportPerformanceTests` also guards viewport-only row mounting, saved
-scroll offsets, and access to the last row. Layout work under 8.33 ms leaves CPU
+scroll offsets, access to the last row, and bounded production tab controls while scrolling.
+For a 300-tab vertical scroll comparison in both directions:
+
+```sh
+VANE_UI_PERFORMANCE=1 swift test --filter SidebarViewportPerformanceTests.testPopulatedSidebarScrollTiming
+```
+
+This reports median, p95, and maximum forced layout cost. Layout work under 8.33 ms leaves CPU
 headroom for a 120 Hz display; these timings do not establish displayed frame rate.
 
 Folder-opening diagnostics report toggle time, forced layout, run-loop gaps, and

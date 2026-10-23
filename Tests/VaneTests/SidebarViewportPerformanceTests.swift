@@ -71,6 +71,68 @@ import XCTest
     }
 
 
+    /// Exercise production row virtualization; opt in to a longer layout timing run.
+    func testPopulatedSidebarScrollTiming() async throws {
+        let timing = ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1"
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let store = TabStore(isPrivate: true)
+        store.sharingReady = false
+        store.tabs = (0..<300).map { index in
+            let tab = Tab(isPrivate: true, profileID: store.profileID)
+            tab.park(url: URL(string: "about:blank#scroll-\(index)")!, Parked(title: "Document \(index)"))
+            return tab
+        }
+        store.syncShapes()
+        store.palette = nil
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 250, height: 400),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: SidebarSpaceSections().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        defer {
+            window.contentView = nil
+            window.close()
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(store.tabs)
+        }
+        window.orderFront(nil)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+        func scroll(in view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { scroll(in: $0) }.first
+        }
+        let scrollView = try XCTUnwrap(scroll(in: host))
+        var times: [Double] = []
+        let offsets = timing
+            ? Array(stride(from: 0, through: 2_400, by: 20))
+                + Array(stride(from: 2_400, through: 0, by: -20))
+            : [0, 2_400, 0]
+        func mountedRows(in view: NSView) -> Int {
+            let own = (view as? TabTooltipAnchorView)?.title.hasPrefix("Document ") == true ? 1 : 0
+            return own + view.subviews.reduce(0) { $0 + mountedRows(in: $1) }
+        }
+        for offset in offsets {
+            let start = ProcessInfo.processInfo.systemUptime
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: offset))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            host.layoutSubtreeIfNeeded()
+            times.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+            try await Task.sleep(for: .milliseconds(timing ? 8 : 100))
+            XCTAssertEqual(scrollView.contentView.bounds.minY, CGFloat(offset), accuracy: 1,
+                           "The populated sidebar must reach each requested scroll position")
+            let mounted = mountedRows(in: host)
+            XCTAssertGreaterThan(mounted, 0, "Scrolling must keep visible tab controls mounted")
+            XCTAssertLessThan(mounted, 60, "Scrolling must not mount all 300 tab controls")
+        }
+        times.sort()
+        print("SIDEBAR_SCROLL_LAYOUT samples=\(times.count) median_ms=\(times[times.count / 2]) p95_ms=\(times[times.count * 95 / 100]) max_ms=\(times.last!)")
+        XCTAssertEqual(scrollView.contentView.bounds.minY, 0, accuracy: 1)
+    }
+
     /// Opt-in native layout timing; this does not measure displayed frame rate.
     func testSpaceSwipeLayoutTiming() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1")

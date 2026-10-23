@@ -3108,7 +3108,9 @@ private struct ShapeRow: View {
     var pr: GitHub.Row?
 
     var body: some View {
-        Group {
+        // A concrete container gives LazyVStack one child per resolved row. Group
+        // exposes the conditional subtree, making scrolling resolve its view list again.
+        HStack(spacing: 0) {
             if let folder = row.entry.folder {
                 FolderRow(folder: folder, shape: shape)
             } else if let tab {
