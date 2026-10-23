@@ -48,6 +48,31 @@ private actor FaviconRecoveryRequests {
         XCTAssertEqual(try Data(contentsOf: file), data)
     }
 
+    func testRejectedDiskIconPreservesNegativeCacheAcrossRepeatedLookups() async throws {
+        TestEnvironment.prepare()
+        let profile = UUID(), requests = FaviconRecoveryRequests()
+        let directory = ProfileManager.faviconDir(for: profile, in: Store.directory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = URL(string: "http://rejected-disk-icon.invalid/")!
+        try Data("corrupt cached icon".utf8).write(to: directory.appendingPathComponent("rejected-disk-icon.invalid"))
+        let cache = Favicons(profileID: profile, fetch: { url in
+            await requests.record(url)
+            return nil
+        })
+        XCTAssertNil(cache.icon(for: url))
+        try await waitUntil { await requests.total == 1 }
+        // Give each UI lookup its own event-loop turn: a rejected disk decode must not
+        // bypass the fallback's existing ten-minute negative cache on a later lookup.
+        for _ in 0..<12 {
+            try await Task.sleep(for: .milliseconds(20))
+            XCTAssertNil(cache.icon(for: url))
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        let fetched = await requests.total
+        XCTAssertEqual(fetched, 1, "Rejected cached bytes must not restart the failed fallback during its retry delay")
+    }
+
     func testEvictedPrivateIconRefetchesUnchangedDeclarationForFreshTab() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared

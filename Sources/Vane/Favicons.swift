@@ -503,7 +503,7 @@ import WebKit
                     tab.favicon = image
                 }
                 self.generation += 1
-            } else if let fallback {
+            } else if let fallback, !self.missed(key) {
                 self.warm(key: key, urls: [fallback], persist: true, fallback: fallback)
             }
         }
