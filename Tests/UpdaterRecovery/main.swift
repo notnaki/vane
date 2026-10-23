@@ -309,6 +309,25 @@ do {
     let (_, other) = try scene("supervised-wrong-target")
     check("health witness cannot certify another target", !BundleReplacement.hasCompletedReplacement(at: other, witness: witness, verifyReplacement: { _ in true }))
 }
+for launching in [false, true] {
+    let (source, target) = try scene(launching ? "launching-completion-poll" : "prepared-completion-poll")
+    try install(source, target)
+    let witness = BundleReplacement.launchWitness(at: target)!
+    if launching { _ = BundleReplacement.beginLaunch(at: target) }
+    let holder = Process()
+    holder.executableURL = URL(fileURLWithPath: args[0])
+    holder.arguments = ["child", "hold-completion-lock", source.path, target.path, "none"]
+    try holder.run()
+    let deadline = ProcessInfo.processInfo.systemUptime + 5
+    while !fm.fileExists(atPath: source.appendingPathComponent("locked").path),
+          ProcessInfo.processInfo.systemUptime < deadline { usleep(1000) }
+    check("pending completion fixture holds transaction lock", fm.fileExists(atPath: source.appendingPathComponent("locked").path))
+    let start = ProcessInfo.processInfo.systemUptime
+    check("pre-health transaction cannot certify completion", !BundleReplacement.hasCompletedReplacement(at: target, witness: witness, verifyReplacement: { _ in true }))
+    check("pre-health completion polling avoids transaction lock", ProcessInfo.processInfo.systemUptime - start < 1)
+    holder.waitUntilExit()
+    check("pending completion lock holder exits", holder.terminationStatus == 0)
+}
 for rollback in [true, false] {
     let (source, target) = try scene(rollback ? "rollback-lock-handoff" : "health-lock-handoff")
     try install(source, target)

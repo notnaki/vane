@@ -582,7 +582,10 @@ enum BundleReplacement {
 
     static func hasCompletedReplacement(at target: URL, witness: LaunchWitness,
                                          verifyReplacement: (URL) -> Bool) -> Bool {
-        (try? withLock(target, wait: 60) {
+        // Polling must not contend with the browser's nonblocking launch claim.
+        // This can only reject completion; success still requires all locked checks.
+        if entryExists(journalURL(target)), read(target)?.state != .healthy { return false }
+        return (try? withLock(target, wait: 60) {
             let pending = entryExists(journalURL(target))
             let journal = pending ? read(target) : nil
             if pending {
