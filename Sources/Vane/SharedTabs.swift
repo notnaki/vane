@@ -292,7 +292,8 @@ import WebKit
             image.addRepresentation(bitmap)
             tab.windowSnapshot = image
         }
-        if tab.presentationOwner != nil, let web = tab.existingWeb, web.window != nil, !tab.suspended {
+        if tab.presentationOwner != nil, let web = tab.existingWeb, web.window != nil,
+           !web.isHiddenOrHasHiddenAncestor, !tab.suspended {
             web.takeSnapshot(with: nil) { [weak tab, weak store, weak web] image, _ in
                 guard let tab, let store, let web,
                       tab.presentationGeneration == generation, tab.existingWeb === web,

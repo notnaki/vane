@@ -328,7 +328,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
                     .opacity(gesture.outgoing != nil && gesture.swiping ? 0 : 1)
                     .allowsHitTesting(!gesture.swiping)
                     .accessibilityHidden(gesture.swiping)
-                if gesture.swiping, let outgoing = gesture.outgoing {
+                if gesture.swiping, !gesture.profileSliding, let outgoing = gesture.outgoing {
                     outgoing.equatable()
                         .background(SpaceStripAnchor(store: store, gesture: gesture, moving: true))
                         .environment(\.colorScheme, outgoing.colorScheme)
@@ -355,7 +355,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
 
     @ViewBuilder private var preview: some View {
         let drag = gesture.drag
-        if gesture.swiping, let space = gesture.neighbour {
+        if gesture.swiping, !gesture.profileSliding, let space = gesture.neighbour {
             let preview = store.swipePreview(in: space)
             preview.equatable()
                 .id(space.id)
@@ -908,12 +908,13 @@ extension TabStore {
 }
 
 private struct SpaceSwipe: ViewModifier {
-    let store: TabStore
+    @ObservedObject var store: TabStore
     let visible: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         let monitor = store.spaceGesture.monitor
+        let visible = self.visible && store.profileVisible
         content
             .onAppear { if visible { monitor.install(store) } }
             .onDisappear { monitor.remove() }
@@ -1096,6 +1097,12 @@ private struct SpaceSwipe: ViewModifier {
         host?.clearQueuedSpaceSelection()
         if let host,
            let slide = host.spaceSlide, slide.isDestination(store) {
+            // A profile can already own the page while its captured sidebar is landing.
+            // Keep exposed rows stable until that leg finishes, just as within a profile.
+            if slide.isActive, !Motion.spaceReduced {
+                host.queueSpaceSelection(space, after: slide)
+                return
+            }
             host.cancelSpaceSlide()
         }
         guard !Motion.spaceReduced, store.window != nil else {
@@ -1215,13 +1222,18 @@ private struct SpaceSwipe: ViewModifier {
         if target.profileID != store.profileID {
             transition = UUID()
             pendingSelection = nil
-            landing = false
-            landingFrom = nil
             returning = false
-            store.spaceDrag = 0
-            store.spaceSwiping = false
+            // Keep the departing presentation intact until its host is covered. Its
+            // onDisappear monitor must not abort this committed handoff mid-mount.
+            landing = true
             let window = store.window
             Motion.spaceHandoff { store.switchTo(space: target) }
+            landing = false
+            landingFrom = nil
+            Motion.spaceHandoff {
+                store.spaceDrag = 0
+                store.spaceSwiping = false
+            }
             if let window, let arriving = TabStore.all.first(where: { $0.window === window }) {
                 (window.contentView as? BrowserWindowHost)?.spaceSlide?.attach(arriving)
             }
@@ -1512,13 +1524,11 @@ private struct SpaceSwipe: ViewModifier {
             slide.start(duration: duration, completion: finish)
             // Submit compositor travel first, then restore the page under its covering
             // sidebar. Selection must not wait for the animation's endpoint.
-            if !includesFavorites {
-                DispatchQueue.main.async { [weak self, weak store] in
-                    guard let self, self.transition == token, let store,
-                          store.currentSpaceID == self.landingFrom,
-                          store.spaceGesture.neighbour?.id == destination.id else { return }
-                    _ = self.activate(destination, in: store)
-                }
+            DispatchQueue.main.async { [weak self, weak store] in
+                guard let self, self.transition == token, let store,
+                      store.currentSpaceID == self.landingFrom,
+                      store.spaceGesture.neighbour?.id == destination.id else { return }
+                _ = self.activate(destination, in: store)
             }
         } else {
             if let host = store.window?.contentView as? BrowserWindowHost,
@@ -1591,16 +1601,16 @@ private struct SpaceSwipe: ViewModifier {
     /// Everything else — a mouse wheel, a scroll down the tab list, a scroll over the page,
     /// anything while the Library panel is over the sidebar — is left
     /// alone for whoever it was meant for.
-    private func mine(_ event: NSEvent, _ store: TabStore) -> Bool {
+    func mine(_ event: NSEvent, _ store: TabStore) -> Bool {
         // Above the guard on purpose: a gesture that starts over the page card still has to
         // clear the last one's verdict, or a swipe made over the sidebar goes on claiming
         // events long after the fingers have moved somewhere else.
         if event.phase.contains(.began) {
             forget()
-            if let host = store.window?.contentView as? BrowserWindowHost,
-               let slide = host.spaceSlide, slide.isDestination(store) { host.cancelSpaceSlide() }
         }
-        guard !store.spaceSwiping || claim == .mine,
+        let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide
+        let ownsLanding = slide.map { $0.isActive && ($0.isSource(store) || $0.isDestination(store)) } ?? false
+        guard !store.spaceSwiping || claim == .mine || ownsLanding,
               event.hasPreciseScrollingDeltas, let window = event.window,
               window === store.window, !store.libraryOpen,
               store.sidebarShown || (window as? VaneWindow)?.peekingSidebar == true
@@ -1637,6 +1647,22 @@ private struct SpaceSwipe: ViewModifier {
         // that drift is enough to lose the toss.
         claim = travelled.h > travelled.v * 1.5 ? .mine : .theirs
         guard claim == .mine else { return false }
+        if ownsLanding {
+            // A distinct horizontal gesture can begin before the preceding landing
+            // reaches rest. Retire that owned leg only after axis lock; unrelated page
+            // and vertical scrolling must leave its presentation alone.
+            slide?.finish()
+            transition = UUID()
+            pendingSelection = nil
+            landing = false
+            landingFrom = nil
+            returning = false
+            Motion.spaceHandoff {
+                store.spaceDrag = 0
+                store.spaceSwiping = false
+            }
+            guard store.window === window else { return false }
+        }
         // The first claimed event is the gesture's beginning as far as the state machine is
         // concerned: the `.began` that opened it carried no deltas and went to the tab list.
         swipe = Spaces.Swipe()

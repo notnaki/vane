@@ -2557,6 +2557,9 @@ struct Stash {
     /// joining that Space, restoring its tabs, or changing the page's browsing identity.
     @Published var littleDestinationSpace: Space?
     weak var window: NSWindow?
+    /// Cached roots remain mounted for WebKit continuity, but only the shown profile
+    /// may own presentation bindings and window-level gesture monitors.
+    @Published var profileVisible = true
     /// The window this store is parked behind while that window shows another profile.
     ///
     /// A window keeps one store per profile it has been in: the one on screen owns `window`,

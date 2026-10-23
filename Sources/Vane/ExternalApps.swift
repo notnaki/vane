@@ -201,7 +201,7 @@ import WebKit
     /// about:blank or name an opaque/sandboxed document's untrusted source URL.
     static func offer(_ url: URL, from frame: WKFrameInfo, tab: Tab) {
         guard let web = tab.existingWeb, frame.webView === web, !tab.suspended,
-              let store = TabStore.all.first(where: { $0.active === tab }),
+              let store = TabStore.all.first(where: { $0.active === tab && $0.profileVisible }),
               store.externalApp == nil else { return }
         let origin = frame.securityOrigin
         let scope = Scope(scheme: origin.protocol, host: origin.host, port: origin.port,
@@ -427,7 +427,7 @@ private struct ExternalAppPrompt: ViewModifier {
     @ObservedObject var store: TabStore
 
     func body(content: Content) -> some View {
-        content.sheet(item: $store.externalApp) { prompt in
+        content.sheet(item: $store.externalApp.presented(when: store.profileVisible)) { prompt in
             ExternalAppCard(prompt: prompt) { ExternalApps.answer(prompt, $0, in: store) }
         }
     }

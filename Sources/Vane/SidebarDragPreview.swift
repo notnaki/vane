@@ -162,6 +162,7 @@ enum FavouriteLanding {
 
     private func track() {
         guard let store, let window = root?.window ?? (ownsGhost ? sourceWindow : nil),
+              store.window === window, root?.isHiddenOrHasHiddenAncestor != true,
               let id = Dragging.shared.tab,
               store.tabs.contains(where: { $0.id == id }) else {
             setDestination(nil)

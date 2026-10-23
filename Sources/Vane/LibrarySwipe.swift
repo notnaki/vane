@@ -99,15 +99,18 @@ extension View {
 }
 
 private struct LibrarySwipe: ViewModifier {
-    let store: TabStore
+    @ObservedObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
     func body(content: Content) -> some View {
         let monitor = store.librarySwipeMonitor
         content
-            .onAppear { monitor.install(store) }
+            .onAppear { if store.profileVisible { monitor.install(store) } }
             .onDisappear { monitor.remove() }
+            .onChange(of: store.profileVisible) { _, visible in
+                if visible { monitor.install(store) } else { monitor.remove() }
+            }
             .onChange(of: reduceMotion) { if reduceMotion { monitor.finishForReducedMotion() } }
             .onChange(of: batterySaver.isActive) {
                 if batterySaver.isActive { monitor.finishForReducedMotion() }

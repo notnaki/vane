@@ -135,7 +135,8 @@ import XCTest
         try await Task.sleep(for: .milliseconds(500))
         let destination = try XCTUnwrap(TabStore.all.first { $0.window === window })
         XCTAssertEqual(destination.profileID, blueProfile.id)
-        XCTAssertNil(blackSurface.window)
+        XCTAssertTrue(blackSurface.window === window && blackSurface.isHiddenOrHasHiddenAncestor,
+                      "Parked profiles keep their backing frames mounted outside input and accessibility")
         XCTAssertEqual(try firstColour(of: blackSurface).blueComponent, 0, accuracy: 0.001,
                        "A cached profile must retain its own black wash, ready for the return handoff")
         if swipe {
@@ -524,6 +525,240 @@ import XCTest
         }
     }
 
+    func testFirstProfileVisitChangesPageAtStartOfNativeLanding() async throws {
+        try await checkEarlyProfilePageSelection(cached: false)
+    }
+
+    func testRapidBackToBackSwipesDoNotWaitForThePreviousLanding() async throws {
+        for direction: CGFloat in [-1, 1] {
+            let (store, spaces, window, _) = try fixture()
+            store.switchTo(space: direction < 0 ? spaces[0] : spaces[3])
+            store.palette = nil
+            try await Task.sleep(for: .milliseconds(150))
+            for _ in 0..<2 {
+                NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
+                NSApp.sendEvent(ScrollEvent(window: window, dx: direction * 100))
+                NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
+                try await Task.sleep(for: .milliseconds(40))
+            }
+            try await Task.sleep(for: .milliseconds(400))
+            XCTAssertEqual(store.currentSpaceID, spaces[direction < 0 ? 2 : 1].id,
+                           "Two distinct quick gestures must each change Space, in either direction")
+        }
+    }
+
+    func testCachedProfileColourStaysContinuousAcrossRepeatedSwipes() async throws {
+        for mixedThemes in [false, true] {
+            try await checkRepeatedProfileSwipes(mixedThemes: mixedThemes)
+        }
+    }
+
+    private func checkRepeatedProfileSwipes(mixedThemes: Bool) async throws {
+        TestEnvironment.prepare()
+        try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let profiles = [manager.create(name: "Repeated red"), manager.create(name: "Repeated blue")]
+        let spaces = profiles.enumerated().map { index, profile in
+            Space(name: "Repeated \(index)", profileID: profile.id,
+                  colorHex: mixedThemes ? (index == 0 ? "#000000" : "#26456B") : (index == 0 ? "#FF0000" : "#0000FF"),
+                  appearance: mixedThemes ? nil : "dark", tint: mixedThemes ? (index == 0 ? 0.8953 : 0.6246) : 1)
+        }
+        for (profile, space) in zip(profiles, spaces) {
+            XCTAssertTrue(manager.saveSpaces([space], for: profile.id))
+        }
+        let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
+        let window = try XCTUnwrap(source.window)
+        window.orderFrontRegardless()
+        defer {
+            window.close()
+            profiles.forEach { _ = manager.delete($0.id) }
+            manager.active = previous
+        }
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        for (index, space) in spaces.enumerated() {
+            let showing = try XCTUnwrap(TabStore.all.first { $0.window === window })
+            showing.switchTo(space: space)
+            let owner = try XCTUnwrap(TabStore.all.first { $0.window === window })
+            for row in 0..<20 {
+                let tab = owner.newBlankTab(focus: false)
+                tab.park(url: URL(string: "about:blank#\(row)")!, Parked(title: "Profile \(index) document \(row)"))
+            }
+            owner.palette = nil
+        }
+        TabStore.all.first { $0.window === window }?.switchTo(space: spaces[0])
+        try await Task.sleep(for: .milliseconds(150))
+        // Alternate twelve times with both saturated themes and mixed default themes.
+        for leg in 0..<12 {
+            let index = (leg + 1) % 2
+            let showing = try XCTUnwrap(TabStore.all.first { $0.window === window })
+            let direction = index == 1 ? 1 : -1
+            let monitor = showing.spaceGesture.monitor
+            XCTAssertNotNil(showing.beginSpaceSelection(spaces[index]))
+            monitor.track(-CGFloat(direction) * 70, width: SidebarWidth.shared.width, in: showing)
+            let sampler = ProfileWashSampler(host: host)
+            sampler.start(on: try XCTUnwrap(window.screen))
+            monitor.land(direction, to: spaces[index], width: SidebarWidth.shared.width,
+                         store: showing, duration: 0.3)
+            try await Task.sleep(for: .milliseconds(450))
+            sampler.stop()
+            XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, spaces[index].id)
+            XCTAssertGreaterThan(sampler.reds.count, 3)
+            let reversals = zip(sampler.reds, sampler.reds.dropFirst()).map { previous, next in
+                (direction == 1) != mixedThemes ? next - previous : previous - next
+            }
+            print("PROFILE_WASH_SAMPLE mixed=\(mixedThemes) leg=\(leg) direction=\(direction) frames=\(sampler.reds.count) max_reverse=\(reversals.max() ?? 0) max_gap_ms=\(sampler.maxGap * 1000)")
+            XCTAssertLessThan(reversals.max() ?? 0, 0.08,
+                              "The displayed background must not flash back toward its source after profile activation")
+            XCTAssertNil(host.spaceSlide)
+            XCTAssertEqual(showing.spaceDrag, 0, "Parked profile progress must be released at every landing")
+        }
+    }
+
+    func testCachedProfileChangesPageAtStartOfNativeLanding() async throws {
+        try await checkEarlyProfilePageSelection(cached: true)
+    }
+
+    func testRapidProfileBoundarySwipesCanImmediatelyReverse() async throws {
+        TestEnvironment.prepare()
+        try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let profiles = [manager.create(name: "Rapid origin"), manager.create(name: "Rapid arrival")]
+        let spaces = profiles.map { manager.createSpace(name: "Rapid", in: $0.id) }
+        let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
+        let window = try XCTUnwrap(source.window)
+        window.orderFrontRegardless()
+        defer {
+            window.close()
+            profiles.forEach { _ = manager.delete($0.id) }
+            manager.active = previous
+        }
+        source.palette = nil
+        try await Task.sleep(for: .milliseconds(150))
+        for leg in 0..<8 {
+            let direction: CGFloat = leg.isMultiple(of: 2) ? -1 : 1
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
+            NSApp.sendEvent(ScrollEvent(window: window, dx: direction * 100))
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
+            try await Task.sleep(for: .milliseconds(40))
+            XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID,
+                           spaces[leg.isMultiple(of: 2) ? 1 : 0].id,
+                           "Every fast boundary crossing and reversal must be accepted")
+        }
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertTrue(source.window === window)
+        XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide)
+    }
+
+    private func checkEarlyProfilePageSelection(cached: Bool) async throws {
+        TestEnvironment.prepare()
+        try XCTSkipIf(Motion.spaceReduced, "Native landing requires animation")
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let firstProfile = manager.create(name: "Early page origin")
+        let secondProfile = manager.create(name: "Early page arrival")
+        var first = manager.createSpace(name: "A", in: firstProfile.id)
+        first.colorHex = "#FF0000"; first.tint = 1; first.appearance = "dark"
+        XCTAssertTrue(manager.updateSpace(first))
+        var second = manager.createSpace(name: "B", in: secondProfile.id)
+        second.colorHex = "#0000FF"; second.tint = 1; second.appearance = "dark"
+        second.tabURLs = [URL(string: "about:blank")!]
+        XCTAssertTrue(manager.updateSpace(second))
+        let other = manager.createSpace(name: "Other parked Space", in: secondProfile.id)
+        let source = Windows.open(profile: firstProfile, space: first, focus: false)
+        let window = try XCTUnwrap(source.window)
+        window.orderFrontRegardless()
+        defer {
+            window.close()
+            _ = manager.delete(firstProfile.id)
+            _ = manager.delete(secondProfile.id)
+            manager.active = previous
+        }
+        if cached {
+            source.switchTo(space: second)
+            let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
+            try await Task.sleep(for: .milliseconds(100))
+            arriving.switchTo(space: other)
+            arriving.switchTo(space: first)
+        }
+        source.newTab(URL(string: "about:blank")!)
+        source.palette = nil
+        try await Task.sleep(for: .milliseconds(150))
+        let sourcePage = try XCTUnwrap(source.active?.web)
+        var observedCachedSelection = false
+        let selection = TabStore.all.first { $0.parkedIn === window && $0.profileID == secondProfile.id }?
+            .$currentSpaceID.sink { id in
+                guard id == second.id else { return }
+                observedCachedSelection = true
+                XCTAssertTrue(sourcePage.window === window && !sourcePage.isHiddenOrHasHiddenAncestor,
+                              "Select the requested cached Space before uncovering its profile host")
+            }
+        defer { selection?.cancel() }
+        let monitor = source.spaceGesture.monitor
+        XCTAssertNotNil(source.beginSpaceSelection(second))
+        monitor.track(-60, width: SidebarWidth.shared.width, in: source)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let slide = try XCTUnwrap(host.spaceSlide)
+        XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
+        monitor.land(1, to: second, width: SidebarWidth.shared.width, store: source, duration: 0.8)
+        try await Task.sleep(for: .milliseconds(100))
+        let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
+        XCTAssertEqual(arriving.profileID, secondProfile.id,
+                       "Profile activation must not wait for the sidebar animation to finish")
+        XCTAssertEqual(arriving.currentSpaceID, second.id)
+        if cached { XCTAssertTrue(observedCachedSelection) }
+        XCTAssertTrue(arriving.active?.web.window === window,
+                      "The destination web content must be mounted during landing")
+        XCTAssertTrue(host.spaceSlide === slide && slide.isActive,
+                      "The original captured sidebar must continue travelling over the new profile")
+        XCTAssertTrue(arriving.spaceGesture.profileSliding,
+                      "Live incoming rows must stay hidden underneath the moving sidebar")
+        XCTAssertFalse(source.profileVisible)
+        XCTAssertTrue(arriving.profileVisible)
+        XCTAssertTrue(source.spaceGesture.monitor.preparedSlides.isEmpty,
+                      "Parked roots must release their gesture preparation and observers")
+        source.liveFolderSheet = true
+        source.externalApp = ExternalApps.Prompt(url: URL(string: "example-app://background")!,
+            scope: nil, tabID: source.active!.id, documentID: UUID(), scheme: "example-app", app: nil, name: nil)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertNil(window.attachedSheet,
+                     "A late result from a parked root must not present over the arriving profile")
+        source.liveFolderSheet = false
+        source.externalApp = nil
+        let arrivingMonitor = arriving.spaceGesture.monitor
+        XCTAssertFalse(arrivingMonitor.mine(ScrollEvent(window: window, phase: .began, x: 900), arriving))
+        XCTAssertFalse(arrivingMonitor.mine(ScrollEvent(window: window, dy: 20, x: 900), arriving))
+        XCTAssertTrue(host.spaceSlide === slide && slide.isActive,
+                      "Scrolling over the page must not cut the sidebar landing short")
+        XCTAssertFalse(arrivingMonitor.mine(ScrollEvent(window: window, phase: .began), arriving))
+        XCTAssertFalse(arrivingMonitor.mine(ScrollEvent(window: window, dy: 20), arriving))
+        XCTAssertTrue(host.spaceSlide === slide && slide.isActive,
+                      "Vertical sidebar scrolling must not cut the landing short")
+        XCTAssertEqual(arriving.spaceGesture.outgoing?.space.id, first.id,
+                       "The arriving footer must keep the gesture's original Space")
+        XCTAssertNotNil(arriving.spaceGesture.footer.drag)
+        var footerFrames = 0
+        let observation = arriving.spaceGesture.footer.$drag.dropFirst().sink { drag in
+            guard let drag else { return }
+            footerFrames += 1
+            XCTAssertEqual(drag, slide.offset, accuracy: 2,
+                           "Each arriving footer frame must follow the same native presentation")
+        }
+        defer { observation.cancel() }
+        let surface = try XCTUnwrap(colourSurface(in: host))
+        let colour = try firstColour(of: surface, presented: true)
+        XCTAssertGreaterThan(colour.redComponent, 0.1,
+                             "The background must continue blending after the early profile handoff")
+        try await Task.sleep(for: .milliseconds(1000))
+        XCTAssertGreaterThan(footerFrames, 2)
+        XCTAssertNil(host.spaceSlide)
+        XCTAssertFalse(arriving.spaceGesture.profileSliding)
+        XCTAssertFalse(source.spaceSwiping)
+        XCTAssertFalse(source.spaceGesture.profileSliding)
+        XCTAssertEqual(source.spaceDrag, 0, "A parked source must not retain stale native travel")
+    }
+
     func testQueuedDestinationStartsFromActualArrivingProfileStore() async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Native queue requires animation")
@@ -548,7 +783,8 @@ import XCTest
         try await Task.sleep(for: .milliseconds(60))
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let original = try XCTUnwrap(host.spaceSlide)
-        source.spaceGesture.monitor.select(third, in: source)
+        let showing = try XCTUnwrap(TabStore.all.first { $0.window === window })
+        showing.spaceGesture.monitor.select(third, in: showing)
         XCTAssertTrue(host.spaceSlide === original)
         let deadline = ProcessInfo.processInfo.systemUptime + 4
         while (TabStore.all.first { $0.window === window }?.currentSpaceID != third.id || host.spaceSlide != nil),
@@ -1289,7 +1525,8 @@ import XCTest
         try await Task.sleep(for: .milliseconds(40))
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let previousSlide = try XCTUnwrap(host.spaceSlide)
-        source.spaceGesture.monitor.select(local, in: source)
+        let showing = try XCTUnwrap(TabStore.all.first { $0.window === window })
+        showing.spaceGesture.monitor.select(local, in: showing)
         XCTAssertTrue(host.spaceSlide === previousSlide,
                       "Already visible incoming profile rows must finish on their original surface")
         XCTAssertTrue(source.spaceGesture.profileSlidesFavorites,
@@ -1302,6 +1539,35 @@ import XCTest
         XCTAssertTrue(source.window === window)
         XCTAssertEqual(source.currentSpaceID, local.id, "The latest requested local Space must follow the visible profile leg")
         XCTAssertNil(host.spaceSlide)
+    }
+}
+
+@MainActor private final class ProfileWashSampler: NSObject {
+    weak var host: BrowserWindowHost?
+    var reds: [Double] = []
+    var maxGap: TimeInterval = 0
+    private var last: TimeInterval?
+    private var link: CADisplayLink?
+    init(host: BrowserWindowHost) { self.host = host }
+    private func visibleSurface(in view: NSView) -> ThemeWashSurface? {
+        guard !view.isHidden else { return nil }
+        if let surface = view as? ThemeWashSurface { return surface }
+        return view.subviews.lazy.compactMap { self.visibleSurface(in: $0) }.first
+    }
+    func start(on screen: NSScreen) {
+        let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+    func stop() { link?.invalidate(); link = nil }
+    @objc private func tick(_ link: CADisplayLink) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let last { maxGap = max(maxGap, now - last) }
+        last = now
+        guard let host, let surface = visibleSurface(in: host),
+              let cg = (surface.base.presentation()?.colors as? [CGColor])?.first,
+              let colour = NSColor(cgColor: cg)?.usingColorSpace(.deviceRGB) else { return }
+        reds.append(colour.redComponent)
     }
 }
 

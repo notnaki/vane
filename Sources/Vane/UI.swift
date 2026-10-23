@@ -4,6 +4,18 @@ import UniformTypeIdentifiers
 import WebKit
 import Combine
 
+@MainActor extension Binding {
+    /// A mounted, hidden profile must not present a late background result over the
+    /// profile currently using the window. Preserve normal dismissal writes.
+    func presented(when visible: Bool) -> Binding<Bool> where Value == Bool {
+        Binding<Bool>(get: { visible && wrappedValue }, set: { wrappedValue = $0 })
+    }
+
+    func presented<Item>(when visible: Bool) -> Binding<Item?> where Value == Item? {
+        Binding<Item?>(get: { visible ? wrappedValue : nil }, set: { wrappedValue = $0 })
+    }
+}
+
 /// Speak something that otherwise only ever changes colour, appears silently, or lives in
 /// an overlay VoiceOver has no reason to visit.
 /// ponytail: NSAccessibility.post rather than SwiftUI's AccessibilityNotification — one
@@ -431,16 +443,16 @@ struct BrowserWindow: View {
         .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
-        .sheet(isPresented: $store.liveFolderSheet) {
+        .sheet(isPresented: $store.liveFolderSheet.presented(when: store.profileVisible)) {
             LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
         }
-        .sheet(item: $store.tidyPreview) { preview in
+        .sheet(item: $store.tidyPreview.presented(when: store.profileVisible)) { preview in
             TidyPreviewSheet(store: store, preview: preview)
         }
-        .sheet(item: $store.workspaceSheet) { request in
+        .sheet(item: $store.workspaceSheet.presented(when: store.profileVisible)) { request in
             SpaceTemplatesSheet(store: store, request: request)
         }
-        .sheet(isPresented: $store.organizationSheet) {
+        .sheet(isPresented: $store.organizationSheet.presented(when: store.profileVisible)) {
             TabOrganizationSheet(store: store)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
@@ -947,6 +959,9 @@ private struct Sidebar: View {
             downloadsHover.dismiss()
         }
         .onDisappear { downloadsHover.dismiss() }
+        .onChange(of: store.profileVisible) { _, visible in
+            if !visible { downloadsHover.dismiss() }
+        }
         .frame(width: sidebar.width, alignment: .leading)
         .background(SidebarDragAnchor(preview: dragPreview, store: store, region: .root))
         .environmentObject(dragPreview)
@@ -1383,7 +1398,7 @@ private struct PillBody: View {
         .actionAnchor(overflowAnchor)
         .vaneTooltip("Page Actions", hint: "Copy, reader, site controls, and extensions")
         .accessibilityLabel("Page Actions")
-        .popover(isPresented: $showingSiteControls, arrowEdge: .bottom) {
+        .popover(isPresented: $showingSiteControls.presented(when: store.profileVisible), arrowEdge: .bottom) {
             if let tab { SiteControlPopover(tab: tab) }
         }
     }
@@ -1439,6 +1454,7 @@ private struct PillBody: View {
 
 /// Copy Link and Site Settings, the two glyphs Arc's pill grows on hover.
 private struct PillHoverGlyphs: View {
+    @EnvironmentObject private var store: TabStore
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let tab: Tab
@@ -1479,7 +1495,7 @@ private struct PillHoverGlyphs: View {
         .accessibilityLabel("Site Controls")
         .accessibilityValue([site.connection, site.badge].compactMap { $0 }.joined(separator: ", "))
         .accessibilityHint("Shows what this site is allowed to do, and its zoom, extensions and data.")
-        .popover(isPresented: $showingSiteControls, arrowEdge: .bottom) {
+        .popover(isPresented: $showingSiteControls.presented(when: store.profileVisible), arrowEdge: .bottom) {
             SiteControlPopover(tab: tab)
         }
     }
@@ -2511,9 +2527,9 @@ private struct SpaceRow: View {
             .contextMenu {
                 SpaceMenu(store: store, space: space, icons: $icons, theme: $theme, live: $live)
             }
-            .popover(isPresented: $icons) { SpaceIcons(store: store, space: space) }
-            .popover(isPresented: $theme) { ThemeEditor(store: store, space: space) }
-            .sheet(isPresented: $live) {
+            .popover(isPresented: $icons.presented(when: store.profileVisible)) { SpaceIcons(store: store, space: space) }
+            .popover(isPresented: $theme.presented(when: store.profileVisible)) { ThemeEditor(store: store, space: space) }
+            .sheet(isPresented: $live.presented(when: store.profileVisible)) {
                 LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
             }
             .accessibilityElement(children: .contain)
@@ -3046,11 +3062,11 @@ private struct SpaceDots: View {
             SpaceMenu(store: store, space: space, icons: showIcons, theme: showTheme,
                       live: showLive)
         }
-        .popover(isPresented: showIcons) { SpaceIcons(store: store, space: space) }
-        .popover(isPresented: showTheme) { ThemeEditor(store: store, space: space) }
+        .popover(isPresented: showIcons.presented(when: store.profileVisible)) { SpaceIcons(store: store, space: space) }
+        .popover(isPresented: showTheme.presented(when: store.profileVisible)) { ThemeEditor(store: store, space: space) }
         // In the Space the window is showing, like "New Folder" beside it in the same menu:
         // a folder belongs to a Pinned section, and this window draws exactly one.
-        .sheet(isPresented: showLive) {
+        .sheet(isPresented: showLive.presented(when: store.profileVisible)) {
             LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
         }
         .accessibilityElement(children: .ignore)
@@ -3230,7 +3246,7 @@ private struct PinnedSection: View {
                 Button("New Folder") { store.newFolder() }
                 Button("New Live Folder…") { store.askForLiveFolder { open($sheet) } }
             }
-            .sheet(isPresented: $sheet) {
+            .sheet(isPresented: $sheet.presented(when: store.profileVisible)) {
                 LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
             }
             .accessibilityHidden(store.pinnedSectionCollapsed)
@@ -3317,8 +3333,8 @@ private struct FolderRow: View {
             FolderMenu(store: store, folder: folder, shape: shape,
                        icons: $icons, editing: $editing)
         }
-        .popover(isPresented: $icons) { FolderIcons(store: store, folder: folder, shape: shape) }
-        .sheet(isPresented: $editing) {
+        .popover(isPresented: $icons.presented(when: store.profileVisible)) { FolderIcons(store: store, folder: folder, shape: shape) }
+        .sheet(isPresented: $editing.presented(when: store.profileVisible)) {
             LiveFolderSheet(store: store, editing: folder,
                             live: LiveFolders.shared(for: store.profileID))
         }

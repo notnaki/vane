@@ -669,12 +669,19 @@ extension VaneWindow {
         arriving.sidebarShown = store.sidebarShown
         arriving.sidebarPeeking = store.sidebarPeeking
         arriving.sidebarPresentationRevision &+= 1
+        if let slide = (window.contentView as? BrowserWindowHost)?.spaceSlide,
+           slide.isActive, slide.isSource(store) {
+            // Hide live rows and carry the gesture's tint/footer before mounting the
+            // arriving profile. The native sidebar continues travelling above this host.
+            slide.attach(arriving)
+        }
         store.sidebarPeeking = false
         store.parkedIn = window
         store.window = nil
+        store.profileVisible = false
         arriving.parkedIn = nil
         arriving.window = window
-        delegate.shown.store = arriving         // reattach this profile's existing interface
+        arriving.profileVisible = true
         ProfileManager.shared.active = profile
         // Live folders keep themselves filled for as long as a window is showing the profile.
         LiveFolders.shared(for: profile.id).begin()
@@ -683,6 +690,7 @@ extension VaneWindow {
         arriving.resolveStaleSpace()
         arriving.switchTo(space: space)         // a no-op for a store built into it just now
         arriving.applySpaceAppearance()
+        delegate.shown.store = arriving         // expose only the finalized destination
         SharedTabs.refreshPresentation()
         store.extensions.sync()
         arriving.extensions.sync()
@@ -830,9 +838,9 @@ extension VaneWindow {
     init(_ store: TabStore) { self.store = store }
 }
 
-/// One native hosting view per profile visited in this window. Removing a host from the
-/// window preserves its SwiftUI state and mounted WebKit pages; returning only reattaches
-/// it. Each root stays bound to its own store, so gestures and shortcuts cannot leak into
+/// One native hosting view per profile visited in this window. Hiding a host preserves
+/// its SwiftUI state and WebKit backing frames; returning only unhides it. Each root
+/// stays bound to its own store, so gestures and shortcuts cannot leak into
 /// another profile. Parked stores have no window, and their event monitors ignore input.
 @MainActor final class BrowserWindowHost: NSView {
     private var hosts: [ObjectIdentifier: NSView] = [:]
@@ -925,10 +933,21 @@ extension VaneWindow {
                 .font(Look.text))
             hosts[id] = host
         }
-        if let current { hosts[current]?.removeFromSuperview() }
+        let departing = current.flatMap { hosts[$0] }
         host.frame = bounds
         host.autoresizingMask = [.width, .height]
-        addSubview(host, positioned: .below, relativeTo: spaceSlide)
+        if host.superview !== self {
+            addSubview(host, positioned: .below, relativeTo: spaceSlide)
+        }
+        // Detaching a cached WebKit tree discards its ready backing frame and forces
+        // another paint on return. Keep parked roots mounted, outside input/AX, just
+        // as WebHost keeps pages behind the selected tab.
+        if let departing, let holder = window?.firstResponder as? NSView,
+           holder.isDescendant(of: departing) {
+            window?.makeFirstResponder(nil)
+        }
+        departing?.isHidden = true
+        host.isHidden = false
         current = id
     }
 }
@@ -940,6 +959,7 @@ extension VaneWindow {
     private let incoming: NSView
     private let direction: Int
     private let targetID: UUID
+    private let originPreview: SpacePreviewList
     private let preparedOrigin: Space
     private let preparedTarget: Space
     private let preparedFrame: NSRect
@@ -978,6 +998,7 @@ extension VaneWindow {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
         self.direction = direction
         targetID = incoming.space.id
+        originPreview = outgoing
         preparedOrigin = outgoing.space
         preparedTarget = incoming.space
         preparedFrame = frame
@@ -1015,10 +1036,15 @@ extension VaneWindow {
     func isSource(_ store: TabStore) -> Bool { source === store }
 
     func attach(_ store: TabStore) {
-        // Profile activation occurs inside finish's completion. It still owns this
-        // overlay until the arriving sidebar is attached and acknowledged.
-        guard !finished || completingSelection else { return }
+        // Activation can replace the profile host during travel or inside completion.
+        // Both keep this overlay until the arriving sidebar acknowledges its rest state.
+        guard (!finished || completingSelection), destination !== store else { return }
         destination = store
+        store.spaceSwiping = true
+        store.spaceGesture.outgoing = originPreview
+        store.spaceGesture.neighbour = preparedTarget
+        store.spaceGesture.previewDirection = direction
+        store.spaceGesture.nativeDrag = offset
         store.spaceGesture.profileSlidesFavorites = includesFavorites
         store.spaceGesture.profileSliding = true
     }
@@ -1059,7 +1085,9 @@ extension VaneWindow {
     }
 
     fileprivate var groundStart: ThemeWashPresentation?
-    fileprivate func captureGroundPresentation() -> ThemeWashPresentation? { source?.spaceGesture.captureGround?() }
+    fileprivate func captureGroundPresentation() -> ThemeWashPresentation? {
+        (destination ?? source)?.spaceGesture.captureGround?()
+    }
     private var finishGround: ((Space?) -> Void)?
     private var animationID: UUID?
 
@@ -1153,9 +1181,15 @@ extension VaneWindow {
     }
 
     private func publishProgress(_ drag: CGFloat) {
-        guard let gesture = source?.spaceGesture else { return }
-        Motion.instant { gesture.nativeDrag = drag }
-        gesture.trackGround?(Double(min(1, abs(drag / travelWidth))))
+        guard let window else { return }
+        for store in [source, destination].compactMap({ $0 }) {
+            // A parked source no longer presents this gesture. Publishing into its
+            // footer would render stale metadata and leave a drag for the next visit.
+            guard store.window === window else { continue }
+            let gesture = store.spaceGesture
+            Motion.instant { gesture.nativeDrag = drag }
+            gesture.trackGround?(Double(min(1, abs(drag / travelWidth))))
+        }
     }
 
     func cancel() {
@@ -1208,6 +1242,8 @@ extension VaneWindow {
         finishGround = nil
         Motion.spaceHandoff {
             source?.spaceGesture.profileSliding = false
+            destination?.spaceDrag = 0
+            destination?.spaceSwiping = false
             destination?.spaceGesture.profileSliding = false
         }
         // Keep the native rows until the live tree acknowledges its resting identity.
