@@ -99,11 +99,21 @@ private struct Feel02PressAnchor: NSViewRepresentable {
     }
 }
 
+private struct SidebarRetainsControlsKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 private struct Feel02PressFeedbackEnabledKey: EnvironmentKey {
     static let defaultValue = true
 }
 
 extension EnvironmentValues {
+    /// A small sidebar can disable a folded slot without discarding its press anchor.
+    var sidebarRetainsControls: Bool {
+        get { self[SidebarRetainsControlsKey.self] }
+        set { self[SidebarRetainsControlsKey.self] = newValue }
+    }
+
     /// Passive native monitors cannot infer SwiftUI's allowsHitTesting flag.
     /// Inert preview roots explicitly exclude all of their descendant anchors.
     var feel02PressFeedbackEnabled: Bool {
@@ -115,6 +125,7 @@ extension EnvironmentValues {
 /// Feedback changes decoration immediately; text and hit rectangles never scale.
 struct Feel02PressFeedback: ViewModifier {
     var enabled = true
+    @Environment(\.sidebarRetainsControls) private var retainsControls
     @Environment(\.isEnabled) private var controlEnabled
     @Environment(\.feel02PressFeedbackEnabled) private var surfaceEnabled
     @State private var pressed = false
@@ -132,8 +143,8 @@ struct Feel02PressFeedback: ViewModifier {
             .background {
                 // Preview/held surfaces are inert. Mounting one native view per row
                 // still adds layout work even when its monitor target is disabled.
-                if interactive {
-                    Feel02PressAnchor(enabled: true) { next in
+                if interactive || (retainsControls && enabled && surfaceEnabled) {
+                    Feel02PressAnchor(enabled: interactive) { next in
                         var transaction = Transaction(animation: nil)
                         transaction.disablesAnimations = true
                         withTransaction(transaction) { pressed = next }

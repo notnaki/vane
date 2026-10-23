@@ -120,6 +120,45 @@ import XCTest
         XCTAssertEqual(cache.resolve(in: store, shape: standalone).rows.count, 1)
     }
 
+    func testRetainedOutlineKeepsNestedDisclosureAndExcludesLockedContent() throws {
+        let store = fixture(), cache = Feel02SidebarRowsCache()
+        var outer = Folder(name: "Outer", collapsed: true)
+        let inner = Folder(name: "Inner", collapsed: true)
+        var locked = Folder(name: "Locked", collapsed: true)
+        locked.requiresAuthentication = true
+        let tabs = store.tabs
+        store.todayShape = Pins(entries: [
+            .init(row: .folder(outer)),
+            .init(row: .folder(inner), parent: outer.id),
+            .init(row: .tab(tabs[0].id.uuidString), parent: inner.id),
+            .init(row: .folder(locked), parent: outer.id),
+            .init(row: .tab(tabs[1].id.uuidString), parent: locked.id),
+            .init(row: .tab(tabs[2].id.uuidString))
+        ])
+        let closed = cache.resolve(in: store, shape: store.todayShape)
+        XCTAssertEqual(closed.rows.map(\.id), [outer.id.uuidString, tabs[2].id.uuidString])
+        let retained = try XCTUnwrap(closed.retainedRows)
+        XCTAssertEqual(retained.map(\.id), [outer.id.uuidString, inner.id.uuidString,
+            tabs[0].id.uuidString, locked.id.uuidString, tabs[2].id.uuidString])
+        XCTAssertEqual(retained.map(\.visible.depth), [0, 1, 2, 1, 0])
+        XCTAssertTrue(retained[1].visible.entry.folder?.collapsed == true)
+        outer.collapsed = false
+        store.todayShape.edit(folder: outer.id) { $0 = outer }
+        XCTAssertEqual(cache.resolve(in: store, shape: store.todayShape).rows.map(\.id),
+            [outer.id.uuidString, inner.id.uuidString, locked.id.uuidString, tabs[2].id.uuidString])
+    }
+
+    func testLargeCollapsedOutlineDoesNotRetainOffscreenControls() {
+        let store = fixture(count: 300), cache = Feel02SidebarRowsCache()
+        let folder = Folder(name: "Large", collapsed: true)
+        store.todayShape = Pins(entries: [.init(row: .folder(folder))] + store.tabs.map {
+            .init(row: .tab($0.id.uuidString), parent: folder.id)
+        })
+        let snapshot = cache.resolve(in: store, shape: store.todayShape)
+        XCTAssertEqual(snapshot.rows.map(\.id), [folder.id.uuidString])
+        XCTAssertNil(snapshot.retainedRows)
+    }
+
     func testLiveResizePublishesOnlyChangedClampedWidth() {
         let sidebar = SidebarWidth()
         sidebar.width = SidebarWidth.maximum

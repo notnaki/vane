@@ -2120,6 +2120,7 @@ private struct Lifted: ViewModifier {
 /// pages load their titles is a row you cannot aim at, and four panes have to fit a sidebar
 /// either way, so the truncation is the answer at every count.
 struct PaneStrip: View {
+    @Environment(\.isEnabled) private var isEnabled
     @Environment(\.spaceChromeTheme) private var chromeTheme
     /// Passed in rather than read from the environment, as `SpaceMenu`'s is: this is also
     /// built for the drag preview, which AppKit renders outside the view hierarchy, and a
@@ -2168,9 +2169,10 @@ struct PaneStrip: View {
                   ? chromeTheme.selectedEdge.opacity(1 - (morph?.progress ?? 0)) : .clear)
         .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
-        .onHover { hovering = $0 }
+        .onHover { hovering = $0 && isEnabled }
+        .onChange(of: isEnabled) { _, enabled in if !enabled { hovering = false } }
         .onTapGesture { store.focusPane(split.activeTab) }
-        .environment(\.rowHovering, held || hovering)
+        .environment(\.rowHovering, isEnabled && (held || hovering))
     }
 
     /// A split can mix a live PR with unrelated pages. Each pane owns its own icon metadata.
@@ -3121,6 +3123,7 @@ struct SidebarScrollCutoffs: Equatable {
 struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     var initialOffset: CGFloat = 0
     var animatesCutoffs = true
+    var retainsRows = false
     var reportOffset: (CGFloat) -> Void = { _ in }
     @ViewBuilder let header: () -> Header
     @ViewBuilder let rows: () -> Rows
@@ -3134,8 +3137,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
         VStack(spacing: Look.rowGap) {
             header()
             ScrollView {
-                // Both the live sidebar and moving previews mount only the viewport.
-                LazyVStack(spacing: Look.rowGap) { rows() }
+                rowStack
                     .frame(minHeight: scrollHeight, alignment: .top)
                     .background(WindowDragArea())
             }
@@ -3164,6 +3166,14 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
         }
     }
 
+    @ViewBuilder private var rowStack: some View {
+        if retainsRows {
+            VStack(spacing: Look.rowGap) { rows() }
+        } else {
+            LazyVStack(spacing: Look.rowGap) { rows() }
+        }
+    }
+
     private func cutoffLine(visible: Bool) -> some View {
         Rectangle().fill(Look.hairline)
             .frame(height: 1 / max(1, displayScale))
@@ -3188,7 +3198,8 @@ struct SidebarSpaceSections: View {
     @EnvironmentObject private var store: TabStore
 
     var body: some View {
-        SpaceSectionsLayout(reportOffset: { store.spaceGesture.sidebarOffset = $0 }) { SpaceRow() } rows: {
+        SpaceSectionsLayout(retainsRows: Feel02SidebarRowsCache.retainsRows(in: store),
+                            reportOffset: { store.spaceGesture.sidebarOffset = $0 }) { SpaceRow() } rows: {
             PinnedTabs()
             TidyRow()
             NewTabRow()
@@ -3226,20 +3237,18 @@ private struct PinnedSection: View {
         // actually draw a row are counted — a pinned pane that is not its split's lead, and
         // an entry whose tab has gone, draw nothing, and a place in the list counted in
         // entries rather than rows lands beside the wrong one. See `OpenTabs`.
-        let available = rowsCache.resolve(in: store, shape: store.pins).rows
+        let snapshot = rowsCache.resolve(in: store, shape: store.pins)
+        let available = snapshot.rows
         // Empty is nothing, as in Arc: the divider follows the space’s name, and this
         // section draws no row at all — not even an empty one while a drag is in flight,
         // which would push the whole strip down a pitch under the pointer and take
         // `Landing`'s arithmetic with it. The way in is the divider below, which is the end
         // of this list and takes a drop as one; the space row above; ⌘⇧D; or New Folder.
-        let rows = store.pinnedSectionCollapsed ? [] : available
         if !available.isEmpty {
-            LazyVStack(spacing: Look.rowGap) {
-                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                    ShapeRow(row: row.visible, tab: row.tab, index: index, rows: rows.count,
-                             shape: \.pins, pr: presentation(of: row.visible))
-                        .transition(.rowCollapse)
-                }
+            SidebarSectionRows(snapshot: snapshot, collapsed: store.pinnedSectionCollapsed,
+                               transition: .rowCollapse) { row, index, count in
+                ShapeRow(row: row.visible, tab: row.tab, index: index, rows: count,
+                         shape: \.pins, pr: presentation(of: row.visible))
             }
             .padding(.bottom, store.pinnedSectionCollapsed ? -Look.rowGap : 0)
             .contextMenu {
@@ -3310,6 +3319,7 @@ private enum FolderZone: Equatable { case before, inside, after }
 /// folded. Clicking anywhere on it folds or unfolds; everything else it can be is in its
 /// right-click menu, which is the only route the keyboard and VoiceOver have.
 private struct FolderRow: View {
+    @Environment(\.isEnabled) private var isEnabled
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
@@ -3324,7 +3334,7 @@ private struct FolderRow: View {
 
     @ObservedObject private var dragging = Dragging.shared
     private var locked: Bool { store.isFolderLocked(folder.id) }
-    private var receiving: Bool { dragging.active && zone == .inside }
+    private var receiving: Bool { isEnabled && dragging.active && zone == .inside }
 
     var body: some View {
         dropRow
@@ -3389,6 +3399,7 @@ private struct FolderRow: View {
         .onDrop(of: [.plainText],
                 delegate: FolderDrop(store: store, folder: folder, shape: shape, marker: dropMarker, zone: $zone))
         .padding(.vertical, -Look.rowGap / 2)
+        .onChange(of: isEnabled) { _, enabled in if !enabled { zone = nil } }
         .onChange(of: dragging.active) { _, active in if !active { zone = nil } }
     }
 
@@ -3637,6 +3648,7 @@ private struct FolderDrop: DropDelegate {
 /// Every clickable line in the sidebar: an icon, a title, and whatever the row wants on the
 /// trailing edge. One shape so the list reads as one list.
 struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
+    @Environment(\.isEnabled) private var isEnabled
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let selected: Bool
     /// In a multi-select. It wears the same fill as `selected` — a selection is a selection —
@@ -3702,10 +3714,11 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
         }
         .modifier(Feel02PressFeedback(enabled: keyboardEnabled && !held))
         .contentShape(.rect)
-        .onHover { hovering = $0 }
+        .onHover { hovering = $0 && isEnabled }
+        .onChange(of: isEnabled) { _, enabled in if !enabled { hovering = false } }
         .onTapGesture { InteractionSounds.play(.press); action() }
         .vaneKeyboardAction(enabled: keyboardEnabled && !held, action: action)
-        .environment(\.rowHovering, held || hovering)
+        .environment(\.rowHovering, isEnabled && (held || hovering))
     }
 
     private var highlightOpacity: Double {
@@ -3923,12 +3936,8 @@ private struct OpenTabs: View {
         // tidy's folders live here now, and a folder is not a tab. Only the entries that
         // actually draw a row are counted — a pane that is not its split's lead, and an
         // entry whose tab has gone, draw nothing. See `PinnedSection`.
-        let rows = snapshot.rows
-        LazyVStack(spacing: Look.rowGap) {
-            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                ShapeRow(row: row.visible, tab: row.tab, index: index, rows: rows.count, shape: \.todayShape)
-                    .transition(.todayRow)
-            }
+        SidebarSectionRows(snapshot: snapshot, transition: .todayRow) { row, index, count in
+            ShapeRow(row: row.visible, tab: row.tab, index: index, rows: count, shape: \.todayShape)
         }
         // A container of rows, so VoiceOver reads this as a tab list and steps through the
         // tabs instead of announcing an anonymous stack.
@@ -3944,6 +3953,7 @@ private struct OpenTabs: View {
 /// One line of the strip: a tab's row — unless the tab is a pane of a split, in which case
 /// the split owns one row between all of its panes and draws it where its first pane sits.
 private struct StripRow: View {
+    @Environment(\.isEnabled) private var isEnabled
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
@@ -3980,6 +3990,7 @@ private struct StripRow: View {
                     .transition(tab.kind == .today ? .todayRow : .rowCollapse)
             }
         }
+        .onChange(of: isEnabled) { _, enabled in if !enabled { side = nil; half = nil } }
         .lifted(tab.id)
         .modifier(TabArrivalFeedback(feedback: store.feedback, id: tab.id))
         // One drop target for the row, whichever of the two draws it: a split is one item in
@@ -5012,6 +5023,7 @@ private struct TabHomeIcon: View {
 /// tile rather than in the icon's place, and because the two must say the same words: the
 /// tooltip, the VoiceOver label and the row's own accessibility action are all these.
 private struct GoHomeGlyph: View {
+    @Environment(\.isEnabled) private var isEnabled
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let store: TabStore
     let tab: Tab
@@ -5040,7 +5052,10 @@ private struct GoHomeGlyph: View {
                 .background(returnHovering.wrappedValue ? chromeTheme.hovered : .clear,
                             in: .rect(cornerRadius: Look.pillRadius))
                 .contentShape(.rect(cornerRadius: Look.pillRadius))
-                .onHover { returnHovering.wrappedValue = $0 }
+                .onHover { returnHovering.wrappedValue = $0 && isEnabled }
+                .onChange(of: isEnabled) { _, enabled in
+                    if !enabled { returnHovering.wrappedValue = false }
+                }
                 .onDisappear { returnHovering.wrappedValue = false }
             } else {
                 Image(systemName: "arrow.uturn.backward")

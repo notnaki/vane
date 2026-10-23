@@ -106,9 +106,12 @@ import XCTest
                 XCTAssertTrue(tabs.allSatisfy { $0.existingWeb == nil })
                 print("FOLDER_OPEN kind=\(kind) count=\(count) visible=\(visible) mounted=\(mounted) toggle_ms=\(toggle) layout_ms=\(layout) max_gap_ms=\(gaps.max() ?? 0)")
                 if count == 300 { XCTAssertLessThan(mounted, 60) }
+                let closeStart = ProcessInfo.processInfo.systemUptime
                 store.toggleFolder(folder.id, in: shape)
                 host.layoutSubtreeIfNeeded()
+                let closeLayout = (ProcessInfo.processInfo.systemUptime - closeStart) * 1000
                 try await Task.sleep(for: .milliseconds(500))
+                print("FOLDER_CLOSE kind=\(kind) count=\(count) layout_ms=\(closeLayout)")
             }
         }
     }
