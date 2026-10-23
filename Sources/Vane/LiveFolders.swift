@@ -862,6 +862,8 @@ enum GitHubOAuth {
     /// remains for injected offline fixtures.
     @discardableResult
     func saveAsync(login: String, token: String) async -> Bool {
+        guard let operation = Passwords.beginUIOperation() else { return false }
+        defer { operation.finish() }
         guard systemStoreCredential else { return save(login: login, token: token) }
         guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }),
               let lock = try? GitHubRefreshLock.tryAcquire(renewal.lockURL) else { return false }
@@ -889,7 +891,8 @@ enum GitHubOAuth {
     /// pasted again. Deleting the folders because a credential was withdrawn would be
     /// deleting the user's tabs.
     func signOut() {
-        guard let old = signIn else { return }
+        guard !AppLifecycle.shared.persistenceExitInProgress,
+              let old = signIn, let operation = Passwords.beginUIOperation() else { return }
         credentialVersion += 1
         let version = credentialVersion
         let session = GitHubSignedIn(login: old.login,
@@ -897,8 +900,14 @@ enum GitHubOAuth {
         if let lock = try? GitHubRefreshLock.tryAcquire(renewal.lockURL) {
             if systemDeleteCredential {
                 signingOut = true
-                Task { await removeSystemCredential(session, holding: lock, version: version) }
-            } else { removeCredential(old.login, holding: lock) }
+                Task {
+                    defer { operation.finish() }
+                    await removeSystemCredential(session, holding: lock, version: version)
+                }
+            } else {
+                defer { operation.finish() }
+                removeCredential(old.login, holding: lock)
+            }
             return
         }
         // A refresh is spending its one-use token. Complete sign-out once it releases the
@@ -906,6 +915,7 @@ enum GitHubOAuth {
         signingOut = true
         needsReconnect = false
         Task {
+            defer { operation.finish() }
             guard let lock = try? await GitHubRefreshLock.acquire(renewal.lockURL) else {
                 if credentialVersion == version {
                     signingOut = false

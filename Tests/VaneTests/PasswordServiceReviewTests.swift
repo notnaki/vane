@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import XCTest
 @testable import vane
 
@@ -66,4 +67,54 @@ private final class ReviewedCredentialFixture: @unchecked Sendable {
         XCTAssertEqual(updated.revision, fixture.revision)
         XCTAssertEqual(fixture.password, "newer settings edit")
     }
+    func testFlushWaitsForSaveIntentRegisteredBeforeItsTaskStarts() async throws {
+        TestEnvironment.prepare()
+        let entered = expectation(description: "accepted Save reached worker")
+        let release = DispatchSemaphore(value: 0)
+        let tab = Tab(profileID: UUID())
+        defer { tab.tearDown() }
+        var reader = Passwords.Reader()
+        reader.commit = { _, _, _, _, _ in
+            XCTAssertFalse(Thread.isMainThread)
+            entered.fulfill()
+            _ = release.wait(timeout: .now() + 3)
+            return .saved
+        }
+        tab.passwordReader = reader
+        tab.pendingSave = PendingSave(host: "flush.invalid", account: "ada", password: "fixture")
+        tab.confirmSaveAsync()
+        // No suspension has occurred since the click: this covers the gap before Task
+        // execution/queue admission that a bare service queue barrier cannot observe.
+        XCTAssertTrue(Passwords.hasPendingOperations)
+        var flushed = false
+        let flush = Task { try await Passwords.flushPendingOperations(); flushed = true }
+        await fulfillment(of: [entered], timeout: 2)
+        XCTAssertFalse(flushed)
+        XCTAssertNotNil(tab.pendingSave)
+        release.signal()
+        try await flush.value
+        XCTAssertTrue(flushed)
+        XCTAssertFalse(Passwords.hasPendingOperations)
+        XCTAssertNil(tab.pendingSave)
+    }
+
+    func testPersistenceExitRejectsNewSaveBeforeServiceAdmission() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let lifecycle = AppLifecycle.shared
+        XCTAssertTrue(lifecycle.beginPersistenceExit())
+        defer { lifecycle.endPersistenceExit() }
+        let tab = Tab(profileID: UUID())
+        defer { tab.tearDown() }
+        var reader = Passwords.Reader()
+        reader.commit = { _, _, _, _, _ in XCTFail("New Save reached service after admission closed"); return .saved }
+        tab.passwordReader = reader
+        let offer = PendingSave(host: "flush.invalid", account: "ada", password: "fixture")
+        tab.pendingSave = offer
+        tab.confirmSaveAsync()
+        XCTAssertFalse(Passwords.hasPendingOperations)
+        try await Passwords.flushPendingOperations()
+        XCTAssertEqual(tab.pendingSave?.id, offer.id)
+    }
+
 }

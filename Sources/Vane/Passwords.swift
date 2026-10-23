@@ -586,6 +586,42 @@ enum Passwords {
         } onCancel: { cancellation.cancel() }
     }
 
+    /// Register synchronously on the UI actor before launching a task, closing the gap
+    /// between a Save click and its eventual service-queue admission.
+    struct PendingUIOperation: Sendable {
+        fileprivate let id: UUID
+        @MainActor func finish() { Passwords.finishUIOperation(id) }
+    }
+    @MainActor private static var pendingUIOperations: Set<UUID> = []
+    @MainActor private static var pendingUIWaiters: [CheckedContinuation<Void, Never>] = []
+    @MainActor static var hasPendingOperations: Bool { !pendingUIOperations.isEmpty }
+
+    @MainActor static func beginUIOperation() -> PendingUIOperation? {
+        guard !AppLifecycle.shared.persistenceExitInProgress else { return nil }
+        let id = UUID()
+        pendingUIOperations.insert(id)
+        return PendingUIOperation(id: id)
+    }
+    @MainActor private static func finishUIOperation(_ id: UUID) {
+        guard pendingUIOperations.remove(id) != nil, pendingUIOperations.isEmpty else { return }
+        let waiters = pendingUIWaiters
+        pendingUIWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// Caller closes new intent first, then drains imports before this barrier. No UI
+    /// thread waits on queue.sync; admitted UI tasks may reach the lane after this starts.
+    @MainActor static func flushPendingOperations() async throws {
+        while true {
+            if !pendingUIOperations.isEmpty {
+                await withCheckedContinuation { pendingUIWaiters.append($0) }
+            }
+            try Task.checkCancellation()
+            try await perform { }
+            if pendingUIOperations.isEmpty { return }
+        }
+    }
+
     private static func checkServiceCancellation() throws {
         try Task.checkCancellation()
         if DispatchQueue.getSpecific(key: serviceLane.cancellationKey)?.cancelled == true {
@@ -1213,9 +1249,9 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                 + "https://saved.example,ada,first\n"
                 + "https://blocked.example,ada,second\n")
                 .write(to: importFile, atomically: true, encoding: .utf8)
-            let result = try PasswordImport.importFile(importFile) { entry in
+            let result = try PasswordImport.importFile(importFile, save: { entry in
                 entry.host != "blocked.example"
-            }
+            })
             check("password import counts only credentials actually stored",
                   result.imported == 1 && result.failed == 1 && result.skipped == 0)
         } catch {

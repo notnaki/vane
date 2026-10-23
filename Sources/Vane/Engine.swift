@@ -2097,13 +2097,15 @@ struct TitleReveal: Equatable, Sendable {
         guard !isPrivate, let offer = pendingSave, passwordCommitOffer != offer.id else { return }
         let origin = reviewedOrigin ?? offer.origin, account = reviewedAccount ?? offer.account
         let password = reviewedPassword ?? offer.password
-        guard origin.scheme == "https", !password.isEmpty else { return }
+        guard origin.scheme == "https", !password.isEmpty,
+              let operation = Passwords.beginUIOperation() else { return }
         let profile = profileID, reader = passwordReader
         passwordSaveReadTask?.cancel()
         passwordSaveReadRequest = UUID()
         passwordCommitOffer = offer.id
         passwordSaveReadTask = Task { [weak self] in
             defer {
+                operation.finish()
                 if self?.passwordCommitOffer == offer.id { self?.passwordCommitOffer = nil }
             }
             do {

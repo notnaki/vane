@@ -345,11 +345,11 @@ import SwiftUI
             addProblem = "This login already exists. Open it and choose Edit to change it."
             return
         }
-        guard !mutationInFlight else { return }
+        guard !mutationInFlight, let operation = Passwords.beginUIOperation() else { return }
         let password = secrets.draftPassword, scope = profileID, context = secrets.secretContext
         mutationInFlight = true
         mutationTask = Task {
-            defer { mutationInFlight = false }
+            defer { mutationInFlight = false; operation.finish() }
             do { try await Passwords.addAsync(origin: origin, account: account, password: password, profileID: scope) }
             catch {
                 guard profileID == scope, secrets.secretContext == context else { return }
@@ -494,11 +494,11 @@ import SwiftUI
             problem = "Enter a valid HTTPS website without a username or password in its URL."
             return
         }
-        guard !mutationInFlight else { return }
+        guard !mutationInFlight, let operation = Passwords.beginUIOperation() else { return }
         let password = secrets.draftPassword, scope = profileID, context = secrets.secretContext
         mutationInFlight = true
         mutationTask = Task {
-            defer { mutationInFlight = false }
+            defer { mutationInFlight = false; operation.finish() }
             do { try await Passwords.editAsync(login, origin: origin, account: account, password: password, profileID: scope) }
             catch {
                 guard profileID == scope, secrets.secretContext == context else { return }
@@ -517,11 +517,12 @@ import SwiftUI
 
     private func remove(_ login: Passwords.Login) {
         guard !mutationInFlight, confirm("Delete the saved login for \(login.host)?", "Delete",
-                      PasswordsPane.deleteDetail(login)) else { return }
+                      PasswordsPane.deleteDetail(login)),
+              let operation = Passwords.beginUIOperation() else { return }
         let scope = profileID, context = secrets.secretContext
         mutationInFlight = true
         mutationTask = Task {
-            defer { mutationInFlight = false }
+            defer { mutationInFlight = false; operation.finish() }
             do { try await Passwords.deleteAsync(login, profileID: scope) }
             catch {
                 guard profileID == scope, secrets.secretContext == context else { return }

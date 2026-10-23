@@ -106,6 +106,8 @@ final class GitHubRefreshLock {
 
     func token(after token: String, force: Bool = false) async -> Result<GitHubSignedIn, GitHub.Trouble> {
         if let inFlight { return await inFlight.value }
+        guard let operation = Passwords.beginUIOperation() else { return .failure(.offline) }
+        defer { operation.finish() }
         let task = Task { await rotate(after: token, force: force) }
         inFlight = task
         let result = await task.value
