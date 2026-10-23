@@ -101,7 +101,7 @@ import Security
         if provider == .apple { return await AppleAI.shortTitle(for: title, url: url) }
         struct Title: Decodable { let text: String }
         let prompt = AppleAI.prompt("Host: \(url.host() ?? "")\nTitle: \(title)", ask:
-            #"Return JSON {"text":"short title"}. Use at most four words and 32 characters, selected from the original title. Keep the specific subject; omit site names and marketing text. Finish at a whole word."#, limit: 700)
+            #"Return JSON {"text":"short title"}. Consider titles of any length. Use at most four words and 32 characters, selected from the original title. Keep the specific subject; omit site names and marketing text. Finish at a whole word."#, limit: 700)
         return await reply(Title.self, prompt: prompt, tokens: 512)?.text
     }
 

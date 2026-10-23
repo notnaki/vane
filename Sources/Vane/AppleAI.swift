@@ -195,7 +195,7 @@ import FoundationModels
     /// Below this there is nothing to summarise and the model would hand back a paraphrase
     /// of the input, a second later.
     static let minimumWords = 40
-    /// A title this short already fits a tab.
+    /// Maximum length of a generated tab label.
     static let titleLimit = 28
     /// Two tabs are not a grouping problem.
     static let minimumTabsToGroup = 4
@@ -211,9 +211,9 @@ import FoundationModels
         return trimmed
     }
 
-    static func needsShortening(_ title: String) -> Bool {
+    static func worthNaming(_ title: String) -> Bool {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !t.isEmpty && t.count > titleLimit
+        return !t.isEmpty
     }
 
     static func worthGrouping(_ count: Int) -> Bool { count >= minimumTabsToGroup }
@@ -288,7 +288,7 @@ import FoundationModels
         case .summary:
             return "You summarise web pages for a browser. Be factual and specific; no preamble. " + rule
         case .title:
-            return "You shorten web page titles so they fit a narrow browser tab. Keep the "
+            return "You name favorite and pinned browser tabs concisely, even when the page title is already short. Keep the "
                 + "distinctive words, drop the site name and any marketing. " + rule
         case .filename:
             return "You name downloaded files. Short, lowercase, hyphen-separated, describing "
@@ -540,12 +540,11 @@ import FoundationModels
         return stream
     }
 
-    /// A tidy short tab title. nil when the title already fits — asking would only risk
-    /// making it worse.
+    /// A concise tab name. Short page titles are eligible too.
     static func shortTitle(for title: String, url: URL) async -> String? {
-        guard ready, needsShortening(title) else { return nil }
+        guard ready, worthNaming(title) else { return nil }
         let p = "Host: \(sanitize(url.host() ?? "")).\n"
-            + prompt(title, ask: "Shorten the untrusted page title above.", limit: 300)
+            + prompt(title, ask: "Give the untrusted page title above a concise tab name, even if it is already short.", limit: 300)
         guard let out = await run(.title, p, as: ShortTitle.self,
                                   tokens: 32, timeout: .seconds(10)) else { return nil }
         return tidyTitle(out.text)
@@ -683,9 +682,9 @@ import FoundationModels
         assert("one word short of the threshold is still not sent",
                payload(Array(repeating: "w", count: minimumWords - 1).joined(separator: " ")) == nil)
         assert("an article-length page produces a payload", payload(article) != nil)
-        assert("a title that already fits a tab is not sent", needsShortening("Vane") == false)
-        assert("an empty title is not sent", needsShortening("   ") == false)
-        assert("a long title is sent", needsShortening(String(repeating: "long ", count: 12)))
+        assert("a short title is eligible for naming", worthNaming("Vane"))
+        assert("an empty title is not sent", worthNaming("   ") == false)
+        assert("a long title is sent", worthNaming(String(repeating: "long ", count: 12)))
         assert("two tabs are not a grouping problem", worthGrouping(2) == false)
         assert("a screenful of tabs is", worthGrouping(minimumTabsToGroup))
 
