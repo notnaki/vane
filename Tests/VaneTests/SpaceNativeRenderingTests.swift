@@ -15,6 +15,9 @@ import XCTest
         }
         XCTAssertTrue(ProfileManager.shared.saveSpaces(spaces, for: profile))
         let store = TabStore(profileID: profile, space: spaces[0], session: [])
+        // Empty windows initially offer search. These fixtures exercise the sidebar;
+        // search-specific tests opt back into its presentation explicitly.
+        store.palette = nil
         let frame = NSRect(x: 100, y: 100, width: 300, height: 400)
         let window: NSWindow = floatingWindow
             ? VaneWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -931,7 +934,7 @@ import XCTest
         _ = peer.newBlankTab(focus: false)
         window.contentView?.layoutSubtreeIfNeeded()
         monitor.schedulePreparation(in: store)
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitForPreparation(monitor, target: target.id)
         let prepared = try XCTUnwrap(monitor.preparedSlides[target.id])
         monitor.select(target, in: store)
         XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === prepared,
@@ -945,7 +948,7 @@ import XCTest
         let (profile, target) = adjacentProfile(to: store, after: spaces.last!)
         window.contentView?.layoutSubtreeIfNeeded()
         monitor.schedulePreparation(in: store)
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitForPreparation(monitor, target: target.id)
         let stale = try XCTUnwrap(monitor.preparedSlides[target.id])
         let peer = TabStore(profileID: profile, space: target, session: [])
         _ = peer.newBlankTab(focus: false)
@@ -1128,11 +1131,19 @@ import XCTest
         XCTAssertTrue(remaining.allSatisfy { $0.superview == nil })
     }
 
+    private func waitForPreparation(_ monitor: SwipeMonitor, target: UUID) async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while monitor.preparedSlides[target] == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     private func adjacentProfile(to store: TabStore, after space: Space) -> (UUID, Space) {
         let profile = ProfileManager.shared.create(name: "Prepared destination").id
         let target = Space(name: "Remote", profileID: profile)
         XCTAssertTrue(ProfileManager.shared.saveSpaces([target], for: profile))
         store.switchTo(space: space)
+        store.palette = nil // The empty destination offers search; this fixture tests swipes.
         XCTAssertEqual(store.swipeNeighbour(for: -1)?.id, target.id)
         addTeardownBlock { @MainActor in
             for peer in TabStore.all.filter({ $0.profileID == profile }) {
@@ -1156,7 +1167,7 @@ import XCTest
         _ = peer.newBlankTab(focus: false)
         window.contentView?.layoutSubtreeIfNeeded()
         monitor.schedulePreparation(in: store)
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitForPreparation(monitor, target: target.id)
         let stale = try XCTUnwrap(monitor.preparedSlides[target.id])
         _ = peer.newBlankTab(focus: false)
         XCTAssertNil(monitor.preparedSlides[target.id],
@@ -1174,7 +1185,7 @@ import XCTest
         let (profile, target) = adjacentProfile(to: store, after: spaces.last!)
         window.contentView?.layoutSubtreeIfNeeded()
         monitor.schedulePreparation(in: store)
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitForPreparation(monitor, target: target.id)
         let stale = try XCTUnwrap(monitor.preparedSlides[target.id])
         let peer = TabStore(profileID: profile, space: target, session: [])
         _ = peer.newBlankTab(focus: false)
@@ -1183,6 +1194,42 @@ import XCTest
         let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
         XCTAssertFalse(slide === stale, "A newly live preview supplier changes the frozen row structure")
         XCTAssertNil(stale.superview)
+    }
+
+    func testSearchDefersAdjacentPreparationUntilDismissalFinishes() async throws {
+        let (store, _, window, monitor) = try fixture()
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        monitor.remove()
+        monitor.install(store)
+        // Opening can race an already queued idle capture. Both scheduling and
+        // execution must respect search, including later suggestion publications.
+        store.palette = .newTab
+        try await Task.sleep(for: .milliseconds(600))
+        monitor.schedulePreparation(in: store)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                      "Hidden Space lists must not be built during search opening")
+        SearchSuggestions.enabled = false
+        store.suggest("fixture")
+        monitor.schedulePreparation(in: store)
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                      "Suggestion updates must not start hidden layout during typing")
+        let dismissed = ContinuousClock.now
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        if !Motion.reduced, ContinuousClock.now < dismissed + .seconds(Look.appearDuration) {
+            XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                          "Search's dismissal fade must finish before hidden layout resumes")
+        }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while monitor.preparedSlides.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(monitor.preparedSlides.isEmpty,
+                       "Adjacent Space swipes must be ready again after search closes")
     }
 
     func testSidebarPreparationWaitsUntilLibraryDragIsIdle() async throws {

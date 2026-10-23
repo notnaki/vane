@@ -197,6 +197,16 @@ VANE_UI_PERFORMANCE=1 swift test --filter SidebarViewportPerformanceTests.testPo
 This reports median, p95, and maximum forced layout cost. Layout work under 8.33 ms leaves CPU
 headroom for a 120 Hz display; these timings do not establish displayed frame rate.
 
+Search opening and typing diagnostics use the production native browser window with
+20 and 300 parked tabs. They report forced opening layout, the largest 2 ms input
+heartbeat gap during opening, and worst native field-edit/layout cost, without a CI
+timing limit. Hidden adjacent Space preview preparation must stay paused until search
+closes and its dismissal fade finishes.
+
+```sh
+VANE_UI_PERFORMANCE=1 swift test --filter SearchPresentationPerformanceTests
+```
+
 Folder-opening diagnostics report toggle time, forced layout, run-loop gaps, and
 mounted native tab controls for 20/300-tab folders. They also guard against repeated
 lock scans in an unprotected 3,000-tab strip:
