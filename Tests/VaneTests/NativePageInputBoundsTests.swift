@@ -43,6 +43,21 @@ import XCTest
         XCTAssertEqual(image.size, NSSize(width: 16, height: 16))
     }
 
+    func testSVGArtworkRasterizesIntoBoundedBitmapOnWorker() async throws {
+        let data = Data("<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='red'/></svg>".utf8)
+        let decoded = await Task.detached { NativeSVGResult(image: Favicons.image(from: data)) }.value
+        let image = try XCTUnwrap(decoded.image)
+        let bitmap = try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        XCTAssertLessThanOrEqual(bitmap.width, 64)
+        XCTAssertLessThanOrEqual(bitmap.height, 64)
+        XCTAssertEqual(image.size, NSSize(width: 16, height: 16))
+        XCTAssertFalse(image.isTemplate)
+        let pixels = NSBitmapImageRep(cgImage: bitmap)
+        let center = try XCTUnwrap(pixels.colorAt(x: bitmap.width / 2, y: bitmap.height / 2)?.usingColorSpace(.deviceRGB))
+        XCTAssertGreaterThan(center.redComponent, 0.9)
+        XCTAssertLessThan(center.greenComponent, 0.1)
+    }
+
     func testFaviconMemoryCacheEvictsLeastRecentlyUsedAndKeepsInstancesIndependent() throws {
         var cache = FaviconMemoryCache(capacity: 2)
         let a = NSImage(size: NSSize(width: 16, height: 16))
@@ -59,6 +74,8 @@ import XCTest
         XCTAssertNil(other.image(for: "a"))
     }
 }
+
+private struct NativeSVGResult: @unchecked Sendable { let image: NSImage? }
 
 /// A synthetic response that keeps sending chunks until URLSession cancels the transfer.
 /// The assertions count delivered chunks; they do not impose a machine-speed threshold.

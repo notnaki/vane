@@ -64,13 +64,20 @@ import WebKit
 
     let profileID: UUID
 
-    init(profileID: UUID = ProfileManager.defaultID) { self.profileID = profileID }
+    private let fetchImageData: @Sendable (URL) async -> Data?
+
+    init(profileID: UUID = ProfileManager.defaultID,
+         fetch: @escaping @Sendable (URL) async -> Data? = { await Favicons.fetch($0) }) {
+        self.profileID = profileID
+        self.fetchImageData = fetch
+    }
 
     /// Bumped when a fetch lands, so views that asked for a nil icon redraw.
     @Published private(set) var generation = 0
 
     private var memory = FaviconMemoryCache()
     private var inflight: [String: Task<Void, Never>] = [:]
+    private var diskInflight: [String: Task<Void, Never>] = [:]
     /// Inspect loaded pages even after a root fallback has been cached. The same set of
     /// declarations needs one fetch per session, not another fetch on every reload.
     private var discoveries: [String: [URL]] = [:]
@@ -118,8 +125,8 @@ import WebKit
     func icon(for url: URL) -> NSImage? {
         guard let key = Favicons.key(for: url) else { return nil }
         if let img = memory[key] { return img }
-        if let img = readDisk(key) { memory[key] = img; return img }
-        guard !missed(key), let fallback = Favicons.fallback(for: url) else { return nil }
+        if let img = readDisk(key, fallback: Favicons.fallback(for: url)) { memory[key] = img; return img }
+        guard diskInflight[key] == nil, !missed(key), let fallback = Favicons.fallback(for: url) else { return nil }
         warm(key: key, urls: [fallback], persist: profileID != Profile.incognito.id, fallback: fallback)
         return nil
     }
@@ -157,7 +164,7 @@ import WebKit
             // A failed root probe says nothing about the icons declared by this page.
             let declared = Favicons.declared(try? await web.evaluateJavaScript(Favicons.linkJS))
             guard tab.existingWeb === web, tab.currentURL == url else { return }
-            if !declared.isEmpty, self.discoveries[key] == declared { return }
+            if !declared.isEmpty, self.discoveries[key] == declared, self.memory[key] != nil { return }
             if !declared.isEmpty {
                 self.discoveries[key] = declared
                 if self.discoveries.count > Self.maxFiles,
@@ -201,7 +208,7 @@ import WebKit
             // response. Keep its declarations in the same queue instead of losing them.
             while let url = self.pending[key]?.urls.first {
                 self.pending[key]?.urls.removeFirst()
-                let data = await Favicons.fetch(url)
+                let data = await self.fetchImageData(url)
                 if self.pending[key]?.fallbackURLs.contains(url) == true { attemptedFallback = true }
                 guard let data, let img = await Favicons.decoded(data)
                 else { continue }
@@ -382,22 +389,54 @@ import WebKit
     /// Colored artwork, light details, and opaque tiles keep their original pixels.
     /// Applied on decode so old disk entries benefit without changing the cached bytes.
     nonisolated static func image(from data: Data) -> NSImage? {
-        guard !data.isEmpty, data.count <= maxBytes,
-              let source = CGImageSourceCreateWithData(data as CFData,
-                [kCGImageSourceShouldCache: false] as CFDictionary),
-              let bitmap = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: maxPixelDimension,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceShouldCacheImmediately: true
-              ] as CFDictionary),
+        guard !data.isEmpty, data.count <= maxBytes else { return nil }
+        guard let bitmap = thumbnail(from: data) ?? vectorBitmap(from: data),
               bitmap.width > 0, bitmap.height > 0,
               bitmap.width <= maxPixelDimension, bitmap.height <= maxPixelDimension else { return nil }
+        return displayImage(bitmap)
+    }
+
+    private nonisolated static func thumbnail(from data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData,
+            [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        guard let bitmap = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelDimension,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary), bitmap.width > 0, bitmap.height > 0,
+              bitmap.width <= maxPixelDimension, bitmap.height <= maxPixelDimension else { return nil }
+        return bitmap
+    }
+
+    private nonisolated static func displayImage(_ bitmap: CGImage) -> NSImage {
         let image = NSImage(cgImage: bitmap, size: NSSize(width: 16, height: 16))
         image.isTemplate = isDarkMark(image)
         // Pin the point size regardless of the site's bitmap resolution.
         image.size = NSSize(width: 16, height: 16)
         return image
+    }
+
+    /// ImageIO does not decode SVG. AppKit's SVG representation is a vector; draw it
+    /// into our own small bitmap rather than asking it to create an intrinsic-size image.
+    /// Production callers use a worker for this path, including pre-existing disk entries.
+    private nonisolated static func vectorBitmap(from data: Data) -> CGImage? {
+        guard let vector = NSImage(data: data),
+              vector.size.width.isFinite, vector.size.height.isFinite,
+              vector.size.width > 0, vector.size.height > 0,
+              vector.size.width <= 16_384, vector.size.height <= 16_384,
+              !vector.representations.isEmpty,
+              vector.representations.allSatisfy({ $0.pixelsWide == 0 && $0.pixelsHigh == 0 }),
+              let context = CGContext(data: nil, width: maxPixelDimension, height: maxPixelDimension,
+                bitsPerComponent: 8, bytesPerRow: maxPixelDimension * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        vector.draw(in: NSRect(x: 0, y: 0, width: maxPixelDimension, height: maxPixelDimension),
+                    from: .zero, operation: .copy, fraction: 1)
+        return context.makeImage()
     }
 
     private nonisolated static func isDarkMark(_ image: NSImage) -> Bool {
@@ -446,21 +485,44 @@ import WebKit
         return d
     }
 
-    private func readDisk(_ key: String) -> NSImage? {
-        guard profileID != Profile.incognito.id else { return nil }
-        return Favicons.read(dir.appendingPathComponent(key)).image
+    private func readDisk(_ key: String, fallback: URL?) -> NSImage? {
+        guard profileID != Profile.incognito.id,
+              let data = Self.readData(dir.appendingPathComponent(key)) else { return nil }
+        if let bitmap = Self.thumbnail(from: data) { return Self.displayImage(bitmap) }
+        // Legacy SVG cache files must also rasterize off the UI actor. Keep this
+        // separate from the network queue so a newly declared icon can still upgrade it.
+        guard diskInflight[key] == nil else { return nil }
+        diskInflight[key] = Task { @MainActor [weak self] in
+            let image = await Self.decoded(data)
+            guard let self else { return }
+            self.diskInflight[key] = nil
+            guard self.memory[key] == nil else { return }
+            if let image {
+                self.memory[key] = image
+                for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
+                    tab.favicon = image
+                }
+                self.generation += 1
+            } else if let fallback {
+                self.warm(key: key, urls: [fallback], persist: true, fallback: fallback)
+            }
+        }
+        return nil
     }
 
     /// Freshly made here and handed over untouched, which is the whole of what the box
     /// asserts: nothing else has a reference to it on either side.
     private struct Icon: @unchecked Sendable { let image: NSImage? }
 
-    private nonisolated static func read(_ file: URL) -> Icon {
-        guard let handle = try? FileHandle(forReadingFrom: file) else { return Icon(image: nil) }
+    private nonisolated static func readData(_ file: URL) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
         defer { try? handle.close() }
-        guard let data = try? handle.read(upToCount: maxBytes + 1), data.count <= maxBytes,
-              let img = image(from: data) else { return Icon(image: nil) }
-        return Icon(image: img)
+        guard let data = try? handle.read(upToCount: maxBytes + 1), data.count <= maxBytes else { return nil }
+        return data
+    }
+
+    private nonisolated static func read(_ file: URL) -> Icon {
+        Icon(image: readData(file).flatMap(image(from:)))
     }
 
     /// The same read, off the main actor. The caller publishes the result — nothing here
