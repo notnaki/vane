@@ -120,6 +120,17 @@ smoke also verifies fresh-process Keychain persistence and deletion. Keychain-de
 XCTest fixtures report a skip if storage is unavailable. See [Password manager](PASSWORD-MANAGER.md)
 for the precise boundaries and remaining real-site/device validation.
 
+### Website popup fixtures
+
+```sh
+swift test --filter 'WebsitePopup|SignInCompatibility|NavigationWebKit|LinkInteraction|LittleArcSpaceMenu|KeyboardAccessibility|PasswordChooser'
+```
+
+These local WebKit fixtures cover temporary dialog windows, opener messaging, blank
+popups written by their opener, cross-origin redirects, private cookies, manual cancel
+and retry, script close, nested lifetimes, ordinary blank-target tabs, password UI and
+text-entry shortcuts. They do not establish Google or Reddit service acceptance.
+
 ### Specialist reliability fixtures
 
 For opt-in cold/warm startup, large-session restoration and parked/sleeping tab
@@ -176,7 +187,14 @@ VANE_UI_PERFORMANCE=1 VANE_LIBRARY_PERF_TABS=10 swift test --filter 'LibrarySwip
 ```
 
 `SidebarViewportPerformanceTests` also guards viewport-only row mounting, saved
-scroll offsets, and access to the last row. Layout work under 8.33 ms leaves CPU
+scroll offsets, access to the last row, and bounded production tab controls while scrolling.
+For a 300-tab vertical scroll comparison in both directions:
+
+```sh
+VANE_UI_PERFORMANCE=1 swift test --filter SidebarViewportPerformanceTests.testPopulatedSidebarScrollTiming
+```
+
+This reports median, p95, and maximum forced layout cost. Layout work under 8.33 ms leaves CPU
 headroom for a 120 Hz display; these timings do not establish displayed frame rate.
 
 Folder-opening diagnostics report toggle time, forced layout, run-loop gaps, and

@@ -427,6 +427,7 @@ struct BrowserWindow: View {
         // safe area at the top. Without this the sidebar's first row sits *below* the
         // traffic lights instead of beside them, and the card loses its top inset.
         .ignoresSafeArea()
+        .modifier(PeekContentTracking(area: store.peekContent))
         .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
@@ -745,6 +746,7 @@ struct WebCard: View {
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
+        .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
         .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
         .padding(.top, topGap)
         .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
@@ -3184,7 +3186,9 @@ private struct ShapeRow: View {
     var pr: GitHub.Row?
 
     var body: some View {
-        Group {
+        // A concrete container gives LazyVStack one child per resolved row. Group
+        // exposes the conditional subtree, making scrolling resolve its view list again.
+        HStack(spacing: 0) {
             if let folder = row.entry.folder {
                 FolderRow(folder: folder, shape: shape)
             } else if let tab {

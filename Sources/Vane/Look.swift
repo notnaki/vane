@@ -216,9 +216,8 @@ enum Look {
     /// Apple's 600×600, Stripe's 450×700. Anything larger is a page, and pages are tabs.
     /// See Popups.swift.
     ///
-    /// The ceiling is the Little Vane it would float in, not a number of its own: a page
-    /// asking for a window taller than the one Vane has to give it is not asking for a
-    /// dialog, and floating it would only crop it.
+    /// Preserve the established dialog-versus-page threshold. Website dialog windows
+    /// honor their requested dimensions, clamped to the visible screen.
     static let popupWidth: CGFloat = 800
     static let popupHeight: CGFloat = littleHeight
     /// Above Little Arc's bar. Its row is the address pill's own height rather than the
@@ -890,13 +889,12 @@ enum Look {
     /// How much of the space's colour washes over the pill's dark ground.
     static let toastTint: Double = 0.45
 
-    // Peek: a link out of a Favourite or a Pinned tab, floating over the window it came
-    // from. Its corner and its shadow are the command bar's — both are surfaces over the
-    // whole window — so the only numbers of its own are how big it is and how long the
-    // offer to bring the last one back stands.
-    /// Of the window, each way. Arc's Peek leaves enough of the sidebar showing that it is
-    /// obviously a page *over* your window rather than a window of its own.
+    // Peek: a floating page centered inside the browser's content area.
+    /// Of the content area, each way; a narrow page also leaves room for the button rail.
     static let peekFraction: CGFloat = 0.8
+    static let peekButtonSize: CGFloat = 36
+    static let peekButtonGap: CGFloat = 10
+    static let peekButtonGlyph = Font.system(size: 16, weight: .semibold)
     /// Its scrim. Deliberately not `Look.scrim`: that one sits under a 760pt bar in the
     /// middle of the window, where the page around it is plainly still there. A Peek covers
     /// four fifths of the window, so the strip left over has to read as *behind* on its own,
@@ -946,7 +944,7 @@ extension Look {
                     littleTopInset + pillHeight == rowHeight + rowGap))
         // The popup threshold, against the window it opens into. A page asking for a window
         // bigger than the one it would get is asking for a page, not a dialog.
-        out.append(("the biggest popup still fits the Little Vane it floats in",
+        out.append(("the dialog classification stays within the established compact bounds",
                     popupWidth <= littleWidth && popupHeight <= littleHeight))
         out.append(("…and every OAuth sheet on the web is inside it: Apple's 600×600 is the widest",
                     popupWidth >= 600 && popupHeight >= 600))

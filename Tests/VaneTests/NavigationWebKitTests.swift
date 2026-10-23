@@ -54,7 +54,7 @@ import XCTest
         var peeked: URL?
         var popupRequested = false
         tab.onPeek = { peeked = $0 }
-        tab.onPopup = { _, _ in popupRequested = true; return nil }
+        tab.onPopup = { _, _, _ in popupRequested = true; return nil }
         try await load("/favourite")
         _ = try await tab.web.evaluateJavaScript("document.getElementById('document').click()")
         try await compatibilityWait { peeked != nil || popupRequested }
@@ -87,7 +87,7 @@ import XCTest
         var peeked: URL?
         var popupRequested = false
         tab.onPeek = { peeked = $0 }
-        tab.onPopup = { _, _ in popupRequested = true; return nil }
+        tab.onPopup = { _, _, _ in popupRequested = true; return nil }
         try await load("/favourite")
         _ = try await tab.web.evaluateJavaScript("document.getElementById('document').click()")
         try await compatibilityWait { peeked != nil || popupRequested }
@@ -307,7 +307,7 @@ import XCTest
         try await load("/opener")
         var popup: Tab?
         var popupClosed = false
-        tab.onPopup = { config, _ in
+        tab.onPopup = { config, _, _ in
             let created = Tab(popup: config, isPrivate: false, profileID: self.tab.profileID)
             created.onClose = { [weak created] in
                 Task { @MainActor in created?.tearDown(); popupClosed = true }

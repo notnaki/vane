@@ -47,7 +47,7 @@ import XCTest
         var childWindow: NSWindow?
         var closed = false
         tab.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
-        tab.onPopup = { configuration, _ in
+        tab.onPopup = { configuration, _, _ in
             let made = Tab(popup: configuration, isPrivate: true, profileID: profile)
             child = made
             childWindow = Self.host(made)

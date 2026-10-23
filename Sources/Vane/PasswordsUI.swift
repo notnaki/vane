@@ -1021,8 +1021,9 @@ extension PasswordChooser {
         // .numericPad of its own, so testing the whole device-independent mask rejects every
         // arrow there is — which is exactly how this went unnoticed the first time.
         guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
-              let store = TabStore.all.first(where: { $0.window === event.window }),
-              let tab = store.active, tab.passwordChoice != nil else { return false }
+              let tab = WebsitePopupWindow.tab(in: event.window)
+                ?? TabStore.all.first(where: { $0.window === event.window })?.active,
+              tab.passwordChoice != nil else { return false }
         if event.modifierFlags.contains(.shift), [126, 125, 36, 76].contains(event.keyCode) { return false }
         switch event.keyCode {
         case 126: tab.moveChoice(-1)
@@ -1039,8 +1040,10 @@ extension PasswordChooser {
     /// events. Preserve clicks inside the card so its buttons still receive mouse-up.
     @MainActor static func handlePointer(_ event: NSEvent) {
         guard [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) else { return }
-        for store in TabStore.all where store.window === event.window {
-            for tab in store.everyTab where tab.existingWeb?.window === event.window {
+        let groups = TabStore.all.filter { $0.window === event.window }.map(\.everyTab)
+            + (WebsitePopupWindow.tab(in: event.window).map { [[$0]] } ?? [])
+        for tabs in groups {
+            for tab in tabs where tab.existingWeb?.window === event.window {
                 guard let web = tab.existingWeb else { continue }
                 if let generation = tab.passwordGeneration {
                     let size = web.bounds.size
@@ -1071,8 +1074,9 @@ extension PasswordChooser {
     /// on screen, so it is what Escape means. Returns true when it acted, so the caller
     /// swallows the key — see `VaneWindow.sendEvent`.
     @MainActor static func dismiss(in window: NSWindow?) -> Bool {
-        guard let store = TabStore.all.first(where: { $0.window === window }),
-              let tab = store.active, tab.passwordChoice != nil || tab.passwordGeneration != nil else { return false }
+        guard let tab = WebsitePopupWindow.tab(in: window)
+                ?? TabStore.all.first(where: { $0.window === window })?.active,
+              tab.passwordChoice != nil || tab.passwordGeneration != nil else { return false }
         tab.closeChooser(.escape)
         return true
     }

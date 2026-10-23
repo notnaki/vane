@@ -165,20 +165,20 @@ import WebKit
     /// view tree — which is what makes the close animation run before the window goes.
     @MainActor final class Shown: ObservableObject { @Published var on = false }
 
-    /// Split View is not merged yet. When it is, it sets `addToSplit` and the Peek's bar
-    /// grows the button Arc has there; until then there is nothing to add a pane to, and a
-    /// button that cannot work is worse than no button.
-    ///
-    /// Published rather than a bare `static var`: a plain one read inside `body` is not a
-    /// dependency of anything, so a Peek already on screen when Split View wires itself up
-    /// would never redraw its bar.
-    @MainActor final class Splitting: ObservableObject {
-        @Published var add: ((URL) -> Void)?
+    /// Bounds measured from the page card, in the full-window SwiftUI coordinate space.
+    @MainActor final class ContentArea: ObservableObject {
+        @Published var bounds: CGRect = .zero
     }
-    static let splitting = Splitting()
-    static var addToSplit: ((URL) -> Void)? {
-        get { splitting.add }
-        set { splitting.add = newValue }
+
+    nonisolated static func cardFrame(in content: CGRect) -> CGRect {
+        // Reserve the same clearance on both sides so the page stays centered while
+        // the external controls remain inside the content area at narrow widths.
+        let inset = max(content.width * (1 - Look.peekFraction) / 2,
+                        Look.peekButtonSize + Look.peekButtonGap + Look.inset)
+        return CGRect(x: content.minX + min(inset, content.width / 2),
+                      y: content.minY + content.height * (1 - Look.peekFraction) / 2,
+                      width: max(0, content.width - 2 * inset),
+                      height: content.height * Look.peekFraction)
     }
 
     // MARK: - Opening
@@ -214,9 +214,11 @@ import WebKit
         window.animationBehavior = .none            // the spring below is the animation
 
         let session = Session(store: store, parent: parent, source: source.id, window: window)
-        window.contentView = NSHostingView(rootView: PeekView(shown: session.shown)
+        window.contentView = NSHostingView(rootView: PeekView(shown: session.shown,
+                                                           contentArea: parent.peekContent)
             .font(Look.text)
             .spaceChrome(parent)
+            .vaneMotionPolicy()
             .environmentObject(store)
             .environmentObject(ProfileManager.shared))
         store.window = window
@@ -331,9 +333,16 @@ import WebKit
     /// Arc's "Open as tab": the page becomes a real tab beside the one the link was clicked
     /// in, on the same page with the same back/forward list — `park` + `resume`, the hand-off
     /// `LittleArc.move` uses.
-    static func openAsTab() {
+    static func openAsTab(inSplit: Bool = false) {
         guard let session = live, let page = LittleArc.page(of: session.store) else { return }
         let target = session.parent
+        if inSplit {
+            guard !target.isLittle, target.tabs.contains(where: { $0.id == session.source }) else { return }
+            guard target.split(containing: session.source)?.isFull != true else {
+                axAnnounce("Split view already has \(Split.maxPanes) panes.")
+                return
+            }
+        }
         let moved = target.newTabBeside(session.source)
         live = nil                                  // the hand-off closes it; don't re-arm reopen
         session.watchers.forEach(NotificationCenter.default.removeObserver)
@@ -341,6 +350,7 @@ import WebKit
         // nothing here to keep the parent's store alive after the tab already does.
         lastClosed = nil
         LittleArc.hand(page, into: moved, of: target, from: session.store, saying: "Opened as a tab.")
+        if inSplit { Motion.list { target.addPane(moved.id, beside: session.source) } }
         dismantle(session)
     }
 
@@ -428,15 +438,42 @@ final class PeekWindow: NSWindow, NSWindowDelegate {
 
 // MARK: - The view
 
-/// The scrim and the floating page over it. The window covers the parent exactly, so the
-/// card's size is a fraction of this view rather than arithmetic anyone has to redo on a
-/// resize.
+struct PeekContentBounds: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        if let next = nextValue() { value = next }
+    }
+}
+
+/// Resolve the page's anchor at the window root, before the child Peek is opened.
+struct PeekContentTracking: ViewModifier {
+    let area: Peek.ContentArea
+    func body(content: Content) -> some View {
+        content.overlayPreferenceValue(PeekContentBounds.self) { anchor in
+            GeometryReader { geometry in
+                Color.clear
+                    .onChange(of: anchor.map { geometry[$0] } ?? .zero, initial: true) { _, bounds in
+                        area.bounds = bounds
+                    }
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
+}
+
+/// The scrim still covers the window; the page centers within its measured content area.
 private struct PeekView: View {
     @ObservedObject var shown: Peek.Shown
+    @ObservedObject var contentArea: Peek.ContentArea
     @EnvironmentObject var store: TabStore
 
     var body: some View {
         GeometryReader { geo in
+            let content = contentArea.bounds.isEmpty
+                ? CGRect(origin: .zero, size: geo.size) : contentArea.bounds
+            let frame = Peek.cardFrame(in: content)
             ZStack {
                 // Dims the window behind, and is the click target that closes: everywhere
                 // outside the card is "I'm done with this". A real Button, not a tap
@@ -450,10 +487,10 @@ private struct PeekView: View {
                 .accessibilityLabel("Close Peek")
                 .accessibilityHint("Closes the page floating over the window.")
                 card
-                    .frame(width: geo.size.width * Look.peekFraction,
-                           height: geo.size.height * Look.peekFraction)
+                    .frame(width: frame.width, height: frame.height)
                     .scaleEffect(shown.on ? 1 : Look.appearScale)
                     .opacity(shown.on ? 1 : 0)
+                    .position(x: frame.midX, y: frame.midY)
             }
         }
         .ignoresSafeArea()
@@ -474,10 +511,10 @@ private struct PeekView: View {
         // command bar's corner and its shadow rather than inventing a second pair.
         .clipShape(.rect(cornerRadius: Look.barRadius))
         .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
-        // Above the card's top-right corner, over the scrim: chrome for the card, not
-        // something sitting on the page the way a find bar does.
+        // A vertical rail beside the page, clear of both its content and its rounded edge.
         .overlay(alignment: .topTrailing) {
-            PeekBar().offset(y: -(Look.topRow + Look.inset))
+            PeekBar().fixedSize()
+                .offset(x: Look.peekButtonSize + Look.peekButtonGap)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Peek")
@@ -488,29 +525,22 @@ private struct PeekView: View {
     }
 }
 
-/// The Peek's whole chrome: open it as a tab, add it to a split once there is one, close it.
+/// Close, expand into a tab, and add to Split View, in visual and keyboard order.
 private struct PeekBar: View {
-    /// Not `Peek.addToSplit` read straight: see `Peek.Splitting`.
-    @ObservedObject private var splitting = Peek.splitting
-
     var body: some View {
-        HStack(spacing: Look.inset) {
-            if let addToSplit = splitting.add {
-                PeekButton("square.split.2x1", "Add to Split") {
-                    if let url = Peek.live?.store.active?.currentURL { addToSplit(url) }
-                }
-            }
-            PeekButton("arrow.up.forward.app", "Open as Tab (\u{2318}O)") { Peek.openAsTab() }
+        VStack(spacing: Look.peekButtonGap) {
             PeekButton("xmark", "Close Peek (Esc)") { Peek.close() }
+            PeekButton("arrow.up.left.and.arrow.down.right", "Open as Tab (\u{2318}O)") { Peek.openAsTab() }
+            PeekButton("rectangle.split.2x1", "Add to Split") {
+                Peek.openAsTab(inSplit: true)
+            }
         }
         .accessibilityElement(children: .contain)
     }
 }
 
-/// One glyph on that bar. The sidebar's own button: `pillFill` at rest, the selection's step
-/// under the pointer, `pillRadius` around it.
+/// High-contrast circular controls retain their appearance over any page or Space theme.
 private struct PeekButton: View {
-    @Environment(\.spaceChromeTheme) private var chromeTheme
     let symbol: String
     let label: String
     let act: () -> Void
@@ -524,12 +554,11 @@ private struct PeekButton: View {
     var body: some View {
         Button(action: act) {
             Image(systemName: symbol)
-                .font(Look.pillGlyph)
-                .foregroundStyle(Look.inkPrimary)
-                .frame(width: Look.topRow, height: Look.topRow)
-                .background(hovering ? chromeTheme.selected : chromeTheme.pillFill,
-                            in: .rect(cornerRadius: Look.pillRadius))
-                .contentShape(.rect)
+                .font(Look.peekButtonGlyph)
+                .foregroundStyle(.white)
+                .frame(width: Look.peekButtonSize, height: Look.peekButtonSize)
+                .background(hovering ? Color(white: 0.16) : .black, in: .circle)
+                .contentShape(.circle)
         }
         .buttonStyle(.plain)
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
