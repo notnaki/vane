@@ -5106,6 +5106,16 @@ private struct FaviconPlaceholder: View {
     }
 }
 
+/// Observe asynchronous cache arrivals at the icon leaf, without invalidating its row
+/// or reranking the search results that contain it.
+struct CachedFavicon<Content: View>: View {
+    @ObservedObject var cache: Favicons
+    let url: URL?
+    @ViewBuilder let content: (NSImage?) -> Content
+
+    var body: some View { content(url.flatMap(cache.icon(for:))) }
+}
+
 /// A site's own icon, with a placeholder until it arrives (or forever, for a page that
 /// has none). Callers can supply a symbol when the slot also identifies a specific feature.
 struct SiteIcon: View {

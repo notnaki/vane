@@ -673,7 +673,12 @@ import WebKit
                         "touch-icon rel metadata wins even when its filename does not say apple-touch")
             try require(sibling.suspended && sibling.favicon === upgrade.favicon,
                         "a sharper declared icon also updates parked rows")
-            let restoredIcon = Favicons(profileID: upgrade.profileID).icon(for: qualityURL)
+            let restoredCache = Favicons(profileID: upgrade.profileID)
+            _ = restoredCache.icon(for: qualityURL)
+            try await wait("the upgraded disk icon is decoded off the UI actor") {
+                restoredCache.icon(for: qualityURL) != nil
+            }
+            let restoredIcon = restoredCache.icon(for: qualityURL)
             try require(restoredIcon?.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width == 64,
                         "the sharper artwork replaces the low-resolution disk cache too")
             try await load(upgrade, qualityURL.absoluteString, title: "Fixture Quality")

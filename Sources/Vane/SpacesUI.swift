@@ -667,14 +667,16 @@ struct SpacePreviewList: View, Equatable {
                     ForEach(Array(favoriteItems.enumerated()), id: \.offset) { _, item in
                         let tab = item.tab
                         let page = tab?.currentURL ?? item.url.flatMap { saved[$0.absoluteString]?.page ?? $0 }
-                        let icon = if let tab { tab.favicon } else { page.flatMap {
-                            $0.isFileURL ? Files.icon(for: $0) : Favicons.cache(for: space.profileID).icon(for: $0)
-                        } }
-                        SidebarPageIcon(icon: icon, easel: page.flatMap(EaselAddress.boardID) != nil,
-                                        rounded: page?.isFileURL != true, size: Look.tileIcon)
-                            .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
-                            .background(FavoriteTileBackground(selected: tab?.id == selectedID && tab != nil,
-                                                              hovering: false, icon: icon))
+                        let fixedIcon = tab?.favicon ?? page.flatMap { $0.isFileURL ? Files.icon(for: $0) : nil }
+                        CachedFavicon(cache: Favicons.cache(for: space.profileID),
+                                      url: fixedIcon == nil && page?.isFileURL != true ? page : nil) { cached in
+                            let icon = fixedIcon ?? cached
+                            SidebarPageIcon(icon: icon, easel: page.flatMap(EaselAddress.boardID) != nil,
+                                            rounded: page?.isFileURL != true, size: Look.tileIcon)
+                                .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
+                                .background(FavoriteTileBackground(selected: tab?.id == selectedID && tab != nil,
+                                                                  hovering: false, icon: icon))
+                        }
                     }
                 }
                 .padding(.bottom, Look.inset - Look.rowGap)
@@ -744,11 +746,13 @@ struct SpacePreviewList: View, Equatable {
             guard case .site(let url, .pinned, _, _, _, _) = row else { return false }
             return tab.map { !$0.atHome } ?? (page != url)
         }()
-        let icon = tab?.favicon ?? page.flatMap { $0.isFileURL ? Files.icon(for: $0)
-            : Favicons.cache(for: space.profileID).icon(for: $0) }
+        let fixedIcon = tab?.favicon ?? page.flatMap { $0.isFileURL ? Files.icon(for: $0) : nil }
         return SidebarRow(selected: selected, action: {}) {
-            SidebarPageIcon(icon: icon, easel: page.flatMap(EaselAddress.boardID) != nil,
-                            pr: row.pr, rounded: page?.isFileURL != true)
+            CachedFavicon(cache: Favicons.cache(for: space.profileID),
+                          url: fixedIcon == nil && page?.isFileURL != true ? page : nil) { cached in
+                SidebarPageIcon(icon: fixedIcon ?? cached, easel: page.flatMap(EaselAddress.boardID) != nil,
+                                pr: row.pr, rounded: page?.isFileURL != true)
+            }
         } label: {
             HStack(spacing: 6) {
                 if returning {

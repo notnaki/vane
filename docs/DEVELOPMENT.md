@@ -225,7 +225,8 @@ VANE_UI_PERFORMANCE=1 swift test --filter SearchPresentationPerformanceTests
 ```
 
 `LiveSidebarResponsivenessTests` mounts the production browser host with three loaded
-WebKit documents and a selected page in the content card. Its normal run serves a
+WebKit documents, a selected page in the content card, and 47 archived entries in the
+closed Library. Its normal run serves a
 150-card HTML document over local HTTP and checks that folder disclosure, search edits,
 and tab selection preserve the page and its input. Timing runs compare 28- and 300-tab
 outlines. To exercise a public website in the content card instead:

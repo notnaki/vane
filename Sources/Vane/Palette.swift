@@ -1116,6 +1116,17 @@ struct CommandField: NSViewRepresentable {
         return HStack(spacing: Look.barRowSpacing) {
             if let image = row.image {
                 SiteIcon(icon: image, size: Look.rowIcon, rounded: !row.detail.hasPrefix("file:"))
+            } else if ["Archived tab", "History", "Bookmark"].contains(row.kind) {
+                CachedFavicon(cache: store.favicons, url: URL(string: row.detail)) { image in
+                    if let image {
+                        SiteIcon(icon: image, size: Look.rowIcon, rounded: !row.detail.hasPrefix("file:"))
+                    } else {
+                        Image(systemName: row.icon)
+                            .font(Look.symbol)
+                            .foregroundStyle(Look.barGlyph)
+                            .frame(width: Look.rowIcon, height: Look.rowIcon)
+                    }
+                }
             } else if row.chip {
                 Image(systemName: row.icon)
                     .font(Look.chipGlyph)
@@ -1420,13 +1431,7 @@ struct CommandField: NSViewRepresentable {
             // Preserve its action through subsequent refreshes of the same query.
             fallback: !reset && selectedRow?.kind == "Search suggestion"
                 ? selectedRow : nil, id: \.id)
-        rows = visible.map { row in
-            var row = row
-            if row.id.hasPrefix("archived:") {
-                row.image = URL(string: row.detail).flatMap(store.favicons.icon)
-            }
-            return row
-        }
+        rows = visible
         index = Palette.selectedIndex(previous: index, selectedID: selectedID,
                                       rowIDs: rows.map(\.id), reset: reset)
         guard reset else { return }
@@ -1527,7 +1532,6 @@ struct CommandField: NSViewRepresentable {
             let host = URL(string: s.url)?.host ?? s.url
             return PaletteRow(
                 id: "url:" + s.url, icon: icon,
-                image: s.completion ? nil : URL(string: s.url).flatMap(store.favicons.icon),
                 title: title,
                 detail: s.completion ? "" : s.url,
                 subtitle: s.completion || s.title.isEmpty ? "" : host,
@@ -1607,7 +1611,7 @@ struct CommandField: NSViewRepresentable {
         let archive = Archive.shared(for: store.profileID)
         return archive.entries.map { entry in
             PaletteRow(id: "archived:" + entry.url, icon: "archivebox",
-                       // Resolve icons only after ranking and the displayed-row cap.
+                       // Visible icon leaves load artwork after ranking and the row cap.
                        title: entry.title.isEmpty ? entry.url : entry.title,
                        detail: entry.url, matchURL: entry.url,
                        trailing: "Restore Tab", kind: "Archived tab") { _ in

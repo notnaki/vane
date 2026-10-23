@@ -770,7 +770,7 @@ struct LibraryPanel: View {
         case .spaces where !store.isPrivate: SpacesPane()
         // History never becomes the section, and Spaces is not offered in a private
         // window — either way the archive is what a Library with nothing else shows.
-        default: ArchivedTabsPane(archives: ArchiveLibrary.library(for: store.profileID))
+        default: ArchivedTabsPane(store: store, archives: ArchiveLibrary.library(for: store.profileID))
         }
     }
 }
@@ -1099,7 +1099,9 @@ private struct LibraryColumn<Head: View, Body_: View>: View {
 // MARK: - Archived Tabs
 
 private struct ArchivedTabsPane: View {
-    @EnvironmentObject var store: TabStore
+    // Window selection, disclosure and search do not change the archive. Holding
+    // the action target must not subscribe every hidden archive row to TabStore.
+    let store: TabStore
     @ObservedObject var archives: ArchiveLibrary
     @ObservedObject private var library = Library.shared
 
@@ -1128,7 +1130,7 @@ private struct ArchivedTabsPane: View {
         } content: {
             LibraryList(groups: groups, id: \ArchiveLibrary.Entry.id) { row in
                 if let archive = archives.owner(of: row) {
-                    ArchivedRow(entry: row.entry, profile: row.profile, archive: archive,
+                    ArchivedRow(store: store, entry: row.entry, profile: row.profile, archive: archive,
                                 canAct: { rowsAreCurrent })
                         .disabled(!rowsAreCurrent)
                 }
@@ -1178,7 +1180,7 @@ private struct ArchivedTabsPane: View {
 /// One archived tab. Its own view so the hover state belongs to the row: held in the pane,
 /// every pointer move redrew the whole list.
 private struct ArchivedRow: View {
-    @EnvironmentObject var store: TabStore
+    let store: TabStore
     let entry: Archive.Entry
     let profile: Profile
     @ObservedObject var archive: Archive
@@ -1197,8 +1199,9 @@ private struct ArchivedRow: View {
         LibraryRow(title: entry.title, subtitle: subtitle,
                    spoken: "Archived tab, \(subtitle), \(HistoryWindow.time(entry.at))"
                     + (entry.isLittleArc ? ", Little Vane" : "")) {
-            SiteIcon(icon: URL(string: entry.url).flatMap(store.favicons.icon(for:)),
-                     size: Look.libraryThumb)
+            CachedFavicon(cache: store.favicons, url: URL(string: entry.url)) {
+                SiteIcon(icon: $0, size: Look.libraryThumb)
+            }
         } actions: {
             Button("Restore") { restore() }
             Button("Copy Link") { copyLink() }
@@ -1267,7 +1270,9 @@ private struct BoostsPane: View {
                                 LibraryRow(title: entry.origin,
                                            subtitle: "\(entry.profileName) · \(entry.boost.enabled ? "Enabled" : "Disabled")",
                                            spoken: "\(entry.profileName), \(entry.boost.enabled ? "Enabled" : "Disabled"), \(entry.origin)") {
-                                    SiteIcon(icon: store.favicons.icon(for: url), size: Look.libraryThumb)
+                                    CachedFavicon(cache: store.favicons, url: url) {
+                                        SiteIcon(icon: $0, size: Look.libraryThumb)
+                                    }
                                 } actions: {
                                     Button("Open Site") { open(entry) }
                                     Button(entry.boost.enabled ? "Disable Boost" : "Enable Boost") { toggle(entry) }
@@ -2014,7 +2019,9 @@ private struct PageRow: View {
 
     var body: some View {
         HStack(spacing: Look.captionGap * 3) {
-            SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.captionGap * 7)
+            CachedFavicon(cache: Favicons.cache(for: space.profileID), url: url) {
+                SiteIcon(icon: $0, size: Look.captionGap * 7)
+            }
             Text(title).font(Look.caption).foregroundStyle(Look.inkPrimary).lineLimit(1)
             Spacer(minLength: Look.captionGap)
         }

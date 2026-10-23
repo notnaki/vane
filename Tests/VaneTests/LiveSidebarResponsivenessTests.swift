@@ -32,6 +32,13 @@ import XCTest
             XCTAssertTrue(ProfileManager.shared.saveSpaces(spaces, for: profile))
             let store = TabStore(profileID: profile, space: spaces[0], session: [])
             store.sharingReady = false
+            // The closed Library stays mounted for swipe-in. Populate its archive too,
+            // so sidebar interactions exercise that hidden subtree as a real profile does.
+            let archive = Archive.shared(for: profile)
+            for index in 0..<47 {
+                archive.add(url: URL(string: url.absoluteString + "#archived-\(index)")!,
+                            title: "Archived document \(index)")
+            }
             let tabs = (0..<count).map { index in
                 let tab = store.makeBlankTab(as: index < 4 ? .favourite : (index < 15 ? .pinned : .today))
                 tab.park(url: URL(string: url.absoluteString + "#tab-\(index)")!, Parked(title: "Live document \(index)"))
@@ -53,6 +60,7 @@ import XCTest
             window.makeKeyAndOrderFront(nil)
             SharedTabs.refreshPresentation()
             defer {
+                archive.clear()
                 store.clearSuggestions()
                 store.spaceGesture.monitor.remove()
                 store.librarySwipeMonitor.remove()
