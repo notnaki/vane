@@ -119,14 +119,57 @@ import WebKit
 /// Black fills the gaps between yellow dashes even on a light or tinted sidebar.
 struct DeveloperTabBorder: View {
     var body: some View {
-        let outline = RoundedRectangle(cornerRadius: Look.pillRadius)
-        outline.strokeBorder(.black, lineWidth: 1.5)
-            .overlay {
-                outline.strokeBorder(Look.developerYellow,
-                    style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+        Canvas { context, size in
+            let outline = RoundedRectangle(cornerRadius: Look.pillRadius)
+                .inset(by: 0.75).path(in: CGRect(origin: .zero, size: size))
+            // Fit whole repeats to the actual inset path. A fixed [5, 4] leaves a
+            // partial repeat that joins its first dash at the upper-right seam.
+            let length = Self.perimeter(of: outline)
+            guard length > 0 else { return }
+            let repeatLength = length / max(1, (length / 9).rounded())
+            context.stroke(outline, with: .color(.black), lineWidth: 1.5)
+            context.stroke(outline, with: .color(Look.developerYellow),
+                style: StrokeStyle(lineWidth: 1.5,
+                    dash: [repeatLength * 5 / 9, repeatLength * 4 / 9]))
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private static func perimeter(of path: Path) -> CGFloat {
+        var length: CGFloat = 0
+        var current = CGPoint.zero, start = CGPoint.zero
+        func line(to point: CGPoint) {
+            length += hypot(point.x - current.x, point.y - current.y)
+            current = point
+        }
+        func curve(to end: CGPoint, control1: CGPoint, control2: CGPoint) {
+            let origin = current
+            // RoundedRectangle uses short cubic segments. Subdivision retains its
+            // native corner geometry while measuring well below a display pixel.
+            for step in 1...32 {
+                let t = CGFloat(step) / 32, u = 1 - t
+                line(to: CGPoint(
+                    x: u*u*u*origin.x + 3*u*u*t*control1.x + 3*u*t*t*control2.x + t*t*t*end.x,
+                    y: u*u*u*origin.y + 3*u*u*t*control1.y + 3*u*t*t*control2.y + t*t*t*end.y))
             }
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        }
+        path.forEach { element in
+            switch element {
+            case .move(let point): current = point; start = point
+            case .line(let point): line(to: point)
+            case .curve(let end, let control1, let control2):
+                curve(to: end, control1: control1, control2: control2)
+            case .quadCurve(let end, let control):
+                curve(to: end,
+                    control1: CGPoint(x: current.x + (control.x - current.x) * 2 / 3,
+                                      y: current.y + (control.y - current.y) * 2 / 3),
+                    control2: CGPoint(x: end.x + (control.x - end.x) * 2 / 3,
+                                      y: end.y + (control.y - end.y) * 2 / 3))
+            case .closeSubpath: line(to: start)
+            }
+        }
+        return length
     }
 }
 

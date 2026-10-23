@@ -1229,6 +1229,120 @@ import XCTest
                        "The settled floating sidebar must still prepare the next swipe")
     }
 
+    func testDockedRevealDefersAdjacentSurfacePreparationUntilAfterTravel() async throws {
+        let (store, _, window, monitor) = try fixture(floatingWindow: true)
+        store.sidebarShown = false
+        try await Task.sleep(for: .milliseconds(350))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(monitor.preparedSlides.isEmpty)
+        store.sidebarShown = true
+        window.contentView?.layoutSubtreeIfNeeded()
+        let start = ProcessInfo.processInfo.systemUptime
+        try await Task.sleep(for: .milliseconds(120))
+        print("SIDEBAR_DOCK_PREPARATION wait_ms=\((ProcessInfo.processInfo.systemUptime - start) * 1000) prepared=\(monitor.preparedSlides.count)")
+        XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                      "Adjacent hosting trees must not interrupt the docked opening animation")
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while monitor.preparedSlides.isEmpty, ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(monitor.preparedSlides.isEmpty)
+    }
+
+    func testVerticalScrollingDefersAdjacentSurfacePreparationUntilIdle() async throws {
+        let (store, _, window, monitor) = try fixture()
+        store.sharingReady = false
+        store.tabs = (0..<300).map { index in
+            let tab = Tab(profileID: store.profileID)
+            tab.park(url: URL(string: "about:blank#scroll-\(index)")!, Parked(title: "Document \(index)"))
+            return tab
+        }
+        store.syncShapes()
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        monitor.schedulePreparation(in: store)
+        var gaps: [Double] = []
+        for index in 0..<20 {
+            let start = ProcessInfo.processInfo.systemUptime
+            if index == 10 {
+                NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
+            }
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: 0, dy: 20,
+                phase: index < 10 ? (index == 0 ? .began : .changed) : [],
+                momentum: index < 10 ? [] : (index == 10 ? .began : .changed)))
+            try await Task.sleep(for: .milliseconds(20))
+            gaps.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+            XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                          "Vertical scrolling must not compete with hidden neighboring hosting trees")
+        }
+        XCTAssertFalse(store.spaceSwiping, "Vertical scrolling must keep its normal recipient")
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: [], momentum: .ended))
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while monitor.preparedSlides.isEmpty, ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(monitor.preparedSlides.isEmpty,
+                       "Preparation must resume after scrolling so the next swipe stays ready")
+        print("SIDEBAR_SCROLL_PREPARATION max_gap_ms=\(gaps.max() ?? 0)")
+    }
+
+    func testMouseWheelScrollingAlsoPostponesHiddenPreparation() async throws {
+        let (store, _, window, monitor) = try fixture()
+        monitor.schedulePreparation(in: store)
+        for _ in 0..<8 {
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 10, phase: [], precise: false))
+            try await Task.sleep(for: .milliseconds(25))
+            XCTAssertTrue(monitor.preparedSlides.isEmpty)
+        }
+        XCTAssertFalse(store.spaceSwiping)
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while monitor.preparedSlides.isEmpty, ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(monitor.preparedSlides.isEmpty)
+    }
+
+    func testScrollingRetiresStaleSurfacesOnlyAfterIdle() async throws {
+        let (_, spaces, window, monitor) = try fixture()
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while monitor.preparedSlides[spaces[1].id] == nil, ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let stale = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 20, phase: .began))
+        XCTAssertNil(monitor.preparedSlides[spaces[1].id], "The old scroll position must not be reused")
+        XCTAssertNotNil(stale.superview, "Tearing down hidden hosting trees must not block the first scroll event")
+        for _ in 0..<8 {
+            try await Task.sleep(for: .milliseconds(25))
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 20))
+        }
+        XCTAssertNotNil(stale.superview, "Keep disposal out of continued scrolling too")
+        let refreshedDeadline = ProcessInfo.processInfo.systemUptime + 2
+        while monitor.preparedSlides[spaces[1].id] == nil, ProcessInfo.processInfo.systemUptime < refreshedDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertNil(stale.superview, "Idle preparation must retire the stale trees")
+        let refreshed = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 20, phase: .began))
+        XCTAssertNotNil(refreshed.superview)
+        monitor.remove()
+        XCTAssertNil(refreshed.superview, "Removing the monitor must drain deferred surfaces too")
+    }
+
+    func testPageScrollingKeepsThePreparedSidebarReady() async throws {
+        let (store, spaces, _, monitor) = try fixture()
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while monitor.preparedSlides[spaces[1].id] == nil, ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        // The fixture is 300pt wide; this point is beyond the default sidebar.
+        NSApplication.shared.sendEvent(ScrollEvent(window: try XCTUnwrap(store.window), dy: 20,
+                                                   phase: .began, x: 290))
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                      "Page scrolling must not discard an unrelated ready-to-use sidebar")
+    }
+
     func testFingerTrackingReusesNativeSurfaceThroughCommit() async throws {
         let (store, spaces, window, monitor) = try fixture()
         monitor.track(-30, width: 250, in: store)

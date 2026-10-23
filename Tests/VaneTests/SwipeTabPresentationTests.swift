@@ -68,6 +68,27 @@ import SwiftUI
         XCTAssertGreaterThan(yellow, 30, "Yellow must alternate with black along the border")
     }
 
+    func testDeveloperTapeHasNoJoinedDashAtTheRightCorner() throws {
+        let scale: CGFloat = 8
+        for width: CGFloat in [180, 223, 228, 250, 320] {
+            let renderer = ImageRenderer(content: DeveloperTabBorder().frame(width: width, height: 36))
+            renderer.scale = scale
+            let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+            var previous: Bool?, run = 0
+            // The path closes at the right edge's midpoint; sample the straight
+            // section on both sides of that seam at subpixel resolution.
+            for y in Int(13 * scale)..<Int(23 * scale) {
+                let color = try XCTUnwrap(bitmap.colorAt(x: Int((width - 0.75) * scale), y: y)?
+                    .usingColorSpace(.deviceRGB))
+                let yellow = color.redComponent > 0.5
+                run = yellow == previous ? run + 1 : 1
+                previous = yellow
+                XCTAssertLessThanOrEqual(CGFloat(run) / scale, yellow ? 5.5 : 4.5,
+                    "The dash repeat must close without a long stripe or gap at width \(width)")
+            }
+        }
+    }
+
     func testDuplicateLiveTodayTabsKeepTheirOwnGhostTitle() {
         TestEnvironment.prepare()
         let profile = UUID()
