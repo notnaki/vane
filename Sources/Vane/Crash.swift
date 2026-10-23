@@ -45,7 +45,7 @@ import AppKit
         guard SnapshotPersistence.write(Data(), to: marker) else { return false }
         lastSave = now
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
-            MainActor.assumeIsolated { _ = autosave() }
+            Task { @MainActor in _ = await autosavePersisted() }
         }
         return true
     }
@@ -69,6 +69,49 @@ import AppKit
         guard write() else { return false }
         lastSave = now
         return true
+    }
+
+    private static var saving = false
+
+    /// Timer saves capture native values on MainActor and await worker IO without
+    /// occupying it. A failed write remains dirty and can be retried next interval.
+    @discardableResult
+    static func autosavePersisted(now: Date = .now) async -> Bool {
+        guard !saving, now.timeIntervalSince(lastSave) >= interval else { return false }
+        saving = true
+        defer { saving = false }
+        guard Session.enqueueSave() else { return false }
+        guard await Session.flushPersistence() else { return false }
+        lastSave = now
+        return true
+    }
+
+    static func stopAutosave() { timer?.invalidate(); timer = nil }
+    static func resumeAutosave() {
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+            Task { @MainActor in _ = await autosavePersisted() }
+        }
+    }
+
+    static func markDirtyAsync() async -> Bool {
+        let marker = marker
+        return await SessionPersistence.shared.perform { SnapshotPersistence.write(Data(), to: marker) }
+    }
+
+    /// A clean marker is published only after every accepted session/Boost write has
+    /// completed. Failure keeps the marker and original recovery generations intact.
+    static func markCleanAsync() async -> Bool {
+        stopAutosave()
+        guard Session.enqueueSave(), await Session.flushPersistence() else { return false }
+        let marker = marker
+        return await SessionPersistence.shared.perform {
+            do {
+                try FileManager.default.removeItem(at: marker)
+                return true
+            } catch CocoaError.fileNoSuchFile { return true }
+            catch { NSLog("Vane: could not clear session marker: %@", error.localizedDescription); return false }
+        }
     }
 
     /// Stands in for `Session.restore()` in main.swift. On a clean launch it *is*

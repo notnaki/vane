@@ -251,11 +251,14 @@ extension TabStore {
         // itself. Counted afterwards rather than before: a blank or file tab has no url to
         // write into a Space and is left where it is, and saying "moved 5" when 3 went is
         // worse than saying nothing.
-        ids.forEach { Spaces.move($0, to: space, as: kind, from: self) }
-        let gone = ids.filter { id in !tabs.contains { $0.id == id } }.count
-        let name = spaces.first { $0.id == space }?.name ?? "the space"
-        axAnnounce(gone == ids.count ? "Moved \(gone) tab\(gone == 1 ? "" : "s") to \(name)."
-                   : "Moved \(gone) of \(ids.count) tabs to \(name).")
+        Task { [weak self] in
+            guard let self else { return }
+            for id in ids { await Spaces.moveAsync(id, to: space, as: kind, from: self) }
+            let gone = ids.filter { id in !tabs.contains { $0.id == id } }.count
+            let name = spaces.first { $0.id == space }?.name ?? "the space"
+            axAnnounce(gone == ids.count ? "Moved \(gone) tab\(gone == 1 ? "" : "s") to \(name)."
+                       : "Moved \(gone) of \(ids.count) tabs to \(name).")
+        }
     }
 
     /// "Copy N Links": one url per line, in the order the rows are drawn — which is what

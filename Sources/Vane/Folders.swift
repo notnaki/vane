@@ -190,27 +190,106 @@ struct Pins: Codable, Equatable, Sendable {
         var id: String { entry.id }
     }
 
+    /// One index for a topology pass. Parent lookup and ancestry queries stay constant
+    /// time even in wide shapes. A corrupt cycle is cut deterministically; missing
+    /// parents become roots, and every row is still considered exactly once.
+    struct TraversalIndex {
+        let parents: [Int?]
+        let depths: [Int]
+        private let starts: [Int]
+        private let ends: [Int]
+        let order: [Int]
+        private let cycles: [[Int]]
+
+        init(_ entries: [Entry]) {
+            var byID: [UUID: Int] = [:]
+            for i in entries.indices {
+                if let folder = entries[i].folder, byID[folder.id] == nil { byID[folder.id] = i }
+            }
+            var parents = entries.map { $0.parent.flatMap { byID[$0] } }
+            var cycles: [[Int]] = []
+            var state = [UInt8](repeating: 0, count: entries.count)
+            for first in entries.indices where state[first] == 0 {
+                var path: [Int] = []
+                var next: Int? = first
+                while let i = next, state[i] == 0 {
+                    state[i] = 1; path.append(i); next = parents[i]
+                }
+                if let i = next, state[i] == 1 {
+                    if let start = path.firstIndex(of: i) { cycles.append(Array(path[start...])) }
+                    parents[i] = nil
+                }
+                for i in path { state[i] = 2 }
+            }
+            var children = [[Int]](repeating: [], count: entries.count)
+            var roots: [Int] = []
+            for i in entries.indices {
+                if let p = parents[i] { children[p].append(i) } else { roots.append(i) }
+            }
+            var depths = [Int](repeating: 0, count: entries.count)
+            var starts = depths, ends = depths, order: [Int] = []
+            var stack = roots.reversed().map { ($0, false) }
+            while let (i, leaving) = stack.popLast() {
+                if leaving { ends[i] = order.count; continue }
+                starts[i] = order.count; order.append(i)
+                stack.append((i, true))
+                for child in children[i].reversed() {
+                    depths[child] = depths[i] + 1
+                    stack.append((child, false))
+                }
+            }
+            self.parents = parents; self.depths = depths
+            self.starts = starts; self.ends = ends; self.order = order; self.cycles = cycles
+        }
+
+        func contains(_ row: Int, under folder: Int) -> Bool {
+            row != folder && starts[row] >= starts[folder] && starts[row] < ends[folder]
+        }
+
+        func lockedRows(in entries: [Entry], unlocked: Set<UUID>) -> Set<String> {
+            var blocked = [Bool](repeating: false, count: entries.count)
+            var protectedCycleRoots = Set<Int>()
+            for cycle in cycles where cycle.contains(where: {
+                entries[$0].folder.map { $0.requiresAuthentication == true && !unlocked.contains($0.id) } == true
+            }) {
+                if let root = cycle.first(where: { parents[$0] == nil }) { protectedCycleRoots.insert(root) }
+            }
+            var result = Set<String>()
+            for i in order {
+                let folder = entries[i].folder
+                blocked[i] = protectedCycleRoots.contains(i) || parents[i].map { blocked[$0] } == true
+                    || (folder?.requiresAuthentication == true && !unlocked.contains(folder!.id))
+                if blocked[i] { result.insert(entries[i].id) }
+            }
+            // A cycle cut above must never remove an authentication boundary. A
+            // malformed shape is conservative: all members of a protected cycle lock.
+            return result
+        }
+    }
+
     /// What the sidebar draws: unfolded rows and arrivals previewed by collapsed live folders.
     var visible: [Visible] { visible(unlocked: []) }
 
     func visible(unlocked: Set<UUID>) -> [Visible] {
+        let index = TraversalIndex(entries)
+        let locked = index.lockedRows(in: entries, unlocked: unlocked)
         var out: [Visible] = []
         var i = 0
         while i < entries.count {
-            out.append(Visible(entry: entries[i], depth: depth(of: i)))
+            if entries[i].tab != nil, locked.contains(entries[i].id) { i += 1; continue }
+            out.append(Visible(entry: entries[i], depth: index.depths[i]))
             if let f = entries[i].folder, f.collapsed || (f.requiresAuthentication == true && !unlocked.contains(f.id)) {
-                let end = subtree(at: i).upperBound
+                var end = i + 1
+                while end < entries.count, index.contains(end, under: i) { end += 1 }
                 if f.collapsed, f.live != nil,
                    f.requiresAuthentication != true || unlocked.contains(f.id) {
                     for child in (i + 1)..<end where entries[child].parent == f.id {
                         guard entries[child].tab != nil, entries[child].liveArrival == true else { continue }
-                        out.append(Visible(entry: entries[child], depth: depth(of: child)))
+                        out.append(Visible(entry: entries[child], depth: index.depths[child]))
                     }
                 }
                 i = end
-            } else {
-                i += 1
-            }
+            } else { i += 1 }
         }
         return out
     }

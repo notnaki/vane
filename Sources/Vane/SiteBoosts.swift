@@ -50,25 +50,120 @@ struct SiteBoost: Codable, Equatable, Sendable {
 }
 
 @MainActor final class SiteBoostStore {
+    private struct Cached {
+        var data: Data?
+        var table: [String: SiteBoost]
+    }
+    private final class DefaultsWriter: @unchecked Sendable {
+        let defaults: UserDefaults
+        var results: [UUID: (generation: Int, data: Data?)] = [:] // lane-confined
+        init(_ defaults: UserDefaults) { self.defaults = defaults }
+        func persist(_ table: [String: SiteBoost], profile: UUID, key: String, generation: Int) -> Bool {
+            do {
+                let data = table.isEmpty ? nil : try JSONEncoder().encode(table)
+                if data != defaults.data(forKey: key) {
+                    if let data { defaults.set(data, forKey: key) }
+                    else { defaults.removeObject(forKey: key) }
+                }
+                results[profile] = (generation, data)
+                return true
+            } catch { NSLog("Vane: could not save Boosts: %@", error.localizedDescription); return false }
+        }
+    }
     private let defaults: UserDefaults
-    init(defaults: UserDefaults) { self.defaults = defaults }
-    static func key(_ profile: UUID) -> String { ProfileManager.defaultsKey("siteBoosts.v1", profile) }
+    private let writer: DefaultsWriter
+    private let background: Bool
+    private let lane = SessionPersistence()
+    private var cache: [UUID: Cached] = [:]
+    private var generations: [UUID: Int] = [:]
+    private var dirty = Set<UUID>()
+    private var debounce: [UUID: Task<Void, Never>] = [:]
 
-    func records(profile: UUID) -> [String: SiteBoost] {
-        guard let data = defaults.data(forKey: Self.key(profile)),
-              let raw = try? JSONDecoder().decode([String: SiteBoost].self, from: data) else { return [:] }
+    /// Standalone stores remain durable for import/check callers. The application store
+    /// warms asynchronously and coalesces editor keystrokes before worker serialization.
+    init(defaults: UserDefaults, background: Bool = false) {
+        self.defaults = defaults; self.writer = DefaultsWriter(defaults); self.background = background
+    }
+    nonisolated static func key(_ profile: UUID) -> String { ProfileManager.defaultsKey("siteBoosts.v1", profile) }
+    private nonisolated static func decoded(_ data: Data?) -> [String: SiteBoost] {
+        guard let data, let raw = try? JSONDecoder().decode([String: SiteBoost].self, from: data) else { return [:] }
         return raw.filter { URL(string: $0.key).flatMap(SiteBoosts.origin) == $0.key }.mapValues(\.sanitized)
+    }
+    func prepare(profiles: [UUID]) async {
+        for profile in profiles where cache[profile] == nil {
+            let key = Self.key(profile), writer = writer
+            let loaded = await lane.perform {
+                let data = writer.defaults.data(forKey: key)
+                return (data, Self.decoded(data))
+            }
+            if cache[profile] == nil { cache[profile] = Cached(data: loaded.0, table: loaded.1) }
+        }
+    }
+    func records(profile: UUID) -> [String: SiteBoost] {
+        // Pending local changes own the profile until the ordered publication completes.
+        if dirty.contains(profile) { return cache[profile]?.table ?? [:] }
+        let data = defaults.data(forKey: Self.key(profile))
+        if let cached = cache[profile], cached.data == data { return cached.table }
+        let table = Self.decoded(data)
+        cache[profile] = Cached(data: data, table: table)
+        return table
     }
     func get(origin: String, profile: UUID) -> SiteBoost { records(profile: profile)[origin] ?? SiteBoost() }
     func set(_ value: SiteBoost, origin: String, profile: UUID) {
         guard URL(string: origin).flatMap(SiteBoosts.origin) == origin else { return }
         var table = records(profile: profile)
         let value = value.sanitized
+        guard (table[origin] ?? SiteBoost()) != value else { return }
         if value == SiteBoost() { table.removeValue(forKey: origin) } else { table[origin] = value }
-        if table.isEmpty { defaults.removeObject(forKey: Self.key(profile)) }
-        else if let data = try? JSONEncoder().encode(table) { defaults.set(data, forKey: Self.key(profile)) }
+        update(table, profile: profile)
     }
-    func forget(profile: UUID) { defaults.removeObject(forKey: Self.key(profile)) }
+    private func update(_ table: [String: SiteBoost], profile: UUID) {
+        cache[profile] = Cached(data: cache[profile]?.data, table: table)
+        generations[profile, default: 0] += 1
+        dirty.insert(profile)
+        debounce[profile]?.cancel()
+        if background {
+            debounce[profile] = Task { [weak self] in
+                do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                self?.submit(profile)
+            }
+        } else {
+            let key = Self.key(profile), generation = generations[profile]!
+            if lane.sync({ writer.persist(table, profile: profile, key: key, generation: generation) }) {
+                acknowledge(profile, generation: generation, data: lane.sync { writer.results[profile]?.data })
+            }
+        }
+    }
+    private func acknowledge(_ profile: UUID, generation: Int, data: Data?) {
+        guard generations[profile] == generation else { return }
+        cache[profile]?.data = data
+        dirty.remove(profile)
+    }
+    private func submit(_ profile: UUID) {
+        debounce.removeValue(forKey: profile)?.cancel()
+        guard dirty.contains(profile), let table = cache[profile]?.table else { return }
+        let key = Self.key(profile), generation = generations[profile]!, writer = writer
+        lane.enqueue(file: URL(fileURLWithPath: "/siteBoosts/" + profile.uuidString)) { [weak self] in
+            let ok = writer.persist(table, profile: profile, key: key, generation: generation)
+            if ok {
+                let data = writer.results[profile]?.data
+                Task { @MainActor [weak self] in self?.acknowledge(profile, generation: generation, data: data) }
+            }
+            return ok
+        }
+    }
+    func flush() async -> Bool {
+        repeat {
+            for profile in Array(dirty) { submit(profile) }
+            guard await lane.flush() else { return false }
+            let writer = writer
+            let results = await lane.perform { writer.results }
+            for (profile, result) in results { acknowledge(profile, generation: result.generation, data: result.data) }
+        } while !dirty.isEmpty
+        return true
+    }
+
+    func forget(profile: UUID) { update([:], profile: profile) }
 }
 
 @MainActor enum SiteBoosts {
@@ -82,7 +177,7 @@ struct SiteBoost: Codable, Equatable, Sendable {
         var scriptRan = false
         init(tab: Tab, origin: String, stamp: Double, token: String) { self.tab = tab; self.origin = origin; self.stamp = stamp; self.token = token }
     }
-    private static let store = SiteBoostStore(defaults: .vane)
+    private static let store = SiteBoostStore(defaults: .vane, background: true)
     private static var privateValues: [UUID: [String: SiteBoost]] = [:]
     private static var documents: [UUID: Document] = [:]
 
@@ -94,6 +189,9 @@ struct SiteBoost: Codable, Equatable, Sendable {
         let suffix = port != nil && port != (scheme == "https" ? 443 : 80) ? ":\(port!)" : ""
         return "\(scheme)://\(host)\(suffix)"
     }
+
+    static func prepare(profiles: [UUID]) async { await store.prepare(profiles: profiles) }
+    static func flushPersistence() async -> Bool { await store.flush() }
 
     static func document(for tab: Tab) -> Document? { documents[tab.id] }
     static func records(profile: UUID) -> [String: SiteBoost] { store.records(profile: profile) }
@@ -168,8 +266,9 @@ struct SiteBoost: Codable, Equatable, Sendable {
 
     private static func apply(to tab: Tab, document: Document) {
         guard let web = tab.existingWeb else { return }
+        let boost = value(origin: document.origin, tab: tab)
         web.callAsyncJavaScript("if (window.__vaneBoost?.documentToken === token && location.origin === origin) window.__vaneBoost.apply(css, scale);",
-            arguments: ["token": document.token, "origin": document.origin, "css": value(origin: document.origin, tab: tab).style, "scale": value(origin: document.origin, tab: tab).enabled ? value(origin: document.origin, tab: tab).sanitized.textScale : 1],
+            arguments: ["token": document.token, "origin": document.origin, "css": boost.style, "scale": boost.enabled ? boost.textScale : 1],
             in: nil, in: SiteBoostScripts.world) { _ in }
     }
 

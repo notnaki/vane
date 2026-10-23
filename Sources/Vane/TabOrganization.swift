@@ -102,6 +102,7 @@ import Combine
     private var observedTabs = Set<ObjectIdentifier>()
     private var refreshQueued = false
     private var sessionSaveFailed = false
+    @Published private(set) var working = false
 
     init(store: TabStore) {
         self.store = store
@@ -413,7 +414,7 @@ import Combine
         refresh()
         rebuild()
         if let store {
-            Toasts.show(text, action: ("Undo", { [self] in _ = undo() }), in: store)
+            Toasts.show(text, action: ("Undo", { [self] in Task { _ = await undoAsync() } }), in: store)
         }
         axAnnounce(message)
     }
@@ -518,6 +519,239 @@ import Combine
         }
         publish(states)
         sessionSaveFailed = !Session.save()
+        return true
+    }
+
+    @discardableResult func archiveSelectedAsync(duplicatesOnly: Bool = false) async -> Bool {
+        guard available, !working else { return false }
+        working = true
+        PendingSessionTransactions.begin()
+        defer { working = false; PendingSessionTransactions.end() }
+        let before = capture()
+        guard let selected = reviewedSelection(in: before) else { return false }
+        let ids = Set(selected.map(\.id))
+        if duplicatesOnly {
+            // Include current protected copies, not an old duplicate count from the sheet.
+            refresh()
+            guard selected.allSatisfy({ row in
+                rows.contains { $0.url == row.url && !ids.contains($0.id) }
+            }) else {
+                message = "Keep at least one copy of each page. Untick the copies you want to keep."
+                return false
+            }
+        }
+        var after = before.filter { $0.records.contains { ids.contains($0.id) } }
+        let affected = Set(after.map { $0.space.id })
+        var undoBefore = before.filter { affected.contains($0.space.id) }
+        for index in after.indices {
+            after[index].records.removeAll { ids.contains($0.id) }
+            for id in ids { after[index].today.remove(tab: id.uuidString) }
+            after[index].today.removeEmptyFolders()
+        }
+        guard await commitAsync(after) else { return false }
+        let archive = Archive.shared(for: profileID)
+        let previous = archive.entries.filter { entry in selected.contains { $0.url.absoluteString == entry.url } }
+        for row in selected { archive.add(url: row.url, title: row.title, space: row.spaceID) }
+        // Closed pages are reconstructed from their own snapshots on undo. Never reuse a
+        // torn-down WebKit object; moved tabs retain their identity and live object instead.
+        for index in undoBefore.indices {
+            for record in undoBefore[index].records.indices where ids.contains(undoBefore[index].records[record].id) {
+                undoBefore[index].records[record].tab = nil
+            }
+        }
+        Self.saved[profileID] = UndoRecord(before: undoBefore,
+            after: Dictionary(uniqueKeysWithValues: capture().filter { affected.contains($0.space.id) }.map { ($0.space.id, $0.mark) }),
+            previousArchive: previous,
+            addedArchive: archive.entries.filter { entry in selected.contains { $0.url.absoluteString == entry.url } })
+        finished("Archived \(selected.count) tabs")
+        return true
+    }
+
+    @discardableResult func moveSelectedAsync(to destination: UUID) async -> Bool {
+        guard available, !working else { return false }
+        working = true
+        PendingSessionTransactions.begin()
+        defer { working = false; PendingSessionTransactions.end() }
+        let before = capture()
+        guard let target = before.firstIndex(where: { $0.space.id == destination }),
+              let selected = reviewedSelection(in: before) else { return false }
+        let ids = Set(selected.filter { $0.spaceID != destination }.map(\.id))
+        guard !ids.isEmpty else { message = "These tabs are already in that Space."; return false }
+        var after = before
+        let moved = before.flatMap(\.records).filter { ids.contains($0.id) }
+        let affected = Set(selected.filter { ids.contains($0.id) }.compactMap(\.spaceID) + [destination])
+        for index in after.indices {
+            after[index].records.removeAll { ids.contains($0.id) }
+            for id in ids { after[index].today.remove(tab: id.uuidString) }
+            after[index].today.removeEmptyFolders()
+        }
+        after[target].records += moved
+        after[target].today.sync(tabs: after[target].records.filter { $0.kind == .today }.map(\.id.uuidString))
+        guard await commitAsync(after.filter { affected.contains($0.space.id) }) else { return false }
+        Self.saved[profileID] = UndoRecord(before: before.filter { affected.contains($0.space.id) },
+            after: Dictionary(uniqueKeysWithValues: capture().filter { affected.contains($0.space.id) }.map { ($0.space.id, $0.mark) }),
+            previousArchive: [], addedArchive: [])
+        finished("Moved \(moved.count) tabs to \(after[target].space.name)")
+        return true
+    }
+
+    @discardableResult func undoAsync() async -> Bool {
+        guard !working else { return false }
+        working = true
+        PendingSessionTransactions.begin()
+        defer { working = false; PendingSessionTransactions.end() }
+        let current = available ? capture() : []
+        guard available, let undo = Self.saved[profileID], undoIsCurrent(current) else {
+            message = "Tabs or folders changed since this action. Undo would overwrite those changes."
+            refresh()
+            return false
+        }
+        // Surviving saved rows may now be live with new IDs. Keep those live objects and
+        // their latest page state; only resurrect the archived rows from the old snapshots.
+        var survivors: [UUID: Record] = [:]
+        for state in current {
+            guard let expected = undo.after[state.space.id] else { continue }
+            for (oldID, record) in zip(expected.ids, state.records) { survivors[oldID] = record }
+        }
+        var restoring = undo.before
+        for index in restoring.indices {
+            restoring[index].records = restoring[index].records.map { survivors[$0.id] ?? $0 }
+            restoring[index].pins = restoring[index].pins.mapped { raw in
+                UUID(uuidString: raw).flatMap { survivors[$0]?.id.uuidString } ?? raw
+            }
+            restoring[index].today = restoring[index].today.mapped { raw in
+                UUID(uuidString: raw).flatMap { survivors[$0]?.id.uuidString } ?? raw
+            }
+            if let live = current.first(where: { $0.space.id == restoring[index].space.id }) {
+                restoring[index].splits = live.splits
+            }
+        }
+        guard await commitAsync(restoring) else { return false }
+        let archive = Archive.shared(for: profileID)
+        for entry in undo.addedArchive where archive.entries.contains(entry) {
+            archive.remove(entry.id)
+            if let old = undo.previousArchive.first(where: { $0.id == entry.id }), let url = URL(string: old.url) {
+                archive.add(url: url, title: old.title, at: old.at, space: old.space, littleArc: old.isLittleArc)
+            }
+        }
+        Self.saved[profileID] = nil
+        message = "Undid tab organization." + (sessionSaveFailed ? " The session could not be saved." : "")
+        refresh()
+        rebuild()
+        return true
+    }
+
+    private func commitAsync(_ states: [State]) async -> Bool {
+        var spaces = ProfileManager.shared.spaces(for: profileID)
+        guard states.allSatisfy({ state in spaces.contains { $0.id == state.space.id } }) else {
+            message = "A Space changed profiles or was deleted. Refresh and try again."
+            return false
+        }
+        let expected = Dictionary(uniqueKeysWithValues: capture().filter { state in states.contains { $0.space.id == state.space.id } }.map { ($0.space.id, $0.mark) })
+        func stillCurrent() -> Bool {
+            let current = Dictionary(uniqueKeysWithValues: capture().map { ($0.space.id, $0.mark) })
+            return expected.allSatisfy { id, mark in current[id].map { mark.matches($0) } == true }
+        }
+        let sessionURL = ProfileManager.sessionURL(for: profileID, in: Store.directory)
+        let sessionBefore = await SessionPersistence.shared.perform { try? Data(contentsOf: sessionURL) }
+        @MainActor func restoreSession() async {
+            if let sessionBefore, !(await SessionPersistence.shared.perform { SnapshotPersistence.write(sessionBefore, to: sessionURL) }) {
+                message = "Could not restore the session snapshot. Check storage and retry."
+            }
+        }
+        for state in states {
+            guard await Session.forgetAsync(space: state.space.id, in: profileID) else {
+                message = "Could not save the session. No tabs were changed."
+                await restoreSession()
+                return false
+            }
+        }
+        let previous = Dictionary(uniqueKeysWithValues: states.map {
+            ($0.space.id, Suspension.SpaceState.load(space: $0.space.id, profileID: profileID, in: Store.directory))
+        })
+        @MainActor func rollback() async {
+            await restoreSession()
+            for (id, parked) in previous {
+                if !(await Suspension.SpaceState.saveAsync(parked, space: id, profileID: profileID, in: Store.directory)) {
+                    message = "Could not restore saved page state. Check storage and retry."
+                }
+            }
+        }
+        for state in states {
+            var parked: [String: Parked] = [:]
+            // Match saveCurrentSpace's favourite → pinned → Today precedence. The
+            // sidecar is URL-keyed; a wandered favourite must not overwrite Today.
+            for tab in TabStore.all.first(where: { $0.sharesTabs && $0.profileID == profileID })?.tabs.filter({ $0.kind == .favourite }) ?? [] {
+                if let entry = TabStore.sidecarEntry(page: tab.currentURL, home: tab.homeURL, snapshot: tab.snapshot) {
+                    parked[entry.key] = entry.parked
+                }
+            }
+            for record in state.records {
+                guard let entry = TabStore.sidecarEntry(page: record.url, home: record.home, snapshot: record.parked) else { continue }
+                parked[entry.key] = entry.parked
+            }
+            guard await Suspension.SpaceState.saveAsync(parked, space: state.space.id, profileID: profileID, in: Store.directory) else {
+                message = "Could not save page state. No tabs were changed."
+                await rollback()
+                return false
+            }
+            let index = spaces.firstIndex { $0.id == state.space.id }!
+            spaces[index].tabURLs = state.records.filter { $0.kind == .today }.compactMap(\.savedURL).filter(TabAddress.restorable)
+            spaces[index].pinnedTabURLs = state.records.filter { $0.kind == .pinned }.compactMap(\.savedURL).filter(TabAddress.restorable)
+            if spaces[index].layout != nil || state.records.contains(where: { $0.customName != nil }) {
+                let pages = state.records.compactMap { record -> SpaceLayout.Page? in
+                    guard let url = record.url, let saved = record.savedURL,
+                          TabAddress.restorable(url), TabAddress.restorable(saved) else { return nil }
+                    return .init(id: record.id, url: url, kind: record.kind, title: record.parked.title,
+                                 customName: record.customName, home: record.home)
+                }
+                let kept = Set(pages.map(\.id))
+                let splits = state.splits.compactMap { split -> Split.Saved? in
+                    guard split.tabs.allSatisfy(kept.contains) else { return nil }
+                    return .init(urls: split.tabs.map { id in pages.first { $0.id == id }!.url.absoluteString },
+                                 vertical: split.vertical, active: split.active,
+                                 ids: split.tabs.map(\.uuidString), weights: split.weights)
+                }
+                spaces[index].layout = SpaceLayout(tabs: pages,
+                    pins: state.pins.mapped { UUID(uuidString: $0).map(kept.contains) == true ? $0 : nil },
+                    today: state.today.mapped { UUID(uuidString: $0).map(kept.contains) == true ? $0 : nil }, splits: splits,
+                    selected: state.space.layout?.selected.flatMap { kept.contains($0) ? $0 : nil })
+            }
+        }
+        guard stillCurrent() else {
+            message = "Tabs changed while saving. No tabs were changed; review and retry."
+            // Current live snapshots supersede staged sidecar/session generations.
+            _ = Session.enqueueSave()
+            _ = await Session.flushPersistence()
+            return false
+        }
+        guard ProfileManager.shared.saveSpaces(spaces, for: profileID) else {
+            message = "Could not save Spaces. No tabs were changed."
+            await rollback()
+            return false
+        }
+        for state in states {
+            var counts: [DiskKey: Int] = [:]
+            let byID = Dictionary(uniqueKeysWithValues: state.records.map { ($0.id.uuidString, $0.savedURL?.absoluteString) })
+            for (kind, shape) in [(TabKind.pinned, state.pins), (.today, state.today)] {
+                let key = TabStore.shapeKey(kind, space: state.space.id, profileID: profileID)
+                let named = shape.mapped { byID[$0] ?? nil }
+                if named.entries.contains(where: { $0.folder != nil }) {
+                    UserDefaults.vane.set(try? JSONEncoder().encode(named), forKey: key)
+                } else { UserDefaults.vane.removeObject(forKey: key) }
+            }
+            for record in state.records {
+                guard let url = record.savedURL else { continue }
+                var key = DiskKey(profile: profileID, space: state.space.id, kind: record.kind, url: url, occurrence: 0)
+                let occurrence = counts[key, default: 0]
+                counts[key] = occurrence + 1
+                key.occurrence = occurrence
+                Self.diskIDs[key] = record.id
+            }
+        }
+        publish(states)
+        sessionSaveFailed = !Session.enqueueSave()
+        if !(await Session.flushPersistence()) { sessionSaveFailed = true }
         return true
     }
 

@@ -230,6 +230,50 @@ enum Spaces {
         store.spacesChanged()
     }
 
+    @MainActor static func moveAsync(_ id: Tab.ID, to spaceID: UUID, as kind: TabKind,
+                                from store: TabStore) async {
+        PendingSessionTransactions.begin()
+        defer { PendingSessionTransactions.end() }
+        // A private window has no Space and writes nothing down; moving one of its tabs into
+        // a Space would put a page the user asked not to be remembered into spaces.json.
+        guard !store.isPrivate, !store.isTabLocked(id),
+              let tab = store.tabs.first(where: { $0.id == id }),
+              let url = tab.pinnedURL, TabAddress.restorable(url),   // home, not the wander
+              var space = store.spaces.first(where: { $0.id == spaceID }),
+              space.id != store.currentSpaceID
+        else { return }
+        let destinationBefore = space
+        switch kind {
+        case .pinned: space.pinnedTabURLs = appending(url, to: space.pinnedTabURLs ?? [])
+        default:      space.tabURLs = appending(url, to: space.tabURLs)
+        }
+        // The state sidecar too, so the tab comes up where it was left rather than reloading
+        // from the top — unless it has wandered from its home: then it is handed over the
+        // way its × would hand it over, at home with none of the wander's state, or the
+        // list would say one page and the sidecar wake it on another.
+        var parked = Suspension.SpaceState.load(space: spaceID, profileID: store.profileID,
+                                                in: Store.directory)
+        // `==`, not `atHome`: in the resume gap a row has no `currentURL` yet, reads as
+        // at home, and its snapshot is still the wander's.
+        parked[url.absoluteString] = tab.currentURL == url ? tab.snapshot
+            : Parked(title: TabStore.homeTitle(known: tab.history.title(for: url), url: url))
+        let sourceSpace = store.currentSpaceID
+        let sourcePage = tab.currentURL
+        guard await Suspension.SpaceState.saveAsync(parked, space: spaceID, profileID: store.profileID,
+                                                   in: Store.directory),
+              store.currentSpaceID == sourceSpace, tab.currentURL == sourcePage,
+              store.tabs.contains(where: { $0 === tab }), !store.isTabLocked(id),
+              store.spaces.first(where: { $0.id == spaceID }) == destinationBefore,
+              ProfileManager.shared.updateSpace(space) else { return }
+        // A favourite is global, so moving one to a Space would take it out of every other
+        // Space's grid — send it down to Today first, then close it like any other tab.
+        if tab.kind != .today { store.move(id, to: .today) }
+        store.close(id)
+        SharedTabs.receiveSavedTab(url, parked: parked[url.absoluteString] ?? Parked(),
+                                   kind: kind, in: spaceID, profileID: store.profileID)
+        store.spacesChanged()
+    }
+
     // MARK: - Reordering
 
     /// A list with the item at `from` put back at `to`, clamped. Used by dragging the footer
@@ -256,6 +300,32 @@ enum Spaces {
         let showing = TabStore.all.filter { $0.profileID == profileID && $0.currentSpaceID == id }
         // Flush the shared live tabs before reading the saved Space.
         guard showing.allSatisfy({ $0.saveCurrentSpace() }) else { return false }
+        let all = ProfileManager.shared.spaces(for: profileID)
+        // Read the Space back rather than trusting the caller's copy: what is on disk is
+        // what is about to be deleted, and it is newer than the copy a menu was built from.
+        guard let space = all.first(where: { $0.id == id }),
+              ProfileManager.shared.deleteSpace(id, in: profileID) else { return false }
+        archiveContents(of: space)
+        TabStore.forgetShape(space: id, profileID: profileID)
+        rememberTab(nil, in: id)       // and the row saying which tab it was left on
+        for store in TabStore.all where store.profileID == profileID {
+            // A theme preview can still make `currentSpace` answer with the deleted Space.
+            // Clear it before resolving, so the switch cannot be deferred to a view's task.
+            if store.previewSpace?.id == id { store.previewSpace = nil }
+            if store.currentSpaceID == id { store.resolveStaleSpace() }
+            store.spacesChanged()
+        }
+        return true
+    }
+
+    @discardableResult
+    @MainActor static func deleteAsync(_ id: UUID, in profileID: UUID) async -> Bool {
+        PendingSessionTransactions.begin()
+        defer { PendingSessionTransactions.end() }
+        let showing = TabStore.all.filter { $0.profileID == profileID && $0.currentSpaceID == id }
+        // Flush the shared live tabs before reading the saved Space.
+        guard showing.allSatisfy({ $0.saveCurrentSpace() }),
+              await SessionPersistence.shared.flush() else { return false }
         let all = ProfileManager.shared.spaces(for: profileID)
         // Read the Space back rather than trusting the caller's copy: what is on disk is
         // what is about to be deleted, and it is newer than the copy a menu was built from.

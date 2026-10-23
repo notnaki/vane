@@ -740,7 +740,7 @@ extension VaneWindow {
         }
         func windowWillClose(_ n: Notification) {
             MainActor.assumeIsolated {
-                Session.save()
+                Session.enqueueSave()
                 // Every store the window is holding, not only the one on screen: a window
                 // that has hopped profiles keeps the ones behind it alive, pages and all.
                 // See `hop`.
@@ -1397,7 +1397,7 @@ extension TabStore {
 
     /// One tab as the session file remembers it. `state` is a base64 `interactionState`:
     /// the back/forward list, the current item and its scroll offset.
-    struct Entry: Codable, Equatable {
+    struct Entry: Codable, Equatable, Sendable {
         var id: String?
         var url: String
         var title: String?
@@ -1434,7 +1434,7 @@ extension TabStore {
         }
     }
 
-    private struct Disk: Codable {
+    private struct Disk: Codable, Sendable {
         var version: Int
         var windows: [[Entry]]
         /// Each window's split views, as the urls of their panes. Optional, so a v2 file —
@@ -1450,7 +1450,7 @@ extension TabStore {
 
     /// One validated generation supplies every restoration field. Keep the file choice
     /// with its metadata so a recovery fallback never needs a second primary-file read.
-    struct RestorationSnapshot {
+    struct RestorationSnapshot: Sendable {
         let windows: [[Entry]]
         let splits: [[Split.Saved]]
         let spaces: [UUID?]
@@ -1498,7 +1498,7 @@ extension TabStore {
     /// fidelity.
     /// ponytail: no writer for v1 or v2. Downgrading loses the session once, and a browser
     /// that can be downgraded mid-session is not a thing anyone does twice.
-    static func encode(_ windows: [[Entry]], splits: [[Split.Saved]] = [],
+    nonisolated static func encode(_ windows: [[Entry]], splits: [[Split.Saved]] = [],
                        spaces: [String] = [], selected: [String?] = []) -> Data? {
         try? JSONEncoder().encode(Disk(version: 4, windows: windows,
                                        splits: splits.contains { !$0.isEmpty } ? splits : nil,
@@ -1510,9 +1510,9 @@ extension TabStore {
 
     /// Keep optional row-metadata tolerance, but never mistake corruption or a future
     /// schema for a successfully saved empty session.
-    static func readable(_ data: Data) -> Bool { restorationSnapshot(data) != nil }
+    nonisolated static func readable(_ data: Data) -> Bool { restorationSnapshot(data) != nil }
 
-    private static func restorationSnapshot(_ data: Data) -> RestorationSnapshot? {
+    private nonisolated static func restorationSnapshot(_ data: Data) -> RestorationSnapshot? {
         if let saved = try? JSONDecoder().decode(Disk.self, from: data) {
             guard (2...4).contains(saved.version),
                   saved.windows.flatMap({ $0 }).allSatisfy({ TabAddress.restorable(URL(string: $0.url)) })
@@ -1533,7 +1533,7 @@ extension TabStore {
 
     /// Restore previews must distinguish an empty session from a damaged file. Keep
     /// the browsing reader's legacy tolerance, but require a known schema at import.
-    static func validateBackup(_ data: Data) throws -> (windows: [[Entry]], spaces: [UUID?]) {
+    nonisolated static func validateBackup(_ data: Data) throws -> (windows: [[Entry]], spaces: [UUID?]) {
         if let legacy = try? JSONDecoder().decode([[String]].self, from: data) {
             return (legacy.map { $0.map { Entry(url: $0) } }, legacy.map { _ in nil })
         }
@@ -1623,10 +1623,21 @@ extension TabStore {
     /// profile's prior crash snapshot. Keep every other window and its aligned metadata.
     @discardableResult
     static func forget(space id: UUID, in profileID: UUID) -> Bool {
+        let destination = file(profileID)
+        return SessionPersistence.shared.sync(file: destination) { forgetFile(space: id, file: destination) }
+    }
+
+    @discardableResult
+    static func forgetAsync(space id: UUID, in profileID: UUID) async -> Bool {
+        let destination = file(profileID)
+        return await SessionPersistence.shared.perform { forgetFile(space: id, file: destination) }
+    }
+
+    private nonisolated static func forgetFile(space id: UUID, file: URL) -> Bool {
         // A stale fallback is safe to preview/restore, but cannot authorize deleting or
         // moving a Space out of an unreadable current session.
         let data: Data
-        do { data = try Data(contentsOf: file(profileID)) }
+        do { data = try Data(contentsOf: file) }
         catch CocoaError.fileReadNoSuchFile { return true }
         catch { return false }
         guard readable(data), var snapshot = try? JSONDecoder().decode(Disk.self, from: data) else { return false }
@@ -1641,14 +1652,27 @@ extension TabStore {
         snapshot.spaces = kept.map { spaces.indices.contains($0) ? spaces[$0] : "" }
         snapshot.selected = snapshot.selected.map { list in kept.map { list.indices.contains($0) ? list[$0] : nil } }
         guard let updated = try? JSONEncoder().encode(snapshot) else { return false }
-        return RecoverySnapshots.write(updated, to: file(profileID), valid: readable)
+        return RecoverySnapshots.write(updated, to: file, valid: readable)
     }
 
     /// Every profile's open windows, each into its own file. A profile whose windows are all
     /// closed keeps the session it already had — only profiles with a live window are
     /// rewritten, so quitting from profile B does not erase profile A's session.
     @discardableResult
-    static func save() -> Bool {
+    static func save() -> Bool { captureSave(background: false) }
+
+    @discardableResult
+    static func enqueueSave() -> Bool { captureSave(background: true) }
+
+    /// Async backup and quit boundary. Every job already admitted is durable, or a
+    /// failure is returned so the dirty marker / existing originals remain intact.
+    static func flushPersistence() async -> Bool {
+        let boosts = await SiteBoosts.flushPersistence()
+        let session = await SessionPersistence.shared.flush()
+        return boosts && session
+    }
+
+    private static func captureSave(background: Bool) -> Bool {
         guard !restoring else { return false }
         var succeeded = true
         var byProfile: [UUID: [(entries: [Entry], splits: [Split.Saved], space: String,
@@ -1702,10 +1726,15 @@ extension TabStore {
             // Windows are dropped as whole rows, so a window's splits and its Space never
             // end up filed under the next window's tabs.
             let kept = windows.filter { !$0.entries.isEmpty }
-            guard let data = encode(kept.map(\.entries), splits: kept.map(\.splits),
-                                    spaces: kept.map(\.space), selected: kept.map(\.selected))
-            else { succeeded = false; continue }
-            if !RecoverySnapshots.write(data, to: file(profileID), valid: readable) { succeeded = false }
+            let destination = file(profileID)
+            let entries = kept.map(\.entries), splits = kept.map(\.splits)
+            let spaces = kept.map(\.space), selected = kept.map(\.selected)
+            let write: @Sendable () -> Bool = {
+                guard let data = encode(entries, splits: splits, spaces: spaces, selected: selected) else { return false }
+                return RecoverySnapshots.write(data, to: destination, valid: readable)
+            }
+            if background { SessionPersistence.shared.enqueue(file: destination, write) }
+            else if !SessionPersistence.shared.sync(file: destination, write) { succeeded = false }
         }
         return succeeded
     }

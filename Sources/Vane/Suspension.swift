@@ -48,7 +48,7 @@ enum SnapshotPersistence {
 /// item is current, and its scroll offset. Assigning it to a fresh WKWebView restores all
 /// of that, synchronously as far as `url` and `canGoBack` are concerned. It is the only
 /// public API that captures a page without keeping its process.
-struct Parked {
+struct Parked: Equatable, Sendable {
     var title: String
     var state: Data?
     /// The page this state actually came from, when it is filed under a key that is not it.
@@ -341,8 +341,8 @@ extension Prefs {
     /// pure cache: delete it and spaces still switch, just without the scroll position.
     /// Ceiling: nothing prunes it, so a space that has had a thousand urls in it keeps a
     /// thousand rows (~600 bytes each).
-    enum SpaceState {
-        private struct Row: Codable {
+    @MainActor enum SpaceState {
+        private struct Row: Codable, Equatable, Sendable {
             var t: String?
             var s: String?
             /// The page the state came from, written only for a row filed under a key that
@@ -358,57 +358,145 @@ extension Prefs {
             dir.appendingPathComponent("spacestate\(ProfileManager.suffix(profileID)).json")
         }
 
-        private nonisolated static func read(_ profileID: UUID, in dir: URL) -> [String: [String: Row]] {
-            let file = url(for: profileID, in: dir)
-            guard let data = RecoverySnapshots.read(file, valid: readable),
-                  var all = try? JSONDecoder().decode([String: [String: Row]].self, from: data)
-            else { return [:] }
-            // Recovery policy belongs to the entire fallback generation. A save or
-            // removal in one Space must not silently wake another Space's opaque state.
-            if (try? Data(contentsOf: file)).map(readable) != true {
-                all = all.mapValues { rows in rows.mapValues { row in
-                    var row = row
-                    row.needsRecovery = true
-                    return row
-                } }
+        private typealias Table = [String: [String: Row]]
+        /// Worker state is confined to the shared persistence lane; UI cache contains
+        /// immutable parked values and never waits behind an autosave that is writing.
+        private final class Worker: @unchecked Sendable {
+            var tables: [URL: Table] = [:]
+            var primary: [URL: Data] = [:]
+            var dirty = Set<URL>()
+
+            func read(_ file: URL) -> Table {
+                if let table = tables[file] { return table }
+                var result: Table = [:]
+                for candidate in [file, file.appendingPathExtension("previous")] {
+                    guard let data = try? Data(contentsOf: candidate),
+                          var decoded = try? JSONDecoder().decode(Table.self, from: data) else { continue }
+                    if candidate != file {
+                        decoded = decoded.mapValues { $0.mapValues { row in
+                            var copy = row; copy.needsRecovery = true; return copy
+                        } }
+                    } else { primary[file] = data }
+                    result = decoded; break
+                }
+                tables[file] = result
+                return result
             }
-            return all
-        }
 
-        private nonisolated static func readable(_ data: Data) -> Bool {
-            (try? JSONDecoder().decode([String: [String: Row]].self, from: data)) != nil
+            func update(_ rows: [String: Row]?, space: UUID, file: URL) -> Bool {
+                var table = read(file)
+                let changed = table[space.uuidString] != rows
+                if let rows { table[space.uuidString] = rows }
+                else { table.removeValue(forKey: space.uuidString) }
+                tables[file] = table
+                guard changed || dirty.contains(file) else { return true }
+                dirty.insert(file)
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                guard let data = try? encoder.encode(table) else { return false }
+                let trusted = primary[file]
+                let ok = RecoverySnapshots.write(data, to: file) { candidate in
+                    candidate == data || candidate == trusted || readable(candidate)
+                }
+                if ok { primary[file] = data; dirty.remove(file) }
+                return ok
+            }
         }
+        private nonisolated static let worker = Worker()
+        private static var cache: [URL: [String: [String: Parked]]] = [:]
+        private static var loaded = Set<URL>()
 
-        /// `dir` is always `Store.directory` outside `check()`; it cannot be a default
-        /// argument because reading it is main-actor work and default values are evaluated
-        /// in a nonisolated context.
-        static func load(space: UUID, profileID: UUID, in dir: URL) -> [String: Parked] {
-            return (read(profileID, in: dir)[space.uuidString] ?? [:]).mapValues {
+        private nonisolated static func parked(_ table: Table) -> [String: [String: Parked]] {
+            table.mapValues { rows in rows.mapValues {
                 Parked(title: $0.t ?? "", state: $0.s.flatMap { Data(base64Encoded: $0) },
                        page: $0.u.flatMap(URL.init(string:)), needsRecovery: $0.needsRecovery == true)
-            }
+            } }
         }
-
-        @discardableResult
-        static func save(_ parked: [String: Parked], space: UUID,
-                         profileID: UUID, in dir: URL) -> Bool {
-            var all = read(profileID, in: dir)
-            all[space.uuidString] = parked.mapValues {
+        private nonisolated static func rows(_ parked: [String: Parked]) -> [String: Row] {
+            parked.mapValues {
                 Row(t: $0.title, s: $0.state?.base64EncodedString(), u: $0.page?.absoluteString,
                     needsRecovery: $0.needsRecovery ? true : nil)
             }
-            guard let data = try? JSONEncoder().encode(all) else { return false }
-            return RecoverySnapshots.write(data, to: url(for: profileID, in: dir), valid: readable)
+        }
+        private nonisolated static func readable(_ data: Data) -> Bool {
+            (try? JSONDecoder().decode(Table.self, from: data)) != nil
         }
 
-        /// Remove one Space without disturbing the other Spaces in the profile's sidecar.
+        /// Await before restoration. Large first-generation decoding and state decoding
+        /// happen on the worker; later Space switches only read the in-memory values.
+        static func prepare(profiles: [UUID], in dir: URL) async {
+            for profile in profiles {
+                let file = url(for: profile, in: dir)
+                guard !loaded.contains(file) else { continue }
+                let loaded = await SessionPersistence.shared.perform { parked(worker.read(file)) }
+                cache[file] = loaded.merging(cache[file] ?? [:], uniquingKeysWith: { _, newer in newer })
+                self.loaded.insert(file)
+            }
+        }
+
+        static func invalidateCache() async {
+            await SessionPersistence.shared.perform {
+                worker.tables.removeAll(); worker.primary.removeAll(); worker.dirty.removeAll()
+            }
+            cache.removeAll(); loaded.removeAll()
+        }
+
+        static func load(space: UUID, profileID: UUID, in dir: URL) -> [String: Parked] {
+            let file = url(for: profileID, in: dir)
+            if !loaded.contains(file) {
+                // Compatibility for isolated checks and newly introduced profiles.
+                let disk = SessionPersistence.shared.sync { parked(worker.read(file)) }
+                cache[file] = disk.merging(cache[file] ?? [:], uniquingKeysWith: { _, newer in newer })
+                loaded.insert(file)
+            }
+            return cache[file]?[space.uuidString] ?? [:]
+        }
+
+        /// Accepted into the ordered queue; flushPersistence reports durable completion.
+        @discardableResult
+        static func enqueueSave(_ parked: [String: Parked], space: UUID,
+                                profileID: UUID, in dir: URL) -> Bool {
+            let file = url(for: profileID, in: dir)
+            cache[file, default: [:]][space.uuidString] = parked
+            SessionPersistence.shared.enqueue(file: file) {
+                worker.update(rows(parked), space: space, file: file)
+            }
+            return true
+        }
+
+        @discardableResult
+        static func saveAsync(_ parked: [String: Parked], space: UUID,
+                              profileID: UUID, in dir: URL) async -> Bool {
+            enqueueSave(parked, space: space, profileID: profileID, in: dir)
+            return await SessionPersistence.shared.flush()
+        }
+
+        @discardableResult
+        static func removeAsync(space: UUID, profileID: UUID, in dir: URL) async -> Bool {
+            let file = url(for: profileID, in: dir)
+            cache[file]?.removeValue(forKey: space.uuidString)
+            SessionPersistence.shared.enqueue(file: file) { worker.update(nil, space: space, file: file) }
+            return await SessionPersistence.shared.flush()
+        }
+
+        /// Durable compatibility boundary for move/delete transactions. Normal UI
+        /// autosaves use enqueueSave, and backups/quit await the shared lane's flush.
+        @discardableResult
+        static func save(_ parked: [String: Parked], space: UUID,
+                         profileID: UUID, in dir: URL) -> Bool {
+            let file = url(for: profileID, in: dir)
+            let ok = SessionPersistence.shared.sync(file: file) { worker.update(rows(parked), space: space, file: file) }
+            if ok { cache[file, default: [:]][space.uuidString] = parked }
+            return ok
+        }
+
         @discardableResult
         static func remove(space: UUID, profileID: UUID, in dir: URL) -> Bool {
-            var all = read(profileID, in: dir)
-            all.removeValue(forKey: space.uuidString)
-            guard let data = try? JSONEncoder().encode(all) else { return false }
-            return RecoverySnapshots.write(data, to: url(for: profileID, in: dir), valid: readable)
+            let file = url(for: profileID, in: dir)
+            let ok = SessionPersistence.shared.sync(file: file) { worker.update(nil, space: space, file: file) }
+            if ok { cache[file]?.removeValue(forKey: space.uuidString) }
+            return ok
         }
+
     }
 
     // MARK: Offline check

@@ -17,6 +17,7 @@ enum RecoverySnapshots {
             let original: Data?
             do { original = try Data(contentsOf: file) }
             catch CocoaError.fileReadNoSuchFile { original = nil }
+            if original == data { return true }
             if let original {
                 if valid(original) {
                     guard SnapshotPersistence.write(original, to: file.appendingPathExtension("previous")) else { return false }

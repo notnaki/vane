@@ -37,7 +37,7 @@ struct TabOrganizationSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Undo") { model.undo() }.disabled(!model.canUndo)
+                Button("Undo") { Task { await model.undoAsync() } }.disabled(!model.canUndo || model.working)
                 Button("Refresh") { model.refresh() }
             }
             HStack {
@@ -117,17 +117,18 @@ struct TabOrganizationSheet: View {
                 Button("Copy Links") { copyLinks() }.disabled(selected.isEmpty)
                 Menu("Move to Space") {
                     ForEach(model.spaces) { space in
-                        Button(space.name) { model.moveSelected(to: space.id) }
+                        Button(space.name) { Task { await model.moveSelectedAsync(to: space.id) } }
                             .disabled(!selected.contains { $0.spaceID != space.id })
                     }
                 }.disabled(selected.isEmpty)
                 Button(duplicatesOnly ? "Archive Selected Copies" : "Archive Selected") {
-                    model.archiveSelected(duplicatesOnly: duplicatesOnly)
+                    Task { await model.archiveSelectedAsync(duplicatesOnly: duplicatesOnly) }
                 }.disabled(selected.isEmpty)
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
             }
         }
+        .disabled(model.working)
         .padding(24).frame(width: 760, height: 580)
         .onChange(of: spaceFilter) { Motion.list { model.selection = [] } }
         .onChange(of: query) { Motion.list { model.selection = [] } }

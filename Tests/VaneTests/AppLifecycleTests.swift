@@ -38,7 +38,9 @@ import XCTest
     private func quitByCommandQ() throws -> NSApplication.TerminateReply {
         TestEnvironment.prepare()
         let app = NSApplication.shared
-        let lifecycle = AppLifecycle()
+        weak var weakLifecycle: AppLifecycle?
+        let lifecycle = AppLifecycle(terminationReply: { _, _ in weakLifecycle?.endPersistenceExit() })
+        weakLifecycle = lifecycle
         let warning = Prefs.warnBeforeQuit
         Prefs.warnBeforeQuit = true
         defer { Prefs.warnBeforeQuit = warning }
@@ -70,7 +72,7 @@ import XCTest
     func testCommandQQuitsImmediatelyAfterTheLastWindowCloses() throws {
         let closed = window()
         closed.close()
-        XCTAssertEqual(try quitByCommandQ(), .terminateNow)
+        XCTAssertEqual(try quitByCommandQ(), .terminateLater)
     }
 
     func testCommandQStillWarnsWithAnOpenWindow() throws {
@@ -88,7 +90,7 @@ import XCTest
         let host = window()
         host.isExcludedFromWindowsMenu = true
         host.setFrameOrigin(NSPoint(x: -12_000, y: -12_000))
-        XCTAssertEqual(try quitByCommandQ(), .terminateNow)
+        XCTAssertEqual(try quitByCommandQ(), .terminateLater)
     }
 
     func testDockClickRestoresAMinimizedWindowDespiteTheVisibleWindowsFlag() async throws {

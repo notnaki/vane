@@ -81,6 +81,22 @@ enum QuitAsk {
     }
 }
 
+/// Arrival order matters when Finder and external links arrive during recovery.
+/// Keep ingress closed until main explicitly finishes migrations and initial restore.
+@MainActor final class BootstrapIngressGate {
+    private(set) var ready = true
+    private var pending: [@MainActor () -> Void] = []
+    func block() { ready = false }
+    func submit(_ action: @escaping @MainActor () -> Void) {
+        if ready { action() } else { pending.append(action) }
+    }
+    func complete() {
+        ready = true
+        let actions = pending; pending.removeAll()
+        for action in actions { action() }
+    }
+}
+
 /// What the Dock icon does.
 ///
 /// Vane had no `NSApplicationDelegate` at all — `main.swift` is a bare bootstrap — so with
@@ -102,7 +118,18 @@ enum QuitAsk {
     }
     private var minimized: [MinimizedWindow] = []
 
-    override init() {
+    private let openURLs: @MainActor ([URL]) -> Void
+    private let reopenAction: (@MainActor (NSApplication) -> Void)?
+    private let openWindow: @MainActor (Bool) -> Void
+    private let terminationReply: @MainActor (NSApplication, Bool) -> Void
+    init(openURLs: @escaping @MainActor ([URL]) -> Void = { URLHandling.open($0) },
+         reopenAction: (@MainActor (NSApplication) -> Void)? = nil,
+         openWindow: @escaping @MainActor (Bool) -> Void = { Windows.open(isPrivate: $0) },
+         terminationReply: @escaping @MainActor (NSApplication, Bool) -> Void = {
+        $0.reply(toApplicationShouldTerminate: $1)
+    }) {
+        self.openURLs = openURLs; self.reopenAction = reopenAction; self.openWindow = openWindow
+        self.terminationReply = terminationReply
         super.init()
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(didMiniaturize(_:)),
@@ -129,6 +156,10 @@ enum QuitAsk {
     /// not count as an open user window either.
     /// False back means "handled", so AppKit does not raise a second window.
     func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !bootstrapIngress.ready {
+            afterBootstrap { [self] in reopen(in: app) }
+            return false
+        }
         guard !app.windows.contains(where: {
             !($0 is NSPanel) && !$0.isExcludedFromWindowsMenu && $0.isVisible && !$0.isMiniaturized
         })
@@ -140,6 +171,7 @@ enum QuitAsk {
     /// Restore the last minimized window, including private, Little Vane and utility
     /// windows. With none minimized, keep the existing browser/session/new-window ladder.
     private func reopen(in app: NSApplication) {
+        if let reopenAction { reopenAction(app); return }
         let lastMinimized = minimized.reversed().compactMap(\.window).first { $0.isMiniaturized }
             ?? app.windows.last { !($0 is NSPanel) && $0.isMiniaturized }
         if let last = lastMinimized {
@@ -158,6 +190,10 @@ enum QuitAsk {
         Windows.open()
     }
 
+    /// External Apple Events and Dock commands may arrive while bundle/library
+    /// recovery awaits. They must not open a Store or profile before bootstrap finishes.
+    func afterBootstrap(_ action: @escaping @MainActor () -> Void) { bootstrapIngress.submit(action) }
+
     /// Finder ▸ Open With ▸ Vane, `open -a Vane report.pdf`, and a file dropped on the Dock
     /// icon. Routed through `URLHandling.open` rather than opened here, so a PDF from Finder
     /// lands wherever a link from Mail would — an Air Traffic Control rule, a Little Arc, or
@@ -168,7 +204,7 @@ enum QuitAsk {
     /// it starts up and calls this; the hand-rolled Apple Event handler that used to answer
     /// it is gone with this.
     func application(_ app: NSApplication, open urls: [URL]) {
-        URLHandling.open(urls)
+        afterBootstrap { [self] in openURLs(urls) }
     }
 
     // MARK: - Quit Vane?
@@ -176,6 +212,59 @@ enum QuitAsk {
     /// The dialog has been answered and we are the ones asking to terminate: do not ask again.
     private var confirmed = false
     private var askingAboutUnsavedProfiles = false
+    private var terminating = false
+    private var waitingForBootstrap = false
+    /// main.swift installs its asynchronous recovery/bootstrap task before NSApp.run.
+    private let bootstrapIngress = BootstrapIngressGate()
+    var bootstrapTask: Task<Void, Never>? {
+        didSet { if bootstrapTask != nil { bootstrapIngress.block() } }
+    }
+    func completeBootstrap() {
+        bootstrapTask = nil
+        if !persistenceExitInProgress { bootstrapIngress.complete() }
+    }
+    private(set) var persistenceExitInProgress = false
+    private var exitEventMonitor: Any?
+    private var exitProgress: NSPanel?
+
+    /// Quiesce new user intent while accepted writes and recovery handoff finish.
+    /// External ingress remains FIFO queued and is released if the handoff is cancelled.
+    @discardableResult
+    func beginPersistenceExit() -> Bool {
+        guard !persistenceExitInProgress else { return false }
+        persistenceExitInProgress = true
+        Store.setAdmissionPaused(true)
+        bootstrapIngress.block()
+        exitEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [
+            .keyDown, .keyUp, .flagsChanged, .leftMouseDown, .leftMouseUp,
+            .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp,
+            .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+            .scrollWheel, .pressure, .magnify, .rotate, .swipe
+        ]) { _ in nil }
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 280, height: 88),
+                            styleMask: [.titled], backing: .buffered, defer: false)
+        panel.title = "Vane"
+        panel.isReleasedWhenClosed = false
+        let spinner = NSProgressIndicator(frame: NSRect(x: 24, y: 28, width: 24, height: 24))
+        spinner.style = .spinning; spinner.startAnimation(nil)
+        let label = NSTextField(labelWithString: "Saving changes…")
+        label.frame = NSRect(x: 64, y: 28, width: 200, height: 24)
+        panel.contentView?.addSubview(spinner); panel.contentView?.addSubview(label)
+        panel.center(); panel.orderFront(nil)
+        exitProgress = panel
+        return true
+    }
+    private func allowPersistenceExitDialog() {
+        exitProgress?.orderOut(nil); exitProgress = nil
+        if let monitor = exitEventMonitor { NSEvent.removeMonitor(monitor); exitEventMonitor = nil }
+    }
+    func endPersistenceExit() {
+        allowPersistenceExitDialog()
+        persistenceExitInProgress = false
+        Store.setAdmissionPaused(false)
+        if bootstrapTask == nil { bootstrapIngress.complete() }
+    }
+
 
     /// ⌘Q with `Prefs.warnBeforeQuit` on and an open user window puts up Arc's "Quit Vane?"
     /// and quits only on its answer. Only a real, fresh ⌘Q is asked about, and the chord is
@@ -187,6 +276,19 @@ enum QuitAsk {
     /// somebody's logout, or the Dock's Quit that "does nothing". File ▸ Quit Vane with the
     /// pointer is deliberate too, and quits at once.
     func applicationShouldTerminate(_ app: NSApplication) -> NSApplication.TerminateReply {
+        if let bootstrapTask {
+            guard !waitingForBootstrap else { return .terminateCancel }
+            waitingForBootstrap = true
+            Task { [self] in
+                await bootstrapTask.value
+                completeBootstrap()
+                waitingForBootstrap = false
+                let decision = applicationShouldTerminate(app)
+                if decision != .terminateLater { terminationReply(app, decision == .terminateNow) }
+            }
+            return .terminateLater
+        }
+        guard !terminating, !persistenceExitInProgress else { return .terminateCancel }
         // Before every other route out of here, all of which end in a terminate.
         if QuitAsk.refuses(whileAsking: QuitDialog.isUp) { return .terminateCancel }
         guard !askingAboutUnsavedProfiles else { return .terminateCancel }
@@ -205,9 +307,9 @@ enum QuitAsk {
             return discarded
         }
         guard savedOrDiscarded else { return .terminateCancel }
-        if discarded { return .terminateNow }
+        if discarded { return finishTermination(in: app, discarding: true) }
         if let ae = NSAppleEventManager.shared().currentAppleEvent,
-           QuitAsk.isQuitAppleEvent(class: ae.eventClass, id: ae.eventID) { return .terminateNow }
+           QuitAsk.isQuitAppleEvent(class: ae.eventClass, id: ae.eventID) { return finishTermination(in: app) }
         // Closed windows can linger in AppKit, and the offscreen preview renderer stays
         // visible. Neither needs a warning; minimized user windows still do.
         guard !confirmed, Prefs.warnBeforeQuit,
@@ -217,20 +319,77 @@ enum QuitAsk {
               QuitAsk.isQuitChord(type: event.type, characters: event.charactersIgnoringModifiers,
                                   flags: event.modifierFlags),
               QuitAsk.isFresh(event.timestamp, now: ProcessInfo.processInfo.systemUptime)
-        else { return .terminateNow }
+        else { return finishTermination(in: app) }
         switch QuitDialog.ask(over: app.keyWindow) {
         case .cancel: return .terminateCancel
         case .quitForever: Prefs.warnBeforeQuit = false; fallthrough
-        case .quit: confirmed = true; return .terminateNow
+        case .quit: confirmed = true; return finishTermination(in: app)
         }
+    }
+
+    /// AppKit keeps the event loop alive while ordered workers finish. All accepted
+    /// writes are included before acknowledging quit; failed persistence keeps the
+    /// existing explicit keep-open / discard choice and dirty recovery marker.
+    private func finishTermination(in app: NSApplication, discarding: Bool = false) -> NSApplication.TerminateReply {
+        guard beginPersistenceExit() else { return .terminateCancel }
+        terminating = true
+        Crash.stopAutosave()
+        Task { [self] in
+            var succeeded = true
+            await PendingSessionTransactions.drain()
+            await ProfileManager.shared.waitForTransactions()
+            await Library.waitForMoves()
+            do { try await EaselStore.drainAllPendingWrites(directory: Store.directory) } catch { succeeded = false }
+            do { try await Store.flushAllPendingWrites() } catch { succeeded = false }
+            do { try await EaselStore.flushAll(directory: Store.directory) } catch { succeeded = false }
+            if !(await AppIcon.flushPersistence()) { succeeded = false }
+            await Updater.markHealthyLaunchAsync()
+            if succeeded && !discarding {
+                if !(await Crash.markCleanAsync()) { succeeded = false }
+            } else {
+                // Even explicit discard waits for accepted workers so process exit cannot
+                // interrupt a generation or bundle replacement halfway through publication.
+                if !Session.enqueueSave() { succeeded = false }
+                if !(await Session.flushPersistence()) { succeeded = false }
+            }
+            // Late navigation completions can enqueue Store work while workers are
+            // awaited. Drain again, and inspect/reply in the same MainActor turn.
+            for _ in 0..<3 where Store.hasUnflushedWrites {
+                do { try await Store.flushAllPendingWrites() } catch { succeeded = false; break }
+            }
+            if Store.hasUnflushedWrites { succeeded = false }
+            if !succeeded { _ = await Crash.markDirtyAsync() }
+            if !succeeded && !discarding {
+                allowPersistenceExitDialog()
+                askingAboutUnsavedProfiles = true
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "Changes couldn’t be saved"
+                alert.informativeText = "Keep Vane open to retry saving. Quitting now may lose unsaved changes."
+                alert.addButton(withTitle: "Keep Vane Open")
+                alert.addButton(withTitle: "Quit Without Saving")
+                alert.buttons.last?.hasDestructiveAction = true
+                let discard = alert.runModal() == .alertSecondButtonReturn
+                askingAboutUnsavedProfiles = false
+                if !discard {
+                    terminating = false; confirmed = false
+                    Crash.resumeAutosave()
+                    endPersistenceExit()
+                    terminationReply(app, false)
+                    return
+                }
+            }
+            terminationReply(app, true)
+        }
+        return .terminateLater
     }
 
     /// Right-clicking the Dock icon. The two things anyone wants from there, and the two the
     /// File menu leads with.
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
-        menu.addItem(dockItem("New Window") { Windows.open() })
-        menu.addItem(dockItem("New Private Window") { Windows.open(isPrivate: true) })
+        menu.addItem(dockItem("New Window") { [self] in afterBootstrap { openWindow(false) } })
+        menu.addItem(dockItem("New Private Window") { [self] in afterBootstrap { openWindow(true) } })
         return menu
     }
 

@@ -220,9 +220,11 @@ struct SpaceDrop: DropDelegate {
             let (tabs, _) = Dragging.shared.takeAll()
             // `Spaces.move` closes each tab and `close` prunes the selection, so a dragged
             // selection empties itself and a drag of some other row leaves it alone.
-            tabs.forEach { Spaces.move($0, to: space.id, as: .today, from: store) }
-            axAnnounce(tabs.count == 1 ? "Moved to \(space.name)."
-                       : "Moved \(tabs.count) tabs to \(space.name).")
+            Task {
+                for id in tabs { await Spaces.moveAsync(id, to: space.id, as: .today, from: store) }
+                axAnnounce(tabs.count == 1 ? "Moved to \(space.name)."
+                           : "Moved \(tabs.count) tabs to \(space.name).")
+            }
             return true
         }
         guard let dragged = SpaceDragging.shared.id else { return false }
@@ -268,8 +270,8 @@ struct MoveToSpaceMenu: View {
             Menu("Move to Space") {
                 ForEach(others) { space in
                     Menu(space.name) {
-                        Button("Pinned") { Spaces.move(tab.id, to: space.id, as: .pinned, from: store) }
-                        Button("Today") { Spaces.move(tab.id, to: space.id, as: .today, from: store) }
+                        Button("Pinned") { Task { await Spaces.moveAsync(tab.id, to: space.id, as: .pinned, from: store) } }
+                        Button("Today") { Task { await Spaces.moveAsync(tab.id, to: space.id, as: .today, from: store) } }
                     }
                 }
             }

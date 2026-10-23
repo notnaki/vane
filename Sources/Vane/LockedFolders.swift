@@ -182,16 +182,15 @@ extension TabStore {
     var accessibleTabs: [Tab] {
         let unlocked = unlockedFolders
         let shapes = [pins, todayShape] + stashes.values.flatMap { [$0.pins, $0.todayShape] }
-        // Ordinary folders cannot hide a tab. Check protection once before doing the
-        // per-ID ownership/ancestor walks, which otherwise rescan the strip for every tab.
-        let hasProtection = shapes.contains { shape in
-            shape.entries.contains { entry in
-                guard let folder = entry.folder else { return false }
-                return folder.requiresAuthentication == true && !unlocked.contains(folder.id)
-            }
+        var owned = Set<String>(), blocked = Set<String>()
+        for shape in shapes {
+            let locked = Pins.TraversalIndex(shape.entries).lockedRows(in: shape.entries, unlocked: unlocked)
+            // Keep the first owning shape's protection, as lockedFolders(for:) does.
+            let ids = Set(shape.entries.map(\.id))
+            blocked.formUnion(locked.subtracting(owned))
+            owned.formUnion(ids)
         }
-        guard hasProtection else { return tabs }
-        return tabs.filter { !isTabLocked($0.id) }
+        return tabs.filter { !blocked.contains($0.id.uuidString) }
     }
 
     var lockedPageFolder: Folder? {
