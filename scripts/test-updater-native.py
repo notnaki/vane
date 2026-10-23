@@ -272,6 +272,10 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
                 elif scenario in ['healthy', 'fresh-profile', 'retained-healthy']:
                     until(lambda: not record.exists(), seconds=60)
                     assert version(target) == new_version and not previous.exists()
+                    if scenario == 'retained-healthy':
+                        # Recovery of the earlier healthy launch precedes this
+                        # process's database bootstrap; still require real storage.
+                        until(lambda: (data / 'vane.db').exists())
                     assert (data / 'vane.db').exists(), 'XPC worker must preserve isolated browser storage'
                 elif scenario == 'crashed-launch':
                     children = [pid for pid, entry in track(work).items() if '/Vane.app/Contents/MacOS/Vane' in entry[1]]
