@@ -1633,7 +1633,43 @@ extension TabStore {
         return await SessionPersistence.shared.perform(file: destination) { forgetFile(space: id, file: destination) }
     }
 
+    struct StagedForget: Sendable {
+        fileprivate let file: URL
+        fileprivate let before: RecoverySnapshots.Generations
+        fileprivate let after: RecoverySnapshots.Generations
+        fileprivate let previousVersion: UInt64
+        fileprivate let version: UInt64
+    }
+    static func stageForget(space id: UUID, in profileID: UUID) async -> (succeeded: Bool, change: StagedForget?) {
+        await stageForget(spaces: [id], in: profileID)
+    }
+    static func stageForget(spaces: Set<UUID>, in profileID: UUID) async -> (succeeded: Bool, change: StagedForget?) {
+        let destination = file(profileID)
+        let edit = await SessionPersistence.shared.mutate(file: destination) {
+            () -> (Bool, RecoverySnapshots.Generations?, RecoverySnapshots.Generations?) in
+            guard let before = try? RecoverySnapshots.Generations.capture(destination) else { return (false, nil, nil) }
+            let succeeded = forgetFile(spaces: spaces, file: destination)
+            return (succeeded, before, try? RecoverySnapshots.Generations.capture(destination))
+        }
+        guard let edit else { return (false, nil) }
+        guard let before = edit.value.1, let after = edit.value.2 else { return (false, nil) }
+        return (edit.value.0, StagedForget(file: destination, before: before, after: after,
+            previousVersion: edit.previousVersion, version: edit.version))
+    }
+    static func repair(_ change: StagedForget) async -> Bool {
+        await SessionPersistence.shared.repair(file: change.file, version: change.version,
+                                              previousVersion: change.previousVersion) {
+            guard let current = try? RecoverySnapshots.Generations.capture(change.file) else { return false }
+            guard current == change.after else { return nil }
+            return change.before.restore(change.file)
+        }
+    }
+
     private nonisolated static func forgetFile(space id: UUID, file: URL) -> Bool {
+        forgetFile(spaces: [id], file: file)
+    }
+    private nonisolated static func forgetFile(spaces removed: Set<UUID>, file: URL) -> Bool {
+        let removedIDs = Set(removed.map(\.uuidString))
         // A stale fallback is safe to preview/restore, but cannot authorize deleting or
         // moving a Space out of an unreadable current session.
         let data: Data
@@ -1644,7 +1680,7 @@ extension TabStore {
         guard let spaces = snapshot.spaces else { return snapshot.windows.isEmpty }
         guard spaces.count >= snapshot.windows.count else { return false }
         let kept = snapshot.windows.indices.filter {
-            !spaces.indices.contains($0) || spaces[$0] != id.uuidString
+            !spaces.indices.contains($0) || !removedIDs.contains(spaces[$0])
         }
         guard kept.count != snapshot.windows.count else { return true }
         snapshot.windows = kept.map { snapshot.windows[$0] }
@@ -1690,6 +1726,9 @@ extension TabStore {
         // Nothing private is written down, and neither is a Little Arc: it is a link
         // someone followed once, not a window to come back up in.
         for store in orderedStores where !store.isPrivate && !store.isLittle {
+            // Deleted profiles can keep a visible window until relaunch. Their retired
+            // destinations intentionally reject writes and are no longer session owners.
+            guard !SessionPersistence.shared.isRetired(file(store.profileID)) else { continue }
             if !store.saveCurrentSpace() { succeeded = false }
             // A store parked behind another profile in the same window has just had its Space
             // written, which is where its tabs actually live — but it is not a window of its

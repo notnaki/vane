@@ -74,6 +74,41 @@ import XCTest
         XCTAssertTrue(store.tabs.contains { $0 === doomed })
     }
 
+    func testRejectedClosedSpaceEditRestoresExactSidecarAndSession() async throws {
+        let (store, _, closed) = fixture()
+        let page = URL(string: "https://organizer-race.example/closed")!
+        var saved = closed; saved.tabURLs = [page]
+        XCTAssertTrue(ProfileManager.shared.updateSpace(saved))
+        let parked = [page.absoluteString: Parked(title: "Closed page", state: Data("opaque navigation state".utf8))]
+        let stateSaved = await Suspension.SpaceState.saveAsync(parked, space: closed.id,
+            profileID: store.profileID, in: Store.directory)
+        XCTAssertTrue(stateSaved)
+        let sessionFile = ProfileManager.sessionURL(for: store.profileID, in: Store.directory)
+        let session = try XCTUnwrap(Session.encode([[Session.Entry(url: page.absoluteString,
+            title: "Closed page", state: Data("opaque navigation state".utf8).base64EncodedString())]],
+            spaces: [closed.id.uuidString]))
+        try session.write(to: sessionFile, options: .atomic)
+        let sidecarFile = Suspension.SpaceState.url(for: store.profileID, in: Store.directory)
+        let sidecar = try Data(contentsOf: sidecarFile)
+        let model = TabOrganization(store: store)
+        model.selection = [try XCTUnwrap(model.rows.first { $0.spaceID == closed.id }).id]
+        let entered = expectation(description: "closed Space staging blocked"), release = DispatchSemaphore(value: 0)
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        SessionPersistence.shared.enqueue(file: marker) { entered.fulfill(); release.wait(); return true }
+        await fulfillment(of: [entered], timeout: 2)
+        let operation = Task { await model.archiveSelectedAsync() }
+        while !model.working { await Task.yield() }
+        saved.name = "Renamed closed Space"
+        XCTAssertTrue(ProfileManager.shared.updateSpace(saved))
+        release.signal()
+        let committed = await operation.value
+        XCTAssertFalse(committed)
+        XCTAssertEqual(try Data(contentsOf: sidecarFile), sidecar)
+        XCTAssertEqual(try Data(contentsOf: sessionFile), session)
+        XCTAssertEqual(Suspension.SpaceState.load(space: closed.id, profileID: store.profileID, in: Store.directory), parked)
+        XCTAssertEqual(ProfileManager.shared.spaces(for: store.profileID).first { $0.id == closed.id }?.name, saved.name)
+    }
+
     func testUndoRejectsNewTabAddedAfterPublicationBeforeFinalFlush() async throws {
         let (store, _, _) = fixture()
         let doomed = tab("archive", in: store)

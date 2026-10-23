@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import XCTest
 @testable import vane
 
@@ -33,6 +34,36 @@ private final class SessionLifecycleFlag: @unchecked Sendable {
         XCTAssertTrue(flushed)
         XCTAssertTrue(loaded.isEmpty)
         XCTAssertFalse(blocked, "A known-empty profile must not join another profile’s disk queue")
+    }
+
+    func testSessionCaptureSkipsRetiredProfileWhoseWindowRemainsOpen() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let profile = UUID(), space = Space(name: "Retire visible profile", profileID: UUID())
+        var owned = space; owned.profileID = profile
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([owned], for: profile))
+        Suspension.SpaceState.registerNewProfile(profileID: profile, in: Store.directory)
+        let store = TabStore(profileID: profile, space: owned, session: [])
+        addTeardownBlock { @MainActor in
+            store.dropStashes(); SharedTabs.release(store.tabs)
+            TabStore.all.removeAll { $0 === store }; Store.forget(profile)
+        }
+        let tab = store.newBlankTab(focus: false, as: .today)
+        tab.restore(url: URL(string: "https://retired-visible.example/")!, home: nil, parked: Parked(title: "Retire"))
+        XCTAssertTrue(Session.enqueueSave())
+        let initial = await Session.flushPersistence()
+        XCTAssertTrue(initial)
+        await Suspension.SpaceState.retire(profileID: profile, in: Store.directory)
+        RecoverySnapshots.forget(profileID: profile, in: Store.directory)
+        XCTAssertTrue(TabStore.all.contains { $0 === store })
+        XCTAssertTrue(Session.enqueueSave(), "An intentionally retained window must not poison global persistence")
+        let flushed = await Session.flushPersistence()
+        XCTAssertTrue(flushed)
+        for file in [ProfileManager.sessionURL(for: profile, in: Store.directory),
+                     ProfileManager.spacesURL(for: profile, in: Store.directory),
+                     Suspension.SpaceState.url(for: profile, in: Store.directory)] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        }
     }
 
     func testRetirementDrainsActiveWriterAndRejectsQueuedWritesAndFailureRetry() async throws {

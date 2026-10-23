@@ -2,7 +2,7 @@ from pathlib import Path
 import subprocess,sys
 r=Path(__file__).resolve().parents[2];baseline='--baseline' in sys.argv
 def read(name):
- if baseline:return subprocess.check_output(['git','show','5851a64:Sources/Vane/'+name],cwd=r,text=True)
+ if baseline:return subprocess.check_output(['git','show','d808ddf:Sources/Vane/'+name],cwd=r,text=True)
  return (r/'Sources/Vane'/name).read_text()
 def block(s,st):
  a=s.index(st);b=s.index('{',a);i=b+1;depth=1

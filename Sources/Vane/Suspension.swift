@@ -342,7 +342,7 @@ extension Prefs {
     /// Ceiling: nothing prunes it, so a space that has had a thousand urls in it keeps a
     /// thousand rows (~600 bytes each).
     @MainActor enum SpaceState {
-        private struct Row: Codable, Equatable, Sendable {
+        fileprivate struct Row: Codable, Equatable, Sendable {
             var t: String?
             var s: String?
             /// The page the state came from, written only for a row filed under a key that
@@ -358,13 +358,30 @@ extension Prefs {
             dir.appendingPathComponent("spacestate\(ProfileManager.suffix(profileID)).json")
         }
 
-        private typealias Table = [String: [String: Row]]
+        fileprivate typealias Table = [String: [String: Row]]
+        struct StagedSave: Sendable {
+            fileprivate let file: URL
+            fileprivate let spaces: Set<UUID>
+            fileprivate let beforeTable: Table
+            fileprivate let afterTable: Table
+            fileprivate let beforePrimary: Data?
+            fileprivate let wasDirty: Bool
+            fileprivate let beforeGenerations: RecoverySnapshots.Generations
+            fileprivate let afterGenerations: RecoverySnapshots.Generations
+            fileprivate let previousRowVersions: [UUID: UInt64]
+            fileprivate let rowVersions: [UUID: UInt64]
+            fileprivate let previousCacheVersions: [UUID: UInt64]
+            fileprivate let cacheVersions: [UUID: UInt64]
+        }
+
         /// Worker state is confined to the shared persistence lane; UI cache contains
         /// immutable parked values and never waits behind an autosave that is writing.
         private final class Worker: @unchecked Sendable {
             var tables: [URL: Table] = [:]
             var primary: [URL: Data] = [:]
             var dirty = Set<URL>()
+            var rowVersions: [URL: [String: UInt64]] = [:]
+            var nextVersion: UInt64 = 0
 
             func read(_ file: URL) -> Table {
                 if let table = tables[file] { return table }
@@ -383,11 +400,29 @@ extension Prefs {
                 return result
             }
 
+            /// Durable compatibility callers permit external replacement between calls.
+            /// Normal prepared UI reads never enter this synchronous boundary.
+            func refreshIfChanged(_ file: URL) {
+                let current = try? Data(contentsOf: file)
+                guard current != primary[file] else { return }
+                tables.removeValue(forKey: file); primary.removeValue(forKey: file); dirty.remove(file)
+                rowVersions.removeValue(forKey: file)
+                _ = read(file)
+            }
+
             func update(_ rows: [String: Row]?, space: UUID, file: URL) -> Bool {
+                update([space: rows], file: file)
+            }
+            func update(_ changes: [UUID: [String: Row]?], file: URL) -> Bool {
                 var table = read(file)
-                let changed = table[space.uuidString] != rows
-                if let rows { table[space.uuidString] = rows }
-                else { table.removeValue(forKey: space.uuidString) }
+                var changed = false
+                for (space, rows) in changes {
+                    nextVersion &+= 1
+                    rowVersions[file, default: [:]][space.uuidString] = nextVersion
+                    if table[space.uuidString] != rows { changed = true }
+                    if let rows { table[space.uuidString] = rows }
+                    else { table.removeValue(forKey: space.uuidString) }
+                }
                 tables[file] = table
                 guard changed || dirty.contains(file) else { return true }
                 dirty.insert(file)
@@ -405,6 +440,14 @@ extension Prefs {
         private static var cache: [URL: [String: [String: Parked]]] = [:]
         private static var loaded = Set<URL>()
         private static var retired = Set<URL>()
+        private static var legacyFiles = Set<URL>()
+        private static var cacheVersions: [URL: [String: UInt64]] = [:]
+        private static var nextCacheVersion: UInt64 = 0
+        private static func advanceCache(_ file: URL, space: UUID) -> UInt64 {
+            nextCacheVersion &+= 1
+            cacheVersions[file, default: [:]][space.uuidString] = nextCacheVersion
+            return nextCacheVersion
+        }
 
         private nonisolated static func parked(_ table: Table) -> [String: [String: Parked]] {
             table.mapValues { rows in rows.mapValues {
@@ -437,9 +480,9 @@ extension Prefs {
 
         static func invalidateCache() async {
             await SessionPersistence.shared.perform {
-                worker.tables.removeAll(); worker.primary.removeAll(); worker.dirty.removeAll()
+                worker.tables.removeAll(); worker.primary.removeAll(); worker.dirty.removeAll(); worker.rowVersions.removeAll()
             }
-            cache.removeAll(); loaded.removeAll()
+            cache.removeAll(); loaded.removeAll(); cacheVersions.removeAll()
         }
 
         /// A freshly generated profile ID has no sidecar or recovery generations.
@@ -464,14 +507,20 @@ extension Prefs {
             await SessionPersistence.shared.perform {
                 worker.tables.removeValue(forKey: file)
                 worker.primary.removeValue(forKey: file)
-                worker.dirty.remove(file)
+                worker.dirty.remove(file); worker.rowVersions.removeValue(forKey: file)
             }
         }
 
         static func load(space: UUID, profileID: UUID, in dir: URL) -> [String: Parked] {
             let file = url(for: profileID, in: dir)
             guard !retired.contains(file) else { return [:] }
-            if !loaded.contains(file) {
+            if legacyFiles.contains(file) {
+                cache[file] = SessionPersistence.shared.sync {
+                    worker.refreshIfChanged(file)
+                    return parked(worker.read(file))
+                }
+                loaded.insert(file)
+            } else if !loaded.contains(file) {
                 // Compatibility for isolated checks and newly introduced profiles.
                 let disk = SessionPersistence.shared.sync { parked(worker.read(file)) }
                 cache[file] = disk.merging(cache[file] ?? [:], uniquingKeysWith: { _, newer in newer })
@@ -486,6 +535,7 @@ extension Prefs {
                                 profileID: UUID, in dir: URL) -> Bool {
             let file = url(for: profileID, in: dir)
             guard !retired.contains(file) else { return false }
+            _ = advanceCache(file, space: space)
             cache[file, default: [:]][space.uuidString] = parked
             return SessionPersistence.shared.enqueue(file: file) {
                 worker.update(rows(parked), space: space, file: file)
@@ -503,9 +553,100 @@ extension Prefs {
         static func removeAsync(space: UUID, profileID: UUID, in dir: URL) async -> Bool {
             let file = url(for: profileID, in: dir)
             guard !retired.contains(file) else { return false }
+            _ = advanceCache(file, space: space)
             cache[file]?.removeValue(forKey: space.uuidString)
             SessionPersistence.shared.enqueue(file: file) { worker.update(nil, space: space, file: file) }
             return await SessionPersistence.shared.flush()
+        }
+
+        /// Stage one Space and retain a receipt for conditional failure repair. File
+        /// generations and decoded state are captured together on the persistence lane.
+        static func stageSave(_ parked: [String: Parked], space: UUID,
+                              profileID: UUID, in dir: URL) async -> (succeeded: Bool, change: StagedSave?) {
+            await stageSave([space: parked], profileID: profileID, in: dir)
+        }
+        static func stageSave(_ changes: [UUID: [String: Parked]],
+                              profileID: UUID, in dir: URL) async -> (succeeded: Bool, change: StagedSave?) {
+            let file = url(for: profileID, in: dir)
+            guard !retired.contains(file) else { return (false, nil) }
+            let cacheBefore = cache[file] ?? [:]
+            var previousCacheVersions: [UUID: UInt64] = [:], cacheVersions: [UUID: UInt64] = [:]
+            for (space, parked) in changes {
+                previousCacheVersions[space] = self.cacheVersions[file]?[space.uuidString] ?? 0
+                cacheVersions[space] = advanceCache(file, space: space)
+                cache[file, default: [:]][space.uuidString] = parked
+            }
+            let priorCacheVersions = previousCacheVersions, stagedCacheVersions = cacheVersions
+            let result = await SessionPersistence.shared.mutate(file: file) {
+                () -> (Bool, StagedSave?) in
+                let beforeTable = worker.read(file)
+                let beforePrimary = worker.primary[file], wasDirty = worker.dirty.contains(file)
+                let beforeVersions = Dictionary(uniqueKeysWithValues: changes.keys.map {
+                    ($0, worker.rowVersions[file]?[$0.uuidString] ?? 0)
+                })
+                guard let before = try? RecoverySnapshots.Generations.capture(file) else { return (false, nil) }
+                let converted: [UUID: [String: Row]?] = changes.mapValues { rows($0) }
+                let succeeded = worker.update(converted, file: file)
+                guard let after = try? RecoverySnapshots.Generations.capture(file) else { return (false, nil) }
+                let versions = Dictionary(uniqueKeysWithValues: changes.keys.map {
+                    ($0, worker.rowVersions[file]?[$0.uuidString] ?? 0)
+                })
+                let change = StagedSave(file: file, spaces: Set(changes.keys), beforeTable: beforeTable,
+                    afterTable: worker.read(file), beforePrimary: beforePrimary, wasDirty: wasDirty,
+                    beforeGenerations: before, afterGenerations: after,
+                    previousRowVersions: beforeVersions, rowVersions: versions,
+                    previousCacheVersions: priorCacheVersions, cacheVersions: stagedCacheVersions)
+                return (succeeded, change)
+            }
+            if result?.value.1 == nil {
+                for space in changes.keys where self.cacheVersions[file]?[space.uuidString] == cacheVersions[space] {
+                    cache[file, default: [:]][space.uuidString] = cacheBefore[space.uuidString]
+                    self.cacheVersions[file, default: [:]][space.uuidString] = previousCacheVersions[space]
+                }
+            }
+            return result?.value ?? (false, nil)
+        }
+
+        /// Repair only rows still owned by this staging receipt. A complete unchanged
+        /// batch restores exact generation bytes; partial repairs preserve newer rows.
+        static func repair(_ change: StagedSave) async -> Bool {
+            guard !retired.contains(change.file) else { return true }
+            let result = await SessionPersistence.shared.perform {
+                () -> (succeeded: Bool, restored: Set<UUID>) in
+                guard !SessionPersistence.shared.isRetired(change.file) else { return (true, []) }
+                let owned = change.spaces.filter {
+                    worker.rowVersions[change.file]?[$0.uuidString] == change.rowVersions[$0]
+                }
+                guard !owned.isEmpty else { return (true, []) }
+                guard let current = try? RecoverySnapshots.Generations.capture(change.file) else { return (false, []) }
+                let table = worker.read(change.file)
+                let succeeded: Bool
+                if owned == change.spaces, current == change.afterGenerations && table == change.afterTable {
+                    succeeded = change.beforeGenerations.restore(change.file)
+                    if succeeded {
+                        worker.tables[change.file] = change.beforeTable
+                        worker.primary[change.file] = change.beforePrimary
+                        if change.wasDirty { worker.dirty.insert(change.file) } else { worker.dirty.remove(change.file) }
+                    }
+                } else {
+                    guard current.current == worker.primary[change.file] else { return (true, []) }
+                    let previous = Dictionary(uniqueKeysWithValues: owned.map { ($0, change.beforeTable[$0.uuidString]) })
+                    succeeded = worker.update(previous, file: change.file)
+                }
+                if succeeded {
+                    for space in owned {
+                        worker.rowVersions[change.file, default: [:]][space.uuidString] = change.previousRowVersions[space]
+                    }
+                }
+                return (succeeded, succeeded ? owned : [])
+            }
+            for space in result.restored where cacheVersions[change.file]?[space.uuidString] == change.cacheVersions[space] {
+                if let previous = change.beforeTable[space.uuidString] {
+                    cache[change.file, default: [:]][space.uuidString] = self.parked([space.uuidString: previous])[space.uuidString]
+                } else { cache[change.file]?.removeValue(forKey: space.uuidString) }
+                cacheVersions[change.file, default: [:]][space.uuidString] = change.previousCacheVersions[space]
+            }
+            return result.succeeded
         }
 
         /// Durable compatibility boundary for move/delete transactions. Normal UI
@@ -514,16 +655,34 @@ extension Prefs {
         static func save(_ parked: [String: Parked], space: UUID,
                          profileID: UUID, in dir: URL) -> Bool {
             let file = url(for: profileID, in: dir)
-            let ok = SessionPersistence.shared.sync(file: file) { worker.update(rows(parked), space: space, file: file) }
-            if ok { cache[file, default: [:]][space.uuidString] = parked }
+            guard !retired.contains(file) else { return false }
+            legacyFiles.insert(file)
+            let ok = SessionPersistence.shared.sync(file: file) {
+                worker.refreshIfChanged(file)
+                return worker.update(rows(parked), space: space, file: file)
+            }
+            if ok {
+                _ = advanceCache(file, space: space)
+                cache[file] = SessionPersistence.shared.sync { self.parked(worker.read(file)) }
+                loaded.insert(file)
+            }
             return ok
         }
 
         @discardableResult
         static func remove(space: UUID, profileID: UUID, in dir: URL) -> Bool {
             let file = url(for: profileID, in: dir)
-            let ok = SessionPersistence.shared.sync(file: file) { worker.update(nil, space: space, file: file) }
-            if ok { cache[file]?.removeValue(forKey: space.uuidString) }
+            guard !retired.contains(file) else { return false }
+            legacyFiles.insert(file)
+            let ok = SessionPersistence.shared.sync(file: file) {
+                worker.refreshIfChanged(file)
+                return worker.update(nil, space: space, file: file)
+            }
+            if ok {
+                _ = advanceCache(file, space: space)
+                cache[file] = SessionPersistence.shared.sync { self.parked(worker.read(file)) }
+                loaded.insert(file)
+            }
             return ok
         }
 

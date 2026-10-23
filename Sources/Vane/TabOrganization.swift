@@ -668,31 +668,26 @@ import Combine
             let current = Dictionary(uniqueKeysWithValues: capture().map { ($0.space.id, $0.mark) })
             return expected.allSatisfy { id, mark in current[id].map { mark.matches($0) } == true }
         }
-        let sessionURL = ProfileManager.sessionURL(for: profileID, in: Store.directory)
-        let sessionBefore = await SessionPersistence.shared.perform { try? Data(contentsOf: sessionURL) }
-        @MainActor func restoreSession() async {
-            if let sessionBefore, !(await SessionPersistence.shared.perform(file: sessionURL) { SnapshotPersistence.write(sessionBefore, to: sessionURL) }) {
-                message = "Could not restore the session snapshot. Check storage and retry."
-            }
-        }
-        for state in states {
-            guard await Session.forgetAsync(space: state.space.id, in: profileID) else {
-                message = "Could not save the session. No tabs were changed."
-                await restoreSession()
-                return nil
-            }
-        }
-        let previous = Dictionary(uniqueKeysWithValues: states.map {
-            ($0.space.id, Suspension.SpaceState.load(space: $0.space.id, profileID: profileID, in: Store.directory))
-        })
+        var forgotten: [Session.StagedForget] = []
+        var staged: [Suspension.SpaceState.StagedSave] = []
         @MainActor func rollback() async {
-            await restoreSession()
-            for (id, parked) in previous {
-                if !(await Suspension.SpaceState.saveAsync(parked, space: id, profileID: profileID, in: Store.directory)) {
-                    message = "Could not restore saved page state. Check storage and retry."
-                }
+            var succeeded = true
+            for change in staged.reversed() {
+                if !(await Suspension.SpaceState.repair(change)) { succeeded = false }
             }
+            for change in forgotten.reversed() {
+                if !(await Session.repair(change)) { succeeded = false }
+            }
+            if !succeeded { message = "Could not restore saved page state. Check storage and retry." }
         }
+        let forgottenEdit = await Session.stageForget(spaces: affected, in: profileID)
+        if let change = forgottenEdit.change { forgotten.append(change) }
+        guard forgottenEdit.succeeded else {
+            message = "Could not save the session. No tabs were changed."
+            await rollback()
+            return nil
+        }
+        var sidecarChanges: [UUID: [String: Parked]] = [:]
         for state in states {
             var parked: [String: Parked] = [:]
             // Match saveCurrentSpace's favourite → pinned → Today precedence. The
@@ -706,11 +701,7 @@ import Combine
                 guard let entry = TabStore.sidecarEntry(page: record.url, home: record.home, snapshot: record.parked) else { continue }
                 parked[entry.key] = entry.parked
             }
-            guard await Suspension.SpaceState.saveAsync(parked, space: state.space.id, profileID: profileID, in: Store.directory) else {
-                message = "Could not save page state. No tabs were changed."
-                await rollback()
-                return nil
-            }
+            sidecarChanges[state.space.id] = parked
             let index = spaces.firstIndex { $0.id == state.space.id }!
             spaces[index].tabURLs = state.records.filter { $0.kind == .today }.compactMap(\.savedURL).filter(TabAddress.restorable)
             spaces[index].pinnedTabURLs = state.records.filter { $0.kind == .pinned }.compactMap(\.savedURL).filter(TabAddress.restorable)
@@ -734,19 +725,23 @@ import Combine
                     selected: state.space.layout?.selected.flatMap { kept.contains($0) ? $0 : nil })
             }
         }
+        let sidecarEdit = await Suspension.SpaceState.stageSave(sidecarChanges, profileID: profileID, in: Store.directory)
+        if let change = sidecarEdit.change { staged.append(change) }
+        guard sidecarEdit.succeeded else {
+            message = "Could not save page state. No tabs were changed."
+            await rollback()
+            return nil
+        }
         guard stillCurrent() else {
             message = "Tabs changed while saving. No tabs were changed; review and retry."
-            // Current live snapshots supersede staged sidecar/session generations.
-            _ = Session.enqueueSave()
-            _ = await Session.flushPersistence()
+            await rollback()
             return nil
         }
         let latest = ProfileManager.shared.spaces(for: profileID)
         guard let merged = Self.mergingSpaceChanges(spaces, expected: expectedSpaces,
                                                     latest: latest, affected: affected) else {
             message = "A Space changed while saving. Review and retry."
-            _ = Session.enqueueSave()
-            _ = await Session.flushPersistence()
+            await rollback()
             return nil
         }
         guard ProfileManager.shared.saveSpaces(merged, for: profileID) else {

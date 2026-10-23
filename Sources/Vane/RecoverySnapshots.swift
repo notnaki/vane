@@ -3,6 +3,27 @@ import Foundation
 /// Session generations are published atomically. Damaged or unsupported originals are
 /// evidence, never an empty session: preserve them before publishing replacement bytes.
 enum RecoverySnapshots {
+    struct Generations: Equatable, Sendable {
+        let current: Data?
+        let previous: Data?
+        static func capture(_ file: URL) throws -> Self {
+            func read(_ url: URL) throws -> Data? {
+                do { return try Data(contentsOf: url) }
+                catch CocoaError.fileReadNoSuchFile { return nil }
+            }
+            return try Self(current: read(file), previous: read(file.appendingPathExtension("previous")))
+        }
+        func restore(_ file: URL) -> Bool {
+            func replace(_ data: Data?, _ url: URL) -> Bool {
+                if let data { return SnapshotPersistence.write(data, to: url) }
+                do { try FileManager.default.removeItem(at: url); return true }
+                catch CocoaError.fileNoSuchFile { return true }
+                catch { return false }
+            }
+            return replace(previous, file.appendingPathExtension("previous")) && replace(current, file)
+        }
+    }
+
     static func read(_ file: URL, valid: (Data) -> Bool) -> Data? {
         for candidate in [file, file.appendingPathExtension("previous")] {
             if let data = try? Data(contentsOf: candidate), valid(data) { return data }

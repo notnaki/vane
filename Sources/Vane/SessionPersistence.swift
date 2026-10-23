@@ -6,10 +6,20 @@ final class SessionPersistence: @unchecked Sendable {
     static let shared = SessionPersistence()
     private let queue = DispatchQueue(label: "Vane.session-persistence", qos: .utility)
     private var failures: [URL: @Sendable () -> Bool] = [:] // confined to queue
+    struct Mutation<Value: Sendable>: Sendable {
+        let value: Value
+        let previousVersion: UInt64
+        let version: UInt64
+    }
+    private var nextVersion: UInt64 = 0
+    private var versions: [URL: UInt64] = [:] // queue-confined write identity
+    private func advance(_ file: URL) -> UInt64 {
+        nextVersion &+= 1; versions[file] = nextVersion; return nextVersion
+    }
     private let retirementLock = NSLock()
     private var retired = Set<URL>() // protected by retirementLock, never waits for IO
 
-    private func isRetired(_ file: URL) -> Bool {
+    func isRetired(_ file: URL) -> Bool {
         retirementLock.withLock { retired.contains(file.standardizedFileURL) }
     }
 
@@ -28,6 +38,7 @@ final class SessionPersistence: @unchecked Sendable {
         guard !isRetired(file) else { return false }
         queue.async { [self] in
             guard !isRetired(file) else { failures.removeValue(forKey: file); return }
+            _ = advance(file)
             if operation() { failures.removeValue(forKey: file) } else { failures[file] = operation }
         }
         return true
@@ -38,6 +49,7 @@ final class SessionPersistence: @unchecked Sendable {
     func sync(file: URL, _ operation: @escaping @Sendable () -> Bool) -> Bool {
         queue.sync {
             guard !isRetired(file) else { return false }
+            _ = advance(file)
             let ok = operation()
             if ok { failures.removeValue(forKey: file) } else { failures[file] = operation }
             return ok
@@ -48,7 +60,30 @@ final class SessionPersistence: @unchecked Sendable {
         guard !isRetired(file) else { return false }
         return await perform { [self] in
             guard !isRetired(file) else { return false }
+            _ = advance(file)
             return operation()
+        }
+    }
+
+    /// Returns the exact write identity needed by a rejected transaction's repair.
+    func mutate<Value: Sendable>(file: URL, _ operation: @escaping @Sendable () -> Value) async -> Mutation<Value>? {
+        await perform { [self] in
+            guard !isRetired(file) else { return nil }
+            let previous = versions[file, default: 0]
+            let version = advance(file)
+            return Mutation(value: operation(), previousVersion: previous, version: version)
+        }
+    }
+
+    /// nil from operation means external bytes superseded this edit. Reverse repairs
+    /// restore predecessor identities so several staged edits can unwind in order.
+    func repair(file: URL, version: UInt64, previousVersion: UInt64,
+                _ operation: @escaping @Sendable () -> Bool?) async -> Bool {
+        await perform { [self] in
+            guard !isRetired(file), versions[file, default: 0] == version else { return true }
+            let restored = operation()
+            if restored == true { versions[file] = previousVersion }
+            return restored != false
         }
     }
 
@@ -65,6 +100,7 @@ final class SessionPersistence: @unchecked Sendable {
             // spinning, and a persistent failure remains visible to backup/quit.
             for (file, retry) in failures {
                 if isRetired(file) { failures.removeValue(forKey: file); continue }
+                _ = advance(file)
                 if retry() { failures.removeValue(forKey: file) }
             }
             return failures.isEmpty
