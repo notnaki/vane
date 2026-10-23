@@ -72,8 +72,11 @@ import XCTest
             try await Task.sleep(for: .milliseconds(5))
         }
         XCTAssertFalse(store.spaceSwiping, "The actual native landing must complete")
-        let handoffDeadline = ProcessInfo.processInfo.systemUptime + 0.18
-        while (host.spaceSlide != nil || sampler.samples.count < 6),
+        // Retirement waits for SwiftUI's resting-sidebar acknowledgement, separately
+        // from landing. Covered endpoint samples cannot stand in for displayed frames
+        // after the native cover disappears, especially when callbacks arrive late.
+        let handoffDeadline = ProcessInfo.processInfo.systemUptime + 2
+        while (host.spaceSlide != nil || sampler.samples.filter { !$0.covered }.count < 4),
               ProcessInfo.processInfo.systemUptime < handoffDeadline {
             try await Task.sleep(for: .milliseconds(5))
         }
