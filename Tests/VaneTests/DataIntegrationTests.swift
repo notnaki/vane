@@ -69,6 +69,24 @@ import XCTest
     private func preferences(_ data: Data) throws -> NSDictionary {
         try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? NSDictionary)
     }
+    private func assertRestoredPreferences(_ actualData: Data, match originalData: Data, profiles: [Profile],
+                                           file: StaticString = #filePath, line: UInt = #line) throws {
+        var actual = try XCTUnwrap(PropertyListSerialization.propertyList(from: actualData, format: nil) as? [String: Any])
+        var expected = try XCTUnwrap(PropertyListSerialization.propertyList(from: originalData, format: nil) as? [String: Any])
+        for profile in profiles {
+            let key = SiteBoostStore.key(profile.id)
+            let original = try JSONDecoder().decode([String: SiteBoost].self, from: XCTUnwrap(expected.removeValue(forKey: key) as? Data))
+            var expectedBoosts = original
+            for (origin, originalBoost) in original {
+                var boost = originalBoost
+                boost.scriptEnabled = false
+                expectedBoosts[origin] = boost
+            }
+            let actualBoosts = try JSONDecoder().decode([String: SiteBoost].self, from: XCTUnwrap(actual.removeValue(forKey: key) as? Data))
+            XCTAssertEqual(actualBoosts, expectedBoosts, file: file, line: line)
+        }
+        XCTAssertEqual(actual as NSDictionary, expected as NSDictionary, file: file, line: line)
+    }
     private func assertInventory(_ expected: Inventory, in f: BackupFixture, file: StaticString = #filePath, line: UInt = #line) async throws {
         // New instances model a cold launch; none can rely on the old in-memory inventory.
         let manager = f.seed(), templates = WorkspaceTemplates(manager: manager)
@@ -109,14 +127,14 @@ import XCTest
         try transaction.prepare(BackupCodec.read(export))
         XCTAssertEqual(try BackupRestore(library: f.library).recoverAtLaunch(), .restored)
         XCTAssertEqual(try f.library.capture(reason: .manual).files, archive.files)
-        XCTAssertEqual(try preferences(f.library.currentPreferences()), try preferences(archive.preferences))
+        try assertRestoredPreferences(f.library.currentPreferences(), match: archive.preferences, profiles: inventory.profiles)
         XCTAssertEqual(f.defaults.string(forKey: "backup.lastPoint"), "this device")
         try await assertInventory(inventory, in: f)
         XCTAssertEqual(try BackupRestore(library: f.library).recoverAtLaunch(), .none)
         try await assertInventory(inventory, in: f)
     }
     func testEveryPopulatedRestoreCheckpointPreservesCompleteRecoverableInventory() async throws {
-        let source = try fixture(); _ = try await populate(source)
+        let source = try fixture(), inventory = try await populate(source)
         let incoming = try source.library.capture(reason: .manual)
         let probe = try fixture(); _ = try await populate(probe)
         var checkpoints: [String] = []
@@ -138,7 +156,7 @@ import XCTest
             if stop == "committed" {
                 XCTAssertEqual(recovered, .restored, stop)
                 XCTAssertEqual(try target.library.capture(reason: .manual).files, incoming.files, stop)
-                XCTAssertEqual(try preferences(target.library.currentPreferences()), try preferences(incoming.preferences), stop)
+                try assertRestoredPreferences(target.library.currentPreferences(), match: incoming.preferences, profiles: inventory.profiles)
             } else {
                 XCTAssertEqual(recovered, .rolledBack, stop)
                 XCTAssertEqual(try target.library.capture(reason: .manual).files, before.files, stop)

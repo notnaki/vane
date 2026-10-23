@@ -1082,7 +1082,7 @@ struct TitleReveal: Equatable, Sendable {
         windowSnapshot = nil
         easelSession?.liveItems.removeAll()
         easelObservation = nil
-        if isPrivate { SitePermissions.forgetPrivate(tabID: id) }
+        if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
         release()
         TabAudio.forget(id)
     }
@@ -1733,14 +1733,10 @@ struct TitleReveal: Equatable, Sendable {
         // redirect, a ⌘-click that would otherwise open a tab that cannot load, or a
         // target=_blank on its way to `createWebViewWith`.
         //
-        // `w.url` is the site the card names — the page the link is on. Deliberately not
-        // the link's own host: a `zoommtg:` url's host is part of the meeting address, not
-        // a site anything can be granted to. ponytail: a url typed straight into the
-        // address bar is credited to the page it is replacing, since the source frame is
-        // that page either way. Ceiling: the card names the site you were on.
+        // Credit the initiating frame's security origin, never the top-level URL.
         if let url = navigationAction.request.url, ExternalApps.isExternal(url.scheme) {
             decisionHandler(.cancel)
-            ExternalApps.offer(url, from: w.url ?? currentURL, tab: self)
+            ExternalApps.offer(url, from: navigationAction.sourceFrame, tab: self)
             return
         }
         if navigationAction.navigationType == .linkActivated,
@@ -2100,7 +2096,7 @@ struct TitleReveal: Equatable, Sendable {
         // `decidePolicyFor` — a popup opened with no url and navigated afterwards arrives
         // here first — and a new tab for a scheme no tab can load is worse than no tab.
         if let url = action.request.url, ExternalApps.isExternal(url.scheme) {
-            ExternalApps.offer(url, from: w.url ?? currentURL, tab: self)
+            ExternalApps.offer(url, from: action.sourceFrame, tab: self)
             return nil
         }
         return onPopup?(cfg, Popup.placement(features: windowFeatures,
@@ -3023,7 +3019,7 @@ struct Stash {
         // it leaves it exactly as it is, and only Unfavourite/Unpin ever takes it out.
         // Nothing is "closed", so nothing is pushed for Reopen Closed Tab either.
         if !outcome.keep {
-            if isPrivate { SitePermissions.forgetPrivate(tabID: id) }
+            if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
             if TabStore.remembersClosed(keep: outcome.keep, byScript: byScript,
                                         isPrivate: isPrivate) { ClosedTabs.push(tab.currentURL) }
             SharedTabs.remove(id, from: self)

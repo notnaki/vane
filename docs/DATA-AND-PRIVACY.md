@@ -148,6 +148,11 @@ current saved-library totals before replacing anything. Cancel leaves the librar
 profiles and settings during a controlled restart. It replaces the library; it does not
 merge it. An interrupted restore rolls back before normal startup.
 
+Restored Boost scripts retain their source but start disabled until you enable them
+again. Certificate exceptions, camera/microphone/location answers, external-app grants,
+HTTP downgrade exceptions, and extension permission approval require fresh consent after
+a restore. Exact rollback after an interrupted restore preserves your original decisions.
+
 Vane creates a recovery point after startup and checks hourly while running, saving
 another only when saved data changes. The latest ten completed points are kept under the
 data folder's `Recovery/Points`, including points made before restores. The last healthy

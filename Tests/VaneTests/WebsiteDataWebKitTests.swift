@@ -237,14 +237,15 @@ import XCTest
         try await compatibilityWait { finished }
     }
 
-    func testBulkClearPreservesAnotherProfileAndSharedAppPermissions() async throws {
+    func testBulkClearPreservesAnotherProfileAndExplicitAppPermissions() async throws {
         if try await runInFreshHost(#function) { return }
         let (profile, victim) = store()
         let (_, survivor) = store()
         await cookie("shared.invalid", in: victim)
         await cookie("shared.invalid", in: survivor)
-        ExternalApps.allow(host: "shared.invalid", scheme: "fixture-app")
-        defer { ExternalApps.reset(host: "shared.invalid") }
+        let scope = SitePermissions.Scope(url: URL(string: "https://shared.invalid"), profileID: profile)!
+        ExternalApps.allow(scope: scope, scheme: "fixture-app")
+        defer { ExternalApps.forgetAll(profileID: profile) }
         let completed = await withCheckedContinuation { continuation in
             BrowsingData.clear(.init(history: false, cookies: true), profileID: profile) {
                 continuation.resume(returning: $0)
@@ -255,7 +256,7 @@ import XCTest
         let kept = await cookies(survivor)
         XCTAssertTrue(erased.isEmpty)
         XCTAssertEqual(kept.map(\.domain), ["shared.invalid"])
-        XCTAssertEqual(ExternalApps.schemes(host: "shared.invalid"), ["fixture-app"])
+        XCTAssertEqual(ExternalApps.schemes(scope: scope), ["fixture-app"])
     }
 
     func testDeletingProfileErasesOnlyItsWebsiteStore() async throws {

@@ -1,23 +1,10 @@
 import AppKit
 import SwiftUI
+import WebKit
 
-/// Links that leave the browser: `zoommtg:`, `msteams:`, `slack:`, `mailto:`, `tel:`, an
-/// App Store `itms-apps:` — a scheme WebKit has no loader for and macOS does.
-///
-/// Before this they were dropped on the floor. WebKit asked `decidePolicyFor`, Vane said
-/// `.allow`, WebKit failed the navigation with "unsupported URL", and `ErrorPage` — which
-/// quite rightly does not draw a page for a navigation that was never going to happen —
-/// showed nothing. So the "Join Zoom Meeting" button did nothing at all, twice, and then
-/// the user went and found the meeting in another browser.
-///
-/// Arc asks. So does this: the navigation is cancelled, and a card names the app macOS
-/// would hand the link to, the site that asked, and three answers — Cancel, Allow once, or
-/// Always Allow, which is remembered for that (site, scheme) pair and never asked again.
-///
-/// ponytail: a UserDefaults bool per (host, scheme), exactly like `SitePermissions` — no
-/// expiry, no per-tab "allow for this visit", no allow-list shipped with the app. The two
-/// place it can be taken back is the Site Control Center's app rows. Website-data
-/// clearing keeps these shared preferences so another profile cannot lose its answers.
+/// External application launches are granted to an exact web origin in one profile.
+/// The requesting frame supplies the origin; a child never borrows its parent's grant.
+/// Private grants live only in memory for the lifetime of their tab.
 @MainActor enum ExternalApps {
 
     // MARK: - What counts as leaving
@@ -93,75 +80,54 @@ import SwiftUI
 
     // MARK: - What is remembered
 
-    /// Swapped out under `check()` so assertions never touch the user's real preferences.
+    typealias Scope = SitePermissions.Scope
     private static var defaults: UserDefaults = .vane
+    private static let prefix = "externalApp.v2."
+    private static var privateAnswers: [UUID: [String: [String]]] = [:]
 
-    nonisolated private static let prefix = "externalApp."
-
-    /// `externalApp.<host>`, holding the schemes that site may open, sorted.
-    ///
-    /// One key per *site* rather than one per (site, scheme) pair, which is what
-    /// `SitePermissions` does. The Site Control Center asks "what may this site open?" on
-    /// every render, and against a key per pair the only way to answer was to walk
-    /// `dictionaryRepresentation()` — every preference in the app's domain *and* all of
-    /// NSGlobalDomain — parsing each key. Per site it is one `stringArray(forKey:)`, and a
-    /// pair key would also have needed a separator that is legal in neither half (a url
-    /// scheme may itself contain dots: `com.example.app:` is a legal scheme).
-    nonisolated static func key(host: String) -> String { prefix + host.lowercased() }
-
-    /// Which site a key names, or nil when the key is not one of ours. Pure, so the sweep
-    /// in `forgetAll` cannot reach a preference belonging to something else.
-    nonisolated static func parse(key: String) -> String? {
-        guard key.hasPrefix(prefix) else { return nil }
-        let host = String(key.dropFirst(prefix.count))
-        return host.isEmpty ? nil : host
+    private static func key(scope: Scope) -> String {
+        prefix + scope.profileID.uuidString.lowercased() + "."
+            + Data(scope.origin.utf8).base64EncodedString()
     }
 
-    static func remembered(host: String, scheme: String) -> Bool {
-        schemes(host: host).contains(scheme.lowercased())
+    static func remembered(scope: Scope?, scheme: String) -> Bool {
+        schemes(scope: scope).contains(scheme.lowercased())
     }
 
-    /// "Always Allow". Never for a site with no host: the answer would be filed under "" and
-    /// would then answer for every hostless page in the browser.
-    static func allow(host: String, scheme: String) {
-        guard !host.isEmpty, !scheme.isEmpty else { return }
-        let scheme = scheme.lowercased()
-        var all = schemes(host: host)
-        guard !all.contains(scheme) else { return }
-        all.append(scheme)
-        defaults.set(all.sorted(), forKey: key(host: host))
+    static func schemes(scope: Scope?) -> [String] {
+        guard let scope else { return [] }
+        if let tab = scope.privateTabID { return privateAnswers[tab]?[key(scope: scope)] ?? [] }
+        // Host-only legacy grants cannot establish scheme, port, or profile consent.
+        return defaults.stringArray(forKey: key(scope: scope)) ?? []
     }
 
-    /// One row of the Site Control Center, switched off. The site's key goes with its last
-    /// scheme rather than being left behind as an empty array nothing would ever read.
-    static func forget(host: String, scheme: String) {
-        let scheme = scheme.lowercased()
-        let left = schemes(host: host).filter { $0 != scheme }
-        if left.isEmpty { defaults.removeObject(forKey: key(host: host)) }
-        else { defaults.set(left, forKey: key(host: host)) }
+    static func allow(scope: Scope?, scheme: String) {
+        guard let scope, isExternal(scheme) else { return }
+        let all = Array(Set(schemes(scope: scope) + [scheme.lowercased()])).sorted()
+        save(all, scope: scope)
     }
 
-    /// Every scheme this site may open without being asked, in the order they were stored —
-    /// sorted, so the panel's rows do not shuffle between renders. Exact host, never a
-    /// suffix test: an answer given to `example.com` is not one `evil-example.com` gets.
-    static func schemes(host: String) -> [String] {
-        guard !host.isEmpty else { return [] }
-        return defaults.stringArray(forKey: key(host: host)) ?? []
+    static func forget(scope: Scope?, scheme: String) {
+        guard let scope else { return }
+        save(schemes(scope: scope).filter { $0 != scheme.lowercased() }, scope: scope)
     }
 
-    /// Clear Site Data for one site.
-    static func reset(host: String) {
-        guard !host.isEmpty else { return }
-        defaults.removeObject(forKey: key(host: host))
+    private static func save(_ schemes: [String], scope: Scope) {
+        let key = key(scope: scope)
+        if let tab = scope.privateTabID {
+            privateAnswers[tab, default: [:]][key] = schemes.isEmpty ? nil : schemes
+        } else if schemes.isEmpty { defaults.removeObject(forKey: key) }
+        else { defaults.set(schemes, forKey: key) }
     }
 
-    /// Clear Browsing Data's "cookies and site data". An app a site was allowed to open is
-    /// something that site was allowed to do, and a sweep that leaves it standing has not
-    /// cleared the site.
-    static func forgetAll() {
-        for key in defaults.dictionaryRepresentation().keys where parse(key: key) != nil {
+    static func forgetPrivate(tabID: UUID) { privateAnswers.removeValue(forKey: tabID) }
+
+    static func forgetAll(profileID: UUID? = nil) {
+        let match = profileID.map { prefix + $0.uuidString.lowercased() + "." } ?? "externalApp."
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(match) {
             defaults.removeObject(forKey: key)
         }
+        if profileID == nil { privateAnswers.removeAll() }
     }
 
     // MARK: - The card
@@ -169,19 +135,18 @@ import SwiftUI
     /// One question on screen. `Equatable` and `Identifiable` so it can drive a sheet.
     struct Prompt: Identifiable, Equatable, Sendable {
         let url: URL
-        /// The site that asked. Empty for a page with no host, which can be told apart in
-        /// the card's wording and is never remembered.
-        let host: String
+        let scope: Scope?
+        let tabID: UUID
+        let documentID: UUID
+        let id = UUID().uuidString
+        var host: String { scope?.host ?? "" }
+        var originLabel: String { scope?.origin ?? "" }
         let scheme: String
         /// Where the handler lives, so the card can draw its icon. Nil when nothing on this
         /// Mac claims the scheme, which is a different card with one button.
         let app: URL?
         /// Its display name — "Zoom", not "zoom.us.app".
         let name: String?
-        /// The pair, which is also what keeps two cards for the same question off the
-        /// screen. Not a defaults key — the store is keyed by site — just an id for the one
-        /// question this card is asking.
-        var id: String { host + "|" + scheme }
     }
 
     /// What the buttons say, in the order they are read.
@@ -232,79 +197,55 @@ import SwiftUI
         return shown.hasSuffix(".app") ? String(shown.dropLast(4)) : shown
     }
 
-    /// Which (host, scheme) pairs already have a card up. A page that redirects to its own
-    /// app link on a timer, or a frame that retries, is one navigation after another and
-    /// must be one card: without this a `location =` loop stacked a sheet per turn of the
-    /// run loop and the window could not be reached at all.
-    ///
-    /// ponytail: keyed by the pair alone, so it is app-wide rather than per window. The
-    /// same site open in two windows, both firing the same app link at once, puts one card
-    /// up and the second window's navigation is dropped. Deliberate — the answer is
-    /// remembered per site anyway, so the second window would only be asking a question
-    /// that is already on screen — and the ceiling is that the second window's click needs
-    /// a second try. Upgrade path if anyone ever hits it: key the set by (window, pair).
-    private static var asking: Set<String> = []
-
-    /// The whole of it, from `decidePolicyFor`. `page` is the url of the page the link is
-    /// on — the site the card names — and is deliberately not the link's own host: a
-    /// `zoommtg:` url's "host" is part of the meeting address, not a site that can be
-    /// granted anything.
-    static func offer(_ url: URL, from page: URL?, tab: Tab) {
+    /// Only WebKit's security origin is authority. Frame request URLs can retain
+    /// about:blank or name an opaque/sandboxed document's untrusted source URL.
+    static func offer(_ url: URL, from frame: WKFrameInfo, tab: Tab) {
+        guard let web = tab.existingWeb, frame.webView === web, !tab.suspended,
+              let store = TabStore.all.first(where: { $0.active === tab }),
+              store.externalApp == nil else { return }
+        let origin = frame.securityOrigin
+        let scope = Scope(scheme: origin.protocol, host: origin.host, port: origin.port,
+                          profileID: tab.profileID, privateTabID: tab.isPrivate ? tab.id : nil)
         let scheme = url.scheme?.lowercased() ?? ""
-        let host = page?.host()?.lowercased() ?? ""
-        switch decision(remembered: remembered(host: host, scheme: scheme),
-                        host: host, scheme: scheme) {
-        case .refuse:
-            return
-        case .open:
-            NSWorkspace.shared.open(url)
+        switch decision(remembered: remembered(scope: scope, scheme: scheme),
+                        host: scope?.host ?? "", scheme: scheme) {
+        case .refuse: return
+        case .open: NSWorkspace.shared.open(url)
         case .ask:
-            ask(url, host: host, scheme: scheme, tab: tab)
+            let app = handler(for: url)
+            store.externalApp = Prompt(url: url, scope: scope, tabID: tab.id,
+                                       documentID: tab.readingDocumentGeneration,
+                                       scheme: scheme, app: app, name: name(of: app))
         }
     }
 
-    private static func ask(_ url: URL, host: String, scheme: String, tab: Tab) {
-        // The window the tab is in — a browser window, a Little Vane or a Peek all hold
-        // their tabs the same way, which is what gives all three the same card.
-        //
-        // ponytail: `tabs`, not `everyTab`. A page in a Space the window is keeping alive
-        // behind this one has no row and no card to be anchored to, and a sheet over
-        // whatever is being read now, asking about a link fired by a page the user swiped
-        // away from, is worse than the silence. Finding nothing is the answer.
-        guard let store = TabStore.all.first(where: { s in s.tabs.contains { $0 === tab } }),
-              store.externalApp == nil else { return }
-        let app = handler(for: url)
-        let prompt = Prompt(url: url, host: host, scheme: scheme, app: app, name: name(of: app))
-        guard asking.insert(prompt.id).inserted else { return }
-        store.externalApp = prompt
-    }
-
-    /// A button on the card. Takes the card down first, so "Always Allow" cannot leave a
-    /// second copy of the question behind it if the page fires again while the app launches.
     static func answer(_ prompt: Prompt, _ answer: Answer, in store: TabStore) {
-        release(prompt)
+        // An old SwiftUI button action must not approve a new document or prompt.
+        guard store.externalApp?.id == prompt.id else { return }
         store.externalApp = nil
+        guard let tab = store.active, tab.id == prompt.tabID, tab.existingWeb != nil, !tab.suspended,
+              tab.readingDocumentGeneration == prompt.documentID else { return }
         switch answer {
-        case .cancel:
-            axAnnounce("Didn’t open the link.")
+        case .cancel: axAnnounce("Didn’t open the link.")
         case .always:
-            allow(host: prompt.host, scheme: prompt.scheme)
-            SiteChanges.shared.bump()          // the site panel grew a row
+            allow(scope: prompt.scope, scheme: prompt.scheme)
+            SiteChanges.shared.bump()
             open(prompt)
-        case .once:
-            open(prompt)
+        case .once: open(prompt)
         }
     }
 
     private static func open(_ prompt: Prompt) {
+        guard prompt.app != nil else { return }
         NSWorkspace.shared.open(prompt.url)
         axAnnounce("Opened the link in \(prompt.name ?? "another app").")
     }
 
-    /// The pair may be asked about again. Called by the card as it goes away, whatever took
-    /// it away — so a sheet dismissed by anything but a button cannot wedge the question
-    /// shut for the rest of the session.
-    static func release(_ prompt: Prompt) { asking.remove(prompt.id) }
+    static func dismiss(for tab: Tab) {
+        for store in TabStore.all where store.externalApp?.tabID == tab.id {
+            store.externalApp = nil
+        }
+    }
 
     // MARK: - check
 
@@ -367,87 +308,28 @@ import SwiftUI
              body(host: "zoom.us", app: " ") == body(host: "zoom.us", app: nil)),
         ]
 
-        // The key format. One key per site, so the sweep that clears them all has to be
-        // able to tell one of ours from somebody else's preference.
-        out += [
-            ("a site round-trips through its key",
-             parse(key: key(host: "zoom.us")) == "zoom.us"),
-            ("a host with dots survives the parse",
-             parse(key: key(host: "sub.example.co.uk")) == "sub.example.co.uk"),
-            ("the key is lowercased, the way hosts are",
-             key(host: "Zoom.US") == key(host: "zoom.us")),
-            ("somebody else's preference is not one of ours",
-             parse(key: "homepage") == nil
-                && parse(key: "sitePermission.camera.example.com") == nil),
-            ("a key with no host is not one of ours", parse(key: "externalApp.") == nil),
-            ("a key that merely starts the same way is not one of ours",
-             parse(key: "externalAppsomething") == nil),
-        ]
-
-        let suite = "vane.check.apps.\(ProcessInfo.processInfo.processIdentifier)"
+        let suite = "vane.check.apps.\(UUID())"
         guard let scratch = UserDefaults(suiteName: suite) else {
             return out + [("scratch defaults suite is available", false)]
         }
         let real = defaults
         defaults = scratch
-        defer {
-            defaults = real
-            UserDefaults.dropScratchSuite(suite)
-        }
-
-        out.append(("a site nobody has answered for is not remembered",
-                    !remembered(host: "zoom.us", scheme: "zoommtg")))
-        allow(host: "zoom.us", scheme: "zoommtg")
+        defer { defaults = real; UserDefaults.dropScratchSuite(suite) }
+        let profile = UUID()
+        let scope = Scope(url: URL(string: "https://zoom.us"), profileID: profile)!
+        allow(scope: scope, scheme: "ZoomMtg")
         out += [
-            ("Always Allow round-trips", remembered(host: "zoom.us", scheme: "zoommtg")),
-            ("…case-insensitively", remembered(host: "ZOOM.US", scheme: "ZoomMtg")),
-            ("…for that scheme only",
-             !remembered(host: "zoom.us", scheme: "msteams")),
-            ("…and for that site only",
-             !remembered(host: "evil.example", scheme: "zoommtg")),
-            ("…not for a site that merely ends the same way",
-             !remembered(host: "not-zoom.us", scheme: "zoommtg")),
-            ("…nor for one of its subdomains, which is a different origin",
-             !remembered(host: "sub.zoom.us", scheme: "zoommtg")),
-            ("the site panel lists what it may open",
-             schemes(host: "zoom.us") == ["zoommtg"]),
-            ("saying always twice does not list the same app twice",
-             { allow(host: "zoom.us", scheme: "ZoomMtg")
-               return schemes(host: "zoom.us") == ["zoommtg"] }()),
+            ("Always Allow remembers an exact origin", remembered(scope: scope, scheme: "zoommtg")),
+            ("an HTTP origin cannot borrow HTTPS consent", !remembered(
+                scope: Scope(url: URL(string: "http://zoom.us"), profileID: profile), scheme: "zoommtg")),
+            ("a different port cannot borrow consent", !remembered(
+                scope: Scope(url: URL(string: "https://zoom.us:8443"), profileID: profile), scheme: "zoommtg")),
+            ("another profile cannot borrow consent", !remembered(
+                scope: Scope(url: URL(string: "https://zoom.us"), profileID: UUID()), scheme: "zoommtg")),
+            ("opaque origins cannot retain grants", { allow(scope: nil, scheme: "zoommtg"); return schemes(scope: nil).isEmpty }()),
         ]
-
-        allow(host: "zoom.us", scheme: "msteams")
-        allow(host: "other.example", scheme: "tel")
-        out += [
-            ("…in a stable order, so the rows do not shuffle",
-             schemes(host: "zoom.us") == ["msteams", "zoommtg"]),
-            ("a site with no host is never remembered at all",
-             { allow(host: "", scheme: "zoommtg"); return schemes(host: "").isEmpty }()),
-            ("…and is never answered for either",
-             !remembered(host: "", scheme: "zoommtg")),
-            ("a scheme with dots in it is stored and read back whole",
-             { allow(host: "dots.example", scheme: "com.example.helper")
-               return remembered(host: "dots.example", scheme: "com.example.helper") }()),
-        ]
-
-        forget(host: "zoom.us", scheme: "msteams")
-        out += [
-            ("switching a row off forgets that pair", schemes(host: "zoom.us") == ["zoommtg"]),
-            ("…and leaves the site's other answers standing",
-             remembered(host: "zoom.us", scheme: "zoommtg")),
-        ]
-
-        reset(host: "zoom.us")
-        out += [
-            ("Clear Site Data forgets every app that site could open",
-             schemes(host: "zoom.us").isEmpty),
-            ("…and leaves the other sites alone",
-             remembered(host: "other.example", scheme: "tel")),
-        ]
-
-        forgetAll()
-        out.append(("Clear Browsing Data's cookies and site data forgets them all",
-                    !remembered(host: "other.example", scheme: "tel")))
+        forget(scope: scope, scheme: "zoommtg")
+        out.append(("revoking consent removes the launch grant", !remembered(scope: scope, scheme: "zoommtg")))
         return out
     }
 }
@@ -475,7 +357,7 @@ struct ExternalAppCard: View {
                     Text(ExternalApps.title(app: prompt.name, scheme: prompt.scheme))
                         .font(Look.heading).foregroundStyle(Look.inkPrimary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(ExternalApps.body(host: prompt.host, app: prompt.name))
+                    Text(ExternalApps.body(host: prompt.originLabel, app: prompt.name))
                         .font(Look.footnote).foregroundStyle(Look.inkQuiet)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -502,21 +384,20 @@ struct ExternalAppCard: View {
                     // Not the default action: "never ask me again" is not what Return
                     // should mean, and it is the one answer that cannot be taken back by
                     // simply clicking Cancel next time.
-                    Button("Always Allow") { answer(.always) }
-                        .disabled(prompt.host.isEmpty)
-                        .help(prompt.host.isEmpty
+                    Button(prompt.scope?.privateTabID == nil ? "Always Allow" : "Allow for This Private Tab") { answer(.always) }
+                        .disabled(prompt.scope == nil)
+                        .help(prompt.scope == nil
                               ? "This page has no site to remember an answer for."
-                              : "Opens \(prompt.scheme): links from \(prompt.host) without asking.")
+                              : "Opens \(prompt.scheme): links from \(prompt.originLabel) in this profile without asking.")
                     Button("Allow") { answer(.once) }.keyboardShortcut(.defaultAction)
                 }
             }
         }
         .padding(Look.paneMargin)
         .frame(width: Look.appPrompt)
-        .onDisappear { ExternalApps.release(prompt) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(ExternalApps.title(app: prompt.name, scheme: prompt.scheme))
-        .accessibilityValue(ExternalApps.body(host: prompt.host, app: prompt.name))
+        .accessibilityValue(ExternalApps.body(host: prompt.originLabel, app: prompt.name))
     }
 
     /// The handler's own icon, which is the fastest way to see whether the app about to

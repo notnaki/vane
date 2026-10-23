@@ -721,6 +721,7 @@ struct Space: Identifiable, Codable, Equatable {
         Zoom.forget(profile: id)
         SiteBoosts.forget(profile: id)
         CertificateTrust.forget(profile: id)
+        ExternalApps.forgetAll(profileID: id)
         try? fm.removeItem(at: WorkspaceTemplates.url(profile: id, directory: directory))
         try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
         try? fm.removeItem(at: Self.faviconDir(for: id, in: directory))

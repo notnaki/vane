@@ -20,7 +20,7 @@ enum UpdateInstallation {
         }
         guard realDirectory(source) else { throw failure("Invalid update source") }
         guard let incomingVersion = UpdateVersion(tag) else { throw failure("Invalid update version") }
-        try BundleReplacement.install(source: source, at: target, keepPrevious: keepPrevious,
+        try installPrepared(source: source, at: target, keepPrevious: keepPrevious,
             verify: { staged in
                 guard realDirectory(staged), bundleInfo(staged) != nil,
                       let actual = version(staged) else { throw failure("Invalid update bundle identity or version") }
@@ -44,6 +44,42 @@ enum UpdateInstallation {
                 guard (try? verifySignature(destination, pinned: false)) != nil else { return false }
                 return installed < incomingVersion
             }, prepare: prepare)
+    }
+
+    /// Quarantine removal must not run in an Applications sibling: the sandboxed browser
+    /// can write there. Freeze and prepare a separate copy in the helper's system temp
+    /// directory, then publish another verified copy without removing any attributes there.
+    static func installPrepared(source: URL, at target: URL, keepPrevious: Bool,
+                                verify: (URL) throws -> Bool,
+                                mayReplaceTarget: (URL) -> Bool,
+                                prepare: (URL) throws -> Void) throws {
+        guard source.isFileURL, realDirectory(source) else { throw failure("Invalid update source") }
+        let workspace = try privateWorkspace()
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let copy = workspace.appendingPathComponent("Vane.app", isDirectory: true)
+        try FileManager.default.copyItem(at: source, to: copy)
+        guard realDirectory(copy), try verify(copy) else { throw BundleReplacement.Fault.invalidStage }
+        try prepare(copy)
+        try BundleReplacement.install(source: copy, at: target, keepPrevious: keepPrevious,
+            verify: verify, mayReplaceTarget: mayReplaceTarget)
+    }
+
+    private static func privateWorkspace() throws -> URL {
+        // TMPDIR is inherited environment and can name a directory the caller can write.
+        // Ask Darwin for the unsandboxed helper's per-user temp root instead. Location
+        // outside the browser sandbox is the boundary; 0700 alone cannot separate peers
+        // running as the same user. Never derive this path from the source or destination.
+        let size = confstr(_CS_DARWIN_USER_TEMP_DIR, nil, 0)
+        guard size > 1 else { throw failure("Cannot locate installer temporary directory") }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, size) == size else {
+            throw failure("Cannot locate installer temporary directory")
+        }
+        let root = URL(fileURLWithPath: String(cString: buffer), isDirectory: true).resolvingSymlinksInPath()
+        guard realDirectory(root) else { throw failure("Invalid installer temporary directory") }
+        var template = Array(root.appendingPathComponent("Vane-prepared-XXXXXX").path.utf8CString)
+        guard mkdtemp(&template) != nil else { throw failure("Cannot create installer temporary directory") }
+        return URL(fileURLWithPath: String(cString: template), isDirectory: true)
     }
 
     static func verifyForRelaunch(_ bundle: URL) throws {
@@ -106,7 +142,8 @@ enum UpdateInstallation {
 
     private static func verifySignature(_ bundle: URL, pinned: Bool = true,
                                         identifier: String = "io.github.notnaki.vane") throws {
-        // Validate the private, final copy, not the source the client can still modify.
+        // Validate the preparation copy and final transaction copy independently,
+        // never relying on the source that the client can still modify.
         var code: SecStaticCode?
         var requirement: SecRequirement?
         let text = pinned ? UpdateInstaller.requirement(identifier: identifier)

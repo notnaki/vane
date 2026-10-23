@@ -22,10 +22,81 @@ import XCTest
         let web = try await fixture(html)
         let extracted = await Reader.extract(from: web)
         let result = try XCTUnwrap(extracted)
-        let probeJSON = try await web.evaluateJavaScript(Reader.extractJS(probe: true)) as! String
+        let probeJSON: String = await withCheckedContinuation { continuation in
+            web.evaluateJavaScript(Reader.extractJS(probe: true), in: nil, in: Reader.world) { result in
+                continuation.resume(returning: (try? result.get()) as? String ?? "{}")
+            }
+        }
         let probe = try JSONSerialization.jsonObject(with: Data(probeJSON.utf8)) as! [String: Int]
         XCTAssertEqual(probe["words"], result.words)
         return result
+    }
+    func testPageJSONSerializerCannotForgeReaderExtraction() async throws {
+        let web = try await fixture("""
+            <article><h1>Original article</h1><p>ORIGINAL \(prose)</p></article>
+            <script>
+              JSON.stringify = function () {
+                return '{"title":"FORGED TITLE","nodes":[{"x":"FORGED BODY"}]}';
+              };
+            </script>
+            """)
+        let extracted = await Reader.extract(from: web)
+        let result = try XCTUnwrap(extracted)
+        XCTAssertEqual(result.title, "Original article")
+        XCTAssertTrue(Reader.plainText(result.nodes).contains("ORIGINAL"))
+        XCTAssertFalse(Reader.plainText(result.nodes).contains("FORGED BODY"))
+    }
+    func testPageJSONSerializerCannotForgeReaderAvailability() async throws {
+        let web = try await fixture("""
+            <article><p>A short page with too little text for Reader.</p></article>
+            <script>JSON.stringify = function () { return '{"words":1000000}'; };</script>
+            """)
+        let available = await Reader.isAvailable(in: web)
+        XCTAssertFalse(available, "A page serializer must not make a short page qualify as an article")
+    }
+    func testPageDOMPrototypeOverridesCannotForgeReaderText() async throws {
+        let web = try await fixture("""
+            <article><h1>Original article</h1><p>ORIGINAL \(prose)</p></article>
+            <script>
+              Object.defineProperty(Node.prototype, 'textContent', {
+                configurable: true, get: function () { return 'FORGED PROTOTYPE TEXT'; }
+              });
+              Object.defineProperty(Node.prototype, 'nodeValue', {
+                configurable: true, get: function () { return 'FORGED PROTOTYPE TEXT'; }
+              });
+            </script>
+            """)
+        let extracted = await Reader.extract(from: web)
+        let result = try XCTUnwrap(extracted)
+        XCTAssertEqual(result.title, "Original article")
+        XCTAssertTrue(Reader.plainText(result.nodes).contains("ORIGINAL"))
+        XCTAssertFalse(Reader.plainText(result.nodes).contains("FORGED PROTOTYPE TEXT"))
+        let available = await Reader.isAvailable(in: web)
+        XCTAssertTrue(available, "Page prototype overrides must not suppress a readable article")
+    }
+    func testReaderExtractionDocumentTokenIsNotExposedToPageScripts() async throws {
+        let web = try await fixture("<article><p>ORIGINAL \(prose)</p></article>")
+        let extracted = await Reader.extract(from: web, documentToken: "native-document-token")
+        let result = try XCTUnwrap(extracted)
+        XCTAssertTrue(Reader.plainText(result.nodes).contains("ORIGINAL"))
+        let exposed = try await web.evaluateJavaScript("typeof document.documentElement.__vaneReaderToken !== 'undefined'") as? Bool
+        XCTAssertEqual(exposed, false, "The page must not observe or replace Reader's document identity token")
+    }
+    func testReaderRejectsExcessivelyNestedArticleBeforeNativeTreeUse() async throws {
+        let nested = String(repeating: "<span>", count: 80) + prose + String(repeating: "</span>", count: 80)
+        let web = try await fixture("<article><p>\(nested)</p></article>")
+        let extracted = await Reader.extract(from: web)
+        XCTAssertTrue(extracted == nil, "Deep page markup must not reach recursive native Reader processing")
+        let available = await Reader.isAvailable(in: web)
+        XCTAssertFalse(available)
+    }
+    func testReaderRejectsOversizedArticleText() async throws {
+        let text = String(repeating: "article ", count: 300_000)
+        let web = try await fixture("<article><p>\(text)</p></article>")
+        let extracted = await Reader.extract(from: web)
+        XCTAssertTrue(extracted == nil, "An article exceeding the text budget must not cross into native tree processing")
+        let available = await Reader.isAvailable(in: web)
+        XCTAssertFalse(available)
     }
     func testSavedReadingMeasureAndSpacingReachDocumentWithClickableSource() {
         TestEnvironment.prepare()

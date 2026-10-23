@@ -23,6 +23,13 @@ import SwiftUI
 /// The JS therefore returns a node tree as JSON, not HTML: markup built in the page's own
 /// world is markup a hostile page can shape.
 @MainActor enum Reader {
+    /// Page scripts can replace JavaScript builtins and DOM prototypes in their own
+    /// world. Keep extraction and its document identity in a separate wrapper world.
+    static let world = WKContentWorld.world(name: "vane-reader")
+    private static let payloadLimit = 4 * 1024 * 1024
+    private static let textLimit = 2 * 1024 * 1024
+    private static let nodeLimit = 50_000
+    private static let depthLimit = 64
 
     // MARK: - State
 
@@ -89,7 +96,7 @@ import SwiftUI
     static func applyPreferences(in tab: Tab?) {
         ReaderState.shared.preferenceRevision += 1
         guard let tab, isOn(tab) else { return }
-        tab.web.evaluateJavaScript(preferenceScript)
+        tab.web.evaluateJavaScript(preferenceScript, in: nil, in: world) { _ in }
     }
 
     /// Shared by live and saved readers. Updating trusted CSS variables keeps the
@@ -132,9 +139,9 @@ import SwiftUI
     /// but only the word count comes back over the wire. See `extractJS(probe:)`.
     static func isAvailable(in web: WKWebView) async -> Bool {
         guard web.url?.scheme?.hasPrefix("http") == true else { return false }
-        let raw: Any? = try? await web.evaluateJavaScript(extractJS(probe: true))
-        guard let json = raw as? String, let data = json.data(using: .utf8),
-              let p = try? JSONDecoder().decode(Probe.self, from: data) else { return false }
+        guard let json = await evaluate(extractJS(probe: true), in: web, as: String.self),
+              let data = boundedJSON(json, limit: 256),
+              let p = try? JSONDecoder().decode(Probe.self, from: data), p.words >= 0 else { return false }
         return isEnough(words: p.words)
     }
 
@@ -161,11 +168,12 @@ import SwiftUI
             // forward entries get truncated the way loadHTMLString or loadSimulatedRequest
             // would truncate them, and nothing lands in history. Fragment parsing with
             // <html> as the context element starts in "before head", so head/body parse.
-            let replaced = try? await web.evaluateJavaScript(
+            let replaced = await evaluate(
                 "(() => { if (location.href !== \(jsString(source.absoluteString)) || document.readyState !== 'complete' || document.documentElement.__vaneReaderToken !== \(jsString(token.uuidString))) return false;"
                 + "document.documentElement.innerHTML = \(jsString(doc));"
-                + "document.scrollingElement && (document.scrollingElement.scrollTop = 0); return true; })()")
-            guard replaced as? Bool == true, entering[id] == token, generation == tab.readingDocumentGeneration, web.url == source else { return }
+                + "document.scrollingElement && (document.scrollingElement.scrollTop = 0); return true; })()",
+                in: web, as: Bool.self)
+            guard replaced == true, entering[id] == token, generation == tab.readingDocumentGeneration, web.url == source else { return }
 
             ReaderState.shared.tabs.insert(id)
             retained[id] = (generation, e)
@@ -244,10 +252,49 @@ import SwiftUI
     // internal, not private: the throwaway real-page harness drives this directly.
     static func extract(from web: WKWebView, documentToken: String? = nil) async -> Extraction? {
         let mark = documentToken.map { "document.documentElement.__vaneReaderToken = \(jsString($0));\n" } ?? ""
-        let raw: Any? = try? await web.evaluateJavaScript(mark + extractJS())
-        guard let json = raw as? String, let data = json.data(using: .utf8),
-              let p = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
+        guard let json = await evaluate(mark + extractJS(), in: web, as: String.self),
+              let data = boundedJSON(json, limit: payloadLimit),
+              let p = try? JSONDecoder().decode(Payload.self, from: data), boundedTree(p.nodes ?? []) else { return nil }
         return build(p)
+    }
+
+    private static func evaluate<T: Sendable>(_ source: String, in web: WKWebView, as type: T.Type) async -> T? {
+        await withCheckedContinuation { continuation in
+            web.evaluateJavaScript(source, in: nil, in: world) { result in
+                continuation.resume(returning: (try? result.get()) as? T)
+            }
+        }
+    }
+
+    /// Bound work before a recursive decoder or native tree traversal sees page data.
+    private static func boundedJSON(_ json: String, limit: Int) -> Data? {
+        guard json.utf8.prefix(limit + 1).count <= limit else { return nil }
+        var depth = 0, quoted = false, escaped = false
+        for byte in json.utf8 {
+            if quoted {
+                if escaped { escaped = false }
+                else if byte == 92 { escaped = true }
+                else if byte == 34 { quoted = false }
+            } else if byte == 34 { quoted = true }
+            else if byte == 123 || byte == 91 {
+                depth += 1
+                // Each tree level has an object and a children array, plus its envelope.
+                if depth > depthLimit * 2 + 4 { return nil }
+            } else if byte == 125 || byte == 93 { depth -= 1 }
+        }
+        return json.data(using: .utf8)
+    }
+
+    private static func boundedTree(_ nodes: [Node]) -> Bool {
+        var stack = nodes.map { ($0, 1) }, count = 0, textBytes = 0
+        while let (node, depth) = stack.popLast() {
+            count += 1
+            guard depth <= depthLimit, count <= nodeLimit else { return false }
+            textBytes += node.x?.utf8.count ?? 0
+            guard textBytes <= textLimit else { return false }
+            stack += (node.c ?? []).map { ($0, depth + 1) }
+        }
+        return true
     }
 
     private static func build(_ p: Payload) -> Extraction {
@@ -278,9 +325,8 @@ import SwiftUI
 
     // MARK: - Rendering (all of this is offline-testable)
 
-    /// The only tags that reach the reader document. The tag string arrives from the page's
-    /// own JavaScript world, so it is re-checked here rather than trusted; anything else is
-    /// unwrapped and its text kept.
+    /// The only tags that reach the reader document. Extraction reads an untrusted DOM,
+    /// so tag names are re-checked here; anything else is unwrapped and its text kept.
     static let allowed: Set<String> = [
         "p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "code",
         "ul", "ol", "li", "figure", "figcaption", "img", "a", "em", "strong",
@@ -469,6 +515,12 @@ import SwiftUI
     /// `plainText` uses, so the two can never disagree about what entering would show.
     static func extractJS(probe: Bool = false) -> String { #"""
     (function (PROBE) {
+      var nodeCount = 0, textBytes = 0, encoder = new TextEncoder();
+      function limitedJSON(value) {
+        var json = JSON.stringify(value);
+        if (json.length > \#(payloadLimit) || encoder.encode(json).length > \#(payloadLimit)) throw new Error('Reader article is too large');
+        return json;
+      }
       var BAD = /combx|comment|com-|contact|foot|masthead|outbrain|promo|related|scroll|shoutbox|sidebar|sponsor|shopping|widget|nav|menu|share|social|banner|newsletter|subscribe|popup|modal|cookie|breadcrumb|advert|recirc|teaser|paywall|\bads?\b/i;
       // Broad layout words such as scroll/content are scoring signals, not deletion
       // rules. Hard deletion is reserved for clear furniture tokens and semantic tags.
@@ -555,12 +607,14 @@ import SwiftUI
         if (sc > bestScore) { bestScore = sc; best = cands[i]; }
       }
       if (!best) { best = document.querySelector('article') || document.body; }
-      if (!best) { return JSON.stringify({ nodes: [] }); }
+      if (!best) { return limitedJSON(PROBE ? { words: 0 } : { nodes: [] }); }
 
       var BLOCKY = 'p,div,ul,ol,blockquote,pre,figure,h1,h2,h3,h4,h5,h6,table';
-      function ser(n, preformatted) {
+      function ser(n, preformatted, depth) {
+        if (depth > \#(depthLimit) || ++nodeCount > \#(nodeLimit)) throw new Error('Reader article is too large');
         if (n.nodeType === 3) {
           var v = preformatted ? n.nodeValue : n.nodeValue.replace(/\s+/g, ' ');
+          if (v.length > \#(textLimit) || (textBytes += encoder.encode(v).length) > \#(textLimit)) throw new Error('Reader article is too large');
           return (preformatted ? v.length > 0 : /\S/.test(v)) ? { x: v } : null;
         }
         if (n.nodeType !== 1) { return null; }
@@ -582,7 +636,7 @@ import SwiftUI
         if (n !== best && bad(n)) { return null; }
         var kids = [];
         for (var i = 0; i < n.childNodes.length; i++) {
-          var k = ser(n.childNodes[i], preformatted || tag === 'PRE');
+          var k = ser(n.childNodes[i], preformatted || tag === 'PRE', depth + 1);
           if (k) { kids.push(k); }
         }
         if (!kids.length) { return null; }
@@ -635,7 +689,7 @@ import SwiftUI
       }
       var nodes = [];
       roots.forEach(function(e) {
-        var root = ser(e, false);
+        var root = ser(e, false, 1);
         if (root) { nodes = nodes.concat(root.e === '' && root.c ? root.c : [root]); }
       });
       if (PROBE) {
@@ -657,9 +711,9 @@ import SwiftUI
           nodes = nodes.slice(1);
         }
         var text = flat(nodes);
-        return JSON.stringify({ words: text ? text.split(/\s+/).length : 0 });
+        return limitedJSON({ words: text ? text.split(/\s+/).length : 0 });
       }
-      return JSON.stringify({ title: title, byline: byline, lead: lead, nodes: nodes });
+      return limitedJSON({ title: title, byline: byline, lead: lead, nodes: nodes });
     })(\#(probe))
     """# }
 

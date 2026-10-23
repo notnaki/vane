@@ -14,6 +14,13 @@ entitlement. These packaging capabilities likewise do not grant user authorizati
 
 ## Supported decisions
 
+External-app links use the requesting frame's exact web origin and profile, separately
+from device permissions. The prompt names that origin, including scheme and nondefault
+port. Private grants stay within one private tab and are not saved. Host-only permissions
+from older versions require a new answer. Navigating or closing the owning tab dismisses
+its pending app request. Restoring a backup requires fresh security consent; see
+[the security review](SECURITY-AUDIT.md).
+
 | Capability | Supported application hooks | Vane behavior and limits |
 | --- | --- | --- |
 | Camera and microphone | `WKUIDelegate` media permission request; `WKWebView.cameraCaptureState`, `microphoneCaptureState`, and their setters | Allow Once, saved Allow/Block, private-tab answers, Ask/reset, and stopping the revoked device with `.none`. State/setters cover the whole web view, so revoking one frame’s camera can also stop another frame’s camera. The untouched device continues. |

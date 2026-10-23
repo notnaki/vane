@@ -282,7 +282,7 @@ extension SiteControlModel {
         }
         // The name is looked up per scheme rather than stored: the answer is a (site,
         // scheme) pair, and which app answers to a scheme is macOS's to change.
-        apps = ExternalApps.schemes(host: h).map { scheme in
+        apps = ExternalApps.schemes(scope: SitePermissions.scope(for: tab)).map { scheme in
             let handler = URL(string: scheme + "://open").flatMap(ExternalApps.handler(for:))
             return App(scheme: scheme, name: ExternalApps.name(of: handler) ?? scheme)
         }
@@ -342,7 +342,7 @@ extension SiteControlModel {
         case .ext(let i): toggleExtension(i, on: tab)
         // The switch is on because the answer exists; the only thing it can do is take it
         // back, which puts the site back to being asked.
-        case .app(let i): forgetApp(i, host: host)
+        case .app(let i): forgetApp(i, on: tab)
         case .clearData: clearSiteData(host: host, tab: tab)
         case .developer: DeveloperMode.toggle(tab)
         }
@@ -384,10 +384,11 @@ extension SiteControlModel {
     /// "Always Allow", taken back. Indexed the way the row was drawn — against the sorted
     /// list `ExternalApps.schemes` returns — and re-read here rather than carried, so a row
     /// whose answer has gone in the meantime removes nothing instead of its neighbour.
-    static func forgetApp(_ index: Int, host: String) {
-        let all = ExternalApps.schemes(host: host)
+    static func forgetApp(_ index: Int, on tab: Tab) {
+        let scope = SitePermissions.scope(for: tab)
+        let all = ExternalApps.schemes(scope: scope)
         guard all.indices.contains(index) else { return }
-        ExternalApps.forget(host: host, scheme: all[index])
+        ExternalApps.forget(scope: scope, scheme: all[index])
     }
 
     /// The index-keyed way in, for `act` — which is keyed on `RowID` and has nothing else to

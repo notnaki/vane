@@ -9,6 +9,24 @@ import XCTest
         _ = f.seed()
         return f
     }
+    private func rememberedSecurityDecisions(profileID: UUID) throws -> [String: Any] {
+        let certificateScope = try XCTUnwrap(CertificateTrust.Scope(profileID: profileID, host: "accounts.example", port: 8443))
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let certificateKey = "certException.v2." + (try encoder.encode(certificateScope)).base64EncodedString()
+            + "|" + String(repeating: "a", count: 64)
+        let site = try XCTUnwrap(SitePermissions.Scope(scheme: "https", host: "accounts.example", port: 8443, profileID: profileID))
+        let profile = profileID.uuidString.lowercased()
+        let access = ExtensionAccess(permissions: ["tabs", "scripting"], sites: ["https://accounts.example/*"])
+        var decisions: [String: Any] = [certificateKey: true,
+            "externalApp.v2.\(profile)." + Data(site.origin.utf8).base64EncodedString(): ["zoommtg"],
+            ProfileManager.defaultsKey(HTTPSOnly.exceptionsKey, profileID): ["accounts.example"],
+            ProfileManager.defaultsKey(ExtensionConsent.baseKey, profileID):
+                ["/Applications/Vane extensions/test-extension": try JSONEncoder().encode(access)]]
+        for kind in [SitePermissions.Kind.camera, .microphone, .location] {
+            decisions["sitePermission.v2.\(profile).\(kind.rawValue).https.8443.accounts.example"] = true
+        }
+        return decisions
+    }
     func testRestoreReplacesOwnedDataRemovesAbsentFilesAndPreservesUnrelatedData() throws {
         let source = try fixture(), target = try fixture()
         let manager = source.seed(), work = manager.create(name: "Work")
@@ -52,6 +70,103 @@ import XCTest
                 XCTAssertNil(RecoverySnapshots.read(session, valid: Session.readable))
                 XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.appendingPathExtension("previous").path))
             }
+        }
+    }
+
+    func testRestoredBoostScriptsRequireEnablingAgainWithoutLosingCodeOrStyles() throws {
+        let source = try fixture(), target = try fixture()
+        let manager = source.seed(), profileID = manager.active.id
+        let origin = "https://accounts.example"
+        var boost = SiteBoost()
+        boost.css = "p { color: red; }"
+        boost.script = "document.body.dataset.restoredBoost = 'ran';"
+        boost.scriptEnabled = true
+        SiteBoostStore(defaults: source.defaults).set(boost, origin: origin, profile: profileID)
+        let incoming = try source.library.capture(reason: .manual)
+        XCTAssertTrue(SiteBoostStore(defaults: source.defaults).get(origin: origin, profile: profileID).scriptEnabled)
+
+        let restore = BackupRestore(library: target.library)
+        try restore.prepare(incoming)
+        XCTAssertEqual(try restore.recoverAtLaunch(), .restored)
+
+        let restoredStore = SiteBoostStore(defaults: target.defaults)
+        var restored = restoredStore.get(origin: origin, profile: profileID)
+        XCTAssertEqual(restored.script, "document.body.dataset.restoredBoost = 'ran';")
+        XCTAssertEqual(restored.css, "p { color: red; }")
+        XCTAssertTrue(restored.enabled)
+        XCTAssertFalse(restored.scriptEnabled, "Restored code must wait for an explicit enable in the destination profile.")
+
+        restored.scriptEnabled = true
+        restoredStore.set(restored, origin: origin, profile: profileID)
+        XCTAssertTrue(restoredStore.get(origin: origin, profile: profileID).scriptEnabled,
+                      "A user must still be able to enable the retained script normally.")
+    }
+
+    func testInterruptedRestorePreservesPreviouslyEnabledBoostScriptsOnRollback() throws {
+        let source = try fixture(), target = try fixture()
+        let origin = "https://accounts.example", profileID = target.seed().active.id
+        var boost = SiteBoost()
+        boost.script = "document.body.dataset.originalBoost = 'ran';"
+        boost.scriptEnabled = true
+        SiteBoostStore(defaults: target.defaults).set(boost, origin: origin, profile: profileID)
+        let restore = BackupRestore(library: target.library, checkpoint: { name in
+            if name == "preferences" { throw Interrupted.now }
+        })
+        try restore.prepare(source.library.capture(reason: .manual))
+        XCTAssertThrowsError(try restore.recoverAtLaunch())
+        XCTAssertEqual(try BackupRestore(library: target.library).recoverAtLaunch(), .rolledBack)
+        let restored = SiteBoostStore(defaults: target.defaults).get(origin: origin, profile: profileID)
+        XCTAssertEqual(restored.script, "document.body.dataset.originalBoost = 'ran';")
+        XCTAssertTrue(restored.scriptEnabled, "Exact rollback must preserve the existing user's script approval.")
+    }
+
+    func testRestoreDiscardsRememberedSecurityDecisionsAcrossProfiles() throws {
+        let source = try fixture(), target = try fixture()
+        let manager = source.seed(), work = manager.create(name: "Work")
+        var decisions: [String: Any] = [:]
+        for profileID in [ProfileManager.defaultID, work.id] {
+            decisions.merge(try rememberedSecurityDecisions(profileID: profileID)) { _, new in new }
+        }
+        for (key, value) in decisions { source.defaults.set(value, forKey: key) }
+        source.defaults.set("https://home.example", forKey: "homepage")
+        source.defaults.set(false, forKey: "httpsOnly")
+        source.defaults.set("ordinary setting", forKey: "httpsOnlyExceptionsLabel")
+        let incoming = try source.library.capture(reason: .manual)
+        let restore = BackupRestore(library: target.library)
+        try restore.prepare(incoming)
+        XCTAssertEqual(try restore.recoverAtLaunch(), .restored)
+
+        for key in decisions.keys {
+            XCTAssertNotNil(source.defaults.object(forKey: key), "The source retains its own approved decisions.")
+            XCTAssertNil(target.defaults.object(forKey: key), "Imported security decisions require fresh consent: \(key)")
+        }
+        let folder = URL(fileURLWithPath: "/Applications/Vane extensions/test-extension")
+        let access = ExtensionAccess(permissions: ["tabs", "scripting"], sites: ["https://accounts.example/*"])
+        for profileID in [ProfileManager.defaultID, work.id] {
+            let sourceApproval = ExtensionConsent.saved(for: folder, profileID: profileID, in: source.defaults)
+            XCTAssertEqual(sourceApproval, access)
+            let restoredApproval = ExtensionConsent.saved(for: folder, profileID: profileID, in: target.defaults)
+            XCTAssertTrue(ExtensionConsent.Review(name: "Installed extension", requested: access,
+                previous: restoredApproval, installing: false).needsApproval,
+                "Managed code retained on disk must require a fresh permission review after restore.")
+        }
+        XCTAssertEqual(target.defaults.string(forKey: "homepage"), "https://home.example")
+        XCTAssertEqual(target.defaults.object(forKey: "httpsOnly") as? Bool, false)
+        XCTAssertEqual(target.defaults.string(forKey: "httpsOnlyExceptionsLabel"), "ordinary setting")
+    }
+
+    func testInterruptedRestoreRollsBackRememberedSecurityDecisionsExactly() throws {
+        let source = try fixture(), target = try fixture()
+        let decisions = try rememberedSecurityDecisions(profileID: target.seed().active.id)
+        for (key, value) in decisions { target.defaults.set(value, forKey: key) }
+        let restore = BackupRestore(library: target.library, checkpoint: { name in
+            if name == "preferences" { throw Interrupted.now }
+        })
+        try restore.prepare(source.library.capture(reason: .manual))
+        XCTAssertThrowsError(try restore.recoverAtLaunch())
+        XCTAssertEqual(try BackupRestore(library: target.library).recoverAtLaunch(), .rolledBack)
+        for (key, value) in decisions {
+            XCTAssertEqual(target.defaults.object(forKey: key) as? NSObject, value as? NSObject, key)
         }
     }
 

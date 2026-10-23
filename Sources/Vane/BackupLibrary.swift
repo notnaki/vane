@@ -33,6 +33,16 @@ struct BackupPreview: Sendable {
     static func isLocalPreference(_ key: String) -> Bool {
         key.hasPrefix("backup.") || ["blockerLastGoodList", "firstLaunchWelcome"].contains(key)
     }
+    private static func isRememberedSecurityDecision(_ key: String) -> Bool {
+        if ["certException.", "sitePermission.", "externalApp."].contains(where: { key.hasPrefix($0) }) { return true }
+        for base in [HTTPSOnly.exceptionsKey, ExtensionConsent.baseKey] {
+            if key == base { return true }
+            guard key.hasPrefix(base + "-"),
+                  let profileID = UUID(uuidString: String(key.dropFirst(base.count + 1))) else { continue }
+            if key == ProfileManager.defaultsKey(base, profileID) { return true }
+        }
+        return false
+    }
     func currentPreferences(includeLocal: Bool = false) throws -> Data {
         let all = defaults.persistentDomain(forName: domain) ?? [:]
         let kept = includeLocal ? all : all.filter { !Self.isLocalPreference($0.key) }
@@ -42,8 +52,22 @@ struct BackupPreview: Sendable {
         guard let values = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
             throw BackupError.invalid("Invalid preferences.")
         }
-        var incoming = includeLocal ? values : values.filter { !Self.isLocalPreference($0.key) }
+        var incoming = includeLocal ? values : values.filter {
+            !Self.isLocalPreference($0.key) && !Self.isRememberedSecurityDecision($0.key)
+        }
         if !includeLocal {
+            // A backup can carry code, but cannot grant permission to run it in the
+            // destination profile. Exact rollback retains the user's original approval.
+            let boostKey = SiteBoostStore.key(ProfileManager.defaultID)
+            for (key, value) in incoming where key == boostKey || key.hasPrefix(boostKey + "-") {
+                guard let data = value as? Data,
+                      let records = try? JSONDecoder().decode([String: SiteBoost].self, from: data) else { continue }
+                incoming[key] = try JSONEncoder().encode(records.mapValues { value in
+                    var boost = value
+                    boost.scriptEnabled = false
+                    return boost
+                })
+            }
             for (key, value) in defaults.persistentDomain(forName: domain) ?? [:] where Self.isLocalPreference(key) {
                 incoming[key] = value
             }

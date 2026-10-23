@@ -43,6 +43,7 @@ Historical test counts are not a fresh validation of the current checkout.
 
 | Evidence | Scope |
 | --- | --- |
+| [Security review](SECURITY-AUDIT.md) | Website/native boundaries, restored consent, Reader isolation, update preparation, and remaining release gates. |
 | [Crash and session recovery](CRASH-RECOVERY.md) | Paused recovery, previous generations, preserved originals, multi-profile sessions, and interruption/storage fixtures. |
 | [Draft protection](DRAFT-PROTECTION.md) | Live-form retention, detection failures, suspension, and nonrecoverable draft boundaries. |
 | [Navigation reliability](NAVIGATION-RELIABILITY.md) | Ownership, history, cancellation, POST consent, and controlled network failures. |
