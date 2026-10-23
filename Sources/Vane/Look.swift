@@ -890,13 +890,12 @@ enum Look {
     /// How much of the space's colour washes over the pill's dark ground.
     static let toastTint: Double = 0.45
 
-    // Peek: a link out of a Favourite or a Pinned tab, floating over the window it came
-    // from. Its corner and its shadow are the command bar's — both are surfaces over the
-    // whole window — so the only numbers of its own are how big it is and how long the
-    // offer to bring the last one back stands.
-    /// Of the window, each way. Arc's Peek leaves enough of the sidebar showing that it is
-    /// obviously a page *over* your window rather than a window of its own.
+    // Peek: a floating page centered inside the browser's content area.
+    /// Of the content area, each way; a narrow page also leaves room for the button rail.
     static let peekFraction: CGFloat = 0.8
+    static let peekButtonSize: CGFloat = 36
+    static let peekButtonGap: CGFloat = 10
+    static let peekButtonGlyph = Font.system(size: 16, weight: .semibold)
     /// Its scrim. Deliberately not `Look.scrim`: that one sits under a 760pt bar in the
     /// middle of the window, where the page around it is plainly still there. A Peek covers
     /// four fifths of the window, so the strip left over has to read as *behind* on its own,

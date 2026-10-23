@@ -2180,6 +2180,8 @@ struct Stash {
 }
 
 @MainActor final class TabStore: ObservableObject {
+    /// Separate observation boundary: page geometry only invalidates its floating Peek.
+    let peekContent = Peek.ContentArea()
     weak var sidebarDragPreview: SidebarDragPreview?
     let windowID = UUID()
     // Outlive the Find bar and profile parking, but never the owning store.
