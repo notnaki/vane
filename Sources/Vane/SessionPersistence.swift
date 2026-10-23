@@ -20,8 +20,6 @@ final class SessionPersistence: @unchecked Sendable {
     struct Mutation<Value: Sendable>: Sendable {
         let value: Value
         let ownership: Ownership
-        var previousVersion: UInt64 { ownership.previousVersion }
-        var version: UInt64 { ownership.version }
     }
     private var nextVersion: UInt64 = 0
     private var versions: [URL: UInt64] = [:] // queue-confined write identity

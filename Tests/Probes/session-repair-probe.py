@@ -39,6 +39,11 @@ for declaration in ['    struct Entry:', '    private struct Disk:', '    struct
     source += block(window, declaration) + "\n"
 source += "}\n"
 source += r'''
+final class ProbeWritePermission: @unchecked Sendable {
+ private let lock=NSLock();private var allowed=false
+ func permits()->Bool {lock.withLock {allowed}}
+ func allow(){lock.withLock {allowed=true}}
+}
 @main struct RepairProbe {
  @MainActor static func main() async throws {
   let directory=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -97,7 +102,32 @@ source += r'''
   let flushed=await SessionPersistence.shared.flush();precondition(flushed)
   let skipSession=await Session.repair(forgottenAgain.change!);precondition(skipSession)
   let retainedSession=try Data(contentsOf:sessionFile);precondition(retainedSession==newerSession)
-  print("PASS exact session/sidecar generations and caches, unrelated merge, newer writes, external fallback pause")
+  let pendingFile=directory.appendingPathComponent("pending-session.json")
+  let lane=SessionPersistence(),permission=ProbeWritePermission()
+  lane.enqueue(file:pendingFile) {permission.permits() && SnapshotPersistence.write(Data("old pending".utf8),to:pendingFile)}
+  let rejected=await lane.flush();precondition(!rejected)
+  let stagedPending=await lane.mutate(file:pendingFile) {SnapshotPersistence.write(Data("staged".utf8),to:pendingFile)}
+  let stagedFlushed=await lane.flush();precondition(stagedFlushed)
+  permission.allow()
+  let rolledBack=await lane.repair(stagedPending!.ownership) { owns in
+   precondition(owns);return (true,SessionPersistence.RepairDisposition.rolledBack)
+  };precondition(rolledBack==true)
+  let pendingFlushed=await lane.flush();precondition(pendingFlushed)
+  let pendingBytes=try Data(contentsOf:pendingFile);precondition(pendingBytes==Data("old pending".utf8))
+  let closedProfile=UUID(),removedSpace=UUID(),keptSpace=UUID(),closedPermission=ProbeWritePermission()
+  let closedFile=ProfileManager.sessionURL(for:closedProfile,in:directory)
+  let closedOld=Session.encode([[Session.Entry(url:"https://old-closed.example")]],spaces:[removedSpace.uuidString])!
+  let closedPending=Session.encode([[Session.Entry(url:"https://remove.example")],[Session.Entry(url:"https://keep-accepted.example")]],spaces:[removedSpace.uuidString,keptSpace.uuidString])!
+  try closedOld.write(to:closedFile)
+  SessionPersistence.shared.enqueue(file:closedFile) {closedPermission.permits() && RecoverySnapshots.write(closedPending,to:closedFile,valid:Session.readable)}
+  let closedRejected=await SessionPersistence.shared.flush();precondition(!closedRejected)
+  let closedBlocked=await Session.stageForget(space:removedSpace,in:closedProfile);precondition(!closedBlocked.succeeded && closedBlocked.change==nil)
+  closedPermission.allow()
+  let closedStaged=await Session.stageForget(space:removedSpace,in:closedProfile);precondition(closedStaged.succeeded)
+  let closedData=try String(contentsOf:closedFile,encoding:.utf8);precondition(closedData.contains("keep-accepted.example") && !closedData.contains("remove.example"))
+  let closedRepair=await Session.repair(closedStaged.change!);precondition(closedRepair)
+  let closedRestored=try Data(contentsOf:closedFile);precondition(closedRestored==closedPending)
+  print("PASS exact session/sidecar generations and caches, unrelated merge, newer writes, external fallback pause, retry ownership and pending closed-window preservation")
  }
 }
 '''
