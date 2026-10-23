@@ -632,6 +632,31 @@ import XCTest
         try await checkEarlyProfilePageSelection(cached: true)
     }
 
+    func testCachedProfileReturnInstallsInputBeforeTheNextRender() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let profiles = [manager.create(name: "Input origin"), manager.create(name: "Input arrival")]
+        let spaces = profiles.map { manager.createSpace(name: "Input", in: $0.id) }
+        let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
+        let window = try XCTUnwrap(source.window)
+        defer {
+            window.close()
+            profiles.forEach { _ = manager.delete($0.id) }
+            manager.active = previous
+        }
+        source.palette = nil
+        try await compatibilityWait { source.spaceGesture.monitor.isInstalled }
+        let arriving = try XCTUnwrap(Windows.hop(source, to: spaces[1]))
+        try await compatibilityWait {
+            !source.spaceGesture.monitor.isInstalled && arriving.spaceGesture.monitor.isInstalled
+        }
+        XCTAssertTrue(Windows.hop(arriving, to: spaces[0]) === source)
+        XCTAssertTrue(source.spaceGesture.monitor.isInstalled,
+                      "Cached profiles must accept the next gesture before SwiftUI renders their visibility change")
+    }
+
     func testRapidProfileBoundarySwipesCanImmediatelyReverse() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared

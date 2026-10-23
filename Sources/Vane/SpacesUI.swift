@@ -290,7 +290,7 @@ extension View {
 
     /// Two-finger horizontal swipe on the sidebar switches Space.
     func spaceSwipe(_ store: TabStore) -> some View {
-        modifier(SpaceSwipe(store: store, visible: store.sidebarShown || store.sidebarPeeking))
+        modifier(SpaceSwipe(store: store))
     }
 }
 
@@ -913,31 +913,41 @@ extension TabStore {
 
 private struct SpaceSwipe: ViewModifier {
     @ObservedObject var store: TabStore
-    let visible: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var visible: Bool { store.profileVisible && (store.sidebarShown || store.sidebarPeeking) }
+
+    private func reconcileInput() {
+        let monitor = store.spaceGesture.monitor
+        if !store.profileVisible { monitor.remove() }
+        else if visible { monitor.install(store) }
+        else { monitor.suspend() }
+    }
 
     func body(content: Content) -> some View {
         let monitor = store.spaceGesture.monitor
-        let visible = self.visible && store.profileVisible
         content
-            .onAppear { if visible { monitor.install(store) } }
-            .onDisappear { monitor.remove() }
+            .onAppear { reconcileInput() }
+            .onDisappear {
+                // Cached-host callbacks can trail a completed return to this profile.
+                // Model ownership, rather than that old callback, owns current input.
+                if !store.profileVisible || store.window == nil || !TabStore.all.contains(where: { $0 === store }) {
+                    monitor.remove()
+                }
+            }
             // The sidebar stays mounted offscreen between edge reveals. Its gesture
             // lifetime still follows visibility, including cancellation of a live drag.
-            .onChange(of: visible) { _, visible in
+            .onChange(of: visible) {
                 if visible {
                     if !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35, preservingSurfaces: true) }
-                    monitor.install(store)
-                } else if store.profileVisible { monitor.suspend() }
-                else { monitor.remove() }
+                }
+                reconcileInput()
             }
             .onChange(of: store.sidebarShown) { _, shown in
                 // Docking a peek keeps `visible` true, but still animates the page seam.
                 if shown, !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35, preservingSurfaces: true) }
             }
-            .onChange(of: store.profileVisible) { _, visible in
-                if !visible { monitor.remove() }
-            }
+            .onChange(of: store.profileVisible) { reconcileInput() }
             .onChange(of: reduceMotion) { _, reduced in
                 if reduced { monitor.finishForReducedMotion() }
             }

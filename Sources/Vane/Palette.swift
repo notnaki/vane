@@ -462,7 +462,7 @@ enum PaletteMode {
 /// `detail` is matched against and spoken, but never drawn: Arc's rows are a title and a
 /// verb, and a url after every tab title is what made the list read as a log. `subtitle`
 /// is the part of it worth drawing when there is one — "Window 2", a history item's host.
-private struct PaletteRow: Identifiable {
+struct PaletteRow: Identifiable {
     let id: String
     let icon: String
     var image: NSImage? = nil
@@ -733,6 +733,120 @@ struct CommandField: NSViewRepresentable {
     }
 }
 
+/// A result slot owns its pointer state. Hovering must not invalidate the field,
+/// tab snapshots, or neighboring results while the user scrolls through search.
+@MainActor struct PaletteResultRow: View {
+    let row: PaletteRow
+    let index: Int
+    let rowCount: Int
+    let selected: Bool
+    let selectionColor: Color
+    let favicons: Favicons
+    let animations: Bool
+    let activate: () -> Void
+    let forget: () -> Void
+    @Environment(\.spaceChromeTheme) private var chromeTheme
+    // Slots keep their identity while queries replace the result occupying them.
+    @State private var hovering = false
+
+    var body: some View {
+        let on = selected
+        let lit = hovering
+        HStack(spacing: Look.barRowSpacing) {
+            if let image = row.image {
+                SiteIcon(icon: image, size: Look.rowIcon, rounded: !row.detail.hasPrefix("file:"))
+            } else if ["Archived tab", "History", "Bookmark"].contains(row.kind) {
+                CachedFavicon(cache: favicons, url: URL(string: row.detail)) { image in
+                    if let image {
+                        SiteIcon(icon: image, size: Look.rowIcon, rounded: !row.detail.hasPrefix("file:"))
+                    } else {
+                        Image(systemName: row.icon)
+                            .font(Look.symbol)
+                            .foregroundStyle(Look.barGlyph)
+                            .frame(width: Look.rowIcon, height: Look.rowIcon)
+                    }
+                }
+            } else if row.chip {
+                Image(systemName: row.icon)
+                    .font(Look.chipGlyph)
+                    .foregroundStyle(Look.barGlyph)
+                    .frame(width: Look.chip, height: Look.chip)
+                    .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
+                    // The chip is wider than the icon column, and centred on it, so the
+                    // titles down the bar stay on one line whether or not a row wears one.
+                    .frame(width: Look.rowIcon)
+            } else {
+                Image(systemName: row.icon)
+                    .font(Look.symbol)
+                    .foregroundStyle(Look.barGlyph)
+                    .frame(width: Look.rowIcon, height: Look.rowIcon)
+            }
+            // Arc's title is a light grey until the row is the one Return will press,
+            // when it goes to full white — the fill alone is not the whole selection here.
+            Text(row.title).font(Look.rowText).lineLimit(1)
+                .foregroundStyle(on ? Look.barSelectedText : Look.barText)
+            if !row.subtitle.isEmpty {
+                Text(row.subtitle).font(Look.text).foregroundStyle(Look.barTrailing).lineLimit(1)
+            }
+            Spacer(minLength: Look.inset)
+            // Forgetting a suggestion is a hover affordance, the way Arc's is: it appears on
+            // the row under the pointer or the arrow, and stays out of the way otherwise.
+            // Its width is held whether or not it is drawn, so arriving over a row does not
+            // shove "Open" sideways — the chrome stays put and only the ink changes.
+            if row.forget != nil {
+                Button(action: forget) {
+                    Image(systemName: "xmark")
+                        .font(Look.chipGlyph)
+                        .foregroundStyle(Look.barGlyph)
+                        .frame(width: Look.chip, height: Look.chip)
+                        .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
+                }
+                .buttonStyle(.plain)
+                .opacity(lit || on ? 1 : 0)
+                .allowsHitTesting(lit || on)
+                .animation(animations ? Look.quick : nil, value: lit || on)
+                .accessibilityLabel("Remove from history")
+                .accessibilityHidden(!(lit || on))
+            }
+            // The verb and its chip travel together, on every row that has one; the
+            // selected row's are the bright pair, because that is the one Return presses.
+            if !row.shortcut.isEmpty {
+                Text(row.shortcut).font(Look.rowText)
+                    .foregroundStyle(on ? Look.barSelectedText : Look.barTrailing)
+                    .lineLimit(1).layoutPriority(1)
+            }
+            if !row.trailing.isEmpty {
+                Text(row.trailing).font(Look.rowText)
+                    .foregroundStyle(on ? Look.barSelectedText : Look.barTrailing)
+                    .lineLimit(1).layoutPriority(1)
+                Image(systemName: "arrow.right")
+                    .font(Look.chipGlyph)
+                    .foregroundStyle(on ? Look.barSelectedText : Look.barGlyph)
+                    .frame(width: Look.chip, height: Look.chip)
+                    .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
+            }
+        }
+        .padding(.horizontal, Look.barRowInset)
+        .frame(height: Look.barRowHeight)
+        .background(on ? selectionColor
+                    : (lit ? chromeTheme.barHovered : .clear),
+                    in: .rect(cornerRadius: Look.pillRadius))
+        .animation(animations ? Look.quick : nil, value: on)
+        .animation(animations ? Look.quick : nil, value: lit)
+        .padding(.horizontal, Look.barInset)
+        .contentShape(.rect)
+        .id(index)
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: activate)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(row.title)
+        .accessibilityValue("\(row.kind), \(row.detail), \(index + 1) of \(rowCount)")
+        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { activate() }
+    }
+
+}
+
 /// The search bar: one centred sheet over the page for typing a url, a search, a question
 /// for an assistant, or the name of a tab.
 ///
@@ -742,6 +856,8 @@ struct CommandField: NSViewRepresentable {
 /// open. Commands are a tail that only shows up once the query is long enough to mean one.
 /// Every entry point — ⌘L, ⌘T, the address pill, ⌘⇧P, ⌘⇧A — lands here, looking the same.
 @MainActor struct PaletteView: View {
+    @ObservedObject private var profileManager = ProfileManager.shared
+    @State private var spaceCatalog = PaletteSpaceCatalog()
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -759,9 +875,6 @@ struct CommandField: NSViewRepresentable {
     /// In-memory rows refresh immediately; database suggestions arrive separately.
     @State private var rows: [PaletteRow] = []
     @State private var layout = Feel03PaletteLayout<PaletteRow>()
-    /// The slot under the pointer. Slots are rewritten in place, so hover follows the
-    /// slot, not whichever row last stood in it.
-    @State private var hover: Int?
     /// Arc's ⇥: the bar narrows to its actions catalogue and says so with a scope chip in
     /// the field. Escape takes the filter off before it closes the bar.
     @State private var actionsOnly = false
@@ -945,8 +1058,21 @@ struct CommandField: NSViewRepresentable {
         // result/action content before rebuilding, including store-driven changes.
         .onChange(of: currentTabContent) { refresh(reset: false) }
         .onChange(of: tabSpaceID) { refresh() }
+        // Space metadata changes between queries still update the open palette.
+        .onChange(of: profileManager.spacesRevision) { refresh(reset: false) }
+        .onChange(of: profileManager.profiles) { refresh(reset: false) }
+        .onChange(of: store.previewSpace) { refresh(reset: false) }
+        .onChange(of: store.currentSpaceID) { refresh(reset: false) }
         // Tabs opened or closed while the bar is up: watch the new set, and list it.
         .onChange(of: allTabs.map(\.id)) { tabs.watch(allTabs); refresh(reset: false) }
+    }
+
+    private var catalogStrip: [Space] {
+        store.isPrivate || store.isLittle ? [] : spaceCatalog.strip(manager: profileManager, preview: store.previewSpace)
+    }
+
+    private var catalogSpaces: [Space] {
+        catalogStrip.filter { $0.profileID == store.profileID }
     }
 
     private var sources: [(offset: Int, element: TabStore)] {
@@ -1051,7 +1177,7 @@ struct CommandField: NSViewRepresentable {
             if mode == .tabs, !store.isPrivate, !store.isLittle, !actionsOnly {
                 Picker("Space", selection: $tabSpaceID) {
                     Text("All open Spaces").tag(nil as UUID?)
-                    ForEach(store.spaces) { space in
+                    ForEach(catalogSpaces) { space in
                         Text(space.name).tag(Optional(space.id))
                     }
                 }
@@ -1111,99 +1237,10 @@ struct CommandField: NSViewRepresentable {
     }
 
     private func line(_ i: Int, _ row: PaletteRow) -> some View {
-        let on = i == index
-        let lit = Palette.litSlot(hover: hover, rowCount: rows.count) == i
-        return HStack(spacing: Look.barRowSpacing) {
-            if let image = row.image {
-                SiteIcon(icon: image, size: Look.rowIcon, rounded: !row.detail.hasPrefix("file:"))
-            } else if ["Archived tab", "History", "Bookmark"].contains(row.kind) {
-                CachedFavicon(cache: store.favicons, url: URL(string: row.detail)) { image in
-                    if let image {
-                        SiteIcon(icon: image, size: Look.rowIcon, rounded: !row.detail.hasPrefix("file:"))
-                    } else {
-                        Image(systemName: row.icon)
-                            .font(Look.symbol)
-                            .foregroundStyle(Look.barGlyph)
-                            .frame(width: Look.rowIcon, height: Look.rowIcon)
-                    }
-                }
-            } else if row.chip {
-                Image(systemName: row.icon)
-                    .font(Look.chipGlyph)
-                    .foregroundStyle(Look.barGlyph)
-                    .frame(width: Look.chip, height: Look.chip)
-                    .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
-                    // The chip is wider than the icon column, and centred on it, so the
-                    // titles down the bar stay on one line whether or not a row wears one.
-                    .frame(width: Look.rowIcon)
-            } else {
-                Image(systemName: row.icon)
-                    .font(Look.symbol)
-                    .foregroundStyle(Look.barGlyph)
-                    .frame(width: Look.rowIcon, height: Look.rowIcon)
-            }
-            // Arc's title is a light grey until the row is the one Return will press,
-            // when it goes to full white — the fill alone is not the whole selection here.
-            Text(row.title).font(Look.rowText).lineLimit(1)
-                .foregroundStyle(on ? Look.barSelectedText : Look.barText)
-            if !row.subtitle.isEmpty {
-                Text(row.subtitle).font(Look.text).foregroundStyle(Look.barTrailing).lineLimit(1)
-            }
-            Spacer(minLength: Look.inset)
-            // Forgetting a suggestion is a hover affordance, the way Arc's is: it appears on
-            // the row under the pointer or the arrow, and stays out of the way otherwise.
-            // Its width is held whether or not it is drawn, so arriving over a row does not
-            // shove "Open" sideways — the chrome stays put and only the ink changes.
-            if row.forget != nil {
-                Button { index = i; forget() } label: {
-                    Image(systemName: "xmark")
-                        .font(Look.chipGlyph)
-                        .foregroundStyle(Look.barGlyph)
-                        .frame(width: Look.chip, height: Look.chip)
-                        .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
-                }
-                .buttonStyle(.plain)
-                .opacity(lit || on ? 1 : 0)
-                .allowsHitTesting(lit || on)
-                .animation(motion(Look.quick), value: lit || on)
-                .accessibilityLabel("Remove from history")
-                .accessibilityHidden(!(lit || on))
-            }
-            // The verb and its chip travel together, on every row that has one; the
-            // selected row's are the bright pair, because that is the one Return presses.
-            if !row.shortcut.isEmpty {
-                Text(row.shortcut).font(Look.rowText)
-                    .foregroundStyle(on ? Look.barSelectedText : Look.barTrailing)
-                    .lineLimit(1).layoutPriority(1)
-            }
-            if !row.trailing.isEmpty {
-                Text(row.trailing).font(Look.rowText)
-                    .foregroundStyle(on ? Look.barSelectedText : Look.barTrailing)
-                    .lineLimit(1).layoutPriority(1)
-                Image(systemName: "arrow.right")
-                    .font(Look.chipGlyph)
-                    .foregroundStyle(on ? Look.barSelectedText : Look.barGlyph)
-                    .frame(width: Look.chip, height: Look.chip)
-                    .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
-            }
-        }
-        .padding(.horizontal, Look.barRowInset)
-        .frame(height: Look.barRowHeight)
-        .background(on ? (activeBang == nil ? chromeTheme.barSelected : bangColor)
-                    : (lit ? chromeTheme.barHovered : .clear),
-                    in: .rect(cornerRadius: Look.pillRadius))
-        .animation(motion(Look.quick), value: on)
-        .animation(motion(Look.quick), value: lit)
-        .padding(.horizontal, Look.barInset)
-        .contentShape(.rect)
-        .id(i)
-        .onHover { hover = $0 ? i : (hover == i ? nil : hover) }
-        .onTapGesture { index = i; activate() }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(row.title)
-        .accessibilityValue("\(row.kind), \(row.detail), \(i + 1) of \(rows.count)")
-        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
-        .accessibilityAction { index = i; activate() }
+        PaletteResultRow(row: row, index: i, rowCount: rows.count, selected: i == index,
+            selectionColor: activeBang == nil ? chromeTheme.barSelected : bangColor,
+            favicons: store.favicons, animations: motion(Look.quick) != nil,
+            activate: { index = i; activate() }, forget: { index = i; forget() })
     }
 
     // MARK: Behaviour
@@ -1626,7 +1663,7 @@ struct CommandField: NSViewRepresentable {
     /// leave and no strip to switch.
     private func spaceRows() -> [PaletteRow] {
         guard !store.isPrivate, !store.isLittle else { return [] }
-        return store.strip.filter { $0.id != store.currentSpaceID }.map { space in
+        return catalogStrip.filter { $0.id != store.currentSpaceID }.map { space in
             PaletteRow(id: "space:" + space.id.uuidString, icon: space.icon ?? "square.stack",
                        title: space.name, detail: "Space",
                        trailing: "Switch to Space", kind: "Space") { _ in
@@ -1643,7 +1680,8 @@ struct CommandField: NSViewRepresentable {
         else { return [] }
         // Ranked on the title alone: matching the shortcut too would put every ⌘-something
         // under a query like "d", and the Shortcuts pane is where keys are searched.
-        return Palette.rank(typed, PaletteCommand.all(for: store), key: \.title).map { c in
+        return Palette.rank(typed, PaletteCommand.all(for: store, strip: catalogStrip,
+            ownSpaces: catalogSpaces), key: \.title).map { c in
             PaletteRow(id: "cmd:" + c.id, icon: c.icon, title: c.title,
                        detail: c.shortcut, shortcut: c.shortcut, kind: "Action") { _ in
                 c.run()

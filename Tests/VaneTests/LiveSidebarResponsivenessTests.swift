@@ -21,6 +21,9 @@ import XCTest
         </article><script>window.beats=0;setInterval(()=>window.beats++,16)</script>
         """
         let timing = ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1"
+        let previousPolicy = NSApp.activationPolicy()
+        if timing { NSApp.setActivationPolicy(.accessory) }
+        defer { if timing { NSApp.setActivationPolicy(previousPolicy) } }
         let remote = ProcessInfo.processInfo.environment["VANE_LIVE_SITE_URL"].flatMap(URL.init(string:))
         let url = try remote ?? server.url("/page")
         let suggestionsEnabled = SearchSuggestions.enabled
@@ -51,13 +54,14 @@ import XCTest
                 + tabs[8..<15].map { .init(row: .tab($0.id.uuidString), parent: folder.id) })
             store.todayShape = Pins(entries: tabs[15...].map { .init(row: .tab($0.id.uuidString)) })
             store.palette = nil
-            let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1100, height: 750),
+            let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1100, height: timing ? 600 : 750),
                 styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             store.window = window
             let host = BrowserWindowHost(shown: ShownStore(store))
             window.contentView = host
             window.makeKeyAndOrderFront(nil)
+            if timing { NSApp.activate(ignoringOtherApps: true) }
             SharedTabs.refreshPresentation()
             defer {
                 archive.clear()
@@ -92,6 +96,42 @@ import XCTest
                 XCTAssertEqual(cards, 150, "The content must be a rendered document, not a blank parked page")
                 _ = try await web.evaluateJavaScript("document.getElementById('draft').value = 'edited draft retained'")
             }
+            let cadence = timing ? NativeChromeCadence() : nil
+            if let screen = window.screen { cadence?.start(on: screen) }
+            defer { cadence?.stop() }
+            func scrollFrames(sidebar: Bool) async throws {
+                guard timing else { return }
+                func scrolls(in view: NSView) -> [NSScrollView] {
+                    (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrolls(in: $0) }
+                }
+                func candidate() -> NSScrollView? { scrolls(in: host).first { scroll in
+                    let rect = scroll.convert(scroll.bounds, to: host)
+                    let extent = max(scroll.documentView?.bounds.height ?? 0,
+                                     scroll.documentView?.frame.height ?? 0) - scroll.contentView.bounds.height
+                    return extent > 1 && rect.minX >= 0 && rect.height > 100 && (sidebar
+                        ? rect.maxX < SidebarWidth.shared.width + 20
+                        : rect.width > SidebarWidth.shared.width + 80 && rect.height < 500)
+                } }
+                try await compatibilityWait { candidate() != nil }
+                let viewport = try XCTUnwrap(candidate())
+                let limit = max(0, max(viewport.documentView?.bounds.height ?? 0,
+                    viewport.documentView?.frame.height ?? 0) - viewport.contentView.bounds.height)
+                XCTAssertGreaterThan(limit, 0, "Cadence diagnostics require a genuinely scrollable production list")
+                // Keep velocity equal across outline sizes. Sweeping the full content
+                // range makes 300 tabs demand vastly more new rows per frame than 28.
+                let distance = min(limit, 16 * 44)
+                print("CHROME_SCROLL \(sidebar ? "sidebar" : "cmdt") tabs=\(count) viewport=\(viewport.contentView.bounds.height) range=\(limit) distance=\(distance)")
+                cadence?.begin()
+                for frame in 0..<90 {
+                    let progress = CGFloat(frame < 45 ? frame : 89 - frame) / 44
+                    viewport.contentView.scroll(to: CGPoint(x: 0, y: distance * progress))
+                    viewport.reflectScrolledClipView(viewport.contentView)
+                    // Let the normal display cycle commit native scrolling. Forcing
+                    // whole-window layout on each packet overstates normal input work.
+                    try await Task.sleep(for: .milliseconds(8))
+                }
+                cadence?.report("\(sidebar ? "sidebar_scroll" : "cmdt_scroll") tabs=\(count)")
+            }
             for iteration in 0..<3 {
                 var lastBeat = ProcessInfo.processInfo.systemUptime
                 var largestGap = 0.0
@@ -109,6 +149,7 @@ import XCTest
                 host.layoutSubtreeIfNeeded()
                 let disclosure = start.duration(to: .now)
                 try await Task.sleep(for: .milliseconds(600))
+                if iteration == 0 { try await scrollFrames(sidebar: true) }
                 let hide = ContinuousClock.now
                 store.sidebarShown = false
                 host.layoutSubtreeIfNeeded()
@@ -120,10 +161,16 @@ import XCTest
                 let showing = show.duration(to: .now)
                 try await Task.sleep(for: .milliseconds(250))
                 let open = ContinuousClock.now
+                cadence?.begin()
                 store.palette = .newTab
                 host.layoutSubtreeIfNeeded()
                 let opening = open.duration(to: .now)
                 try await compatibilityWait { window.firstResponder is NSTextView }
+                if timing {
+                    try await Task.sleep(for: .milliseconds(180))
+                    cadence?.report("cmdt_open tabs=\(count) iteration=\(iteration)")
+                    cadence?.begin()
+                }
                 let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
                 var typing = Duration.zero
                 for text in ["l", "li", "live", "live document"] {
@@ -133,9 +180,13 @@ import XCTest
                     typing = max(typing, edit.duration(to: .now))
                     try await Task.sleep(for: .milliseconds(20))
                 }
+                if timing { cadence?.report("cmdt_typing tabs=\(count) iteration=\(iteration)") }
+                if iteration == 0 { try await scrollFrames(sidebar: false) }
+                cadence?.begin()
                 store.palette = nil
                 host.layoutSubtreeIfNeeded()
                 try await Task.sleep(for: .milliseconds(250))
+                if timing { cadence?.report("cmdt_close tabs=\(count) iteration=\(iteration)") }
                 XCTAssertTrue(active.existingWeb === web)
                 XCTAssertTrue(web.window === window)
                 XCTAssertFalse(web.isHiddenOrHasHiddenAncestor)
@@ -151,4 +202,32 @@ import XCTest
             XCTAssertFalse(try XCTUnwrap(tabs[15].existingWeb).isHiddenOrHasHiddenAncestor)
         }
     }
+}
+
+/// Main-thread display callback availability, not a claim of compositor-presented FPS.
+@MainActor private final class NativeChromeCadence: NSObject {
+    private var link: CADisplayLink?
+    private var previous: CFTimeInterval = 0
+    private var gaps: [Double] = []
+    private var rate: Float = 0
+    func start(on screen: NSScreen) {
+        rate = Float(screen.maximumFramesPerSecond)
+        let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+    func begin() { previous = CACurrentMediaTime(); gaps.removeAll(keepingCapacity: true) }
+    @objc private func tick(_ link: CADisplayLink) {
+        let now = CACurrentMediaTime()
+        if previous > 0 { gaps.append((now - previous) * 1000) }
+        previous = now
+    }
+    func report(_ phase: String) {
+        let sorted = gaps.sorted()
+        guard !sorted.isEmpty else { print("CHROME_CADENCE \(phase) callbacks=0 hz=\(rate)"); return }
+        let budget = 1000 / Double(rate)
+        print("CHROME_CADENCE \(phase) callbacks=\(sorted.count) hz=\(rate) p50_ms=\(sorted[sorted.count / 2]) p95_ms=\(sorted[min(sorted.count - 1, sorted.count * 95 / 100)]) max_ms=\(sorted.last!) over_1_5_frames=\(sorted.filter { $0 > budget * 1.5 }.count)")
+    }
+    func stop() { link?.invalidate(); link = nil }
 }

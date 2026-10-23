@@ -2538,8 +2538,12 @@ struct Stash {
     }
 
     func clearSuggestions() {
-        suggestTask?.cancel(); suggestions = []; suggestionIndex = -1; suggestionsPending = false
-        historyPending = false; enginePending = false
+        suggestTask?.cancel()
+        if !suggestions.isEmpty { suggestions = [] }
+        if suggestionIndex != -1 { suggestionIndex = -1 }
+        if suggestionsPending { suggestionsPending = false }
+        if historyPending { historyPending = false }
+        if enginePending { enginePending = false }
     }
 
     let isPrivate: Bool

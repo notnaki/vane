@@ -429,13 +429,20 @@ struct BrowserWindow: View {
                     .zIndex(1)
             }
             // Last, so the search bar composites over the sidebar as well as the page.
-            if let mode = store.palette {
-                PaletteView(mode: mode) { dismissPalette() }
-                    // The bar fades itself in; this is the way out — Escape and a click
-                    // on the scrim dissolve it rather than cutting to the page.
-                    .transition(.opacity)
-                    .zIndex(2)
+            ZStack {
+                if let mode = store.palette {
+                    PaletteView(mode: mode) { dismissPalette() }
+                        // The bar fades itself in; this is the way out — Escape and a click
+                        // on the scrim dissolve it rather than cutting to the page.
+                        .transition(.opacity)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Keep the fade transaction inside the persistent overlay. Opening search
+            // also disables the sidebar; those controls do not need to animate with it.
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
+                       value: store.palette == nil)
+            .zIndex(2)
         }
         // The window is `.fullSizeContentView`, but SwiftUI still keeps a titlebar-sized
         // safe area at the top. Without this the sidebar's first row sits *below* the
@@ -471,7 +478,6 @@ struct BrowserWindow: View {
         .animation(reduceMotion || batterySaver.isActive ? nil
                    : Look.floatingSidebarAnimation, value: peeking)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.libraryOpen)
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.palette == nil)
         // Arc hides the traffic lights along with the sidebar: a collapsed window is the
         // page and nothing else. They come back the moment either sidebar does.
         .onChange(of: chrome, initial: true) { showTrafficLights(chrome) }
@@ -3689,18 +3695,23 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     var body: some View {
         if interactiveSurface {
             surface
-                .modifier(Feel02PressFeedback(enabled: keyboardEnabled && !held))
+                .modifier(Feel02PressFeedback(enabled: keyboardEnabled && !held, hoverChanged: { next in
+                    if hovering != next { hovering = next }
+                }))
                 .contentShape(.rect)
-                .onContinuousHover { phase in
-                    switch phase {
-                    case .active: if hovering != isEnabled { hovering = isEnabled }
-                    case .ended: if hovering { hovering = false }
-                    }
+                .onHover { inside in
+                    // Tracking exits cover leaving the window, while tracking
+                    // entries caused by layout never manufacture pointer motion.
+                    if !inside { hovering = false }
                 }
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in
+                .onGeometryChange(for: CGRect?.self) { [tracksFrame = hovering] in
+                    tracksFrame ? $0.frame(in: .global) : nil
+                } action: { previous, next in
                     // AppKit may omit an exit when disclosure/scrolling moves a
-                    // hovered row away from a stationary pointer.
-                    if hovering { hovering = false }
+                    // hovered row away from a stationary pointer. Unhovered rows
+                    // do not need global frame tracking during every scroll frame.
+                    guard let previous, let next, previous != next else { return }
+                    hovering = false
                 }
                 .onDisappear { hovering = false }
                 .onChange(of: isEnabled) { _, enabled in if !enabled { hovering = false } }

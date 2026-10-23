@@ -103,14 +103,21 @@ private struct LibrarySwipe: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
+    private func reconcileInput() {
+        if store.profileVisible { store.librarySwipeMonitor.install(store) }
+        else { store.librarySwipeMonitor.remove() }
+    }
+
     func body(content: Content) -> some View {
         let monitor = store.librarySwipeMonitor
         content
-            .onAppear { if store.profileVisible { monitor.install(store) } }
-            .onDisappear { monitor.remove() }
-            .onChange(of: store.profileVisible) { _, visible in
-                if visible { monitor.install(store) } else { monitor.remove() }
+            .onAppear { reconcileInput() }
+            .onDisappear {
+                if !store.profileVisible || store.window == nil || !TabStore.all.contains(where: { $0 === store }) {
+                    monitor.remove()
+                }
             }
+            .onChange(of: store.profileVisible) { reconcileInput() }
             .onChange(of: reduceMotion) { if reduceMotion { monitor.finishForReducedMotion() } }
             .onChange(of: batterySaver.isActive) {
                 if batterySaver.isActive { monitor.finishForReducedMotion() }

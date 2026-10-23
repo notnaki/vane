@@ -691,6 +691,12 @@ extension VaneWindow {
         arriving.switchTo(space: space)         // a no-op for a store built into it just now
         arriving.applySpaceAppearance()
         delegate.shown.store = arriving         // expose only the finalized destination
+        // A cached host can take another display turn to acknowledge visibility.
+        // The next gesture already belongs to this profile when hop returns.
+        arriving.librarySwipeMonitor.install(arriving)
+        if arriving.sidebarShown || arriving.sidebarPeeking {
+            arriving.spaceGesture.monitor.install(arriving)
+        }
         SharedTabs.refreshPresentation()
         store.extensions.sync()
         arriving.extensions.sync()
