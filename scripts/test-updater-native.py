@@ -157,7 +157,7 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
     # rights; it runs only transaction/relaunch code, never browser storage code.
     subprocess.run(['codesign', '--force', '--options', 'runtime', '--sign', os.environ.get('SIGN_ID', '-'),
                     '--entitlements', str(ROOT / 'Vane.entitlements'), str(driver)], check=True)
-    scenarios = ['healthy', 'fresh-profile', 'crashed-launch', 'corrupted-new', 'legacy-rollback', 'unsupervised-rollback'] + (['failed-bootstrap', 'failed-bootstrap-stale', 'failed-bootstrap-malformed'] if options.bootstrap_failure else [])
+    scenarios = ['healthy', 'fresh-profile', 'retained-healthy', 'crashed-launch', 'corrupted-new', 'legacy-rollback', 'unsupervised-rollback'] + (['failed-bootstrap', 'failed-bootstrap-stale', 'failed-bootstrap-malformed'] if options.bootstrap_failure else [])
     service = driver / 'Contents/XPCServices/io.github.notnaki.vane.UpdateInstaller.xpc'
     (service / 'Contents/MacOS').mkdir(parents=True)
     shutil.copy2(ROOT / 'installer/UpdateInstaller-Info.plist', service / 'Contents/Info.plist')
@@ -219,7 +219,10 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
             journal = json.loads(record.read_text())
             previous = scene / journal['stageName']
             assert version(previous) == old_version
-            if scenario == 'legacy-rollback':
+            if scenario == 'retained-healthy':
+                journal.update(state='healthy', launchPID=2147483647, launchStart=1)
+                record.write_text(json.dumps(journal))
+            elif scenario == 'legacy-rollback':
                 for key in ['targetPath', 'volumeID', 'newDigest', 'oldDigest']:
                     journal.pop(key, None)
                 journal.update(state='launching', launchPID=2147483647, launchStart=1, launchDeadline=0)
@@ -252,7 +255,7 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
                     process.wait(timeout=10)  # Reap the exited requesting parent before launch.
                     assert process.returncode == 0
                 track(work)
-                if scenario not in ['corrupted-new', 'legacy-rollback', 'unsupervised-rollback'] and not scenario.startswith('failed-bootstrap'):
+                if scenario not in ['retained-healthy', 'corrupted-new', 'legacy-rollback', 'unsupervised-rollback'] and not scenario.startswith('failed-bootstrap'):
                     until(lambda: record.exists() and json.loads(record.read_text())['state'] == 'launching')
                     assert previous.is_dir(), 'Previous bundle must remain before health'
                 if scenario in ['failed-bootstrap-stale', 'failed-bootstrap-malformed']:
@@ -266,7 +269,7 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
                     assert not any('/Vane.app/Contents/MacOS/Vane' in entry[1] for entry in track(work).values())
                     process = launch_recorded([str(target / 'Contents/MacOS/Vane')], environment, log)
                     until(lambda: (data / 'vane.db').exists())
-                elif scenario in ['healthy', 'fresh-profile']:
+                elif scenario in ['healthy', 'fresh-profile', 'retained-healthy']:
                     until(lambda: not record.exists(), seconds=60)
                     assert version(target) == new_version and not previous.exists()
                     assert (data / 'vane.db').exists(), 'XPC worker must preserve isolated browser storage'

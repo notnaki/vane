@@ -306,6 +306,9 @@ do {
     BundleReplacement.markHealthy(at: target, fault: { $0 == .beforeCleanup })
     check("durable health releases supervisor despite interrupted cleanup", BundleReplacement.hasPendingRecord(at: target) && BundleReplacement.hasCompletedReplacement(at: target, witness: witness, verifyReplacement: { label($0) == "new" }))
     check("health witness still requires independent signature", !BundleReplacement.hasCompletedReplacement(at: target, witness: witness, verifyReplacement: { _ in false }))
+    check("retained healthy journal identifies its exact owner", BundleReplacement.launchClaimed(at: target, by: getpid()))
+    check("retained healthy journal cannot certify a new child", !BundleReplacement.launchClaimed(at: target, by: Int32.max))
+    check("retained healthy journal rejects a reused owner PID", !BundleReplacement.launchClaimed(at: target, by: getpid(), observeStart: { _ in 1 }))
     let (_, other) = try scene("supervised-wrong-target")
     check("health witness cannot certify another target", !BundleReplacement.hasCompletedReplacement(at: other, witness: witness, verifyReplacement: { _ in true }))
 }

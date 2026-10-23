@@ -96,7 +96,10 @@ enum InstallerRelaunch {
         application.environment = environment
         try application.run()
         while application.isRunning, BundleReplacement.hasPendingRecord(at: target) {
-            if let witness, BundleReplacement.hasCompletedReplacement(at: target, witness: witness,
+            // A retained healthy record can belong to a previous process. Do not
+            // contend with this child's recovery until it has claimed the journal.
+            if let witness, BundleReplacement.launchClaimed(at: target, by: application.processIdentifier),
+               BundleReplacement.hasCompletedReplacement(at: target, witness: witness,
                     verifyReplacement: { (try? UpdateInstallation.verifyForRelaunch($0)) != nil }) { return }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }

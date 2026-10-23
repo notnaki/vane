@@ -605,7 +605,7 @@ enum BundleReplacement {
                               observeStart: (Int32) -> UInt64? = processStart) -> Bool {
         guard let journal = read(target), let recordedStart = journal.launchStart,
               let observedStart = observeStart(pid) else { return false }
-        return bound(journal, to: target) && journal.state == .launching
+        return bound(journal, to: target) && (journal.state == .launching || journal.state == .healthy)
             && journal.launchPID == pid && recordedStart == observedStart
             && fileID(target) == journal.newID
     }
