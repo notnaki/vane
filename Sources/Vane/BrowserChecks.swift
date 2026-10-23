@@ -291,7 +291,7 @@ import WebKit
                 // navigation delegate. SelfCheck separately checks gesture SPI/placement.
                 tab.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
                 var popup: Tab?
-                tab.onPopup = { [weak self] configuration, _ in
+                tab.onPopup = { [weak self] configuration, _, _ in
                     guard let self else { return nil }
                     let child = Tab(popup: configuration, isPrivate: false, profileID: profile)
                     popup = child
@@ -1272,7 +1272,7 @@ import WebKit
             source.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
             var child: Tab?
             var closed = false
-            source.onPopup = { [weak self] configuration, _ in
+            source.onPopup = { [weak self] configuration, _, _ in
                 guard let self else { return nil }
                 let made = Tab(popup: configuration, isPrivate: false, profileID: profile)
                 child = made

@@ -375,7 +375,9 @@ extension VaneWindow {
     /// key window meant the browser.
     /// Anything that moves rows around a sidebar, a Space or the archive wants `main`.
     static var current: TabStore? {
-        TabStore.all.first { $0.window?.isKeyWindow == true } ?? main
+        // Browser commands in a website dialog must never target the opener behind it.
+        if WebsitePopupWindow.owns(NSApp.keyWindow) { return nil }
+        return TabStore.all.first { $0.window?.isKeyWindow == true } ?? main
     }
 
     // MARK: ⌘W

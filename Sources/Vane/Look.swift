@@ -216,9 +216,8 @@ enum Look {
     /// Apple's 600×600, Stripe's 450×700. Anything larger is a page, and pages are tabs.
     /// See Popups.swift.
     ///
-    /// The ceiling is the Little Vane it would float in, not a number of its own: a page
-    /// asking for a window taller than the one Vane has to give it is not asking for a
-    /// dialog, and floating it would only crop it.
+    /// Preserve the established dialog-versus-page threshold. Website dialog windows
+    /// honor their requested dimensions, clamped to the visible screen.
     static let popupWidth: CGFloat = 800
     static let popupHeight: CGFloat = littleHeight
     /// Above Little Arc's bar. Its row is the address pill's own height rather than the
@@ -946,7 +945,7 @@ extension Look {
                     littleTopInset + pillHeight == rowHeight + rowGap))
         // The popup threshold, against the window it opens into. A page asking for a window
         // bigger than the one it would get is asking for a page, not a dialog.
-        out.append(("the biggest popup still fits the Little Vane it floats in",
+        out.append(("the dialog classification stays within the established compact bounds",
                     popupWidth <= littleWidth && popupHeight <= littleHeight))
         out.append(("…and every OAuth sheet on the web is inside it: Apple's 600×600 is the widest",
                     popupWidth >= 600 && popupHeight >= 600))

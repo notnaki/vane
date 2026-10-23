@@ -7,8 +7,8 @@ import WebKit
 /// `window.open` and `target=_blank` have always meant two different things on the web. One
 /// is "another page, please": the link that opens a tab. The other is the sign-in popup — a
 /// small window with no chrome that talks back to the page that opened it over
-/// `window.opener` and closes itself when it is done. Arc answers the first with a tab beside
-/// the opener and the second with a Little Arc, and this is that fork, written down once.
+/// `window.opener` and closes itself when it is done. Vane answers the first with a tab beside
+/// the opener and the second with a temporary website window, distinct from Little Vane.
 ///
 /// The half that matters most is not here: a popup's web view has to be built from the
 /// `WKWebViewConfiguration` WebKit hands the delegate, because that configuration is the
@@ -22,8 +22,8 @@ enum Popup {
     enum Placement: Equatable, Sendable {
         /// A tab beside the opener. `focus` false leaves the user where they were.
         case tab(focus: Bool)
-        /// A Little Vane: one floating page, one row of chrome, no sidebar.
-        case little
+        /// A temporary website dialog, outside the sidebar and session.
+        case window
     }
 
     /// The whole decision, as a pure function of what the page asked for. `nonisolated` so
@@ -40,16 +40,16 @@ enum Popup {
     /// silently dropped is the failure nobody can debug.
     ///
     /// `background` is ⌘ held on a `target=_blank` link, which asks for a tab behind this
-    /// one and gets exactly that whatever size the page named — a Little Vane in front of
+    /// one and gets exactly that whatever size the page named — a dialog in front of
     /// you is the one thing a ⌘-click is a request *not* to do. `decidePolicyFor` catches
     /// the ordinary ⌘-click before WebKit ever asks for a window, so this is the belt to
     /// that brace.
     nonisolated static func placement(width: Double?, height: Double?, toolbars: Bool?,
                                       userInitiated: Bool, background: Bool = false) -> Placement {
         guard userInitiated, !background else { return .tab(focus: false) }
-        if toolbars == false { return .little }
+        if toolbars == false { return .window }
         if let width, let height,
-           width <= Double(Look.popupWidth), height <= Double(Look.popupHeight) { return .little }
+           width <= Double(Look.popupWidth), height <= Double(Look.popupHeight) { return .window }
         return .tab(focus: true)
     }
 
@@ -89,17 +89,10 @@ enum Popup {
         return unsafeBitCast(imp, to: Getter.self)(action, sel)
     }
 
-    /// Whether the window a popup lands in comes to the front.
-    ///
-    /// A Little Vane is only ever *chosen* for a popup the user's own gesture asked for, so
-    /// it takes the key. A popup placed as a tab and floated anyway — which is what happens
-    /// inside a Little Vane or a Peek, where there is no sidebar to put a tab beside — keeps
-    /// the answer the placement gave it: `focus: false` is a ⌘-click or a popup with no
-    /// gesture behind it, and a floating window jumping in front of the page being read is
-    /// precisely what that asked *not* to happen.
+    /// Keep the placement's focus intent when a floating opener has no tab strip.
     nonisolated static func takesFocus(_ placement: Placement) -> Bool {
         switch placement {
-        case .little: true
+        case .window: true
         case .tab(let focus): focus
         }
     }
@@ -116,12 +109,12 @@ enum Popup {
         return [
             ("a popup that asked for no size is a tab, and the user is taken to it",
              p(nil, nil, nil, true) == .tab(focus: true)),
-            ("Google's 451×600 sign-in popup is a Little Vane",
-             p(451, 600, nil, true) == .little),
-            ("a page that asks for no toolbars is a Little Vane whatever size it named",
-             p(nil, nil, false, true) == .little),
+            ("Google's 451×600 sign-in popup is a website window",
+             p(451, 600, nil, true) == .window),
+            ("a page that asks for no toolbars is a website window whatever size it named",
+             p(nil, nil, false, true) == .window),
             ("…and toolbars it does want are no reason not to float a small one",
-             p(451, 600, true, true) == .little),
+             p(451, 600, true, true) == .window),
             ("a popup nothing the user did asked for opens behind, not in front",
              p(nil, nil, nil, false) == .tab(focus: false)),
             ("…and never as a window, however small it asked to be",
@@ -130,7 +123,7 @@ enum Popup {
              p(1400, 900, nil, true) == .tab(focus: true)),
             ("half a size is not a size", p(451, nil, nil, true) == .tab(focus: true)),
             ("the threshold is inclusive on both edges",
-             p(Double(Look.popupWidth), Double(Look.popupHeight), nil, true) == .little),
+             p(Double(Look.popupWidth), Double(Look.popupHeight), nil, true) == .window),
             ("…and one pixel over it either way is a page",
              p(Double(Look.popupWidth) + 1, 600, nil, true) == .tab(focus: true)
                 && p(451, Double(Look.popupHeight) + 1, nil, true) == .tab(focus: true)),
@@ -152,7 +145,7 @@ enum Popup {
 
             // Where a floated popup lands in the stack, for the Little Vane / Peek case in
             // `TabStore.popup` — the one place a `.tab` placement is floated anyway.
-            ("a Little Vane opened for a popup comes to the front", takesFocus(.little)),
+            ("a website dialog comes to the front", takesFocus(.window)),
             ("a popup that asked for a tab in front floats in front",
              takesFocus(.tab(focus: true))),
             ("…and one that asked to stay behind stays behind, floating or not",
@@ -197,14 +190,14 @@ extension TabStore {
     /// should go, though — `Popup.takesFocus` — so a ⌘-click or a gesture-less popup inside
     /// a Little Vane opens *behind* it rather than jumping in front of the page being read.
     func popup(_ cfg: WKWebViewConfiguration, placement: Popup.Placement,
-               opener: Tab.ID?) -> WKWebView {
+               opener: Tab.ID?, features: WKWindowFeatures? = nil) -> WKWebView {
         let tab = Tab(popup: cfg, isPrivate: isPrivate, profileID: profileID)
         switch placement {
         case .tab(let focus) where !isLittle:
             adoptBeside(tab, opener: opener, focus: focus)
         default:
-            LittleArc.open(popup: tab, isPrivate: isPrivate, profileID: profileID,
-                           focus: Popup.takesFocus(placement))
+            WebsitePopupWindow.open(tab, origin: self, opener: opener,
+                                    features: features, focus: Popup.takesFocus(placement))
         }
         return tab.web
     }
@@ -228,17 +221,6 @@ extension TabStore {
         } else {
             axAnnounce("Opened in a background tab.")
         }
-        extensions.sync()
-    }
-
-    /// The one page of a Little Vane opened around a popup. A floating store made with no
-    /// url comes up empty with the search bar over it, the way ⌥⌘N does — but this one is
-    /// not empty, it is about to be navigated by WebKit, so the bar goes.
-    func adopt(popup tab: Tab) {
-        wire(tab)
-        tabs.append(tab)
-        current = tab.id
-        palette = nil
         extensions.sync()
     }
 

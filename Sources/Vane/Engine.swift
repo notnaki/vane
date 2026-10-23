@@ -577,7 +577,7 @@ struct TitleReveal: Equatable, Sendable {
     /// A window this page asked for with `window.open` or `target=_blank`, and where its
     /// window said it should go. The web view that comes back is WebKit's own — see
     /// `createWebViewWith`, which hands it straight on. Nil is a popup that was refused.
-    var onPopup: ((WKWebViewConfiguration, Popup.Placement) -> WKWebView?)?
+    var onPopup: ((WKWebViewConfiguration, Popup.Placement, WKWindowFeatures) -> WKWebView?)?
     /// `window.close()`. Only ever called for a page a script opened, which is why every tab
     /// can carry it: WebKit refuses the call on a page the user navigated to themselves.
     var onClose: (() -> Void)?
@@ -1069,9 +1069,9 @@ struct TitleReveal: Equatable, Sendable {
     ///
     /// `release` and not `suspend`: suspension is about *parking* a page, so it declines a
     /// tab with nothing to park — one already suspended, one that never loaded — and a
-    /// closing window has to be let go either way. This is the path a Little Vane takes when
-    /// its popup calls `window.close()`: `closedByScript` → `performClose` →
-    /// `windowWillClose` → here, and a `suspend()` that decided there was nothing to do left
+    /// closing window has to be let go either way. Website dialogs use this same path:
+    /// `window.close()` → `performClose` → `windowWillClose` → here.
+    /// A `suspend()` that decided there was nothing to do left
     /// that popup's WebContent process running for the life of the app.
     func tearDown() {
         guard !tornDown else { return }
@@ -2080,7 +2080,7 @@ struct TitleReveal: Equatable, Sendable {
     func back()    { expectNavigation(existingWeb?.goBack()) }
     func forward() { expectNavigation(existingWeb?.goForward()) }
 
-    /// `target="_blank"` and `window.open` — a tab beside this one, or a Little Vane for a
+    /// `target="_blank"` and `window.open` — a tab beside this one, or a temporary window for a
     /// popup that asked to be one. See Popups.swift for which, and why.
     ///
     /// The web view handed back is built from `cfg`, WebKit's own configuration for this
@@ -2101,7 +2101,7 @@ struct TitleReveal: Equatable, Sendable {
         }
         return onPopup?(cfg, Popup.placement(features: windowFeatures,
                                              userInitiated: Popup.userInitiated(action),
-                                             background: action.modifierFlags.contains(.command)))
+                                             background: action.modifierFlags.contains(.command)), windowFeatures)
     }
 
     /// `window.close()`, which a page may only call on a window a script opened — so this
@@ -2824,9 +2824,9 @@ struct Stash {
         }
         // `window.open` and `target=_blank`: WebKit's own web view, put in a window of
         // Vane's choosing. See Popups.swift.
-        t.onPopup = { [weak self, weak t] cfg, placement in
+        t.onPopup = { [weak self, weak t] cfg, placement, features in
             guard let self else { return nil }
-            return popup(cfg, placement: placement, opener: t?.id)
+            return popup(cfg, placement: placement, opener: t?.id, features: features)
         }
         // `window.close()`. Deferred a turn: WebKit is inside this web view's own delegate
         // call, and closing the tab drops the view — freeing it under the frame that is

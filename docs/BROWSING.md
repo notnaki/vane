@@ -115,6 +115,11 @@ Split View shows two to four pages side by side or stacked, with resizable divid
 Peek opens a link over the current page; Little Vane opens it in a separate compact
 window.
 
+Website sign-in and other small script-opened dialogs use a separate temporary window
+with a read-only website address and native close controls. They have no Little Vane
+branding, Open in Space action, sidebar row, or saved session entry. Closing the dialog
+leaves its originating tab open; ordinary `target="_blank"` links still open tabs.
+
 ## Search and history
 
 **Instant Links** uses **Shift+Return** in the address or new-tab bar to open the
