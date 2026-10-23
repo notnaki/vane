@@ -1876,14 +1876,37 @@ struct TitleReveal: Equatable, Sendable {
         guard w === existingWeb, !tornDown, !suspended else { Task { _ = await download.cancel() }; return }
         TidyDownloads.remember(download, pageTitle: w.title)   // the page title only exists here
         Downloads.manager(for: profileID).attach(download, from: w)
-        Peek.dismissIfBlank(self)      // a Peek opened for a download has no page to show
+        if navigationAction.targetFrame?.isMainFrame == true { dismissDownloadTabIfBlank(w) }
     }
 
     func webView(_ w: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
         guard w === existingWeb, !tornDown, !suspended else { Task { _ = await download.cancel() }; return }
         TidyDownloads.remember(download, pageTitle: w.title)   // the page title only exists here
         Downloads.manager(for: profileID).attach(download, from: w)
+        if navigationResponse.isForMainFrame { dismissDownloadTabIfBlank(w) }
+    }
+
+    /// A new tab whose first navigation became a download has no document to keep.
+    /// The URL can already name the provisional download, so use committed history
+    /// rather than `url` or `hasEverLoaded` (which is set at provisional start).
+    private func dismissDownloadTabIfBlank(_ w: WKWebView) {
         Peek.dismissIfBlank(self)
+        guard w === existingWeb, !stays else { return }
+        let item = w.backForwardList.currentItem
+        guard item == nil || item?.url.absoluteString == "about:blank" else { return }
+        let generation = navigationState.policyGeneration
+        Task { @MainActor [weak self, weak w] in
+            guard let self, let w else { return }
+            // window.open('about:blank') can commit an empty history item first.
+            // Preserve a document written there by its opener, even without a URL.
+            let empty = try? await w.evaluateJavaScript("!document.body || !document.body.hasChildNodes()") as? Bool
+            guard empty == true, w === self.existingWeb, !self.tornDown, !self.suspended,
+                  !self.stays, self.navigationState.policyGeneration == generation,
+                  w.backForwardList.currentItem === item else { return }
+            // The owner's close callback defers teardown until WebKit's delegate returns
+            // and omits the empty tab from Reopen Closed Tab, just like script close.
+            self.onClose?()
+        }
     }
 
     func toggleBookmark() {
