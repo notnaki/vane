@@ -31,7 +31,12 @@ def declaration(source, marker):
 # keeping this probe independent of WebKit/AppKit and the app's build directory.
 selected = ["struct Login", "struct Failure", "static func namespace(", "static func owns(",
             "enum CredentialRead", "static func rank(", "private static func usedKey(",
-            "static func lastUsed("]
+            "static func lastUsed(", "private final class ServiceLane", "private final class Cancellation",
+            "static func serialized<", "static func checkServiceCancellation("]
+# Include the actual shared instance as well as its type: IntegrationTokens performs
+# complete migration/read/write turns through this lane, including cancellation checks.
+lane = next(line for line in passwords.splitlines()
+            if line.strip() == "private static let serviceLane = ServiceLane()")
 code = '''import Foundation
 import Security
 enum Store { static let overrideDirectory = ProcessInfo.processInfo.environment["VANE_DATA_DIR"] }
@@ -46,7 +51,7 @@ extension UserDefaults {
 }
 ''' + (ROOT / "Sources/Vane/PasswordOrigin.swift").read_text() + declaration(credential, "struct GitHubCredential") + '''
 enum Passwords {
-''' + "\n".join(declaration(passwords, marker) for marker in selected) + '''
+''' + "\n".join(declaration(passwords, marker) for marker in selected) + "\n" + lane + '''
 }
 ''' + (ROOT / "Sources/Vane/IntegrationTokens.swift").read_text() + '''
 let args = CommandLine.arguments
