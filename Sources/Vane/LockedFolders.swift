@@ -67,7 +67,7 @@ import LocalAuthentication
         let context = (override ?? authenticate)(reason) { [weak self] success in
             guard let self, let request = pending[key], request.token == token else { return }
             pending[key] = nil
-            if success { unlocked.insert(key); changed(profile) }
+            if success { unlocked.insert(key); changed(profile, unlocking: true) }
             request.replies.forEach { $0(success) }
         }
         // A test authenticator or unavailable system policy may finish synchronously.
@@ -92,8 +92,11 @@ import LocalAuthentication
         requests.flatMap(\.replies).forEach { $0(false) }
     }
 
-    private func changed(_ profile: UUID) {
+    private func changed(_ profile: UUID, unlocking: Bool = false) {
         let stores = TabStore.all.filter { $0.profileID == profile && $0.folderAuthentication === self }
+        // A grant publishes before its disclosure callback. Defer preview teardown
+        // before that publication; revocation still invalidates protected surfaces now.
+        if unlocking { stores.forEach { $0.postponeFolderPreparation() } }
         // All windows capture before the first one releases a shared live page.
         for store in stores { store.captureLockedFolderBackdrop() }
         for store in stores { store.enforceFolderLocks() }

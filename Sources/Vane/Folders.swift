@@ -1414,7 +1414,7 @@ extension TabStore {
 
     /// Preview hosting trees share the input thread. Keep both their teardown and
     /// replacement outside disclosure, including the list spring's settling tail.
-    private func postponeFolderPreparation() {
+    func postponeFolderPreparation() {
         spaceGesture.monitor.postponePreparation(in: self,
             by: Motion.reduced ? 0 : Look.listSeconds * 2)
     }

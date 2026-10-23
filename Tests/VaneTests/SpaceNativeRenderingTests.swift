@@ -1350,7 +1350,20 @@ import XCTest
     }
 
     func testFolderDisclosureDefersHiddenSpacePreparationAndDisposal() async throws {
+        try await checkFolderDisclosurePreparation(authenticating: false)
+    }
+
+    func testSuccessfulFolderUnlockDefersPreviewDisposalBeforeGrantPublication() async throws {
+        try await checkFolderDisclosurePreparation(authenticating: true)
+    }
+
+    private func checkFolderDisclosurePreparation(authenticating: Bool) async throws {
         let (store, spaces, window, monitor) = try fixture()
+        var authenticationReply: FolderAuthentication.Reply?
+        store.folderAuthentication = FolderAuthentication { _, reply in
+            authenticationReply = reply
+            return nil
+        }
         try XCTSkipIf(Motion.reduced, "Requires the folder's animated disclosure interval")
         store.sharingReady = false
         // Match the reported outline: four favourites, four loose pins, seven folder
@@ -1362,7 +1375,8 @@ import XCTest
             return tab
         }
         store.tabs = tabs
-        let folder = Folder(name: "Documents", collapsed: true)
+        let folder = Folder(name: "Documents", collapsed: true,
+                            requiresAuthentication: authenticating ? true : nil)
         store.pins = Pins(entries: tabs[4..<8].map { .init(row: .tab($0.id.uuidString)) }
             + [.init(row: .folder(folder))]
             + tabs[8..<15].map { .init(row: .tab($0.id.uuidString), parent: folder.id) })
@@ -1373,6 +1387,11 @@ import XCTest
         for _ in 0..<2 {
             let stale = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
             store.toggleFolder(folder.id)
+            if let reply = authenticationReply {
+                authenticationReply = nil
+                reply(true)
+            }
+            XCTAssertFalse(store.isFolderLocked(folder.id))
             XCTAssertTrue(monitor.preparedSlides.isEmpty, "Old disclosure geometry cannot be reused")
             XCTAssertNotNil(stale.superview,
                             "Disposing hidden hosting trees must not block the disclosure input")
