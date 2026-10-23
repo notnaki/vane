@@ -1635,7 +1635,6 @@ struct FavoriteTileBackground: View {
     let icon: NSImage?
 
     private var outlineColors: [Color] {
-        if chromeTheme.primary != nil { return [chromeTheme.accent, chromeTheme.accent] }
         let colors = FavoriteIconPalette.colors(for: icon).map { Color(nsColor: $0) }
         if colors.isEmpty { return [Look.inkPrimary, Look.inkPrimary] }
         return colors.count == 1 ? colors + colors : colors

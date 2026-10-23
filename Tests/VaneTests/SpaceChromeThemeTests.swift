@@ -88,24 +88,27 @@ final class SpaceChromeThemeTests: XCTestCase {
         }
     }
 
-    @MainActor func testSelectedFavoriteUsesSpacePrimaryInsteadOfItsWebsiteIcon() throws {
+    @MainActor func testSelectedFavoriteUsesWebsiteIconAcrossSpaceThemes() throws {
         let icon = NSImage(size: CGSize(width: 16, height: 16), flipped: false) { rect in
             NSColor.red.setFill()
             rect.fill()
             return true
         }
-        let theme = SpaceChromeTheme(primary: ThemeColor(hex: "#22BB55"))
-        for scheme in [ColorScheme.dark, .light] {
-            let renderer = ImageRenderer(content: FavoriteTileBackground(selected: true,
-                hovering: false, icon: icon)
-                .environment(\.spaceChromeTheme, theme)
-                .environment(\.colorScheme, scheme)
-                .frame(width: 72, height: 46)
-                .background(scheme == .dark ? Color.black : Color.white))
-            let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
-            let edge = try XCTUnwrap(bitmap.colorAt(x: 1, y: 23)?.usingColorSpace(.sRGB))
-            XCTAssertGreaterThan(edge.greenComponent - edge.redComponent, 0.3,
-                                 "The open favorite's outline should follow the space's green primary")
+        for hex in ["#777777", "#22BB55", "#3355EE"] {
+            let theme = SpaceChromeTheme(primary: ThemeColor(hex: hex))
+            for scheme in [ColorScheme.dark, .light] {
+                let renderer = ImageRenderer(content: FavoriteTileBackground(selected: true,
+                    hovering: false, icon: icon)
+                    .environment(\.spaceChromeTheme, theme)
+                    .environment(\.colorScheme, scheme)
+                    .frame(width: 72, height: 46)
+                    .background(scheme == .dark ? Color.black : Color.white))
+                let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+                let edge = try XCTUnwrap(bitmap.colorAt(x: 1, y: 23)?.usingColorSpace(.sRGB))
+                XCTAssertGreaterThan(edge.redComponent - edge.greenComponent, 0.3,
+                                     "The red favicon must supply the outline in space \(hex)")
+                XCTAssertGreaterThan(edge.redComponent - edge.blueComponent, 0.3)
+            }
         }
     }
 
