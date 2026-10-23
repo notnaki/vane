@@ -749,6 +749,8 @@ enum GitHubOAuth {
     private let readCredential: () -> Passwords.CredentialRead
     private let deleteCredential: (String) -> Bool
     private let storeCredential: (String, String) -> Bool
+    private let systemStoreCredential: Bool
+    private let systemDeleteCredential: Bool
     private let fetchPullRequests: (GitHubQuery, String) async -> Result<[GitHub.PR], GitHub.Trouble>
     private let renewal: GitHubTokenRenewal
     private var credentialVersion = 0
@@ -762,6 +764,9 @@ enum GitHubOAuth {
          sendRefresh: GitHubTokenRenewal.Send? = nil,
          fetchPullRequests: ((GitHubQuery, String) async -> Result<[GitHub.PR], GitHub.Trouble>)? = nil) {
         self.profileID = profileID
+        self.systemStoreCredential = storeCredential == nil
+        self.systemDeleteCredential = deleteCredential == nil
+        let host = Self.host
         let read = readCredential ?? {
             Passwords.readCredential(host: LiveFolders.host, profileID: profileID)
         }
@@ -780,7 +785,24 @@ enum GitHubOAuth {
         self.fetchPullRequests = fetchPullRequests ?? { await LiveFolders.fetch($0, token: $1) }
         self.renewal = GitHubTokenRenewal(
             lockURL: Store.directory.appendingPathComponent("github-refresh-" + profileID.uuidString + ".lock"),
-            read: read, write: write, secret: oauthSecret ?? { OAuthSecret.github }, send: sendRefresh)
+            read: read, write: write, secret: oauthSecret ?? { OAuthSecret.github }, send: sendRefresh,
+            readAsync: readCredential == nil ? {
+                (try? await Passwords.perform { Passwords.readCredential(host: host, profileID: profileID) })
+                    ?? .unavailable(errSecNotAvailable)
+            } : nil,
+            commit: storeCredential == nil ? { previous, next in
+                guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { return false }
+                return (try? await Passwords.perform {
+                    // Settings may edit/delete the token while the network request or
+                    // worker admission waits. Check and replace in the same lane turn.
+                    guard case let .found(account, value) = Passwords.readCredential(host: host, profileID: profileID),
+                          account == previous.login, GitHubCredential.restore(value) == previous.credential else { return false }
+                    guard Passwords.savePreferredCredential(host: host, account: next.login,
+                        password: next.credential.stored, profileID: profileID) else { return false }
+                    _ = Passwords.deleteOtherCredentials(host: host, keeping: next.login, profileID: profileID)
+                    return true
+                }) ?? false
+            } : nil)
         self.deleteCredential = deleteCredential ?? { account in
             Passwords.delete(host: LiveFolders.host, account: account, profileID: profileID)
         }
@@ -833,6 +855,33 @@ enum GitHubOAuth {
         return ok
     }
 
+    /// Production sign-in persists on the shared Keychain lane; the synchronous entry
+    /// remains for injected offline fixtures.
+    @discardableResult
+    func saveAsync(login: String, token: String) async -> Bool {
+        guard systemStoreCredential else { return save(login: login, token: token) }
+        guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }),
+              let lock = try? GitHubRefreshLock.tryAcquire(renewal.lockURL) else { return false }
+        defer { withExtendedLifetime(lock) {} }
+        credentialVersion += 1
+        let version = credentialVersion, host = Self.host, profile = profileID
+        let ok = (try? await Passwords.perform {
+            guard Passwords.savePreferredCredential(host: host, account: login, password: token, profileID: profile) else { return false }
+            _ = Passwords.deleteOtherCredentials(host: host, keeping: login, profileID: profile)
+            return true
+        }) ?? false
+        guard credentialVersion == version,
+              ProfileManager.shared.profiles.contains(where: { $0.id == profile }) else { return false }
+        if ok {
+            signingOut = false
+            credential = LiveCredentialCache(login: login, token: token)
+            needsReconnect = false
+            saidSignedOut = false
+            failing.removeAll()
+        }
+        return ok
+    }
+
     /// The token goes; the folders stay, holding whatever they last had, until a token is
     /// pasted again. Deleting the folders because a credential was withdrawn would be
     /// deleting the user's tabs.
@@ -841,7 +890,10 @@ enum GitHubOAuth {
         credentialVersion += 1
         let version = credentialVersion
         if let lock = try? GitHubRefreshLock.tryAcquire(renewal.lockURL) {
-            removeCredential(old.login, holding: lock)
+            if systemDeleteCredential {
+                signingOut = true
+                Task { await removeSystemCredential(old.login, token: old.token, holding: lock, version: version) }
+            } else { removeCredential(old.login, holding: lock) }
             return
         }
         // A refresh is spending its one-use token. Complete sign-out once it releases the
@@ -857,8 +909,25 @@ enum GitHubOAuth {
                 return
             }
             guard credentialVersion == version else { return }
-            removeCredential(old.login, holding: lock)
+            if systemDeleteCredential {
+                await removeSystemCredential(old.login, token: old.token, holding: lock, version: version)
+            } else { removeCredential(old.login, holding: lock) }
         }
+    }
+
+    private func removeSystemCredential(_ login: String, token: String, holding lock: GitHubRefreshLock, version: Int) async {
+        defer { withExtendedLifetime(lock) {} }
+        let host = Self.host, profile = profileID
+        let removed = (try? await Passwords.perform {
+            guard case let .found(account, value) = Passwords.readCredential(host: host, profileID: profile),
+                  account == login, GitHubCredential.restore(value)?.accessToken == token else { return false }
+            return Passwords.delete(host: host, account: login, profileID: profile)
+        }) ?? false
+        guard credentialVersion == version else { return }
+        if !removed { say("Vane couldn’t remove your GitHub sign-in. Try signing out again.") }
+        signingOut = false
+        credential = LiveCredentialCache()
+        needsReconnect = false
     }
 
     private func removeCredential(_ login: String, holding lock: GitHubRefreshLock) {
@@ -1008,7 +1077,7 @@ enum GitHubOAuth {
             say("GitHub signed Vane in, but would not say who to. Nothing was stored.")
             return
         }
-        guard save(login: who, token: grant.stored) else {
+        guard await saveAsync(login: who, token: grant.stored) else {
             say("The keychain would not store the GitHub token.")
             return
         }

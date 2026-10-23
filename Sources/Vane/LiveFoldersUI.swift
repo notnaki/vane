@@ -188,7 +188,7 @@ struct LiveFolderSheet: View {
         Task {
             switch await LiveFolders.identify(token: typed) {
             case .success(let who):
-                if live.save(login: who, token: typed) {
+                if await live.saveAsync(login: who, token: typed) {
                     login = who
                     token = ""
                 } else {

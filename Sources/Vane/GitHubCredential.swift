@@ -69,6 +69,9 @@ final class GitHubRefreshLock {
     let lockURL: URL
     private let read: () -> Passwords.CredentialRead
     private let write: (String, String) -> Bool
+    typealias Commit = (GitHubSignedIn, GitHubSignedIn) async -> Bool
+    private let commit: Commit?
+    private let readAsync: (() async -> Passwords.CredentialRead)?
     private let secret: () -> String?
     private let send: Send
     private var inFlight: Task<Result<GitHubSignedIn, GitHub.Trouble>, Never>?
@@ -78,10 +81,13 @@ final class GitHubRefreshLock {
 
     init(lockURL: URL, read: @escaping () -> Passwords.CredentialRead,
          write: @escaping (String, String) -> Bool, secret: @escaping () -> String?,
-         send: Send? = nil) {
+         send: Send? = nil, readAsync: (() async -> Passwords.CredentialRead)? = nil,
+         commit: Commit? = nil) {
         self.lockURL = lockURL
         self.read = read
         self.write = write
+        self.commit = commit
+        self.readAsync = readAsync
         self.secret = secret
         self.send = send ?? Self.request
     }
@@ -99,8 +105,9 @@ final class GitHubRefreshLock {
         case found(GitHubSignedIn), missing, unavailable
     }
 
-    private func saved() -> Saved {
-        switch read() {
+    private func saved() async -> Saved {
+        let current = if let readAsync { await readAsync() } else { read() }
+        switch current {
         case .missing: return .missing
         case .unavailable: return .unavailable
         case let .found(account, value):
@@ -114,14 +121,14 @@ final class GitHubRefreshLock {
             let lock = try await GitHubRefreshLock.acquire(lockURL)
             defer { withExtendedLifetime(lock) {} }
             let current: GitHubSignedIn
-            switch saved() {
+            switch await saved() {
             case .found(let session): current = session
             case .missing: pending = nil; return .failure(.offline)
             case .unavailable: return .failure(.offline)
             }
             if let waiting = pending {
                 if current.login == waiting.previous.login && current.credential == waiting.previous.credential {
-                    guard write(waiting.next.login, waiting.next.credential.stored) else { return .failure(.offline) }
+                    guard await store(waiting.next, replacing: current) else { return .failure(.offline) }
                     pending = nil
                     return .success(waiting.next)
                 }
@@ -148,7 +155,7 @@ final class GitHubRefreshLock {
             // one removed during the network request or overwrite a replacement sign-in.
             let next = GitHubSignedIn(login: current.login, credential: grant)
             let latest: GitHubSignedIn
-            switch saved() {
+            switch await saved() {
             case .found(let session): latest = session
             case .missing: pending = nil; return .failure(.offline)
             case .unavailable:
@@ -156,13 +163,18 @@ final class GitHubRefreshLock {
                 return .failure(.offline)
             }
             guard latest.login == current.login && latest.credential == current.credential else { return .success(latest) }
-            guard write(next.login, grant.stored) else {
+            guard await store(next, replacing: current) else {
                 pending = (current, next)
                 return .failure(.offline)
             }
             NSLog("[vane] GitHub OAuth credential renewed")
             return .success(next)
         } catch { return .failure(.offline) }
+    }
+
+    private func store(_ next: GitHubSignedIn, replacing previous: GitHubSignedIn) async -> Bool {
+        if let commit { return await commit(previous, next) }
+        return write(next.login, next.credential.stored)
     }
 
     private static func request(_ request: URLRequest) async -> Result<GitHubCredential, GitHub.Trouble> {

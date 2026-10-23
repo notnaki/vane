@@ -68,8 +68,10 @@ private final class PasswordReadGate: @unchecked Sendable {
         }
         // The spy belongs to the isolated autofill world, so a secret handed to WebKit is
         // observable even if the original target became invalid and the script refused it.
-        _ = try await script(tab.web, "window.__workerFills=0; window.__vaneFill=()=>{ window.__workerFills++; return true; };")
-        return tab
+        do {
+            _ = try await script(tab.web, "window.__workerFills=0; window.__vaneFill=()=>{ window.__workerFills++; return true; }; 0")
+            return tab
+        } catch { tab.tearDown(); throw error }
     }
 
     private func script(_ web: WKWebView, _ source: String) async throws -> Int? {
@@ -174,6 +176,83 @@ private final class PasswordReadGate: @unchecked Sendable {
         gate.release.signal()
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(tab.pendingSave?.id, newer.id)
+    }
+
+    func testDelayedSubmittedSaveOfferSurvivesSameOriginRedirect() async throws {
+        let gate = PasswordReadGate()
+        var reader = Passwords.Reader()
+        reader.matches = { _, _ in [] }
+        reader.password = { _, _, _ in gate.wait(); return nil }
+        reader.revision = { _, _, _ in nil }
+        let tab = try await loadedTab(reader: reader)
+        defer { tab.tearDown() }
+        tab.offerSubmittedPassword(origin: .init(host: "worker.invalid"), account: "ada", password: "submitted fixture", attempt: "one")
+        await fulfillment(of: [gate.entered], timeout: 2)
+        tab.web.loadSimulatedRequest(URLRequest(url: URL(string: "https://worker.invalid/account")!), responseHTML: "<p>Signed in</p>")
+        let deadline = Date.now.addingTimeInterval(3)
+        while tab.web.isLoading || tab.web.url?.path != "/account" {
+            if Date.now > deadline { return XCTFail("redirect fixture did not load") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        gate.release.signal()
+        while tab.pendingSave == nil, Date.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(tab.pendingSave?.account, "ada")
+        XCTAssertEqual(tab.pendingSave?.password, "submitted fixture")
+        XCTAssertEqual(tab.pendingSave?.attempt, "one")
+    }
+
+    func testCrossOriginNavigationPermanentlyRevokesDelayedSubmission() async throws {
+        let gate = PasswordReadGate()
+        var reader = Passwords.Reader()
+        reader.matches = { _, _ in [] }
+        reader.password = { _, _, _ in gate.wait(); return nil }
+        reader.revision = { _, _, _ in nil }
+        let tab = try await loadedTab(reader: reader)
+        defer { tab.tearDown() }
+        tab.offerSubmittedPassword(origin: .init(host: "worker.invalid"), account: "ada", password: "submitted fixture", attempt: "one")
+        await fulfillment(of: [gate.entered], timeout: 2)
+        // Even returning to the original origin before the service responds must not
+        // restore authorization revoked by the intervening main-frame navigation.
+        tab.allowCertificateNavigation(to: URL(string: "https://other.invalid/"))
+        tab.allowCertificateNavigation(to: URL(string: "https://worker.invalid/account"))
+        gate.release.signal()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(tab.pendingSave)
+    }
+
+    func testRejectedDelayedSubmissionDoesNotBecomeSaveOffer() async throws {
+        let gate = PasswordReadGate()
+        var reader = Passwords.Reader()
+        reader.matches = { _, _ in [] }
+        reader.password = { _, _, _ in gate.wait(); return nil }
+        reader.revision = { _, _, _ in nil }
+        let tab = try await loadedTab(reader: reader)
+        defer { tab.tearDown() }
+        tab.offerSubmittedPassword(origin: .init(host: "worker.invalid"), account: "ada", password: "submitted fixture", attempt: "rejected")
+        await fulfillment(of: [gate.entered], timeout: 2)
+        _ = try await script(tab.web, "window.webkit.messageHandlers.vanepw.postMessage({rejectedAttempt:'rejected'}); 0")
+        try await Task.sleep(for: .milliseconds(30))
+        gate.release.signal()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(tab.pendingSave)
+    }
+
+    func testNewerSubmissionWinsWhileOldReadWaits() async throws {
+        let gate = PasswordReadGate()
+        var reader = Passwords.Reader()
+        reader.matches = { _, _ in [] }
+        reader.password = { _, account, _ in if account == "ada" { gate.wait() }; return nil }
+        reader.revision = { _, _, _ in nil }
+        let tab = try await loadedTab(reader: reader)
+        defer { tab.tearDown() }
+        tab.offerSubmittedPassword(origin: .init(host: "worker.invalid"), account: "ada", password: "older fixture", attempt: "one")
+        await fulfillment(of: [gate.entered], timeout: 2)
+        tab.offerSubmittedPassword(origin: .init(host: "worker.invalid"), account: "bob", password: "newer fixture", attempt: "two")
+        gate.release.signal()
+        let deadline = Date.now.addingTimeInterval(2)
+        while tab.pendingSave?.account != "bob", Date.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(tab.pendingSave?.account, "bob")
+        XCTAssertEqual(tab.pendingSave?.attempt, "two")
     }
 
     func testViewSourceEscapesMarkupAndPreservesUnicode() throws {

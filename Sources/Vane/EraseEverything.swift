@@ -62,12 +62,11 @@ import WebKit
         // take every credential Vane has filed (the GitHub token among them). A data-dir
         // instance takes its own profiles' — the ones filed under a security domain — and
         // leaves the default profile's alone, because those are the real app's.
-        if Store.overrideDirectory == nil {
-            Passwords.deleteEverything()
-        } else {
-            for id in ProfileManager.shared.profiles.map(\.id) where id != ProfileManager.defaultID {
-                Passwords.deleteAll(profileID: id)
-            }
+        let deleteEveryCredential = Store.overrideDirectory == nil
+        let profileIDs = ProfileManager.shared.profiles.map(\.id).filter { $0 != ProfileManager.defaultID }
+        try? await Passwords.perform {
+            if deleteEveryCredential { Passwords.deleteEverything() }
+            else { for id in profileIDs { Passwords.deleteAll(profileID: id) } }
         }
 
         try? FileManager.default.removeItem(at: Store.directory)

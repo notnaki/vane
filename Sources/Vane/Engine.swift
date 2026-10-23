@@ -430,6 +430,7 @@ struct TitleReveal: Equatable, Sendable {
     private var passwordSaveReadTask: Task<Void, Never>?
     private var passwordCommitOffer: UUID?
     private var passwordSaveReadRequest = UUID()
+    private var passwordSubmission: (request: UUID, origin: PasswordOrigin, expires: Date)?
     private var viewSourceTask: Task<Void, Never>?
     private var viewSourceRequest = UUID()
     @Published var passwordSaveProblem: String?
@@ -1000,6 +1001,7 @@ struct TitleReveal: Equatable, Sendable {
         draftProtection.reset()
         passwordReadTask?.cancel(); passwordSaveReadTask?.cancel()
         passwordReadRequest = UUID(); passwordSaveReadRequest = UUID()
+        passwordSubmission = nil
         viewSourceTask?.cancel(); viewSourceRequest = UUID()
         readingDocumentGeneration = UUID()
         Reader.forget(tab: self)
@@ -1521,6 +1523,7 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func allowCertificateNavigation(to url: URL?) {
+        validatePasswordSubmissionNavigation(to: url)
         navigationState.cancelPrompt()
         CertificateTrust.navigationStarted(in: self)
         // WebKit may cancel the previous navigation after this policy answer and
@@ -1603,6 +1606,7 @@ struct TitleReveal: Equatable, Sendable {
         guard ownsNavigation(navigation, in: w) else { return }
         certificateNavigation = navigation
         certificateDestinationURL = w.url
+        validatePasswordSubmissionNavigation(to: w.url)
     }
 
     /// loadSimulatedRequest, not loadHTMLString: it leaves the failed url in the address bar
@@ -1685,6 +1689,7 @@ struct TitleReveal: Equatable, Sendable {
         Zoom.apply(to: self)
         DeveloperMode.apply(to: self)   // localhost → deployed site, and back
         closeChooser(.navigate)       // a redirect lands here without a fresh provisional
+        validatePasswordSubmissionNavigation(to: w.url)
         if let offer = pendingSave, offer.origin != secureOrigin { pendingSave = nil; passwordSaveProblem = nil }
         if let step = passwordStep, step.awaitingNavigation, step.origin == secureOrigin, step.expires > .now {
             passwordStep?.awaitingNavigation = false
@@ -1952,6 +1957,7 @@ struct TitleReveal: Equatable, Sendable {
             if lastPasswordAttempt == rejected {
                 passwordSaveReadTask?.cancel()
                 passwordSaveReadRequest = UUID()
+                passwordSubmission = nil
             }
             if pendingSave?.attempt == rejected { pendingSave = nil; passwordSaveProblem = nil }
             return
@@ -2021,22 +2027,33 @@ struct TitleReveal: Equatable, Sendable {
         // Already stored and unchanged — nothing to ask about. Only the account being
         // submitted is decrypted, and only to answer that one question.
         guard let origin = secureOrigin else { return }
-        let attempt = body["attempt"] as? String
+        offerSubmittedPassword(origin: origin, account: account, password: password, attempt: body["attempt"] as? String)
+    }
+
+    /// Submission authorization belongs to this account/origin, rather than the document
+    /// that a successful form normally replaces before a slow Keychain query returns.
+    func offerSubmittedPassword(origin: PasswordOrigin, account: String, password: String, attempt: String?) {
+        guard !isPrivate, !password.isEmpty, secureOrigin == origin,
+              !Passwords.isNeverSaved(host: origin.host, profileID: profileID) else { return }
+        let host = origin.host
         if let attempt, lastPasswordAttempt == attempt { return }
         lastPasswordAttempt = attempt
         passwordSaveReadTask?.cancel()
-        let request = UUID(), document = readingDocumentGeneration
-        let page = web, pageURL = page.url, profile = profileID, reader = passwordReader
+        let request = UUID()
+        let page = web, profile = profileID, reader = passwordReader
         passwordSaveReadRequest = request
+        passwordSubmission = (request, origin, .now.addingTimeInterval(300))
         passwordSaveReadTask = Task { [weak self, weak page] in
             let outcome: Result<(String?, Passwords.Revision?), Error>
             do { outcome = .success(try await reader.saved(origin: origin, account: account, profileID: profile)) }
             catch { outcome = .failure(error) }
             guard let self, let page, !Task.isCancelled, !self.tornDown, !self.suspended,
                   !self.isPrivate, self.profileID == profile, self.existingWeb === page,
-                  page.url == pageURL, self.readingDocumentGeneration == document,
                   self.secureOrigin == origin, self.passwordSaveReadRequest == request,
+                  self.passwordSubmission?.request == request,
+                  self.passwordSubmission.map({ $0.expires > .now }) == true,
                   !Passwords.isNeverSaved(host: host, profileID: profile) else { return }
+            self.passwordSubmission = nil
             switch outcome {
             case .success(let (stored, revision)):
                 guard stored != password else { return }
@@ -2049,6 +2066,14 @@ struct TitleReveal: Equatable, Sendable {
                     host: host, account: account, password: password)
             }
         }
+    }
+
+    private func validatePasswordSubmissionNavigation(to url: URL?) {
+        guard let submission = passwordSubmission,
+              url.flatMap(PasswordOrigin.init(url:)) != submission.origin else { return }
+        passwordSubmission = nil
+        passwordSaveReadTask?.cancel()
+        passwordSaveReadRequest = UUID()
     }
 
     func confirmSave(origin reviewedOrigin: PasswordOrigin? = nil, account reviewedAccount: String? = nil,
@@ -2198,7 +2223,8 @@ struct TitleReveal: Equatable, Sendable {
     /// `window.close()` that did nothing.
     func webView(_ w: WKWebView, createWebViewWith cfg: WKWebViewConfiguration,
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        guard w === existingWeb, !tornDown, !suspended else { return nil }
+        guard w === existingWeb, !tornDown, !suspended,
+              !AppLifecycle.shared.persistenceExitInProgress else { return nil }
         // `window.open('zoommtg:…')`. Belt and braces around the same test in
         // `decidePolicyFor` — a popup opened with no url and navigated afterwards arrives
         // here first — and a new tab for a scheme no tab can load is worse than no tab.
@@ -2723,6 +2749,7 @@ struct Stash {
     /// tab only comes into being when the user searches or opens something from it — a
     /// dismissed bar leaves nothing behind.
     func newTab(_ url: URL?) {
+        guard !AppLifecycle.shared.persistenceExitInProgress else { return }
         // One page per Little Arc: ⌘T, the palette's New Tab and everything else that asks
         // this window for a tab gets another Little Arc instead of a second page hidden
         // behind the first. With no url it comes up empty with the search bar over it,
@@ -3861,6 +3888,42 @@ struct Stash {
         }
         guard Suspension.SpaceState.save(parked, space: id, profileID: profileID,
                                          in: Store.directory),
+              ProfileManager.shared.updateSpace(space) else { return false }
+        TabStore.saveShape(stash.pins, from: stash.tabs, kind: .pinned,
+                           space: id, profileID: profileID, ownsSection: true)
+        TabStore.saveShape(stash.todayShape, from: stash.tabs, kind: .today,
+                           space: id, profileID: profileID, ownsSection: true)
+        let selected = stash.tabs.first { $0.id == stash.current }?.pinnedURL
+        Spaces.rememberTab(selected.flatMap {
+            TabAddress.restorable($0) ? $0.absoluteString : nil
+        }, in: id)
+        return true
+    }
+
+    func saveStashedSpaceAsync(_ id: UUID) async -> Bool {
+        guard let stash = stashes[id] else { return true }
+        guard stash.fingerprint == fingerprint(of: id) else { return true }
+        guard var space = spaces.first(where: { $0.id == id }) else { return false }
+        func urls(_ kind: TabKind) -> [URL] {
+            stash.tabs.filter { $0.kind == kind }.compactMap(\.pinnedURL)
+                .filter { TabAddress.restorable($0) }
+        }
+        space.tabURLs = urls(.today)
+        space.pinnedTabURLs = urls(.pinned)
+        if space.layout != nil {
+            space.layout = Self.workspaceLayout(tabs: stash.tabs, pins: stash.pins, today: stash.todayShape,
+                splits: stash.splits, selected: stash.current, profile: profileID)
+        }
+        var parked: [String: Parked] = [:]
+        for tab in stash.tabs {
+            guard let entry = TabStore.sidecarEntry(page: tab.currentURL, home: tab.homeURL,
+                                                    snapshot: tab.snapshot) else { continue }
+            parked[entry.key] = entry.parked
+        }
+        guard await Suspension.SpaceState.saveAsync(parked, space: id, profileID: profileID,
+                                         in: Store.directory),
+              stashes[id]?.fingerprint == stash.fingerprint,
+              fingerprint(of: id) == stash.fingerprint,
               ProfileManager.shared.updateSpace(space) else { return false }
         TabStore.saveShape(stash.pins, from: stash.tabs, kind: .pinned,
                            space: id, profileID: profileID, ownsSection: true)

@@ -40,6 +40,8 @@ import SwiftUI
     @State private var feedback: String?
     /// A refused write must be visible, so a failed save never looks like success.
     @State private var problem: String?
+    @State private var mutationInFlight = false
+    @State private var mutationTask: Task<Void, Never>?
     /// Plaintext lives only while the manager is visible, including its add/edit drafts.
     @StateObject private var secrets = PasswordManagerSecrets()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -343,14 +345,23 @@ import SwiftUI
             addProblem = "This login already exists. Open it and choose Edit to change it."
             return
         }
-        do {
-            try Passwords.saveChecked(origin: origin, account: account, password: secrets.draftPassword,
-                                      profileID: profileID, replacingExisting: false)
-        } catch { addProblem = error.localizedDescription; return }
-        Passwords.allowSaving(host: host, profileID: profileID)
-        secrets.adding = false; forgetSecrets(); reload()
-        navigate(to: host)
-        axAnnounce("Password saved.")
+        guard !mutationInFlight else { return }
+        let password = secrets.draftPassword, scope = profileID, context = secrets.secretContext
+        mutationInFlight = true
+        mutationTask = Task {
+            defer { mutationInFlight = false }
+            do { try await Passwords.addAsync(origin: origin, account: account, password: password, profileID: scope) }
+            catch {
+                guard profileID == scope, secrets.secretContext == context else { return }
+                addProblem = error.localizedDescription
+                return
+            }
+            guard profileID == scope, secrets.secretContext == context else { return }
+            Passwords.allowSaving(host: host, profileID: scope)
+            secrets.adding = false; forgetSecrets(); reload()
+            navigate(to: host)
+            axAnnounce("Password saved.")
+        }
     }
 
     private func glyph(_ symbol: String, _ label: String,
@@ -377,7 +388,7 @@ import SwiftUI
         if host == nil { searchFocused = true }
     }
 
-    private func forgetSecrets() { secrets.forget() }
+    private func forgetSecrets() { mutationTask?.cancel(); secrets.forget() }
 
     /// Hiding needs no permission; showing does — and what comes back is held for a minute
     /// and then dropped, whether or not anybody is still looking at this window.
@@ -483,33 +494,48 @@ import SwiftUI
             problem = "Enter a valid HTTPS website without a username or password in its URL."
             return
         }
-        do {
-            try Passwords.editChecked(login, origin: origin, account: account,
-                                      password: secrets.draftPassword, profileID: profileID)
-        } catch {
-            problem = error.localizedDescription
-            axAnnounce(problem ?? "")
-            return
+        guard !mutationInFlight else { return }
+        let password = secrets.draftPassword, scope = profileID, context = secrets.secretContext
+        mutationInFlight = true
+        mutationTask = Task {
+            defer { mutationInFlight = false }
+            do { try await Passwords.editAsync(login, origin: origin, account: account, password: password, profileID: scope) }
+            catch {
+                guard profileID == scope, secrets.secretContext == context else { return }
+                problem = error.localizedDescription
+                axAnnounce(problem ?? "")
+                return
+            }
+            guard profileID == scope, secrets.secretContext == context else { return }
+            selectedHost = origin.host
+            forgetSecrets()
+            feedback = "Password updated"
+            selected = origin.key(account: account)
+            reload()
         }
-        selectedHost = origin.host
-        forgetSecrets()
-        feedback = "Password updated"
-        selected = origin.key(account: account)
-        reload()
     }
 
     private func remove(_ login: Passwords.Login) {
-        guard confirm("Delete the saved login for \(login.host)?", "Delete",
+        guard !mutationInFlight, confirm("Delete the saved login for \(login.host)?", "Delete",
                       PasswordsPane.deleteDetail(login)) else { return }
-        do { try Passwords.deleteChecked(origin: login.origin, account: login.account, profileID: profileID) }
-        catch { problem = error.localizedDescription; axAnnounce(problem ?? ""); return }
-        problem = nil
-        secrets.secretContext = UUID()
-        secrets.forgetting.removeValue(forKey: login.id)?.cancel()
-        secrets.revealed[login.id] = nil
-        if secrets.editing == login.id { cancelEditing() }
-        reload()
-        axAnnounce("Saved login for \(login.host) deleted.")
+        let scope = profileID, context = secrets.secretContext
+        mutationInFlight = true
+        mutationTask = Task {
+            defer { mutationInFlight = false }
+            do { try await Passwords.deleteAsync(login, profileID: scope) }
+            catch {
+                guard profileID == scope, secrets.secretContext == context else { return }
+                problem = error.localizedDescription; axAnnounce(problem ?? ""); return
+            }
+            guard profileID == scope, secrets.secretContext == context else { return }
+            problem = nil
+            secrets.secretContext = UUID()
+            secrets.forgetting.removeValue(forKey: login.id)?.cancel()
+            secrets.revealed[login.id] = nil
+            if secrets.editing == login.id { cancelEditing() }
+            reload()
+            axAnnounce("Saved login for \(login.host) deleted.")
+        }
     }
 
     // MARK: Keyboard
