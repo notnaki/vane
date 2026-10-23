@@ -1218,9 +1218,9 @@ struct PasswordOffer: View {
             if let offer = tab.pendingSave {
                 PasswordOfferCard(offer: offer, profileID: tab.profileID,
                     problem: tab.passwordSaveProblem,
-                    dismiss: { tab.pendingSave = nil }, save: { tab.confirmSave() },
+                    dismiss: { tab.pendingSave = nil }, save: { tab.confirmSaveAsync() },
                     never: { tab.neverSaveHere() },
-                    saveReviewed: { tab.confirmSave(origin: $0, account: $1, password: $2) })
+                    saveReviewed: { tab.confirmSaveAsync(origin: $0, account: $1, password: $2) })
                     .id(offer.id)
                     .transition(reduceMotion || batterySaver.isActive ? .identity
                         : .opacity.combined(with: .scale(scale: Look.appearScale, anchor: .topTrailing)))

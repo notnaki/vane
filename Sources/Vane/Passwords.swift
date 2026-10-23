@@ -393,11 +393,12 @@ enum Passwords {
     static func all(profileID: UUID = ProfileManager.activeProfileID) -> [Login] {
         cacheLock.lock()
         let hit = cached[profileID]
+        let revision = cacheRevision
         cacheLock.unlock()
         if let hit { return hit }
         guard let fresh = try? allChecked(profileID: profileID) else { return [] }
         cacheLock.lock()
-        cached[profileID] = fresh
+        if cacheRevision == revision { cached[profileID] = fresh }
         cacheLock.unlock()
         return fresh
     }
@@ -447,10 +448,12 @@ enum Passwords {
     /// `nonisolated(unsafe)` plus an explicit lock, for the same reason `UserDefaults.vane`
     /// is: the keychain is reachable from any thread and this is only a read-through copy.
     private nonisolated(unsafe) static var cached: [UUID: [Login]] = [:]
+    private nonisolated(unsafe) static var cacheRevision: UInt64 = 0
     private static let cacheLock = NSLock()
 
     private static func invalidate() {
         cacheLock.lock()
+        cacheRevision &+= 1
         cached.removeAll()
         cacheLock.unlock()
     }
@@ -503,7 +506,7 @@ enum Passwords {
         forgetUse(origin: origin, account: account, profileID: profileID)
     }
 
-    struct Revision: Equatable {
+    struct Revision: Equatable, Sendable {
         let reference: Data
         let modified: Date?
     }
@@ -516,6 +519,78 @@ enum Passwords {
         guard status == errSecSuccess else { throw Failure(status: status) }
         guard let attrs = out as? [String: Any] else { throw Failure(status: errSecDecode) }
         return Revision(reference: ref, modified: attrs[kSecAttrModificationDate as String] as? Date)
+    }
+
+    // One service operation at a time also bounds blocked Keychain calls when a page
+    // repeatedly focuses a field. Cancelled queued reads never enter the service.
+    private actor ReadWorker {
+        func run<Value: Sendable>(_ operation: @Sendable () throws -> Value) throws -> Value {
+            try Task.checkCancellation()
+            let result = try operation()
+            try Task.checkCancellation()
+            return result
+        }
+    }
+    private static let readWorker = ReadWorker()
+
+    enum SaveDecision: Sendable {
+        case saved
+        case review(PendingSave)
+    }
+
+    static func reviewedSave(_ offer: PendingSave, origin: PasswordOrigin, account: String,
+                             password: String, profileID: UUID) throws -> SaveDecision {
+        let existing = try passwordChecked(origin: origin, account: account, profileID: profileID)
+        let revision = try revision(origin: origin, account: account, profileID: profileID)
+        let sameIdentity = origin == offer.origin && account == offer.account
+        if existing != nil && (!offer.update || !sameIdentity || (offer.revision != nil && offer.revision != revision)) {
+            return .review(PendingSave(attempt: offer.attempt, revision: revision, port: origin.port,
+                host: origin.host, account: account, password: password, update: true))
+        }
+        try Task.checkCancellation()
+        if offer.update && sameIdentity {
+            guard existing != nil else { throw Failure(status: errSecItemNotFound) }
+            try editChecked(.init(origin: origin, account: account), origin: origin, account: account,
+                            password: password, profileID: profileID)
+        } else {
+            try saveChecked(origin: origin, account: account, password: password,
+                            profileID: profileID, replacingExisting: false)
+        }
+        return .saved
+    }
+
+    /// Immutable injected operations keep Keychain calls on the worker while UI callers
+    /// retain the profile, document and account authorization around every suspension.
+    struct Reader: Sendable {
+        var matches: @Sendable (PasswordOrigin, UUID) throws -> [Login] = {
+            try matchesChecked(origin: $0, profileID: $1)
+        }
+        var password: @Sendable (PasswordOrigin, String, UUID) throws -> String? = {
+            try passwordChecked(origin: $0, account: $1, profileID: $2)
+        }
+        var revision: @Sendable (PasswordOrigin, String, UUID) throws -> Revision? = {
+            try Passwords.revision(origin: $0, account: $1, profileID: $2)
+        }
+
+        var commit: @Sendable (PendingSave, PasswordOrigin, String, String, UUID) throws -> SaveDecision = {
+            try reviewedSave($0, origin: $1, account: $2, password: $3, profileID: $4)
+        }
+
+        func save(_ offer: PendingSave, origin: PasswordOrigin, account: String,
+                  password: String, profileID: UUID) async throws -> SaveDecision {
+            try await readWorker.run { try commit(offer, origin, account, password, profileID) }
+        }
+        func logins(origin: PasswordOrigin, profileID: UUID) async throws -> [Login] {
+            try await readWorker.run { try matches(origin, profileID) }
+        }
+        func secret(_ login: Login, profileID: UUID) async throws -> String? {
+            try await readWorker.run { try password(login.origin, login.account, profileID) }
+        }
+        func saved(origin: PasswordOrigin, account: String, profileID: UUID) async throws -> (String?, Revision?) {
+            try await readWorker.run {
+                (try password(origin, account, profileID), try revision(origin, account, profileID))
+            }
+        }
     }
 
     // MARK: Last used
@@ -730,7 +805,7 @@ enum Passwords {
 }
 
 /// A save offer waiting on the user. Held only until they answer.
-struct PendingSave: Equatable, Identifiable {
+struct PendingSave: Equatable, Identifiable, Sendable {
     var attempt: String? = nil
     var revision: Passwords.Revision? = nil
     var port: Int = 443
