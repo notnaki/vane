@@ -90,12 +90,16 @@ import XCTest
         }
     }
 
-    func testSavedEaselGhostUsesTheRestoredBoardTitle() throws {
+    func testSavedEaselGhostUsesTheRestoredBoardTitle() async throws {
         TestEnvironment.prepare()
         let profile = UUID()
         let repository = EaselStore.shared(profileID: profile, directory: Store.directory)
-        defer { EaselStore.forget(profile, directory: Store.directory); Store.forget(profile) }
-        let board = try repository.create(title: "Sketches")
+        addTeardownBlock { @MainActor in
+            EaselStore.forget(profile, directory: Store.directory)
+            await EaselStore.waitForRetirement(profileID: profile, directory: Store.directory)
+            await Store.forgetAsync(profile)
+        }
+        let board = try await repository.createAsync(title: "Sketches")
         let preview = SpacePreviewList(space: Space(name: "Work", profileID: profile,
             tabURLs: [EaselAddress.url(board.id)]), liveTabs: nil)
         XCTAssertEqual(preview.rows.today.map { preview.title(for: $0) }, ["Sketches"])
