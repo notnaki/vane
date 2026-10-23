@@ -84,8 +84,9 @@ import XCTest
         let outside = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero,
             modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
             eventNumber: 1, clickCount: 1, pressure: 1))
-        window.sendEvent(outside)
-        XCTAssertNil(tab.passwordChoice, "A native click outside the popup's chooser must dismiss it")
+        // Exercise pointer routing without entering AppKit's window-edge tracking loop.
+        PasswordChooser.handlePointer(outside)
+        XCTAssertNil(tab.passwordChoice, "A click outside the popup's chooser must dismiss it")
     }
 
     func testPopupSizeUsesSafeDefaultsAndFitsTheScreen() {
