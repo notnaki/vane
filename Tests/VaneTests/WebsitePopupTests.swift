@@ -33,6 +33,61 @@ import XCTest
         XCTAssertTrue(opener.existingWeb === opener.web)
     }
 
+    func testWebsitePopupDrawsPasswordChooserAndSaveOffer() async throws {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let tab = Tab(popup: config, isPrivate: false, profileID: UUID())
+        let controller = WebsitePopupWindow.open(tab, origin: nil, opener: nil)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        func pixels() throws -> Data {
+            let content = try XCTUnwrap(window.contentView)
+            content.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        let empty = try pixels()
+        tab.passwordChoice = PasswordChoice(host: "accounts.example.com", accounts: ["ada@example.com", "bob@example.com"],
+                                           anchor: CGRect(x: 20, y: 20, width: 250, height: 40))
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertNotEqual(try pixels(), empty, "A sign-in popup must draw its account chooser")
+        tab.passwordChoice = nil
+        try await Task.sleep(for: .milliseconds(350))
+        let withoutOffer = try pixels()
+        tab.pendingSave = PendingSave(host: "accounts.example.com", account: "ada", password: "fixture")
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertNotEqual(try pixels(), withoutOffer, "A sign-in popup must draw its save offer")
+    }
+
+    func testWebsitePopupPasswordChooserHandlesArrowsAndEscape() throws {
+        let tab = Tab(popup: WKWebViewConfiguration(), isPrivate: false, profileID: UUID())
+        let controller = WebsitePopupWindow.open(tab, origin: nil, opener: nil)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        tab.passwordChoice = PasswordChoice(host: "accounts.example.com", accounts: ["ada", "bob"], anchor: .zero)
+        let down = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            characters: "\u{F701}", charactersIgnoringModifiers: "\u{F701}", isARepeat: false, keyCode: 125))
+        XCTAssertTrue(PasswordChooser.handleKey(down))
+        XCTAssertEqual(tab.passwordChoice?.selected, 1)
+        XCTAssertTrue(PasswordChooser.dismiss(in: window))
+        XCTAssertNil(tab.passwordChoice)
+        tab.passwordChoice = PasswordChoice(host: "accounts.example.com", accounts: ["ada", "bob"], anchor: .zero)
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        window.sendEvent(escape)
+        XCTAssertNil(tab.passwordChoice, "Native Escape must dismiss the popup's chooser")
+        tab.passwordChoice = PasswordChoice(host: "accounts.example.com", accounts: ["ada", "bob"], anchor: .zero)
+        let outside = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero,
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 1, clickCount: 1, pressure: 1))
+        window.sendEvent(outside)
+        XCTAssertNil(tab.passwordChoice, "A native click outside the popup's chooser must dismiss it")
+    }
+
     func testPopupSizeUsesSafeDefaultsAndFitsTheScreen() {
         let screen = NSSize(width: 1000, height: 800)
         XCTAssertEqual(WebsitePopupWindow.contentSize(width: 451, height: 600, available: screen),
@@ -182,6 +237,24 @@ import XCTest
         defer { other.tearDown() }
         XCTAssertFalse(other.web.configuration.websiteDataStore === opener.web.configuration.websiteDataStore)
         XCTAssertFalse(opener.history.recent().contains { $0.url == (try? server.url("/provider", host: "localhost").absoluteString) })
+    }
+
+    func testPopupLoginInputKeepsOptionTextShortcuts() async throws {
+        server.pages["/input"] = "<title>Login input</title><input id='account'>"
+        try await prepare(isPrivate: false, html: """
+        <button onclick="window.child=window.open('/input','auth','width=451,height=600')">Sign in</button>
+        """)
+        try await clickFirstControl()
+        let child = try XCTUnwrap(child)
+        let window = try XCTUnwrap(childWindow)
+        try await compatibilityWait { child.title == "Login input" }
+        _ = try await child.web.evaluateJavaScript("document.getElementById('account').focus(); void 0")
+        window.makeFirstResponder(child.web)
+        try await compatibilityWait { child.editableFocused }
+        try XCTUnwrap(Keybindings.withScratchDefaults("website-popup-option") {
+            XCTAssertTrue(Keybindings.keepsKeyForResponder(Keybinding("d", .option), in: window),
+                          "Option-D must type in the provider's login field")
+        })
     }
 
     func testNestedDialogOutlivesItsParentAndClosesIndependently() async throws {

@@ -120,6 +120,17 @@ smoke also verifies fresh-process Keychain persistence and deletion. Keychain-de
 XCTest fixtures report a skip if storage is unavailable. See [Password manager](PASSWORD-MANAGER.md)
 for the precise boundaries and remaining real-site/device validation.
 
+### Website popup fixtures
+
+```sh
+swift test --filter 'WebsitePopup|SignInCompatibility|NavigationWebKit|LinkInteraction|LittleArcSpaceMenu|KeyboardAccessibility|PasswordChooser'
+```
+
+These local WebKit fixtures cover temporary dialog windows, opener messaging, blank
+popups written by their opener, cross-origin redirects, private cookies, manual cancel
+and retry, script close, nested lifetimes, ordinary blank-target tabs, password UI and
+text-entry shortcuts. They do not establish Google or Reddit service acceptance.
+
 ### Specialist reliability fixtures
 
 For opt-in cold/warm startup, large-session restoration and parked/sleeping tab

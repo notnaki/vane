@@ -284,7 +284,10 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 @MainActor private func passwordItems() -> [NSMenuItem] {
     [
 
-        item(.fillPassword) { Windows.current?.active?.fillPassword(announcing: true) },
+        item(.fillPassword) {
+            (WebsitePopupWindow.tab(in: NSApp.keyWindow) ?? Windows.current?.active)?
+                .fillPassword(announcing: true)
+        },
         item(.importPasswords) { PasswordImport.chooseAndImport() },
         .separator(),
         item("Export Passwords…", "") { Export.chooseAndExport(.passwords) },

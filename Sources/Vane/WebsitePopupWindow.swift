@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import SwiftUI
 
 /// A website-owned dialog. It owns its page, never a sidebar, Space or saved session.
 /// Retain the controller until native or scripted close tears down only this web view.
@@ -13,7 +14,12 @@ import WebKit
 
     static func owns(_ window: NSWindow?) -> Bool {
         guard let window else { return false }
-        return live.contains { $0.window === window }
+        return tab(in: window) != nil
+    }
+
+    static func tab(in window: NSWindow?) -> Tab? {
+        guard let window else { return nil }
+        return live.first { $0.window === window }?.tab
     }
 
     @discardableResult
@@ -33,7 +39,7 @@ import WebKit
         let visible = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1000, height: 800)
         let size = Self.contentSize(width: features?.width?.doubleValue,
                                     height: features?.height?.doubleValue, available: visible)
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+        let window = WebsiteDialogWindow(contentRect: NSRect(origin: .zero, size: size),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -51,7 +57,8 @@ import WebKit
         location.isSelectable = true
         location.setAccessibilityLabel("Website address")
         let web = tab.web
-        for view in [location, web] {
+        let page = NSHostingView(rootView: WebsitePopupPage(tab: tab).font(Look.text))
+        for view in [location, page] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
@@ -60,10 +67,10 @@ import WebKit
             location.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
             location.topAnchor.constraint(equalTo: content.topAnchor, constant: 7),
             location.heightAnchor.constraint(equalToConstant: 18),
-            web.topAnchor.constraint(equalTo: location.bottomAnchor, constant: 7),
-            web.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            web.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            web.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            page.topAnchor.constraint(equalTo: location.bottomAnchor, constant: 7),
+            page.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            page.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            page.bottomAnchor.constraint(equalTo: content.bottomAnchor),
         ])
         // Keep profile-scoped link actions, but replace the tab-store close/popup owners.
         origin?.wire(tab)
@@ -86,6 +93,7 @@ import WebKit
             Task { @MainActor [weak self] in self?.showLocation(url) }
         }
         window.center()
+        content.layoutSubtreeIfNeeded()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -114,5 +122,30 @@ import WebKit
         window?.contentView = nil
         // NSWindow's delegate is weak; keep self alive through this callback as well.
         Task { @MainActor in Self.live.removeAll { $0 === self } }
+    }
+}
+
+
+/// Keep authentication UI on the popup's own page without introducing a tab store.
+private struct WebsitePopupPage: View {
+    @ObservedObject var tab: Tab
+
+    var body: some View {
+        Group {
+            if let web = tab.existingWeb {
+                WebView(web: web)
+                    .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
+                    .overlay(alignment: .topTrailing) { PasswordOffer(tab: tab).padding(12) }
+            }
+        }
+    }
+}
+
+private final class WebsiteDialogWindow: NSWindow {
+    override func sendEvent(_ event: NSEvent) {
+        MainActor.assumeIsolated { PasswordChooser.handlePointer(event) }
+        if event.type == .keyDown, event.keyCode == 53,
+           MainActor.assumeIsolated({ PasswordChooser.dismiss(in: self) }) { return }
+        super.sendEvent(event)
     }
 }

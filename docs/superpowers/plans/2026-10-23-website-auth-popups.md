@@ -14,7 +14,16 @@
 - [x] Add failing real popup-window tests using existing `.little` placement: no floating store, native temporary chrome, manual close leaves opener intact.
 - [x] Implement `.window` and a dedicated controller, preserve WebKit configuration, route nested windows and links, remove Little Vane's popup constructor. Update pure checks and comments.
 - [x] Extend real HTTP/WebKit fixtures for blank/document.write, opener/postMessage, redirect, script close, profile/private cookies, nested popup and ordinary target=_blank behavior. Test invalid/oversized window sizes.
-- [ ] Run focused popup/navigation/link tests and pure checks; build the signed test app if real-site inspection is available. Record Reddit Google flow limits honestly.
+- [x] Run focused popup/navigation/link tests and pure checks; build the signed test app if real-site inspection is available. Record Reddit Google flow limits honestly.
 - [ ] Push a focused PR; obtain independent current-diff review, address findings and revalidate. Wait for required CI and mergeability, squash merge, verify commit, clean up task-owned app processes.
 
 Review focus: close callback lifetime; private data-store identity and profile isolation; redirect origin display; nested popup ownership after opener closes; background focus and ordinary `_blank` routing.
+
+Validation record: 72 focused tests passed on macOS 27 / Swift 6.4, including native
+password overlay rendering, chooser keyboard/pointer dismissal and Option text entry.
+The original regression failed against Little Vane routing before implementation;
+review regressions also failed before fixes. `selfcheck --pure` passed. A signed debug
+bundle built successfully. Reddit/Google acceptance remains unverified: the isolated
+signed app timed out in native UI automation; its owned process was terminated and
+verified exited. Independent review identified password UI and input shortcut gaps;
+both are fixed and the updated commit must be reviewed before merge.
