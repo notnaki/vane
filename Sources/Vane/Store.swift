@@ -559,14 +559,33 @@ struct BookmarkImportResult: Equatable, Sendable {
                 && !deletedProjectedURLs.contains($0.url) && projectedURLIDs[$0.url] == nil
         }
         rows += bookmarkOverrides.values
-        let query = query.trimmingCharacters(in: .whitespaces)
-        return Array(rows.map { row in
-            deletedFolderIDs.contains(row.folderID ?? "")
-                ? Bookmark(id: row.id, url: row.url, title: row.title, at: row.at, folderID: nil) : row
-        }.filter {
-            (folderID == nil || $0.folderID == folderID) && (!unfiledOnly || $0.folderID == nil)
-                && (query.isEmpty || $0.url.range(of: query, options: [.caseInsensitive]) != nil || $0.title.range(of: query, options: [.caseInsensitive]) != nil)
-        }.sorted { $0.at > $1.at }.prefix(max(0, limit)))
+        let askedQuery: String = query.trimmingCharacters(in: .whitespaces)
+        var matching: [Bookmark] = []
+        matching.reserveCapacity(rows.count)
+        for original in rows {
+            let row: Bookmark
+            if deletedFolderIDs.contains(original.folderID ?? "") {
+                row = Bookmark(id: original.id, url: original.url, title: original.title,
+                               at: original.at, folderID: nil)
+            } else {
+                row = original
+            }
+            let matchesFolder: Bool = folderID == nil || row.folderID == folderID
+            guard matchesFolder else { continue }
+            let matchesUnfiled: Bool = !unfiledOnly || row.folderID == nil
+            guard matchesUnfiled else { continue }
+            if !askedQuery.isEmpty {
+                let matchesURL: Bool = row.url.range(of: askedQuery, options: [.caseInsensitive]) != nil
+                let matchesQuery: Bool = matchesURL || row.title.range(of: askedQuery, options: [.caseInsensitive]) != nil
+                guard matchesQuery else { continue }
+            }
+            matching.append(row)
+        }
+        let ordered: [Bookmark] = matching.sorted { (left: Bookmark, right: Bookmark) -> Bool in
+            left.at > right.at
+        }
+        let maximum: Int = max(0, limit)
+        return Array(ordered.prefix(maximum))
     }
     func suggest(_ query: String, limit: Int = 8) -> [Suggestion] { connection.suggest(query, limit: limit) }
     func suggestAsync(_ query: String, limit: Int = 8, scopedTo engine: SearchEngine? = nil) async -> [Suggestion] {

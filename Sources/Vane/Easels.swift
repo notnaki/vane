@@ -93,6 +93,14 @@ private actor EaselArchiveWriter {
     }
 }
 
+/// Keep macro-generated TaskLocal backing storage outside the MainActor repository.
+/// Older supported Swift compilers do not propagate a property's nonisolated modifier
+/// to the projected storage generated inside a global-actor-isolated type.
+nonisolated enum EaselIntentContext {
+    @TaskLocal static var admittedIntent = false
+    @TaskLocal static var intentOrder: Int?
+}
+
 /// One repository per profile. Writes are atomic and published only after they succeed.
 /// Images are embedded in the document so export/import never relies on an outside path.
 @MainActor final class EaselStore: ObservableObject {
@@ -279,10 +287,8 @@ private actor EaselArchiveWriter {
     }
     func finishIntent(_ id: UUID) { intents[id] = nil }
     private var generation = 0
-    @TaskLocal nonisolated static var admittedIntent = false
-    @TaskLocal nonisolated static var intentOrder: Int?
     private func ordered<T: Sendable>(mutation: Bool = true, _ work: @escaping @MainActor () async throws -> T) async throws -> T {
-        guard Self.admittedIntent || !AppLifecycle.shared.persistenceExitInProgress else { throw Failure.exiting }
+        guard EaselIntentContext.admittedIntent || !AppLifecycle.shared.persistenceExitInProgress else { throw Failure.exiting }
         if mutation { hasMutationIntent = true; pendingWrites += 1 }
         let previous = tail
         generation &+= 1
@@ -324,7 +330,7 @@ private actor EaselArchiveWriter {
     /// Reads wait for every earlier admitted mutation intent, including another session's
     /// queued edit. The admission cutoff excludes later actions and prevents wait cycles.
     func snapshotAsync(_ id: UUID) async throws -> EaselBoard {
-        let cutoff = Self.intentOrder ?? (generation + 1)
+        let cutoff = EaselIntentContext.intentOrder ?? (generation + 1)
         let earlier = intents.values.filter { $0.mutation && $0.order < cutoff }.map(\.task)
         for task in earlier { await task.value }
         return try await ordered(mutation: false) { [self] in

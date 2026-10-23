@@ -20,7 +20,7 @@ import UniformTypeIdentifiers
     /// Queue user intents, then derive each edit from the last durable board. A failed
     /// operation leaves the board and its undo stacks intact and reports the error.
     @discardableResult func performAsync(mutation: Bool = true, _ work: @escaping @MainActor () async throws -> Void) -> Bool {
-        guard EaselStore.admittedIntent || !AppLifecycle.shared.persistenceExitInProgress else {
+        guard EaselIntentContext.admittedIntent || !AppLifecycle.shared.persistenceExitInProgress else {
             message = EaselStore.Failure.exiting.localizedDescription; return false
         }
         let previous = pending, intentID = UUID(), order = repository.reserveIntent()
@@ -28,8 +28,8 @@ import UniformTypeIdentifiers
             if let previous { await previous.value }
             defer { repository.finishIntent(intentID) }
             do {
-                try await EaselStore.$admittedIntent.withValue(true) {
-                    try await EaselStore.$intentOrder.withValue(order) { try await work() }
+                try await EaselIntentContext.$admittedIntent.withValue(true) {
+                    try await EaselIntentContext.$intentOrder.withValue(order) { try await work() }
                 }
             } catch { message = error.localizedDescription }
         }
