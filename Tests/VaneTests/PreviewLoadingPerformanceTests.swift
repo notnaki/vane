@@ -239,12 +239,15 @@ private final class PreviewServer: @unchecked Sendable {
             guard ContinuousClock.now < nextDeadline else { return XCTFail("Replacement preview did not load") }
             try await Task.sleep(for: .milliseconds(20))
         }
+        let pageHandler = try await web.evaluateJavaScript("typeof window.webkit?.messageHandlers?.vanepreviewmeta") as? String
+        XCTAssertEqual(pageHandler, "undefined", "Previewed pages must not be able to fabricate native metadata")
         // An about:blank child provides an actual WKScriptMessage with a blank
         // originating frame while the containing WebView already has a new URL.
-        _ = try await web.evaluateJavaScript("""
+        // The handler exists only in the metadata producer's isolated world.
+        _ = try await web.callAsyncJavaScript("""
         var f = document.createElement('iframe'); document.body.appendChild(f);
-        f.contentWindow.webkit.messageHandlers.vanepreviewmeta.postMessage('<title>Stale blank</title>'); true;
-        """)
+        f.contentWindow.webkit.messageHandlers.vanepreviewmeta.postMessage('<title>Stale blank</title>'); return true;
+        """, arguments: [:], in: nil, in: WKContentWorld.world(name: "VanePreviewMetadata"))
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertNotEqual(previews.current?.title, "Stale blank")
         var pending = Previews.Preview(url: next)

@@ -68,15 +68,16 @@ enum MediaTray {
     /// `mediaSession.metadata` and this is drawn in a 250pt sidebar, so the cap is about not
     /// handing that to text layout, not about the pixels.
     static let maxText = 200
+    static let maxRawTextBytes = 8192
 
     /// What the tray is allowed to draw. Control characters — newlines, tabs — become
     /// spaces because the tray is one line, and so do the bidi overrides, which could
     /// otherwise paint a title that reads as a different site's.
     static func clean(_ raw: String) -> String {
         var out = ""
-        out.reserveCapacity(min(raw.count, maxText))
+        out.reserveCapacity(maxText)
         var lastWasSpace = true                  // also eats leading whitespace
-        for u in raw.unicodeScalars {
+        for u in raw.unicodeScalars.prefix(maxRawTextBytes) {
             let bad = CharacterSet.controlCharacters.contains(u) || u.properties.isBidiControl
             let c = bad || u.properties.isWhitespace ? " " : Character(u)
             if c == " " {
@@ -86,17 +87,36 @@ enum MediaTray {
                 lastWasSpace = false
             }
             out.append(c)
-            if out.count == maxText { break }
         }
+        // Count graphemes once. Recounting after every scalar is quadratic for titles
+        // made from long combining sequences, even when they form just one Character.
+        out = String(out.prefix(maxText))
         if out.hasSuffix(" ") { out.removeLast() }
         return out
     }
 
+    /// Check the native dictionary's size before bridging all its keys and values.
+    static func payload(from body: Any) -> [String: Any]? {
+        guard let native = body as? NSDictionary, native.count <= 16 else { return nil }
+        // NSString length is available before a page-controlled string is bridged or
+        // transcoded to Swift UTF-8. Copy only known fields, never arbitrary page keys.
+        for (key, limit) in [("source", 80), ("title", maxRawTextBytes), ("artist", maxRawTextBytes)] {
+            if let text = native[key] as? NSString, text.length > limit { return nil }
+        }
+        var payload: [String: Any] = [:]
+        for key in ["source", "title", "artist", "playing", "hasMedia", "gone", "next", "prev", "video"] {
+            if let value = native[key] { payload[key] = value }
+        }
+        return payload
+    }
+
     /// Anything that is not a message we sent returns nil and changes nothing.
     static func info(from body: Any) -> Info? {
-        guard let d = body as? [String: Any] else { return nil }
+        guard let d = payload(from: body) else { return nil }
         // `playing` is the one field every payload carries; without it this is not ours.
-        guard let playing = d["playing"] as? Bool else { return nil }
+        guard let playing = d["playing"] as? Bool,
+              (d["title"] as? String ?? "").utf8.prefix(maxRawTextBytes + 1).count <= maxRawTextBytes,
+              (d["artist"] as? String ?? "").utf8.prefix(maxRawTextBytes + 1).count <= maxRawTextBytes else { return nil }
         return Info(title: clean(d["title"] as? String ?? ""),
                     artist: clean(d["artist"] as? String ?? ""),
                     playing: playing,
@@ -363,14 +383,17 @@ enum MediaTray {
     }
 
     func handle(_ body: Any, for tab: Tab, from frame: WKFrameInfo) {
-        guard let i = MediaTray.info(from: body), let d = body as? [String: Any],
-              let token = d["source"] as? String, !token.isEmpty, token.count <= 80 else { return }
+        guard let d = MediaTray.payload(from: body),
+              let token = d["source"] as? String, !token.isEmpty,
+              token.utf8.prefix(81).count <= 80 else { return }
         let o = frame.securityOrigin
         let source = Source(main: frame.isMainFrame,
                             origin: "\(o.protocol)://\(o.host):\(o.port)", token: token)
-        // Ignore first reports from empty documents before they can consume origin slots.
-        if d["gone"] as? Bool != true && d["hasMedia"] as? Bool != true && !i.playing
-            && i.title.isEmpty && i.artist.isEmpty && reports[tab.id]?[source] == nil { return }
+        // Cheap empty-document rejection precedes admission. Text cleanup only happens
+        // after the trusted-origin bucket admits this message.
+        if d["gone"] as? Bool != true && d["hasMedia"] as? Bool != true && d["playing"] as? Bool != true
+            && (d["title"] as? String ?? "").isEmpty && (d["artist"] as? String ?? "").isEmpty
+            && reports[tab.id]?[source] == nil { return }
         // Rate limits use WebKit's trusted origin, independent of the document token.
         // Quiet reports and pagehide must not reset this bucket.
         let origin = Origin(main: frame.isMainFrame, address: source.origin)
@@ -379,7 +402,7 @@ enum MediaTray {
         var bucket = buckets[tab.id]?[origin] ?? MediaTray.Bucket(at: now)
         let allowed = bucket.take(now)
         buckets[tab.id, default: [:]][origin] = bucket
-        guard allowed else { return }
+        guard allowed, let i = MediaTray.info(from: d) else { return }
         var rows = reports[tab.id] ?? [:]
         if d["gone"] as? Bool == true {
             rows[source] = nil

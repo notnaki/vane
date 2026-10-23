@@ -157,6 +157,8 @@ import WebKit
     }
     private var sessionCookies: Set<SessionCookie>?
     private var sessionTask: Task<Void, Never>?
+    private var metadataTask: Task<Void, Never>?
+    private var metadataDocument: WKNavigation?
     private let sessionObserverFactory: (UUID, @escaping @MainActor () -> Void) -> Feel04PreviewSessionObserver?
     /// Monotonic. Every publish carries the id of the request that produced it, so a reply
     /// arriving after the pointer moved is dropped rather than flashed on screen.
@@ -175,7 +177,7 @@ import WebKit
         self.debounceSleep = debounceSleep
     }
 
-    isolated deinit { sessionTask?.cancel() }
+    isolated deinit { sessionTask?.cancel(); metadataTask?.cancel() }
 
     private func retireSession() {
         cache = Cache(); sessionCookies = nil
@@ -362,6 +364,8 @@ import WebKit
         domReady = false
         summaryTries = 0
         navigation = nil
+        metadataTask?.cancel(); metadataTask = nil
+        metadataDocument = nil
         debounceTask?.cancel(); debounceTask = nil
         sessionTask?.cancel(); sessionTask = nil
         paintTask?.cancel(); paintTask = nil
@@ -422,8 +426,8 @@ import WebKit
         bridge = b
         cfg.userContentController.addUserScript(
             WKUserScript(source: Previews.metaScript, injectionTime: .atDocumentEnd,
-                         forMainFrameOnly: true))
-        cfg.userContentController.add(b, name: Previews.metaMessageName)
+                         forMainFrameOnly: true, in: Previews.metadataWorld))
+        cfg.userContentController.add(b, contentWorld: Previews.metadataWorld, name: Previews.metaMessageName)
 
         let w = WKWebView(frame: NSRect(origin: .zero, size: Previews.viewport), configuration: cfg)
         w.customUserAgent = Settings.userAgent
@@ -530,16 +534,28 @@ import WebKit
         guard web === self.web, committed == id, let url = web.url,
               let documentURL, documentURL.absoluteString != "about:blank",
               documentURL == url, showing != nil else { return }
-        let m = Previews.meta(from: html)
-        edit(id) {
-            if !m.title.isEmpty { $0.title = m.title }
-            if !m.description.isEmpty { $0.description = m.description }
-            if !m.image.isEmpty { $0.imageURL = URL(string: m.image, relativeTo: url)?.absoluteURL }
+        guard Self.acceptsMetadata(html), let navigation,
+              metadataDocument !== navigation else { return }
+        metadataTask?.cancel()
+        metadataDocument = navigation
+        let work = Task.detached(priority: .userInitiated) { Previews.meta(from: html) }
+        metadataTask = Task { @MainActor [weak self, weak web] in
+            let m = await withTaskCancellationHandler {
+                await work.value
+            } onCancel: { work.cancel() }
+            guard !Task.isCancelled, let self, let web,
+                  self.latest == id, self.web === web, self.navigation === navigation,
+                  self.committed == id, web.url == url, self.showing != nil else { return }
+            self.metadataTask = nil
+            self.edit(id) {
+                if !m.title.isEmpty { $0.title = m.title }
+                if !m.description.isEmpty { $0.description = m.description }
+                if !m.image.isEmpty { $0.imageURL = URL(string: m.image, relativeTo: url)?.absoluteURL }
+            }
+            // documentEnd: the DOM is parsed, even if styles and images are still arriving.
+            self.domReady = true
+            self.startSummary(id: id)
         }
-        // documentEnd: the DOM is parsed, so there is text to summarise even though the
-        // images and the stylesheets are still arriving.
-        domReady = true
-        startSummary(id: id)
     }
 
     fileprivate func finished(_ web: WKWebView, navigation: WKNavigation?) {
@@ -783,12 +799,19 @@ import WebKit
     /// input format — the same one `check()` feeds it.
     fileprivate static let metaMessageName = "vanepreviewmeta"
 
+    private static let metadataWorld = WKContentWorld.world(name: "VanePreviewMetadata")
+
     fileprivate static let metaScript = """
     (function () {
-      var out = [], t = document.querySelector('title');
-      if (t) { out.push(t.outerHTML); }
+      var out = [], size = 0, limit = 65536, t = document.querySelector('title');
+      function append(node) {
+        var text = node.outerHTML;
+        if (text.length > limit - size) { return false; }
+        size += text.length; out.push(text); return true;
+      }
+      if (t) { append(t); }
       var m = document.querySelectorAll('meta[property],meta[name]');
-      for (var i = 0; i < m.length; i++) { out.push(m[i].outerHTML); }
+      for (var i = 0; i < m.length && i < 256; i++) { if (!append(m[i])) { break; } }
       webkit.messageHandlers.\(metaMessageName).postMessage(out.join(''));
     })();
     """
@@ -799,13 +822,20 @@ import WebKit
     // a real page's real head. The web's og tags are written by hand, by templates, and by
     // plugins, so the parser assumes nothing: any quoting, any attribute order, any casing.
 
-    struct Meta: Equatable {
+    struct Meta: Equatable, Sendable {
         var title = ""
         var description = ""
         var image = ""
     }
 
-    static func meta(from html: String) -> Meta {
+    nonisolated static let maxMetadataBytes = 65_536
+
+    nonisolated static func acceptsMetadata(_ html: String) -> Bool {
+        html.utf8.prefix(maxMetadataBytes + 1).count <= maxMetadataBytes
+    }
+
+    nonisolated static func meta(from html: String) -> Meta {
+        guard acceptsMetadata(html), !Task.isCancelled else { return Meta() }
         let s = Array(html)
         var docTitle = ""
         var og = Meta(), twitter = Meta()
@@ -878,7 +908,7 @@ import WebKit
     /// to be handed, not an error.
     ///
     /// Returns the attributes with lowercased names, and the index just past the `>`.
-    static func attributes(_ s: [Character], from i: Int) -> ([String: String], Int) {
+    nonisolated static func attributes(_ s: [Character], from i: Int) -> ([String: String], Int) {
         var attrs: [String: String] = [:]
         var j = i
         while j < s.count {
@@ -914,7 +944,7 @@ import WebKit
     }
 
     /// Index of `needle` (case-insensitively) at or after `from`, or the end of the input.
-    private static func find(_ needle: String, in s: [Character], from: Int) -> Int {
+    private nonisolated static func find(_ needle: String, in s: [Character], from: Int) -> Int {
         let n = Array(needle.lowercased())
         guard !n.isEmpty, s.count >= n.count else { return s.count }
         var i = max(0, from)
@@ -932,7 +962,7 @@ import WebKit
 
     /// Attribute values arrive escaped and often wrapped across source lines. A card wants
     /// one tidy line of prose.
-    static func clean(_ s: String) -> String {
+    nonisolated static func clean(_ s: String) -> String {
         var out = ""
         var space = false
         for ch in unescape(s) {
@@ -946,14 +976,15 @@ import WebKit
     /// ponytail: the five named entities that actually turn up in an og:description, plus
     /// numeric references. Not an entity table — `&hellip;` survives as `&hellip;`, which is
     /// a cosmetic wart on a hover card and not worth 250 lines of HTML5 named references.
-    static func unescape(_ s: String) -> String {
+    nonisolated static func unescape(_ s: String) -> String {
         guard s.contains("&") else { return s }
         var out = ""
         var i = s.startIndex
         while i < s.endIndex {
-            guard s[i] == "&",
-                  let semi = s[i...].firstIndex(of: ";"),
-                  s.distance(from: i, to: semi) <= 10 else {
+            // Look at at most ten characters, even when no semicolon exists. Searching
+            // the entire suffix once per ampersand makes malformed input quadratic.
+            let end = s.index(i, offsetBy: 11, limitedBy: s.endIndex) ?? s.endIndex
+            guard s[i] == "&", let semi = s[i..<end].firstIndex(of: ";") else {
                 out.append(s[i]); i = s.index(after: i); continue
             }
             let body = String(s[s.index(after: i)..<semi])
@@ -996,7 +1027,9 @@ import WebKit
         init(_ owner: Previews) { self.owner = owner }
 
         func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
-            guard m.frameInfo.isMainFrame, let html = m.body as? String,
+            guard m.frameInfo.isMainFrame, let native = m.body as? NSString,
+                  native.length <= Previews.maxMetadataBytes,
+                  let html = m.body as? String, Previews.acceptsMetadata(html),
                   let web = m.webView else { return }
             owner?.received(meta: html, from: web, documentURL: m.frameInfo.request.url)
         }

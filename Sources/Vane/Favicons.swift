@@ -1,5 +1,39 @@
 import AppKit
+import ImageIO
 import WebKit
+
+/// A bounded per-profile LRU. Every stored image is decoded to at most 64×64 pixels,
+/// so 300 hosts retain at most about 5 MiB of bitmap storage rather than site-sized art.
+@MainActor struct FaviconMemoryCache {
+    private let capacity: Int
+    private var images: [String: NSImage] = [:]
+    private var recent: [String] = []
+
+    init(capacity: Int = 300) { self.capacity = max(0, capacity) }
+
+    mutating func image(for key: String) -> NSImage? {
+        guard let image = images[key] else { return nil }
+        recent.removeAll { $0 == key }
+        recent.append(key)
+        return image
+    }
+
+    mutating func store(_ image: NSImage, for key: String) {
+        guard capacity > 0 else { return }
+        images[key] = image
+        recent.removeAll { $0 == key }
+        recent.append(key)
+        while recent.count > capacity { images.removeValue(forKey: recent.removeFirst()) }
+    }
+
+    subscript(key: String) -> NSImage? {
+        mutating get { image(for: key) }
+        set {
+            if let newValue { store(newValue, for: key) }
+            else { images[key] = nil; recent.removeAll { $0 == key } }
+        }
+    }
+}
 
 /// Favicons, fetched from the site itself and cached by host.
 ///
@@ -35,7 +69,7 @@ import WebKit
     /// Bumped when a fetch lands, so views that asked for a nil icon redraw.
     @Published private(set) var generation = 0
 
-    private var memory: [String: NSImage] = [:]
+    private var memory = FaviconMemoryCache()
     private var inflight: [String: Task<Void, Never>] = [:]
     /// Inspect loaded pages even after a root fallback has been cached. The same set of
     /// declarations needs one fetch per session, not another fetch on every reload.
@@ -69,10 +103,13 @@ import WebKit
     private func recordMiss(_ key: String, attemptedFallback: Bool, at date: Date = .now) {
         guard attemptedFallback else { return }
         misses[key] = date
+        if misses.count > Self.maxFiles,
+           let oldest = misses.min(by: { $0.value < $1.value })?.key { misses[oldest] = nil }
     }
 
-    private static let maxBytes = 512_000     // an icon that big is a mistake, not an icon
+    nonisolated static let maxBytes = 512_000     // an icon that big is a mistake, not an icon
     private static let maxFiles = 300
+    nonisolated static let maxPixelDimension = 64
 
     // MARK: Public
 
@@ -121,7 +158,13 @@ import WebKit
             let declared = Favicons.declared(try? await web.evaluateJavaScript(Favicons.linkJS))
             guard tab.existingWeb === web, tab.currentURL == url else { return }
             if !declared.isEmpty, self.discoveries[key] == declared { return }
-            if !declared.isEmpty { self.discoveries[key] = declared }
+            if !declared.isEmpty {
+                self.discoveries[key] = declared
+                if self.discoveries.count > Self.maxFiles,
+                   let other = self.discoveries.keys.first(where: { $0 != key }) {
+                    self.discoveries[other] = nil
+                }
+            }
             var candidates = declared
             let fallback = self.memory[key] != nil || self.missed(key) ? nil : Favicons.fallback(for: url)
             if let fallback { candidates.append(fallback) }
@@ -160,7 +203,7 @@ import WebKit
                 self.pending[key]?.urls.removeFirst()
                 let data = await Favicons.fetch(url)
                 if self.pending[key]?.fallbackURLs.contains(url) == true { attemptedFallback = true }
-                guard let data, let img = Favicons.image(from: data)
+                guard let data, let img = await Favicons.decoded(data)
                 else { continue }
                 self.memory[key] = img
                 received = url
@@ -182,7 +225,7 @@ import WebKit
         return task
     }
 
-    private static func fetch(_ url: URL) async -> Data? {
+    nonisolated static func fetch(_ url: URL, session: URLSession = .shared) async -> Data? {
         var req = URLRequest(url: url)
         req.timeoutInterval = 8
         // An icon is small and already compressed, so asking for it uncompressed costs
@@ -192,11 +235,23 @@ import WebKit
         // and the html decoded to no image, so the host was filed as a miss.
         req.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         req.setValue("image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
-              (1...maxBytes).contains(data.count)
-        else { return nil }
-        return data
+        do {
+            let (bytes, response) = try await session.bytes(for: req)
+            // Stop the underlying transfer on every early return, including unknown-length
+            // and chunked responses. The old data(for:) buffered everything before checking.
+            defer { bytes.task.cancel() }
+            guard (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
+                  response.expectedContentLength <= Int64(maxBytes) else { return nil }
+            var data = Data()
+            if response.expectedContentLength > 0 {
+                data.reserveCapacity(Int(response.expectedContentLength))
+            }
+            for try await byte in bytes {
+                guard data.count < maxBytes, !Task.isCancelled else { return nil }
+                data.append(byte)
+            }
+            return data.isEmpty ? nil : data
+        } catch { return nil }
     }
 
     /// The page's own declarations, including touch icons preloaded as images (ManageBac).
@@ -204,7 +259,7 @@ import WebKit
     static let linkJS = """
     (function(){var o=[];document.querySelectorAll(\
     "link[rel~='icon' i],link[rel~='apple-touch-icon' i],link[rel~='apple-touch-icon-precomposed' i],link[rel~='preload' i][as='image' i]")\
-    .forEach(function(l){if(!l.href)return;\
+    .forEach(function(l){if(o.length>=32||!l.href)return;\
     if(l.rel.toLowerCase().split(/\\s+/).includes('preload')&&!/apple-touch-icon/i.test(l.href))return;\
     o.push({href:l.href,rel:l.rel,sizes:l.getAttribute('sizes')||'',type:l.type||''})});return o})()
     """
@@ -240,8 +295,16 @@ import WebKit
     }
 
     static func declared(_ value: Any?) -> [URL] {
-        let declarations = (value as? [[String: String]] ?? []).prefix(32).compactMap { entry -> Declaration? in
-            guard let href = entry["href"], let url = URL(string: href),
+        guard let entries = value as? NSArray else { return [] }
+        let declarations = entries.prefix(32).compactMap { raw -> Declaration? in
+            guard let native = raw as? NSDictionary, native.count <= 4 else { return nil }
+            var entry: [String: String] = [:]
+            for key in ["href", "rel", "sizes", "type"] {
+                guard let value = native[key] else { continue }
+                guard let text = value as? NSString, text.length <= 8192 else { return nil }
+                entry[key] = String(text)
+            }
+            guard let href = entry["href"], href.utf8.count <= 8192, let url = URL(string: href),
                   ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
             return Declaration(url: url, rel: entry["rel"] ?? "icon", sizes: entry["sizes"] ?? "", type: entry["type"] ?? "")
         }
@@ -319,8 +382,18 @@ import WebKit
     /// Colored artwork, light details, and opaque tiles keep their original pixels.
     /// Applied on decode so old disk entries benefit without changing the cached bytes.
     nonisolated static func image(from data: Data) -> NSImage? {
-        guard let image = NSImage(data: data), image.isValid,
-              image.size.width > 0, image.size.height > 0 else { return nil }
+        guard !data.isEmpty, data.count <= maxBytes,
+              let source = CGImageSourceCreateWithData(data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary),
+              let bitmap = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelDimension,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary),
+              bitmap.width > 0, bitmap.height > 0,
+              bitmap.width <= maxPixelDimension, bitmap.height <= maxPixelDimension else { return nil }
+        let image = NSImage(cgImage: bitmap, size: NSSize(width: 16, height: 16))
         image.isTemplate = isDarkMark(image)
         // Pin the point size regardless of the site's bitmap resolution.
         image.size = NSSize(width: 16, height: 16)
@@ -383,7 +456,9 @@ import WebKit
     private struct Icon: @unchecked Sendable { let image: NSImage? }
 
     private nonisolated static func read(_ file: URL) -> Icon {
-        guard let data = try? Data(contentsOf: file),
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return Icon(image: nil) }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: maxBytes + 1), data.count <= maxBytes,
               let img = image(from: data) else { return Icon(image: nil) }
         return Icon(image: img)
     }
@@ -392,6 +467,10 @@ import WebKit
     /// touches the cache, because the cache belongs to the actor this has just left.
     private nonisolated static func decoded(_ file: URL) async -> NSImage? {
         await Task.detached(priority: .userInitiated) { read(file) }.value.image
+    }
+
+    private nonisolated static func decoded(_ data: Data) async -> NSImage? {
+        await Task.detached(priority: .userInitiated) { Icon(image: image(from: data)) }.value.image
     }
 
     private func writeDisk(_ key: String, _ data: Data) {
