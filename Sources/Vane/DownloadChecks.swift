@@ -18,9 +18,10 @@ import WebKit
             DownloadLocation.setAskEveryTime(false, for: downloads.profileID)
             TidyDownloads.enabled = false
             if resume {
+                await downloads.waitForDestinationRefresh()
                 guard let row = downloads.items.first, row.status == .paused, downloads.canResume(row),
                       downloads.resume(row) else { throw Failure.message("Restart did not restore a resumable row") }
-                try await wait { row.download == nil && row.status != .running }
+                try await wait { row.status == .done || row.status == .failed }
                 let expected = Data((0..<262144).map { UInt8($0 % 251) })
                 guard row.status == .done, let file = row.url,
                       try Data(contentsOf: file) == expected else {

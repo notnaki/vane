@@ -27,6 +27,7 @@ import CryptoKit
             manager.destinationRefreshGeneration &+= 1
             manager.destinationRefresh?.cancel()
             manager.destinationRefresh = nil
+            manager.destinationRefreshRequested = false
             for download in manager.pendingDownloads.values {
                 download.delegate = nil
                 download.cancel { _ in }
@@ -66,6 +67,7 @@ import CryptoKit
     private var invalidated = false
     private var destinationRefresh: Task<Void, Never>?
     private var destinationRefreshGeneration: UInt64 = 0
+    private var destinationRefreshRequested = false
     private let destinationProbe: @Sendable (DestinationRequest) -> DestinationResult
     private let asynchronousDestinationInspection: Bool
     private var pendingDownloads: [ObjectIdentifier: WKDownload] = [:]
@@ -161,8 +163,8 @@ import CryptoKit
         /// Save panels grant the selected file, not its containing directory.
         fileprivate var destinationBookmarkIsFile: Bool?
         fileprivate var destinationLease: DownloadDestinationLease?
-        fileprivate var inspectedDestination: DestinationRequest?
-        fileprivate var resumeAvailable = false
+        @Published fileprivate(set) var inspectedDestination: DestinationRequest?
+        @Published fileprivate(set) var resumeEligibility = ResumeEligibility.pending
         /// Distinguishes "the user pressed pause" from "the network fell over" — the two
         /// need different words when the resume data turns out not to exist.
         fileprivate var pausedByUser = false
@@ -170,6 +172,7 @@ import CryptoKit
         fileprivate var onProgress: (() -> Void)?
         private var obs: [NSKeyValueObservation] = []
 
+        enum ResumeEligibility: Equatable { case pending, available, unavailable }
         enum State: Equatable { case running, done, failed(String) }
         enum Status: Equatable {
             case running, paused, done, missing, failed
@@ -638,41 +641,50 @@ import CryptoKit
         // Offline `check()` deliberately runs without an event loop; keep its existing
         // synchronous fixture behavior. Production and injected latency checks use IO workers.
         if !asynchronousDestinationInspection { refreshMissingForOfflineCheck(); return }
-        guard destinationRefresh == nil else { return }
+        guard destinationRefresh == nil else { destinationRefreshRequested = true; return }
         destinationRefreshGeneration &+= 1
         let generation = destinationRefreshGeneration
-        let requests = items.filter { $0.status == .done || $0.status == .missing || $0.status == .paused }
+        var requests = items.filter { $0.status == .done || $0.status == .missing || $0.status == .paused }
             .map(destinationRequest)
         let probe = destinationProbe
+        destinationRefreshRequested = false
         destinationRefresh = Task {
-            let results = await Task.detached(priority: .utility) { requests.map(probe) }.value
-            guard !invalidated, generation == destinationRefreshGeneration else { return }
-            var changed = false
-            for result in results {
-                guard let item = items.first(where: { $0.id == result.request.id }),
-                      destinationRequest(item) == result.request else { continue }
-                if item.url != result.url, let url = result.url { item.url = url; changed = true }
-                if item.destinationBookmark != result.bookmark, let bookmark = result.bookmark {
-                    item.destinationBookmark = bookmark; changed = true
-                }
-                item.destinationLease = result.lease
-                item.resumeAvailable = !result.unavailable && result.resumeIssue == nil && result.readable
-                if item.status == .done || item.status == .missing {
-                    let want: Item.Status = result.readable ? .done : .missing
-                    if item.status != want {
-                        item.status = want
-                        item.state = result.readable ? .done : .failed(Self.missingText)
-                        changed = true
+            while true {
+                let batch = requests
+                let results = await Task.detached(priority: .utility) { batch.map(probe) }.value
+                guard !invalidated, generation == destinationRefreshGeneration else { return }
+                var changed = false
+                for result in results {
+                    guard let item = items.first(where: { $0.id == result.request.id }),
+                          destinationRequest(item) == result.request else { continue }
+                    if item.url != result.url, let url = result.url { item.url = url; changed = true }
+                    if item.destinationBookmark != result.bookmark, let bookmark = result.bookmark {
+                        item.destinationBookmark = bookmark; changed = true
                     }
-                } else if item.status == .paused {
-                    if result.unavailable { item.state = .failed("Download folder unavailable. Reconnect it to resume.") }
-                    else if let issue = result.resumeIssue { item.state = .failed(issue) }
-                    else { item.state = .failed("Paused") }
+                    item.destinationLease = result.lease
+                    item.resumeEligibility = result.unavailable ? .pending
+                        : result.resumeIssue == nil && result.readable ? .available : .unavailable
+                    if item.status == .done || item.status == .missing {
+                        let want: Item.Status = result.readable ? .done : .missing
+                        if item.status != want {
+                            item.status = want
+                            item.state = result.readable ? .done : .failed(Self.missingText)
+                            changed = true
+                        }
+                    } else if item.status == .paused {
+                        if result.unavailable { item.state = .failed("Download folder unavailable. Reconnect it to resume.") }
+                        else if let issue = result.resumeIssue { item.state = .failed(issue) }
+                        else { item.state = .failed("Paused") }
+                    }
+                    item.inspectedDestination = destinationRequest(item)
                 }
-                item.inspectedDestination = destinationRequest(item)
+                if changed { save() }
+                guard destinationRefreshRequested else { break }
+                destinationRefreshRequested = false
+                requests = items.filter { $0.status == .done || $0.status == .missing || $0.status == .paused }
+                    .map(destinationRequest)
             }
             destinationRefresh = nil
-            if changed { save() }
         }
     }
 
@@ -962,7 +974,7 @@ import CryptoKit
     func canRetry(_ item: Item) -> Bool {
         guard !invalidated, items.contains(where: { $0 === item }), !item.retryPending, !item.resumePending,
               item.download == nil, item.completed == nil,
-              item.status == .failed || (item.status == .paused && !canResume(item)),
+              item.status == .failed || (item.status == .paused && resumeEligibility(for: item) == .unavailable),
               let source = item.source, ["http", "https"].contains(source.scheme?.lowercased() ?? ""),
               item.sourceMethod == "GET",
               profileID != Profile.incognito.id || item.sourceWeb != nil else { return false }
@@ -1026,13 +1038,18 @@ import CryptoKit
 
     /// Anything the user could still finish: paused, or interrupted with a blob on disk.
     func canResume(_ item: Item) -> Bool {
-        if !sandboxed {
-            return !invalidated && items.contains(where: { $0 === item }) && item.status == .paused
-                && item.download == nil && !item.resumePending
-                && item.inspectedDestination == destinationRequest(item) && item.resumeAvailable
+        !invalidated && items.contains(where: { $0 === item }) && item.status == .paused
+            && item.download == nil && !item.resumePending && resumeEligibility(for: item) == .available
+    }
+
+    /// A pending/reconnect inspection is not proof that a paused transfer cannot resume.
+    /// Only a matching, completed negative result can authorize destructive Retry.
+    private func resumeEligibility(for item: Item) -> Item.ResumeEligibility {
+        if asynchronousDestinationInspection {
+            guard item.inspectedDestination == destinationRequest(item) else { return .pending }
+            return item.resumeEligibility
         }
-        return !invalidated && items.contains(where: { $0 === item }) && item.status == .paused
-            && item.download == nil && !item.resumePending && resumeProblem(item) == nil
+        return resumeProblem(item) == nil ? .available : .unavailable
     }
 
     private func resumeProblem(_ item: Item) -> String? {

@@ -96,7 +96,7 @@ struct BlockerSettingsSection: View {
             do {
                 guard name == URL(fileURLWithPath: name).lastPathComponent else { return }
                 let report = try await Task.detached(priority: .utility) {
-                    Blocker.convert(try String(contentsOf: Blocker.importedDirectory.appendingPathComponent(name), encoding: .utf8)).report
+                    try Blocker.convertBoundedSources([BlockerFiles.readText(Blocker.importedDirectory.appendingPathComponent(name))]).report
                 }.value
                 Self.showReport(report, title: "Local filter file")
             } catch { self.error = error.localizedDescription }
