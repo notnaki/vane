@@ -4,6 +4,53 @@ import XCTest
 @testable import vane
 
 @MainActor final class SidebarHoverLayoutTests: XCTestCase {
+    func testMountedRowStillUpdatesSelectionAndRenameAfterObservationSplit() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let store = TabStore(isPrivate: true)
+        store.sharingReady = false
+        let tab = store.makeBlankTab(as: .today)
+        tab.park(url: URL(string: "about:blank#row-observation")!, Parked(title: "A live row"))
+        store.current = nil
+        store.palette = nil
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 250, height: Look.rowHeight),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView:
+            SidebarTabSurface(store: store, tab: tab, returnHovering: .constant(false), action: {})
+                .transaction { $0.disablesAnimations = true })
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            window.contentView = nil
+            window.close()
+            store.dropStashes()
+            tab.tearDown()
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release([tab])
+        }
+        func pixels() throws -> Data {
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        }
+        func editableFields(in view: NSView) -> [NSTextField] {
+            (view as? NSTextField).map { $0.isEditable ? [$0] : [] }
+                ?? view.subviews.flatMap { editableFields(in: $0) }
+        }
+        try await Task.sleep(for: .milliseconds(60))
+        let unselected = try pixels()
+        store.current = tab.id
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertNotEqual(try pixels(), unselected, "Selection must still reach the rendered row")
+        store.renamingTab = tab.id
+        try await compatibilityWait { !editableFields(in: host).isEmpty }
+        XCTAssertEqual(editableFields(in: host).first?.stringValue, "A live row")
+        store.renamingTab = nil
+        try await compatibilityWait { editableFields(in: host).isEmpty }
+    }
+
     func testHoverKeepsLongTabTitleAndSubtitleInPlace() throws {
         TestEnvironment.prepare()
         let store = TabStore(isPrivate: true)

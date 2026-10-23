@@ -2346,6 +2346,8 @@ struct Stash {
     // Outlive the Find bar and profile parking, but never the owning store.
     lazy var findSession = Find()
     let feedback = InteractionFeedback()
+    /// Protection changes can revoke a captured sidebar without changing its shape.
+    let sidebarPreviewInvalidated = PassthroughSubject<Void, Never>()
     var sharingReady = false
     var sharedUpdateQueued = false
     @Published var tabs: [Tab] = [] { didSet { SharedTabs.schedule(from: self) } }

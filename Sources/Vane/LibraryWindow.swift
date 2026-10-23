@@ -715,13 +715,26 @@ extension Look {
 /// window, so media, the mini player and picture-in-picture all carry on.
 struct LibraryPanel: View {
     @EnvironmentObject var store: TabStore
+
+    var body: some View {
+        LibraryPanelSurface(store: store, isOpen: store.libraryOpen,
+                            ownsEscape: store.libraryOpen && store.palette == nil && !store.findOpen)
+    }
+}
+
+/// Keep search typing and unrelated window publications outside the retained,
+/// offscreen Library graph. Only its presentation state crosses this boundary.
+private struct LibraryPanelSurface: View {
+    let store: TabStore
+    let isOpen: Bool
+    let ownsEscape: Bool
     @ObservedObject private var library = Library.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         HStack(spacing: 0) {
-            LibraryRail()
+            LibraryRail(store: store)
             content
                 .transition(.opacity)
         }
@@ -738,7 +751,7 @@ struct LibraryPanel: View {
         // while the command bar is up — that reads Escape itself, and the innermost cancel
         // action would otherwise win.
         .background {
-            if store.libraryOpen && store.palette == nil && !store.findOpen {
+            if ownsEscape {
                 Button("Close Library") { Library.close(store) }
                     .keyboardShortcut(.cancelAction)
                     .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
@@ -754,9 +767,9 @@ struct LibraryPanel: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Library")
-        .onAppear { if store.libraryOpen { axAnnounce("Library, \(library.section.title).") } }
-        .onChange(of: store.libraryOpen) {
-            if store.libraryOpen { axAnnounce("Library, \(library.section.title).") }
+        .onAppear { if isOpen { axAnnounce("Library, \(library.section.title).") } }
+        .onChange(of: isOpen) {
+            if isOpen { axAnnounce("Library, \(library.section.title).") }
         }
     }
 
@@ -778,7 +791,7 @@ struct LibraryPanel: View {
 // MARK: - The rail
 
 private struct LibraryRail: View {
-    @EnvironmentObject var store: TabStore
+    let store: TabStore
     @ObservedObject private var library = Library.shared
 
     private var sections: [LibrarySection] {
@@ -796,7 +809,7 @@ private struct LibraryRail: View {
             ScrollView {
                 VStack(spacing: Look.rowGap) {
                     ForEach(sections) { section in
-                        LibraryTile(section: section, selected: library.section == section) {
+                        LibraryTile(store: store, section: section, selected: library.section == section) {
                             Library.open(section, in: store)
                             axAnnounce(section.title)
                         }
@@ -837,13 +850,13 @@ private struct LibraryRail: View {
 /// selections stacked on each other — the glyph is drawn bare and the card is what says
 /// which section this is.
 private struct LibraryTile: View {
+    let store: TabStore
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let section: LibrarySection
     let selected: Bool
     let action: () -> Void
     @State private var hovering = false
     @State private var focused = false
-    @EnvironmentObject private var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 

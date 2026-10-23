@@ -220,6 +220,13 @@ heartbeat gap during opening, and worst native field-edit/layout cost, without a
 timing limit. Hidden adjacent Space preview preparation must stay paused until search
 closes and its dismissal fade finishes.
 
+Unchanged prepared sidebars survive search presentation, suggestion updates, and vertical
+scrolling. A claimed Space surface updates its outgoing native scroll viewport before
+travel; structural changes and folder-protection revocation still invalidate immediately.
+`SpaceNativeRenderingTests` checks cache identity across search/scroll, the actual native
+scroll position, rapid profile reversals, and synchronous protection invalidation. Visible
+animation fixtures activate their test window and restore the prior activation policy.
+
 ```sh
 VANE_UI_PERFORMANCE=1 swift test --filter SearchPresentationPerformanceTests
 ```

@@ -4193,25 +4193,44 @@ struct LivePRTitle: View {
 
 struct SidebarTabSurface: View {
     @ObservedObject var store: TabStore
+    let tab: Tab
+    var held = false
+    @Binding var returnHovering: Bool
+    var pr: GitHub.Row?
+    var action: () -> Void
+    var previewSelected: Bool? = nil
+    var previewTicked = false
+
+    var body: some View {
+        // Map window publications to the few values this row draws. The expensive
+        // row subtree remains unchanged during command-field/suggestion updates.
+        SidebarTabPresentation(store: store, tab: tab, held: held, returnHovering: $returnHovering,
+            pr: pr, action: action, selected: previewSelected ?? (store.current == tab.id),
+            ticked: previewSelected == nil ? store.selection.contains(tab.id) : previewTicked,
+            previewing: previewSelected != nil, renaming: previewSelected == nil && store.renamingTab == tab.id)
+    }
+}
+
+private struct SidebarTabPresentation: View {
+    let store: TabStore
     @ObservedObject var tab: Tab
     var held = false
     @Binding var returnHovering: Bool
     var pr: GitHub.Row?
     var action: () -> Void
-    /// A swipe renders the incoming selection without mutating the outgoing window.
-    var previewSelected: Bool? = nil
-    var previewTicked = false
+    let selected: Bool
+    let ticked: Bool
+    let previewing: Bool
+    let renaming: Bool
     @Environment(\.ghostTileMorph) private var morph
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
-        let selected = previewSelected ?? (store.current == tab.id)
-        let ticked = previewSelected == nil ? store.selection.contains(tab.id) : previewTicked
         let returning = tab.kind == .pinned && !tab.atHome
         let title = TidyTitles.title(for: tab)
         SidebarRow(selected: selected, ticked: ticked, held: held,
-                   keyboardEnabled: previewSelected == nil && store.renamingTab != tab.id,
+                   keyboardEnabled: !previewing && !renaming,
                    action: action) {
             TabHomeIcon(store: store, tab: tab, returnHovering: held ? .constant(returnHovering) : $returnHovering)
         } label: {
@@ -4224,7 +4243,7 @@ struct SidebarTabSurface: View {
                         .accessibilityHidden(true)
                 }
                 // Keep the away marker visible during rename and Return hover too.
-                if previewSelected == nil && !held && store.renamingTab == tab.id {
+                if !previewing && !held && renaming {
                     RenameField(store: store, tab: tab, initialTitle: title)
                 } else {
                     LivePRTitle(title: title, reveal: tab.titleReveal, pr: pr,
