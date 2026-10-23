@@ -19,6 +19,7 @@ struct BackupCandidate: Identifiable, Sendable {
     /// Drain accepted edits before capturing the final session. An unreadable original
     /// with no admitted edit can be preserved for repair; a failed write cannot.
     private static func flushPersistence(allowDamagedOriginals: Bool) async -> Bool {
+        await ImportOperations.drain()
         await PendingSessionTransactions.drain()
         await ProfileManager.shared.waitForTransactions()
         await Library.waitForMoves()
@@ -28,12 +29,16 @@ struct BackupCandidate: Identifiable, Sendable {
             else { try await EaselStore.flushAll(directory: Store.directory) }
             try await Store.flushAllPendingWrites()
         } catch { return false }
+        do { try await Passwords.flushPendingOperations() } catch { return false }
+        guard await AppIcon.flushPersistence() else { return false }
+        await Updater.markHealthyLaunchAsync()
         let captured = Session.enqueueSave()
         let persisted = await Session.flushPersistence()
         let failures = ProfileManager.shared.saveFailures
         let originalsOnly = allowDamagedOriginals && !ProfileManager.shared.hasUnsavedProfileChanges
             && failures.allSatisfy { $0.id == .profiles && !$0.canRetry }
-        return profiles && captured && persisted && (failures.isEmpty || originalsOnly)
+        return profiles && captured && persisted && !ImportOperations.hasPendingOperations
+            && !Passwords.hasPendingOperations && (failures.isEmpty || originalsOnly)
     }
 
     @Published private(set) var busy = false

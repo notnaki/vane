@@ -6,20 +6,49 @@ final class SessionPersistence: @unchecked Sendable {
     static let shared = SessionPersistence()
     private let queue = DispatchQueue(label: "Vane.session-persistence", qos: .utility)
     private var failures: [URL: @Sendable () -> Bool] = [:] // confined to queue
+    private let retirementLock = NSLock()
+    private var retired = Set<URL>() // protected by retirementLock, never waits for IO
 
-    func enqueue(file: URL, _ operation: @escaping @Sendable () -> Bool) {
+    private func isRetired(_ file: URL) -> Bool {
+        retirementLock.withLock { retired.contains(file.standardizedFileURL) }
+    }
+
+    /// Admission closes immediately; the barrier waits for any operation already
+    /// executing before deletion is allowed to unlink its files. Rejected retries
+    /// cannot recreate the profile after the barrier returns.
+    func retire(files: [URL]) async {
+        retirementLock.withLock { retired.formUnion(files.map(\.standardizedFileURL)) }
+        await perform { [self] in
+            for file in files { failures.removeValue(forKey: file) }
+        }
+    }
+
+    @discardableResult
+    func enqueue(file: URL, _ operation: @escaping @Sendable () -> Bool) -> Bool {
+        guard !isRetired(file) else { return false }
         queue.async { [self] in
+            guard !isRetired(file) else { failures.removeValue(forKey: file); return }
             if operation() { failures.removeValue(forKey: file) } else { failures[file] = operation }
         }
+        return true
     }
 
     func sync<T>(_ operation: () -> T) -> T { queue.sync(execute: operation) }
 
     func sync(file: URL, _ operation: @escaping @Sendable () -> Bool) -> Bool {
         queue.sync {
+            guard !isRetired(file) else { return false }
             let ok = operation()
             if ok { failures.removeValue(forKey: file) } else { failures[file] = operation }
             return ok
+        }
+    }
+
+    func perform(file: URL, _ operation: @escaping @Sendable () -> Bool) async -> Bool {
+        guard !isRetired(file) else { return false }
+        return await perform { [self] in
+            guard !isRetired(file) else { return false }
+            return operation()
         }
     }
 
@@ -35,6 +64,7 @@ final class SessionPersistence: @unchecked Sendable {
             // One retry per durability boundary handles recovered disk access without
             // spinning, and a persistent failure remains visible to backup/quit.
             for (file, retry) in failures {
+                if isRetired(file) { failures.removeValue(forKey: file); continue }
                 if retry() { failures.removeValue(forKey: file) }
             }
             return failures.isEmpty

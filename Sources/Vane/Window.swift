@@ -1630,7 +1630,7 @@ extension TabStore {
     @discardableResult
     static func forgetAsync(space id: UUID, in profileID: UUID) async -> Bool {
         let destination = file(profileID)
-        return await SessionPersistence.shared.perform { forgetFile(space: id, file: destination) }
+        return await SessionPersistence.shared.perform(file: destination) { forgetFile(space: id, file: destination) }
     }
 
     private nonisolated static func forgetFile(space id: UUID, file: URL) -> Bool {
@@ -1733,7 +1733,9 @@ extension TabStore {
                 guard let data = encode(entries, splits: splits, spaces: spaces, selected: selected) else { return false }
                 return RecoverySnapshots.write(data, to: destination, valid: readable)
             }
-            if background { SessionPersistence.shared.enqueue(file: destination, write) }
+            if background {
+                if !SessionPersistence.shared.enqueue(file: destination, write) { succeeded = false }
+            }
             else if !SessionPersistence.shared.sync(file: destination, write) { succeeded = false }
         }
         return succeeded

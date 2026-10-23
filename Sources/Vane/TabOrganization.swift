@@ -548,7 +548,7 @@ import Combine
             for id in ids { after[index].today.remove(tab: id.uuidString) }
             after[index].today.removeEmptyFolders()
         }
-        guard await commitAsync(after) else { return false }
+        guard let published = await commitAsync(after) else { return false }
         let archive = Archive.shared(for: profileID)
         let previous = archive.entries.filter { entry in selected.contains { $0.url.absoluteString == entry.url } }
         for row in selected { archive.add(url: row.url, title: row.title, space: row.spaceID) }
@@ -560,7 +560,7 @@ import Combine
             }
         }
         Self.saved[profileID] = UndoRecord(before: undoBefore,
-            after: Dictionary(uniqueKeysWithValues: capture().filter { affected.contains($0.space.id) }.map { ($0.space.id, $0.mark) }),
+            after: published,
             previousArchive: previous,
             addedArchive: archive.entries.filter { entry in selected.contains { $0.url.absoluteString == entry.url } })
         finished("Archived \(selected.count) tabs")
@@ -587,9 +587,9 @@ import Combine
         }
         after[target].records += moved
         after[target].today.sync(tabs: after[target].records.filter { $0.kind == .today }.map(\.id.uuidString))
-        guard await commitAsync(after.filter { affected.contains($0.space.id) }) else { return false }
+        guard let published = await commitAsync(after.filter { affected.contains($0.space.id) }) else { return false }
         Self.saved[profileID] = UndoRecord(before: before.filter { affected.contains($0.space.id) },
-            after: Dictionary(uniqueKeysWithValues: capture().filter { affected.contains($0.space.id) }.map { ($0.space.id, $0.mark) }),
+            after: published,
             previousArchive: [], addedArchive: [])
         finished("Moved \(moved.count) tabs to \(after[target].space.name)")
         return true
@@ -626,7 +626,7 @@ import Combine
                 restoring[index].splits = live.splits
             }
         }
-        guard await commitAsync(restoring) else { return false }
+        guard await commitAsync(restoring) != nil else { return false }
         let archive = Archive.shared(for: profileID)
         for entry in undo.addedArchive where archive.entries.contains(entry) {
             archive.remove(entry.id)
@@ -641,13 +641,29 @@ import Combine
         return true
     }
 
-    private func commitAsync(_ states: [State]) async -> Bool {
+    /// Merge only the reviewed Spaces after the worker wait. The profile inventory
+    /// and unrelated metadata remain owned by their latest main-actor values.
+    nonisolated static func mergingSpaceChanges(_ staged: [Space], expected: [Space],
+                                                latest: [Space], affected: Set<UUID>) -> [Space]? {
+        let expectedByID = Dictionary(expected.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let replacements = Dictionary(staged.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let currentByID = Dictionary(latest.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        guard affected.allSatisfy({ id in
+            expectedByID[id] != nil && replacements[id] != nil && currentByID[id] == expectedByID[id]
+        }) else { return nil }
+        return latest.map { affected.contains($0.id) ? replacements[$0.id]! : $0 }
+    }
+
+    private func commitAsync(_ states: [State]) async -> [UUID: Mark]? {
+        let before = capture()
         var spaces = ProfileManager.shared.spaces(for: profileID)
         guard states.allSatisfy({ state in spaces.contains { $0.id == state.space.id } }) else {
             message = "A Space changed profiles or was deleted. Refresh and try again."
-            return false
+            return nil
         }
-        let expected = Dictionary(uniqueKeysWithValues: capture().filter { state in states.contains { $0.space.id == state.space.id } }.map { ($0.space.id, $0.mark) })
+        let expectedSpaces = spaces
+        let affected = Set(states.map { $0.space.id })
+        let expected = Dictionary(uniqueKeysWithValues: before.filter { state in states.contains { $0.space.id == state.space.id } }.map { ($0.space.id, $0.mark) })
         func stillCurrent() -> Bool {
             let current = Dictionary(uniqueKeysWithValues: capture().map { ($0.space.id, $0.mark) })
             return expected.allSatisfy { id, mark in current[id].map { mark.matches($0) } == true }
@@ -655,7 +671,7 @@ import Combine
         let sessionURL = ProfileManager.sessionURL(for: profileID, in: Store.directory)
         let sessionBefore = await SessionPersistence.shared.perform { try? Data(contentsOf: sessionURL) }
         @MainActor func restoreSession() async {
-            if let sessionBefore, !(await SessionPersistence.shared.perform { SnapshotPersistence.write(sessionBefore, to: sessionURL) }) {
+            if let sessionBefore, !(await SessionPersistence.shared.perform(file: sessionURL) { SnapshotPersistence.write(sessionBefore, to: sessionURL) }) {
                 message = "Could not restore the session snapshot. Check storage and retry."
             }
         }
@@ -663,7 +679,7 @@ import Combine
             guard await Session.forgetAsync(space: state.space.id, in: profileID) else {
                 message = "Could not save the session. No tabs were changed."
                 await restoreSession()
-                return false
+                return nil
             }
         }
         let previous = Dictionary(uniqueKeysWithValues: states.map {
@@ -693,7 +709,7 @@ import Combine
             guard await Suspension.SpaceState.saveAsync(parked, space: state.space.id, profileID: profileID, in: Store.directory) else {
                 message = "Could not save page state. No tabs were changed."
                 await rollback()
-                return false
+                return nil
             }
             let index = spaces.firstIndex { $0.id == state.space.id }!
             spaces[index].tabURLs = state.records.filter { $0.kind == .today }.compactMap(\.savedURL).filter(TabAddress.restorable)
@@ -723,12 +739,20 @@ import Combine
             // Current live snapshots supersede staged sidecar/session generations.
             _ = Session.enqueueSave()
             _ = await Session.flushPersistence()
-            return false
+            return nil
         }
-        guard ProfileManager.shared.saveSpaces(spaces, for: profileID) else {
+        let latest = ProfileManager.shared.spaces(for: profileID)
+        guard let merged = Self.mergingSpaceChanges(spaces, expected: expectedSpaces,
+                                                    latest: latest, affected: affected) else {
+            message = "A Space changed while saving. Review and retry."
+            _ = Session.enqueueSave()
+            _ = await Session.flushPersistence()
+            return nil
+        }
+        guard ProfileManager.shared.saveSpaces(merged, for: profileID) else {
             message = "Could not save Spaces. No tabs were changed."
             await rollback()
-            return false
+            return nil
         }
         for state in states {
             var counts: [DiskKey: Int] = [:]
@@ -750,9 +774,14 @@ import Combine
             }
         }
         publish(states)
+        // Bind undo to the exact publication, before persistence yields to new tab
+        // creation/navigation. A later edit must make undo refuse, never become part
+        // of the organizer operation's accepted after-state.
+        let published = Dictionary(uniqueKeysWithValues: capture(flush: false)
+            .filter { affected.contains($0.space.id) }.map { ($0.space.id, $0.mark) })
         sessionSaveFailed = !Session.enqueueSave()
         if !(await Session.flushPersistence()) { sessionSaveFailed = true }
-        return true
+        return published
     }
 
     /// Publish all ends before releasing any page. This preserves a moved live tab and

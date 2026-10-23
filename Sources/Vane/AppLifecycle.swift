@@ -336,12 +336,14 @@ enum QuitAsk {
         Crash.stopAutosave()
         Task { [self] in
             var succeeded = true
+            await ImportOperations.drain()
             await PendingSessionTransactions.drain()
             await ProfileManager.shared.waitForTransactions()
             await Library.waitForMoves()
             do { try await EaselStore.drainAllPendingWrites(directory: Store.directory) } catch { succeeded = false }
             do { try await Store.flushAllPendingWrites() } catch { succeeded = false }
             do { try await EaselStore.flushAll(directory: Store.directory) } catch { succeeded = false }
+            do { try await Passwords.flushPendingOperations() } catch { succeeded = false }
             if !(await AppIcon.flushPersistence()) { succeeded = false }
             await Updater.markHealthyLaunchAsync()
             if succeeded && !discarding {
@@ -357,7 +359,7 @@ enum QuitAsk {
             for _ in 0..<3 where Store.hasUnflushedWrites {
                 do { try await Store.flushAllPendingWrites() } catch { succeeded = false; break }
             }
-            if Store.hasUnflushedWrites { succeeded = false }
+            if Store.hasUnflushedWrites || ImportOperations.hasPendingOperations || Passwords.hasPendingOperations { succeeded = false }
             if !succeeded { _ = await Crash.markDirtyAsync() }
             if !succeeded && !discarding {
                 allowPersistenceExitDialog()
@@ -388,8 +390,8 @@ enum QuitAsk {
     /// File menu leads with.
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
-        menu.addItem(dockItem("New Window") { [self] in afterBootstrap { openWindow(false) } })
-        menu.addItem(dockItem("New Private Window") { [self] in afterBootstrap { openWindow(true) } })
+        menu.addItem(dockItem("New Window") { [self] in afterBootstrap { self.openWindow(false) } })
+        menu.addItem(dockItem("New Private Window") { [self] in afterBootstrap { self.openWindow(true) } })
         return menu
     }
 

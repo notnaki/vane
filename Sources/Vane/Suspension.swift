@@ -404,6 +404,7 @@ extension Prefs {
         private nonisolated static let worker = Worker()
         private static var cache: [URL: [String: [String: Parked]]] = [:]
         private static var loaded = Set<URL>()
+        private static var retired = Set<URL>()
 
         private nonisolated static func parked(_ table: Table) -> [String: [String: Parked]] {
             table.mapValues { rows in rows.mapValues {
@@ -426,8 +427,9 @@ extension Prefs {
         static func prepare(profiles: [UUID], in dir: URL) async {
             for profile in profiles {
                 let file = url(for: profile, in: dir)
-                guard !loaded.contains(file) else { continue }
+                guard !loaded.contains(file), !retired.contains(file) else { continue }
                 let loaded = await SessionPersistence.shared.perform { parked(worker.read(file)) }
+                guard !retired.contains(file) else { continue }
                 cache[file] = loaded.merging(cache[file] ?? [:], uniquingKeysWith: { _, newer in newer })
                 self.loaded.insert(file)
             }
@@ -440,8 +442,35 @@ extension Prefs {
             cache.removeAll(); loaded.removeAll()
         }
 
+        /// A freshly generated profile ID has no sidecar or recovery generations.
+        /// Establish its empty UI cache before any window is constructed, without
+        /// joining the disk lane behind another profile's in-flight write.
+        static func registerNewProfile(profileID: UUID, in dir: URL) {
+            let file = url(for: profileID, in: dir)
+            guard !retired.contains(file) else { return }
+            cache[file] = [:]
+            loaded.insert(file)
+        }
+
+        /// Profile deletion closes UI admission before awaiting the ordered barrier.
+        /// Every session-generation producer uses the same retired destination keys.
+        static func retire(profileID: UUID, in dir: URL) async {
+            let file = url(for: profileID, in: dir)
+            retired.insert(file)
+            cache.removeValue(forKey: file); loaded.remove(file)
+            await SessionPersistence.shared.retire(files: [file,
+                ProfileManager.sessionURL(for: profileID, in: dir),
+                ProfileManager.spacesURL(for: profileID, in: dir)])
+            await SessionPersistence.shared.perform {
+                worker.tables.removeValue(forKey: file)
+                worker.primary.removeValue(forKey: file)
+                worker.dirty.remove(file)
+            }
+        }
+
         static func load(space: UUID, profileID: UUID, in dir: URL) -> [String: Parked] {
             let file = url(for: profileID, in: dir)
+            guard !retired.contains(file) else { return [:] }
             if !loaded.contains(file) {
                 // Compatibility for isolated checks and newly introduced profiles.
                 let disk = SessionPersistence.shared.sync { parked(worker.read(file)) }
@@ -456,23 +485,24 @@ extension Prefs {
         static func enqueueSave(_ parked: [String: Parked], space: UUID,
                                 profileID: UUID, in dir: URL) -> Bool {
             let file = url(for: profileID, in: dir)
+            guard !retired.contains(file) else { return false }
             cache[file, default: [:]][space.uuidString] = parked
-            SessionPersistence.shared.enqueue(file: file) {
+            return SessionPersistence.shared.enqueue(file: file) {
                 worker.update(rows(parked), space: space, file: file)
             }
-            return true
         }
 
         @discardableResult
         static func saveAsync(_ parked: [String: Parked], space: UUID,
                               profileID: UUID, in dir: URL) async -> Bool {
-            enqueueSave(parked, space: space, profileID: profileID, in: dir)
+            guard enqueueSave(parked, space: space, profileID: profileID, in: dir) else { return false }
             return await SessionPersistence.shared.flush()
         }
 
         @discardableResult
         static func removeAsync(space: UUID, profileID: UUID, in dir: URL) async -> Bool {
             let file = url(for: profileID, in: dir)
+            guard !retired.contains(file) else { return false }
             cache[file]?.removeValue(forKey: space.uuidString)
             SessionPersistence.shared.enqueue(file: file) { worker.update(nil, space: space, file: file) }
             return await SessionPersistence.shared.flush()
