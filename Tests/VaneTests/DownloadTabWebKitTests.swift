@@ -42,7 +42,7 @@ import XCTest
         manager.items.filter { $0.status.isLive }.forEach { manager.cancel($0) }
         Downloads.forget(store.profileID)
         child?.tearDown()
-        store.tabs.forEach { $0.tearDown() }
+        store.everyTab.forEach { $0.tearDown() }
         TabStore.all.removeAll { $0 === store }
         server.stop()
         try? FileManager.default.removeItem(at: root)
@@ -141,5 +141,59 @@ import XCTest
         binary.held = false
         try await compatibilityWait { item.status == .done }
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(item.url)), binary.bytes)
+    }
+
+    func testDelayedDownloadClosesItsTabAfterSwitchingSpaces() async throws {
+        let first = Space(name: "Downloads", profileID: store.profileID)
+        let second = Space(name: "Reading", profileID: store.profileID)
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([first, second], for: store.profileID))
+        store.switchTo(space: first)
+        server.heldPaths.insert("/download")
+        try await loadOpener("<a href='/download' target='_blank'>Download</a>")
+        _ = try await opener.web.evaluateJavaScript("document.querySelector('a').click(); void 0")
+        try await compatibilityWait { self.child != nil && self.server.requests.contains { $0.hasPrefix("GET /download ") } }
+        let child = try XCTUnwrap(child)
+        store.switchTo(space: second)
+        XCTAssertEqual(store.stashes[first.id]?.tabs.map(\.id), [opener.id, child.id])
+        server.heldPaths.remove("/download")
+        try await waitForDownload()
+        try await compatibilityWait { !self.store.everyTab.contains { $0.id == child.id } }
+        XCTAssertEqual(store.currentSpaceID, second.id)
+        XCTAssertNil(store.current)
+        store.switchTo(space: first)
+        XCTAssertEqual(store.tabs.map(\.id), [opener.id])
+    }
+
+    func testEmptyBlankDocumentWithBackHistoryKeepsItsTab() async throws {
+        try await loadOpener("")
+        let web = opener.web
+        opener.go(URL(string: "about:blank")!)
+        try await compatibilityWait { web.backForwardList.currentItem?.url.absoluteString == "about:blank" && !self.opener.loading }
+        XCTAssertFalse(web.backForwardList.backList.isEmpty)
+        opener.go(try server.url("/download"))
+        try await waitForDownload()
+        // Allow the asynchronous blank-document check and deferred close to settle.
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(store.tabs.contains { $0.id == opener.id })
+        XCTAssertTrue(opener.existingWeb === web)
+        XCTAssertTrue(web.canGoBack)
+    }
+
+    func testEmptyBlankDocumentWithForwardHistoryKeepsItsTab() async throws {
+        let tab = store.newBlankTab()
+        let web = tab.web
+        tab.go(URL(string: "about:blank")!)
+        try await compatibilityWait { web.backForwardList.currentItem?.url.absoluteString == "about:blank" && !tab.loading }
+        tab.go(try server.url("/history"))
+        try await compatibilityWait { tab.title == "Page /history" && !tab.loading }
+        tab.back()
+        try await compatibilityWait { web.backForwardList.currentItem?.url.absoluteString == "about:blank" && !tab.loading }
+        XCTAssertFalse(web.backForwardList.forwardList.isEmpty)
+        tab.go(try server.url("/download"))
+        try await waitForDownload()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(store.tabs.contains { $0.id == tab.id })
+        XCTAssertTrue(tab.existingWeb === web)
+        XCTAssertTrue(web.canGoForward)
     }
 }

@@ -233,7 +233,15 @@ extension TabStore {
     /// A Little Vane is its one page, so closing that page closes the window, exactly as
     /// ⌘W does — see `closeOrArchive`.
     func closedByScript(_ id: Tab.ID) {
-        if isLittle, tabs.count <= 1, tabs.first?.id == id {
+        if let stashed = space(stashing: id) {
+            // A delayed download can become ready after its Space left the strip.
+            // Remove it from that Space without switching or remembering a closed page.
+            guard !isTabLocked(id), let tab = stashes[stashed]?.tabs.first(where: { $0.id == id }),
+                  !tab.stays else { return }
+            SharedTabs.remove(id, from: self)
+            stashes[stashed]?.remove(id)?.tearDown()
+            extensions.sync()
+        } else if isLittle, tabs.count <= 1, tabs.first?.id == id {
             window?.performClose(nil)
         } else {
             close(id, byScript: true)

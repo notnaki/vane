@@ -1893,7 +1893,8 @@ struct TitleReveal: Equatable, Sendable {
         Peek.dismissIfBlank(self)
         guard w === existingWeb, !stays else { return }
         let item = w.backForwardList.currentItem
-        guard item == nil || item?.url.absoluteString == "about:blank" else { return }
+        let history = w.backForwardList.backList + w.backForwardList.forwardList + [item].compactMap { $0 }
+        guard history.allSatisfy({ $0.url.absoluteString == "about:blank" }) else { return }
         let generation = navigationState.policyGeneration
         Task { @MainActor [weak self, weak w] in
             guard let self, let w else { return }
