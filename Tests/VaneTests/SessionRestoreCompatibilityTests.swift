@@ -65,7 +65,12 @@ import XCTest
             tab.resume()
             XCTAssertEqual(tab.currentURL, sharedURL)
             XCTAssertTrue(tab.web.canGoBack)
-            tab.web.goBack()
+            // Restoring interactionState also starts an asynchronous navigation to
+            // /same. Let it finish before Back so the two navigations cannot race.
+            try await compatibilityWait {
+                !tab.web.isLoading && tab.web.url == sharedURL && tab.web.title == "Page /same"
+            }
+            _ = try XCTUnwrap(tab.web.goBack(), "Restored history must accept Back to \(path)")
             // WebKit can publish the restored URL/loading state before its title.
             try await compatibilityWait {
                 !tab.web.isLoading && tab.web.url?.path == path && tab.web.title == "Page \(path)"
