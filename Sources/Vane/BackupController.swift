@@ -31,7 +31,6 @@ struct BackupCandidate: Identifiable, Sendable {
         } catch { return false }
         do { try await Passwords.flushPendingOperations() } catch { return false }
         guard await AppIcon.flushPersistence() else { return false }
-        await Updater.markHealthyLaunchAsync()
         let captured = Session.enqueueSave()
         let persisted = await Session.flushPersistence()
         let failures = ProfileManager.shared.saveFailures
@@ -147,9 +146,14 @@ struct BackupCandidate: Identifiable, Sendable {
                     let recovery = BackupRecovery(library: library)
                     _ = try recovery.beforeRestorePointIfChanged(original)
                 }
+                // This clean restore handoff may confirm health; ordinary backup
+                // flushes leave rollback available through the startup grace period.
+                await Updater.markHealthyLaunchAsync()
                 // Late page callbacks can queue history behind the Store admission
                 // pause. Recheck on the same actor turn as restart's process exit.
-                if !Store.hasUnflushedWrites { drained = true; break }
+                if !Store.hasUnflushedWrites && !ImportOperations.hasPendingOperations && !Passwords.hasPendingOperations {
+                    drained = true; break
+                }
             }
             guard drained else { throw BackupError.saveFailed }
             try restart()
