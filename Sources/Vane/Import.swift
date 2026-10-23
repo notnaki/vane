@@ -9,13 +9,15 @@ enum CSV {
 
     /// Validate the whole document before a caller saves any credentials. Errors identify
     /// structure only, never field contents (even a malformed header may contain a secret).
-    static func parse(_ input: String) throws -> [[String]] {
+    static func parse(_ input: String, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> [[String]] {
         let text = input.hasPrefix("\u{FEFF}") ? String(input.dropFirst()) : input
         var rows: [[String]] = [], row: [String] = [], field = ""
         var quoted = false, closed = false
-        var i = text.startIndex
+        var i = text.startIndex, processed = 0
         func finishField() { row.append(field); field = ""; closed = false }
         while i < text.endIndex {
+            if processed & 4095 == 0 { try checkCancellation() }
+            processed += 1
             let c = text[i]
             if quoted {
                 if c == "\"" {
@@ -49,7 +51,7 @@ enum CSV {
 /// ponytail: no reading Chrome's Login Data + Safe Storage key, no Firefox NSS. One parser,
 /// no crypto, and it does not break the next time a vendor changes its at-rest format.
 enum PasswordImport {
-    struct Entry {
+    struct Entry: Sendable {
         let origin: PasswordOrigin
         let account: String, password: String
         var host: String { origin.host }
@@ -66,8 +68,8 @@ enum PasswordImport {
     private static let passwordNames = ["password", "login_password"]
 
     /// Returns the usable entries plus the count of rows dropped (no password, or no host).
-    static func parse(_ text: String) throws -> (entries: [Entry], skipped: Int) {
-        let rows = try CSV.parse(text)
+    static func parse(_ text: String, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> (entries: [Entry], skipped: Int) {
+        let rows = try CSV.parse(text, checkCancellation: checkCancellation)
         guard let header = rows.first else { throw Failure("the file is empty") }
         let cols = header.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
         func index(_ names: [String]) -> Int? { cols.firstIndex { names.contains($0) } }
@@ -78,6 +80,7 @@ enum PasswordImport {
 
         var entries: [Entry] = [], skipped = 0
         for row in rows.dropFirst() {
+            try checkCancellation()
             guard row.count <= header.count else { throw Failure("A CSV row has more fields than its header. Check its quoting.") }
             func field(_ i: Int?) -> String {
                 guard let i, i < row.count else { return "" }
@@ -99,15 +102,17 @@ enum PasswordImport {
 
     @discardableResult
     static func importFile(_ url: URL, existing: @autoclosure () -> Set<String> = [],
+                           checkCancellation: () throws -> Void = { try Task.checkCancellation() },
                            save: (Entry) -> Bool = {
                                Passwords.save(origin: $0.origin, account: $0.account,
                                               password: $0.password, replacingExisting: false)
                            }) throws -> (imported: Int, skipped: Int, failed: Int) {
-        let text = try String(contentsOf: url, encoding: .utf8)
-        let parsed = try parse(text)
+        let text = try ImportWork.readText(url, checkCancellation: checkCancellation)
+        let parsed = try parse(text, checkCancellation: checkCancellation)
         var imported = 0, skipped = parsed.skipped, failed = 0
         var saved = existing()
         for entry in parsed.entries {
+            try checkCancellation()
             let key = entry.origin.key(account: entry.account)
             guard !saved.contains(key) else { skipped += 1; continue }
             if save(entry) { imported += 1; saved.insert(key) }
@@ -123,6 +128,27 @@ enum PasswordImport {
 
     // MARK: UI
 
+    /// Keep the whole batch ordered with credential edits/deletion. A profile retired
+    /// during source parsing cannot be recreated by a later per-entry Keychain save.
+    @MainActor static func importFileAsync(_ file: URL, profileID: UUID) async throws
+        -> (imported: Int, skipped: Int, failed: Int) {
+        let destination = Store.store(for: profileID)
+        let cancellation = StoreImportCancellation()
+        return try await withTaskCancellationHandler {
+            try await Passwords.perform {
+                guard !destination.isRetired else { throw CancellationError() }
+                return try importFile(file, existing: Set(Passwords.all(profileID: profileID).map(\.id)),
+                                      checkCancellation: {
+                    if cancellation.isCancelled { throw CancellationError() }
+                }, save: {
+                    guard !destination.isRetired else { return false }
+                    return Passwords.save(origin: $0.origin, account: $0.account, password: $0.password,
+                                          profileID: profileID, replacingExisting: false)
+                })
+            }
+        } onCancel: { cancellation.cancel() }
+    }
+
     @MainActor static func chooseAndImport(profileID: UUID = ProfileManager.activeProfileID) {
         let panel = NSOpenPanel()
         panel.title = "Import Passwords"
@@ -131,38 +157,45 @@ enum PasswordImport {
         panel.allowedContentTypes = [.commaSeparatedText]
         guard panel.runModal() == .OK, let file = panel.url else { return }
 
-        let alert = NSAlert()
-        do {
-            let result = try importFile(file, existing: Set(Passwords.all(profileID: profileID).map(\.id)), save: {
-                return Passwords.save(origin: $0.origin, account: $0.account, password: $0.password,
-                                      profileID: profileID, replacingExisting: false)
-            })
-            let imported = result.imported
-            alert.messageText = result.failed == 0
-                ? "Imported \(imported) password\(imported == 1 ? "" : "s")."
-                : "Some passwords could not be imported."
-            if result.failed > 0 { alert.alertStyle = .warning }
-            alert.informativeText = (result.failed > 0
-                ? "\(imported) saved; \(result.failed) failed. Existing passwords were kept. Check Keychain access and try importing again.\n\n"
-                : "")
-                + (result.skipped > 0 ? "\(result.skipped) invalid, duplicate or existing row(s) were skipped. Existing passwords were kept.\n\n" : "")
-                + "That export file is plain text. Delete it when you no longer need it."
-        } catch {
-            alert.alertStyle = .warning
-            alert.messageText = "Could not import that file."
-            alert.informativeText = error.localizedDescription
+        Task {
+            let alert = NSAlert()
+            do {
+                let result = try await importFileAsync(file, profileID: profileID)
+                let imported = result.imported
+                alert.messageText = result.failed == 0
+                    ? "Imported \(imported) password\(imported == 1 ? "" : "s")."
+                    : "Some passwords could not be imported."
+                if result.failed > 0 { alert.alertStyle = .warning }
+                alert.informativeText = (result.failed > 0
+                    ? "\(imported) saved; \(result.failed) failed. Existing passwords were kept. Check Keychain access and try importing again.\n\n"
+                    : "")
+                    + (result.skipped > 0 ? "\(result.skipped) invalid, duplicate or existing row(s) were skipped. Existing passwords were kept.\n\n" : "")
+                    + "That export file is plain text. Delete it when you no longer need it."
+            } catch {
+                alert.alertStyle = .warning
+                alert.messageText = "Could not import that file."
+                alert.informativeText = error.localizedDescription
+            }
+            alert.runModal()
         }
-        alert.runModal()
     }
 }
 
 /// Netscape bookmark HTML from Vane or another browser. Folder names are retained; nested
 /// paths are displayed as a single readable folder because the native manager is one level.
-@MainActor enum BookmarkImport {
+enum BookmarkImport {
     @discardableResult
-    static func importFile(_ url: URL, profileID: UUID = ProfileManager.activeProfileID) throws
+    @MainActor static func importFile(_ url: URL, profileID: UUID = ProfileManager.activeProfileID) throws
         -> BookmarkImportResult {
-        let entries = try Export.checkedNetscapeEntries(String(contentsOf: url, encoding: .utf8))
+        let items = try readItems(url)
+        guard let result = Store.store(for: profileID).importBookmarks(items) else {
+            throw PasswordImport.Failure("the bookmarks could not be saved")
+        }
+        return result
+    }
+
+    static func readItems(_ url: URL) throws -> [BookmarkImportItem] {
+        let entries = try Export.checkedNetscapeEntries(ImportWork.readText(url))
         guard !entries.isEmpty else { throw PasswordImport.Failure("no bookmarks were found") }
         let items = entries.compactMap { entry -> BookmarkImportItem? in
             guard let url = URL(string: entry.row.url), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
@@ -171,30 +204,64 @@ enum PasswordImport {
                                       folder: entry.folder, at: entry.importedAt)
         }
         guard !items.isEmpty else { throw PasswordImport.Failure("no usable web bookmarks were found") }
-        guard let result = Store.store(for: profileID).importBookmarks(items) else {
-            throw PasswordImport.Failure("the bookmarks could not be saved")
-        }
-        return result
+        return items
     }
 
-    static func chooseAndImport(profileID: UUID = ProfileManager.activeProfileID) {
+    @MainActor static func importFileAsync(_ url: URL, profileID: UUID) async throws -> BookmarkImportResult {
+        let destination = Store.store(for: profileID)
+        let items = try await ImportWork.run { try readItems(url) }
+        try Task.checkCancellation()
+        return try await destination.importBookmarksAsync(items)
+    }
+
+    @MainActor static func chooseAndImport(profileID: UUID = ProfileManager.activeProfileID) {
         let panel = NSOpenPanel()
         panel.title = "Import Bookmarks"
         panel.message = "Choose a bookmark HTML export from Vane, Safari, Chrome, Firefox or Edge."
         panel.allowedContentTypes = [.html]
         guard panel.runModal() == .OK, let file = panel.url else { return }
-        let alert = NSAlert()
-        do {
-            let result = try importFile(file, profileID: profileID)
-            alert.messageText = "Imported \(result.imported) bookmark\(result.imported == 1 ? "" : "s")."
-            alert.informativeText = result.folders == 0 ? "" : "Created \(result.folders) folder\(result.folders == 1 ? "" : "s")."
-            rebuild()
-            BookmarkManager.refresh(profileID: profileID)
-        } catch {
-            alert.alertStyle = .warning
-            alert.messageText = "Could not import that bookmark file."
-            alert.informativeText = error.localizedDescription
+        Task {
+            let alert = NSAlert()
+            do {
+                let result = try await importFileAsync(file, profileID: profileID)
+                alert.messageText = "Imported \(result.imported) bookmark\(result.imported == 1 ? "" : "s")."
+                alert.informativeText = result.folders == 0 ? "" : "Created \(result.folders) folder\(result.folders == 1 ? "" : "s")."
+                rebuild()
+                BookmarkManager.refresh(profileID: profileID)
+            } catch {
+                alert.alertStyle = .warning
+                alert.messageText = "Could not import that bookmark file."
+                alert.informativeText = error.localizedDescription
+            }
+            alert.runModal()
         }
-        alert.runModal()
+    }
+}
+
+/// Immutable source work executes on a worker. Cancellation reaches the detached task;
+/// validated destination transactions separately check a shared cancellation token.
+enum ImportWork {
+    static func run<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
+        let task = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            return try operation()
+        }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    static func readText(_ url: URL, maximumBytes: Int = 64 * 1024 * 1024,
+                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
+        let file = try FileHandle(forReadingFrom: url)
+        defer { try? file.close() }
+        var data = Data()
+        while true {
+            try checkCancellation()
+            let chunk = try file.read(upToCount: min(64 * 1024, maximumBytes + 1 - data.count)) ?? Data()
+            if chunk.isEmpty { break }
+            data.append(chunk)
+            guard data.count <= maximumBytes else { throw PasswordImport.Failure("The import file exceeds the 64 MiB limit.") }
+        }
+        guard let text = String(data: data, encoding: .utf8) else { throw PasswordImport.Failure("The import file is not valid UTF-8.") }
+        return text
     }
 }

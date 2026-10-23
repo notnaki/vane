@@ -16,20 +16,20 @@ import UniformTypeIdentifiers
 /// `at`), so the rows are read straight from the profile's SQLite file with a second
 /// read-only connection. ponytail: that duplicates two SELECTs rather than widening Store's
 /// API for one caller; if a third caller ever needs dated rows, move it into Store.
-@MainActor enum Export {
+enum Export {
 
-    enum Kind {
+    enum Kind: Sendable {
         case bookmarks, historyJSON, historyCSV, passwords
     }
 
     /// A dated url. Bookmarks and history are the same three columns in this app.
-    struct Row: Equatable {
+    struct Row: Equatable, Sendable {
         let url: String
         let title: String
         let at: Date
     }
 
-    struct BookmarkEntry: Equatable {
+    struct BookmarkEntry: Equatable, Sendable {
         let row: Row
         let folder: String?
         let importedAt: Date?
@@ -173,11 +173,15 @@ import UniformTypeIdentifiers
                 + escape(r.title) + "</A>\n"
         }
         for entry in entries where entry.folder == nil { s += anchor(entry.row, indent: "    ") }
-        var emitted = Set<String>()
+        var orderedFolders: [String] = [], grouped: [String: [Row]] = [:]
         for entry in entries {
-            guard let folder = entry.folder, emitted.insert(folder).inserted else { continue }
+            guard let folder = entry.folder else { continue }
+            if grouped[folder] == nil { orderedFolders.append(folder) }
+            grouped[folder, default: []].append(entry.row)
+        }
+        for folder in orderedFolders {
             s += "    <DT><H3>\(escape(folder))</H3>\n    <DL><p>\n"
-            for child in entries where child.folder == folder { s += anchor(child.row, indent: "        ") }
+            for child in grouped[folder] ?? [] { s += anchor(child, indent: "        ") }
             s += "    </DL><p>\n"
         }
         s += "</DL><p>\n"
@@ -196,30 +200,51 @@ import UniformTypeIdentifiers
 
     /// One pass prevents an escaped literal such as &amp;lt; from being decoded twice.
     static func unescape(_ s: String) -> String {
-        let entities = try! NSRegularExpression(pattern: #"&(?:amp|lt|gt|quot|apos|#39|#\d+|#x[0-9a-fA-F]+);"#)
-        let ns = s as NSString
-        var result = s
-        for match in entities.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed() {
-            let token = ns.substring(with: match.range)
-            let named = ["&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&apos;": "'"]
-            var decoded = named[token]
-            if decoded == nil {
-                let hex = token.hasPrefix("&#x")
-                let digits = token.dropFirst(hex ? 3 : 2).dropLast()
-                if let value = UInt32(digits, radix: hex ? 16 : 10), value != 0,
-                   let scalar = UnicodeScalar(value) { decoded = String(scalar) }
+        let bytes = Array(s.utf8)
+        var out: [UInt8] = []
+        out.reserveCapacity(bytes.count)
+        var i = 0
+        while i < bytes.count {
+            guard bytes[i] == 38 else { out.append(bytes[i]); i += 1; continue }
+            var end = i + 1
+            while end < bytes.count, bytes[end] != 59, bytes[end] != 38 { end += 1 }
+            guard end < bytes.count, bytes[end] == 59 else {
+                out.append(contentsOf: bytes[i..<end]); i = end; continue
             }
-            if let decoded, let range = Range(match.range, in: result) { result.replaceSubrange(range, with: decoded) }
+            let token = bytes[(i + 1)..<end]
+            var decoded: UnicodeScalar?
+            if token.elementsEqual("amp".utf8) { decoded = "&" }
+            else if token.elementsEqual("lt".utf8) { decoded = "<" }
+            else if token.elementsEqual("gt".utf8) { decoded = ">" }
+            else if token.elementsEqual("quot".utf8) { decoded = "\"" }
+            else if token.elementsEqual("apos".utf8) { decoded = "'" }
+            else if token.first == 35 {
+                let hex = token.dropFirst().first == 120
+                let digits = token.dropFirst(hex ? 2 : 1)
+                var value: UInt32 = 0, valid = !digits.isEmpty
+                for byte in digits {
+                    let digit: UInt32
+                    if (48...57).contains(byte) { digit = UInt32(byte - 48) }
+                    else if hex, (65...70).contains(byte) { digit = UInt32(byte - 55) }
+                    else if hex, (97...102).contains(byte) { digit = UInt32(byte - 87) }
+                    else { valid = false; break }
+                    let (product, overflow) = value.multipliedReportingOverflow(by: hex ? 16 : 10)
+                    let (sum, addedOverflow) = product.addingReportingOverflow(digit)
+                    guard !overflow, !addedOverflow else { valid = false; break }
+                    value = sum
+                }
+                if valid, value != 0 { decoded = UnicodeScalar(value) }
+            }
+            if let decoded { out.append(contentsOf: String(decoded).utf8) }
+            else { out.append(contentsOf: bytes[i...end]) }
+            i = end + 1
         }
-        return result
+        return String(decoding: out, as: UTF8.self)
     }
 
-    // Quoted attributes can contain >, and text can contain line breaks. DT end tags are
-    // optional in Netscape exports, so anchors are recognized independently of DT spacing.
-    private static let attributesPattern = #"(?:[^>"']|"[^"]*"|'[^']*')*"#
-    private static let bookmarkTags = try! NSRegularExpression(
-        pattern: "<H3\\b(\(attributesPattern))>(.*?)</H3\\s*>|</?DL\\b\(attributesPattern)>|<A\\b(\(attributesPattern))>(.*?)</A\\s*>",
-        options: [.caseInsensitive, .dotMatchesLineSeparators])
+    // A single forward lexer: an unfinished anchor/quote is consumed once, rather than
+    // retrying a whole-document closing-tag regex from every subsequent opening tag.
+    static let maximumBookmarkBytes = 64 * 1024 * 1024
 
     static func parseNetscape(_ html: String) -> [Row] { parseNetscapeEntries(html).map(\.row) }
 
@@ -232,42 +257,74 @@ import UniformTypeIdentifiers
     }
 
     private static func netscapeEntries(_ html: String, validate: Bool) throws -> [BookmarkEntry] {
+        guard html.utf8.count <= maximumBookmarkBytes else {
+            throw Failure("The bookmark HTML exceeds the 64 MiB import limit.")
+        }
+        let bytes = Array(html.utf8)
+        func string(_ range: Range<Int>) -> String { String(decoding: bytes[range], as: UTF8.self) }
+        func letter(_ c: UInt8) -> Bool { (65...90).contains(c) || (97...122).contains(c) || (48...57).contains(c) }
         var folders: [String] = [], levels: [Bool] = [], pending: String?
-        var out: [BookmarkEntry] = [], anchors = 0, headings = 0
-        let ns = html as NSString
-        let whole = NSRange(location: 0, length: ns.length)
-        for match in bookmarkTags.matches(in: html, range: whole) {
-            let tag = ns.substring(with: match.range)
-            if match.range(at: 2).location != NSNotFound {
-                headings += 1
-                pending = unescape(ns.substring(with: match.range(at: 2)))
-            } else if match.range(at: 4).location != NSNotFound {
-                anchors += 1
-                let attributes = ns.substring(with: match.range(at: 3))
-                guard let href = attribute("HREF", in: attributes) else { continue }
-                let at = attribute("ADD_DATE", in: attributes).flatMap(Double.init)
-                    .flatMap { usableEpoch($0) ? Date(timeIntervalSince1970: $0) : nil }
-                out.append(BookmarkEntry(row: Row(url: unescape(href),
-                    title: unescape(ns.substring(with: match.range(at: 4))),
-                    at: at ?? Date(timeIntervalSince1970: 0)),
-                    folder: folders.isEmpty ? nil : folders.joined(separator: " / "), importedAt: at))
-            } else if tag.lowercased().hasPrefix("</dl") {
-                guard let level = levels.popLast() else {
-                    if validate { throw Failure("The bookmark HTML has an unmatched folder ending.") }
-                    continue
+        var out: [BookmarkEntry] = [], opened = 0, completed = 0
+        var content: (name: String, attributes: String, start: Int)?
+        var i = 0, malformed = false
+        while i < bytes.count {
+            guard bytes[i] == 60 else { i += 1; continue }
+            if i + 3 < bytes.count, bytes[i...i + 3].elementsEqual([60, 33, 45, 45]) {
+                i += 4
+                while i + 2 < bytes.count, !bytes[i...i + 2].elementsEqual([45, 45, 62]) { i += 1 }
+                guard i + 2 < bytes.count else { malformed = true; break }
+                i += 3; continue
+            }
+            let tagStart = i
+            i += 1
+            let closing = i < bytes.count && bytes[i] == 47
+            if closing { i += 1 }
+            let nameStart = i
+            while i < bytes.count, letter(bytes[i]) { i += 1 }
+            let name = string(nameStart..<i).lowercased()
+            let attributesStart = i
+            var quote: UInt8?
+            while i < bytes.count {
+                let c = bytes[i]
+                if let q = quote { if c == q { quote = nil } }
+                else if c == 34 || c == 39 { quote = c }
+                else if c == 62 { break }
+                i += 1
+            }
+            guard i < bytes.count else { malformed = true; break }
+            let attributes = string(attributesStart..<i)
+            i += 1
+            if name == "a" || name == "h3" {
+                if !closing {
+                    opened += 1
+                    content = (name, attributes, i)
+                } else if let active = content, active.name == name {
+                    completed += 1
+                    let title = unescape(string(active.start..<tagStart))
+                    content = nil
+                    if name == "h3" { pending = title }
+                    else if let href = attribute("HREF", in: active.attributes) {
+                        let at = attribute("ADD_DATE", in: active.attributes).flatMap(Double.init)
+                            .flatMap { usableEpoch($0) ? Date(timeIntervalSince1970: $0) : nil }
+                        out.append(BookmarkEntry(row: Row(url: unescape(href), title: title,
+                            at: at ?? Date(timeIntervalSince1970: 0)),
+                            folder: folders.isEmpty ? nil : folders.joined(separator: " / "), importedAt: at))
+                    }
                 }
-                if level { _ = folders.popLast() }
-            } else {
-                if let folder = pending { folders.append(folder); pending = nil; levels.append(true) }
-                else { levels.append(false) }
+            } else if name == "dl" {
+                if closing {
+                    guard let level = levels.popLast() else {
+                        if validate { throw Failure("The bookmark HTML has an unmatched folder ending.") }
+                        continue
+                    }
+                    if level { _ = folders.popLast() }
+                } else if let folder = pending {
+                    folders.append(folder); pending = nil; levels.append(true)
+                } else { levels.append(false) }
             }
         }
-        if validate {
-            let starts = try! NSRegularExpression(pattern: #"<(A|H3)\b"#, options: .caseInsensitive)
-            let opened = starts.numberOfMatches(in: html, range: whole)
-            guard opened == anchors + headings, levels.isEmpty, pending == nil else {
-                throw Failure("The bookmark HTML is truncated or has unfinished folders. No bookmarks were imported.")
-            }
+        if validate, malformed || opened != completed || !levels.isEmpty || pending != nil {
+            throw Failure("The bookmark HTML is truncated or has unfinished folders. No bookmarks were imported.")
         }
         return out
     }
@@ -305,19 +362,20 @@ import UniformTypeIdentifiers
 
     // MARK: History
 
-    private static let iso: ISO8601DateFormatter = {
+    private static var iso: ISO8601DateFormatter {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         return f
-    }()
+    }
 
     /// Two date columns on purpose: `visited_at` is for the human reading the file, `epoch`
     /// is the one that survives a round trip — Swift prints a Double in its shortest
     /// round-trippable form, so `Double(epoch)!` is bit-for-bit the date that went in, which
     /// ISO-8601 (whole seconds) is not.
     static func historyCSVRows(_ rows: [Row]) -> [[String]] {
-        [["url", "title", "visited_at", "epoch"]] + rows.map {
-            [$0.url, $0.title, iso.string(from: $0.at), String($0.at.timeIntervalSince1970)]
+        let formatter = iso
+        return [["url", "title", "visited_at", "epoch"]] + rows.map {
+            [$0.url, $0.title, formatter.string(from: $0.at), String($0.at.timeIntervalSince1970)]
         }
     }
 
@@ -335,9 +393,10 @@ import UniformTypeIdentifiers
     /// ponytail: JSONSerialization, not Codable — the shape is three keys and writing an
     /// Encodable struct to get the same bytes is more code, not less.
     static func historyJSON(_ rows: [Row]) -> String {
+        let formatter = iso
         let objects = rows.map {
             ["url": $0.url, "title": $0.title,
-             "visited_at": iso.string(from: $0.at), "epoch": $0.at.timeIntervalSince1970] as [String: Any]
+             "visited_at": formatter.string(from: $0.at), "epoch": $0.at.timeIntervalSince1970] as [String: Any]
         }
         guard let data = try? JSONSerialization.data(withJSONObject: objects,
                                                      options: [.prettyPrinted, .sortedKeys]),
@@ -410,7 +469,7 @@ import UniformTypeIdentifiers
         }
     }
 
-    private static func contentType(_ kind: Kind) -> UTType {
+    @MainActor private static func contentType(_ kind: Kind) -> UTType {
         switch kind {
         case .bookmarks:   .html
         case .historyJSON: .json
@@ -421,7 +480,7 @@ import UniformTypeIdentifiers
     /// The password export writes every credential in the clear. One button is not enough
     /// friction for that, so the word has to be typed: no muscle-memory Return, no
     /// mis-click, and the alert says the dangerous thing out loud instead of hinting at it.
-    private static func confirmPlaintext() -> Bool {
+    @MainActor private static func confirmPlaintext() -> Bool {
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Export every saved password in plain text?"
@@ -440,7 +499,7 @@ import UniformTypeIdentifiers
         return field.stringValue.trimmingCharacters(in: .whitespaces).uppercased() == "EXPORT"
     }
 
-    static func chooseAndExport(_ kind: Kind,
+    @MainActor static func chooseAndExport(_ kind: Kind,
                                 profileID: UUID = ProfileManager.activeProfileID) {
         if kind == .passwords, !confirmPlaintext() { return }
 
@@ -455,38 +514,51 @@ import UniformTypeIdentifiers
             : "Exporting from the profile “\(profileName)”."
         guard panel.runModal() == .OK, let file = panel.url else { return }
 
-        let alert = NSAlert()
-        do {
-            let body = try text(for: kind, profileID: profileID)
-            try write(body, to: file, secret: kind == .passwords)
-            alert.messageText = "Exported \(count(kind, body)) to \(file.lastPathComponent)."
-            alert.informativeText = kind == .passwords
-                ? "That file is plain text. Delete it as soon as you have imported it elsewhere."
-                : (kind == .bookmarks
-                   ? "Chrome, Safari, Firefox and Edge can all import this file."
-                   : "")
-        } catch {
-            alert.alertStyle = .warning
-            alert.messageText = "Could not export that data."
-            alert.informativeText = error.localizedDescription
+        Task {
+            let alert = NSAlert()
+            do {
+                let count = try await exportFile(kind, profileID: profileID, to: file)
+                alert.messageText = "Exported \(countDescription(kind, count)) to \(file.lastPathComponent)."
+                alert.informativeText = kind == .passwords
+                    ? "That file is plain text. Delete it as soon as you have imported it elsewhere."
+                    : (kind == .bookmarks ? "Chrome, Safari, Firefox and Edge can all import this file." : "")
+            } catch {
+                alert.alertStyle = .warning
+                alert.messageText = "Could not export that data."
+                alert.informativeText = error.localizedDescription
+            }
+            alert.runModal()
         }
-        alert.runModal()
     }
 
-    /// "3 bookmarks" / "12 history entries" — counted from what was actually written, not
-    /// from a second query that could disagree with it.
-    private static func count(_ kind: Kind, _ body: String) -> String {
+    /// Count comes from the very same snapshot that is formatted and written. Re-parsing
+    /// a many-megabyte export just to display its count doubles the expensive work.
+    static func exportFile(_ kind: Kind, profileID: UUID, to file: URL) async throws -> Int {
+        try await ImportWork.run {
+            let body: String, count: Int
+            switch kind {
+            case .bookmarks:
+                let entries = try bookmarkEntries(profileID: profileID)
+                body = bookmarksHTML(entries); count = entries.count
+            case .historyJSON, .historyCSV:
+                let entries = try historyRows(profileID: profileID)
+                body = kind == .historyJSON ? historyJSON(entries) : historyCSV(entries)
+                count = entries.count
+            case .passwords:
+                let entries = try savedPasswords(profileID: profileID)
+                body = passwordsCSV(entries); count = entries.count
+            }
+            try Task.checkCancellation()
+            try write(body, to: file, secret: kind == .passwords)
+            return count
+        }
+    }
+
+    private static func countDescription(_ kind: Kind, _ count: Int) -> String {
         switch kind {
-        case .bookmarks:
-            let n = parseNetscape(body).count
-            return "\(n) bookmark\(n == 1 ? "" : "s")"
-        case .historyJSON, .historyCSV:
-            let n = kind == .historyCSV ? parseHistoryCSV(body).count
-                : (((try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [Any])?.count ?? 0)
-            return "\(n) history entr\(n == 1 ? "y" : "ies")"
-        case .passwords:
-            let n = (try? PasswordImport.parse(body).entries.count) ?? 0
-            return "\(n) password\(n == 1 ? "" : "s")"
+        case .bookmarks: return "\(count) bookmark\(count == 1 ? "" : "s")"
+        case .historyJSON, .historyCSV: return "\(count) history entr\(count == 1 ? "y" : "ies")"
+        case .passwords: return "\(count) password\(count == 1 ? "" : "s")"
         }
     }
 

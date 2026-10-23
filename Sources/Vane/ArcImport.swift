@@ -510,7 +510,7 @@ enum ArcImport {
 
     /// What the import managed to do, for the toast at the end — and what it did not, which
     /// is the half a summary of successes alone cannot say.
-    struct Counts {
+    struct Counts: Sendable {
         var profiles = 0, spaces = 0, spacesSkipped = 0
         var favourites = 0, liveFolders = 0
         var passwords = 0, passwordsAlready = 0, passwordsSkipped = 0
@@ -640,29 +640,26 @@ enum ArcImport {
 
     /// Arc's folder, read into values. nil when the folder is not an Arc installation.
     ///
-    /// `async` for the SQLite half, which is handed to a detached task: see `read(vault:at:)`.
-    /// The two JSON files are small enough to read here.
+    /// JSON parsing and every SQLite snapshot stay on the worker, including large Arc
+    /// sidebars. Only the completed immutable scan returns to the UI.
     @MainActor static func scan(_ root: URL) async -> Scan? {
-        guard let data = try? Data(contentsOf: root.appendingPathComponent("StorableSidebar.json")),
-              let sidebar = ArcSidebar.parse(data) else { return nil }
-        let userData = root.appendingPathComponent("User Data")
-        let listed = (try? Data(contentsOf: userData.appendingPathComponent("Local State")))
-            .map(ArcProfiles.parse) ?? []
-        let fm = FileManager.default
-        let directories = directories(in: sidebar, listed: listed) {
-            fm.fileExists(atPath: userData.appendingPathComponent($0).path)
-        }
-
-        let reading = Task.detached(priority: .userInitiated) {
-            directories.compactMap { directory -> Vault? in
-                let path = userData.appendingPathComponent(directory)
-                guard FileManager.default.fileExists(atPath: path.path) else { return nil }
-                return read(vault: directory, at: path)
+        await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: root.appendingPathComponent("StorableSidebar.json")),
+                  let sidebar = ArcSidebar.parse(data) else { return nil as Scan? }
+            let userData = root.appendingPathComponent("User Data")
+            let listed = (try? Data(contentsOf: userData.appendingPathComponent("Local State")))
+                .map(ArcProfiles.parse) ?? []
+            let directories = directories(in: sidebar, listed: listed) {
+                FileManager.default.fileExists(atPath: userData.appendingPathComponent($0).path)
             }
-        }
-        var scan = Scan(root: root, sidebar: sidebar, profiles: listed, directories: directories)
-        for vault in await reading.value { scan.vaults[vault.directory] = vault }
-        return scan
+            var scan = Scan(root: root, sidebar: sidebar, profiles: listed, directories: directories)
+            for directory in directories {
+                let path = userData.appendingPathComponent(directory)
+                guard FileManager.default.fileExists(atPath: path.path) else { continue }
+                scan.vaults[directory] = read(vault: directory, at: path)
+            }
+            return scan
+        }.value
     }
 
     // MARK: The keychain
@@ -678,7 +675,7 @@ enum ArcImport {
     /// favourites, history and bookmarks still come across. Ceiling: an ad-hoc-signed build
     /// changes identity on every rebuild, so the remembered answer does not stick across a
     /// self-built Vane; a Developer ID build asks once and never again.
-    @MainActor private static func safeStorageKey() -> Data? {
+    nonisolated private static func safeStorageKey() -> Data? {
         var out: CFTypeRef?
         let status = SecItemCopyMatching([
             kSecClass as String: kSecClassGenericPassword,
@@ -937,10 +934,23 @@ enum ArcImport {
     }
 
     @MainActor private static func write(logins: [(origin: PasswordOrigin, account: String, password: String)],
-                                         into profileID: UUID, counts: inout Counts) {
-        importLogins(logins, existing: Set(Passwords.all(profileID: profileID).map(\.id)), counts: &counts) {
-            Passwords.save(origin: $0, account: $1, password: $2, profileID: profileID, replacingExisting: false)
+                                         into profileID: UUID, counts: inout Counts) async {
+        guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else {
+            counts.refused += logins.count; return
         }
+        let destination = Store.store(for: profileID)
+        let result = (try? await Passwords.perform {
+            var imported = Counts()
+            guard !destination.isRetired else { imported.refused += logins.count; return imported }
+            importLogins(logins, existing: Set(Passwords.all(profileID: profileID).map(\.id)), counts: &imported) {
+                guard !destination.isRetired else { return false }
+                return Passwords.save(origin: $0, account: $1, password: $2, profileID: profileID, replacingExisting: false)
+            }
+            return imported
+        }) ?? Counts()
+        counts.passwords += result.passwords
+        counts.passwordsAlready += result.passwordsAlready
+        counts.refused += result.refused
     }
 
     @MainActor private static func write(cookies: [HTTPCookie], into profileID: UUID) async -> Int {
@@ -957,42 +967,49 @@ enum ArcImport {
     @MainActor static func apply(_ scan: Scan) async -> Counts {
         var counts = Counts()
         let ids = profileIDs(for: scan, counts: &counts)
-        let key = safeStorageKey()
+        let key = await Task.detached(priority: .userInitiated) { safeStorageKey() }.value
         counts.noKey = key == nil
 
         var gained: Set<UUID> = []
         for space in scan.sidebar.spaces {
-            guard let profileID = ids[space.profileDirectory] else { continue }
+            guard let profileID = ids[space.profileDirectory],
+                  ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
             if write(space, into: profileID, counts: &counts) { gained.insert(profileID) }
         }
         for (directory, urls) in scan.sidebar.favourites.sorted(by: { $0.key < $1.key }) {
-            guard let profileID = ids[directory] else { continue }
+            guard let profileID = ids[directory],
+                  ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
             write(favourites: urls, into: profileID, counts: &counts)
         }
         for (directory, vault) in scan.vaults.sorted(by: { $0.key < $1.key }) {
-            guard let profileID = ids[directory] else { continue }
+            guard let profileID = ids[directory],
+                  ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
             counts.unreadable += vault.unreadable
             if let key {
-                // The AES off the main actor, the keychain and the cookie store on it.
+                // Decryption and Keychain batches use workers; WebKit cookie publication stays on MainActor.
                 let opened = await Task.detached(priority: .userInitiated) {
                     open(vault, key: key)
                 }.value
                 counts.passwordsSkipped += opened.skipped
                 counts.locked += opened.locked
                 counts.cookiesSkipped += opened.cookiesSkipped
-                write(logins: opened.logins, into: profileID, counts: &counts)
+                await write(logins: opened.logins, into: profileID, counts: &counts)
+                guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
                 counts.cookies += await write(cookies: opened.cookies, into: profileID)
             }
-            let fm = FileManager.default
-            let hasHistory = fm.fileExists(atPath: vault.path.appendingPathComponent("History").path)
-            let hasBookmarks = fm.fileExists(atPath: vault.path.appendingPathComponent("Bookmarks").path)
+            let (hasHistory, hasBookmarks) = await Task.detached(priority: .userInitiated) {
+                let fm = FileManager.default
+                return (fm.fileExists(atPath: vault.path.appendingPathComponent("History").path),
+                        fm.fileExists(atPath: vault.path.appendingPathComponent("Bookmarks").path))
+            }.value
+            guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
             guard hasHistory || hasBookmarks else { continue }
             let profile = BrowserProfile(browser: "Arc", profile: directory, path: vault.path,
                                          hasHistory: hasHistory, hasBookmarks: hasBookmarks)
             // `importAll` reaches the right profile's Store because it was given one to reach;
             // before Import from Arc it always wrote into whichever profile was on screen.
             do {
-                let done = try BrowserImport.importAll(from: profile, profileID: profileID)
+                let done = try await BrowserImport.importAllAsync(from: profile, profileID: profileID)
                 counts.history += done.history
                 counts.bookmarks += done.bookmarks
             } catch {

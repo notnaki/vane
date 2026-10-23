@@ -3,7 +3,7 @@ import SQLite3
 
 /// One detected profile directory. `path` is the directory that holds the data files, so
 /// callers never have to know a vendor's layout.
-struct BrowserProfile {
+struct BrowserProfile: Sendable {
     let browser: String
     let profile: String
     let path: URL
@@ -19,7 +19,7 @@ struct BrowserProfile {
 /// and passwords, and passwords already have their own CSV path in Import.swift. The
 /// ceiling is that session cookies do not come across; the upgrade path is the same
 /// Safe Storage decryption PasswordImport deliberately avoids.
-@MainActor enum BrowserImport {
+enum BrowserImport {
 
     /// `nonisolated` along with `query` and `guardReadable` below: those three are a file
     /// copy, a `sqlite3_step` loop and the error it can fail with, and `ArcImport` runs them
@@ -95,9 +95,12 @@ struct BrowserProfile {
     /// browser profiles across at once, and each has to reach its own `Store` — Arc's work
     /// profile's history in Vane's work profile, not all of it in whichever profile happened
     /// to be on screen.
-    static func importAll(from p: BrowserProfile,
-                          profileID: UUID = ProfileManager.activeProfileID) throws
-        -> (history: Int, bookmarks: Int) {
+    struct Source: Sendable {
+        let visits: [(url: URL, title: String, at: Date)]
+        let bookmarks: [BookmarkImportItem]
+    }
+
+    static func readSource(from p: BrowserProfile) throws -> Source {
         var visits: [(url: String, title: String, at: Date)] = []
         var marks: [(url: String, title: String)] = []
 
@@ -163,10 +166,26 @@ struct BrowserProfile {
                   url.host?.isEmpty == false else { return nil }
             return BookmarkImportItem(url: url, title: mark.title, folder: nil)
         }
+        return Source(visits: history, bookmarks: bookmarks)
+    }
+
+    @MainActor static func importAll(from p: BrowserProfile,
+                                     profileID: UUID = ProfileManager.activeProfileID) throws
+        -> (history: Int, bookmarks: Int) {
+        let source = try readSource(from: p)
         let store = Store.store(for: profileID)
-        guard let result = store.importBrowserData(visits: history, bookmarks: bookmarks) else {
+        guard let result = store.importBrowserData(visits: source.visits, bookmarks: source.bookmarks) else {
             throw Failure("Could not save imported history and bookmarks. " + (store.lastHistoryError ?? "Try again."))
         }
+        return (result.history, result.bookmarks.imported)
+    }
+
+    @MainActor static func importAllAsync(from p: BrowserProfile, profileID: UUID) async throws
+        -> (history: Int, bookmarks: Int) {
+        let destination = Store.store(for: profileID)
+        let source = try await ImportWork.run { try readSource(from: p) }
+        try Task.checkCancellation()
+        let result = try await destination.importBrowserDataAsync(visits: source.visits, bookmarks: source.bookmarks)
         return (result.history, result.bookmarks.imported)
     }
 
@@ -222,7 +241,7 @@ struct BrowserProfile {
     /// Chromium counts microseconds from 1601-01-01 UTC — the Windows FILETIME epoch, which
     /// is 11644473600 seconds before the Unix one.
     ///
-    /// `nonisolated` only so `ArcImport.chromeTime` can wrap it: this type is @MainActor for
+    /// Shared with `ArcImport.chromeTime`; the parser itself has no UI isolation.
     /// the sake of its panels and its alerts, and one line of arithmetic has no business
     /// being the reason a second copy of the epoch constant exists.
     nonisolated static func chromiumTime(_ micro: Int64) -> Date {
@@ -386,6 +405,7 @@ struct BrowserProfile {
         }
         var status = sqlite3_step(st)
         while status == SQLITE_ROW {
+            try Task.checkCancellation()
             row(st!)
             status = sqlite3_step(st)
         }
@@ -400,8 +420,14 @@ struct BrowserProfile {
 
     // MARK: UI
 
-    static func chooseAndImport() {
-        let found = detect()
+    @MainActor static func chooseAndImport() {
+        Task {
+            let found = await Task.detached(priority: .userInitiated) { detect() }.value
+            chooseAndImport(found: found)
+        }
+    }
+
+    @MainActor private static func chooseAndImport(found: [BrowserProfile]) {
         guard !found.isEmpty else {
             // Under the App Sandbox this is the normal case, not an error: scanning
             // ~/Library/Application Support/Google/Chrome is denied outright, so detect()
@@ -443,18 +469,21 @@ struct BrowserProfile {
 
     /// Shared by the detected-profile path and the pick-a-folder path.
     @MainActor private static func report(importing chosen: BrowserProfile) {
-        let done = NSAlert()
-        do {
-            let (h, b) = try importAll(from: chosen)
-            done.messageText = "Imported \(h) history entr\(h == 1 ? "y" : "ies") "
-                + "and \(b) bookmark\(b == 1 ? "" : "s") from \(chosen.browser)."
-        } catch {
-            done.alertStyle = .warning
-            done.messageText = "Could not import from \(chosen.browser)."
-            done.informativeText = error.localizedDescription
+        let profileID = ProfileManager.activeProfileID
+        Task {
+            let done = NSAlert()
+            do {
+                let (h, b) = try await importAllAsync(from: chosen, profileID: profileID)
+                done.messageText = "Imported \(h) history entr\(h == 1 ? "y" : "ies") "
+                    + "and \(b) bookmark\(b == 1 ? "" : "s") from \(chosen.browser)."
+            } catch {
+                done.alertStyle = .warning
+                done.messageText = "Could not import from \(chosen.browser)."
+                done.informativeText = error.localizedDescription
+            }
+            done.runModal()
+            rebuild()   // the Bookmarks and History menus are snapshots taken at build time
         }
-        done.runModal()
-        rebuild()   // the Bookmarks and History menus are snapshots taken at build time
     }
 
     // MARK: Offline checks
