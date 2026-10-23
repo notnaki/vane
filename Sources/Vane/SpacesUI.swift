@@ -920,7 +920,14 @@ private struct SpaceSwipe: ViewModifier {
             // The sidebar stays mounted offscreen between edge reveals. Its gesture
             // lifetime still follows visibility, including cancellation of a live drag.
             .onChange(of: visible) { _, visible in
-                if visible { monitor.install(store) } else { monitor.remove() }
+                if visible {
+                    if !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35) }
+                    monitor.install(store)
+                } else { monitor.remove() }
+            }
+            .onChange(of: store.sidebarShown) { _, shown in
+                // Docking a peek keeps `visible` true, but still animates the page seam.
+                if shown, !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35) }
             }
             .onChange(of: reduceMotion) { _, reduced in
                 if reduced { monitor.finishForReducedMotion() }
@@ -939,6 +946,8 @@ private struct SpaceSwipe: ViewModifier {
 @MainActor final class SwipeMonitor {
     private(set) var preparedSlides: [UUID: ProfileSpaceSlide] = [:]
     private var preparation: DispatchWorkItem?
+    private var preparationNotBefore: TimeInterval = 0
+    private var stalePreparedSlides: [ProfileSpaceSlide] = []
     private var preparationObservers: [AnyCancellable] = []
     private var preparationPeers: [ObjectIdentifier: AnyCancellable] = [:]
     private var preparationProfiles: Set<UUID> = []
@@ -963,6 +972,17 @@ private struct SpaceSwipe: ViewModifier {
         preparation?.cancel()
         preparation = nil
         discardPreparation()
+    }
+
+    /// Hidden hosting trees share the UI thread with visible travel and scrolling.
+    /// Keep their work behind a quiet interval, even if another publisher reschedules it.
+    func postponePreparation(in store: TabStore, by delay: TimeInterval) {
+        preparationNotBefore = max(preparationNotBefore, ProcessInfo.processInfo.systemUptime + delay)
+        // Invalidate reuse immediately, but retain the hidden trees until idle: their
+        // AppKit/SwiftUI teardown is also expensive on the first scroll event.
+        stalePreparedSlides.append(contentsOf: preparedSlides.values)
+        preparedSlides.removeAll()
+        schedulePreparation(in: store)
     }
 
     /// Consume one validated idle capture for either a finger claim or a button click.
@@ -997,8 +1017,9 @@ private struct SpaceSwipe: ViewModifier {
         let work = DispatchWorkItem { [weak self, weak store] in
             guard let self, let store, self.monitor != nil, self.store === store,
                   !store.spaceSwiping, !self.landing,
-                  !store.libraryOpen, store.librarySwipeProgress == nil,
-                  !Motion.spaceReduced,
+                  !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+            self.discardStalePreparation()
+            guard !Motion.spaceReduced,
                   store.sidebarShown || (store.window as? VaneWindow)?.peekingSidebar == true,
                   let host = store.window?.contentView as? BrowserWindowHost else { return }
             let strip = store.strip
@@ -1028,13 +1049,19 @@ private struct SpaceSwipe: ViewModifier {
         preparation = work
         // Preparing two hosting trees during the floating panel's spring blocks its
         // middle frames. Let that travel (including its tail) finish before idle work.
-        let delay = !store.sidebarShown && store.sidebarPeeking && !Motion.reduced ? 0.35 : 0.08
+        let revealDelay = !store.sidebarShown && store.sidebarPeeking && !Motion.reduced ? 0.35 : 0.08
+        let delay = max(revealDelay, preparationNotBefore - ProcessInfo.processInfo.systemUptime)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func discardPreparation() {
         for slide in preparedSlides.values { slide.discardPreparation() }
         preparedSlides.removeAll()
+    }
+
+    private func discardStalePreparation() {
+        for slide in stalePreparedSlides { slide.discardPreparation() }
+        stalePreparedSlides.removeAll()
     }
     /// A committed finger gesture belongs to its window even if a profile hop replaces
     /// the monitor. Consume its finger and momentum tail until the next beginning.
@@ -1278,7 +1305,17 @@ private struct SpaceSwipe: ViewModifier {
             // Library sits before the first Space. Give its shared navigation handler
             // priority even when AppKit invokes the sidebar's monitor first.
             guard store.librarySwipeMonitor.handle(event, in: store) != nil else { return nil }
-            guard self.mine(event, store) else { return event }
+            guard self.mine(event, store) else {
+                // Keep vertical input with NSScrollView. Its momentum tail and ordinary
+                // mouse wheels also postpone hidden layout; horizontal claims retain
+                // their prepared surfaces for the very first directional sample.
+                if event.scrollingDeltaY != 0,
+                   (self.claim == .theirs || !event.hasPreciseScrollingDeltas),
+                   self.isOverSidebar(event, store) {
+                    self.postponePreparation(in: store, by: 0.18)
+                }
+                return event
+            }
             let phase = Self.phase(of: event)
             let width = SidebarWidth.shared.width
             let dt = self.last > 0 ? event.timestamp - self.last : 0
@@ -1347,7 +1384,9 @@ private struct SpaceSwipe: ViewModifier {
         preparationProfiles.removeAll()
         preparation?.cancel()
         preparation = nil
+        preparationNotBefore = 0
         discardPreparation()
+        discardStalePreparation()
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         watchers.forEach(NotificationCenter.default.removeObserver)
@@ -1601,19 +1640,8 @@ private struct SpaceSwipe: ViewModifier {
                let slide = host.spaceSlide, slide.isDestination(store) { host.cancelSpaceSlide() }
         }
         guard !store.spaceSwiping || claim == .mine,
-              event.hasPreciseScrollingDeltas, let window = event.window,
-              window === store.window, !store.libraryOpen,
-              store.sidebarShown || (window as? VaneWindow)?.peekingSidebar == true
+              event.hasPreciseScrollingDeltas, isOverSidebar(event, store)
         else { return false }
-        // The floating panel is inset on every side and extends that much further right
-        // than the docked rail. Its surrounding gaps still belong to the page.
-        let inset = store.sidebarShown ? 0 : Look.floatingSidebarGap
-        let bounds = window.contentView.map { $0.convert($0.bounds, to: nil) }
-            ?? NSRect(origin: .zero, size: window.frame.size)
-        let sidebar = NSRect(x: bounds.minX + inset, y: bounds.minY + inset,
-                             width: SidebarWidth.shared.width,
-                             height: max(0, bounds.height - 2 * inset))
-        guard sidebar.contains(event.locationInWindow) else { return false }
         switch claim {
         case .mine:   return true
         case .theirs: return false
@@ -1643,6 +1671,17 @@ private struct SpaceSwipe: ViewModifier {
         last = 0
         list = store.strip
         return true
+    }
+
+    private func isOverSidebar(_ event: NSEvent, _ store: TabStore) -> Bool {
+        guard let window = event.window, window === store.window, !store.libraryOpen,
+              store.sidebarShown || (window as? VaneWindow)?.peekingSidebar == true else { return false }
+        let inset = store.sidebarShown ? 0 : Look.floatingSidebarGap
+        let bounds = window.contentView.map { $0.convert($0.bounds, to: nil) }
+            ?? NSRect(origin: .zero, size: window.frame.size)
+        return NSRect(x: bounds.minX + inset, y: bounds.minY + inset,
+                      width: SidebarWidth.shared.width,
+                      height: max(0, bounds.height - 2 * inset)).contains(event.locationInWindow)
     }
 
     /// Points of travel, in both axes together, before the gesture is given a direction.
