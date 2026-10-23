@@ -501,39 +501,41 @@ struct BrowserWindow: View {
         }
     }
 
-    @ViewBuilder private var sidebarSurface: some View {
+    private var sidebarSurface: some View {
         // One sidebar for both presentations. ⌘S while peeking keeps this view alive:
         // only its inset and floating chrome settle away as the page makes room.
-        if store.sidebarShown || peeking {
-            let floating = !store.sidebarShown
-            Sidebar()
-                .disabled(store.palette != nil || store.libraryOpen)
-                .accessibilityHidden(store.palette != nil || store.libraryOpen)
-                .frame(width: sidebar.width)
-                .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
-                .background {
-                    RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
-                        .fill(Look.floatingSidebarFill)
-                        .background(Look.floatingSidebarMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
-                                .strokeBorder(Look.floatingSidebarStroke,
-                                              lineWidth: Look.floatingSidebarStrokeWidth)
-                        }
-                        .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
-                        .opacity(floating ? 1 : 0)
-                        .allowsHitTesting(false)
-                }
-                .padding(floating ? Look.floatingSidebarGap : 0)
-                .allowsHitTesting(!store.libraryOpen)
-                .transition(.move(edge: .leading).combined(with: .opacity))
-                // Above the page during edge reveal and dismissal; below the resize handle.
-                .zIndex(1)
-                .onHover { hovering in
-                    guard !store.sidebarShown else { return }
-                    hovering ? peekTask?.cancel() : endPeek()
-                }
-        }
+        // Retain its viewport while hidden too: realizing rows and native controls in
+        // the reveal transaction stalls the slide partway through its first frames.
+        let visible = store.sidebarShown || peeking
+        let floating = !store.sidebarShown
+        return Sidebar()
+            .disabled(!visible || store.palette != nil || store.libraryOpen)
+            .accessibilityHidden(!visible || store.palette != nil || store.libraryOpen)
+            .frame(width: sidebar.width)
+            .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
+            .background {
+                RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
+                    .fill(Look.floatingSidebarFill)
+                    .background(Look.floatingSidebarMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
+                            .strokeBorder(Look.floatingSidebarStroke,
+                                          lineWidth: Look.floatingSidebarStrokeWidth)
+                    }
+                    .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
+                    .opacity(floating ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+            .padding(floating ? Look.floatingSidebarGap : 0)
+            .offset(x: visible ? 0 : -(sidebar.width + 2 * Look.floatingSidebarGap))
+            .opacity(visible ? 1 : 0)
+            .allowsHitTesting(visible && !store.libraryOpen)
+            // Above the page during edge reveal and dismissal; below the resize handle.
+            .zIndex(1)
+            .onHover { hovering in
+                guard visible, !store.sidebarShown else { return }
+                hovering ? peekTask?.cancel() : endPeek()
+            }
     }
 
     /// A small delay on the way out, so crossing the gap between the strip and the panel
@@ -935,6 +937,9 @@ private struct Sidebar: View {
             refreshPreview()
         }
         .onChange(of: store.palette != nil) { downloadsHover.dismiss() }
+        .onChange(of: store.sidebarShown || store.sidebarPeeking) { _, visible in
+            if !visible { downloadsHover.dismiss() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             downloadsHover.dismiss()
         }

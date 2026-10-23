@@ -4,6 +4,49 @@ import SwiftUI
 @testable import vane
 
 @MainActor final class SidebarVisibilityTests: XCTestCase {
+    func testFloatingRevealRetainsTheLaidOutSidebar() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let store = TabStore(isPrivate: true)
+        store.palette = nil
+        let bounds = NSRect(x: 0, y: 0, width: 900, height: 700)
+        let window = VaneWindow(contentRect: bounds, styleMask: .borderless,
+                                backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        store.window = window
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        host.frame = bounds
+        window.contentView = host
+        defer {
+            store.spaceGesture.monitor.remove()
+            window.contentView = nil
+            store.window = nil
+            window.close()
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+        }
+        func viewport(in view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { viewport(in: $0) }.first
+        }
+        host.layoutSubtreeIfNeeded()
+        let original = try XCTUnwrap(viewport(in: host))
+        for _ in 0..<2 {
+            store.sidebarShown = false
+            store.sidebarPeeking = false
+            try await Task.sleep(for: .milliseconds(350))
+            host.layoutSubtreeIfNeeded()
+            XCTAssertTrue(viewport(in: host) === original,
+                          "Hiding must retain the laid-out rows so edge reveal does not rebuild mid-animation")
+            store.sidebarPeeking = true
+            try await Task.sleep(for: .milliseconds(350))
+            host.layoutSubtreeIfNeeded()
+            XCTAssertTrue(viewport(in: host) === original,
+                          "Repeated edge reveals must reuse the sidebar viewport")
+        }
+    }
+
     func testDockingOrHidingEndsTheFloatingRevealImmediately() {
         TestEnvironment.prepare()
         let profile = ProfileManager.shared.active.id
@@ -21,6 +64,42 @@ import SwiftUI
         store.sidebarPeeking = true
         store.sidebarShown = true
         XCTAssertFalse(store.sidebarPeeking)
+    }
+
+    func testHidingSidebarDisablesItsFocusedRenameField() async throws {
+        TestEnvironment.prepare()
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let profile = manager.create(name: "Hidden sidebar input")
+        let space = manager.createSpace(name: "Rename fixture", in: profile.id)
+        let store = Windows.open(profile: profile, space: space, focus: false)
+        let window = try XCTUnwrap(store.window)
+        defer {
+            window.close()
+            _ = manager.delete(profile.id)
+            manager.active = previous
+        }
+        store.palette = nil
+        store.renamingSpace = space.id
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        func renameField(in view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, field.stringValue == "Rename fixture", field.isEditable {
+                return field
+            }
+            return view.subviews.lazy.compactMap { renameField(in: $0) }.first
+        }
+        let field = try XCTUnwrap(renameField(in: XCTUnwrap(window.contentView)))
+        XCTAssertTrue(field.isEnabled)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(field.currentEditor())
+        Motion.instant { store.sidebarShown = false }
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(field.window == nil || !field.isEnabled,
+                      "Hidden inline editors must not accept keyboard input")
+        XCTAssertFalse(window.firstResponder === editor,
+                       "Hiding the sidebar must release its field editor")
     }
 
     func testVisibilityFollowsWindowAcrossNewAndParkedProfiles() throws {

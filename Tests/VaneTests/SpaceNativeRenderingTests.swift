@@ -962,6 +962,37 @@ import XCTest
         XCTAssertFalse(monitor.preparedSlides.isEmpty)
     }
 
+    func testHidingTheRetainedSidebarEndsAnUncommittedSwipe() async throws {
+        let (store, _, window, monitor) = try fixture()
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue(store.spaceSwiping)
+        store.sidebarShown = false
+        try await Task.sleep(for: .milliseconds(350))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertFalse(store.spaceSwiping, "A hidden retained sidebar must release its gesture")
+        XCTAssertEqual(store.spaceDrag, 0)
+        XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide)
+    }
+
+    func testFloatingRevealDefersAdjacentSurfacePreparationUntilAfterTravel() async throws {
+        let (store, _, window, monitor) = try fixture(floatingWindow: true)
+        store.sidebarShown = false
+        try await Task.sleep(for: .milliseconds(350))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(monitor.preparedSlides.isEmpty)
+        store.sidebarPeeking = true
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                      "Laying out adjacent Spaces must not interrupt the floating reveal")
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while monitor.preparedSlides.isEmpty, ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(monitor.preparedSlides.isEmpty,
+                       "The settled floating sidebar must still prepare the next swipe")
+    }
+
     func testFingerTrackingReusesNativeSurfaceThroughCommit() async throws {
         let (store, spaces, window, monitor) = try fixture()
         monitor.track(-30, width: 250, in: store)

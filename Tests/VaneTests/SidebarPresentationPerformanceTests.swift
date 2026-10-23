@@ -128,6 +128,8 @@ import XCTest
             func measure(_ name: String, repeats: Int = 5, settlePreparation: Bool = false,
                          prepare: () -> Void = {},
                          _ action: () -> Void) async throws {
+                if let operation = ProcessInfo.processInfo.environment["VANE_SIDEBAR_PERF_OPERATION"],
+                   operation != name { return }
                 var times: [Double] = []
                 var gaps: [Double] = []
                 try await Task.sleep(for: .milliseconds(400))
@@ -258,6 +260,16 @@ import XCTest
                 store.sidebarShown = true
                 host.layoutSubtreeIfNeeded()
             }
+            store.sidebarShown = false
+            try await measure("floating-reveal-layout", settlePreparation: true, prepare: {
+                store.sidebarPeeking = false
+                host.layoutSubtreeIfNeeded()
+            }) {
+                store.sidebarPeeking = true
+                host.layoutSubtreeIfNeeded()
+            }
+            store.sidebarPeeking = false
+            store.sidebarShown = true
             // A populated live stash exercises the supported Space commit without page loading.
             let incoming = tabs.enumerated().map { index, original in
                 let tab = Tab(profileID: profile)

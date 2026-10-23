@@ -289,7 +289,9 @@ extension View {
     func spaceSlide(_ store: TabStore) -> some View { modifier(SpaceSlide(store: store)) }
 
     /// Two-finger horizontal swipe on the sidebar switches Space.
-    func spaceSwipe(_ store: TabStore) -> some View { modifier(SpaceSwipe(store: store)) }
+    func spaceSwipe(_ store: TabStore) -> some View {
+        modifier(SpaceSwipe(store: store, visible: store.sidebarShown || store.sidebarPeeking))
+    }
 }
 
 /// Profile favourites travel with the incoming Space only at a profile boundary.
@@ -907,13 +909,19 @@ extension TabStore {
 
 private struct SpaceSwipe: ViewModifier {
     let store: TabStore
+    let visible: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         let monitor = store.spaceGesture.monitor
         content
-            .onAppear { monitor.install(store) }
+            .onAppear { if visible { monitor.install(store) } }
             .onDisappear { monitor.remove() }
+            // The sidebar stays mounted offscreen between edge reveals. Its gesture
+            // lifetime still follows visibility, including cancellation of a live drag.
+            .onChange(of: visible) { _, visible in
+                if visible { monitor.install(store) } else { monitor.remove() }
+            }
             .onChange(of: reduceMotion) { _, reduced in
                 if reduced { monitor.finishForReducedMotion() }
             }
@@ -1018,7 +1026,10 @@ private struct SpaceSwipe: ViewModifier {
             }
         }
         preparation = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+        // Preparing two hosting trees during the floating panel's spring blocks its
+        // middle frames. Let that travel (including its tail) finish before idle work.
+        let delay = !store.sidebarShown && store.sidebarPeeking && !Motion.reduced ? 0.35 : 0.08
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func discardPreparation() {
