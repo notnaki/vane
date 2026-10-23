@@ -29,6 +29,13 @@ final class SearchMatchTests: XCTestCase {
         }
     }
 
+    func testNormalizedURLPreservesRepeatedCombiningMarkFolding() {
+        // Foundation can remove only one repeated combining mark per fold.
+        // URL normalization historically folds once, then scoring folds again.
+        XCTAssertEqual(SearchMatch("例").page(title: "Reference", url: "https://www.例\u{301}\u{301}/"),
+                       5_000_000)
+    }
+
     func testFuzzyScoresMatchOriginalForAllShortASCIIAlignments() {
         var targets = [""]
         var frontier = [""]

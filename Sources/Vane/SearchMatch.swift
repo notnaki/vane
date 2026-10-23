@@ -90,8 +90,9 @@ struct SearchMatch: Sendable {
             if c == query[next] { next += 1 }
         }
         guard next == query.count else { return nil }
-        // Boundaries depend only on the target, not on each query character.
-        let boundaries = t.indices.map { i in i == 0 ? 12 : (isWord(t[i - 1]) ? 0 : 6) }
+        // Cache only matched positions: classifying every preceding Unicode
+        // character costs more than a sparse query's original boundary checks.
+        var boundaries = [Int](repeating: -1, count: t.count)
         // Best subsequence alignment, O(query × target) time and O(target) memory.
         // A later contiguous run must beat a greedy walk through earlier distractions.
         let missing = Int.min / 2
@@ -102,6 +103,9 @@ struct SearchMatch: Sendable {
             for i in t.indices {
                 if i > 0 { best = max(best, previous[i - 1]) }
                 guard t[i] == c else { continue }
+                if boundaries[i] < 0 {
+                    boundaries[i] = i == 0 ? 12 : (isWord(t[i - 1]) ? 0 : 6)
+                }
                 let boundary = boundaries[i]
                 if qi == 0 {
                     current[i] = 1 + boundary
@@ -131,7 +135,10 @@ struct SearchMatch: Sendable {
             if address.hasPrefix("www."), !query.hasPrefix("www.") { address.removeFirst(4) }
         }
         if address.hasSuffix("/") && !query.hasSuffix("/") { address.removeLast() }
-        let urlScore = scoreFolded(address, fuzzy: fuzzy)
+        // Preserve the scoring pass's second Unicode fold: Foundation folding is
+        // not idempotent for repeated combining marks. ASCII is already final.
+        let normalized = address.utf8.allSatisfy { $0 < 128 } ? address : Self.fold(address)
+        let urlScore = scoreFolded(normalized, fuzzy: fuzzy)
         let literalURLScore = address == foldedURL ? nil : scoreFolded(foldedURL, fuzzy: fuzzy)
         return [titleScore, urlScore, literalURLScore].compactMap { $0 }.max()
     }
