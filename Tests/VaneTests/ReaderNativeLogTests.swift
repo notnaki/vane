@@ -138,4 +138,64 @@ final class ReaderNativeLogTests: XCTestCase {
         XCTAssertFalse(result.contains("errno="))
         XCTAssertFalse(result.contains("TOKEN"))
     }
+
+    @objc func testSourceFileGrantLifecycleLiteralsWithReleaseLogPrefixHaveFixedLabels() throws {
+        let value = try XCTUnwrap(query())
+        // WebKit-7624.2.5.11.4 WebPageProxy.cpp:476,2003,2033,2043,2102.
+        let prefix = "0x123abc - [pageProxyID=17, webPageID=29, PID=999] WebPageProxy::maybeInitializeSandboxExtensionHandle: "
+        let fixtures = [
+            ("unable to create sandbox extension", "issue-failure"),
+            ("process is launching", "process-launch-pending"),
+            ("created sandbox extension to resource directory", "resource-handle-ready"),
+            ("has sandbox access to resource directory", "resource-access-confirmed"),
+        ]
+        for (literal, label) in fixtures {
+            let result = try XCTUnwrap(ReaderNativeLog.classify(try record(prefix + literal), query: value))
+            XCTAssertTrue(result.hasPrefix(label + ",process=owner,pid=321"))
+            for raw in [prefix, literal, "0x123abc", "pageProxyID", "PID=999", reader] {
+                XCTAssertFalse(result.contains(raw))
+            }
+        }
+    }
+
+    @objc func testFileGrantLifecycleLabelsRequireOwnedSandboxMethodAndExactLiteral() throws {
+        let value = try XCTUnwrap(query())
+        let message = "WebPageProxy::maybeInitializeSandboxExtensionHandle: process is launching"
+        XCTAssertNil(ReaderNativeLog.classify(try record(message, pid: 999), query: value))
+        XCTAssertNil(ReaderNativeLog.classify(try record(message, category: "Unrelated"), query: value))
+        XCTAssertNil(ReaderNativeLog.classify(try record("OtherMethod: process is launching"), query: value))
+        XCTAssertNil(ReaderNativeLog.classify(try record(message + " /Users/PRIVATE/" + reader), query: value))
+    }
+
+    @objc func testScopeDistinguishesExactReaderFromOwnerProcessAndKernelCorrelation() throws {
+        let value = try XCTUnwrap(query())
+        let networking = try record("Sandbox: com.apple.WebKit.Networking(987) deny(1) file-read-data /tmp/\(reader)/article.html",
+                                    pid: 0, process: "kernel")
+        let owned = try XCTUnwrap(ReaderNativeLog.classify(networking, query: value))
+        XCTAssertTrue(owned.contains("scope=owned-reader"))
+        XCTAssertTrue(owned.contains("reportedTarget=webkit-networking,reportedPID=987"))
+        let kernel = try record("Sandbox: Owner(321) deny(1) file-read-data <private>", pid: 0, process: "kernel")
+        XCTAssertTrue(try XCTUnwrap(ReaderNativeLog.classify(kernel, query: value)).contains("scope=owner-kernel"))
+        let owner = try record("deny(1) file-read-data <private>")
+        XCTAssertTrue(try XCTUnwrap(ReaderNativeLog.classify(owner, query: value)).contains("scope=owner-process"))
+        let both = try record("deny(1) file-read-data /tmp/\(reader)/article.html")
+        XCTAssertTrue(try XCTUnwrap(ReaderNativeLog.classify(both, query: value)).contains("scope=owned-reader"))
+        let foreign = try record("Sandbox: Other(987) deny(1) file-read-data <private>", pid: 0, process: "kernel")
+        XCTAssertNil(ReaderNativeLog.classify(foreign, query: value))
+        for raw in [reader, "/tmp/", "article.html"] { XCTAssertFalse(owned.contains(raw)) }
+    }
+
+    @objc func testDenialOperationEmitsOnlyExactReadDataOrMetadataWords() throws {
+        let value = try XCTUnwrap(query())
+        for operation in ["file-read-data", "file-read-metadata"] {
+            let data = try record("Sandbox: Owner(321) deny(1) \(operation) <private>", pid: 0, process: "kernel")
+            let result = try XCTUnwrap(ReaderNativeLog.classify(data, query: value))
+            XCTAssertTrue(result.contains("operation=" + operation))
+            XCTAssertFalse(result.contains("<private>"))
+        }
+        for operation in ["file-read-data-other", "prefixfile-read-metadata", "file-read-xattr"] {
+            let data = try record("Sandbox: Owner(321) deny(1) \(operation) <private>", pid: 0, process: "kernel")
+            XCTAssertFalse(try XCTUnwrap(ReaderNativeLog.classify(data, query: value)).contains("operation="))
+        }
+    }
 }
