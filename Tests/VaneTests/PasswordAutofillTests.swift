@@ -114,27 +114,6 @@ import XCTest
         }
     }
 
-    // Temporary macOS 26 CI probe; remove with its workflow step after collecting evidence.
-    func testNativeTimeoutDiagnosticSmoke() async throws {
-        guard ProcessInfo.processInfo.environment["VANE_NATIVE_TIMEOUT_PROBE"] == "1" else {
-            throw XCTSkip("Enabled only for the targeted native timeout diagnostic probe")
-        }
-        let (web, _) = try await fixture("<p>Owned native timeout diagnostic probe</p>")
-        let stage = "deliberately false native diagnostic probe condition"
-        do {
-            try await wait(for: stage, diagnostics: {
-                await NativeFixtureDiagnostics.failureReport(for: web)
-            }) { false }
-            XCTFail("The deliberately false probe must reach the original five-second timeout")
-        } catch {
-            let failure = try XCTUnwrap(error as? FixtureFailure)
-            XCTAssertEqual(failure.stage, stage)
-            XCTAssertTrue(failure.cause is FixtureTimeout)
-            XCTAssertTrue(failure.diagnostics.contains("uiPID="))
-            NativeFixtureDiagnostics.emit("targeted native timeout probe caught original FixtureTimeout; " + failure.diagnostics)
-        }
-    }
-
     private func wait(for stage: String = "fixture condition", file: StaticString = #filePath, line: UInt = #line,
                       diagnostics: () async -> String = { "" },
                       _ condition: () async throws -> Bool) async throws {
