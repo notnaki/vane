@@ -60,15 +60,28 @@ enum ReaderNativeLog {
         let category = object["category"] as? String ?? ""
         let text = message.lowercased()
         let sandbox = text.contains("sandbox") || category.lowercased().contains("sandbox")
-        guard text.contains(query.basename.lowercased()) || (pid == query.ownerPID && (sandbox || text.contains("operation not permitted")))
-            || (["kernel", "sandboxd"].contains(process) && message.contains("(\(query.ownerPID))") && (sandbox || text.contains("deny")))
-        else { return nil }
+        let scope: String
+        if text.contains(query.basename.lowercased()) { scope = "owned-reader" }
+        else if pid == query.ownerPID, sandbox || text.contains("operation not permitted") { scope = "owner-process" }
+        else if ["kernel", "sandboxd"].contains(process), message.contains("(\(query.ownerPID))"), sandbox || text.contains("deny") {
+            scope = "owner-kernel"
+        } else { return nil }
         let classification: String
         // Published WebKit consume failure: token is quoted; errno is NOT quoted.
         let errnoRange = text.range(of: #"', errno = ([0-9]{1,3})$"#, options: .regularExpression)
         let consumeErrno = errnoRange.flatMap { text[$0].split(separator: "=").last }
             .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }.flatMap { $0 <= 255 ? $0 : nil }
-        if text.contains("could not create a sandbox extension for"), consumeErrno != nil {
+        let fileGrantLabels = [
+            "unable to create sandbox extension": "issue-failure",
+            "process is launching": "process-launch-pending",
+            "created sandbox extension to resource directory": "resource-handle-ready",
+            "has sandbox access to resource directory": "resource-access-confirmed",
+        ]
+        let method = text.range(of: "webpageproxy::maybeinitializesandboxextensionhandle: ")
+        let fileGrantLabel = method.flatMap { fileGrantLabels[String(text[$0.upperBound...])] }
+        if pid == query.ownerPID, category == "Sandbox", let fileGrantLabel {
+            classification = fileGrantLabel
+        } else if text.contains("could not create a sandbox extension for"), consumeErrno != nil {
             classification = "consume-failure"
         } else if text.contains("could not create a sandbox extension for"), !text.contains("errno") {
             classification = "issue-failure"
@@ -85,7 +98,11 @@ enum ReaderNativeLog {
         } else { return nil }
         // All output values come from fixed vocabularies or validated integers.
         // In particular, never copy quoted sandbox tokens, paths, UUIDs or messages.
-        var fields = [classification, "process=\(pid == query.ownerPID ? "owner" : names[process] ?? "other")", "pid=\(pid)"]
+        var fields = [classification, "process=\(pid == query.ownerPID ? "owner" : names[process] ?? "other")", "pid=\(pid)", "scope=" + scope]
+        if classification == "read-denial",
+           let operation = text.range(of: #"(?<![A-Za-z0-9_-])file-read-(?:data|metadata)(?![A-Za-z0-9_-])"#, options: .regularExpression) {
+            fields.append(text[operation] == "file-read-data" ? "operation=file-read-data" : "operation=file-read-metadata")
+        }
         if let range = message.range(of: #"com\.apple\.WebKit\.(Networking|WebContent)\([0-9]{1,10}\)"#, options: .regularExpression) {
             let target = String(message[range]).split(separator: "(")
             if target.count == 2, let name = names[String(target[0])],
@@ -202,7 +219,7 @@ enum ReaderNativeLog {
         let running = process.isRunning
         let status = running ? "cleanup-unverified" : timedOut ? "timeout" : truncated ? "truncated"
             : cancelled ? "cancelled" : process.terminationStatus != 0 ? "unavailable" : capture.events.isEmpty ? "empty" : "collected"
-        let cleanup = running ? ",childPID=\(process.processIdentifier),childStart=\(child.map { String($0.start) } ?? "unavailable"),childRunning=true" : ",childRunning=false"
+        let cleanup = running ? ",childPID=\(process.processIdentifier),childStart=\(child.map { String($0.start) } ?? "unavailable"),childRunning=true" : ",childRunning=false,exitStatus=\(process.terminationStatus)"
         return "reader-native-log status=\(status),inconclusive=true,records=\(capture.records),oversized=\(capture.oversized)\(cleanup); " + capture.events.joined(separator: "; ")
     }
 }
