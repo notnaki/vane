@@ -257,6 +257,9 @@ native input and display-cycle availability, not compositor-presented frame rate
 cost of loading hundreds of websites. Verify frame presentation separately in the affected
 profile with its actual pages, using the target display refresh rate. A 60 Hz session
 cannot establish 120 FPS.
+Run timing diagnostics on an unlocked, otherwise idle desktop and keep the fixture
+visible. The fixture skips detected occlusion; also discard a run if the desktop locks
+or another workload interferes, even if AppKit still reports the window as visible.
 
 Folder-opening diagnostics report toggle time, opening/closing layout, run-loop gaps, and
 mounted native tab controls for 20/300-tab folders. They also guard against repeated

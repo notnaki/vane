@@ -96,6 +96,10 @@ import XCTest
                 XCTAssertEqual(cards, 150, "The content must be a rendered document, not a blank parked page")
                 _ = try await web.evaluateJavaScript("document.getElementById('draft').value = 'edited draft retained'")
             }
+            if timing {
+                try XCTSkipUnless(window.occlusionState.contains(.visible),
+                    "Timing requires a visible window on an unlocked desktop; discard occluded measurements")
+            }
             let cadence = timing ? NativeChromeCadence() : nil
             if let screen = window.screen { cadence?.start(on: screen) }
             defer { cadence?.stop() }
@@ -144,6 +148,10 @@ import XCTest
                 cadence?.report("\(sidebar ? "sidebar_scroll" : "cmdt_scroll") tabs=\(count)")
             }
             for iteration in 0..<3 {
+                if timing {
+                    try XCTSkipUnless(window.occlusionState.contains(.visible),
+                        "The timing window became occluded; discard this run")
+                }
                 var lastBeat = ProcessInfo.processInfo.systemUptime
                 var largestGap = 0.0
                 let timer = Timer(timeInterval: 0.002, repeats: true) { _ in
