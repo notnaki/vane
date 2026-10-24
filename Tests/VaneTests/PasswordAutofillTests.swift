@@ -5,6 +5,32 @@ import XCTest
 @testable import vane
 
 @MainActor final class PasswordAutofillTests: XCTestCase {
+    private var nativeFixtureProfiles: Set<UUID> = []
+
+    override func tearDown() async throws {
+        // A normal Tab caches its named store beyond the lifetime of its web view.
+        // Every native fixture has already torn down its tabs and windows here.
+        // Release these disposable stores between tests rather than accumulating
+        // another persistent WebKit backend for every continuation scenario.
+        for profile in nativeFixtureProfiles {
+            var store: WKWebsiteDataStore? = ProfileManager.dataStore(for: profile)
+            await store!.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+            store = nil
+            ProfileManager.releaseDataStore(for: profile)
+            let identifier = try XCTUnwrap(ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: Store.overrideDirectory))
+            let error: Error? = await withCheckedContinuation { continuation in
+                WKWebsiteDataStore.remove(forIdentifier: identifier) { continuation.resume(returning: $0) }
+            }
+            if let error {
+                let failure = error as NSError
+                XCTAssertEqual(failure.domain, "WKWebSiteDataStore")
+                XCTAssertEqual(failure.code, 1, "Unexpected password fixture unregister failure: \(error)")
+                print("Password fixture \(identifier): contents erased and cache released; WebKit still has the empty store in use.")
+            }
+        }
+        nativeFixtureProfiles.removeAll()
+    }
+
     private final class Capture: NSObject, WKScriptMessageHandler {
         var messages: [[String: Any]] = []
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -55,6 +81,7 @@ import XCTest
     }
 
     private func wait(for stage: String = "fixture condition", file: StaticString = #filePath, line: UInt = #line,
+                      diagnostics: () -> String = { "" },
                       _ condition: () async throws -> Bool) async throws {
         let deadline = Date.now.addingTimeInterval(5)
         do {
@@ -63,7 +90,7 @@ import XCTest
                 try await Task.sleep(for: .milliseconds(20))
             }
         } catch {
-            XCTFail("Failed waiting for \(stage): \(error)", file: file, line: line)
+            XCTFail("Failed waiting for \(stage): \(error). \(diagnostics())", file: file, line: line)
             throw error
         }
     }
@@ -182,6 +209,7 @@ import XCTest
         guard Passwords.save(origin: origin, account: "ada", password: "ada-secret", profileID: profile),
               Passwords.save(origin: origin, account: "bob", password: "bob-secret", profileID: profile)
         else { throw XCTSkip("Disposable Keychain fixtures unavailable") }
+        nativeFixtureProfiles.insert(profile)
         let tab = Tab(profileID: profile)
         let window = NSWindow(contentRect: CGRect(x: -4000, y: -4000, width: 800, height: 600),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -213,6 +241,7 @@ import XCTest
         guard Passwords.save(origin: origin, account: "bob", password: "bob-secret", profileID: profile),
               Passwords.save(origin: origin, account: "ada", password: "ada-secret", profileID: profile)
         else { throw XCTSkip("Disposable Keychain fixtures unavailable") }
+        nativeFixtureProfiles.insert(profile)
         let tab = Tab(profileID: profile)
         let window = NSWindow(contentRect: CGRect(x: -4000, y: -4000, width: 800, height: 600),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -224,8 +253,34 @@ import XCTest
     }
 
     private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String) async throws {
-        tab.web.loadSimulatedRequest(URLRequest(url: origin.url.appendingPathComponent(path)), responseHTML: html)
-        try await wait(for: "continuation document \(path) to finish loading") { !tab.web.isLoading }
+        let web = tab.web, url = origin.url.appendingPathComponent(path)
+        let started = Date.now
+        var document = "not sampled", nextSample = started.addingTimeInterval(0.5), samplePending = false
+        web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
+        try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
+            "expected=\(url), actual=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), " +
+            "progress=\(web.estimatedProgress), tabLoading=\(tab.loading), suspended=\(tab.suspended), " +
+            "recovery=\(tab.needsRecovery), document=\(document), samplePending=\(samplePending)"
+        }) {
+            // Sample only slow loads. Do not await JavaScript here: an unresponsive
+            // content process must still leave the fixture's timeout bounded.
+            if web.isLoading, Date.now >= nextSample, !samplePending {
+                nextSample = Date.now.addingTimeInterval(0.5)
+                samplePending = true
+                web.evaluateJavaScript("JSON.stringify({url:location.href,ready:document.readyState,password:!!document.getElementById('password')})",
+                                       in: nil, in: .page) { result in
+                    switch result {
+                    case .success(let value): document = String(describing: value)
+                    case .failure(let error): document = String(describing: error)
+                    }
+                    samplePending = false
+                }
+            }
+            return !web.isLoading
+        }
+        if Date.now.timeIntervalSince(started) >= 0.5 {
+            print("Continuation fixture \(path) loaded in \(Date.now.timeIntervalSince(started))s; document=\(document)")
+        }
     }
 
     private func submitUsernameAndLoadPassword(_ tab: Tab, origin: PasswordOrigin, identity: String = "") async throws {
@@ -455,6 +510,7 @@ import XCTest
             (profile, false, "https://isolation.example.test:8443/", "")
         ]
         for (scope, privateMode, address, expected) in cases {
+            if !privateMode { nativeFixtureProfiles.insert(scope) }
             let tab = Tab(isPrivate: privateMode, profileID: scope)
             let window = NSWindow(contentRect: CGRect(x: -4000, y: -4000, width: 800, height: 600),
                                   styleMask: [.titled], backing: .buffered, defer: false)
