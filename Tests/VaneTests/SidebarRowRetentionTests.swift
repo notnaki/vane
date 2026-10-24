@@ -52,25 +52,50 @@ import XCTest
         let original = try XCTUnwrap(anchors(in: host).first { $0.title == "Retained 4" })
         let next = try XCTUnwrap(anchors(in: host).first { $0.title == "Retained 5" })
         let today = try XCTUnwrap(anchors(in: host).first { $0.title == "Retained 11" })
+        let visibleSibling = try XCTUnwrap(anchors(in: host).first { $0.title == "Retained 0" })
         let pitch = Look.rowHeight + Look.rowGap
+        let folderY = original.convert(original.bounds, to: host).minY - pitch
+        let folderControl = try XCTUnwrap(pressAnchors(in: host).first {
+            $0.bounds.width > 150 && abs($0.convert($0.bounds, to: host).minY - folderY) < 1
+        })
         XCTAssertEqual(abs(original.convert(.zero, to: host).y - next.convert(.zero, to: host).y),
                        pitch, accuracy: 0.5)
         let todayBefore = today.convert(.zero, to: host).y
         Motion.instant { store.toggleFolder(folder.id) }
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(600))
-        XCTAssertTrue(anchors(in: host).contains { $0 === original },
-                      "Small collapsed folders must retain their controls for the next opening")
-        XCTAssertFalse(original.enabled, "Collapsed rows must disable their native tooltip/input anchors")
-        XCTAssertEqual(Set(pressAnchors(in: host).map(ObjectIdentifier.init)), originalPress,
-                       "Disclosure must retain the passive press anchors as well as the tooltips")
-        XCTAssertGreaterThanOrEqual(pressAnchors(in: host).filter { !$0.enabled }.count, 7)
+        let afterPress = Set(pressAnchors(in: host).map(ObjectIdentifier.init))
+        if RetainedRowVirtualizationExperiment.enabled {
+            XCTAssertTrue(pressAnchors(in: host).contains { $0 === folderControl })
+            XCTAssertTrue(anchors(in: host).contains { $0 === visibleSibling })
+            XCTAssertTrue(anchors(in: host).contains { $0 === today })
+            XCTAssertTrue(original.window == nil || !original.enabled,
+                          "A collapsed child must be unmounted or inert")
+            XCTAssertFalse(anchors(in: host).contains { $0.title == "Retained 4" && $0.enabled })
+        } else {
+            XCTAssertTrue(anchors(in: host).contains { $0 === original },
+                          "Small collapsed folders must retain their controls for the next opening")
+            XCTAssertFalse(original.enabled, "Collapsed rows must disable their native tooltip/input anchors")
+            XCTAssertEqual(afterPress, originalPress,
+                           "The eager outline must retain exactly the same passive press anchors")
+            XCTAssertGreaterThanOrEqual(pressAnchors(in: host).filter { !$0.enabled }.count, 7)
+        }
         XCTAssertEqual(abs(today.convert(.zero, to: host).y - todayBefore), 7 * pitch, accuracy: 0.5,
                        "Closing must remove each child's height and gap, without phantom slots")
         Motion.instant { store.toggleFolder(folder.id) }
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(600))
-        XCTAssertTrue(anchors(in: host).contains { $0 === original })
+        if RetainedRowVirtualizationExperiment.enabled {
+            XCTAssertTrue(pressAnchors(in: host).contains { $0 === folderControl })
+            XCTAssertTrue(anchors(in: host).contains { $0 === visibleSibling })
+            XCTAssertTrue(anchors(in: host).contains { $0 === today })
+            XCTAssertTrue(try XCTUnwrap(anchors(in: host).first { $0.title == "Retained 4" }).enabled)
+            XCTAssertTrue(try XCTUnwrap(anchors(in: host).first { $0.title == "Retained 5" }).enabled)
+        } else {
+            XCTAssertTrue(anchors(in: host).contains { $0 === original })
+            XCTAssertTrue(anchors(in: host).contains { $0 === next })
+            XCTAssertTrue(original.enabled)
+        }
         func scroll(in view: NSView) -> NSScrollView? {
             if let scroll = view as? NSScrollView { return scroll }
             return view.subviews.lazy.compactMap { scroll(in: $0) }.first
@@ -92,8 +117,13 @@ import XCTest
         if timing {
             print("SMALL_SIDEBAR_SCROLL samples=\(times.count) median_ms=\(times[times.count / 2]) p95_ms=\(times[times.count * 95 / 100]) max_ms=\(times.last!)")
         }
-        XCTAssertTrue(anchors(in: host).contains { $0 === original },
-                      "Scrolling a small sidebar must reuse its existing row controls")
+        if RetainedRowVirtualizationExperiment.enabled {
+            XCTAssertTrue(try XCTUnwrap(anchors(in: host).first { $0.title == "Retained 4" }).enabled,
+                          "Returning to the viewport must restore a usable row")
+        } else {
+            XCTAssertTrue(anchors(in: host).contains { $0 === original },
+                          "Scrolling an eager small sidebar must reuse its existing row controls")
+        }
         XCTAssertTrue(tabs.allSatisfy { $0.existingWeb == nil })
     }
 }
