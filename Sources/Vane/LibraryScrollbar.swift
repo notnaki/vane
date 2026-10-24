@@ -27,7 +27,11 @@ struct LibraryScrollbarMetrics: Equatable {
 /// A persistent invisible rail makes a hidden thumb discoverable by hovering. Only the
 /// thumb fades; its hit target stays put, including throughout a drag outside the rail.
 struct LibraryScrollView<Content: View>: View {
-    @ViewBuilder var content: () -> Content
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
     @State private var position = ScrollPosition(edge: .top)
     @State private var metrics = LibraryScrollbarMetrics()
     @State private var interaction = LibraryScrollbarInteraction()
@@ -43,7 +47,7 @@ struct LibraryScrollView<Content: View>: View {
 
     var body: some View {
         ScrollView {
-            content().padding(.trailing, LibraryScrollbarMetrics.railWidth)
+            content.padding(.trailing, LibraryScrollbarMetrics.railWidth)
                 .background(LibraryScrollAnchor(bridge: bridge))
         }
         .scrollIndicators(.never)

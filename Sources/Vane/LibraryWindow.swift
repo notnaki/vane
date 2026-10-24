@@ -125,18 +125,18 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
         // A filter belongs to the visit, not to the user: a Library opened fresh shows
         // everything, the way a reopened Finder window is not still filtered.
         if !store.libraryOpen {
-            shared.littleArcOnly = false
-            shared.completedOnly = false
+            if shared.littleArcOnly { shared.littleArcOnly = false }
+            if shared.completedOnly { shared.completedOnly = false }
         }
         // …and the one search field is shared by every section, so a query typed at the
         // downloads must not still be filtering the archive a click later.
-        if !store.libraryOpen || shared.section != section { shared.query = "" }
-        shared.section = section
+        if (!store.libraryOpen || shared.section != section), !shared.query.isEmpty { shared.query = "" }
+        if shared.section != section { shared.section = section }
         // The find bar searches the page, and the page is about to be covered by this. A bar
         // left open would be invisible, would still be eating Escape, and would have nothing
         // to search.
-        store.findOpen = false
-        store.libraryOpen = true
+        if store.findOpen { store.findOpen = false }
+        if !store.libraryOpen { store.libraryOpen = true }
         shared.focusSearch()
     }
 
@@ -157,7 +157,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
            let window = store.window, window.attachedSheet == nil {
             window.makeFirstResponder(nil)
         }
-        store.libraryOpen = false
+        if store.libraryOpen { store.libraryOpen = false }
         store.focusPage()
     }
 }

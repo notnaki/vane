@@ -1186,7 +1186,7 @@ import XCTest
         try await Task.sleep(for: .milliseconds(250))
         let previous = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
         _ = store.newBlankTab(focus: false)
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitForPreparation(monitor, target: spaces[1].id)
         let refreshed = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
         XCTAssertFalse(previous === refreshed, "Changed sidebar content must invalidate the prepared capture")
         XCTAssertNil(previous.superview)
@@ -1376,7 +1376,7 @@ import XCTest
         XCTAssertNil(monitor.preparedSlides[target.id],
                      "A peer mutation must invalidate before a same-turn gesture can claim the capture")
         XCTAssertNil(stale.superview)
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitForPreparation(monitor, target: target.id)
         let refreshed = try XCTUnwrap(monitor.preparedSlides[target.id])
         XCTAssertFalse(refreshed === stale)
         monitor.track(-30, width: SidebarWidth.shared.width, in: store)
@@ -1436,7 +1436,7 @@ import XCTest
     }
 
     func testSidebarPreparationWaitsUntilLibraryDragIsIdle() async throws {
-        let (store, _, _, monitor) = try fixture()
+        let (store, spaces, _, monitor) = try fixture()
         store.librarySwipeProgress = 0.2
         monitor.schedulePreparation(in: store)
         try await Task.sleep(for: .milliseconds(180))
@@ -1444,7 +1444,7 @@ import XCTest
                       "Background sidebar layout must not interrupt an active Library drag")
         store.librarySwipeProgress = nil
         monitor.schedulePreparation(in: store)
-        try await Task.sleep(for: .milliseconds(180))
+        try await waitForPreparation(monitor, target: spaces[1].id)
         XCTAssertFalse(monitor.preparedSlides.isEmpty)
     }
 
@@ -1496,6 +1496,69 @@ import XCTest
         while monitor.preparedSlides.isEmpty, ProcessInfo.processInfo.systemUptime < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
+        XCTAssertFalse(monitor.preparedSlides.isEmpty)
+    }
+
+    func testSnapshotBurstWaitsForQuietThenWarmsBothNeighbours() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        store.switchTo(space: spaces[1])
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await waitForPreparation(monitor, target: spaces[0].id)
+        try await waitForPreparation(monitor, target: spaces[2].id)
+        let old = Array(monitor.preparedSlides.values)
+        // These are real snapshot-revision publications, not a test-only timer API.
+        // Every publication must revoke reuse immediately, but a burst should not
+        // repeatedly create and destroy complete neighboring hosting trees.
+        var prematureCaptures: Set<ObjectIdentifier> = []
+        for _ in 0..<4 {
+            store.spacesChanged()
+            XCTAssertTrue(monitor.preparedSlides.isEmpty)
+            try await Task.sleep(for: .milliseconds(130))
+            prematureCaptures.formUnion(monitor.preparedSlides.values.map(ObjectIdentifier.init))
+        }
+        XCTAssertTrue(prematureCaptures.isEmpty, "A continuing mutation burst must produce zero replacement captures")
+        try await waitForPreparation(monitor, target: spaces[0].id)
+        try await waitForPreparation(monitor, target: spaces[2].id)
+        XCTAssertEqual(Set(monitor.preparedSlides.keys), Set([spaces[0].id, spaces[2].id]))
+        XCTAssertTrue(old.allSatisfy { $0.superview == nil })
+        let right = try XCTUnwrap(monitor.preparedSlides[spaces[2].id])
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === right,
+                      "Quiet-time rebuilding must still supply the first directional claim")
+        monitor.abort()
+    }
+
+    func testPageInputExtendsPendingPreparationWithoutDiscardingWarmSurfaces() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let warm = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 10, phase: .began, x: 290))
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === warm,
+                      "Input must preserve valid warm first-swipe surfaces")
+        store.spacesChanged()
+        for index in 0..<4 {
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 10,
+                phase: index == 0 ? .began : .changed, x: 290))
+            try await Task.sleep(for: .milliseconds(130))
+            XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                          "Pending hidden trees must not rebuild during continuing page/Library input")
+        }
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended, x: 290))
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        XCTAssertFalse(monitor.preparedSlides[spaces[1].id] === warm)
+    }
+
+    func testCreateFormDefersReplacementPreparationUntilDismissed() async throws {
+        let (store, spaces, _, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        store.creatingSpace = true
+        store.spacesChanged()
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                      "The Create Space form must not compete with replacement preview layout")
+        store.creatingSpace = false
+        try await waitForPreparation(monitor, target: spaces[1].id)
         XCTAssertFalse(monitor.preparedSlides.isEmpty)
     }
 

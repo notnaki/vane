@@ -973,6 +973,7 @@ private struct SpaceSwipe: ViewModifier {
     private(set) var preparedSlides: [UUID: ProfileSpaceSlide] = [:]
     private var preparation: DispatchWorkItem?
     private var preparationNotBefore: TimeInterval = 0
+    private static let preparationQuietInterval: TimeInterval = 0.35
     private var stalePreparedSlides: [ProfileSpaceSlide] = []
     private var preparationObservers: [AnyCancellable] = []
     private var preparationPeers: [ObjectIdentifier: AnyCancellable] = [:]
@@ -985,6 +986,7 @@ private struct SpaceSwipe: ViewModifier {
         preparationPeers.removeAll()
         for peer in TabStore.all where peer !== store && profiles.contains(peer.profileID) {
             preparationPeers[ObjectIdentifier(peer)] = peer.sidebarSnapshotChanges.sink { [weak self, weak store] _ in
+                self?.extendPreparationQuietInterval()
                 self?.invalidatePreparation()
                 DispatchQueue.main.async { [weak self, weak store] in
                     guard let self, let store else { return }
@@ -1003,6 +1005,13 @@ private struct SpaceSwipe: ViewModifier {
         let retired = Array(preparedSlides.values)
         discardPreparation()
         stalePreparedSlides.append(contentsOf: retired)
+    }
+
+    private func extendPreparationQuietInterval() {
+        preparationNotBefore = max(preparationNotBefore,
+            ProcessInfo.processInfo.systemUptime + Self.preparationQuietInterval)
+        preparation?.cancel()
+        preparation = nil
     }
 
     /// Hidden hosting trees share the UI thread with visible travel and scrolling.
@@ -1071,7 +1080,7 @@ private struct SpaceSwipe: ViewModifier {
     /// Anchor updates invalidate them when the live sidebar or its geometry changes.
     func schedulePreparation(in store: TabStore) {
         guard monitor != nil, self.store === store, !store.spaceSwiping, !landing,
-              store.palette == nil, !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+              store.palette == nil, !store.creatingSpace, !store.libraryOpen, store.librarySwipeProgress == nil else { return }
         guard preparation == nil else { return }
         // The geometry anchor can acknowledge the same layout several times. Store
         // and peer mutations already invalidate synchronously through the observers;
@@ -1084,7 +1093,11 @@ private struct SpaceSwipe: ViewModifier {
             self?.preparation = nil
             guard let self, let store, self.monitor != nil, self.store === store,
                   !store.spaceSwiping, !self.landing, store.palette == nil,
-                  !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+                  !store.creatingSpace, !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+            guard ProcessInfo.processInfo.systemUptime >= self.preparationNotBefore else {
+                self.schedulePreparation(in: store)
+                return
+            }
             // Reveal anchors can report intermediate offscreen frames. Validate them
             // after travel settles; claim-time validation still rejects a mismatch.
             if self.preparedGeometryMatches(in: store) { return }
@@ -1383,6 +1396,19 @@ private struct SpaceSwipe: ViewModifier {
                 self.schedulePreparation(in: store)
             }
         })
+        // Form and Library transitions can begin without a scroll event. Preserve
+        // valid captures, but do not build their replacements underneath this UI.
+        preparationObservers.append(Publishers.MergeMany([
+            store.$creatingSpace.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$libraryOpen.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.libraryGesture.objectWillChange.eraseToAnyPublisher()
+        ]).sink { [weak self, weak store] _ in
+            self?.extendPreparationQuietInterval()
+            DispatchQueue.main.async { [weak self, weak store] in
+                guard let self, let store else { return }
+                self.schedulePreparation(in: store)
+            }
+        })
         // Store collections and neighbouring Space metadata can change without updating
         // the geometry anchor. Read their completed state on the next main-loop turn.
         for (publisher, invalidates) in [
@@ -1391,7 +1417,10 @@ private struct SpaceSwipe: ViewModifier {
             (ProfileManager.shared.objectWillChange.eraseToAnyPublisher(), true)
         ] {
             preparationObservers.append(publisher.sink { [weak self, weak store] _ in
-                if invalidates { self?.invalidatePreparation() }
+                if invalidates {
+                    self?.extendPreparationQuietInterval()
+                    self?.invalidatePreparation()
+                }
                 DispatchQueue.main.async { [weak self, weak store] in
                     guard let self, let store else { return }
                     self.schedulePreparation(in: store)
@@ -1401,8 +1430,16 @@ private struct SpaceSwipe: ViewModifier {
     }
 
     private func installInput(in store: TabStore) {
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak store] event in
-            guard let store else { return event }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseDown,
+            .leftMouseUp, .leftMouseDragged, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self, weak store] event in
+            guard let self, let store else { return event }
+            // This runs before actions and Library routing. Extend the deadline on
+            // every input packet without discarding valid first-swipe surfaces.
+            if event.window === store.window {
+                self.postponePreparation(in: store, by: Self.preparationQuietInterval,
+                                         preservingSurfaces: true)
+            }
+            guard event.type == .scrollWheel else { return event }
             if event.hasPreciseScrollingDeltas, let window = event.window, window === store.window {
                 if event.phase.contains(.began) {
                     Self.committedSwipes.remove(window)

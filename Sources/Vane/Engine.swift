@@ -3510,11 +3510,17 @@ struct Stash {
             tab.tearDown()
             Motion.animate(Look.tabClose) { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
-            pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it
-            // A Today folder does not: it is a grouping of tabs that are still archiving
-            // themselves, so the last one leaving — swept, closed or cleared — ends it.
-            todayShape.remove(tab: id.uuidString)
-            todayShape.removeEmptyFolders()
+            // Mutating @Published values also publishes when the mutation is a
+            // no-op. Closing Today must not invalidate the unchanged pinned outline.
+            var remainingPins = pins
+            remainingPins.remove(tab: id.uuidString) // Pinned keeps empty folders.
+            if remainingPins != pins { pins = remainingPins }
+            // Publish Today's completed removal and pruning together, so observers
+            // never lay out an intermediate empty folder on the close input event.
+            var remainingToday = todayShape
+            remainingToday.remove(tab: id.uuidString)
+            remainingToday.removeEmptyFolders()
+            if remainingToday != todayShape { todayShape = remainingToday }
             MediaState.shared.forget(id)
             // Closing GitHub's consent page by hand is abandoning the sign-in: the next
             // "New Live Folder…" starts a fresh one rather than pointing at a tab that has
@@ -3527,7 +3533,9 @@ struct Stash {
         // A selection may only ever name tabs that exist: one closed under it — by ⌘W, by a
         // bulk archive, by the auto-archive sweep — drops out of it here rather than
         // lingering as an id no row will ever be drawn for.
-        selection.keep(tabs.map(\.id))
+        var remainingSelection = selection
+        remainingSelection.keep(tabs.map(\.id))
+        if remainingSelection != selection { selection = remainingSelection }
         extensions.sync()
         // A split loses a pane with the tab, and a split down to one pane is a plain tab
         // again. Its remaining pane is a better answer than "the neighbouring row": the user
