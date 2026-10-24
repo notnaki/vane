@@ -25,12 +25,25 @@ final class NativeFixtureDiagnosticsTests: XCTestCase {
 
     func testSymbolOutputOmitsArgumentsAndBinaryPathsAndCapsStacks() {
         let raw = "Arguments: PRIVATE-ARGUMENT\nCall graph:\nWebCore::FrameLoader\n" +
-            String(repeating: "stack\n", count: 4_000) + "Binary Images:\nPRIVATE-PATH"
+            String(repeating: "éstack\n", count: 4_000) + "Binary Images:\nPRIVATE-PATH"
         let result = NativeFixtureDiagnostics.symbolsOnly(raw)
         XCTAssertTrue(result.contains("WebCore::FrameLoader"))
         XCTAssertFalse(result.contains("PRIVATE-ARGUMENT"))
         XCTAssertFalse(result.contains("PRIVATE-PATH"))
-        XCTAssertLessThanOrEqual(result.count, 16_384)
+        XCTAssertLessThanOrEqual(result.utf8.count, 16_384)
         XCTAssertEqual(NativeFixtureDiagnostics.symbolsOnly("Arguments: PRIVATE-ARGUMENT"), "symbolic call graph unavailable")
+    }
+
+    func testSampleReadCapsLargeReportBeforeDecode() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vane-sample-read-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("sample.txt")
+        try Data(repeating: 65, count: 128 * 1_024).write(to: output)
+        let data = try XCTUnwrap(NativeFixtureDiagnostics.readSampleData(output))
+        XCTAssertEqual(data.count, 64 * 1_024)
+        let link = directory.appendingPathComponent("sample-link.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: output)
+        XCTAssertNil(NativeFixtureDiagnostics.readSampleData(link), "A replaced report must not follow a symbolic link")
     }
 }

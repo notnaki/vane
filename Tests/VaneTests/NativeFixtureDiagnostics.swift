@@ -46,8 +46,26 @@ import WebKit
         guard let start = output.range(of: "Call graph:")?.upperBound else { return "symbolic call graph unavailable" }
         let graph = output[start...]
         let end = graph.range(of: "Binary Images:")?.lowerBound ?? graph.endIndex
-        // Omit process arguments, paths and binary-image metadata; keep only bounded stacks.
-        return String(graph[..<end].prefix(16_384))
+        // Omit process arguments, paths and binary-image metadata; cap UTF-8 bytes.
+        var bytes = Array(graph[..<end].utf8.prefix(16_384))
+        while !bytes.isEmpty {
+            if let text = String(bytes: bytes, encoding: .utf8) { return text }
+            bytes.removeLast() // At most three bytes of a truncated final scalar.
+        }
+        return ""
+    }
+
+    nonisolated static func readSampleData(_ output: URL) -> Data? {
+        let descriptor = open(output.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { _ = close(descriptor) }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else { return nil }
+        var bytes = [UInt8](repeating: 0, count: 64 * 1_024)
+        let count = bytes.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+        guard count >= 0 else { return nil }
+        return Data(bytes.prefix(count))
     }
 
     static func failureReport(for web: WKWebView) async -> String {
@@ -97,7 +115,7 @@ import WebKit
         guard stillOwned(), maySample(captured, observed: identity(captured.pid), ownedPID: captured.pid) else {
             return samplerMetadata + "; sample discarded: fixture process changed during collection"
         }
-        guard sampler.terminationStatus == 0, let data = try? Data(contentsOf: output) else {
+        guard sampler.terminationStatus == 0, let data = readSampleData(output) else {
             return samplerMetadata + "; sample unavailable: sampler exit \(sampler.terminationStatus)"
         }
         return samplerMetadata + ", samplerRunning=false; WebContent symbolic stacks:\n" + symbolsOnly(String(decoding: data, as: UTF8.self))
