@@ -89,7 +89,7 @@ import XCTest
         let description: String
     }
 
-    private func waitForLocalImage(_ web: WKWebView, image: URL, sessionState: () -> String,
+    private func waitForLocalImage(_ web: WKWebView, image: URL, startedAt: Date, sessionState: () -> String,
                                    file: StaticString = #filePath, line: UInt = #line) async throws {
         let probe = ImageProbe()
         defer { probe.stop() }
@@ -101,6 +101,7 @@ import XCTest
                 return
             }
             if ContinuousClock.now >= deadline {
+                let logEnd = Date()
                 let state = "url=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), progress=\(web.estimatedProgress), " +
                     "bounds=\(web.bounds), policy=\(NSApplication.shared.activationPolicy().rawValue), " +
                     "expectedImage=\(image.absoluteString), fileExists=\(FileManager.default.fileExists(atPath: image.path)), " +
@@ -110,6 +111,7 @@ import XCTest
                 NativeFixtureDiagnostics.emit(failure + "; collecting native diagnostics")
                 let native = await NativeFixtureDiagnostics.failureReport(for: web)
                 NativeFixtureDiagnostics.emit(failure + "; " + native)
+                NativeFixtureDiagnostics.emit(await ReaderNativeLog.report(image: image, startedAt: startedAt, failedAt: logEnd))
                 throw ImageFixtureFailure(description: failure + "; " + native)
             }
             if !web.isLoading { probe.sample(web) }
@@ -200,6 +202,7 @@ import XCTest
         let origin = TabStore(profileID: UUID())
         XCTAssertNotEqual(origin.profileID, repository.profileID)
         defer { origin.tabs.forEach { $0.tearDown() }; TabStore.all.removeAll { $0 === origin }; SavedReaderWindow.forget(profileID: article.profileID) }
+        let nativeLogStart = Date()
         SavedReaderWindow.show(articleID: article.id, repository: repository, origin: origin)
         try await compatibilityWait { NSApp.windows.contains { $0.title == "Saved copy — \(article.title)" } }
         let window = try XCTUnwrap(NSApp.windows.first { $0.title == "Saved copy — \(article.title)" })
@@ -210,7 +213,7 @@ import XCTest
         XCTAssertTrue(web === initial.web, "The displayed view must be the saved-reader session's actual WebKit view")
         let image = initial.document.deletingLastPathComponent().appendingPathComponent("images/" + raster.resource.name)
         NativeFixtureDiagnostics.emit("saved reader loading resources: " + NativeFixtureDiagnostics.resourceSnapshot(for: web))
-        try await waitForLocalImage(web, image: image, sessionState: {
+        try await waitForLocalImage(web, image: image, startedAt: nativeLogStart, sessionState: {
             guard let state = SavedReaderWindow.loadSnapshot(articleID: article.id, profileID: article.profileID) else {
                 return "session missing"
             }
