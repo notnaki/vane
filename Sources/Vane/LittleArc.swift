@@ -78,7 +78,7 @@ import SwiftUI
             contentRect: NSRect(x: 0, y: 0, width: Look.littleWidth, height: Look.littleHeight),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
-        window.title = "Little Vane"
+        window.title = WindowTitle.current(in: store)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         // Same trick as `Windows.open`: an empty compact toolbar gets AppKit's own idea of
@@ -597,25 +597,7 @@ struct LittleArcView: View {
         .onChange(of: profiles.profiles) { LittleArc.refreshDestination(for: store) }
         .vaneMotionPolicy()
         .environmentObject(store.spaceGesture)
-        // Costs no layout, and is the only thing that hears a title arrive.
-        .background { if let tab = store.active { TitleSync(tab: tab) } }
-    }
-}
-
-/// The window's title is the page's, so AppKit lists a Little Arc in the Window menu by
-/// what is in it rather than by a row of identical "Little Vane"s. Its own view because only
-/// something observing the tab hears the title land.
-private struct TitleSync: View {
-    @ObservedObject var tab: Tab
-    @EnvironmentObject var store: TabStore
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .onChange(of: tab.title, initial: true) {
-                store.window?.title = tab.title.isEmpty ? "Little Vane" : tab.title
-            }
-            .accessibilityHidden(true)
+        .background { WindowTitleSync() }
     }
 }
 

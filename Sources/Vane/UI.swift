@@ -497,6 +497,7 @@ struct BrowserWindow: View {
         }
         .spaceChrome(store)
         .vaneMotionPolicy()
+        .background { WindowTitleSync() }
     }
 
     /// The 6pt of window edge that brings the sidebar back. Only live while it is away.

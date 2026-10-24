@@ -109,6 +109,12 @@ Use **File → New Window** (`⌘N`) for a regular window, **New Private Window*
 (`⇧⌘N`) for private browsing, or **New Little Vane Window** (`⌥⌘N`) for a compact
 single-page window. These are the default bindings; Settings can change them.
 
+Regular window titles follow the active page: `Page title — Vane`, with the profile
+name appended for non-default profiles. This lets password managers and window tools
+identify the active page. Turn off **Settings → Advanced → Show page titles in window
+titles** to use generic titles instead. Private windows, including private Little Vane
+windows, always use generic titles and expose no page title or address through them.
+
 Windows in the same Space share tabs. When both show the same tab, the focused window
 holds its live page and the other shows a gray snapshot. Switching windows preserves
 input, scroll position, and history; closing a tab removes it from every window. Each

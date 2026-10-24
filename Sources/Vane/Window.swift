@@ -521,10 +521,7 @@ extension VaneWindow {
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
-        // The profile name is in the title because there is otherwise nothing on screen that
-        // says which set of logins this window is using.
-        let named = profile.isDefault ? "" : " — " + profile.name
-        window.title = isPrivate ? "Vane — Incognito" : "Vane" + named
+        window.title = WindowTitle.current(in: store)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         // An empty toolbar, never shown: it only exists to make the titlebar 38pt tall,
@@ -694,9 +691,9 @@ extension VaneWindow {
         SharedTabs.refreshPresentation()
         store.extensions.sync()
         arriving.extensions.sync()
-        // The profile is in the window's title because there is otherwise nothing on screen
-        // that says which set of logins the page is using. See `open`.
-        window.title = "Vane" + (profile.isDefault ? "" : " — " + profile.name)
+        // Also set synchronously: a cached host may already have observed this title while
+        // its profile was parked and had no window to update.
+        window.title = WindowTitle.current(in: arriving)
         rebuild()                               // the Spaces menu's checkmark has changed profile
         // Swapping the profile host detaches the old first responder. Put the keyboard on
         // the arriving page once AppKit has mounted it, so a keyboard switch can keep typing.
