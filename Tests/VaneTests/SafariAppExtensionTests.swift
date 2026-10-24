@@ -7,6 +7,7 @@ import XCTest
 /// from the fixture is executed: WebKit reads only its bundled web resources.
 @MainActor final class SafariAppExtensionTests: XCTestCase {
     private var profile: UUID!
+    private var ownedProfiles = Set<UUID>()
     private var root: URL!
     private var app: URL!
     private var appex: URL!
@@ -25,6 +26,7 @@ import XCTest
         }
         signingIdentity = identity; team = expectedTeam
         profile = UUID()
+        ownedProfiles.insert(profile)
         appID = "test.vane.safari-" + UUID().uuidString.lowercased()
         extensionID = appID + ".extension"
         root = Store.directory.appendingPathComponent("signed-safari-\(UUID())")
@@ -84,10 +86,17 @@ import XCTest
             TabStore.all.removeAll { $0 === store }
         }
         windows.forEach { $0.orderOut(nil); $0.contentView = nil }
-        let host = ExtensionHost.host(for: profile)
-        for entry in host.entries { try? host.remove(folder: entry.path) }
-        ExtensionHost.forget(profile)
+        stores.removeAll(); windows.removeAll()
+        func removeInstallations() {
+            let host = ExtensionHost.host(for: profile)
+            for entry in host.entries { try? host.remove(folder: entry.path) }
+            ExtensionHost.forget(profile)
+        }
+        removeInstallations()
         if let root { try? FileManager.default.removeItem(at: root) }
+        let released = ownedProfiles
+        ownedProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
     }
 
     func testSignedSafariAppLoadsReviewedIdentityAndRoutesExternalHandoffInRealTab() async throws {
@@ -272,7 +281,9 @@ import XCTest
 
     func testSameSafariRuntimeIdentityHasSeparateProfileStorage() async throws {
         let first = ExtensionHost.host(for: profile)
-        let second = ExtensionHost.host(for: UUID())
+        let secondProfile = UUID()
+        ownedProfiles.insert(secondProfile)
+        let second = ExtensionHost.host(for: secondProfile)
         defer {
             for entry in second.entries { try? second.remove(folder: entry.path) }
             ExtensionHost.forget(second.profileID)

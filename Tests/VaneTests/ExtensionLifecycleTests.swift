@@ -13,6 +13,7 @@ import XCTest
 
 @MainActor final class ExtensionLifecycleTests: XCTestCase {
     private var profile: UUID!
+    private var ownedProfiles = Set<UUID>()
     private var folder: URL!
     private var views: [WKWebView] = []
     private var stores: [TabStore] = []
@@ -22,6 +23,7 @@ import XCTest
         TestEnvironment.prepare()
         _ = NSApplication.shared
         profile = UUID()
+        ownedProfiles.insert(profile)
         folder = Store.directory.appendingPathComponent("lifecycle-extension-\(UUID())")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try Data(#"{"manifest_version":3,"name":"Lifecycle Fixture","version":"1.0","description":"Runtime integration fixture","permissions":["tabs"],"options_ui":{"page":"options.html"},"commands":{"fixture":{"suggested_key":{"mac":"Command+Shift+Y"},"description":"Fixture command"}}}"#.utf8).write(to: folder.appendingPathComponent("manifest.json"))
@@ -42,6 +44,9 @@ import XCTest
         ScopedPaths.remove(path: folder.path, from: ExtensionHost.key(for: profile))
         ExtensionConsent.remove(for: folder, profileID: profile)
         try? FileManager.default.removeItem(at: folder)
+        let released = ownedProfiles
+        ownedProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
     }
 
     private func fixture() async throws -> (ExtensionHost, WKWebExtensionContext, WKWebView) {
@@ -135,7 +140,9 @@ import XCTest
         other.makeKeyAndOrderFront(nil)
         other.keyboardFocused = true
         XCTAssertFalse(ExtensionCommands.handle(event), "An event from an inactive browser must not act on the focused window")
-        let otherStore = TabStore(profileID: UUID(), session: [])
+        let otherProfile = UUID()
+        ownedProfiles.insert(otherProfile)
+        let otherStore = TabStore(profileID: otherProfile, session: [])
         otherStore.window = other
         _ = otherStore.newBlankTab()
         stores.append(otherStore)

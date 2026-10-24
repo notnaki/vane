@@ -4,6 +4,7 @@ import XCTest
 
 @MainActor final class ClosedTabHistoryTests: XCTestCase {
     private var stores: [TabStore] = []
+    private var ownedProfiles = Set<UUID>()
     private var server: CompatibilityServer!
     private var oldHTTPS = false
     private final class WeakTab {
@@ -50,10 +51,15 @@ import XCTest
         server.stop()
         server = nil
         HTTPSOnly.enabled = oldHTTPS
+        let released = ownedProfiles
+        ownedProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
     }
 
-    private func store(profile: UUID = UUID(), isPrivate: Bool = false) -> TabStore {
-        let made = TabStore(isPrivate: isPrivate, profileID: profile, session: [])
+    private func store(profile: UUID? = nil, isPrivate: Bool = false) -> TabStore {
+        let ownedProfile = profile ?? UUID()
+        if profile == nil && !isPrivate { ownedProfiles.insert(ownedProfile) }
+        let made = TabStore(isPrivate: isPrivate, profileID: ownedProfile, session: [])
         stores.append(made)
         return made
     }

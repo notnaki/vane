@@ -5,6 +5,7 @@ import XCTest
 
 @MainActor final class ExtensionBackgroundStartupTests: XCTestCase {
     private var profile: UUID!
+    private var ownedProfiles = Set<UUID>()
     private var folder: URL!
     private weak var probe: WKWebView?
 
@@ -12,6 +13,7 @@ import XCTest
         TestEnvironment.prepare()
         _ = NSApplication.shared
         profile = UUID()
+        ownedProfiles.insert(profile)
         folder = Store.directory.appendingPathComponent("background-startup-\(UUID())").resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     }
@@ -25,6 +27,9 @@ import XCTest
         ScopedPaths.remove(path: folder.path, from: ExtensionHost.key(for: profile))
         try? ExtensionCodeStore.removeProfile(profile)
         try? FileManager.default.removeItem(at: folder)
+        let released = ownedProfiles
+        ownedProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
     }
 
     private func writeWorker(_ script: String, version: String = "1.0", worker: String = "bg.js", optionalPermissions: [String] = [], in destination: URL? = nil) throws {

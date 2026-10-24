@@ -7,26 +7,34 @@ import XCTest
 
 @MainActor final class ExtensionManagedCodeTests: XCTestCase {
     private var profile: UUID!
+    private var ownedProfiles = Set<UUID>()
     private var folder: URL!
 
     override func setUp() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         profile = UUID()
+        ownedProfiles.insert(profile)
         folder = Store.directory.appendingPathComponent("accepted-code-\(UUID())").resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try write()
     }
 
     override func tearDown() async throws {
-        let host = ExtensionHost.host(for: profile)
-        for entry in host.entries { try? host.remove(folder: entry.path) }
-        ExtensionHost.forget(profile)
+        func removeInstallations() {
+            let host = ExtensionHost.host(for: profile)
+            for entry in host.entries { try? host.remove(folder: entry.path) }
+            ExtensionHost.forget(profile)
+        }
+        removeInstallations()
         for key in [ExtensionHost.baseKey, ExtensionHost.identifiersKey, ExtensionHost.namesKey,
                     ExtensionHost.disabledKey, ExtensionHost.bookmarksKey, ExtensionConsent.baseKey, ExtensionPins.key] {
             UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(key, profile))
         }
         try? FileManager.default.removeItem(at: folder)
+        let released = ownedProfiles
+        ownedProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
     }
 
     private func write(version: String = "1.0", permissions: [String] = ["storage"], script: String = "globalThis.acceptedCode='accepted'") throws {
