@@ -43,13 +43,15 @@ import WebKit
         var display: String { port == 443 ? host : "\(host):\(port)" }
     }
 
-    private final class Memory: NSObject {
+    @MainActor private final class Memory: NSObject {
         var exceptions: Set<String> = []
         var generation = UUID()
+        var clientChallenge: UUID?
         var prompt: NSAlert?
         weak var window: NSWindow?
     }
     private static let memories = NSMapTable<Tab, Memory>.weakToStrongObjects()
+    private static let clientSession = ClientCertificates.Session()
 
     private static func memory(for tab: Tab) -> Memory {
         if let memory = memories.object(forKey: tab) { return memory }
@@ -94,6 +96,7 @@ import WebKit
     }
 
     static func forget(host: String, profileID: UUID) {
+        clientSession.forget(host: host, profileID: profileID)
         let host = host.lowercased()
         for key in defaults.dictionaryRepresentation().keys {
             guard let scope = scope(from: key), scope.profileID == profileID,
@@ -109,6 +112,7 @@ import WebKit
     }
 
     static func forget(profile profileID: UUID) {
+        clientSession.forget(profileID: profileID)
         for key in defaults.dictionaryRepresentation().keys
             where scope(from: key)?.profileID == profileID { defaults.removeObject(forKey: key) }
         for memory in memories.objectEnumerator()?.allObjects as? [Memory] ?? [] {
@@ -117,6 +121,7 @@ import WebKit
     }
 
     static func forgetAll() {
+        clientSession.forgetAll()
         for k in defaults.dictionaryRepresentation().keys
             where k.hasPrefix(prefix) || k.hasPrefix(legacyPrefix) {
             defaults.removeObject(forKey: k)
@@ -247,20 +252,71 @@ import WebKit
 
     // MARK: - The delegate method
 
-    /// Everything `webView(_:didReceive:)` has to answer. Anything that isn't a server
-    /// trust or a login challenge goes back to the system, which is the only honest answer
-    /// for a method that also covers client certificates and NTLM.
-    static func handle(challenge: URLAuthenticationChallenge, tab: Tab, web: WKWebView) async
+    /// Answer the supported trust, client identity and HTTP login challenges.
+    /// Other authentication methods remain managed by WebKit.
+    static func handle(challenge: URLAuthenticationChallenge, tab: Tab, web: WKWebView,
+                       clientIdentities: ([Data]?) async -> [ClientCertificates.Candidate] = {
+                           await ClientCertificates.candidates(issuers: $0)
+                       }) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
         guard tab.existingWeb === web else { return (.cancelAuthenticationChallenge, nil) }
         switch challenge.protectionSpace.authenticationMethod {
         case NSURLAuthenticationMethodServerTrust:
             return await serverTrust(challenge, tab: tab, web: web)
+        case NSURLAuthenticationMethodClientCertificate:
+            return await clientCertificate(challenge, tab: tab, web: web, identities: clientIdentities)
         case NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest:
             return await login(challenge, tab: tab, web: web)
         default:
             return (.performDefaultHandling, nil)
         }
+    }
+
+    private static func clientCertificate(_ challenge: URLAuthenticationChallenge, tab: Tab, web: WKWebView,
+                                          identities: ([Data]?) async -> [ClientCertificates.Candidate]) async
+        -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+        let space = challenge.protectionSpace
+        guard !space.isProxy(), let scope = ClientCertificates.Scope(profileID: tab.profileID,
+            host: space.host, port: space.port, scheme: space.protocol) else {
+            return (.cancelAuthenticationChallenge, nil)
+        }
+        guard shouldPrompt(host: scope.host, port: scope.port,
+                           navigationURL: tab.certificateNavigationURL ?? web.url) else {
+            return (.cancelAuthenticationChallenge, nil)
+        }
+        // Only a new eligible identity challenge replaces this chooser. Background
+        // server-trust checks must not dismiss the person's unfinished selection.
+        if memories.object(forKey: tab)?.clientChallenge != nil { navigationStarted(in: tab) }
+        let memory = memory(for: tab)
+        let request = UUID(), generation = memory.generation
+        memory.clientChallenge = request
+        defer { if memory.clientChallenge == request { memory.clientChallenge = nil } }
+        let current = {
+            tab.existingWeb === web && tab.profileID == scope.profileID
+                && memory.generation == generation && memory.clientChallenge == request
+                && shouldPrompt(host: scope.host, port: scope.port,
+                                navigationURL: tab.certificateNavigationURL ?? web.url)
+        }
+        guard let chosen = await clientSession.choose(scope: scope, isPrivate: tab.isPrivate,
+            previousFailureCount: challenge.previousFailureCount,
+            load: { await identities(space.distinguishedNames) },
+            prompt: { candidates in
+                let alert = NSAlert()
+                alert.messageText = "Choose a certificate for “\(scope.display)”"
+                alert.informativeText = "This site wants to verify your identity with a client certificate."
+                    + (tab.isPrivate ? " Your choice won’t be remembered by Vane." : " Vane will remember your choice for this site during this session.")
+                let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26), pullsDown: false)
+                picker.addItems(withTitles: candidates.map(\.title))
+                picker.setAccessibilityLabel("Client certificate")
+                alert.accessoryView = picker
+                alert.window.initialFirstResponder = picker
+                alert.addButton(withTitle: "Continue")
+                alert.addButton(withTitle: "Cancel")
+                guard current(), await present(alert, tab: tab, web: web, memory: memory) == .alertFirstButtonReturn,
+                      candidates.indices.contains(picker.indexOfSelectedItem) else { return nil }
+                return candidates[picker.indexOfSelectedItem].id
+            }, isCurrent: current) else { return (.cancelAuthenticationChallenge, nil) }
+        return (.useCredential, chosen.credential)
     }
 
     private static func serverTrust(_ challenge: URLAuthenticationChallenge, tab: Tab, web: WKWebView) async
@@ -415,9 +471,18 @@ import WebKit
         let generation = memory.generation
         memory.prompt = alert
         memory.window = window
-        let response = await alert.beginSheetModal(for: window)
+        let response = await withTaskCancellationHandler {
+            if Task.isCancelled { return NSApplication.ModalResponse.abort }
+            return await alert.beginSheetModal(for: window)
+        } onCancel: {
+            Task { @MainActor in
+                if memory.prompt === alert, memory.window === window {
+                    window.endSheet(alert.window, returnCode: .abort)
+                }
+            }
+        }
         if memory.prompt === alert { memory.prompt = nil; memory.window = nil }
-        guard stillCurrent(generation: generation, currentGeneration: memory.generation,
+        guard !Task.isCancelled, stillCurrent(generation: generation, currentGeneration: memory.generation,
                            sameWeb: tab.existingWeb === web, sameWindow: web.window === window,
                            visible: !web.isHiddenOrHasHiddenAncestor) else { return .abort }
         return response
@@ -426,6 +491,7 @@ import WebKit
     static func navigationStarted(in tab: Tab) {
         guard let memory = memories.object(forKey: tab) else { return }
         memory.generation = UUID()
+        memory.clientChallenge = nil
         if let prompt = memory.prompt, let window = memory.window {
             window.endSheet(prompt.window, returnCode: .abort)
         }
