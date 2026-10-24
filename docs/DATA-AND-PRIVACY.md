@@ -71,6 +71,16 @@ Import from Arc reads local SQLite snapshots and decrypts supported `v10` creden
 using Arc's Keychain Safe Storage key. Passwords keep their scheme and port; autofill
 uses HTTPS and matches the full origin. Existing Vane passwords are kept, and duplicate
 Arc logins use the most recently modified password (creation time in older schemas).
+Pinned Arc split views keep their pane order, orientation, shares, focus, and sidebar
+position. Unsupported or damaged splits keep their available pages as ordinary tabs in
+order; skipped sidebar row types are reported and their reachable children are preserved.
+When Arc's `StorableLinkRouting.json` is present, the import confirmation also describes
+Air Traffic Control rules and the external-links default. Imported rules follow existing
+Vane rules, with duplicates kept once; accepted defaults replace Vane's link-opening
+preference. Rules aimed at Spaces that were not imported are skipped and reported.
+Missing or unreadable routing files preserve existing link settings. An explicit Space
+as the default cannot be represented by Vane's current-Space/Little Vane preference;
+it is reported as unsupported and the existing default is kept.
 Session imports preserve HttpOnly, SameSite, Secure, domain, path, and lifetime.
 Expired, partitioned, or unsupported cookies are skipped and reported; those sessions
 may need a fresh sign-in. No decrypted value is logged or written to an import file.
