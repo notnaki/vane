@@ -168,6 +168,93 @@ import XCTest
         try await compatibilityWait { self.child != nil }
     }
 
+    /// Inspect the real popup host, not a separate progress view or the page's model.
+    /// The fixture's blank white page leaves this top-centre region to browser chrome.
+    private func progressInkPixels(in window: NSWindow) throws -> Int {
+        let page = try XCTUnwrap(window.contentView?.subviews.last)
+        page.layoutSubtreeIfNeeded()
+        let region = NSRect(x: page.bounds.midX - 100,
+                            y: page.isFlipped ? 0 : page.bounds.maxY - 24,
+                            width: 200, height: 24)
+        let bitmap = try XCTUnwrap(page.bitmapImageRepForCachingDisplay(in: region))
+        page.cacheDisplay(in: region, to: bitmap)
+        var count = 0
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                guard let pixel = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                if pixel.alphaComponent > 0.8,
+                   min(pixel.redComponent, pixel.greenComponent, pixel.blueComponent) < 0.85 { count += 1 }
+            }
+        }
+        return count
+    }
+
+    func testSlowWindowOpenDrawsProgressAndClearsOnCompletionAndStop() async throws {
+        server.heldPaths = ["/slow", "/next"]
+        server.pages["/slow"] = "<title>Ready</title><style>html{background:white}</style>"
+        try await prepare(isPrivate: true, html: """
+        <button onclick="window.child=window.open('/slow','auth','width=451,height=600')">Sign in</button>
+        """)
+        try await clickFirstControl()
+        let child = try XCTUnwrap(child)
+        let window = try XCTUnwrap(childWindow)
+        window.appearance = NSAppearance(named: .aqua)
+        try await compatibilityWait { child.loading && self.server.requests.contains { $0.hasPrefix("GET /slow ") } }
+        XCTAssertGreaterThan(child.progress, 0)
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertGreaterThan(try progressInkPixels(in: window), 10,
+                             "A real window.open popup must draw its loading capsule while its HTTP response is held")
+        server.heldPaths.remove("/slow")
+        try await compatibilityWait { child.title == "Ready" && !child.loading }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(try progressInkPixels(in: window), 0, "The capsule must disappear after completion")
+
+        child.go(try server.url("/next"))
+        try await compatibilityWait { child.loading && self.server.requests.contains { $0.hasPrefix("GET /next ") } }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertGreaterThan(try progressInkPixels(in: window), 10,
+                             "The existing popup must show progress for its next navigation")
+        child.stop()
+        try await compatibilityWait { !child.loading }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(try progressInkPixels(in: window), 0, "Stopping a popup must clear loading feedback")
+    }
+
+    func testPopupProgressClearsAfterFailedResponseAndReturnsOnReload() async throws {
+        let previousSaver = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.alwaysOn)
+        defer { BatterySaver.shared.setMode(previousSaver) }
+        server.heldPaths = ["/broken"]
+        server.interruptedPaths = ["/broken"]
+        server.pages["/broken"] = "<title>Recovered</title><style>html{background:white}</style>"
+        try await prepare(isPrivate: true, html: """
+        <button onclick="window.child=window.open('/broken','auth','width=451,height=600')">Sign in</button>
+        """)
+        try await clickFirstControl()
+        let child = try XCTUnwrap(child)
+        let window = try XCTUnwrap(childWindow)
+        window.appearance = NSAppearance(named: .aqua)
+        try await compatibilityWait { child.loading && self.server.requests.contains { $0.hasPrefix("GET /broken ") } }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertGreaterThan(try progressInkPixels(in: window), 10,
+                             "Battery Saver must preserve loading feedback without motion")
+        server.heldPaths.remove("/broken")
+        try await compatibilityWait { child.title == "The connection dropped" && !child.loading }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(try progressInkPixels(in: window), 0, "A failed response must clear the popup capsule")
+
+        server.interruptedPaths.remove("/broken")
+        server.heldPaths.insert("/broken")
+        child.reload()
+        try await compatibilityWait { child.loading }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertGreaterThan(try progressInkPixels(in: window), 10, "Reload must restore popup loading feedback")
+        server.heldPaths.remove("/broken")
+        try await compatibilityWait { child.title == "Recovered" && !child.loading }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(try progressInkPixels(in: window), 0)
+    }
+
     func testBlankPopupDocumentWriteMessagingAndScriptClose() async throws {
         try await prepare(isPrivate: false, html: """
         <button onclick="window.child=window.open('about:blank','auth','width=451,height=600'); child.document.write('<title>Written popup</title><p>Ready</p>'); child.document.close()">Sign in</button>

@@ -418,7 +418,8 @@ struct BrowserWindow: View {
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
                 page: WebCard().anchorPreference(key: DownloadFeedbackBounds.self,
-                                                value: .bounds) { [.page: $0] },
+                                                value: .bounds) { [.page: $0] }
+                    .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
                 sidebar: sidebarSurface, panel: LibraryPanel())
             edgeStrip
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
@@ -449,6 +450,7 @@ struct BrowserWindow: View {
         // traffic lights instead of beside them, and the card loses its top inset.
         .ignoresSafeArea()
         .modifier(PeekContentTracking(area: store.peekContent))
+        .modifier(ToastPresentation(store: store, sidebarWidth: sidebar.width))
         .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
@@ -505,6 +507,7 @@ struct BrowserWindow: View {
         }
         .spaceChrome(store)
         .vaneMotionPolicy()
+        .background { WindowTitleSync() }
     }
 
     /// The 6pt of window edge that brings the sidebar back. Only live while it is away.
@@ -808,11 +811,13 @@ struct EmptyPane: View {
 /// own track, its own caps and its own idea of how wide it should be, and this is a shape
 /// and a fraction. The track is drawn whenever the pill is, so the fill has something to
 /// fill; both go together behind the same fade.
-private struct LoadingBar: View {
+struct LoadingBar: View {
     @ObservedObject var tab: Tab
     /// The find bar shares the top of the card; while it is open the pill steps aside
     /// entirely rather than sitting off-centre for the rest of the time.
     var hidden = false
+    /// Popups have no tab row to announce loading; their capsule supplies that copy.
+    var accessible = false
     /// Reduce Motion turns the sweep and the fade into plain cuts — the bar still shows
     /// the same thing, it just stops moving.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -836,9 +841,12 @@ private struct LoadingBar: View {
         .opacity(tab.loading && !hidden ? 1 : 0)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: tab.loading)
         .allowsHitTesting(false)
-        // Decoration: the tab row says "loading" in words, which is the accessible copy of
-        // this. Two elements for one fact is worse than one.
-        .accessibilityHidden(true)
+        // The main window already announces loading in its tab row; a popup has none.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading page")
+        .accessibilityValue(Text("\(Int(tab.progress * 100))%"))
+        .accessibilityHidden(!accessible || !tab.loading || hidden)
+        .vaneMotionPolicy()
     }
 }
 
@@ -921,7 +929,10 @@ private struct Sidebar: View {
         // Toasts and the mini audio player fade in above the footer and sit just
         // above it, over the list — the toast above the player, so neither covers the other.
         .overlay(alignment: .bottom) {
-            VStack(spacing: Look.inset) { ToastHost(); MediaTrayView() }
+            VStack(spacing: Look.inset) {
+                ToastAnchor(target: .sidebar, covered: downloadsHover.isVisible)
+                MediaTrayView()
+            }
                 .padding(.bottom, Look.footer + Look.footerInset + Look.inset)
                 .opacity(downloadsHover.isVisible ? 0 : 1)
                 .allowsHitTesting(!downloadsHover.isVisible)

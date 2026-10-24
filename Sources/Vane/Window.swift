@@ -521,10 +521,7 @@ extension VaneWindow {
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
-        // The profile name is in the title because there is otherwise nothing on screen that
-        // says which set of logins this window is using.
-        let named = profile.isDefault ? "" : " — " + profile.name
-        window.title = isPrivate ? "Vane — Incognito" : "Vane" + named
+        window.title = WindowTitle.current(in: store)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         // An empty toolbar, never shown: it only exists to make the titlebar 38pt tall,
@@ -700,9 +697,9 @@ extension VaneWindow {
         SharedTabs.refreshPresentation()
         store.extensions.sync()
         arriving.extensions.sync()
-        // The profile is in the window's title because there is otherwise nothing on screen
-        // that says which set of logins the page is using. See `open`.
-        window.title = "Vane" + (profile.isDefault ? "" : " — " + profile.name)
+        // Also set synchronously: a cached host may already have observed this title while
+        // its profile was parked and had no window to update.
+        window.title = WindowTitle.current(in: arriving)
         rebuild()                               // the Spaces menu's checkmark has changed profile
         // Swapping the profile host detaches the old first responder. Put the keyboard on
         // the arriving page once AppKit has mounted it, so a keyboard switch can keep typing.
@@ -1893,14 +1890,39 @@ extension TabStore {
     }
 }
 
-/// ⌘⇧T. ponytail: a url stack, not a full tab-state graph — reopening restores the page,
-/// not its scroll position or back/forward list.
+/// ⌘⇧T. Keep the last 32 closed pages in memory, without retaining their tabs,
+/// web views, website data stores or password UI. Nothing in this stack is persisted.
 @MainActor enum ClosedTabs {
-    private static var stack: [URL] = []
-    static func push(_ url: URL?) {
-        guard let url, TabAddress.restorable(url) else { return }
-        stack.append(url)
+    struct Entry {
+        let url: URL
+        let profileID: UUID
+        let snapshot: Parked
+
+        /// Reopen as a new Today row in the current context, just like opening its URL.
+        /// Session state stays inside its originating profile; a different profile or a
+        /// private window gets a fresh URL load using that destination's website data.
+        @MainActor @discardableResult
+        func reopen(in store: TabStore) -> Tab? {
+            guard !AppLifecycle.shared.persistenceExitInProgress else { return nil }
+            let destination = store.isLittle ? LittleArc.open(nil, isPrivate: store.isPrivate) : store
+            let tab = destination.newBlankTab(focus: false)
+            let parked = !destination.isPrivate && destination.profileID == profileID ? snapshot : Parked()
+            tab.park(url: url, parked)
+            destination.palette = nil
+            destination.current = tab.id   // selection resumes the parked history, with URL fallback
+            return tab
+        }
+    }
+
+    private static var stack: [Entry] = []
+    static func push(_ tab: Tab) {
+        guard !tab.isPrivate, let url = tab.currentURL, TabAddress.restorable(url) else { return }
+        var snapshot = tab.snapshot
+        // Reopening is an explicit request to load the URL. Do not replay state that
+        // crash recovery deliberately withheld, or carry its resume blocker into a new row.
+        if snapshot.needsRecovery { snapshot.state = nil; snapshot.needsRecovery = false }
+        stack.append(Entry(url: url, profileID: tab.profileID, snapshot: snapshot))
         if stack.count > 32 { stack.removeFirst() }
     }
-    static func pop() -> URL? { stack.popLast() }
+    static func pop() -> Entry? { stack.popLast() }
 }

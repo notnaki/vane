@@ -194,9 +194,9 @@ swift test --filter 'BlockerTests|BlockerSubscriptionTests|BlockerWebKitTests'
 
 ## Site permissions
 
-Camera and microphone requests open a sheet on the requesting window with **Allow
-Once**, **Always Allow**, and **Don’t Allow**. Builds made with Xcode 27 also offer
-location choices and a Location row on macOS 27. Allow Once belongs to the requesting
+Camera, microphone, and location requests open a sheet on the requesting window with
+**Allow Once**, **Always Allow**, and **Don’t Allow**. Location choices and the Location
+row are available on macOS 26 and later. Allow Once belongs to the requesting
 document and expires when it navigates or closes. Embedded camera, microphone, and
 location requests fail closed because the public APIs do not identify their original
 document reliably. Saved choices belong to the requesting main frame’s exact origin and

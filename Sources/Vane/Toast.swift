@@ -8,7 +8,7 @@ import SwiftUI
 ///
 /// One store app-wide rather than one per window: there is one pointer, one keyboard and so
 /// one event at a time worth telling the user about. `owner` remembers which window it
-/// happened in, and only that window's sidebar draws it.
+/// happened in, and only that window draws it.
 /// ponytail: no toast history and no stack — one ordinary toast at a time, replaced by
 /// whatever happens next, because the verb on the newest is the only one anybody is
 /// reaching for. Ceiling: a Notification-Center-style drawer of past toasts, which Arc
@@ -26,7 +26,7 @@ import SwiftUI
         /// A sticky toast is up because something is still true, not because something just
         /// happened: no clock, and an × of its own. The updater is the only thing with one.
         var sticky = false
-        /// The window it happened in, so only that window's sidebar draws it. On the toast
+        /// The window it happened in, so only that window draws it. On the toast
         /// rather than the store: a toast from a second window must not drag the one
         /// already showing into the wrong sidebar. `nil` means every window, which is what a
         /// toast about the app itself rather than about a page wants.
@@ -165,9 +165,76 @@ import SwiftUI
     }
 }
 
-/// The pill. Lives in the sidebar's overlay just above the footer, and only in the window
-/// the toast belongs to. Dark whatever the appearance, like the command bar, with the
-/// space's colour washed over it: that is what makes it read as *this* space's toast.
+/// Slots preserve the sidebar's media-player spacing and the Library's footer placement
+/// without mounting a second copy of the live toast or its accessibility actions.
+struct ToastBounds: PreferenceKey {
+    enum Target: Hashable { case page, sidebar, library, sidebarCovered }
+    static let defaultValue: [Target: Anchor<CGRect>] = [:]
+    static func reduce(value: inout [Target: Anchor<CGRect>],
+                       nextValue: () -> [Target: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+struct ToastAnchor: View {
+    let target: ToastBounds.Target
+    var covered = false
+
+    var body: some View {
+        Color.clear.frame(height: 0)
+            .anchorPreference(key: ToastBounds.self, value: .bounds) {
+                covered ? [target: $0, .sidebarCovered: $0] : [target: $0]
+            }
+            .allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+
+/// Keep one host alive through docking, hiding, edge reveal and Library navigation.
+/// Moving its layout slot preserves the current pill, hover hold and action generation.
+struct ToastPresentation: ViewModifier {
+    @ObservedObject var store: TabStore
+    let sidebarWidth: CGFloat
+    @EnvironmentObject private var downloads: DownloadFeedback
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    func body(content: Content) -> some View {
+        content.overlayPreferenceValue(ToastBounds.self) { bounds in
+            GeometryReader { geometry in
+                let sidebarVisible = store.sidebarShown || store.sidebarPeeking
+                let chrome = store.libraryOpen || sidebarVisible
+                let anchor = store.libraryOpen ? bounds[.library]
+                    : sidebarVisible ? bounds[.sidebar] : bounds[.page]
+                if let anchor {
+                    let slot = geometry[anchor]
+                    // Match download feedback's 16pt page inset, with a gap above its
+                    // 40pt landing control while that transient feedback is visible.
+                    let target = chrome ? slot : CGRect(
+                        x: slot.minX + 16 - Look.inset, y: slot.minY,
+                        width: min(sidebarWidth, max(0, slot.width - 32 + 2 * Look.inset)),
+                        height: max(0, slot.height - 16 - (downloads.start == nil ? 0 : 40 + Look.inset)))
+                    let covered = store.palette != nil ||
+                        (!store.libraryOpen && sidebarVisible && bounds[.sidebarCovered] != nil)
+                    ToastHost()
+                        .frame(width: target.width, alignment: chrome ? .center : .leading)
+                        .padding(.leading, target.minX)
+                        .padding(.bottom, max(0, geometry.size.height - target.maxY))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                        .opacity(covered ? 0 : 1)
+                        .disabled(covered)
+                        .allowsHitTesting(!covered)
+                        .accessibilityHidden(covered)
+                }
+            }
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
+                       value: downloads.start?.id)
+        }
+    }
+}
+
+/// The pills, drawn once in their owning window. The presentation follows the sidebar
+/// or Library footer when visible, and the page corner when all chrome is hidden.
+/// Dark whatever the appearance, like the command bar, with the space's colour washed over it.
 struct ToastHost: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var toasts = Toasts.shared

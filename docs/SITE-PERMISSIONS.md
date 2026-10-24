@@ -1,4 +1,4 @@
-# Site permissions on macOS 27
+# Site permissions on macOS 26 and later
 
 Vane’s permission store records what a website’s main document may request. macOS device authorization
 (TCC and Location Services) separately determines whether Vane may access the device.
@@ -24,16 +24,19 @@ its pending app request. Restoring a backup requires fresh security consent; see
 | Capability | Supported application hooks | Vane behavior and limits |
 | --- | --- | --- |
 | Camera and microphone | `WKUIDelegate` media permission request; `WKWebView.cameraCaptureState`, `microphoneCaptureState`, and their setters | Allow Once, saved Allow/Block, private-tab answers, Ask/reset, and stopping the revoked device with `.none`. State/setters cover the whole web view, so revoking one frame’s camera can also stop another frame’s camera. The untouched device continues. |
-| Location | macOS 27 `WKUIDelegate` geolocation permission request | Same site decisions. No public API stops individual WebKit location watches. Ask/Block/reset reloads every live page recorded as using the affected origin’s location decision; a completed reload destroys watches and may interrupt other page activity. Cancelling the reload can leave existing watches alive; Vane retains ownership so a later revocation can retry. |
+| Location | WebKit compatibility geolocation delegate on macOS 26; public `WKUIDelegate` request on macOS 27 | Same site decisions. No public API stops individual WebKit location watches. Ask/Block/reset reloads every live page recorded as using the affected origin’s location decision; a completed reload destroys watches and may interrupt other page activity. Cancelling the reload can leave existing watches alive; Vane retains ownership so a later revocation can retry. |
 | Pop-ups | `WKUIDelegate` `createWebViewWith`, with tabs' `javaScriptCanOpenWindowsAutomatically` on so popups with no gesture arrive there | A popup the user's click or key opened always opens. For any other popup the main document's answer decides: Ask (the default) blocks it and shows a toast whose Open loads its URL beside the page, without `window.opener`; Allow opens it like a clicked one; Block drops it with no toast. A popup with no URL offers Allow instead. Never prompted. If WebKit's gesture accessor goes away, WebKit blocks these popups again itself, with no toast. |
 | Screen sharing | WebKit’s `getDisplayMedia` flow and macOS source chooser | No public `WKUIDelegate` display-capture permission callback, per-site persistence, capture-state setter, or source-specific stop hook in the macOS 27 SDK. Camera/microphone grants do not authorize display capture. Vane leaves selection, cancellation, and authorization to WebKit/macOS; document destruction ends its capture. No nonfunctional screen-sharing picker is offered. |
 
-Location’s new delegate requires Xcode 27 (Swift 6.4) and macOS 27. The minimum runtime
-remains macOS 26: older SDK builds and older systems keep WebKit’s location flow and do
-not show Vane’s Location row. The geolocation delegate is compiled only with Swift 6.4
-or newer and runtime-gated. Camera/microphone controls use public APIs available since
-macOS 12. Existing page suspension still uses Vane’s previously established guarded
-`_close` fallback; new site decisions and device revocation introduce no production SPI.
+Location decisions and the Location row are available on the minimum macOS 26 runtime,
+including builds made with Xcode 26. WebKit calls the pre-public
+`_webView:requestGeolocationPermissionForOrigin:initiatedByFrame:decisionHandler:`
+selector on macOS 26; this compatibility hook forwards to the same origin, document,
+profile, and private-tab policy as the public callback. Xcode 27 (Swift 6.4) builds also
+compile the public macOS 27 delegate behind its runtime availability check. The
+compatibility selector is private WebKit API and may change with system releases.
+Camera/microphone controls use public APIs available since macOS 12. Existing page
+suspension retains its established guarded `_close` fallback.
 
 ## Request ownership and lifetime
 
@@ -117,9 +120,16 @@ fixture’s identified WebContent process. The separate display fixture uses an 
 app host so WebKit can receive a focused user gesture. It bypasses the chooser with a
 fake screen source and retains its stream in a same-origin parent to verify frame
 removal ends its track. The runner records its bundle, PID, and launch identity,
-verifies exit, and removes the temporary app. Location fixtures call the actual public delegate with WebKit-created
-frame information and verify reload revocation, including cancelling the revocation
-reload and then retrying; they request no coordinates.
+verifies exit, and removes the temporary app. Location fixtures dispatch the macOS 26
+compatibility selector with WebKit-created frames, verify prompt decisions and document
+lifetimes, and verify reload revocation including cancellation and retry. Native
+`navigator.geolocation` grant/deny tests run through WebKit’s selected delegate and
+Vane’s sheet, using a test-only WebKit provider that supplies synthetic coordinates
+in place of the physical location source. The test view’s window occlusion check is
+disabled because XCTest’s inactive host otherwise leaves geolocation requests queued
+for a hidden page; the fixtures still require WebKit to report the document visible.
+They run without the macOS 27 SDK/runtime gate, so the minimum-runtime CI exercises
+the compatibility dispatch.
 These exercise policy and engine cleanup without collecting physical device data or
 changing macOS authorization.
 
@@ -128,10 +138,12 @@ location coordinates, native screen-source chooser restrictions, audio sharing, 
 hardware indicators. Those require an explicitly selected signed app/device session.
 macOS authorization may deny or delay access after Vane grants a site. WebKit may also
 cache a document’s already-issued permission internally; permission callbacks are not
-a promise to run before every track or every location update. No JavaScript API shim
-or private permission delegate is used to bypass these platform limits.
+a promise to run before every track or every location update. The compatibility
+delegate controls only the site decision; it does not bypass macOS authorization.
+No JavaScript geolocation shim is installed.
 
 Primary references: [Apple media capture delegate](https://developer.apple.com/documentation/webkit/wkuidelegate/webview(_:decidemediacapturepermissionsfor:initiatedby:type:)),
+[WebKit compatibility geolocation delegate](https://github.com/WebKit/WebKit/blob/6403505/Source/WebKit/UIProcess/API/Cocoa/WKUIDelegatePrivate.h#L158),
 [Apple geolocation delegate](https://developer.apple.com/documentation/webkit/wkuidelegate/webview(_:requestgeolocationpermissionfor:initiatedbyframe:decisionhandler:)),
 [Apple capture state setter](https://developer.apple.com/documentation/webkit/wkwebview/setcameracapturestate(_:completionhandler:)),
 [Apple microphone sandbox entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.microphone),

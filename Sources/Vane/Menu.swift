@@ -870,7 +870,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.showDownloads) { showLibrary(.downloads) },
         .separator(),
         item(.reopenClosedTab) {
-            if let u = ClosedTabs.pop() { (Windows.main?.shown ?? Windows.open()).newTab(u) }
+            if let closed = ClosedTabs.pop() { closed.reopen(in: Windows.main?.shown ?? Windows.open()) }
         },
         // Deliberately without a key equivalent: the shortcuts that would fit — ⌘Z, ⇧⌘T —
         // already mean something the user would rather keep, and a page's own undo is not

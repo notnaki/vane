@@ -109,6 +109,12 @@ Use **File → New Window** (`⌘N`) for a regular window, **New Private Window*
 (`⇧⌘N`) for private browsing, or **New Little Vane Window** (`⌥⌘N`) for a compact
 single-page window. These are the default bindings; Settings can change them.
 
+Regular window titles follow the active page: `Page title — Vane`, with the profile
+name appended for non-default profiles. This lets password managers and window tools
+identify the active page. Turn off **Settings → Advanced → Show page titles in window
+titles** to use generic titles instead. Private windows, including private Little Vane
+windows, always use generic titles and expose no page title or address through them.
+
 Windows in the same Space share tabs. When both show the same tab, the focused window
 holds its live page and the other shows a gray snapshot. Switching windows preserves
 input, scroll position, and history; closing a tab removes it from every window. Each
@@ -191,6 +197,12 @@ history remains available through **Archive → View History** or **⌘Y**. Regu
 windows share Library contents across all profiles and Spaces, including Easels,
 Boosts, Archived Tabs, and Reading Queue. Items keep their owning profile for
 opening, restoring, and other actions; profile labels distinguish matching items.
+
+**Reopen Closed Tab** (`⇧⌘T`) remembers the last 32 closed regular tabs
+until Vane quits. Reopening in the same profile restores the page's Back/Forward
+history when WebKit state is available; another profile or a private window opens
+only its URL in the current context. Private tabs and script-closed popups do not
+enter this list. Unavailable or unusable state falls back to loading the URL.
 
 Starting a download sends a small marker from the page into the Library bucket. The
 bucket briefly shows the file type's icon on arrival. Reduce Motion and Battery Saver

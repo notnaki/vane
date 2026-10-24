@@ -312,6 +312,12 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
         gesture = store.spaceGesture
     }
 
+    // A pull past the last Space keeps the current list. Mounting an outgoing ghost
+    // there would expose its initial top offset before scroll restoration takes effect.
+    private var showsOutgoingPreview: Bool {
+        gesture.swiping && gesture.neighbour != nil && gesture.outgoing != nil
+    }
+
     var body: some View {
         // Keep both sections in one tree when a gesture starts, reverses or springs back.
         // Only profile boundaries move the grid; ordinary Space switches leave it fixed.
@@ -325,10 +331,10 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
                             $0.disablesAnimations = true
                         }
                     }
-                    .opacity(gesture.outgoing != nil && gesture.swiping ? 0 : 1)
+                    .opacity(showsOutgoingPreview ? 0 : 1)
                     .allowsHitTesting(!gesture.swiping)
                     .accessibilityHidden(gesture.swiping)
-                if gesture.swiping, !gesture.profileSliding, let outgoing = gesture.outgoing {
+                if showsOutgoingPreview, !gesture.profileSliding, let outgoing = gesture.outgoing {
                     outgoing.equatable()
                         .background(SpaceStripAnchor(store: store, gesture: gesture, moving: true))
                         .environment(\.colorScheme, outgoing.colorScheme)

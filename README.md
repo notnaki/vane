@@ -147,8 +147,8 @@ swift build -c release
 ```
 
 Use the assembled app for bundled icons and native sandbox/signing behavior.
-Xcode 27 plus macOS 27 is needed for Vane-managed location decisions; the minimum
-runtime remains macOS 26. See [development setup](docs/DEVELOPMENT.md#setup-and-local-builds)
+Vane-managed location decisions work on macOS 26 and later. Xcode 27 builds also
+use the public macOS 27 delegate. See [development setup](docs/DEVELOPMENT.md#setup-and-local-builds)
 and [release procedures](docs/RELEASING.md) for testing and distribution.
 
 ## Limitations
@@ -178,7 +178,7 @@ WebKit version, the website, and sometimes signing or Apple-managed capabilities
   [Draft protection](docs/DRAFT-PROTECTION.md) and [crash recovery](docs/CRASH-RECOVERY.md)
   describe what is preserved and what cannot be restored.
 - **Permissions and reliability remain bounded.** Embedded device requests fail
-  closed; location controls require Xcode/macOS 27; screen sharing stays managed by
+  closed; macOS separately authorizes device access; screen sharing stays managed by
   WebKit/macOS. Resume, physical storage failure, and every navigation failure are
   not guaranteed by synthetic checks.
 - **Some features use private WebKit APIs**, including inspector integration and

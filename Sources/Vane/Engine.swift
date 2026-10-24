@@ -1829,7 +1829,6 @@ struct TitleReveal: Equatable, Sendable {
         expectNavigation(navigationState.simulated)
     }
 
-    // Camera/microphone and, on macOS 27, location use supported permission delegates.
     func webView(_ w: WKWebView, respondTo challenge: URLAuthenticationChallenge) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
         Trace.note("trust")
@@ -1842,6 +1841,14 @@ struct TitleReveal: Equatable, Sendable {
                  decisionHandler: @escaping @MainActor (WKPermissionDecision) -> Void) {
         guard let kind = SitePermissions.Kind(type) else { decisionHandler(.deny); return }
         SitePermissions.handle(origin: origin, frame: frame, type: kind, tab: self, web: w, completion: decisionHandler)
+    }
+
+    /// macOS 26 WebKit uses this pre-public delegate selector (available since macOS 12).
+    /// Keep the same permission path and document/origin checks as the public callback.
+    @objc(_webView:requestGeolocationPermissionForOrigin:initiatedByFrame:decisionHandler:)
+    func legacyLocationPermission(_ w: WKWebView, origin: WKSecurityOrigin, frame: WKFrameInfo,
+                                  decisionHandler: @escaping @MainActor (WKPermissionDecision) -> Void) {
+        SitePermissions.handle(origin: origin, frame: frame, type: .location, tab: self, web: w, completion: decisionHandler)
     }
 
     #if compiler(>=6.4)
@@ -1904,11 +1911,14 @@ struct TitleReveal: Equatable, Sendable {
         bookmarked = history.isBookmarked(url)
         let document = readingDocumentGeneration
         Task { [weak self, weak w] in
-            guard let self, let w, self.existingWeb === w, w.url == url,
-                  self.readingDocumentGeneration == document else { return }
+            guard let w, self?.existingWeb === w, w.url == url,
+                  self?.readingDocumentGeneration == document else { return }
             Trace.note("reader probe")
+            // A page probe may finish after Close. Keep the tab weak across WebKit's
+            // async reply so this background check cannot prolong the closed tab's life.
             let available = await Reader.isAvailable(in: w)
-            guard self.existingWeb === w, w.url == url, self.readingDocumentGeneration == document else { return }
+            guard let self, self.existingWeb === w, w.url == url,
+                  self.readingDocumentGeneration == document else { return }
             self.readerAvailable = available
             Trace.note("reader probe answered")
         }
@@ -3495,7 +3505,7 @@ struct Stash {
         if !outcome.keep {
             if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
             if TabStore.remembersClosed(keep: outcome.keep, byScript: byScript,
-                                        isPrivate: isPrivate) { ClosedTabs.push(tab.currentURL) }
+                                        isPrivate: isPrivate) { ClosedTabs.push(tab) }
             SharedTabs.remove(id, from: self)
             tab.tearDown()
             Motion.animate(Look.tabClose) { _ = tabs.remove(at: i) }

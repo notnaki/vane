@@ -1259,6 +1259,7 @@ private struct AdvancedPane: View {
     @AppStorage("userAgent") private var userAgent = ""
     @AppStorage("inspector") private var inspector = true
     @AppStorage("homepage") private var homepage = ""
+    @AppStorage(WindowTitle.preferenceKey) private var pageTitlesInWindows = true
     @AppStorage(PictureInPicture.prefKey) private var autoPiP = true
     @State private var restore = Prefs.restoreSession
     @State private var afterCrash = Prefs.afterCrash
@@ -1290,6 +1291,10 @@ private struct AdvancedPane: View {
             }
             SettingsSection("Windows and Tabs") {
                 SettingsCard {
+                    SettingsRow("Show page titles in window titles") {
+                        Toggle("Show page titles in window titles", isOn: $pageTitlesInWindows).labelsHidden()
+                    }
+                    Footnote("Helps password managers, window switchers, and accessibility tools identify the active page. Private windows always use a generic title.")
                     SettingsRow("Reopen windows and tabs on launch") {
                         Toggle("Reopen windows and tabs on launch", isOn: $restore).labelsHidden()
                             .onChange(of: restore) { Prefs.restoreSession = restore }
