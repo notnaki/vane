@@ -106,8 +106,37 @@ import XCTest
         var description: String { "Password fixture timed out waiting for \(stage)" }
     }
 
+    private struct FixtureFailure: Error, CustomStringConvertible {
+        let stage: String
+        let cause: Error
+        let diagnostics: String
+        let file: StaticString
+        let line: UInt
+        var description: String {
+            "\(file):\(line): Failed waiting for \(stage): \(cause). \(diagnostics)"
+        }
+    }
+
+    func testFixtureConditionFailureKeepsOriginalContextWithoutRecordingTwice() async throws {
+        enum ConditionFailure: Error { case rejected }
+        do {
+            try await wait(for: "injected fixture condition", file: "fixture.swift", line: 17,
+                           diagnostics: { "native diagnostic" }) {
+                throw ConditionFailure.rejected
+            }
+            XCTFail("The failing condition must abort the fixture")
+        } catch {
+            let failure = try XCTUnwrap(error as? FixtureFailure)
+            XCTAssertEqual(failure.stage, "injected fixture condition")
+            XCTAssertTrue(failure.cause is ConditionFailure)
+            XCTAssertEqual(failure.diagnostics, "native diagnostic")
+            XCTAssertEqual(String(describing: failure.file), "fixture.swift")
+            XCTAssertEqual(failure.line, 17)
+        }
+    }
+
     private func wait(for stage: String = "fixture condition", file: StaticString = #filePath, line: UInt = #line,
-                      diagnostics: () -> String = { "" },
+                      diagnostics: () async -> String = { "" },
                       _ condition: () async throws -> Bool) async throws {
         let deadline = Date.now.addingTimeInterval(5)
         do {
@@ -116,8 +145,9 @@ import XCTest
                 try await Task.sleep(for: .milliseconds(20))
             }
         } catch {
-            XCTFail("Failed waiting for \(stage): \(error). \(diagnostics())", file: file, line: line)
-            throw error
+            // XCTest records the thrown failure once. Recording XCTFail here too
+            // obscures the original failure with a second, unexpected thrown error.
+            throw FixtureFailure(stage: stage, cause: error, diagnostics: await diagnostics(), file: file, line: line)
         }
     }
 
@@ -281,31 +311,17 @@ import XCTest
     private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String) async throws {
         let web = tab.web, url = origin.url.appendingPathComponent(path)
         let started = Date.now
-        var document = "not sampled", nextSample = started.addingTimeInterval(0.5), samplePending = false
         web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
         try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
-            "expected=\(url), actual=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), " +
-            "progress=\(web.estimatedProgress), tabLoading=\(tab.loading), suspended=\(tab.suspended), " +
-            "recovery=\(tab.needsRecovery), document=\(document), samplePending=\(samplePending)"
+            let state = "expected=\(url), actual=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), " +
+                "progress=\(web.estimatedProgress), tabLoading=\(tab.loading), suspended=\(tab.suspended), " +
+                "recovery=\(tab.needsRecovery)"
+            return state + "; " + (await NativeFixtureDiagnostics.failureReport(for: web))
         }) {
-            // Sample only slow loads. Do not await JavaScript here: an unresponsive
-            // content process must still leave the fixture's timeout bounded.
-            if web.isLoading, Date.now >= nextSample, !samplePending {
-                nextSample = Date.now.addingTimeInterval(0.5)
-                samplePending = true
-                web.evaluateJavaScript("JSON.stringify({url:location.href,ready:document.readyState,password:!!document.getElementById('password')})",
-                                       in: nil, in: .page) { result in
-                    switch result {
-                    case .success(let value): document = String(describing: value)
-                    case .failure(let error): document = String(describing: error)
-                    }
-                    samplePending = false
-                }
-            }
             return !web.isLoading
         }
         if Date.now.timeIntervalSince(started) >= 0.5 {
-            print("Continuation fixture \(path) loaded in \(Date.now.timeIntervalSince(started))s; document=\(document)")
+            print("Continuation fixture \(path) loaded in \(Date.now.timeIntervalSince(started))s")
         }
     }
 
