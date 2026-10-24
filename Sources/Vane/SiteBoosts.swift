@@ -169,13 +169,14 @@ struct SiteBoost: Codable, Equatable, Sendable {
 @MainActor enum SiteBoosts {
     final class Document {
         weak var tab: Tab?
+        let tabID: UUID
         let origin: String
         let stamp: Double // Captured only for diagnostics; identity uses tokens.
         let token: String
         var pageToken: String?
         var tokenCapture: (id: UUID, task: Task<String?, Never>)?
         var scriptRan = false
-        init(tab: Tab, origin: String, stamp: Double, token: String) { self.tab = tab; self.origin = origin; self.stamp = stamp; self.token = token }
+        init(tab: Tab, origin: String, stamp: Double, token: String) { self.tab = tab; self.tabID = tab.id; self.origin = origin; self.stamp = stamp; self.token = token }
     }
     private static let store = SiteBoostStore(defaults: .vane, background: true)
     private static var privateValues: [UUID: [String: SiteBoost]] = [:]
@@ -241,16 +242,16 @@ struct SiteBoost: Codable, Equatable, Sendable {
             if body["kind"] as? String == "restored" {
                 // BFCache restoration does not run document-end scripts again.
                 doc.scriptRan = true
-                Task { _ = await pageToken(tab: tab, document: doc) }
+                Task { _ = await pageToken(document: doc) }
             }
         case "loaded":
             guard let doc = documents[tab.id], doc.token == token, !doc.scriptRan else { return }
             Task {
-                guard await pageToken(tab: tab, document: doc) != nil, documents[tab.id] === doc, !doc.scriptRan else { return }
+                guard await pageToken(document: doc) != nil, documents[doc.tabID] === doc, !doc.scriptRan else { return }
                 doc.scriptRan = true
-                apply(to: tab, document: doc)
-                let result = await runScript(tab: tab)
-                if documents[tab.id] === doc { SiteBoostEditor.report(result, tab: tab) }
+                applyCurrent(doc)
+                let result = await runScript(document: doc)
+                if documents[doc.tabID] === doc, let tab = doc.tab { SiteBoostEditor.report(result, tab: tab) }
             }
         case "pick":
             guard let doc = documents[tab.id], doc.token == token,
@@ -282,54 +283,76 @@ struct SiteBoost: Codable, Equatable, Sendable {
         token.utf8.count == 32 && token.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
-    private static func matches(_ doc: Document, tab: Tab, web: WKWebView) async -> Bool {
-        guard documents[tab.id] === doc, tab.existingWeb === web else { return false }
+    // Keep strong Tab reads inside synchronous calls. Background document work can
+    // outlive Close while WebKit answers, but must not keep the closed tab alive.
+    private static func currentWeb(_ doc: Document) -> WKWebView? {
+        guard let tab = doc.tab, documents[doc.tabID] === doc else { return nil }
+        return tab.existingWeb
+    }
+
+    private static func currentBoost(_ doc: Document) -> SiteBoost? {
+        guard let tab = doc.tab, documents[doc.tabID] === doc else { return nil }
+        return value(origin: doc.origin, tab: tab)
+    }
+
+    private static func applyCurrent(_ doc: Document) {
+        guard let tab = doc.tab, documents[doc.tabID] === doc else { return }
+        apply(to: tab, document: doc)
+    }
+
+    private static func matches(_ doc: Document, web: WKWebView) async -> Bool {
+        guard currentWeb(doc) === web else { return false }
         let matches: Bool = await withCheckedContinuation { continuation in
             web.callAsyncJavaScript("return window.__vaneBoost?.documentToken === token && location.origin === origin;",
                 arguments: ["token": doc.token, "origin": doc.origin], in: nil, in: SiteBoostScripts.world) { result in
                 continuation.resume(returning: (try? result.get()) as? Bool ?? false)
             }
         }
-        return matches && documents[tab.id] === doc && tab.existingWeb === web
+        return matches && currentWeb(doc) === web
     }
 
     /// timeOrigin can drift in a live WebKit document. Bind the immutable page marker
     /// to its isolated token, checking both sides of the asynchronous cross-world read.
     /// Manual and automatic script runs share this capture instead of racing it.
-    private static func pageToken(tab: Tab, document doc: Document) async -> String? {
-        guard let web = tab.existingWeb, await matches(doc, tab: tab, web: web) else { return nil }
+    private static func pageToken(document doc: Document) async -> String? {
+        guard let web = currentWeb(doc), await matches(doc, web: web) else { return nil }
         if let token = doc.pageToken { return token }
         let capture: (id: UUID, task: Task<String?, Never>)
         if let existing = doc.tokenCapture { capture = existing }
         else {
-            capture = (UUID(), Task { @MainActor [weak tab, weak web, weak doc] in
-                guard let tab, let web, let doc, await matches(doc, tab: tab, web: web) else { return nil }
+            capture = (UUID(), Task { @MainActor [weak web, weak doc] in
+                guard let web, let doc, await matches(doc, web: web) else { return nil }
                 let token: String? = await withCheckedContinuation { continuation in
                     web.callAsyncJavaScript("return document.__vaneBoostPageToken;", arguments: [:], in: nil, in: .page) { result in
                         continuation.resume(returning: (try? result.get()) as? String)
                     }
                 }
-                guard let token, validToken(token), await matches(doc, tab: tab, web: web) else { return nil }
+                guard let token, validToken(token), await matches(doc, web: web) else { return nil }
                 return token
             })
             doc.tokenCapture = capture
         }
         let token = await capture.task.value
         if doc.tokenCapture?.id == capture.id { doc.tokenCapture = nil }
-        guard let token, documents[tab.id] === doc, tab.existingWeb === web else { return nil }
+        guard let token, currentWeb(doc) === web else { return nil }
         doc.pageToken = token
         return token
     }
 
     static func runScript(tab: Tab) async -> String {
-        guard let doc = documents[tab.id], let web = tab.existingWeb else { return "Load a page first." }
-        var boost = value(origin: doc.origin, tab: tab)
+        guard let doc = documents[tab.id] else { return "Load a page first." }
+        return await runScript(document: doc)
+    }
+
+    private static func runScript(document doc: Document) async -> String {
+        guard let web = currentWeb(doc), var boost = currentBoost(doc) else { return "Load a page first." }
         guard boost.enabled, boost.scriptEnabled else { return "Enable JavaScript to run this script." }
         guard !boost.script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "The script is empty." }
-        guard let token = await pageToken(tab: tab, document: doc) else { return "Page changed. Reload and try again." }
+        guard let token = await pageToken(document: doc) else { return "Page changed. Reload and try again." }
         // The user's settings can change during token capture. Queue only current code
         // and current opt-in, with no asynchronous gap after reading either one.
-        boost = value(origin: doc.origin, tab: tab)
+        guard let current = currentBoost(doc) else { return "Page changed. Reload and try again." }
+        boost = current
         guard boost.enabled, boost.scriptEnabled else { return "Enable JavaScript to run this script." }
         guard !boost.script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "The script is empty." }
         // Compile user code directly through WebKit: page CSP can block JavaScript eval().
@@ -344,7 +367,7 @@ struct SiteBoost: Codable, Equatable, Sendable {
                 }
             }
         }
-        guard documents[tab.id] === doc else { return "Page changed. Reload and try again." }
+        guard documents[doc.tabID] === doc else { return "Page changed. Reload and try again." }
         return result
     }
 

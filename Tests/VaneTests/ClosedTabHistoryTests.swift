@@ -1,4 +1,5 @@
 import AppKit
+import WebKit
 import XCTest
 @testable import vane
 
@@ -139,6 +140,40 @@ import XCTest
         original = nil
         XCTAssertNil(retired.value, "An unfinished icon request cannot retain a closed tab")
         withExtendedLifetime(cache) {}
+    }
+
+    func testPendingSiteBoostDocumentProbeDoesNotRetainClosedTab() async throws {
+        let store = store()
+        var original: Tab? = store.newBlankTab()
+        let retired = WeakTab(original)
+        let web = original!.web
+        let controller = web.configuration.userContentController
+        let scripts = controller.userScripts.map { $0 }
+        controller.removeAllUserScripts()
+        controller.addUserScript(WKUserScript(source: """
+            window.__boostIdentityReads = 0;
+            const pending = new Promise(() => {});
+            Object.defineProperty(document, '__vaneBoostPageToken', {
+                get() { window.__boostIdentityReads++; return pending; }
+            });
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        for script in scripts { controller.addUserScript(script) }
+        original!.navigate(to: try server.url("/pending-boost"))
+        // The page identity installer reads once. A second read is the native probe,
+        // whose callAsyncJavaScript reply waits for this document's pending promise.
+        try await compatibilityWait {
+            try await web.evaluateJavaScript("window.__boostIdentityReads >= 2") as? Bool == true
+        }
+        let processSelector = NSSelectorFromString("_webProcessIdentifier")
+        if web.responds(to: processSelector) {
+            typealias Getter = @convention(c) (AnyObject, Selector) -> Int32
+            let pid = unsafeBitCast(web.method(for: processSelector), to: Getter.self)(web, processSelector)
+            print("Owned boost probe WebContent: \(String(describing: NativeFixtureDiagnostics.identity(pid)))")
+        }
+        store.close(original!.id)
+        XCTAssertNil(original?.existingWeb, "Closing must release the live page")
+        original = nil
+        XCTAssertNil(retired.value, "An unfinished document probe cannot retain a closed tab")
     }
 
     func testClosingSuspendedTabPreservesHistoryWithoutWakingIt() async throws {
