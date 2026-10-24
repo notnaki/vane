@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import ObjectiveC
 import WebKit
 import XCTest
 @testable import vane
@@ -13,19 +14,26 @@ import XCTest
     private var profile = UUID()
     private var recorder: PermissionFrameRecorder!
     private var decision: Task<WKPermissionDecision, Never>?
+    private var locationProvider: PermissionLocationProvider!
 
     override func setUp() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         profile = UUID()
         let configuration = Tab.configuration(profileID: profile)
+        configuration.processPool = WKProcessPool()
+        locationProvider = try PermissionLocationProvider(configuration: configuration)
         let preferences = configuration.preferences
-        // Test-only WebKit SPI selects fake devices. Production uses public APIs only.
+        // Test-only WebKit preferences select fake capture devices.
         XCTAssertTrue(preferences.responds(to: NSSelectorFromString("_setMockCaptureDevicesEnabled:")))
         preferences.setValue(true, forKey: "mockCaptureDevicesEnabled")
         preferences.setValue(false, forKey: "getUserMediaRequiresFocus")
         preferences.setValue(true, forKey: "mockCaptureDevicesPromptEnabled")
         tab = Tab(popup: configuration, isPrivate: false, profileID: profile)
+        // XCTest has no foreground app window. Disable only this test view's
+        // occlusion check so native geolocation requests reach the real delegate.
+        XCTAssertTrue(tab.web.responds(to: NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")))
+        tab.web.setValue(false, forKey: "windowOcclusionDetectionEnabled")
         recorder = PermissionFrameRecorder()
         let controller = tab.web.configuration.userContentController
         controller.add(recorder, name: "permissionFixture")
@@ -43,6 +51,8 @@ import XCTest
     override func tearDown() async throws {
         tab.existingWeb?.configuration.userContentController.removeScriptMessageHandler(forName: "permissionFixture")
         tab.tearDown()
+        locationProvider.stop()
+        locationProvider = nil
         if let decision { _ = await decision.value }
         decision = nil; recorder = nil
         SitePermissions.resetAll(profileID: profile)
@@ -83,6 +93,150 @@ import XCTest
 
     private func answer(_ response: NSApplication.ModalResponse) throws {
         window.endSheet(try XCTUnwrap(window.attachedSheet), returnCode: response)
+    }
+
+    /// Dispatch through the actual Objective-C selector that macOS 26 WebKit calls.
+    /// This checks the compatibility ABI without requesting physical location or TCC.
+    private func legacyLocation(frame: WKFrameInfo, origin: WKSecurityOrigin? = nil) throws
+        -> Task<WKPermissionDecision, Never> {
+        let selector = NSSelectorFromString(
+            "_webView:requestGeolocationPermissionForOrigin:initiatedByFrame:decisionHandler:")
+        let method = try XCTUnwrap(class_getInstanceMethod(Tab.self, selector))
+        typealias Invoke = @convention(c) (AnyObject, Selector, WKWebView, WKSecurityOrigin,
+            WKFrameInfo, @escaping @convention(block) (WKPermissionDecision) -> Void) -> Void
+        let invoke = unsafeBitCast(method_getImplementation(method), to: Invoke.self)
+        let tab = tab!, web = tab.web, top = origin ?? frame.securityOrigin
+        return Task { await withCheckedContinuation { continuation in
+            invoke(tab, selector, web, top, frame, { continuation.resume(returning: $0) })
+        } }
+    }
+
+    func testLegacyLocationDelegatePresentsPromptAndRemembersSiteBlock() async throws {
+        try await load("<p>Location request</p>")
+        let main = try XCTUnwrap(recorder.mainFrame)
+        decision = try legacyLocation(frame: main)
+        try await compatibilityWait { self.window.attachedSheet != nil }
+        try answer(.alertThirdButtonReturn)
+        let denied = await decision!.value
+        XCTAssertEqual(denied, .deny)
+        let scope = try XCTUnwrap(SitePermissions.scope(for: tab))
+        XCTAssertEqual(SitePermissions.remembered(scope: scope, type: .location), false)
+        decision = try legacyLocation(frame: main)
+        let repeated = await decision!.value
+        XCTAssertEqual(repeated, .deny)
+        XCTAssertNil(window.attachedSheet)
+    }
+
+    func testLegacyLocationAllowOnceExpiresAtNavigation() async throws {
+        try await load("<p>Location request</p>")
+        let main = try XCTUnwrap(recorder.mainFrame)
+        let scope = try XCTUnwrap(SitePermissions.scope(for: tab))
+        decision = try legacyLocation(frame: main)
+        try await compatibilityWait { self.window.attachedSheet != nil }
+        try answer(.alertFirstButtonReturn)
+        let granted = await decision!.value
+        XCTAssertEqual(granted, .grant)
+        XCTAssertEqual(SitePermissions.effective(scope: scope, type: .location, tabID: tab.id), true)
+        XCTAssertNil(SitePermissions.remembered(scope: scope, type: .location))
+        try await load("<p>Another document</p>", path: "/next-location")
+        XCTAssertNil(SitePermissions.effective(scope: scope, type: .location, tabID: tab.id))
+    }
+
+    func testLegacyLocationEmbeddedRequestCannotReuseSavedTopLevelAllow() async throws {
+        let child = try server.url("/location-child", host: "localhost")
+        server.pages["/location-child"] = "<p>Embedded location requester</p>"
+        try await load("<iframe src='\(child.absoluteString)'></iframe>")
+        let host = child.host()! + ":" + String(server.port!)
+        try await compatibilityWait { self.recorder.frames[host] != nil }
+        let frame = try XCTUnwrap(recorder.frames[host])
+        let main = try XCTUnwrap(recorder.mainFrame)
+        let scope = try XCTUnwrap(SitePermissions.scope(for: tab))
+        SitePermissions.remember(scope: scope, type: .location, allow: true)
+        decision = try legacyLocation(frame: frame, origin: main.securityOrigin)
+        let denied = await decision!.value
+        XCTAssertEqual(denied, .deny)
+        XCTAssertNil(window.attachedSheet)
+    }
+
+    func testLegacyLocationNavigationCancelsPromptWithoutSaving() async throws {
+        try await load("<p>Location request</p>")
+        let main = try XCTUnwrap(recorder.mainFrame)
+        decision = try legacyLocation(frame: main)
+        try await compatibilityWait { self.window.attachedSheet != nil }
+        try await load("<p>Replacement document</p>", path: "/location-replaced")
+        let denied = await decision!.value
+        XCTAssertEqual(denied, .deny)
+        XCTAssertNil(window.attachedSheet)
+        XCTAssertTrue(SitePermissions.all(profileID: profile).isEmpty)
+    }
+
+    func testJavaScriptLocationAllowOnceDeliversSyntheticPosition() async throws {
+        try await load("<p>Location request</p>")
+        try await visibleLocationDocument()
+        try await evaluate("""
+        window.result = 'pending';
+        navigator.geolocation.getCurrentPosition(
+          p => { window.result = p.coords.latitude + ',' + p.coords.longitude; },
+          e => { window.result = 'error:' + e.code + ':' + e.message; });
+        """)
+        try await locationSheet()
+        try answer(.alertFirstButtonReturn)
+        try await compatibilityWait {
+            try await self.tab.web.evaluateJavaScript("window.result") as? String == "50.644358,3.345453"
+        }
+        try await locationContext()
+        let scope = try XCTUnwrap(SitePermissions.scope(for: tab))
+        XCTAssertEqual(SitePermissions.effective(scope: scope, type: .location, tabID: tab.id), true)
+        XCTAssertNil(SitePermissions.remembered(scope: scope, type: .location))
+    }
+
+    func testJavaScriptLocationBlockReturnsPermissionDeniedAndPersists() async throws {
+        try await load("<p>Location request</p>")
+        try await visibleLocationDocument()
+        try await evaluate("""
+        window.result = 'pending';
+        navigator.geolocation.getCurrentPosition(
+          () => { window.result = 'granted'; }, e => { window.result = 'error:' + e.code + ':' + e.message; });
+        """)
+        try await locationSheet()
+        try answer(.alertThirdButtonReturn)
+        try await compatibilityWait {
+            try await self.tab.web.evaluateJavaScript("window.result.startsWith('error:1:')") as? Bool == true
+        }
+        try await locationContext()
+        let scope = try XCTUnwrap(SitePermissions.scope(for: tab))
+        XCTAssertEqual(SitePermissions.remembered(scope: scope, type: .location), false)
+    }
+
+    private func locationSheet() async throws {
+        try await locationContext()
+        do {
+            try await compatibilityWait {
+                if self.window.attachedSheet != nil { return true }
+                return try await self.tab.web.evaluateJavaScript("window.result !== 'pending'") as? Bool == true
+            }
+        } catch {
+            try await locationContext()
+            throw error
+        }
+        try await locationContext()
+        XCTAssertNotNil(window.attachedSheet, "WebKit must dispatch the site decision before returning a location result")
+    }
+
+    private func locationContext() async throws {
+        let context = try await tab.web.evaluateJavaScript("JSON.stringify({result:window.result,secure:isSecureContext,url:location.href,visible:document.visibilityState,focus:document.hasFocus()})")
+        let publicDelegate = tab.responds(to: NSSelectorFromString("webView:requestGeolocationPermissionForOrigin:initiatedByFrame:decisionHandler:"))
+        print("Native location fixture context: \(context ?? "missing"), windowVisible=\(window.isVisible), key=\(window.isKeyWindow), occlusion=\(window.occlusionState.rawValue), active=\(NSApp.isActive), providerStarts=\(locationProvider.starts), publicDelegate=\(publicDelegate), ownsDelegate=\(tab.web.uiDelegate === tab)")
+    }
+
+    private func visibleLocationDocument() async throws {
+        try await locationContext()
+        // WebKit queues geolocation permission requests while its page is hidden.
+        // The XCTest host can be inactive even after makeKeyAndOrderFront().
+        window.orderFrontRegardless()
+        try await compatibilityWait {
+            try await self.tab.web.evaluateJavaScript("document.visibilityState === 'visible'") as? Bool == true
+        }
     }
 
     private func granted() async throws {
@@ -270,15 +424,10 @@ import XCTest
         return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    #if compiler(>=6.4)
     func testCancelledLocationRevocationReloadRetainsOwnerForLaterRevocation() async throws {
-        guard #available(macOS 27.0, *) else { throw XCTSkip("Requires macOS 27") }
         try await load("<script>window.oldDocument = 'original'</script>")
         let frame = try XCTUnwrap(recorder.mainFrame)
-        decision = Task { await withCheckedContinuation { continuation in
-            self.tab.webView(self.tab.web, requestGeolocationPermissionFor: frame.securityOrigin,
-                             initiatedByFrame: frame, decisionHandler: { continuation.resume(returning: $0) })
-        } }
+        decision = try legacyLocation(frame: frame)
         try await compatibilityWait { self.window.attachedSheet != nil }
         try answer(.alertFirstButtonReturn)
         let grant = await decision!.value
@@ -297,13 +446,9 @@ import XCTest
     }
 
     func testLocationRevocationStillReloadsAfterCancelledProvisionalNavigation() async throws {
-        guard #available(macOS 27.0, *) else { throw XCTSkip("Requires macOS 27") }
         try await load("<script>window.oldDocument = 'still here'</script>")
         let frame = try XCTUnwrap(recorder.mainFrame)
-        decision = Task { await withCheckedContinuation { continuation in
-            self.tab.webView(self.tab.web, requestGeolocationPermissionFor: frame.securityOrigin,
-                             initiatedByFrame: frame, decisionHandler: { continuation.resume(returning: $0) })
-        } }
+        decision = try legacyLocation(frame: frame)
         try await compatibilityWait { self.window.attachedSheet != nil }
         try answer(.alertFirstButtonReturn)
         let result = await decision!.value
@@ -328,8 +473,56 @@ import XCTest
         let scope = try XCTUnwrap(SitePermissions.scope(for: tab))
         XCTAssertNil(SitePermissions.effective(scope: scope, type: .location, tabID: tab.id))
     }
-    #endif
 
+}
+
+/// WebKit's C geolocation provider replaces the physical source, below the real
+/// JavaScript/delegate permission path. ABI: WKGeolocationManager.h provider V0.
+/// https://github.com/WebKit/WebKit/blob/6403505/Source/WebKit/UIProcess/API/C/WKGeolocationManager.h
+@MainActor private final class PermissionLocationProvider {
+    private(set) var starts = 0
+    private typealias SetProvider = @convention(c) (UnsafeRawPointer, UnsafeRawPointer?) -> Void
+    private typealias Create = @convention(c) (Double, Double, Double, Double) -> UnsafeRawPointer
+    private typealias Update = @convention(c) (UnsafeRawPointer, UnsafeRawPointer) -> Void
+    private typealias Release = @convention(c) (UnsafeRawPointer) -> Void
+    private let pool: AnyObject
+    private let manager: UnsafeRawPointer
+    private let setProvider: SetProvider
+    private let create: Create
+    private let update: Update
+    private let release: Release
+
+    init(configuration: WKWebViewConfiguration) throws {
+        let pool = configuration.processPool
+        self.pool = pool // Retain the manager's owner until stop() removes the callback.
+        let symbols = UnsafeMutableRawPointer(bitPattern: -2) // RTLD_DEFAULT
+        func symbol<T>(_ name: String, _: T.Type) throws -> T {
+            unsafeBitCast(try XCTUnwrap(dlsym(symbols, name), "Missing WebKit test symbol: \(name)"), to: T.self)
+        }
+        typealias Manager = @convention(c) (UnsafeRawPointer) -> UnsafeRawPointer
+        let getManager = try symbol("WKContextGetGeolocationManager", Manager.self)
+        manager = getManager(Unmanaged.passUnretained(pool).toOpaque())
+        setProvider = try symbol("WKGeolocationManagerSetProvider", SetProvider.self)
+        create = try symbol("WKGeolocationPositionCreate", Create.self)
+        update = try symbol("WKGeolocationManagerProviderDidChangePosition", Update.self)
+        release = try symbol("WKRelease", Release.self)
+        typealias Start = @convention(c) (UnsafeRawPointer, UnsafeRawPointer?) -> Void
+        let start: Start = { manager, client in
+            MainActor.assumeIsolated {
+                let source = Unmanaged<PermissionLocationProvider>.fromOpaque(client!).takeUnretainedValue()
+                source.starts += 1
+                let position = source.create(Date().timeIntervalSince1970, 50.644358, 3.345453, 2.53)
+                source.update(manager, position)
+                source.release(position)
+            }
+        }
+        // V0: int version + alignment, clientInfo, startUpdating, stopUpdating.
+        let provider: [UInt] = [0, UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque()),
+                                unsafeBitCast(start, to: UInt.self), 0]
+        provider.withUnsafeBytes { setProvider(manager, $0.baseAddress) }
+    }
+
+    func stop() { setProvider(manager, nil) }
 }
 
 @MainActor private final class PermissionFrameRecorder: NSObject, WKScriptMessageHandler {

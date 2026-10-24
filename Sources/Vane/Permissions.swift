@@ -22,12 +22,8 @@ import WebKit
             self == .cameraAndMicrophone ? [.camera, .microphone] : [self]
         }
     }
-    nonisolated static var supportsLocation: Bool {
-        #if compiler(>=6.4)
-        if #available(macOS 27.0, *) { return true }
-        #endif
-        return false
-    }
+    // The compatibility delegate covers the minimum runtime; macOS 27 also has a public delegate.
+    nonisolated static let supportsLocation = true
     @MainActor private final class CaptureOwner {
         weak var tab: Tab?
         weak var web: WKWebView?

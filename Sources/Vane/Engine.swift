@@ -1829,7 +1829,6 @@ struct TitleReveal: Equatable, Sendable {
         expectNavigation(navigationState.simulated)
     }
 
-    // Camera/microphone and, on macOS 27, location use supported permission delegates.
     func webView(_ w: WKWebView, respondTo challenge: URLAuthenticationChallenge) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
         Trace.note("trust")
@@ -1842,6 +1841,14 @@ struct TitleReveal: Equatable, Sendable {
                  decisionHandler: @escaping @MainActor (WKPermissionDecision) -> Void) {
         guard let kind = SitePermissions.Kind(type) else { decisionHandler(.deny); return }
         SitePermissions.handle(origin: origin, frame: frame, type: kind, tab: self, web: w, completion: decisionHandler)
+    }
+
+    /// macOS 26 WebKit uses this pre-public delegate selector (available since macOS 12).
+    /// Keep the same permission path and document/origin checks as the public callback.
+    @objc(_webView:requestGeolocationPermissionForOrigin:initiatedByFrame:decisionHandler:)
+    func legacyLocationPermission(_ w: WKWebView, origin: WKSecurityOrigin, frame: WKFrameInfo,
+                                  decisionHandler: @escaping @MainActor (WKPermissionDecision) -> Void) {
+        SitePermissions.handle(origin: origin, frame: frame, type: .location, tab: self, web: w, completion: decisionHandler)
     }
 
     #if compiler(>=6.4)

@@ -25,6 +25,21 @@ import XCTest
         let id = UUID(); tabs.append(id); return id
     }
 
+    func testMinimumRuntimeExposesLocationPermissionControls() {
+        XCTAssertTrue(SitePermissions.supportsLocation,
+                      "The macOS 26 minimum runtime must support site location decisions")
+        let model = SiteControlModel(host: "permission.example", scheme: "https")
+        XCTAssertEqual(model.rows.first { $0.id == .location }?.control, .permission(nil))
+    }
+
+    func testMinimumRuntimeHasWebKitLocationPermissionDelegate() {
+        let tab = Tab(profileID: profile)
+        defer { tab.tearDown() }
+        XCTAssertTrue(tab.responds(to: NSSelectorFromString(
+            "_webView:requestGeolocationPermissionForOrigin:initiatedByFrame:decisionHandler:")),
+                      "macOS 26 calls the pre-public geolocation delegate")
+    }
+
     private func scope(privateTab: UUID? = nil, url: String = "https://permission.example:8443") -> SitePermissions.Scope {
         SitePermissions.Scope(url: URL(string: url), profileID: profile, privateTabID: privateTab)!
     }
@@ -309,7 +324,6 @@ import XCTest
 
 
     func testLocationDecisionDoesNotSplitCombinedMediaDecision() async throws {
-        guard SitePermissions.supportsLocation else { throw XCTSkip("Requires macOS 27 SDK and runtime") }
         let id = tabID(), s = scope()
         SitePermissions.remember(scope: s, type: .cameraAndMicrophone, allow: true)
         let result = try await answer(s, type: .location, tabID: id, response: .alertFirstButtonReturn)
@@ -325,7 +339,6 @@ import XCTest
     }
 
     func testPrivateLocationNeverPersistsAndExpiresWithPrivateTab() async throws {
-        guard SitePermissions.supportsLocation else { throw XCTSkip("Requires macOS 27 SDK and runtime") }
         let id = tabID(), s = scope(privateTab: id)
         _ = try await answer(s, type: .location, tabID: id, response: .alertSecondButtonReturn)
         SitePermissions.endDocument(tabID: id)

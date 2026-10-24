@@ -8,8 +8,9 @@ Required PR CI still applies.
 
 ## Setup and local builds
 
-Requires macOS 26 or later and Xcode 26 or later with its Swift toolchain. Xcode 27 is
-needed to compile the macOS 27 location delegate; runtime availability is also checked.
+Requires macOS 26 or later and Xcode 26 or later with its Swift toolchain. Location
+decisions use WebKit’s compatibility delegate on macOS 26; Xcode 27 builds also compile
+the public macOS 27 delegate, with runtime availability checked.
 Confirm the selected toolchain with `xcodebuild -version` and `swift --version`.
 
 ```sh
@@ -138,7 +139,7 @@ measurements, see [Startup performance](STARTUP-PERFORMANCE.md). Build first and
 reserve a quiet profiling window before collecting timings.
 
 For site-permission lifecycle fixtures and a fake display-capture check, see
-[Site permissions on macOS 27](SITE-PERMISSIONS.md#validation-and-remaining-platform-coverage).
+[Site permissions on macOS 26 and later](SITE-PERMISSIONS.md#validation-and-remaining-platform-coverage).
 
 For download interruption, resume, destination and process-restart fixtures, see
 [Download reliability on macOS 27](DOWNLOAD-RELIABILITY.md).
