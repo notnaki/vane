@@ -332,6 +332,87 @@ import XCTest
         XCTAssertEqual(tab.address, try server.url("/opener").absoluteString)
     }
 
+    func testPopupWithNoGestureIsBlockedAndOfferedUnlessTheSiteAllowsIt() async throws {
+        var opened = 0
+        var blocked: [URL?] = []
+        tab.onPopup = { _, _, _ in opened += 1; return nil }
+        tab.onPopupBlocked = { url, _ in blocked.append(url) }
+        defer { tab.onPopup = nil; tab.onPopupBlocked = nil; SitePermissions.resetAll(profileID: tab.profileID) }
+        tab.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = Popup.readsGesture
+        let page = "<title>Opener</title><script>window.open('/popup')</script>"
+        let base = try server.url("/opener")
+        // Block before anything has loaded: once Ask has shown a toast, the toast's own rate
+        // limit would hide a Block that wrongly showed one too.
+        let scope = try XCTUnwrap(SitePermissions.Scope(url: base, profileID: tab.profileID))
+        SitePermissions.set(scope: scope, type: .popups, answer: false)
+        tab.web.loadHTMLString(page, baseURL: base)
+        try await compatibilityWait { self.tab.title == "Opener" && !self.tab.loading }
+        XCTAssertEqual(opened, 0)
+        XCTAssertTrue(blocked.isEmpty, "Block drops the popup without a toast")
+
+        SiteControl.set(.popups, to: nil, on: tab)
+        tab.web.loadHTMLString(page, baseURL: base)
+        try await compatibilityWait { !blocked.isEmpty }
+        XCTAssertEqual(blocked, [try server.url("/popup")])
+        XCTAssertEqual(opened, 0)
+
+        SiteControl.set(.popups, to: true, on: tab)
+        tab.web.loadHTMLString(page, baseURL: base)
+        try await compatibilityWait { opened == 1 }
+        XCTAssertEqual(blocked.count, 1)
+    }
+
+    func testPageLeavingForAnAllowedSiteCannotBorrowItsPopupAllow() async throws {
+        var opened = 0
+        var blocked: [(URL?, SitePermissions.Scope?)] = []
+        tab.onPopup = { _, _, _ in opened += 1; return nil }
+        tab.onPopupBlocked = { blocked.append(($0, $1)) }
+        defer {
+            tab.onPopup = nil; tab.onPopupBlocked = nil
+            server.heldPaths.remove("/held")
+            SitePermissions.resetAll(profileID: tab.profileID)
+        }
+        tab.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = Popup.readsGesture
+        let allowed = try XCTUnwrap(SitePermissions.Scope(url: try server.url("/held"), profileID: tab.profileID))
+        SitePermissions.set(scope: allowed, type: .popups, answer: true)
+        server.heldPaths.insert("/held")
+        let page = """
+        <script>location.href = '\(try server.url("/held").absoluteString)'
+        setTimeout(() => window.open('/popup'), 300)</script>
+        """
+        tab.web.loadHTMLString(page, baseURL: URL(string: "https://leaving.example/")!)
+        try await compatibilityWait { !blocked.isEmpty }
+        XCTAssertEqual(opened, 0)
+        XCTAssertEqual(blocked.first?.1?.host, "leaving.example", "the toast names, and its Allow saves, the page that asked")
+    }
+
+    func testPageLeavingForAnotherOriginKeepsItsSilentPopupBlock() async throws {
+        var opened = 0
+        var blocked = 0
+        tab.onPopup = { _, _, _ in opened += 1; return nil }
+        tab.onPopupBlocked = { _, _ in blocked += 1 }
+        defer {
+            tab.onPopup = nil; tab.onPopupBlocked = nil
+            server.heldPaths.remove("/held")
+            SitePermissions.resetAll(profileID: tab.profileID)
+        }
+        tab.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = Popup.readsGesture
+        let leaving = try server.url("/blocked-opener")
+        let destination = try server.url("/held", host: "localhost")
+        let scope = try XCTUnwrap(SitePermissions.Scope(url: leaving, profileID: tab.profileID))
+        SitePermissions.set(scope: scope, type: .popups, answer: false)
+        server.heldPaths.insert("/held")
+        let page = """
+        <script>location.href = '\(destination.absoluteString)'
+        setTimeout(() => { window.open('/popup'); document.title = 'Popup attempted' }, 300)</script>
+        """
+        tab.web.loadHTMLString(page, baseURL: leaving)
+        try await compatibilityWait { self.tab.title == "Popup attempted" }
+        XCTAssertEqual(tab.web.url, destination, "the outgoing document is running behind a provisional destination")
+        XCTAssertEqual(opened, 0)
+        XCTAssertEqual(blocked, 0, "the outgoing document's Block remains silent while another origin loads")
+    }
+
     func testSupersededFailureAndFinishCannotReplaceCurrentDocumentOrWriteHistory() async throws {
         let old = try await load("/old")
         server.heldPaths.insert("/held")
@@ -348,6 +429,199 @@ import XCTest
         try await compatibilityWait { self.tab.title == "Page /held" && !self.tab.loading }
         tab.webView(tab.web, didFinish: current)
         XCTAssertFalse(tab.history.recent().contains { $0.url == (try? server.url("/old-failed").absoluteString) })
+    }
+
+    func testHeldCrossSiteNavigationRejectsEarlyAndRetiredURLUpdates() async throws {
+        let old = try await load("/old")
+        let shown = try server.url("/old")
+        let destination = try server.url("/held", host: "localhost")
+        server.heldPaths.insert("/held")
+        tab.go(destination)
+        try await compatibilityWait {
+            self.server.requests.contains { $0.hasPrefix("GET /held ") } && self.tab.web.url == destination
+        }
+        let location = try await tab.web.evaluateJavaScript("location.href") as? String
+        XCTAssertEqual(location, shown.absoluteString, "The provisional destination has no document yet")
+        XCTAssertEqual(tab.address, shown.absoluteString)
+        for callback in ["start", "commit", "finish"] {
+            switch callback {
+            case "start": tab.webView(tab.web, didStartProvisionalNavigation: old)
+            case "commit": tab.webView(tab.web, didCommit: old)
+            default: tab.webView(tab.web, didFinish: old)
+            }
+            XCTAssertEqual(tab.address, shown.absoluteString, "Retired \(callback) must not publish a provisional URL")
+            XCTAssertEqual(tab.currentURL, shown, "Retired \(callback) must not change the saved page")
+            XCTAssertTrue(tab.loading)
+        }
+        server.heldPaths.remove("/held")
+        try await compatibilityWait { self.tab.title == "Page /held" && !self.tab.loading }
+        XCTAssertEqual(tab.address, destination.absoluteString)
+        XCTAssertEqual(tab.currentURL, destination)
+    }
+
+    func testFirstHeldLoadSurvivesSessionSnapshotAndPinning() async throws {
+        let profile = UUID()
+        let space = Space(name: "First navigation fixture", profileID: profile)
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([space], for: profile))
+        let store = TabStore(profileID: profile, space: space, session: [])
+        var stores = [store]
+        defer {
+            for owner in stores {
+                owner.tabs.forEach { $0.tearDown() }
+                owner.dropStashes()
+                TabStore.all.removeAll { $0 === owner }
+                SharedTabs.release(owner.tabs)
+            }
+            ExtensionHost.forget(profile)
+        }
+        let destination = try server.url("/first-held")
+        server.heldPaths.insert("/first-held")
+        let first = store.newBlankTab(loading: destination)
+        XCTAssertEqual(first.currentURL, destination, "An explicit initial request must be restorable before policy runs")
+        XCTAssertEqual(first.address, destination.absoluteString, "A tab without a document should identify its requested page")
+        try await compatibilityWait { self.server.requests.contains { $0.hasPrefix("GET /first-held ") } }
+        XCTAssertTrue(Session.save())
+        let file = ProfileManager.sessionURL(for: profile, in: Store.directory)
+        var entries = Session.decode(try Data(contentsOf: file)).flatMap { $0 }
+        XCTAssertEqual(entries.map(\.url), [destination.absoluteString])
+        first.kind = .pinned
+        store.savePins()
+        XCTAssertEqual(first.homeURL, destination)
+        XCTAssertTrue(Session.save())
+        entries = Session.decode(try Data(contentsOf: file)).flatMap { $0 }
+        XCTAssertEqual(entries.map(\.url), [destination.absoluteString])
+        XCTAssertEqual(entries.first?.home, destination.absoluteString)
+        XCTAssertEqual(ProfileManager.shared.spaces(for: profile).first?.pinnedTabURLs, [destination])
+        first.tearDown()
+        store.dropStashes()
+        TabStore.all.removeAll { $0 === store }
+        SharedTabs.release(store.tabs)
+        let restored = TabStore(profileID: profile, space: space, session: entries)
+        stores.append(restored)
+        XCTAssertEqual(restored.tabs.count, 1)
+        XCTAssertEqual(restored.tabs.first?.currentURL, destination)
+        XCTAssertEqual(restored.tabs.first?.homeURL, destination)
+        let restoredFirst = try XCTUnwrap(restored.tabs.first)
+        restoredFirst.resume()
+        server.heldPaths.remove("/first-held")
+        try await compatibilityWait { restoredFirst.title == "Page /first-held" && !restoredFirst.loading }
+        XCTAssertEqual(restoredFirst.currentURL, destination)
+    }
+
+    func testTypedFirstNavigationShowsRequestedAddress() async throws {
+        let destination = try server.url("/typed-first-held")
+        server.heldPaths.insert("/typed-first-held")
+        tab.editing = true
+        tab.go(destination.absoluteString)
+        XCTAssertFalse(tab.editing)
+        XCTAssertEqual(tab.address, destination.absoluteString)
+        try await compatibilityWait { self.server.requests.contains { $0.hasPrefix("GET /typed-first-held ") } }
+        XCTAssertEqual(tab.address, destination.absoluteString)
+        server.heldPaths.remove("/typed-first-held")
+        try await compatibilityWait { self.tab.title == "Page /typed-first-held" && !self.tab.loading }
+        XCTAssertEqual(tab.currentURL, destination)
+    }
+
+    func testProgrammaticFirstNavigationPreservesEditingAddress() async throws {
+        let destination = try server.url("/editing-first-held")
+        server.heldPaths.insert("/editing-first-held")
+        tab.address = "unfinished address draft"
+        tab.editing = true
+        tab.go(destination)
+        XCTAssertTrue(tab.editing)
+        XCTAssertEqual(tab.address, "unfinished address draft")
+        try await compatibilityWait { self.server.requests.contains { $0.hasPrefix("GET /editing-first-held ") } }
+        XCTAssertEqual(tab.address, "unfinished address draft")
+        server.heldPaths.remove("/editing-first-held")
+        try await compatibilityWait { self.tab.title == "Page /editing-first-held" && !self.tab.loading }
+        XCTAssertEqual(tab.currentURL, destination)
+        XCTAssertEqual(tab.address, "unfinished address draft", "Commit must not replace an active editing value")
+    }
+
+    func testHeldCrossSiteHistoryRedirectKeepsCommittedAddress() async throws {
+        // Force history traversal to fetch, rather than restoring a cached document.
+        let preferences = tab.web.configuration.preferences
+        guard preferences.responds(to: NSSelectorFromString("_setUsesPageCache:")) else {
+            throw XCTSkip("WebKit page-cache control unavailable for held history fixture")
+        }
+        preferences.setValue(false, forKey: "usesPageCache")
+        for menuJump in [false, true] {
+            let suffix = menuJump ? "menu" : "back"
+            let firstPath = "/history-first-\(suffix)"
+            let heldPath = "/history-held-\(suffix)"
+            server.pages[firstPath] = "<title>History first</title>"
+            tab.go(try server.url(firstPath))
+            try await compatibilityWait { self.tab.title == "History first" && !self.tab.loading }
+            let item = try XCTUnwrap(tab.web.backForwardList.currentItem)
+            let shown = try server.url("/history-other-\(suffix)", host: "localhost")
+            tab.go(shown)
+            try await compatibilityWait { self.tab.web.url == shown && !self.tab.loading && !self.tab.web.isLoading }
+            let destination = try server.url(heldPath)
+            server.redirects[firstPath] = destination
+            server.heldPaths.insert(heldPath)
+            if menuJump { _ = tab.web.go(to: item) }
+            else { tab.back() }
+            XCTAssertEqual(tab.currentURL, shown, "A history command must not publish its destination synchronously")
+            try await compatibilityWait { self.server.requests.contains { $0.hasPrefix("GET \(heldPath) ") } }
+            XCTAssertEqual(tab.address, shown.absoluteString)
+            XCTAssertEqual(tab.currentURL, shown)
+            server.heldPaths.remove(heldPath)
+            try await compatibilityWait { self.tab.title == "Page \(heldPath)" && !self.tab.loading }
+            XCTAssertEqual(tab.currentURL, destination)
+            XCTAssertEqual(tab.address, destination.absoluteString)
+        }
+    }
+
+    func testOldDocumentHistoryMutationCannotUnlockHeldNavigation() async throws {
+        try await load("/live-document")
+        let shown = try server.url("/live-document")
+        let destination = try server.url("/first-held", host: "localhost")
+        server.redirects["/first-held"] = try server.url("/second-held", host: "localhost")
+        server.heldPaths = ["/first-held", "/second-held"]
+        tab.go(destination)
+        try await compatibilityWait { self.server.requests.contains { $0.hasPrefix("GET /first-held ") } }
+        _ = try await tab.web.evaluateJavaScript("history.pushState({}, '', '/mutated#section')")
+        server.heldPaths.remove("/first-held")
+        try await compatibilityWait { self.server.requests.contains { $0.hasPrefix("GET /second-held ") } }
+        XCTAssertEqual(tab.currentURL?.host, shown.host)
+        XCTAssertEqual(URL(string: tab.address)?.host, shown.host)
+        tab.stop()
+        let actual = try await tab.web.evaluateJavaScript("location.href") as? String
+        try await compatibilityWait { self.tab.address == actual }
+        XCTAssertEqual(tab.currentURL?.absoluteString, actual)
+        XCTAssertEqual(actual, try server.url("/mutated#section").absoluteString)
+    }
+
+    func testPageInitiatedCrossSiteNavigationKeepsDisplayedOrigin() async throws {
+        try await load("/initiator")
+        let shown = try server.url("/initiator")
+        let destination = try server.url("/page-held", host: "localhost")
+        server.heldPaths.insert("/page-held")
+        _ = try await tab.web.evaluateJavaScript("location.href = '\(destination.absoluteString)'; void 0")
+        try await compatibilityWait { self.server.requests.contains { $0.hasPrefix("GET /page-held ") } }
+        XCTAssertEqual(tab.address, shown.absoluteString)
+        XCTAssertEqual(tab.currentURL, shown)
+        server.heldPaths.remove("/page-held")
+        try await compatibilityWait { self.tab.title == "Page /page-held" && !self.tab.loading }
+        XCTAssertEqual(tab.currentURL, destination)
+    }
+
+    func testAllowedActionWithoutStartRecoversSameDocumentAddress() async throws {
+        let probe = NavigationActionProbe(tab: tab)
+        tab.web.navigationDelegate = probe
+        try await load("/no-start")
+        let action = try XCTUnwrap(probe.lastAction)
+        let generation = tab.readingDocumentGeneration
+        // Replay an allowed action without starting another document, as after Stay.
+        var answer: WKNavigationActionPolicy?
+        tab.webView(tab.web, decidePolicyFor: action) { answer = $0 }
+        XCTAssertEqual(answer, .allow)
+        _ = try await tab.web.evaluateJavaScript("history.pushState({}, '', '/no-start-route#section')")
+        let route = try server.url("/no-start-route#section")
+        try await compatibilityWait { self.tab.address == route.absoluteString }
+        XCTAssertEqual(tab.currentURL, route)
+        XCTAssertEqual(tab.readingDocumentGeneration, generation)
+        XCTAssertNil(tab.certificateNavigationURL, "A policy answer alone cannot authorize a certificate prompt")
     }
 
     func testNewNavigationDismissesPendingHTTPAuthentication() async throws {

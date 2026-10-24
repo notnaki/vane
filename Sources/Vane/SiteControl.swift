@@ -52,6 +52,8 @@ struct SiteControlModel: Equatable, Sendable {
     var camera: Bool?
     var microphone: Bool?
     var location: Bool?
+    /// Ask here means blocked with a toast offering to open it, not a prompt.
+    var popups: Bool?
     var locationOnce = false
     var cameraOnce = false
     var microphoneOnce = false
@@ -72,7 +74,7 @@ extension SiteControlModel {
 
     /// Which row, so the view can act on one without matching on its title.
     enum RowID: Hashable, Sendable {
-        case camera, microphone, location, pictureInPicture, zoom, blocker, blockerSettings, reader, capture, boost, clearData, developer
+        case camera, microphone, location, popups, pictureInPicture, zoom, blocker, blockerSettings, reader, capture, boost, clearData, developer
         /// The index into `extensions`, which is also the index into the host's contexts.
         case ext(Int)
         /// The index into `apps`: one remembered "Always Allow" for another app.
@@ -172,6 +174,9 @@ extension SiteControlModel {
             Row(id: .microphone, title: "Microphone", glyph: "mic",
                 control: .permission(microphone),
                 note: microphoneOnce ? "Allowed once, until this tab navigates or closes." : nil),
+            Row(id: .popups, title: "Pop-ups", glyph: "macwindow.on.rectangle",
+                control: .permission(popups),
+                note: "Pop-ups you click open either way. Ask blocks the rest and offers to open them."),
             // ponytail: no Notifications row. WKWebView has no web-notification permission
             // hook on macOS — nothing asks, so there is nothing to remember and nothing to
             // switch, and a dead toggle is a promise Vane cannot keep. Upgrade path the day
@@ -264,6 +269,7 @@ extension SiteControlModel {
             location = SitePermissions.effective(scope: permissionScope, type: .location, tabID: tab.id)
             locationOnce = SitePermissions.isAllowedOnce(scope: permissionScope, type: .location, tabID: tab.id)
             microphoneOnce = SitePermissions.isAllowedOnce(scope: permissionScope, type: .microphone, tabID: tab.id)
+            popups = SitePermissions.remembered(scope: permissionScope, type: .popups)
         }
         pictureInPicture = tab.pictureInPicture
         zoom = tab.zoom
@@ -328,6 +334,7 @@ extension SiteControlModel {
         case .camera:     cycle(.camera, on: tab)
         case .microphone: cycle(.microphone, on: tab)
         case .location: cycle(.location, on: tab)
+        case .popups: cycle(.popups, on: tab)
         case .pictureInPicture: PictureInPicture.toggle(tab)
         case .zoom: Zoom.reset(tab)
         case .blocker:
@@ -827,8 +834,15 @@ private struct SiteControlRow: View {
         case .permission(let answer):
             Picker("", selection: Binding(
                 get: { PermissionAnswer(answer) },
-                set: { SiteControl.set(row.id == .camera ? .camera : (row.id == .location ? .location : .microphone),
-                                       to: $0.value, on: tab) })) {
+                set: { answer in
+                    let type: SitePermissions.Kind = switch row.id {
+                    case .camera: .camera
+                    case .location: .location
+                    case .popups: .popups
+                    default: .microphone
+                    }
+                    SiteControl.set(type, to: answer.value, on: tab)
+                })) {
                 ForEach(PermissionAnswer.allCases) { Text($0.title).tag($0) }
             }
             .labelsHidden().fixedSize().controlSize(.small)

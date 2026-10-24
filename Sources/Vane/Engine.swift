@@ -27,6 +27,65 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 /// links, linked images, links inside iframes, and open shadow roots resolve in the document
 /// that owns them. Closed shadow roots deliberately remain opaque to the document listener.
 @MainActor final class LinkContextWebView: WKWebView, NSMenuItemValidation {
+    /// Public WebKit commands can publish `url` synchronously, before policy callbacks.
+    /// Keep every caller (including history menus and site controls) behind the same guard.
+    weak var navigationOwner: Tab?
+
+    private func requested(_ navigation: WKNavigation?) -> WKNavigation? {
+        navigationOwner?.expectNavigation(navigation)
+        // A same-document command can finish synchronously inside super, before expect
+        // advances its generation. Reconcile again with that final command identity.
+        navigationOwner?.reconcileIdleDocument(in: self)
+        return navigation
+    }
+
+    override func load(_ request: URLRequest) -> WKNavigation? {
+        navigationOwner?.prepareNavigation(to: request.url)
+        return requested(super.load(request))
+    }
+
+    override func loadFileURL(_ URL: URL, allowingReadAccessTo readAccessURL: URL) -> WKNavigation? {
+        navigationOwner?.prepareNavigation(to: URL)
+        return requested(super.loadFileURL(URL, allowingReadAccessTo: readAccessURL))
+    }
+
+    override func loadHTMLString(_ string: String, baseURL: URL?) -> WKNavigation? {
+        navigationOwner?.prepareNavigation(to: baseURL ?? URL(string: "about:blank"))
+        return requested(super.loadHTMLString(string, baseURL: baseURL))
+    }
+
+    override func loadSimulatedRequest(_ request: URLRequest, responseHTML string: String) -> WKNavigation {
+        navigationOwner?.prepareNavigation(to: request.url)
+        let navigation = super.loadSimulatedRequest(request, responseHTML: string)
+        _ = requested(navigation)
+        return navigation
+    }
+
+    override func reload() -> WKNavigation? {
+        navigationOwner?.prepareNavigation(to: url, reload: true)
+        return requested(super.reload())
+    }
+
+    override func reloadFromOrigin() -> WKNavigation? {
+        navigationOwner?.prepareNavigation(to: url, reload: true)
+        return requested(super.reloadFromOrigin())
+    }
+
+    override func goBack() -> WKNavigation? {
+        navigationOwner?.prepareNavigation(to: backForwardList.backItem?.url)
+        return requested(super.goBack())
+    }
+
+    override func goForward() -> WKNavigation? {
+        navigationOwner?.prepareNavigation(to: backForwardList.forwardItem?.url)
+        return requested(super.goForward())
+    }
+
+    override func go(to item: WKBackForwardListItem) -> WKNavigation? {
+        navigationOwner?.prepareNavigation(to: item.url)
+        return requested(super.go(to: item))
+    }
+
     static let messageName = "vanelinkcontext"
     static let world = WKContentWorld.world(name: "vane-link-context")
     static let itemID = NSUserInterfaceItemIdentifier("VaneOpenLinkInNewTab")
@@ -444,7 +503,10 @@ struct TitleReveal: Equatable, Sendable {
     private var lastFilledAt = Date.distantPast
     /// Only an account name crosses a submitted username step's next navigation.
     /// Never shared between tabs, profiles, frames, or origins; never a stored secret.
-    private var passwordStep: (origin: PasswordOrigin, account: String, expires: Date, awaitingNavigation: Bool)?
+    private var passwordStep: (id: UUID, origin: PasswordOrigin, account: String, expires: Date, awaitingNavigation: Bool, continuationAllowed: Bool)?
+    /// A choice belongs to one document and field target. The page can fake a username
+    /// submission, so another form or frame cannot reuse that choice for continuation.
+    private var chosenAccount: (origin: PasswordOrigin, account: String, target: String, document: UUID, expires: Date)?
     @Published var bookmarked = false
     /// Whether this page has an article worth reading — drives the toolbar button.
     @Published var readerAvailable = false
@@ -592,6 +654,13 @@ struct TitleReveal: Equatable, Sendable {
     /// window said it should go. The web view that comes back is WebKit's own — see
     /// `createWebViewWith`, which hands it straight on. Nil is a popup that was refused.
     var onPopup: ((WKWebViewConfiguration, Popup.Placement, WKWindowFeatures) -> WKWebView?)?
+    /// A popup nothing the user did asked for, refused. The url is what it would have
+    /// loaded, if it said: `window.open()` with none is written into afterwards. The scope
+    /// is the document that asked, fixed now so a later Allow cannot land on the next site.
+    var onPopupBlocked: ((URL?, SitePermissions.Scope?) -> Void)?
+    /// When this tab last said so. A page opening popups on a timer gets one toast for as
+    /// long as a toast stays up (`Prefs.toastSeconds`), not the window's toast slot to itself.
+    private var popupNoticeAt: ContinuousClock.Instant?
     /// `window.close()`. Only ever called for a page a script opened, which is why every tab
     /// can carry it: WebKit refuses the call on a page the user navigated to themselves.
     var onClose: (() -> Void)?
@@ -716,6 +785,7 @@ struct TitleReveal: Equatable, Sendable {
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: SiteBoostScripts.world, name: SiteBoostScripts.messageName)
         NativePiPHostBridge.register(tab: self, web: web)
         if let linkView = web as? LinkContextWebView {
+            linkView.navigationOwner = self
             linkView.openBackground = { [weak self] url in self?.onOpenLinkInBackground?(url) }
             linkView.openDestination = { [weak self] url, destination in self?.onOpenContextLink?(url, destination) }
             linkView.canOpenSplit = { [weak self] in
@@ -749,6 +819,9 @@ struct TitleReveal: Equatable, Sendable {
         web.configuration.userContentController.add(WeakHandler(self),
                                                     contentWorld: PageFocus.world,
                                                     name: PageFocus.messageName)
+        provisional = false
+        committedURL = web.url
+        initialRequestedURL = parkedURL
         // A fresh web view has no page to be insecure about.
         secureContent = true
         certificateTrusted = true
@@ -789,14 +862,19 @@ struct TitleReveal: Equatable, Sendable {
             web.observe(\.isLoading, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
                     guard let self, self.existingWeb === w, !w.isLoading else { return }
+                    self.reconcileIdleDocument(in: w)
                     self.scheduleTitleSettle(for: w)
                 }
             },
             web.observe(\.url, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
                     guard let self, self.existingWeb === w, !self.suspended, !self.tornDown else { return }
-                    if !self.editing { self.address = w.url?.absoluteString ?? "" }
-                    self.recordSameDocumentVisit(in: w)
+                    if !self.provisional {
+                        self.showCommitted(w)
+                        self.recordSameDocumentVisit(in: w)
+                    } else {
+                        self.reconcileIdleDocument(in: w)
+                    }
                     self.extensions.sync()
                 }
             },
@@ -811,6 +889,15 @@ struct TitleReveal: Equatable, Sendable {
             },
             web.observe(\.canGoForward, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated { if self?.existingWeb === w { self?.canGoForward = w.canGoForward } }
+            },
+            web.observe(\.fullscreenState, options: [.new]) { [weak self] w, _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.existingWeb === w, !self.tornDown else { return }
+                    // Use the committed tab context, never a provisional WKWebView URL.
+                    if w.fullscreenState == .inFullscreen {
+                        FullscreenNotice.show(pageURL: self.currentURL, over: w)
+                    } else { FullscreenNotice.hide(over: w) }
+                }
             },
             web.observe(\.hasOnlySecureContent, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
@@ -835,7 +922,6 @@ struct TitleReveal: Equatable, Sendable {
                         guard let self, let w, self.existingWeb === w, !self.suspended,
                               self.readingDocumentGeneration == document, w.serverTrust === trust else { return }
                         self.certificateTrusted = ok
-                        if ok { self.fillPassword(automatic: true) }
                     }
                 }
             },
@@ -908,7 +994,67 @@ struct TitleReveal: Equatable, Sendable {
     /// The url this tab is on, live or parked. Everything that writes a tab down — pins,
     /// the session, spaces — has to come through here, or a suspended tab quietly vanishes
     /// from all of them.
-    var currentURL: URL? { easelID.map(EaselAddress.url) ?? existingWeb?.url ?? parkedURL }
+    var currentURL: URL? {
+        easelID.map(EaselAddress.url) ?? (existingWeb != nil ? committedURL ?? initialRequestedURL : parkedURL)
+    }
+
+    /// The page actually on screen. WebKit's `url` already names a provisional destination
+    /// while the old document is still showing, so a page that sends itself somewhere slow
+    /// would otherwise put that site's address over its own content.
+    private var committedURL: URL?
+    /// Preserve an explicit first request/restored row without mistaking a later
+    /// provisional destination for the document already on screen.
+    private var initialRequestedURL: URL?
+    private var provisional = false
+
+    /// A fragment link never starts a provisional load, so it must not hold the address.
+    static func sameDocument(_ action: WKNavigationAction, from current: URL?) -> Bool {
+        guard action.navigationType != .reload, let url = action.request.url else { return false }
+        return sameDocument(url, from: current)
+    }
+
+    private static func sameDocument(_ url: URL, from current: URL?) -> Bool {
+        guard url.fragment != nil, let current else { return false }
+        var a = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        var b = URLComponents(url: current, resolvingAgainstBaseURL: false)
+        a?.fragment = nil; b?.fragment = nil
+        return a != nil && a == b
+    }
+
+    private func showCommitted(_ w: WKWebView) {
+        committedURL = w.url
+        if committedURL != nil { initialRequestedURL = nil }
+        if !editing { address = w.url?.absoluteString ?? "" }
+    }
+
+    fileprivate func prepareNavigation(to url: URL?, reload: Bool = false) {
+        guard !tornDown, !suspended, let url else { return }
+        if committedURL == nil {
+            initialRequestedURL = url
+            if !editing { address = url.absoluteString }
+        }
+        if reload || !Self.sameDocument(url, from: committedURL) { provisional = true }
+    }
+
+    /// An allowed navigation may never start (beforeunload's Stay, for example).
+    /// History items can advance provisionally too; only the idle document's own
+    /// isolated-world location can establish that a URL change really happened.
+    fileprivate func reconcileIdleDocument(in w: WKWebView) {
+        guard w === existingWeb, !tornDown, !suspended, provisional, !loading, !w.isLoading else { return }
+        let expected = w.url, generation = navigationState.policyGeneration
+        w.evaluateJavaScript("location.href", in: nil, in: PageFocus.world) { [weak self, weak w] result in
+            guard let self, let w, self.existingWeb === w, !self.tornDown, !self.suspended,
+                  self.provisional, !self.loading, !w.isLoading, w.url == expected,
+                  self.navigationState.policyGeneration == generation,
+                  case let .success(value) = result, let raw = value as? String,
+                  URL(string: raw) == expected else { return }
+            // Keep the guard armed: an idle beforeunload prompt may still choose Leave.
+            // A later owned commit/finish/failure, rather than this read, releases it.
+            self.showCommitted(w)
+            self.recordSameDocumentVisit(in: w)
+            self.extensions.sync()
+        }
+    }
 
     /// Internal canvases never pass through WebKit or the history database.
     /// Missing boards remain identifiable so the page can offer the Library.
@@ -1006,6 +1152,7 @@ struct TitleReveal: Equatable, Sendable {
         readingDocumentGeneration = UUID()
         Reader.forget(tab: self)
         passwordStep = nil
+        chosenAccount = nil
         passwordGeneration = nil
         pendingSave = nil
         passwordOfferExpiry?.cancel()
@@ -1017,6 +1164,7 @@ struct TitleReveal: Equatable, Sendable {
         MediaState.shared.forget(id)
         NativePiPHostBridge.unregister(id)
         guard let old = existingWeb else { return }
+        FullscreenNotice.hide(over: old, immediately: true)
         titleSettleTask?.cancel()
         titleSettleTask = nil
         CertificateTrust.navigationStarted(in: self)
@@ -1025,6 +1173,7 @@ struct TitleReveal: Equatable, Sendable {
         obs = []                       // KVO on a view that is about to die
         old.stopLoading()
         if let linkView = old as? LinkContextWebView {
+            linkView.navigationOwner = nil
             linkView.openBackground = nil
             linkView.openDestination = nil
             linkView.canOpenSplit = nil
@@ -1235,7 +1384,9 @@ struct TitleReveal: Equatable, Sendable {
         // ponytail: KVC on a documented-by-name preference, exactly like developerExtrasEnabled
         // below. If the key ever goes away this throws nothing and PiP simply stays off.
         cfg.preferences.setValue(true, forKey: "allowsPictureInPictureMediaPlayback")
-        cfg.preferences.javaScriptCanOpenWindowsAutomatically = false
+        // True so a popup with no click behind it reaches `createWebViewWith`, which blocks it
+        // there and says so. False leaves WebKit to drop it with no trace. See Popups.swift.
+        cfg.preferences.javaScriptCanOpenWindowsAutomatically = Popup.readsGesture
         // isInspectable governs remote inspection from Safari's Develop menu. The in-app
         // inspector window and the "Inspect Element" context-menu item are gated on this
         // preference instead, which has no public setter.
@@ -1284,17 +1435,33 @@ struct TitleReveal: Equatable, Sendable {
     }
     private var secureHost: String? { secureOrigin?.host }
 
-    /// One saved login fills straight in, the way it always has. Several put the list under
-    /// the username field and wait — guessing which of your two accounts you meant is worse
-    /// than asking, and it is what Arc does.
+    struct PasswordContinuation {
+        let id: UUID
+        let expires: Date
+    }
+
+    /// A continuation keeps its original authorization through both asynchronous reads.
+    /// A replacement username step, navigation or expired choice revokes the pending fill.
+    private func permitsPasswordContinuation(_ continuation: PasswordContinuation, origin: PasswordOrigin,
+                                              account: String? = nil) -> Bool {
+        guard let step = passwordStep, step.id == continuation.id, step.expires == continuation.expires,
+              step.continuationAllowed, !step.awaitingNavigation, step.expires > .now,
+              step.origin == origin, secureOrigin == origin else { return false }
+        return account.map { $0 == step.account } ?? true
+    }
+
+    /// Only ever on request (the menu command). One saved login fills straight in; several
+    /// put the list under the username field and wait — guessing which of your two accounts
+    /// you meant is worse than asking.
     ///
     /// Names only until something is chosen: deciding *whether* to ask decrypts nothing.
     func fillPassword(announcing: Bool = false, automatic: Bool = false,
-                      target: String? = nil, accountHint: String? = nil, continuation: Bool = false) {
+                      target: String? = nil, accountHint: String? = nil, continuation: PasswordContinuation? = nil) {
         guard !isPrivate, let origin = secureOrigin else {
             if announcing { axAnnounce("No saved password for this page.") }
             return
         }
+        if let continuation, !permitsPasswordContinuation(continuation, origin: origin, account: accountHint) { return }
         let host = origin.host
         // Capture a concrete target before reading any secret or opening the chooser.
         guard let target else {
@@ -1308,12 +1475,13 @@ struct TitleReveal: Equatable, Sendable {
                       let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let target = body["target"] as? String else { return }
                 self.fillPassword(announcing: announcing, automatic: automatic, target: target,
-                                  accountHint: body["accountHint"] as? String)
+                                  accountHint: body["accountHint"] as? String, continuation: continuation)
             }
             return
         }
         readPasswordLogins(origin: origin, announcing: announcing) { [weak self] hits in
             guard let self else { return }
+            if let continuation, !self.permitsPasswordContinuation(continuation, origin: origin, account: accountHint) { return }
             var hits = hits
             if automatic, let hint = accountHint, !hint.isEmpty {
                 hits = hits.filter { $0.account == hint }
@@ -1370,8 +1538,9 @@ struct TitleReveal: Equatable, Sendable {
     /// Fills both fields and remembers the choice, so this account leads the list next time.
     /// The password is read here and nowhere else, and lives exactly as long as the call.
     func fill(_ login: Passwords.Login, automatic: Bool = false, target: String? = nil,
-              continuation: Bool = false) {
+              continuation: PasswordContinuation? = nil) {
         guard !isPrivate, secureOrigin == login.origin else { return }
+        if let continuation, !permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) { return }
         guard let target else {
             let page = web, pageURL = page.url, document = readingDocumentGeneration
             page.evaluateJavaScript("window.__vaneAnchor && window.__vaneAnchor()",
@@ -1394,20 +1563,32 @@ struct TitleReveal: Equatable, Sendable {
         passwordExplicitFillRequest = automatic ? nil : request
         passwordReadTask = Task { [weak self, weak page] in
             do {
+                if let continuation {
+                    guard !Task.isCancelled,
+                          self?.permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) == true else { return }
+                }
                 guard let password = try await reader.secret(login, profileID: profile)
                 else { throw Passwords.Failure(status: errSecItemNotFound) }
                 guard let self, let page, !Task.isCancelled, !self.tornDown, !self.suspended,
                       !self.isPrivate, self.profileID == profile, self.existingWeb === page,
                       page.url == pageURL, self.readingDocumentGeneration == document,
                       self.secureOrigin == login.origin, self.passwordReadRequest == request else { return }
+                if let continuation, !self.permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) { return }
                 page.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password,
-                                                     automatic: automatic, target: target, continuation: continuation),
+                                                     automatic: automatic, target: target, continuation: continuation != nil),
                                        in: nil, in: Autofill.world) { [weak self, weak page] result in
                     guard let self, let page, self.existingWeb === page, page.url == pageURL,
                           self.readingDocumentGeneration == document, self.secureOrigin == login.origin,
                           self.passwordReadRequest == request, self.profileID == profile,
                           case let .success(value) = result else { return }
                     if (value as? Bool) == true {
+                        if !automatic {
+                            self.chosenAccount = (login.origin, login.account, target, document, .now.addingTimeInterval(120))
+                            self.passwordStep?.continuationAllowed = false
+                        } else if let continuation, self.passwordStep?.id == continuation.id,
+                                  self.passwordStep?.expires == continuation.expires {
+                            self.passwordStep?.continuationAllowed = false
+                        }
                         self.lastFilledAt = .now
                         Passwords.recordUse(origin: login.origin, account: login.account, profileID: profile)
                     } else if !automatic { axAnnounce("No sign-in form on this page.") }
@@ -1564,8 +1745,13 @@ struct TitleReveal: Equatable, Sendable {
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard w === existingWeb, !tornDown, !suspended else { return }
         guard navigationState.begin(navigation) else { return }
+        provisional = true
         retitleTask?.cancel()
-        if w === existingWeb { readingDocumentGeneration = UUID(); Reader.forget(tab: self) }
+        if w === existingWeb {
+            readingDocumentGeneration = UUID()
+            chosenAccount = nil
+            Reader.forget(tab: self)
+        }
         if w === existingWeb { SiteBoosts.beginNavigation(tab: self) }
         if w === existingWeb {
             FileUploads.cancel(tabID: id)
@@ -1595,7 +1781,12 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        // Only the current navigation's failure means nothing is pending: a superseded
+        // load fails after its replacement was allowed.
         guard ownsNavigation(navigation, in: w) else { return }
+        // Back to the page that never left; WebKit's url falls back to it as well.
+        provisional = false
+        if !editing { address = committedURL?.absoluteString ?? "" }
         navigationState.finished = true
         finishCertificateNavigation(navigation, in: w)
         loading = false
@@ -1669,6 +1860,7 @@ struct TitleReveal: Equatable, Sendable {
     /// already painted at the old zoom, which reads as a visible reflow bug).
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
         guard ownsNavigation(navigation, in: w) else { return }
+        provisional = false; showCommitted(w)
         if let item = w.backForwardList.currentItem {
             if navigationState.simulated === navigation {
                 navigationState.simulatedItems.add(item)
@@ -1700,6 +1892,7 @@ struct TitleReveal: Equatable, Sendable {
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
         guard ownsNavigation(navigation, in: w) else { return }
+        if provisional { provisional = false; showCommitted(w) }
         navigationState.finished = true
         finishCertificateNavigation(navigation, in: w)
         progress = 1
@@ -1735,6 +1928,17 @@ struct TitleReveal: Equatable, Sendable {
     func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         guard w === existingWeb, !tornDown, !suspended else { decisionHandler(.cancel); return }
+        // The address stops following WebKit's url from the moment a main-frame load is
+        // allowed: a cross-site load that swaps processes publishes its destination as the
+        // url before didStartProvisionalNavigation arrives.
+        let decided = decisionHandler
+        let decisionHandler: @MainActor (WKNavigationActionPolicy) -> Void = { [weak self] policy in
+            if policy == .allow, navigationAction.targetFrame?.isMainFrame == true,
+               !Tab.sameDocument(navigationAction, from: self?.committedURL) {
+                self?.provisional = true
+            }
+            decided(policy)
+        }
         #if compiler(>=6.4)
         if #available(macOS 27.0, *), let navigation = navigationAction.mainFrameNavigation,
            navigationState.isRetired(navigation) { decisionHandler(.cancel); return }
@@ -1938,6 +2142,10 @@ struct TitleReveal: Equatable, Sendable {
             MediaState.shared.handle(m.body, for: self, from: m.frameInfo)
             return
         }
+        // Both scripts are main-frame only, and these handlers live in the page world, so
+        // a message from any other frame is an embedded page speaking for the tab.
+        if m.name == StatusBar.messageName || m.name == Previews.messageName,
+           !m.frameInfo.isMainFrame { return }
         if m.name == StatusBar.messageName { hoveredLink = StatusBar.hover(from: m.body); return }
         if m.name == PageFocus.messageName {
             editableFrames = PageFocus.frames(m.body, in: editableFrames)
@@ -2001,20 +2209,29 @@ struct TitleReveal: Equatable, Sendable {
         }
         if let account = body["usernameStep"] as? String, !account.isEmpty,
            body["mainDocument"] as? Bool == true, let origin = secureOrigin {
-            passwordStep = (origin, account, .now.addingTimeInterval(120), true)
+            let selectedExpiry = chosenAccount.flatMap { chosen -> Date? in
+                guard chosen.origin == origin, chosen.account == account,
+                      chosen.document == readingDocumentGeneration,
+                      chosen.target == body["target"] as? String, chosen.expires > .now else { return nil }
+                return chosen.expires
+            }
+            // Typed usernames still carry into save prompts. Only a choice in this exact
+            // main-document username target authorizes the next page to read a secret.
+            passwordStep = (UUID(), origin, account, selectedExpiry ?? .now.addingTimeInterval(120), true, selectedExpiry != nil)
             return
         }
+        // A form appearing is not consent: nothing fills until the user picks a login from
+        // the chooser or the menu. The one exception is the same sign-in carrying on — the
+        // password page after the username page where that account was picked.
         if body["ready"] as? Bool == true {
-            guard let target = body["target"] as? String else { return }
-            var hint = body["accountHint"] as? String
-            var continuation = false
-            if (hint ?? "").isEmpty, body["mainDocument"] as? Bool == true,
-               body["passwordOnly"] as? Bool == true, let step = passwordStep,
-               !step.awaitingNavigation, step.origin == secureOrigin, step.expires > .now {
-                hint = step.account
-                continuation = true
-            }
-            fillPassword(automatic: true, target: target, accountHint: hint, continuation: continuation)
+            guard let target = body["target"] as? String,
+                  body["mainDocument"] as? Bool == true, body["passwordOnly"] as? Bool == true,
+                  let step = passwordStep, !step.awaitingNavigation, step.continuationAllowed,
+                  step.origin == secureOrigin, step.expires > .now else { return }
+            let hint = body["accountHint"] as? String ?? ""
+            guard hint.isEmpty || hint == step.account else { return }
+            fillPassword(automatic: true, target: target, accountHint: step.account,
+                         continuation: PasswordContinuation(id: step.id, expires: step.expires))
             return
         }
         // The page saying the list is no longer wanted: a blur, a click elsewhere, a scroll,
@@ -2023,9 +2240,8 @@ struct TitleReveal: Equatable, Sendable {
             closeChooser(ChooserEvent(page: why))
             return
         }
-        // The username field was focused. Nothing happens unless this site has more than one
-        // saved login — one still fills from the menu command, silently. Names only: nothing
-        // is decrypted to answer "is there a choice here".
+        // A login field was focused: the list opens for any saved login, and choosing a row
+        // is what fills. Names only: nothing is decrypted to answer "is there a choice here".
         if body["focus"] as? Bool == true {
             guard let origin = secureOrigin else { return }
             let host = origin.host
@@ -2195,6 +2411,7 @@ struct TitleReveal: Equatable, Sendable {
         CertificateTrust.navigationStarted(in: self)
         existingWeb?.stopLoading()
         loading = false
+        if let w = existingWeb { reconcileIdleDocument(in: w) }
     }
 
     /// ⌥⌘U. ponytail: WebKit has no view-source: handler, so this is the page's own HTML
@@ -2258,8 +2475,41 @@ struct TitleReveal: Equatable, Sendable {
             ExternalApps.offer(url, from: action.sourceFrame, tab: self)
             return nil
         }
-        return onPopup?(cfg, Popup.placement(features: windowFeatures,
-                                             userInitiated: Popup.userInitiated(action),
+        // The popup blocker. A click (or a key) behind it always opens; otherwise the site's
+        // Pop-ups answer decides, and Ask blocks it with a toast that can open it after all.
+        // The toast's tab has no `window.opener`: WebKit's request ends with this return.
+        var gesture = Popup.userInitiated(action)
+        if !gesture {
+            // The answer of the document that is running, not the one loading: `w.url` names
+            // a provisional load's destination while the old page's script still runs, and
+            // that page must not borrow the next site's Allow. A subframe has no top origin
+            // of its own to offer, so it gets the committed history item, and either has
+            // to agree with the tab's site or the popup is only ever offered back.
+            let source = action.sourceFrame
+            let scope = source.isMainFrame
+                ? SitePermissions.Scope(scheme: source.securityOrigin.protocol, host: source.securityOrigin.host,
+                                        port: source.securityOrigin.port, profileID: profileID,
+                                        privateTabID: isPrivate ? id : nil)
+                : SitePermissions.Scope(url: w.backForwardList.currentItem?.url, profileID: profileID,
+                                        privateTabID: isPrivate ? id : nil)
+            let remembered = scope.flatMap { SitePermissions.remembered(scope: $0, type: .popups) }
+            // An outgoing document keeps its silent Block. Only Allow needs the live-site
+            // match: refusing a popup cannot lend the provisional destination authority.
+            let answer = remembered == false || scope == SitePermissions.scope(for: self)
+                ? remembered : nil
+            switch answer {
+            case true?: gesture = true
+            case false?: return nil
+            case nil:
+                let now = ContinuousClock.now
+                if popupNoticeAt.map({ now - $0 >= .seconds(Prefs.toastSeconds) }) ?? true {
+                    popupNoticeAt = now
+                    onPopupBlocked?(action.request.url, scope)
+                }
+                return nil
+            }
+        }
+        return onPopup?(cfg, Popup.placement(features: windowFeatures, userInitiated: gesture,
                                              background: action.modifierFlags.contains(.command)), windowFeatures)
     }
 
@@ -2408,7 +2658,10 @@ struct Stash {
             // The tab being left behind starts its idle clock now, not when it was opened.
             if let old = previousTab {
                 old.lastActive = .now
-                if oldValue != current { old.easelSession?.liveItems.removeAll() }
+                if oldValue != current {
+                    old.easelSession?.liveItems.removeAll()
+                    if let web = old.existingWeb { FullscreenNotice.hide(over: web, immediately: true) }
+                }
                 old.closeChooser(.tabSwitch)   // a list anchored to a page nobody is looking at
             }
             // Selecting a pane by any route at all — ⌘1–9, ⌃⇥, ⌥⌘↑↓, a favourite tile, the
@@ -3029,6 +3282,25 @@ struct Stash {
         t.onPopup = { [weak self, weak t] cfg, placement, features in
             guard let self else { return nil }
             return popup(cfg, placement: placement, opener: t?.id, features: features)
+        }
+        // Safari's "Block and Notify". Open loads the url beside the page, as a link would;
+        // a popup with no url has nothing to open, so it offers the site's Allow instead —
+        // for the site that asked, whatever the tab has moved on to since. A page with no
+        // site to remember an answer for gets the news and no button.
+        t.onPopupBlocked = { [weak self, weak t] url, scope in
+            guard let self, let t else { return }
+            let site = scope.flatMap { Files.pillLabel(URL(string: $0.origin)) } ?? "this page"
+            var action: (title: String, run: @MainActor () -> Void)?
+            if let url, ["http", "https"].contains(url.scheme?.lowercased()) {
+                action = ("Open", { [weak t] in t?.onOpenBeside?(url, true) })
+            } else if let scope {
+                let tabID = t.id
+                action = ("Allow", {
+                    SitePermissions.set(scope: scope, type: .popups, answer: true, tabID: tabID)
+                    SiteChanges.shared.bump()
+                })
+            }
+            Toasts.show("Blocked a pop-up from \(site)", action: action, in: self, replacingCurrent: false)
         }
         // `window.close()`. Deferred a turn: WebKit is inside this web view's own delegate
         // call, and closing the tab drops the view — freeing it under the frame that is

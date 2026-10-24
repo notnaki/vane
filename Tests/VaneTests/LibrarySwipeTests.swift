@@ -819,12 +819,14 @@ import XCTest
         XCTAssertNil(store.palette, "The palette must not obscure the opened Library")
     }
 
-    func testRightSwipeOpensWithEitherNaturalScrollingPreference() {
+    func testPreviousSpaceSwipeOpensWithEitherNaturalScrollingPreference() {
         let (store, window, _) = fixture(withSpaces: true)
-        for (inverted, rightDelta) in [(true, CGFloat(120)), (false, CGFloat(-120))] {
+        // Library is before the first Space, so it takes the previous-Space direction,
+        // which is a positive `scrollingDeltaX` whatever the scrolling preference.
+        for inverted in [true, false] {
             store.libraryOpen = false
             send(window, phase: .began, inverted: inverted)
-            send(window, dx: rightDelta, inverted: inverted)
+            send(window, dx: 120, inverted: inverted)
             send(window, phase: .ended, inverted: inverted)
             XCTAssertTrue(store.libraryOpen)
         }
@@ -909,10 +911,10 @@ import XCTest
             spaceMonitor.remove()
             if libraryFirst { libraryMonitor.install(store); spaceMonitor.install(store) }
             else { spaceMonitor.install(store); libraryMonitor.install(store) }
-            for (inverted, rightDelta) in [(true, CGFloat(120)), (false, CGFloat(-120))] {
+            for inverted in [true, false] {
                 store.libraryOpen = false
                 send(window, phase: .began, inverted: inverted)
-                send(window, dx: rightDelta, inverted: inverted)
+                send(window, dx: 120, inverted: inverted)
                 XCTAssertFalse(store.spaceSwiping, "The sidebar must not claim Library's gesture")
                 send(window, phase: .ended, inverted: inverted)
                 XCTAssertTrue(store.libraryOpen)
@@ -972,20 +974,22 @@ import XCTest
         }
     }
 
-    func testPhysicalLeftSwipeClosesWithEitherNaturalScrollingPreference() {
+    func testNextSpaceSwipeClosesWithEitherNaturalScrollingPreference() {
         let (store, window, _) = fixture()
-        // AppKit's device direction is positive for left; Natural Scrolling inverts it.
-        for (inverted, leftDelta) in [(true, CGFloat(-120)), (false, CGFloat(120))] {
+        // The next-Space direction, a negative `scrollingDeltaX`, leaves Library for the
+        // first Space; the scrolling preference flips the fingers, not the meaning.
+        let leftDelta: CGFloat = -120
+        for inverted in [true, false] {
             store.libraryOpen = true
             send(window, phase: .began, inverted: inverted)
             send(window, dx: leftDelta, inverted: inverted)
             send(window, phase: .ended, inverted: inverted)
-            XCTAssertFalse(store.libraryOpen, "Physical left closes regardless of Natural Scrolling")
+            XCTAssertFalse(store.libraryOpen, "The next-Space swipe closes regardless of Natural Scrolling")
             store.libraryOpen = true
             send(window, phase: .began, inverted: inverted)
             send(window, dx: -leftDelta, inverted: inverted)
             send(window, phase: .ended, inverted: inverted)
-            XCTAssertTrue(store.libraryOpen, "Physical right never closes Library")
+            XCTAssertTrue(store.libraryOpen, "The previous-Space swipe never closes Library")
         }
     }
 

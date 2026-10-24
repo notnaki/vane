@@ -36,8 +36,8 @@ enum Popup {
     ///
     /// Without a gesture behind it, nothing floats and nothing takes the focus: a window put
     /// in front of the user by a page they were only reading is the whole reason popup
-    /// blockers exist. It still opens, as a tab behind the one being read, because a popup
-    /// silently dropped is the failure nobody can debug.
+    /// blockers exist. `createWebViewWith` blocks those before they get here unless the
+    /// site's Pop-ups answer is Allow, which passes a gesture; the row stays as the floor.
     ///
     /// `background` is ⌘ held on a `target=_blank` link, which asks for a tab behind this
     /// one and gets exactly that whatever size the page named — a dialog in front of
@@ -63,14 +63,20 @@ enum Popup {
                   userInitiated: userInitiated, background: background)
     }
 
+    /// Whether WebKit can tell Vane if a gesture is behind a popup. Only then do tabs let
+    /// every `window.open` reach the delegate (`javaScriptCanOpenWindowsAutomatically`), so
+    /// a blocked one can be offered back from a toast instead of vanishing in WebKit.
+    ///
+    /// ponytail: if the accessor is ever renamed this is false, and WebKit goes back to
+    /// refusing gesture-less popups itself, silently — Vane as it was, never unblocked.
+    nonisolated static let readsGesture =
+        WKNavigationAction.instancesRespond(to: NSSelectorFromString("_isUserInitiated"))
+
     /// Whether something the user did is behind this popup.
     ///
-    /// ponytail: `javaScriptCanOpenWindowsAutomatically` is false on every configuration Vane
-    /// makes, so WebKit has already refused every popup with no gesture behind it long before
-    /// the delegate is called — this is the belt to that pair of braces, and it reads
-    /// WebKit's own flag through the one SPI accessor there is, guarded the way `_close` and
-    /// `developerExtrasEnabled` are. Ceiling: if the accessor is ever renamed this answers
-    /// "yes" and the gate above is all that is left, which is where Vane already stands.
+    /// It reads WebKit's own flag through the one SPI accessor there is, guarded the way
+    /// `_close` and `developerExtrasEnabled` are. With no accessor it answers "yes", which
+    /// is safe only because `readsGesture` is then false and WebKit is the gate.
     ///
     /// The accessor is called through its own IMP, never through KVC. `WKNavigationAction`
     /// declares the property `getter=_isUserInitiated`, and key-value coding looks for
@@ -142,6 +148,8 @@ enum Popup {
             ("…and where there is one, its answer is the answer",
              userInitiated(GestureStub(answer: false)) == false
                 && userInitiated(GestureStub(answer: true))),
+            // A rename would quietly turn the popup blocker's toast back off. See `readsGesture`.
+            ("this WebKit still answers the gesture accessor", readsGesture),
 
             // Where a floated popup lands in the stack, for the Little Vane / Peek case in
             // `TabStore.popup` — the one place a `.tab` placement is floated anyway.

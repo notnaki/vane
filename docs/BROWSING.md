@@ -196,10 +196,11 @@ Starting a download sends a small marker from the page into the Library bucket. 
 bucket briefly shows the file type's icon on arrival. Reduce Motion and Battery Saver
 show the icon immediately without the flight.
 
-Swipe right to left within the Library panel to close it, or use Escape or its back
-button. From the leftmost Space, swipe left to right over the sidebar to open Library at
-its last-used section. Swipes over page content stay with the page, including back and
-forward navigation. Vertical scrolling still scrolls the Library.
+Library sits one step before the first Space. From the leftmost Space, swipe toward the
+previous Space over the sidebar to open it; swipe toward the next Space within the panel,
+or use Escape or its back button, to close it. Both follow the macOS scrolling direction,
+like Space swipes. Library opens at its last-used section. Swipes over page content
+stay with the page, including back and forward navigation. Vertical scrolling still scrolls the Library.
 
 Downloads can be paused, resumed, or retried when supported. Resume depends on the
 server, WebKit resume data, authentication, and destination access. Fresh Retry requires

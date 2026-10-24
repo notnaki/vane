@@ -84,8 +84,11 @@ import SwiftUI
 
     /// `store` is the window the event happened in; the menus pass nothing and get the key
     /// window, which is where the shortcut was pressed.
+    /// Automatic page notices may fill an empty ordinary slot, but must not replace an
+    /// action the user can still take — including one held past its expiry by hovering.
     static func show(_ text: String, action: (title: String, run: @MainActor () -> Void)? = nil,
-                     in store: TabStore? = Windows.current) {
+                     in store: TabStore? = Windows.current, replacingCurrent: Bool = true) {
+        guard replacingCurrent || shared.queue.latest == nil else { return }
         shared.put(Toast(text: text, action: action, owner: store.map(ObjectIdentifier.init)))
     }
 

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import WebKit
 import SwiftUI
 
@@ -9,7 +10,7 @@ import SwiftUI
     let tab: Tab
     private weak var origin: TabStore?
     private let opener: Tab.ID?
-    private var observation: NSKeyValueObservation?
+    private var observation: AnyCancellable?
     private let location = NSTextField(labelWithString: "about:blank")
 
     static func owns(_ window: NSWindow?) -> Bool {
@@ -56,7 +57,6 @@ import SwiftUI
         location.lineBreakMode = .byTruncatingTail
         location.isSelectable = true
         location.setAccessibilityLabel("Website address")
-        let web = tab.web
         let page = NSHostingView(rootView: WebsitePopupPage(tab: tab).font(Look.text))
         for view in [location, page] {
             view.translatesAutoresizingMaskIntoConstraints = false
@@ -88,9 +88,10 @@ import SwiftUI
             // Never free the page while WebKit is still in webViewDidClose.
             Task { @MainActor [weak self] in self?.window?.performClose(nil) }
         }
-        observation = web.observe(\.url, options: [.initial, .new]) { [weak self] _, change in
-            let url = change.newValue ?? nil
-            Task { @MainActor [weak self] in self?.showLocation(url) }
+        // The tab's committed address, never WebKit's provisional url: a popup that sends
+        // itself somewhere slow must not wear that site's name over its own page.
+        observation = tab.$address.receive(on: RunLoop.main).sink { [weak self] address in
+            self?.showLocation(URL(string: address))
         }
         window.center()
         content.layoutSubtreeIfNeeded()

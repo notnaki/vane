@@ -7,6 +7,9 @@ import WebKit
 @MainActor enum SitePermissions {
     enum Kind: String, CaseIterable, Hashable, Sendable {
         case camera, microphone, cameraAndMicrophone, location
+        /// A `window.open` nothing the user did asked for. Never prompted: Ask is "block it
+        /// and say so", Allow opens it, Block drops it quietly. See `Tab.createWebViewWith`.
+        case popups
         init?(_ media: WKMediaCaptureType) {
             switch media {
             case .camera: self = .camera
@@ -128,6 +131,7 @@ import WebKit
         case .microphone: "use your microphone"
         case .cameraAndMicrophone: "use your camera and microphone"
         case .location: "use your location"
+        case .popups: "open pop-up windows"
         }
     }
 
@@ -162,7 +166,7 @@ import WebKit
         let camera = remembered(scope: scope, type: .camera)
         let microphone = remembered(scope: scope, type: .microphone)
         let once = tabID.flatMap { onceAnswers[$0]?[scope] } ?? []
-        if type == .location {
+        if type == .location || type == .popups {
             return remembered(scope: scope, type: type) ?? (once.contains(type) ? true : nil)
         }
         let oncePair: Bool? = once.contains(.cameraAndMicrophone) ? true : nil
@@ -179,7 +183,7 @@ import WebKit
             if pair == false || camera == false || microphone == false { return false }
             if pair == true { return true }
             return cameraAnswer == true && microphoneAnswer == true ? true : nil
-        case .location: return nil
+        case .location, .popups: return nil
         }
     }
 
@@ -190,7 +194,7 @@ import WebKit
         // Camera to Ask does not also discard Microphone's one-time access.
         for id in Array(onceAnswers.keys) {
             guard var grants = onceAnswers[id]?[scope] else { continue }
-            if type != .location && type != .cameraAndMicrophone, grants.contains(.cameraAndMicrophone) {
+            if type == .camera || type == .microphone, grants.contains(.cameraAndMicrophone) {
                 grants.formUnion([.camera, .microphone])
                 grants.remove(.cameraAndMicrophone)
             }
@@ -198,7 +202,8 @@ import WebKit
             onceAnswers[id]?[scope] = grants.isEmpty ? nil : grants
             if onceAnswers[id]?.isEmpty == true { onceAnswers.removeValue(forKey: id) }
         }
-        if type != .location, let pair = remembered(scope: scope, type: .cameraAndMicrophone) {
+        if type == .camera || type == .microphone || type == .cameraAndMicrophone,
+           let pair = remembered(scope: scope, type: .cameraAndMicrophone) {
             for kind in [Kind.camera, .microphone]
             where remembered(scope: scope, type: kind) == nil {
                 remember(scope: scope, type: kind, allow: pair)
@@ -380,6 +385,7 @@ import WebKit
         case "microphone": what = "Microphone"
         case "cameraAndMicrophone": what = "Camera and microphone"
         case "location": what = "Location"
+        case "popups": what = "Pop-ups"
         default: return nil
         }
         return (scope, what)
@@ -536,6 +542,17 @@ import WebKit
         results.append(("global reset removes current and legacy grants",
                         all(profileID: otherProfile).isEmpty
                         && scratch.object(forKey: "sitePermission.camera.legacy.example") == nil))
+        set(scope: secure, type: .popups, answer: true)
+        results.append(("a Pop-ups Allow stays on its origin and is listed as Pop-ups",
+                        effective(scope: secure, type: .popups) == true
+                        && effective(scope: insecure, type: .popups) == nil
+                        && all(profileID: profile).contains { $0.what == "Pop-ups" && $0.allowed }))
+        remember(scope: secure, type: .cameraAndMicrophone, allow: true)
+        set(scope: secure, type: .popups, answer: nil)
+        results.append(("changing Pop-ups leaves a camera and microphone pair alone",
+                        effective(scope: secure, type: .popups) == nil
+                        && remembered(scope: secure, type: .cameraAndMicrophone) == true))
+        resetAll()
         return results
     }
 }

@@ -10,10 +10,12 @@ website or username changes. No vault, backend, synchronization or cloud analysi
 Focus a username or current-password field to show the native account chooser. Rows name
 the account and matching HTTPS website, including a nondefault port. “No username” means
 the saved item has an empty username; it does not mean the item is broken. Use Up/Down
-and Return to choose, Escape to dismiss, or click a row. A single matching account may
-fill automatically into an empty recognized login. Multiple accounts wait for a choice.
-Existing user-entered values and `autocomplete=off` are respected during automatic fill.
-An explicit account choice can fill an `off` form. Filling never submits.
+and Return to choose, Escape to dismiss, or click a row. Nothing fills until an account
+is chosen, even when only one matches: a form appearing on a page is not a request to sign
+in. An account picked on the main page's username-only form carries into the next
+same-origin password page for up to two minutes. A hidden or read-only account identity
+must match that choice. An explicit account choice can fill an `off` form. Filling never
+submits.
 
 Detection prefers `autocomplete=username`, `current-password`, and `new-password`, then
 conservative field names and email fields. New fields and visibility/type changes are

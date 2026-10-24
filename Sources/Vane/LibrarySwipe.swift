@@ -125,7 +125,9 @@ private struct LibrarySwipe: ViewModifier {
     }
 }
 
-/// Left closes Library from its panel; right opens it from the first Space's sidebar.
+/// Library sits before the first Space: the previous-Space swipe opens it from the first
+/// Space's sidebar, and the next-Space swipe closes it from its panel. Right and left
+/// respectively with Natural Scrolling on; the other way round with it off.
 /// Decide on fingers-up and consume momentum so one gesture cannot do both.
 /// Page content, vertical scrolling and other Spaces' gestures keep their recipient.
 @MainActor final class LibrarySwipeMonitor {
@@ -315,9 +317,10 @@ private struct LibrarySwipe: ViewModifier {
             }
             return claim == .mine ? nil : event
         }
-        // Navigation follows the fingers, independent of the scrolling preference.
-        // Device deltas are positive for left; Natural Scrolling inverts them.
-        let dx = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+        // Read the way Space swipes are (`scrollingDeltaX`, scrolling preference and all), so
+        // Library is always one step before the first Space. Reading the fingers instead put
+        // "open Library" on the first Space's next-Space swipe with Natural Scrolling off.
+        let dx = event.scrollingDeltaX
         travel.x += dx
         travel.horizontal += abs(event.scrollingDeltaX)
         travel.vertical += abs(event.scrollingDeltaY)

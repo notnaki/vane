@@ -300,7 +300,9 @@ import WebKit
             var p = targetPair(true);
             m.accountHint = p && p.user ? p.user.value : (p && p.pass ? carriedAccount(p) : '');
             m.mainDocument = window === topWindow;
-            m.passwordOnly = !!p && !!p.pass && !p.user;
+            // Hidden/read-only account identities validate the choice; they are not
+            // editable username steps and must never be overwritten.
+            m.passwordOnly = !!p && !!p.pass && (!p.user || !usableInput(p.user));
           }
           if (m.focus) recentContext = context;
           if (m.focus || m.generate) listOpen = true;
@@ -359,7 +361,7 @@ import WebKit
             if (p.user && usableInput(p.user) && p.user.value &&
                 (hasRole(p.user, 'username') || /user|login|account/i.test(p.user.name + ' ' + p.user.id))) {
               rememberStep(p);
-              send({ usernameStep: p.user.value, mainDocument: window === topWindow });
+              send({ usernameStep: p.user.value, target: token(p), mainDocument: window === topWindow });
             }
             return;
           }
