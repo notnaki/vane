@@ -4,6 +4,72 @@ import XCTest
 @testable import vane
 
 @MainActor final class SavedReaderTests: XCTestCase {
+    @MainActor private final class ImageProbe {
+        private(set) var pending = false
+        private(set) var width: Int?
+        private(set) var snapshot = "not sampled"
+        private(set) var error: String?
+        private var active = true
+
+        func stop() { active = false }
+
+        func sample(_ web: WKWebView) {
+            guard active, !pending else { return }
+            pending = true
+            web.evaluateJavaScript("""
+                JSON.stringify((() => {
+                    const image = document.images[0], rect = image?.getBoundingClientRect();
+                    return {url: location.href, ready: document.readyState, imageCount: document.images.length,
+                        naturalWidth: image?.naturalWidth, complete: image?.complete, loading: image?.loading,
+                        src: image?.getAttribute('src'), currentSrc: image?.currentSrc,
+                        rect: rect && {x:rect.x,y:rect.y,width:rect.width,height:rect.height},
+                        viewport: {width:innerWidth,height:innerHeight}};
+                })())
+                """) { [weak self] value, error in
+                guard let self, self.active else { return }
+                self.pending = false
+                if let error { self.error = String(describing: error); return }
+                guard let text = value as? String, let data = text.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    self.error = "Image probe returned an unexpected value: \(String(describing: value))"
+                    return
+                }
+                self.snapshot = String(text.prefix(4_096))
+                self.width = object["naturalWidth"] as? Int
+                self.error = nil
+            }
+        }
+    }
+
+    private struct ImageFixtureFailure: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    private func waitForLocalImage(_ web: WKWebView, resource: String,
+                                   file: StaticString = #filePath, line: UInt = #line) async throws {
+        let probe = ImageProbe()
+        defer { probe.stop() }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while true {
+            if !web.isLoading, probe.width == 1 {
+                print("Saved reader image ready: bounds=\(web.bounds), policy=\(NSApplication.shared.activationPolicy().rawValue), " +
+                      "windowVisible=\(web.window?.isVisible ?? false), occlusion=\(web.window?.occlusionState.rawValue ?? 0), image=\(probe.snapshot)")
+                return
+            }
+            if ContinuousClock.now >= deadline {
+                let image = web.url?.deletingLastPathComponent().appendingPathComponent("images/" + resource)
+                let state = "url=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), progress=\(web.estimatedProgress), " +
+                    "bounds=\(web.bounds), policy=\(NSApplication.shared.activationPolicy().rawValue), " +
+                    "fileExists=\(image.map { FileManager.default.fileExists(atPath: $0.path) } ?? false), " +
+                    "imageProbePending=\(probe.pending), image=\(probe.snapshot), javascriptError=\(probe.error ?? "none")"
+                let native = await NativeFixtureDiagnostics.failureReport(for: web)
+                throw ImageFixtureFailure(description: "\(file):\(line): Saved reader local image did not decode within 10 seconds. \(state); \(native)")
+            }
+            if !web.isLoading { probe.sample(web) }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     func testEscapingLabelAndNoNetworkImages() {
         TestEnvironment.prepare()
         let article = makeReadingArticle(text: "<script>window.bad=true</script>")
@@ -71,7 +137,10 @@ import XCTest
         XCTAssertTrue(window.isVisible)
     }
     func testSavedWindowOpensFromAnotherProfileRendersLocalImageAndClosesOnRemoval() async throws {
-        TestEnvironment.prepare(); NSApplication.shared.setActivationPolicy(.prohibited)
+        TestEnvironment.prepare()
+        let policy = NSApplication.shared.activationPolicy()
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        defer { NSApplication.shared.setActivationPolicy(policy) }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let repository = try ReadingQueueStore.shared(profileID: ProfileManager.defaultID, directory: root)
@@ -90,11 +159,7 @@ import XCTest
         func findWeb(_ view: NSView) -> WKWebView? { if let web = view as? WKWebView { return web }; return view.subviews.compactMap(findWeb).first }
         try await compatibilityWait { window.contentView?.layoutSubtreeIfNeeded(); return window.contentView.flatMap(findWeb) != nil }
         let web = try XCTUnwrap(window.contentView.flatMap(findWeb))
-        try await compatibilityWait {
-            if web.isLoading { return false }
-            let width = try? await web.evaluateJavaScript("document.images[0]?.naturalWidth")
-            return width as? Int == 1
-        }
+        try await waitForLocalImage(web, resource: raster.resource.name)
         let raw = try await web.evaluateJavaScript("document.body.innerText")
         let text = try XCTUnwrap(raw as? String)
         XCTAssertTrue(text.contains("Saved copy")); XCTAssertTrue(text.contains("nebula"))
