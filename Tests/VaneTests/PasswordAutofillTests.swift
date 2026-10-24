@@ -114,6 +114,27 @@ import XCTest
         }
     }
 
+    // Temporary macOS 26 CI probe; remove with its workflow step after collecting evidence.
+    func testNativeTimeoutDiagnosticSmoke() async throws {
+        guard ProcessInfo.processInfo.environment["VANE_NATIVE_TIMEOUT_PROBE"] == "1" else {
+            throw XCTSkip("Enabled only for the targeted native timeout diagnostic probe")
+        }
+        let (web, _) = try await fixture("<p>Owned native timeout diagnostic probe</p>")
+        let stage = "deliberately false native diagnostic probe condition"
+        do {
+            try await wait(for: stage, diagnostics: {
+                await NativeFixtureDiagnostics.failureReport(for: web)
+            }) { false }
+            XCTFail("The deliberately false probe must reach the original five-second timeout")
+        } catch {
+            let failure = try XCTUnwrap(error as? FixtureFailure)
+            XCTAssertEqual(failure.stage, stage)
+            XCTAssertTrue(failure.cause is FixtureTimeout)
+            XCTAssertTrue(failure.diagnostics.contains("uiPID="))
+            NativeFixtureDiagnostics.emit("targeted native timeout probe caught original FixtureTimeout; " + failure.diagnostics)
+        }
+    }
+
     private func wait(for stage: String = "fixture condition", file: StaticString = #filePath, line: UInt = #line,
                       diagnostics: () async -> String = { "" },
                       _ condition: () async throws -> Bool) async throws {
@@ -124,9 +145,12 @@ import XCTest
                 try await Task.sleep(for: .milliseconds(20))
             }
         } catch {
+            NativeFixtureDiagnostics.emit("\(file):\(line): Failed waiting for \(stage): \(error); collecting native diagnostics")
             // XCTest records the thrown failure once. Recording XCTFail here too
             // obscures the original failure with a second, unexpected thrown error.
-            throw FixtureFailure(stage: stage, cause: error, diagnostics: await diagnostics(), file: file, line: line)
+            let report = await diagnostics()
+            NativeFixtureDiagnostics.emit("\(file):\(line): Failed waiting for \(stage): \(error). \(report)")
+            throw FixtureFailure(stage: stage, cause: error, diagnostics: report, file: file, line: line)
         }
     }
 
@@ -295,6 +319,7 @@ import XCTest
             let state = "expected=\(url), actual=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), " +
                 "progress=\(web.estimatedProgress), tabLoading=\(tab.loading), suspended=\(tab.suspended), " +
                 "recovery=\(tab.needsRecovery)"
+            NativeFixtureDiagnostics.emit("continuation document \(path) cached state before sampling: " + state)
             return state + "; " + (await NativeFixtureDiagnostics.failureReport(for: web))
         }) {
             return !web.isLoading

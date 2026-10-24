@@ -62,8 +62,11 @@ import XCTest
                     "bounds=\(web.bounds), policy=\(NSApplication.shared.activationPolicy().rawValue), " +
                     "fileExists=\(image.map { FileManager.default.fileExists(atPath: $0.path) } ?? false), " +
                     "imageProbePending=\(probe.pending), image=\(probe.snapshot), javascriptError=\(probe.error ?? "none")"
+                let failure = "\(file):\(line): Saved reader local image did not decode within 10 seconds. \(state)"
+                NativeFixtureDiagnostics.emit(failure + "; collecting native diagnostics")
                 let native = await NativeFixtureDiagnostics.failureReport(for: web)
-                throw ImageFixtureFailure(description: "\(file):\(line): Saved reader local image did not decode within 10 seconds. \(state); \(native)")
+                NativeFixtureDiagnostics.emit(failure + "; " + native)
+                throw ImageFixtureFailure(description: failure + "; " + native)
             }
             if !web.isLoading { probe.sample(web) }
             try await Task.sleep(for: .milliseconds(20))

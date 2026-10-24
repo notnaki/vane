@@ -2,6 +2,20 @@ import Darwin
 import XCTest
 
 final class NativeFixtureDiagnosticsTests: XCTestCase {
+    func testFailureRecordIsWrittenWithoutWaitingForStdoutFlushOrErrorFormatting() throws {
+        var descriptors = [Int32](repeating: -1, count: 2)
+        XCTAssertEqual(pipe(&descriptors), 0)
+        defer { _ = close(descriptors[0]); _ = close(descriptors[1]) }
+        XCTAssertNotEqual(fcntl(descriptors[0], F_SETFL, O_NONBLOCK), -1)
+        NativeFixtureDiagnostics.emit("cached image width=0; Café", descriptor: descriptors[1])
+        var bytes = [UInt8](repeating: 0, count: 512)
+        let count = bytes.withUnsafeMutableBytes { read(descriptors[0], $0.baseAddress, $0.count) }
+        XCTAssertGreaterThan(count, 0, "The record must be observable immediately, before a failure is thrown")
+        guard count > 0 else { return }
+        XCTAssertEqual(String(decoding: bytes.prefix(count), as: UTF8.self),
+                       "Vane fixture diagnostic: cached image width=0; Café\n")
+    }
+
     private func fixture(pid: Int32 = 123, start: UInt64 = 10, path: String? = nil) -> NativeFixtureDiagnostics.Identity {
         .init(pid: pid, start: start,
               path: path ?? "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",

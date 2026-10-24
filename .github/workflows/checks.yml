@@ -68,6 +68,13 @@ jobs:
       - name: App icon migration and bundled selections
         run: scripts/check-app-icons.sh
 
+      # Temporary diagnostic probe; retain the required full suite below unchanged.
+      - name: Owned native timeout diagnostics on macOS 26
+        env:
+          VANE_TEST_KEYCHAIN: '1'
+          VANE_NATIVE_TIMEOUT_PROBE: '1'
+        run: swift test --jobs 1 --filter PasswordAutofillTests/testNativeTimeoutDiagnosticSmoke
+
       - name: Search typing regressions
         run: swift test
 

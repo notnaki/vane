@@ -5,6 +5,22 @@ import WebKit
 /// Failure-only diagnostics for the WebContent process owned by a fixture's live view.
 /// Never enumerate or sample another application's WebKit processes.
 @MainActor enum NativeFixtureDiagnostics {
+    /// Write straight to stdout: failure context must survive XCTest error
+    /// formatting and must already be visible if a later native diagnostic fails.
+    nonisolated static func emit(_ message: String, descriptor: Int32 = STDOUT_FILENO) {
+        let record = "Vane fixture diagnostic: " + message + "\n"
+        record.utf8CString.withUnsafeBytes { bytes in
+            var offset = 0
+            let count = bytes.count - 1
+            while offset < count {
+                let written = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), count - offset)
+                if written < 0, errno == EINTR { continue }
+                guard written > 0 else { return }
+                offset += written
+            }
+        }
+    }
+
     struct Identity: Equatable, Sendable {
         let pid: Int32
         let start: UInt64
@@ -70,12 +86,15 @@ import WebKit
 
     static func failureReport(for web: WKWebView) async -> String {
         let window = web.window
+        let windowState = "uiPID=\(getpid()), appActive=\(NSApplication.shared.isActive), " +
+            "windowVisible=\(window?.isVisible ?? false), windowOcclusion=\(window?.occlusionState.rawValue ?? 0)"
+        emit("native UI before content PID getter: " + windowState)
         let pid = contentPID(web)
-        let ui = "uiPID=\(getpid()), appActive=\(NSApplication.shared.isActive), " +
-            "windowVisible=\(window?.isVisible ?? false), windowOcclusion=\(window?.occlusionState.rawValue ?? 0), " +
-            "contentPID=\(pid.map(String.init) ?? "unavailable")"
+        let ui = windowState + ", contentPID=\(pid.map(String.init) ?? "unavailable")"
+        emit("native snapshot before sampling: " + ui)
         guard let pid, let captured = identity(pid) else { return ui + "; native process identity unavailable" }
         let metadata = ui + ", contentStart=\(captured.start), contentPath=\(captured.path), contentState=\(captured.state)"
+        emit("native identity before sampling: " + metadata)
         guard maySample(captured, observed: identity(pid), ownedPID: contentPID(web)) else {
             return metadata + "; sample unavailable: live fixture process ownership could not be verified"
         }
@@ -94,9 +113,11 @@ import WebKit
         sampler.standardOutput = FileHandle.nullDevice
         sampler.standardError = FileHandle.nullDevice
         let deadline = ContinuousClock.now + .milliseconds(1750)
+        emit("launching owned sampler for contentPID=\(captured.pid), contentStart=\(captured.start)")
         do { try sampler.run() } catch { return "sample unavailable: \(error.localizedDescription)" }
         let samplerIdentity = identity(sampler.processIdentifier)
         let samplerMetadata = "samplerPID=\(sampler.processIdentifier), samplerStart=\(samplerIdentity?.start ?? 0), samplerPath=\(samplerIdentity?.path ?? "unavailable")"
+        emit("owned sampler launched: " + samplerMetadata)
         // One second of stack collection, with a two-second bound including symbolication.
         while sampler.isRunning, ContinuousClock.now < deadline {
             do { try await Task.sleep(for: .milliseconds(20)) } catch { break }
@@ -110,8 +131,11 @@ import WebKit
                 _ = kill(expected.pid, signal)
                 try? await Task.sleep(for: .milliseconds(50))
             }
-            return samplerMetadata + "; sample unavailable: exceeded diagnostic bound; samplerRunning=\(sampler.isRunning)"
+            let result = samplerMetadata + "; sample unavailable: exceeded diagnostic bound; samplerRunning=\(sampler.isRunning)"
+            emit(result)
+            return result
         }
+        emit("owned sampler exited: " + samplerMetadata + ", status=\(sampler.terminationStatus)")
         guard stillOwned(), maySample(captured, observed: identity(captured.pid), ownedPID: captured.pid) else {
             return samplerMetadata + "; sample discarded: fixture process changed during collection"
         }
