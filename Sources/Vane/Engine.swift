@@ -3488,7 +3488,7 @@ struct Stash {
         if !outcome.keep {
             if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
             if TabStore.remembersClosed(keep: outcome.keep, byScript: byScript,
-                                        isPrivate: isPrivate) { ClosedTabs.push(tab.currentURL) }
+                                        isPrivate: isPrivate) { ClosedTabs.push(tab) }
             SharedTabs.remove(id, from: self)
             tab.tearDown()
             Motion.animate(Look.tabClose) { _ = tabs.remove(at: i) }

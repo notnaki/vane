@@ -1875,14 +1875,39 @@ extension TabStore {
     }
 }
 
-/// ⌘⇧T. ponytail: a url stack, not a full tab-state graph — reopening restores the page,
-/// not its scroll position or back/forward list.
+/// ⌘⇧T. Keep the last 32 closed pages in memory, without retaining their tabs,
+/// web views, website data stores or password UI. Nothing in this stack is persisted.
 @MainActor enum ClosedTabs {
-    private static var stack: [URL] = []
-    static func push(_ url: URL?) {
-        guard let url, TabAddress.restorable(url) else { return }
-        stack.append(url)
+    struct Entry {
+        let url: URL
+        let profileID: UUID
+        let snapshot: Parked
+
+        /// Reopen as a new Today row in the current context, just like opening its URL.
+        /// Session state stays inside its originating profile; a different profile or a
+        /// private window gets a fresh URL load using that destination's website data.
+        @MainActor @discardableResult
+        func reopen(in store: TabStore) -> Tab? {
+            guard !AppLifecycle.shared.persistenceExitInProgress else { return nil }
+            let destination = store.isLittle ? LittleArc.open(nil, isPrivate: store.isPrivate) : store
+            let tab = destination.newBlankTab(focus: false)
+            let parked = !destination.isPrivate && destination.profileID == profileID ? snapshot : Parked()
+            tab.park(url: url, parked)
+            destination.palette = nil
+            destination.current = tab.id   // selection resumes the parked history, with URL fallback
+            return tab
+        }
+    }
+
+    private static var stack: [Entry] = []
+    static func push(_ tab: Tab) {
+        guard !tab.isPrivate, let url = tab.currentURL, TabAddress.restorable(url) else { return }
+        var snapshot = tab.snapshot
+        // Reopening is an explicit request to load the URL. Do not replay state that
+        // crash recovery deliberately withheld, or carry its resume blocker into a new row.
+        if snapshot.needsRecovery { snapshot.state = nil; snapshot.needsRecovery = false }
+        stack.append(Entry(url: url, profileID: tab.profileID, snapshot: snapshot))
         if stack.count > 32 { stack.removeFirst() }
     }
-    static func pop() -> URL? { stack.popLast() }
+    static func pop() -> Entry? { stack.popLast() }
 }

@@ -192,6 +192,12 @@ windows share Library contents across all profiles and Spaces, including Easels,
 Boosts, Archived Tabs, and Reading Queue. Items keep their owning profile for
 opening, restoring, and other actions; profile labels distinguish matching items.
 
+**Reopen Closed Tab** (`⇧⌘T`) remembers the last 32 closed regular tabs
+until Vane quits. Reopening in the same profile restores the page's Back/Forward
+history when WebKit state is available; another profile or a private window opens
+only its URL in the current context. Private tabs and script-closed popups do not
+enter this list. Unavailable or unusable state falls back to loading the URL.
+
 Starting a download sends a small marker from the page into the Library bucket. The
 bucket briefly shows the file type's icon on arrival. Reduce Motion and Battery Saver
 show the icon immediately without the flight.
