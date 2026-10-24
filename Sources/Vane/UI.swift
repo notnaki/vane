@@ -3695,11 +3695,6 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
                     if hovering != next { hovering = next }
                 }))
                 .contentShape(.rect)
-                .onHover { inside in
-                    // Tracking exits cover leaving the window, while tracking
-                    // entries caused by layout never manufacture pointer motion.
-                    if !inside { hovering = false }
-                }
                 .onGeometryChange(for: CGRect?.self) { [tracksFrame = hovering] in
                     tracksFrame ? $0.frame(in: .global) : nil
                 } action: { previous, next in

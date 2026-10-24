@@ -47,6 +47,10 @@ import SwiftUI
         if hovered === anchor { releaseHover(afterLayout: true) }
     }
 
+    func cancelHover(for anchor: Feel02PressAnchorView) {
+        if hovered === anchor { releaseHover(afterLayout: true) }
+    }
+
     func release() {
         pressed?.changed?(false)
         pressed = nil
@@ -122,12 +126,16 @@ import SwiftUI
 }
 
 final class Feel02PressAnchorView: NSView {
+    private var exitTracking: NSTrackingArea?
     var enabled = true {
         didSet { if !enabled { pressMonitor?.cancel(for: self) } }
     }
     var changed: ((Bool) -> Void)?
     var hoverChanged: ((Bool) -> Void)? {
-        didSet { requestPointerMotion() }
+        didSet {
+            requestPointerMotion()
+            updateExitTracking()
+        }
     }
     weak var pressMonitor: Feel02PressMonitor?
 
@@ -137,6 +145,30 @@ final class Feel02PressAnchorView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        updateExitTracking()
+    }
+    private func updateExitTracking() {
+        guard hoverChanged != nil else {
+            if let exitTracking { removeTrackingArea(exitTracking) }
+            exitTracking = nil
+            return
+        }
+        guard exitTracking == nil else { return }
+        // Native motion also admits non-key windows. Exit observation must cover
+        // the same windows, while entry remains governed by actual pointer motion.
+        let area = NSTrackingArea(rect: .zero,
+            options: [.inVisibleRect, .mouseEnteredAndExited, .activeAlways],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        exitTracking = area
+    }
+    override func mouseExited(with event: NSEvent) {
+        // Tracking can exit during layout. Revoke hover now and defer decoration;
+        // native mouse-up and drag handling keep ownership of an ongoing press.
+        pressMonitor?.cancelHover(for: self)
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         requestPointerMotion()
@@ -234,5 +266,52 @@ struct Feel02PressFeedback: ViewModifier {
                     }, hoverChanged: hoverChanged)
                 }
             }
+    }
+}
+
+/// Palette rows arbitrate independently of smaller controls behind their modal surface.
+/// The monitor's passive event and stationary-pointer rules are shared, not its targets.
+@MainActor private enum PaletteHoverInput {
+    static let shared = Feel02PressMonitor()
+}
+
+private struct PaletteHoverAnchor: NSViewRepresentable {
+    let hoverChanged: (Bool) -> Void
+
+    func makeNSView(context: Context) -> Feel02PressAnchorView {
+        let view = Feel02PressAnchorView(frame: .zero)
+        PaletteHoverInput.shared.register(view)
+        return view
+    }
+
+    func updateNSView(_ view: Feel02PressAnchorView, context: Context) {
+        view.changed = nil
+        view.hoverChanged = hoverChanged
+        view.enabled = true
+    }
+
+    static func dismantleNSView(_ view: Feel02PressAnchorView, coordinator: ()) {
+        PaletteHoverInput.shared.remove(view)
+    }
+}
+
+/// Hover decoration only: native hit testing and keyboard activation stay with the row.
+/// Scroll clears pointer feedback until actual pointer movement; selected rows remain lit.
+struct Feel02HoverFeedback: ViewModifier {
+    let hoverChanged: (Bool) -> Void
+    @Environment(\.isEnabled) private var controlEnabled
+    @Environment(\.feel02PressFeedbackEnabled) private var surfaceEnabled
+
+    private var interactive: Bool { controlEnabled && surfaceEnabled }
+
+    func body(content: Content) -> some View {
+        content.background {
+            if interactive {
+                PaletteHoverAnchor(hoverChanged: hoverChanged)
+            }
+        }
+        .onChange(of: interactive) { _, enabled in
+            if !enabled { hoverChanged(false) }
+        }
     }
 }

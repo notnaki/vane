@@ -139,7 +139,14 @@ import XCTest
             location: NSPoint(x: -20, y: -20), modifierFlags: [],
             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
             context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
-        _ = Feel02PressMonitor.shared.handle(exit)
+        newTab.updateTrackingAreas()
+        let exitArea = try XCTUnwrap(newTab.trackingAreas.first {
+            $0.owner === newTab && $0.options.contains(.mouseEnteredAndExited)
+        }, "The row's native anchor must observe exits without SwiftUI hover tracking")
+        newTab.updateTrackingAreas()
+        XCTAssertTrue(newTab.trackingAreas.contains { $0 === exitArea },
+                      "Scrolling layout must reuse the exit observation")
+        newTab.mouseExited(with: exit)
         try await Task.sleep(for: .milliseconds(180))
         XCTAssertLessThan(try fillBrightness(), 0.02, "Leaving the window clears hover")
         try move(to: NSPoint(x: stationary.x + 8, y: stationary.y))

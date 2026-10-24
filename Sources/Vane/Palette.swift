@@ -748,6 +748,7 @@ struct CommandField: NSViewRepresentable {
     @Environment(\.spaceChromeTheme) private var chromeTheme
     // Slots keep their identity while queries replace the result occupying them.
     @State private var hovering = false
+    @State private var nativeHover = PaletteNativeHoverExperiment.enabled
 
     var body: some View {
         let on = selected
@@ -836,7 +837,7 @@ struct CommandField: NSViewRepresentable {
         .padding(.horizontal, Look.barInset)
         .contentShape(.rect)
         .id(index)
-        .onHover { hovering = $0 }
+        .modifier(PaletteResultHover(native: nativeHover) { hovering = $0 })
         .onTapGesture(perform: activate)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(row.title)
@@ -845,6 +846,19 @@ struct CommandField: NSViewRepresentable {
         .accessibilityAction { activate() }
     }
 
+}
+
+private struct PaletteResultHover: ViewModifier {
+    let native: Bool
+    let changed: (Bool) -> Void
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if native {
+            content.modifier(Feel02HoverFeedback(hoverChanged: changed))
+        } else {
+            content.onHover(perform: changed)
+        }
+    }
 }
 
 /// The search bar: one centred sheet over the page for typing a url, a search, a question
