@@ -149,4 +149,32 @@ final class ArcSidebarSplitTests: XCTestCase {
         XCTAssertEqual(layout.splits.first?.active, 1)
     }
 
+
+    func testOnlyActualArcRenamesBecomeCustomNamesInSplitSpaces() throws {
+        var renamed = tab("B", url: "https://mail.example/")
+        renamed["title"] = "My mailbox"
+        let parsed = try sidebar([
+            split(["A", "B"], focus: "B"), tab("A", url: "https://mail.example/"), renamed, tab("today-tab")
+        ], pinned: ["S"], today: ["today-tab"])
+        let layout = ArcImport.layout(pinned: parsed.spaces[0].pinned, today: parsed.spaces[0].today)
+        XCTAssertEqual(layout.tabs.map(\.title), ["A", "B", "today-tab"])
+        XCTAssertEqual(layout.tabs.map(\.customName), [nil, "My mailbox", nil])
+        XCTAssertEqual(Set(layout.tabs.map(\.id)).count, 3)
+        XCTAssertEqual(layout.splits[0].ids, Array(layout.tabs.prefix(2)).map { $0.id.uuidString })
+        XCTAssertEqual(layout.splits[0].active, 1)
+        XCTAssertEqual(layout.selected, layout.tabs[2].id)
+    }
+
+    func testUnrepresentableSplitKeepsRenameProvenanceWhenFlattened() throws {
+        var renamed = tab("B")
+        renamed["title"] = "Custom B"
+        let parsed = try sidebar([split(["A", "B"], orientation: "unsupported"), tab("A"), renamed], pinned: ["S"])
+        let layout = ArcImport.layout(pinned: parsed.spaces[0].pinned, today: [])
+        XCTAssertEqual(layout.tabs.map(\.title), ["A", "B"])
+        XCTAssertEqual(layout.tabs.map(\.customName), [nil, "Custom B"])
+        XCTAssertEqual(ArcImport.parkedTitles(in: layout)["https://b.example/"]?.title, "B")
+        XCTAssertEqual(ArcImport.shape(parsed.spaces[0].pinned).titles["https://b.example/"], "Custom B")
+        XCTAssertEqual(parsed.warnings.flattenedSplits, 1)
+    }
+
 }

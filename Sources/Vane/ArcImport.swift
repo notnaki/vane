@@ -14,10 +14,13 @@ import WebKit
 /// which is the only shape the folder half of the import can be written against. Only
 /// `http(s)` tabs survive the walk — see `ArcSidebar.rows`.
 enum ArcRow: Equatable, Sendable {
-    case tab(url: URL, title: String)
+    /// Cached page title and user rename are distinct: only the latter stays fixed when
+    /// a restored page changes its title or navigates elsewhere.
+    case tab(url: URL, title: String, customName: String? = nil)
     struct Pane: Equatable, Sendable {
         var url: URL
         var title: String
+        var customName: String? = nil
     }
     case split(panes: [Pane], vertical: Bool, weights: [Double], active: Int)
     /// `live` is Arc's one automatic folder — its "Pull Requests" — carried as the
@@ -181,7 +184,7 @@ struct ArcSidebar: Equatable, Sendable {
                 guard let raw = tab["savedURL"] as? String, let url = URL(string: raw),
                       url.scheme == "http" || url.scheme == "https", url.host?.isEmpty == false else { continue }
                 let renamed = (item["title"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                out.append(.tab(url: url, title: renamed ?? (tab["savedTitle"] as? String ?? "")))
+                out.append(.tab(url: url, title: tab["savedTitle"] as? String ?? "", customName: renamed))
             } else if let list = data["list"] {
                 let kids = rows(of: id, items: items, seen: &seen, warnings: &warnings)
                 let live = liveSource(list)
@@ -191,7 +194,9 @@ struct ArcSidebar: Equatable, Sendable {
                 let kids = rows(of: id, items: items, seen: &seen, warnings: &warnings)
                 let childIDs = item["childrenIds"] as? [String] ?? []
                 let panes = kids.compactMap { row -> ArcRow.Pane? in
-                    if case .tab(let url, let title) = row { return .init(url: url, title: title) }
+                    if case .tab(let url, let title, let customName) = row {
+                        return .init(url: url, title: title, customName: customName)
+                    }
                     return nil
                 }
                 if let split = data["splitView"] as? [String: Any],
@@ -206,7 +211,7 @@ struct ArcSidebar: Equatable, Sendable {
                                       weights: Split.normalised(weights), active: active))
                 } else {
                     warnings.flattenedSplits += 1
-                    out += flatten(kids).map { .tab(url: $0.url, title: $0.title) }
+                    out += flatten(kids).map { .tab(url: $0.url, title: $0.title, customName: $0.customName) }
                 }
             } else {
                 // Containers are transparent. A future row type gives up its children too,
@@ -277,12 +282,12 @@ struct ArcSidebar: Equatable, Sendable {
     /// Every tab in a tree, in drawing order, folders given up. What the favourites row and
     /// the Space's flat url lists are made of — the folders themselves travel separately, in
     /// a `Pins`.
-    static func flatten(_ rows: [ArcRow]) -> [(url: URL, title: String)] {
-        rows.flatMap { row -> [(url: URL, title: String)] in
+    static func flatten(_ rows: [ArcRow]) -> [ArcRow.Pane] {
+        rows.flatMap { row -> [ArcRow.Pane] in
             switch row {
-            case .tab(let url, let title): [(url, title)]
+            case .tab(let url, let title, let customName): [.init(url: url, title: title, customName: customName)]
             case .folder(_, let kids, _): flatten(kids)
-            case .split(let panes, _, _, _): panes.map { ($0.url, $0.title) }
+            case .split(let panes, _, _, _): panes
             }
         }
     }
@@ -465,17 +470,18 @@ enum ArcImport {
         func walk(_ rows: [ArcRow], parent: UUID?, depth: Int) {
             for row in rows {
                 switch row {
-                case .tab(let url, let title):
+                case .tab(let url, let title, let customName):
                     pins.entries.append(Pins.Entry(row: .tab(url.absoluteString), parent: parent))
                     urls.append(url)
                     // Two rows on the same page are one key in the sidecar, exactly as they
                     // are for a Space Vane wrote itself; the first title wins rather than the
                     // last, so the page keeps the name of the row drawn first.
-                    if !title.isEmpty, titles[url.absoluteString] == nil {
-                        titles[url.absoluteString] = title
+                    let label = customName ?? title
+                    if !label.isEmpty, titles[url.absoluteString] == nil {
+                        titles[url.absoluteString] = label
                     }
                 case .split(let panes, _, _, _):
-                    walk(panes.map { .tab(url: $0.url, title: $0.title) }, parent: parent, depth: depth)
+                    walk(panes.map { .tab(url: $0.url, title: $0.title, customName: $0.customName) }, parent: parent, depth: depth)
                 case .folder(let name, let kids, let live):
                     // Arc nests as deep as it likes and Vane's sidebar stops at
                     // `Pins.maxDepth`. A folder past that gives up its rows to the folder it
@@ -506,10 +512,10 @@ enum ArcImport {
         func section(_ rows: [ArcRow], kind: TabKind) -> Pins {
             var shape = Pins()
             @discardableResult
-            func page(_ url: URL, _ title: String, parent: UUID?) -> UUID {
+            func page(_ url: URL, _ title: String, customName: String?, parent: UUID?) -> UUID {
                 let id = UUID()
                 layout.tabs.append(.init(id: id, url: url, kind: kind, title: title,
-                                         customName: title.isEmpty ? nil : title,
+                                         customName: customName,
                                          home: kind == .pinned ? url : nil))
                 shape.entries.append(.init(row: .tab(id.uuidString), parent: parent))
                 return id
@@ -517,9 +523,9 @@ enum ArcImport {
             func walk(_ rows: [ArcRow], parent: UUID?, depth: Int) {
                 for row in rows {
                     switch row {
-                    case .tab(let url, let title): page(url, title, parent: parent)
+                    case .tab(let url, let title, let customName): page(url, title, customName: customName, parent: parent)
                     case .split(let panes, let vertical, let weights, let active):
-                        let ids = panes.map { page($0.url, $0.title, parent: parent) }
+                        let ids = panes.map { page($0.url, $0.title, customName: $0.customName, parent: parent) }
                         layout.splits.append(.init(urls: panes.map { $0.url.absoluteString }, vertical: vertical,
                                                    active: active, ids: ids.map(\.uuidString), weights: weights))
                     case .folder(let name, let kids, let live):
@@ -548,6 +554,16 @@ enum ArcImport {
             } else { layout.selected = landing.id }
         }
         return layout
+    }
+
+    /// Cached titles belong in the sidecar; a user rename belongs only in layout metadata.
+    /// Duplicate URL occurrences share one sidecar slot, with the first cached title kept.
+    static func parkedTitles(in layout: SpaceLayout) -> [String: Parked] {
+        var parked: [String: Parked] = [:]
+        for page in layout.tabs where !page.title.isEmpty && parked[page.savedURL.absoluteString] == nil {
+            parked[page.savedURL.absoluteString] = Parked(title: page.title)
+        }
+        return parked
     }
 
     // MARK: What is on disk
@@ -905,10 +921,8 @@ enum ArcImport {
         // And the names, in the sidecar, keyed by url exactly as `saveCurrentSpace` keys it.
         // Without this every restored row comes up named after its host — "github.com"
         // instead of the page Arc was showing.
-        var parked: [String: Parked] = [:]
-        for (url, title) in pinnedTitles.merging(todayTitles, uniquingKeysWith: { a, _ in a }) {
-            parked[url] = Parked(title: title)
-        }
+        let parked = space.layout != nil ? parkedTitles(in: workspace)
+            : pinnedTitles.merging(todayTitles, uniquingKeysWith: { a, _ in a }).mapValues { Parked(title: $0) }
         try await saveImportedTitles(parked, space: space.id, profileID: profileID, in: Store.directory)
         counts.spaces += 1
         return space.id
@@ -1458,7 +1472,7 @@ enum ArcImport {
         assert("arc sidebar: a tab that is not a web page is not imported",
                !ArcSidebar.flatten(sidebar.spaces[0].pinned).contains { $0.title == "Library" })
         assert("arc sidebar: a row Arc renamed comes across under the name the user gave it",
-               ArcSidebar.flatten(sidebar.spaces[0].pinned).first?.title == "Apple Newsroom")
+               ArcSidebar.flatten(sidebar.spaces[0].pinned).first?.customName == "Apple Newsroom")
         assert("arc sidebar: a row nobody renamed keeps the name the page came with",
                ArcSidebar.flatten(sidebar.spaces[0].pinned).map(\.title).contains("Swift Blog"))
         assert("arc sidebar: an empty folder nothing fills is not a row",
