@@ -870,7 +870,7 @@ private struct PaletteResultHover: ViewModifier {
 /// open. Commands are a tail that only shows up once the query is long enough to mean one.
 /// Every entry point — ⌘L, ⌘T, the address pill, ⌘⇧P, ⌘⇧A — lands here, looking the same.
 @MainActor struct PaletteView: View {
-    @ObservedObject private var profileManager = ProfileManager.shared
+    private let profileManager = ProfileManager.shared
     @StateObject private var spaceCatalog = PaletteSpaceCatalog()
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
@@ -1074,8 +1074,11 @@ private struct PaletteResultHover: ViewModifier {
         .onChange(of: currentTabContent) { refresh(reset: false) }
         .onChange(of: tabSpaceID) { refresh() }
         // Space metadata changes between queries still update the open palette.
-        .onChange(of: profileManager.spacesRevision) { prepareCatalog(); refresh(reset: false) }
-        .onChange(of: profileManager.profiles) { prepareCatalog(); refresh(reset: false) }
+        .onReceive(spaceCatalog.metadataChanges(manager: profileManager)) { _ in
+            guard acceptingInput else { return }
+            prepareCatalog()
+            refresh(reset: false)
+        }
         .onChange(of: spaceCatalog.generation) {
             guard acceptingInput else { return }
             refresh(reset: false)
@@ -1097,7 +1100,8 @@ private struct PaletteResultHover: ViewModifier {
     }
 
     private var catalogSpaces: [Space] {
-        catalogStrip.filter { $0.profileID == store.profileID }
+        guard !store.isPrivate, !store.isLittle else { return [] }
+        return spaceCatalog.spaces(for: store.profileID, manager: profileManager, preview: store.previewSpace)
     }
 
     private var sources: [(offset: Int, element: TabStore)] {

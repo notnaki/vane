@@ -4,6 +4,35 @@ import Foundation
 /// The palette only renders an in-memory snapshot. Reading and decoding the saved
 /// metadata belongs to a worker; previews remain live and never enter persistence.
 @MainActor final class PaletteSpaceCatalog: ObservableObject {
+    struct Metadata: Equatable {
+        let profiles: [Profile]
+        let revision: Int
+
+        @MainActor init(_ manager: ProfileManager) {
+            profiles = manager.profiles
+            revision = manager.spacesRevision
+        }
+    }
+
+    private var metadataManager: ObjectIdentifier?
+    private var metadataPublisher: AnyPublisher<Metadata, Never>?
+
+    /// A stable subscription for a mounted palette. Published emits in willSet;
+    /// coalesce the burst before reading the completed manager mutation.
+    func metadataChanges(manager: ProfileManager) -> AnyPublisher<Metadata, Never> {
+        let identity = ObjectIdentifier(manager)
+        if metadataManager == identity, let metadataPublisher { return metadataPublisher }
+        let publisher = manager.$profiles.removeDuplicates()
+            .combineLatest(manager.$spacesRevision.removeDuplicates())
+            .debounce(for: .zero, scheduler: DispatchQueue.main)
+            .map { _ in MainActor.assumeIsolated { Metadata(manager) } }
+            .removeDuplicates()
+            .eraseToAnyPublisher()
+        metadataManager = identity
+        metadataPublisher = publisher
+        return publisher
+    }
+
     typealias Loader = @Sendable (URL, [UUID]) -> [Space]
     private struct Key: Equatable {
         let manager: ObjectIdentifier
