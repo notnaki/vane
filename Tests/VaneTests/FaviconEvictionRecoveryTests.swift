@@ -24,6 +24,18 @@ private actor FaviconRecoveryRequests {
         }
     }
 
+    private func loadIconPage(_ html: String, page: URL, artwork: URL, in tab: Tab) async throws {
+        let web = tab.web
+        // The injected cache owns this fixture's icons. Tab's didFinish would also
+        // start the profile cache, whose failed lookup could clear the injected result.
+        web.navigationDelegate = nil
+        web.loadHTMLString(html, baseURL: page)
+        try await waitUntil { tab.currentURL == page && !web.isLoading }
+        XCTAssertEqual(web.url, page)
+        let declared = Favicons.declared(try await web.evaluateJavaScript(Favicons.linkJS))
+        XCTAssertEqual(declared, [artwork], "The loaded document must supply the real icon declaration")
+    }
+
     func testLegacyDiskCachedSVGLoadsOnWorkerWithoutNetworkOrRewritingOriginal() async throws {
         TestEnvironment.prepare()
         let profile = UUID(), requests = FaviconRecoveryRequests(), data = Self.svg
@@ -86,8 +98,7 @@ private actor FaviconRecoveryRequests {
         let html = "<link rel='icon' href='\(artwork.absoluteString)'><p>Private icon fixture</p>"
         let first = Tab(isPrivate: true), replacement = Tab(isPrivate: true)
         defer { first.tearDown(); replacement.tearDown() }
-        first.web.loadHTMLString(html, baseURL: page)
-        try await waitUntil { first.currentURL == page && !first.web.isLoading }
+        try await loadIconPage(html, page: page, artwork: artwork, in: first)
         cache.load(for: first)
         try await waitUntil { cache.generation == 1 }
         XCTAssertNotNil(first.favicon)
@@ -97,8 +108,7 @@ private actor FaviconRecoveryRequests {
             XCTAssertNil(cache.icon(for: URL(string: "http://fill-\(index).invalid/")!))
         }
         try await waitUntil { cache.generation == 301 }
-        replacement.web.loadHTMLString(html, baseURL: page)
-        try await waitUntil { replacement.currentURL == page && !replacement.web.isLoading }
+        try await loadIconPage(html, page: page, artwork: artwork, in: replacement)
         cache.load(for: replacement)
         try await waitUntil { await requests.count(artwork) == 2 }
         try await waitUntil { replacement.favicon != nil }
