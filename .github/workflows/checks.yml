@@ -83,8 +83,9 @@ jobs:
             echo "Ordered native comparison [$label] exit status: $result"
             if [ "$result" -ne 0 ]; then diagnostic_status=1; fi
           }
-          run_comparison extensions 'VaneTests[.](Extension[^./]*Tests|PasswordAutofillTests|SavedReaderTests)/'
-          run_comparison navigation 'VaneTests[.](NavigationWebKitTests|NativePageWorkTests|PasswordAutofillTests|SavedReaderTests)/'
+          run_comparison navigation 'VaneTests[.](NavigationWebKitTests|PasswordAutofillTests|SavedReaderTests)/'
+          run_comparison downloads 'VaneTests[.](DownloadTabWebKitTests|DownloadWebKitTests|SavedReaderTests)/'
+          run_comparison reader-predecessors 'VaneTests[.](PreviewLoadingPerformanceTests|PrintingCompatibilityTests|ReaderTests|ReadingQueueCaptureTests|ReadingQueueNetworkTests|SavedReaderTests)/'
           echo "Ordered native comparisons aggregate exit status: $diagnostic_status"
           exit "$diagnostic_status"
 
