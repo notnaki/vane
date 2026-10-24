@@ -224,13 +224,17 @@ import WebKit
                 self.memory[key] = img
                 received = url
                 self.misses.removeValue(forKey: key)
-                // A public fallback does not authorize storing another tab's private-only
-                // declaration. Eligibility follows the successful URL, not the batch.
-                if self.pending[key]?.persistentURLs.contains(url) == true { await self.writeDisk(key, data) }
+                // Eligibility belongs to the successful URL, before publication can
+                // synchronously notify observers that enqueue another request.
+                let shouldPersist = self.pending[key]?.persistentURLs.contains(url) == true
                 for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
                     tab.favicon = img
                 }
                 self.generation += 1
+                // Show decoded artwork before utility-priority persistence and pruning.
+                // A public fallback does not authorize storing another tab's private-only
+                // declaration. Eligibility follows the successful URL, not the batch.
+                if shouldPersist { await self.writeDisk(key, data) }
                 // A restored row may already be fetching /favicon.ico when its page
                 // supplies better artwork. Let that queued declaration upgrade it.
                 if self.pending[key]?.fallbackURLs.contains(url) != true { return }
