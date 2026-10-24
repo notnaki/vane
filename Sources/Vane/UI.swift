@@ -800,11 +800,13 @@ struct EmptyPane: View {
 /// own track, its own caps and its own idea of how wide it should be, and this is a shape
 /// and a fraction. The track is drawn whenever the pill is, so the fill has something to
 /// fill; both go together behind the same fade.
-private struct LoadingBar: View {
+struct LoadingBar: View {
     @ObservedObject var tab: Tab
     /// The find bar shares the top of the card; while it is open the pill steps aside
     /// entirely rather than sitting off-centre for the rest of the time.
     var hidden = false
+    /// Popups have no tab row to announce loading; their capsule supplies that copy.
+    var accessible = false
     /// Reduce Motion turns the sweep and the fade into plain cuts — the bar still shows
     /// the same thing, it just stops moving.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -828,9 +830,12 @@ private struct LoadingBar: View {
         .opacity(tab.loading && !hidden ? 1 : 0)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: tab.loading)
         .allowsHitTesting(false)
-        // Decoration: the tab row says "loading" in words, which is the accessible copy of
-        // this. Two elements for one fact is worse than one.
-        .accessibilityHidden(true)
+        // The main window already announces loading in its tab row; a popup has none.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading page")
+        .accessibilityValue(Text("\(Int(tab.progress * 100))%"))
+        .accessibilityHidden(!accessible || !tab.loading || hidden)
+        .vaneMotionPolicy()
     }
 }
 

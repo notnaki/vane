@@ -135,6 +135,7 @@ private struct WebsitePopupPage: View {
         Group {
             if let web = tab.existingWeb {
                 WebView(web: web)
+                    .overlay(alignment: .top) { LoadingBar(tab: tab, accessible: true) }
                     .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
                     .overlay(alignment: .topTrailing) { PasswordOffer(tab: tab).padding(12) }
             }
