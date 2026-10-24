@@ -290,14 +290,33 @@ import XCTest
         try await body(tab, origin)
     }
 
+    private func continuationLoadState(_ tab: Tab, web: WKWebView, requestedURL: URL) -> String {
+        let selector = NSSelectorFromString("_webProcessIdentifier")
+        var process: NativeFixtureDiagnostics.Identity?
+        if web.responds(to: selector) {
+            typealias Getter = @convention(c) (AnyObject, Selector) -> Int32
+            let pid = unsafeBitCast(web.method(for: selector), to: Getter.self)(web, selector)
+            process = NativeFixtureDiagnostics.identity(pid)
+        }
+        let native = process.map {
+            "contentPID=\($0.pid), contentStart=\($0.start), contentPath=\($0.path), contentState=\($0.state)"
+        } ?? "contentIdentity=unavailable"
+        return "requested=\(requestedURL.absoluteString), webURL=\(web.url?.absoluteString ?? "nil"), " +
+            "tabCurrentURL=\(tab.currentURL?.absoluteString ?? "nil"), " +
+            "historyURL=\(web.backForwardList.currentItem?.url.absoluteString ?? "nil"), " +
+            "loading=\(web.isLoading), progress=\(web.estimatedProgress), tabLoading=\(tab.loading), " +
+            "suspended=\(tab.suspended), recovery=\(tab.needsRecovery), " + native
+    }
+
     private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String) async throws {
         let web = tab.web, url = origin.url.appendingPathComponent(path)
         let started = Date.now
-        web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
+        let before = continuationLoadState(tab, web: web, requestedURL: url)
+        let navigationID = ObjectIdentifier(web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html))
+        let after = continuationLoadState(tab, web: web, requestedURL: url)
         try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
-            let state = "expected=\(url), actual=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), " +
-                "progress=\(web.estimatedProgress), tabLoading=\(tab.loading), suspended=\(tab.suspended), " +
-                "recovery=\(tab.needsRecovery)"
+            let state = "before={\(before)}; returnedNavigation=\(navigationID); after={\(after)}; " +
+                "timeout={\(continuationLoadState(tab, web: web, requestedURL: url))}"
             NativeFixtureDiagnostics.emit("continuation document \(path) cached state before sampling: " + state)
             return state + "; " + (await NativeFixtureDiagnostics.failureReport(for: web))
         }) {
