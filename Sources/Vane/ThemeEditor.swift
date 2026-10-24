@@ -22,6 +22,10 @@ struct ThemeEditor: View {
     /// Whether the panel also names the Space. The `+` route does; Arc names a Space in the
     /// sidebar, and so does Vane once it exists.
     var naming = false
+    /// Catalog-backed cards can revoke a retained editor before its disappearance
+    /// commit. Other entry points keep their existing persistence behavior.
+    var canEdit: () -> Bool = { true }
+    var saveSpace: ((Space) -> Void)? = nil
 
     @State private var name = ""
     /// Which page of presets the chevrons have walked to.
@@ -370,6 +374,7 @@ struct ThemeEditor: View {
     /// An edit a finger is still holding: the panel and the window's ground both follow it,
     /// and nothing reaches the disk until the finger leaves.
     private func slide(_ change: (inout Space) -> Void) {
+        guard canEdit() else { return }
         var copy = current
         change(&copy)
         live = copy
@@ -381,7 +386,9 @@ struct ThemeEditor: View {
     private func commitLive() {
         guard dirty, let copy = live else { return }
         dirty = false
-        store.update(space: copy)       // which clears the preview it was showing
+        guard canEdit() else { return }
+        if let saveSpace { saveSpace(copy) }
+        else { store.update(space: copy) } // clears the preview it was showing
     }
 }
 

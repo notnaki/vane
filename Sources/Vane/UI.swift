@@ -394,10 +394,10 @@ struct BrowserWindow: View {
     /// strip blank at the top of its rail, so a panel with no lights beside it is a hole.
     private var chrome: Bool { store.sidebarShown || peeking || store.libraryOpen }
 
-    /// How many Spaces all profiles have. Read when that changes, never per frame: `allSpaces`
-    /// decodes spaces.json every time it is touched, and this number feeds the `.animation`
-    /// key the page's slide follows — reading it there put a file read and a JSON decode in
-    /// every frame of a two-finger Space swipe.
+    /// The Library consumes one retained worker snapshot for its cards and width.
+    /// Card and width preparation reads in-memory DTOs during opening and layout.
+    @StateObject private var librarySpaceLifetime = LibrarySpaceCatalogLifetime()
+    private var librarySpaces: LibrarySpaceCatalog { librarySpaceLifetime.catalog }
     @State private var spaceCount = 0
 
     /// The rail plus its list column, or — in the Spaces section — a card per Space, up to
@@ -467,11 +467,25 @@ struct BrowserWindow: View {
             TabOrganizationSheet(store: store)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
-        // The one place the Space list is counted: when it changes, and when the Library
-        // opens onto it. Changes in another profile invalidate the count too.
-        .onChange(of: profiles.spacesRevision, initial: true) { spaceCount = profiles.allSpaces.count }
-        .onChange(of: profiles.profiles) { spaceCount = profiles.allSpaces.count }
-        .onChange(of: store.libraryOpen) { if store.libraryOpen { spaceCount = profiles.allSpaces.count } }
+        .environment(\.librarySpaceCatalog, librarySpaces)
+        .onAppear {
+            if !store.isPrivate { librarySpaces.prepare(manager: profiles) }
+        }
+        .onReceive(librarySpaces.metadataChanges(manager: profiles)) { _ in
+            let count = librarySpaces.spaces(manager: profiles).count
+            if count != spaceCount { spaceCount = count }
+            if !store.isPrivate { librarySpaces.prepare(manager: profiles) }
+        }
+        .onReceive(librarySpaces.$generation) { _ in
+            let count = librarySpaces.spaces(manager: profiles).count
+            if count != spaceCount { spaceCount = count }
+        }
+        .onChange(of: store.libraryOpen) {
+            guard !store.isPrivate else { return }
+            if store.libraryOpen { librarySpaces.prepare(manager: profiles, force: true) }
+            else { librarySpaces.cancel() }
+        }
+        .onDisappear { librarySpaces.cancel() }
         // The page slides over as the panel takes its width, and back when it gives it up —
         // including when the Spaces section widens the panel to fit another card.
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: libraryWidth)

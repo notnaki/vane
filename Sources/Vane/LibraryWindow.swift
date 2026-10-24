@@ -715,10 +715,17 @@ extension Look {
 /// window, so media, the mini player and picture-in-picture all carry on.
 struct LibraryPanel: View {
     @EnvironmentObject var store: TabStore
+    @Environment(\.librarySpaceCatalog) private var suppliedCatalog
+    @StateObject private var localCatalog = LibrarySpaceCatalog()
 
     var body: some View {
         LibraryPanelSurface(store: store, isOpen: store.libraryOpen,
-                            ownsEscape: store.libraryOpen && store.palette == nil && !store.findOpen)
+                            ownsEscape: store.libraryOpen && store.palette == nil && !store.findOpen,
+                            catalog: suppliedCatalog ?? localCatalog,
+                            managesCatalog: suppliedCatalog == nil)
+            // A standalone panel owns one fallback, driven by SpacesPane's actual
+            // environment manager. Other sections gain no manager dependency/read.
+            .onDisappear { if suppliedCatalog == nil { localCatalog.cancel() } }
     }
 }
 
@@ -728,6 +735,8 @@ private struct LibraryPanelSurface: View {
     let store: TabStore
     let isOpen: Bool
     let ownsEscape: Bool
+    let catalog: LibrarySpaceCatalog
+    let managesCatalog: Bool
     @ObservedObject private var library = Library.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
@@ -779,7 +788,7 @@ private struct LibraryPanelSurface: View {
         case .readingQueue where !store.isPrivate: ReadingQueueHost(origin: store)
         case .easels where !store.isPrivate: GlobalEaselsPane()
         case .boosts where !store.isPrivate: BoostsPane()
-        case .spaces where !store.isPrivate: SpacesPane()
+        case .spaces where !store.isPrivate: SpacesPane(catalog: catalog, managesCatalog: managesCatalog)
         // History never becomes the section, and Spaces is not offered in a private
         // window — either way the archive is what a Library with nothing else shows.
         default: ArchivedTabsPane(store: store, archives: ArchiveLibrary.library(for: store.profileID))
@@ -1694,13 +1703,25 @@ private struct MediaTile: View {
 /// Each wears its own ground. Pages can move between cards in the same profile.
 private struct SpacesPane: View {
     @EnvironmentObject var profiles: ProfileManager
+    @EnvironmentObject var store: TabStore
+    @ObservedObject var catalog: LibrarySpaceCatalog
+    let managesCatalog: Bool
 
     var body: some View {
-        // No search field and no empty state: a profile always has at least one Space, and
-        // a Space is found by looking at four cards rather than by typing.
+        let spaces = catalog.spaces(manager: profiles, preview: store.previewSpace)
+        // Card identities/width survive a metadata refresh. Saved page content waits
+        // for its current protection shapes; a live owner always supplies live rows.
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: Look.spaceCardGap) {
-                ForEach(profiles.allSpaces) { SpaceCard(space: $0) }
+                ForEach(spaces) { space in
+                    SpaceCard(space: space, snapshot: catalog.entry(for: space, manager: profiles),
+                              destinations: spaces.filter { $0.profileID == space.profileID && $0.id != space.id },
+                              catalog: catalog, editEpoch: catalog.editEpoch)
+                }
+                if !catalog.hasSnapshot(manager: profiles) {
+                    ProgressView().accessibilityLabel("Loading Spaces")
+                        .frame(width: Look.spaceCard)
+                }
                 NewSpaceCard()
             }
             .padding(Look.spaceCardGap)
@@ -1710,6 +1731,21 @@ private struct SpacesPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
+        // Standalone LibraryPanel hosts use the same environment manager that
+        // supplies these cards, including custom-manager fixtures. BrowserWindow
+        // drives a supplied catalog so its metadata/count can prewarm offscreen.
+        .onAppear {
+            if managesCatalog { catalog.prepare(manager: profiles, force: store.libraryOpen) }
+        }
+        .onReceive(catalog.metadataChanges(manager: profiles)) { _ in
+            if managesCatalog { catalog.prepare(manager: profiles) }
+        }
+        .onChange(of: store.libraryOpen) {
+            guard managesCatalog else { return }
+            if store.libraryOpen { catalog.prepare(manager: profiles, force: true) }
+            else { catalog.cancel() }
+        }
+        .onDisappear { if managesCatalog { catalog.cancel() } }
     }
 }
 
@@ -1757,15 +1793,16 @@ private struct SpaceCard: View {
     @ObservedObject private var library = Library.shared
     @Environment(\.colorScheme) private var scheme
     let space: Space
+    let snapshot: LibrarySpaceCatalog.Entry?
+    let destinations: [Space]
+    let catalog: LibrarySpaceCatalog
+    let editEpoch: Int
     @State private var over = false
-    @State private var editing = false
+    @State private var editing: LibrarySpaceCatalog.Editing?
     /// Folders the chevron has shut on this card. ponytail: not written down — a card is
     /// looked at, not lived in, and persisting it would mean writing another window's Space
     /// shape from here. The folder's own `collapsed` is still honoured on the way in.
     @State private var shut: Set<UUID> = []
-    /// The shape of a Space that is *not* open in a window, read once. `savedShape` is a
-    /// defaults read and a JSON decode; in the body it ran per card on every pointer move.
-    @State private var saved: Pins?
 
     /// The window showing this Space keeps its pages in its strip, with real titles; every
     /// other Space is the url list in spaces.json. `owner` rather than "is it this window's"
@@ -1774,7 +1811,7 @@ private struct SpaceCard: View {
 
     /// The Pinned section, folders and all, then the Today pages under it — the card is a
     /// miniature of that Space's own sidebar. A live Space's shape is already in memory; a
-    /// shut one's came off disk in `reload`.
+    /// shut one's shapes arrive together from the catalog's worker.
     private var pinned: [CardRow] {
         if let live {
             let byID = Dictionary(live.tabs.map { ($0.id.uuidString, $0) },
@@ -1784,21 +1821,16 @@ private struct SpaceCard: View {
                                     urls: live.tabs.filter { $0.kind == .pinned }
                                         .compactMap(\.currentURL))
         }
-        return Library.cardRows(shape: saved, urls: space.pinnedTabURLs ?? [])
-    }
-
-    /// Read when the card appears and whenever the profile's Spaces change, never in `body`.
-    private func reload() {
-        saved = live == nil
-            ? TabStore.savedShape(space: space.id, profileID: space.profileID)
-            : nil
+        guard let snapshot else { return [] }
+        return Library.cardRows(shape: snapshot.pinned, urls: space.pinnedTabURLs ?? [])
     }
 
     private var today: [URL] {
         if let live { return live.accessibleTabs.filter { $0.kind == .today }.compactMap(\.currentURL) }
-        let shape = TabStore.savedShape(.today, space: space.id, profileID: space.profileID)
-        return space.tabURLs.filter { shape?.lockedFolders(for: $0.absoluteString, unlocked: []).isEmpty ?? true }
+        return snapshot?.visibleToday ?? []
     }
+
+    private var waitingForSavedRows: Bool { live == nil && snapshot == nil }
 
     /// Render the Space's own base and overlay colours. Cards remain opaque so the
     /// current window's wash cannot leak into a different Space's preview.
@@ -1826,7 +1858,7 @@ private struct SpaceCard: View {
                             FolderCardRow(folder: folder, depth: row.depth,
                                           shut: shut.contains(folder.id)) { toggle(folder) }
                         } else if let url = row.url {
-                            PageRow(space: space, url: url, pinned: true, depth: row.depth)
+                            PageRow(space: space, url: url, pinned: true, destinations: destinations, depth: row.depth)
                         }
                     }
                     if !pinned.isEmpty && !today.isEmpty {
@@ -1835,11 +1867,16 @@ private struct SpaceCard: View {
                     // By position, not by url: the same page can be open in two tabs of one
                     // Space, and two rows sharing an id is a list that scrolls to nowhere.
                     ForEach(Array(today.enumerated()), id: \.offset) { _, url in
-                        PageRow(space: space, url: url, pinned: false, depth: 0)
+                        PageRow(space: space, url: url, pinned: false, destinations: destinations, depth: 0)
                     }
                     if pinned.isEmpty && today.isEmpty {
-                        Text("No pages").font(Look.caption).foregroundStyle(Look.inkQuiet)
-                            .padding(.horizontal, Look.inset).frame(height: Look.cardRow)
+                        if waitingForSavedRows {
+                            ProgressView().accessibilityLabel("Loading pages")
+                                .frame(height: Look.cardRow)
+                        } else {
+                            Text("No pages").font(Look.caption).foregroundStyle(Look.inkQuiet)
+                                .padding(.horizontal, Look.inset).frame(height: Look.cardRow)
+                        }
                     }
                 }
                 .padding(.horizontal, Look.captionGap * 2)
@@ -1862,15 +1899,14 @@ private struct SpaceCard: View {
         }
         .hairline(radius: Look.cardRadius, over ? chromeTheme.selectedEdge : Look.cardStroke)
         .onDrop(of: [.utf8PlainText], isTargeted: $over) { drop($0) }
-        .onAppear { reload() }
-        .onChange(of: profiles.spacesRevision) { reload() }
         // A Space made from the Library's `+` is named on its own card, not on a sidebar
         // button that is not on screen. See `NewSpaceCard`.
-        .onChange(of: library.naming, initial: true) {
-            guard library.naming == space.id else { return }
-            editing = true
-            library.naming = nil
-        }
+        .onChange(of: library.naming, initial: true) { fulfillNamingRequest() }
+        .onChange(of: snapshot) { revokeEditingIfNeeded(); fulfillNamingRequest() }
+        .onChange(of: profiles.spacesRevision) { revokeEditingIfNeeded() }
+        .onChange(of: profiles.profiles) { revokeEditingIfNeeded() }
+        .onChange(of: editEpoch) { revokeEditingIfNeeded() }
+        .onChange(of: store.libraryOpen) { if !store.libraryOpen { editing = nil } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(space.name), \(pinned.count + today.count) page\(pinned.count + today.count == 1 ? "" : "s")")
     }
@@ -1892,12 +1928,16 @@ private struct SpaceCard: View {
                     .background(chromeTheme.hovered, in: .rect(cornerRadius: Look.chipRadius))
                     .accessibilityLabel("Profile \(profile.name)")
             }
-            Button { editing = true } label: { Image(systemName: "pencil") }
+            Button { _ = beginEditing() } label: { Image(systemName: "pencil") }
                 .buttonStyle(.plain).font(Look.caption).foregroundStyle(Look.inkTertiary)
                 .vaneTooltip("Edit Space", hint: "Rename, icon, and colour")
                 .accessibilityLabel("Edit \(space.name)")
-                .popover(isPresented: $editing, arrowEdge: .bottom) {
-                    ThemeEditor(store: live ?? store, space: space, naming: true)
+                .disabled(catalog.entry(for: space, manager: profiles) == nil && editing?.isCurrent != true)
+                .popover(item: $editing, arrowEdge: .bottom) { session in
+                    ThemeEditor(store: live ?? store, space: session.space, naming: true,
+                                canEdit: { session.isCurrent }, saveSpace: { copy in
+                        session.perform { (live ?? store).update(space: copy) }
+                    })
                 }
         }
         .padding(.horizontal, Look.inset)
@@ -1923,7 +1963,8 @@ private struct SpaceCard: View {
             // second place to keep that confirmation honest.
             Menu {
                 Button("Go to \(space.name)") { Library.show(space, from: store) }
-                Button("Rename…") { editing = true }
+                Button("Rename…") { _ = beginEditing() }
+                    .disabled(catalog.entry(for: space, manager: profiles) == nil)
             } label: {
                 Image(systemName: "ellipsis")
             }
@@ -1933,6 +1974,21 @@ private struct SpaceCard: View {
         }
         .padding(.horizontal, Look.inset)
         .frame(height: Look.cardRow)
+    }
+
+    @discardableResult private func beginEditing() -> Bool {
+        guard let session = catalog.beginEditing(for: space, manager: profiles) else { return false }
+        editing = session
+        return true
+    }
+
+    private func fulfillNamingRequest() {
+        guard library.naming == space.id, beginEditing() else { return }
+        library.naming = nil
+    }
+
+    private func revokeEditingIfNeeded() {
+        if let session = editing, !session.isCurrent { editing = nil }
     }
 
     private func toggle(_ folder: Folder) {
@@ -2015,6 +2071,7 @@ private struct PageRow: View {
     let space: Space
     let url: URL
     let pinned: Bool
+    let destinations: [Space]
     var depth: Int = 0
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -2050,7 +2107,7 @@ private struct PageRow: View {
         .contextMenu {
             Button("Open") { open() }
             Menu("Move to Space") {
-                ForEach(ProfileManager.shared.spaces(for: space.profileID).filter { $0.id != space.id }) { other in
+                ForEach(destinations) { other in
                     Button(other.name) {
                         Task { @MainActor in
                             await Library.moveAsync(url, from: space.id, to: other.id, pinned: pinned, profile: space.profileID)
