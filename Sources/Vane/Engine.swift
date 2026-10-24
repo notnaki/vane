@@ -1904,11 +1904,14 @@ struct TitleReveal: Equatable, Sendable {
         bookmarked = history.isBookmarked(url)
         let document = readingDocumentGeneration
         Task { [weak self, weak w] in
-            guard let self, let w, self.existingWeb === w, w.url == url,
-                  self.readingDocumentGeneration == document else { return }
+            guard let w, self?.existingWeb === w, w.url == url,
+                  self?.readingDocumentGeneration == document else { return }
             Trace.note("reader probe")
+            // A page probe may finish after Close. Keep the tab weak across WebKit's
+            // async reply so this background check cannot prolong the closed tab's life.
             let available = await Reader.isAvailable(in: w)
-            guard self.existingWeb === w, w.url == url, self.readingDocumentGeneration == document else { return }
+            guard let self, self.existingWeb === w, w.url == url,
+                  self.readingDocumentGeneration == document else { return }
             self.readerAvailable = available
             Trace.note("reader probe answered")
         }
