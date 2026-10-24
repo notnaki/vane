@@ -150,4 +150,23 @@ import XCTest
         XCTAssertTrue(parsed.unsupportedDefault)
     }
 
+
+    func testExplicitSpaceDefaultKeepsPriorSettingRatherThanRoutingToCurrentSpace() throws {
+        TestEnvironment.prepare()
+        UserDefaults.vane.set("little", forKey: LinkTarget.key)
+        let mapped = UUID()
+        let parsed = try routing([rule("work", destination: ["space": ["_0": ["arc-work": [:]]]])],
+                                 defaultDestination: ["space": ["_0": ["arc-work": [:]]]])
+        XCTAssertNil(parsed.defaultTarget)
+        XCTAssertTrue(parsed.unsupportedDefault)
+        XCTAssertTrue(parsed.consent.contains("Vane's default will be kept"))
+        for map in [["arc-work": mapped], [:]] {
+            var counts = ArcImport.Counts()
+            ArcImport.importRouting(parsed, unavailable: false, spaceIDs: map, counts: &counts)
+            XCTAssertEqual(UserDefaults.vane.string(forKey: LinkTarget.key), "little")
+            XCTAssertNil(counts.routingDefault)
+            XCTAssertTrue(counts.routingDefaultUnsupported)
+        }
+    }
+
 }

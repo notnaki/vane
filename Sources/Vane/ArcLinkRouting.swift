@@ -28,7 +28,8 @@ struct ArcLinkRouting: Sendable {
             if let target = destination(value) {
                 switch target {
                 case .littleArc: parsed.defaultTarget = LinkTarget.littleArc
-                case .mostRecentSpace, .space: parsed.defaultTarget = LinkTarget.currentSpace
+                case .mostRecentSpace: parsed.defaultTarget = LinkTarget.currentSpace
+                case .space: parsed.unsupportedDefault = true
                 }
             } else { parsed.unsupportedDefault = true }
         }

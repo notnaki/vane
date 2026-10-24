@@ -78,7 +78,9 @@ When Arc's `StorableLinkRouting.json` is present, the import confirmation also d
 Air Traffic Control rules and the external-links default. Imported rules follow existing
 Vane rules, with duplicates kept once; accepted defaults replace Vane's link-opening
 preference. Rules aimed at Spaces that were not imported are skipped and reported.
-Missing or unreadable routing files preserve existing link settings.
+Missing or unreadable routing files preserve existing link settings. An explicit Space
+as the default cannot be represented by Vane's current-Space/Little Vane preference;
+it is reported as unsupported and the existing default is kept.
 Session imports preserve HttpOnly, SameSite, Secure, domain, path, and lifetime.
 Expired, partitioned, or unsupported cookies are skipped and reported; those sessions
 may need a fresh sign-in. No decrypted value is logged or written to an import file.
