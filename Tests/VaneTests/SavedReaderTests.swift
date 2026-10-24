@@ -209,6 +209,7 @@ import XCTest
         let initial = try XCTUnwrap(SavedReaderWindow.loadSnapshot(articleID: article.id, profileID: article.profileID))
         XCTAssertTrue(web === initial.web, "The displayed view must be the saved-reader session's actual WebKit view")
         let image = initial.document.deletingLastPathComponent().appendingPathComponent("images/" + raster.resource.name)
+        NativeFixtureDiagnostics.emit("saved reader loading resources: " + NativeFixtureDiagnostics.resourceSnapshot(for: web))
         try await waitForLocalImage(web, image: image, sessionState: {
             guard let state = SavedReaderWindow.loadSnapshot(articleID: article.id, profileID: article.profileID) else {
                 return "session missing"

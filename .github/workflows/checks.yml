@@ -74,7 +74,7 @@ jobs:
         timeout-minutes: 5
         run: |
           set +e
-          swift test --filter 'SavedReaderTests|PasswordAutofillTests/testFullFormSelectionCannotAuthorizeUnrelatedUsernameStep|PasswordAutofillTests/testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep|PasswordAutofillTests/testReplacementUsernameFormCannotReuseExplicitSelection'
+          swift test --filter 'SavedReaderTests|PasswordAutofillTests'
           diagnostic_status=$?
           echo "Fresh saved reader/password diagnostic exit status: $diagnostic_status"
           exit "$diagnostic_status"

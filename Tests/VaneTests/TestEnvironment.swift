@@ -12,7 +12,11 @@ import XCTest
         return cleanup
     }()
 
-    static func prepare() { _ = cleanup }
+    private static let resourceBaseline: Void = {
+        NativeFixtureDiagnostics.emit("resource baseline: " + NativeFixtureDiagnostics.resourceSnapshot())
+    }()
+
+    static func prepare() { _ = cleanup; _ = resourceBaseline }
 
     static func supportsPiPMotion(in frames: [NSRect]) -> Bool {
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
