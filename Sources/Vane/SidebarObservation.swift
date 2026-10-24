@@ -1,6 +1,25 @@
 import Combine
 import SwiftUI
 
+/// Shared mutations of the settled sidebar and its captured Space previews.
+/// Each @Published source skips its own initial value; the protection subject
+/// has no initial value and must revoke snapshots on the sending turn.
+extension TabStore {
+    var sidebarSnapshotChanges: AnyPublisher<Void, Never> {
+        Publishers.MergeMany([
+            sidebarChange($tabs), sidebarChange($pins), sidebarChange($todayShape),
+            sidebarChange($splits), sidebarChange($current), sidebarChange($selection),
+            sidebarChange($collapsedPinnedSpaces), sidebarChange($currentSpaceID),
+            sidebarChange($spaceRevision), sidebarChange($previewSpace),
+            sidebarChange($profileVisible), sidebarPreviewInvalidated.eraseToAnyPublisher()
+        ]).eraseToAnyPublisher()
+    }
+}
+
+private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, Never> where P.Failure == Never {
+    publisher.dropFirst().map { _ in () }.eraseToAnyPublisher()
+}
+
 /// Sidebar rows draw a small part of the window's state. Keeping this boundary
 /// separate prevents search and page-chrome publications from rebuilding every row.
 @MainActor final class SidebarObservation: @MainActor ObservableObject {
@@ -8,18 +27,12 @@ import SwiftUI
     private var subscription: AnyCancellable?
 
     init(store: TabStore) {
-        func changed<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, Never> where P.Failure == Never {
-            publisher.dropFirst().map { _ in () }.eraseToAnyPublisher()
-        }
         subscription = Publishers.MergeMany([
-            changed(store.$tabs), changed(store.$pins), changed(store.$todayShape),
-            changed(store.$splits), changed(store.$current), changed(store.$selection),
-            changed(store.$collapsedPinnedSpaces), changed(store.$currentSpaceID),
-            changed(store.$spaceRevision), changed(store.$previewSpace),
-            changed(store.$profileVisible), changed(store.$renamingTab),
-            changed(store.$renamingFolder), changed(store.$renamingSpace),
-            changed(store.$announcing), changed(store.$creatingSpace),
-            store.sidebarPreviewInvalidated.eraseToAnyPublisher()
+            store.sidebarSnapshotChanges,
+            // Live controls redraw for these changes; captured previews do not.
+            sidebarChange(store.$renamingTab), sidebarChange(store.$renamingFolder),
+            sidebarChange(store.$renamingSpace), sidebarChange(store.$announcing),
+            sidebarChange(store.$creatingSpace)
         ]).sink { [weak self] _ in self?.objectWillChange.send() }
     }
 }

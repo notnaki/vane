@@ -855,8 +855,10 @@ struct LoadingBar: View {
 private struct Sidebar: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isolatesSpaceContent = NativeSidebarBoundaryExperiment.enabled
     @StateObject private var dropMarker = SidebarDropMarker()
     @StateObject private var downloadsHover = DownloadsHover()
+    @State private var feedbackScope = FeedbackOcclusionScope()
     @StateObject private var dragPreview = SidebarDragPreview()
     @AppStorage(LibraryHoverCategory.key, store: .vane) private var hoverCategory = "downloads"
     @State private var previewItems: [LibraryHoverItem] = []
@@ -870,9 +872,16 @@ private struct Sidebar: View {
         min(CGFloat(previewItems.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap,
             max(0, sidebarHeight - Look.footer - Look.footerInset - Look.topInset - 48))
     }
-    /// One geometry group for the whole strip, so a tab changing section — a row becoming a
-    /// tile, a tile a row — travels from where it was to where it is going.
-    @Namespace private var strip
+    /// Preferences and their renderer, and both ends of a row/tile morph, belong
+    /// to the same hosting graph. Footer and address-pill anchors stay outside.
+    private var spaceContent: some View {
+        SidebarSpaceContent()
+            .environment(\.feedbackOcclusionScope, feedbackScope)
+            .overlayPreferenceValue(SidebarDropLineBounds.self) { bounds in
+                SidebarDropLineOverlay(marker: dropMarker, bounds: bounds)
+            }
+            .overlay(alignment: .trailing) { PullPlus(store: store) }
+    }
 
     var body: some View {
         VStack(spacing: Look.inset) {
@@ -885,12 +894,13 @@ private struct Sidebar: View {
                 CreateSpaceForm(store: store)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             } else {
-            SidebarSpaceContent()
-            .overlayPreferenceValue(SidebarDropLineBounds.self) { bounds in
-                SidebarDropLineOverlay(marker: dropMarker, bounds: bounds)
+            Group {
+                if isolatesSpaceContent {
+                    NativeContentBoundary { spaceContent }
+                } else {
+                    spaceContent
+                }
             }
-            // The plus that fills as the fingers pull past the last Space.
-            .overlay(alignment: .trailing) { PullPlus(store: store) }
             .transition(.move(edge: .leading).combined(with: .opacity))
             }
             }
@@ -919,7 +929,6 @@ private struct Sidebar: View {
             BottomRow(downloadsHover: downloadsHover, hasPreviewItems: !previewItems.isEmpty,
                       preparePreview: preparePreview)
         }
-        .environment(\.strip, strip)
         .environment(\.sidebarDropMarker, dropMarker)
         // SwiftUI's accessibility motion environment is read-only. Stop decorative
         // animations here without changing the user's system accessibility setting.
@@ -942,6 +951,7 @@ private struct Sidebar: View {
                 RecentLibraryPreview(items: previewItems, category: LibraryHoverCategory.resolve(hoverCategory),
                                      downloads: downloads, store: store, close: downloadsHover.dismiss)
                     .frame(height: max(0, previewHeight))
+                    .background(FeedbackOccluder(scope: feedbackScope))
                     .contentShape(.rect)
                     .onHover { downloadsHover.setHovered($0, over: .preview) }
                     .padding(.bottom, Look.footer + Look.footerInset + Look.inset)
@@ -3138,6 +3148,36 @@ struct SidebarScrollCutoffs: Equatable {
     }
 }
 
+/// Identifies the sections viewport without assuming it is the first native
+/// scroller in a hosted sidebar. This marker owns no input or accessibility node.
+@MainActor struct SidebarSectionsViewport: NSViewRepresentable {
+    final class Marker: NSView {
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            setAccessibilityElement(false)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> Marker { Marker(frame: .zero) }
+    func updateNSView(_ view: Marker, context: Context) {}
+
+    /// Called only when a prepared sidebar is claimed, never during finger tracking.
+    static func scrollView(in root: NSView) -> NSScrollView? {
+        var markers: [Marker] = []
+        func visit(_ view: NSView) {
+            guard markers.count < 2 else { return }
+            if let marker = view as? Marker { markers.append(marker) }
+            for child in view.subviews { visit(child) }
+        }
+        visit(root)
+        guard markers.count == 1, let scroll = markers[0].enclosingScrollView,
+              scroll.isDescendant(of: root) else { return nil }
+        return scroll
+    }
+}
+
 /// The settled sidebar and its swipe preview share the fixed heading and scroll viewport.
 struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     var initialOffset: CGFloat = 0
@@ -3158,6 +3198,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
                 rowStack
                     .frame(minHeight: scrollHeight, alignment: .top)
                     .background(WindowDragArea())
+                    .background(SidebarSectionsViewport())
             }
             .scrollIndicators(.never)
             .modifier(ScrollViewportPosition(initialOffset: initialOffset))
@@ -3209,10 +3250,14 @@ struct SidebarSpaceContent: View {
 
 private struct SidebarSpacePresentation: View {
     @SidebarObserved var store: TabStore
+    /// The namespace owner and both ends of a row/tile morph stay in this graph,
+    /// including when the complete strip is mounted in a native boundary.
+    @Namespace private var strip
 
     var body: some View {
         SpaceSidebarStrip(store: store, favorites: Favorites(store: store),
                           sections: SidebarSpaceSectionContent(store: store))
+            .environment(\.strip, strip)
     }
 }
 
@@ -5151,14 +5196,38 @@ private struct FaviconPlaceholder: View {
     }
 }
 
-/// Observe asynchronous cache arrivals at the icon leaf, without invalidating its row
-/// or reranking the search results that contain it.
+/// Observe only this host's arrivals at the icon leaf. A nil or unsupported URL
+/// has no subscription; profile caches never share their observers.
 struct CachedFavicon<Content: View>: View {
-    @ObservedObject var cache: Favicons
+    let cache: Favicons
     let url: URL?
     @ViewBuilder let content: (NSImage?) -> Content
 
-    var body: some View { content(url.flatMap(cache.icon(for:))) }
+    @ViewBuilder var body: some View {
+        if let url, let key = Favicons.key(for: url) {
+            HostCachedFavicon(cache: cache, url: url, key: key, content: content)
+        } else {
+            content(nil)
+        }
+    }
+}
+
+private struct HostCachedFavicon<Content: View>: View {
+    let cache: Favicons
+    let url: URL
+    let content: (NSImage?) -> Content
+    @ObservedObject private var arrival: FaviconHostArrival
+
+    init(cache: Favicons, url: URL, key: String, content: @escaping (NSImage?) -> Content) {
+        self.cache = cache
+        self.url = url
+        self.content = content
+        // ObservedObject follows URL/profile changes in reused slots. StateObject
+        // would retain the subscription selected by the slot's first initialization.
+        arrival = cache.observation(for: key)
+    }
+
+    var body: some View { content(cache.icon(for: url)) }
 }
 
 /// A site's own icon, with a placeholder until it arrives (or forever, for a page that

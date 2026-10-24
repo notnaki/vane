@@ -74,6 +74,45 @@ private struct ObservedSidebarProbe: View {
         assertInvalidates("Folder protection") { store.sidebarPreviewInvalidated.send() }
     }
 
+    func testLiveOnlyPresentationChangesDoNotInvalidateCapturedSidebars() {
+        let store = fixture()
+        var snapshots = 0
+        var draws = 0
+        let snapshotObservation = store.sidebarSnapshotChanges.sink { snapshots += 1 }
+        let liveObservation = store.sidebarObservation.objectWillChange.sink { draws += 1 }
+        defer { snapshotObservation.cancel(); liveObservation.cancel() }
+        XCTAssertEqual(snapshots, 0, "Subscribing must not report initial published values as mutations")
+        XCTAssertEqual(draws, 0)
+
+        func assertLiveOnly(_ name: String, _ change: () -> Void) {
+            let before = draws
+            change()
+            XCTAssertGreaterThan(draws, before, "\(name) must redraw live controls synchronously")
+            XCTAssertEqual(snapshots, 0, "\(name) must not retire unchanged captured sidebars")
+        }
+        assertLiveOnly("Tab rename") { store.renamingTab = UUID() }
+        assertLiveOnly("Folder rename") { store.renamingFolder = UUID() }
+        assertLiveOnly("Space rename") { store.renamingSpace = UUID() }
+        assertLiveOnly("Live folder announcement") { store.announcing = UUID() }
+        assertLiveOnly("Space creation") { store.creatingSpace = true }
+    }
+
+    func testSnapshotChangesRevokeBeforeOutlineAssignmentAndIncludeProtection() {
+        let store = fixture()
+        var visibleShapes: [Pins] = []
+        let observation = store.sidebarSnapshotChanges.sink { visibleShapes.append(store.todayShape) }
+        defer { observation.cancel() }
+        XCTAssertTrue(visibleShapes.isEmpty)
+
+        let changed = Pins(entries: [.init(row: .folder(Folder(name: "Protected outline")))])
+        store.todayShape = changed
+        XCTAssertEqual(visibleShapes, [Pins()],
+                       "A subscriber must revoke a stale capture before the new outline is installed")
+        store.sidebarPreviewInvalidated.send()
+        XCTAssertEqual(visibleShapes, [Pins(), changed],
+                       "Protection revocation must publish synchronously without a shape assignment")
+    }
+
     func testMountedSidebarSkipsSearchUpdatesButRendersRenameChanges() async throws {
         let store = fixture()
         let draws = SidebarDrawCount()

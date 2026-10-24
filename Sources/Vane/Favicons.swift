@@ -1,6 +1,13 @@
 import AppKit
+import Combine
 import ImageIO
 import WebKit
+
+/// Owned by mounted leaves, weakly indexed by one profile cache. No artwork or
+/// view is retained here; a host arrival invalidates only its matching consumers.
+@MainActor final class FaviconHostArrival: @MainActor ObservableObject {
+    let objectWillChange = ObservableObjectPublisher()
+}
 
 /// A bounded per-profile LRU. Every stored image is decoded to at most 64×64 pixels,
 /// so 300 hosts retain at most about 5 MiB of bitmap storage rather than site-sized art.
@@ -74,6 +81,26 @@ import WebKit
 
     /// Bumped when a fetch lands, so views that asked for a nil icon redraw.
     @Published private(set) var generation = 0
+
+    private let hostObservers = NSMapTable<NSString, FaviconHostArrival>.strongToWeakObjects()
+
+    func observation(for key: String) -> FaviconHostArrival {
+        let key = key as NSString
+        if let observer = hostObservers.object(forKey: key) { return observer }
+        // Weak values do not promise immediate removal of their strong keys.
+        // Prune before insertion so visits cannot accumulate dead host entries.
+        for case let stale as NSString in hostObservers.keyEnumerator().allObjects {
+            if hostObservers.object(forKey: stale) == nil { hostObservers.removeObject(forKey: stale) }
+        }
+        let observer = FaviconHostArrival()
+        hostObservers.setObject(observer, forKey: key)
+        return observer
+    }
+
+    private func publishArrival(for key: String) {
+        hostObservers.object(forKey: key as NSString)?.objectWillChange.send()
+        generation += 1
+    }
 
     private var memory = FaviconMemoryCache()
     private var inflight: [String: Task<Void, Never>] = [:]
@@ -160,7 +187,7 @@ import WebKit
                 tab.favicon = diskImage
                 // Cache-only leaves may be waiting on the same host. Publish even
                 // when restoration's worker beats their own pending disk read.
-                self.generation += 1
+                self.publishArrival(for: key)
             }
             if tab.suspended {
                 tab.favicon = self.memory[key]
@@ -230,7 +257,7 @@ import WebKit
                 for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
                     tab.favicon = img
                 }
-                self.generation += 1
+                self.publishArrival(for: key)
                 // Show decoded artwork before utility-priority persistence and pruning.
                 // A public fallback does not authorize storing another tab's private-only
                 // declaration. Eligibility follows the successful URL, not the batch.
@@ -506,7 +533,7 @@ import WebKit
                 for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
                     tab.favicon = image
                 }
-                self.generation += 1
+                self.publishArrival(for: key)
             } else if !self.missed(key) {
                 self.warm(key: key, urls: [fallback], persist: true, fallback: fallback)
             }

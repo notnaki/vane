@@ -17,6 +17,7 @@ import SwiftUI
     func register(_ anchor: Feel02PressAnchorView) {
         anchors.add(anchor)
         anchor.pressMonitor = self
+        anchor.feedbackScope?.track(self)
         guard monitor == nil else { return }
         pointerPosition = NSEvent.mouseLocation
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp,
@@ -28,6 +29,18 @@ import SwiftUI
                 self?.release()
                 self?.releaseHover()
             } }
+    }
+
+    /// Modal entry can be keyboard-only, with no pointer event to clear decoration.
+    static func quitDialogDidOpen() {
+        shared.revokeForQuitDialog()
+        PaletteHoverInput.shared.revokeForQuitDialog()
+    }
+
+    private func revokeForQuitDialog() {
+        pointerPosition = NSEvent.mouseLocation
+        release()
+        releaseHover()
     }
 
     func remove(_ anchor: Feel02PressAnchorView) {
@@ -51,9 +64,25 @@ import SwiftUI
         if hovered === anchor { releaseHover(afterLayout: true) }
     }
 
-    func release() {
-        pressed?.changed?(false)
+    func release(afterLayout: Bool = false) {
+        let previous = pressed
         pressed = nil
+        guard afterLayout else { previous?.changed?(false); return }
+        DispatchQueue.main.async { [weak self, weak previous] in
+            guard let previous, self?.pressed !== previous else { return }
+            previous.changed?(false)
+        }
+    }
+
+    /// Geometry may revoke decoration but must never admit a stationary target.
+    func feedbackOcclusionChanged(_ scope: FeedbackOcclusionScope) {
+        guard let position = pointerPosition else { return }
+        func covered(_ anchor: Feel02PressAnchorView?) -> Bool {
+            guard let anchor, anchor.feedbackScope === scope, let window = anchor.window else { return false }
+            return scope.contains(window.convertPoint(fromScreen: position), in: window)
+        }
+        if covered(pressed) { release(afterLayout: true) }
+        if covered(hovered) { releaseHover(afterLayout: true) }
     }
 
     private func releaseHover(afterLayout: Bool = false) {
@@ -69,11 +98,13 @@ import SwiftUI
     }
 
     private func contains(_ event: NSEvent, in anchor: Feel02PressAnchorView) -> Bool {
+        guard anchor.enabled, let window = event.window, anchor.window === window,
+              !anchor.isHiddenOrHasHiddenAncestor else { return false }
+        guard anchor.feedbackScope?.contains(event.locationInWindow, in: window) != true else { return false }
         let point = anchor.convert(event.locationInWindow, from: nil)
         // SwiftUI can expose a representable's ancestor clip as its visibleRect,
         // extending beyond this row. Both bounds and clipping must admit input.
-        return anchor.enabled && anchor.window === event.window && !anchor.isHiddenOrHasHiddenAncestor
-            && anchor.bounds.contains(point) && anchor.visibleRect.contains(point)
+        return anchor.bounds.contains(point) && anchor.visibleRect.contains(point)
     }
 
     private func updateHover(_ event: NSEvent) {
@@ -96,6 +127,16 @@ import SwiftUI
     }
 
     func handle(_ event: NSEvent) -> NSEvent {
+        if QuitDialog.isUp {
+            // Track the real modal pointer without admitting feedback behind the card.
+            // Its dismissal must not turn a stationary replay into a fresh hover.
+            if let window = event.window {
+                pointerPosition = window.convertPoint(toScreen: event.locationInWindow)
+            }
+            release()
+            releaseHover()
+            return event
+        }
         switch event.type {
         case .leftMouseDown:
             release()
@@ -138,6 +179,9 @@ final class Feel02PressAnchorView: NSView {
         }
     }
     weak var pressMonitor: Feel02PressMonitor?
+    weak var feedbackScope: FeedbackOcclusionScope? {
+        didSet { feedbackScope?.track(pressMonitor) }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -195,6 +239,7 @@ final class Feel02PressAnchorView: NSView {
 }
 
 private struct Feel02PressAnchor: NSViewRepresentable {
+    @Environment(\.feedbackOcclusionScope) private var feedbackScope
     let enabled: Bool
     let changed: (Bool) -> Void
     var hoverChanged: ((Bool) -> Void)?
@@ -207,6 +252,7 @@ private struct Feel02PressAnchor: NSViewRepresentable {
         view.changed = changed
         view.hoverChanged = hoverChanged
         view.enabled = enabled
+        view.feedbackScope = feedbackScope
     }
     static func dismantleNSView(_ view: Feel02PressAnchorView, coordinator: ()) {
         Feel02PressMonitor.shared.remove(view)

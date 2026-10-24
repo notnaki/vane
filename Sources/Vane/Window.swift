@@ -1089,14 +1089,13 @@ extension VaneWindow {
 
     /// Scrolling changes the viewport, not the captured row structure. Bring the
     /// existing outgoing clip view to the live offset when the gesture claims it.
-    func updatePreparedScrollOffset(_ offset: CGFloat) {
-        func scrollView(in view: NSView) -> NSScrollView? {
-            (view as? NSScrollView) ?? view.subviews.lazy.compactMap { scrollView(in: $0) }.first
+    func updatePreparedScrollOffset(_ offset: CGFloat) -> Bool {
+        guard let scroll = SidebarSectionsViewport.scrollView(in: outgoing) else { return false }
+        if abs(scroll.documentVisibleRect.minY - offset) > 0.5 {
+            scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.minX, y: offset))
+            scroll.reflectScrolledClipView(scroll.contentView)
         }
-        guard let scroll = scrollView(in: outgoing),
-              abs(scroll.documentVisibleRect.minY - offset) > 0.5 else { return }
-        scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.minX, y: offset))
-        scroll.reflectScrolledClipView(scroll.contentView)
+        return true
     }
 
     fileprivate var groundStart: ThemeWashPresentation?

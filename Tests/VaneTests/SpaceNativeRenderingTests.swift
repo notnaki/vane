@@ -607,10 +607,16 @@ import XCTest
             let showing = try XCTUnwrap(TabStore.all.first { $0.window === window })
             let direction = index == 1 ? 1 : -1
             let monitor = showing.spaceGesture.monitor
-            XCTAssertNotNil(showing.beginSpaceSelection(spaces[index]))
-            monitor.track(-CGFloat(direction) * 70, width: SidebarWidth.shared.width, in: showing)
             let sampler = ProfileWashSampler(host: host)
             sampler.start(on: try XCTUnwrap(window.screen))
+            defer { sampler.stop() }
+            // A new display link and a freshly restored hosting tree may not have
+            // presented yet. Establish actual source-color samples before asking
+            // this sampler to verify the subsequent transition's continuity.
+            try await compatibilityWait { sampler.reds.count >= 3 }
+            sampler.beginTransitionSampling()
+            XCTAssertNotNil(showing.beginSpaceSelection(spaces[index]))
+            monitor.track(-CGFloat(direction) * 70, width: SidebarWidth.shared.width, in: showing)
             monitor.land(direction, to: spaces[index], width: SidebarWidth.shared.width,
                          store: showing, duration: 0.3)
             try await Task.sleep(for: .milliseconds(450))
@@ -620,7 +626,7 @@ import XCTest
             let reversals = zip(sampler.reds, sampler.reds.dropFirst()).map { previous, next in
                 (direction == 1) != mixedThemes ? next - previous : previous - next
             }
-            print("PROFILE_WASH_SAMPLE mixed=\(mixedThemes) leg=\(leg) direction=\(direction) frames=\(sampler.reds.count) max_reverse=\(reversals.max() ?? 0) max_gap_ms=\(sampler.maxGap * 1000)")
+            print("PROFILE_WASH_SAMPLE mixed=\(mixedThemes) leg=\(leg) direction=\(direction) frames=\(sampler.reds.count) max_reverse=\(reversals.max() ?? 0) max_gap_ms=\(sampler.maxGap * 1000) first_callback_ms=\((sampler.firstCallbackLatency ?? 0) * 1000)")
             XCTAssertLessThan(reversals.max() ?? 0, 0.08,
                               "The displayed background must not flash back toward its source after profile activation")
             XCTAssertNil(host.spaceSlide)
@@ -1603,6 +1609,45 @@ import XCTest
         XCTAssertTrue(tabs.allSatisfy { $0.existingWeb == nil })
     }
 
+    func testMissingSectionsViewportRejectsPreparedReuse() async throws {
+        try await assertMalformedSectionsViewportRejectsPreparedReuse(duplicate: false)
+    }
+
+    func testDuplicateSectionsViewportsRejectPreparedReuse() async throws {
+        try await assertMalformedSectionsViewportRejectsPreparedReuse(duplicate: true)
+    }
+
+    private func assertMalformedSectionsViewportRejectsPreparedReuse(duplicate: Bool) async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        func markers(in view: NSView) -> [SidebarSectionsViewport.Marker] {
+            (view as? SidebarSectionsViewport.Marker).map { [$0] }
+                ?? view.subviews.flatMap { markers(in: $0) }
+        }
+        let readyMarkers = markers(in: prepared.outgoing)
+        XCTAssertEqual(readyMarkers.count, 1, "The real hosted preview must identify one sections viewport")
+        let marker = try XCTUnwrap(readyMarkers.first)
+        let scroll = try XCTUnwrap(marker.enclosingScrollView)
+        let before = scroll.documentVisibleRect.minY
+        if duplicate {
+            marker.addSubview(SidebarSectionsViewport.Marker(frame: .zero))
+        } else {
+            marker.removeFromSuperview()
+        }
+        XCTAssertFalse(prepared.updatePreparedScrollOffset(180),
+                       "Missing or ambiguous viewport identity must reject cached reuse")
+        XCTAssertEqual(scroll.documentVisibleRect.minY, before, accuracy: 0.5,
+                       "An invalid marker set must not scroll an arbitrary native view")
+
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        let replacement = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        XCTAssertFalse(replacement === prepared, "The gesture must fall back to a fresh native cover")
+        XCTAssertTrue(replacement.isActive)
+        XCTAssertNil(prepared.superview, "The invalid cached cover must be revoked")
+        monitor.abort()
+    }
+
     func testScrollingReusesPreparedSurfacesAndRefreshesNativeOffset() async throws {
         let (store, spaces, window, monitor) = try fixture()
         store.sharingReady = false
@@ -1627,15 +1672,31 @@ import XCTest
         try await Task.sleep(for: .milliseconds(250))
         XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
                       "Scrolling must not reconstruct two whole hidden hosting trees after every pause")
-        store.spaceGesture.sidebarOffset = 180
-        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
-        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === prepared)
         func scrollView(in view: NSView) -> NSScrollView? {
             (view as? NSScrollView) ?? view.subviews.lazy.compactMap { scrollView(in: $0) }.first
         }
         let scroll = try XCTUnwrap(scrollView(in: prepared.outgoing))
+        // An unrelated native scroller can precede the sections viewport in a
+        // hosted sidebar. Keep the real target before inserting that decoy.
+        let decoy = NSScrollView(frame: NSRect(x: 0, y: 0, width: 20, height: 20))
+        decoy.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 20, height: 1000))
+        decoy.contentView.scroll(to: NSPoint(x: 0, y: 40))
+        decoy.reflectScrolledClipView(decoy.contentView)
+        decoy.isHidden = true
+        let nativeContainer = try XCTUnwrap(scroll.superview)
+        nativeContainer.addSubview(decoy, positioned: .below, relativeTo: scroll)
+        defer { decoy.removeFromSuperview() }
+        XCTAssertTrue(scrollView(in: prepared.outgoing) === decoy,
+                      "The decoy must precede the real sections viewport in native traversal")
+        XCTAssertEqual(decoy.documentVisibleRect.minY, 40, accuracy: 1)
+
+        store.spaceGesture.sidebarOffset = 180
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === prepared)
         XCTAssertEqual(scroll.documentVisibleRect.minY, 180, accuracy: 1,
                        "The reused outgoing sidebar must start at the live scroll position")
+        XCTAssertEqual(decoy.documentVisibleRect.minY, 40, accuracy: 1,
+                       "Refreshing a reused sidebar must not scroll an unrelated native view")
         monitor.remove()
         XCTAssertNil(prepared.superview)
     }
@@ -1971,6 +2032,8 @@ import XCTest
     weak var host: BrowserWindowHost?
     var reds: [Double] = []
     var maxGap: TimeInterval = 0
+    private(set) var firstCallbackLatency: TimeInterval?
+    private var started: TimeInterval?
     private var last: TimeInterval?
     private var link: CADisplayLink?
     init(host: BrowserWindowHost) { self.host = host }
@@ -1980,13 +2043,21 @@ import XCTest
         return view.subviews.lazy.compactMap { self.visibleSurface(in: $0) }.first
     }
     func start(on screen: NSScreen) {
+        started = ProcessInfo.processInfo.systemUptime
         let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
         self.link = link
     }
+    func beginTransitionSampling() {
+        reds.removeAll(keepingCapacity: true)
+        maxGap = 0
+        // Include delay before the first transition callback in the gap diagnostic.
+        last = ProcessInfo.processInfo.systemUptime
+    }
     func stop() { link?.invalidate(); link = nil }
     @objc private func tick(_ link: CADisplayLink) {
         let now = ProcessInfo.processInfo.systemUptime
+        if firstCallbackLatency == nil, let started { firstCallbackLatency = now - started }
         if let last { maxGap = max(maxGap, now - last) }
         last = now
         guard let host, let surface = visibleSurface(in: host),

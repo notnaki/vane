@@ -978,28 +978,13 @@ private struct SpaceSwipe: ViewModifier {
     private var preparationPeers: [ObjectIdentifier: AnyCancellable] = [:]
     private var preparationProfiles: Set<UUID> = []
 
-    /// Only state captured by a sidebar invalidates its native surface. Search and
-    /// webpage chrome publish often but do not change the captured row structure.
-    private func sidebarChanges(_ store: TabStore) -> AnyPublisher<Void, Never> {
-        func changed<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, Never> where P.Failure == Never {
-            publisher.dropFirst().map { _ in () }.eraseToAnyPublisher()
-        }
-        return Publishers.MergeMany([
-            changed(store.$tabs), changed(store.$pins), changed(store.$todayShape),
-            changed(store.$splits), changed(store.$current), changed(store.$selection),
-            changed(store.$collapsedPinnedSpaces), changed(store.$currentSpaceID),
-            changed(store.$spaceRevision), changed(store.$previewSpace),
-            changed(store.$profileVisible), store.sidebarPreviewInvalidated.eraseToAnyPublisher()
-        ]).eraseToAnyPublisher()
-    }
-
     /// Preview rows can come from another window or a parked profile. Observe the
     /// supplying profiles, and invalidate synchronously before their row mutations.
     private func observePreparationPeers(for profiles: Set<UUID>, in store: TabStore) {
         preparationProfiles = profiles
         preparationPeers.removeAll()
         for peer in TabStore.all where peer !== store && profiles.contains(peer.profileID) {
-            preparationPeers[ObjectIdentifier(peer)] = sidebarChanges(peer).sink { [weak self, weak store] _ in
+            preparationPeers[ObjectIdentifier(peer)] = peer.sidebarSnapshotChanges.sink { [weak self, weak store] _ in
                 self?.invalidatePreparation()
                 DispatchQueue.main.async { [weak self, weak store] in
                     guard let self, let store else { return }
@@ -1053,7 +1038,10 @@ private struct SpaceSwipe: ViewModifier {
         }
         guard slide.follows(target, direction: direction),
               slide.preparedFor(origin: origin, target: target, frame: frame, width: width) else { return nil }
-        slide.updatePreparedScrollOffset(store.spaceGesture.sidebarOffset)
+        guard slide.updatePreparedScrollOffset(store.spaceGesture.sidebarOffset) else {
+            invalidatePreparation()
+            return nil
+        }
         preparedSlides.removeValue(forKey: target.id)
         preparation?.cancel()
         preparation = nil
@@ -1398,7 +1386,7 @@ private struct SpaceSwipe: ViewModifier {
         // Store collections and neighbouring Space metadata can change without updating
         // the geometry anchor. Read their completed state on the next main-loop turn.
         for (publisher, invalidates) in [
-            (sidebarChanges(store), true),
+            (store.sidebarSnapshotChanges, true),
             (store.spaceGesture.objectWillChange.eraseToAnyPublisher(), false),
             (ProfileManager.shared.objectWillChange.eraseToAnyPublisher(), true)
         ] {
