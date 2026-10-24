@@ -242,15 +242,21 @@ WebKit documents, a selected page in the content card, and 47 archived entries i
 closed Library. Its normal run serves a
 150-card HTML document over local HTTP and checks that folder disclosure, search edits,
 and tab selection preserve the page and its input. Timing runs compare 28- and 300-tab
-outlines. To exercise a public website in the content card instead:
+outlines through native scroll events and AppKit's normal display cycle, without forcing
+whole-window layout on each input. They check that events reach the intended list, keep
+vertical scrolling out of Space navigation, and report input admission separately from
+field readiness and main-thread display-callback gaps. To exercise a public website in
+the content card instead:
 
 ```sh
 VANE_UI_PERFORMANCE=1 VANE_LIVE_SITE_URL=https://obsidian.md/ swift test --filter LiveSidebarResponsivenessTests
 ```
 
 Only three pages are loaded; the remaining rows are suspended tabs. These timings measure
-native update/layout cost, not displayed frame rate or the cost of loading hundreds of
-websites. Also check the affected profile with its actual pages when diagnosing stutter.
+native input and display-cycle availability, not compositor-presented frame rate or the
+cost of loading hundreds of websites. Verify frame presentation separately in the affected
+profile with its actual pages, using the target display refresh rate. A 60 Hz session
+cannot establish 120 FPS.
 
 Folder-opening diagnostics report toggle time, opening/closing layout, run-loop gaps, and
 mounted native tab controls for 20/300-tab folders. They also guard against repeated

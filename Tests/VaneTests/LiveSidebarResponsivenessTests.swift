@@ -121,15 +121,26 @@ import XCTest
                 // range makes 300 tabs demand vastly more new rows per frame than 28.
                 let distance = min(limit, 16 * 44)
                 print("CHROME_SCROLL \(sidebar ? "sidebar" : "cmdt") tabs=\(count) viewport=\(viewport.contentView.bounds.height) range=\(limit) distance=\(distance)")
+                let point = viewport.convert(CGPoint(x: viewport.bounds.midX, y: viewport.bounds.midY), to: nil)
+                let startingOffset = viewport.contentView.bounds.minY
+                var previous: CGFloat = 0
+                var furthest = startingOffset
                 cadence?.begin()
                 for frame in 0..<90 {
                     let progress = CGFloat(frame < 45 ? frame : 89 - frame) / 44
-                    viewport.contentView.scroll(to: CGPoint(x: 0, y: distance * progress))
-                    viewport.reflectScrolledClipView(viewport.contentView)
-                    // Let the normal display cycle commit native scrolling. Forcing
-                    // whole-window layout on each packet overstates normal input work.
+                    let position = distance * progress
+                    NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: previous - position,
+                        phase: frame == 0 ? .began : .changed, x: point.x, y: point.y))
+                    previous = position
+                    // Exercise the production local monitors and scroll recipient.
+                    // Direct clip-view writes bypass idle-preparation postponement.
                     try await Task.sleep(for: .milliseconds(8))
+                    furthest = max(furthest, viewport.contentView.bounds.minY)
                 }
+                NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended, x: point.x, y: point.y))
+                XCTAssertGreaterThan(furthest - startingOffset, min(distance / 2, 100),
+                    "The native event must reach the intended scroll view")
+                XCTAssertFalse(store.spaceSwiping, "Vertical input must keep its normal recipient")
                 cadence?.report("\(sidebar ? "sidebar_scroll" : "cmdt_scroll") tabs=\(count)")
             }
             for iteration in 0..<3 {
@@ -146,26 +157,31 @@ import XCTest
                 defer { timer.invalidate() }
                 let start = ContinuousClock.now
                 store.toggleFolder(folder.id)
-                host.layoutSubtreeIfNeeded()
+                if !timing { host.layoutSubtreeIfNeeded() }
                 let disclosure = start.duration(to: .now)
                 try await Task.sleep(for: .milliseconds(600))
                 if iteration == 0 { try await scrollFrames(sidebar: true) }
                 let hide = ContinuousClock.now
                 store.sidebarShown = false
-                host.layoutSubtreeIfNeeded()
+                if !timing { host.layoutSubtreeIfNeeded() }
                 let hiding = hide.duration(to: .now)
                 try await Task.sleep(for: .milliseconds(250))
                 let show = ContinuousClock.now
                 store.sidebarShown = true
-                host.layoutSubtreeIfNeeded()
+                if !timing { host.layoutSubtreeIfNeeded() }
                 let showing = show.duration(to: .now)
                 try await Task.sleep(for: .milliseconds(250))
                 let open = ContinuousClock.now
                 cadence?.begin()
                 store.palette = .newTab
-                host.layoutSubtreeIfNeeded()
+                // The timing driver must yield to AppKit's normal display cycle.
+                // Forcing a whole-window layout on every input packet adds work that
+                // real keyboard/scroll input does not request. Routine correctness
+                // checks can still flush layout before inspecting mounted views.
+                if !timing { host.layoutSubtreeIfNeeded() }
                 let opening = open.duration(to: .now)
                 try await compatibilityWait { window.firstResponder is NSTextView }
+                let fieldReady = open.duration(to: .now)
                 if timing {
                     try await Task.sleep(for: .milliseconds(180))
                     cadence?.report("cmdt_open tabs=\(count) iteration=\(iteration)")
@@ -176,7 +192,7 @@ import XCTest
                 for text in ["l", "li", "live", "live document"] {
                     let edit = ContinuousClock.now
                     editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
-                    host.layoutSubtreeIfNeeded()
+                    if !timing { host.layoutSubtreeIfNeeded() }
                     typing = max(typing, edit.duration(to: .now))
                     try await Task.sleep(for: .milliseconds(20))
                 }
@@ -184,7 +200,7 @@ import XCTest
                 if iteration == 0 { try await scrollFrames(sidebar: false) }
                 cadence?.begin()
                 store.palette = nil
-                host.layoutSubtreeIfNeeded()
+                if !timing { host.layoutSubtreeIfNeeded() }
                 try await Task.sleep(for: .milliseconds(250))
                 if timing { cadence?.report("cmdt_close tabs=\(count) iteration=\(iteration)") }
                 XCTAssertTrue(active.existingWeb === web)
@@ -194,7 +210,7 @@ import XCTest
                     let draft = try await web.evaluateJavaScript("document.getElementById('draft').value") as? String
                     XCTAssertEqual(draft, "edited draft retained", "Disclosure/search must not reload the live document")
                 }
-                print("LIVE_SIDEBAR tabs=\(count) remote=\(remote != nil) iteration=\(iteration) disclosure=\(disclosure) hide=\(hiding) show=\(showing) open=\(opening) typing_max=\(typing) max_gap_ms=\(largestGap * 1000)")
+                print("LIVE_SIDEBAR tabs=\(count) remote=\(remote != nil) iteration=\(iteration) natural_display=\(timing) disclosure_admission=\(disclosure) hide_admission=\(hiding) show_admission=\(showing) open_admission=\(opening) field_ready=\(fieldReady) typing_admission_max=\(typing) max_gap_ms=\(largestGap * 1000)")
             }
             store.current = tabs[15].id
             host.layoutSubtreeIfNeeded()
