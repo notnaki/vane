@@ -140,4 +140,13 @@ final class ArcSidebarSplitTests: XCTestCase {
         XCTAssertTrue(parsed.spaces[0].hasSplitViews)
     }
 
+
+    func testLandingInFirstTodaySplitSelectsItsFocusedPane() throws {
+        let parsed = try sidebar([tab("pin"), split(["A", "B"], focus: "B"), tab("A"), tab("B")],
+                                 pinned: ["pin"], today: ["S"])
+        let layout = ArcImport.layout(pinned: parsed.spaces[0].pinned, today: parsed.spaces[0].today)
+        XCTAssertEqual(layout.selected, layout.tabs[2].id)
+        XCTAssertEqual(layout.splits.first?.active, 1)
+    }
+
 }

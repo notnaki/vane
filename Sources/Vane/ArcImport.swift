@@ -539,6 +539,14 @@ enum ArcImport {
         }
         layout.pins = section(pinned, kind: .pinned)
         layout.today = section(today, kind: .today)
+        // Selecting a lead pane also changes its split's focus. Land on the saved active
+        // pane instead, or ordinary cold restoration would immediately overwrite it.
+        if let landing = layout.tabs.first(where: { $0.kind == .today }) ?? layout.tabs.first {
+            if let split = layout.splits.first(where: { $0.ids?.contains(landing.id.uuidString) == true }),
+               let ids = split.ids, ids.indices.contains(split.active) {
+                layout.selected = UUID(uuidString: ids[split.active])
+            } else { layout.selected = landing.id }
+        }
         return layout
     }
 
