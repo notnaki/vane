@@ -69,7 +69,23 @@ jobs:
         run: scripts/check-app-icons.sh
 
       - name: Search typing regressions
-        run: swift test
+        id: swift-tests
+        run: |
+          touch "$RUNNER_TEMP/vane-swift-tests-start"
+          swift test
+
+      - name: Collect XCTest crash reports
+        if: failure() && steps.swift-tests.outcome == 'failure'
+        run: python3 scripts/collect-test-crashes.py
+
+      - name: Upload XCTest crash reports
+        if: failure() && steps.swift-tests.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: xctest-crash-reports-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vane-xctest-crash-reports/*
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: CLI password import errors
         run: bash scripts/test-cli-import.sh .build/debug/vane
