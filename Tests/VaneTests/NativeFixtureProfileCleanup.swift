@@ -7,10 +7,14 @@ import XCTest
 @MainActor enum NativeFixtureProfileCleanup {
     static func release(_ profiles: Set<UUID>, file: StaticString = #filePath, line: UInt = #line) async throws {
         guard !profiles.isEmpty else { return }
-        guard Store.overrideDirectory != nil else {
+        guard let directory = Store.overrideDirectory else {
             XCTFail("Native fixture profile cleanup requires an isolated data directory", file: file, line: line)
             return
         }
+        // Temporary CI diagnostic matrix: normal launches and unknown modes retain
+        // both operations; each fixed GitHub Actions mode omits only one operation.
+        let environment = ProcessInfo.processInfo.environment
+        let cleanupMode = environment["GITHUB_ACTIONS"] == "true" ? environment["VANE_NATIVE_FIXTURE_CLEANUP_MODE"] : nil
         for profile in profiles {
             guard profile != ProfileManager.defaultID, profile != Profile.incognito.id else {
                 XCTFail("Native fixture cleanup refuses default and incognito profiles", file: file, line: line)
@@ -20,9 +24,27 @@ import XCTest
             ExtensionHost.forget(profile)
             await Store.forgetAsync(profile)
             Favicons.forget(profile)
-            // Temporary diagnostic control: release fixture owners without erasing
-            // or unregistering WebKit backends, to isolate reader file denials.
+            var store: WKWebsiteDataStore? = ProfileManager.dataStore(for: profile)
+            if cleanupMode != "unregister-only" {
+                await store!.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+            }
+            store = nil
             ProfileManager.releaseDataStore(for: profile)
+            if cleanupMode == "erase-only" { continue }
+            let identifier = try XCTUnwrap(ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: directory), file: file, line: line)
+            let error: Error? = await withCheckedContinuation { continuation in
+                WKWebsiteDataStore.remove(forIdentifier: identifier) { continuation.resume(returning: $0) }
+            }
+            if let error {
+                let failure = error as NSError
+                XCTAssertEqual(failure.domain, "WKWebSiteDataStore", file: file, line: line)
+                XCTAssertEqual(failure.code, 1, "Unexpected native fixture unregister failure: \(error)", file: file, line: line)
+                if cleanupMode == "unregister-only" {
+                    print("Native fixture \(identifier): cache released without erasure; WebKit still has the store in use.")
+                } else {
+                    print("Native fixture \(identifier): contents erased and cache released; WebKit still has the empty store in use.")
+                }
+            }
         }
     }
 }

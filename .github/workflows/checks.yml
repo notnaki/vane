@@ -18,6 +18,10 @@ jobs:
     # macOS 26 / Xcode 26: Package.swift targets .macOS("26.0"), and the WebKit APIs this
     # browser is built on (WKWebExtension, isInspectable) do not exist on older images.
     runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        cleanup_mode: [erase-only, unregister-only]
     steps:
       - uses: actions/checkout@v7
 
@@ -69,6 +73,8 @@ jobs:
         run: scripts/check-app-icons.sh
 
       - name: Search typing regressions
+        env:
+          VANE_NATIVE_FIXTURE_CLEANUP_MODE: ${{ matrix.cleanup_mode }}
         run: swift test
 
       - name: CLI password import errors
