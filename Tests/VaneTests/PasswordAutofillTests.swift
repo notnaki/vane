@@ -8,11 +8,18 @@ import XCTest
     private var nativeFixtureProfiles: Set<UUID> = []
 
     override func tearDown() async throws {
+        try await releaseNativeFixtureProfiles()
+    }
+
+    private func releaseNativeFixtureProfiles() async throws {
         // A normal Tab caches its named store beyond the lifetime of its web view.
         // Every native fixture has already torn down its tabs and windows here.
         // Release these disposable stores between tests rather than accumulating
         // another persistent WebKit backend for every continuation scenario.
         for profile in nativeFixtureProfiles {
+            // A normal Tab also caches an extension controller whose configuration
+            // strongly owns this same store, even when no extensions are installed.
+            ExtensionHost.forget(profile)
             var store: WKWebsiteDataStore? = ProfileManager.dataStore(for: profile)
             await store!.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
             store = nil
@@ -29,6 +36,25 @@ import XCTest
             }
         }
         nativeFixtureProfiles.removeAll()
+    }
+
+    func testNativeContinuationCleanupReleasesExtensionControllerAndStore() async throws {
+        weak var host: ExtensionHost?
+        weak var controller: WKWebExtensionController?
+        weak var store: WKWebsiteDataStore?
+        try await withNativeContinuationFixture { tab, _ in
+            host = tab.extensions
+            controller = tab.web.configuration.webExtensionController
+            store = controller?.configuration.defaultWebsiteDataStore
+            XCTAssertTrue(store === ProfileManager.dataStore(for: tab.profileID))
+        }
+        XCTAssertNotNil(host, "The fixture must exercise the normal profile's cached extension host")
+        try await releaseNativeFixtureProfiles()
+        try await wait(for: "disposed native fixture's extension host, controller and store to be released", diagnostics: {
+            "hostRetained=\(host != nil), controllerRetained=\(controller != nil), storeRetained=\(store != nil)"
+        }) {
+            host == nil && controller == nil && store == nil
+        }
     }
 
     private final class Capture: NSObject, WKScriptMessageHandler {
