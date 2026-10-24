@@ -11,11 +11,15 @@ import Foundation
         /// Small outlines retain their unlocked, collapsed children so scrolling and
         /// disclosure reuse native controls. Large outlines keep viewport-only mounting.
         let retainedRows: [SidebarRows.Row]?
+        /// Captured from the complete outline, before collapse or authentication filtering.
+        let eagerlyMountsVisibleRows: Bool
 
-        init(rows: [SidebarRows.Row], todayCount: Int, retainedRows: [SidebarRows.Row]?) {
+        init(rows: [SidebarRows.Row], todayCount: Int, retainedRows: [SidebarRows.Row]?,
+             eagerlyMountsVisibleRows: Bool = false) {
             self.rows = rows
             self.todayCount = todayCount
             self.retainedRows = retainedRows
+            self.eagerlyMountsVisibleRows = eagerlyMountsVisibleRows
         }
     }
 
@@ -33,6 +37,14 @@ import Foundation
 
     private var key: Key?
     private var snapshot: Snapshot?
+
+    /// Bounded workaround for nested lazy-stack focus/layout fanout. Count every
+    /// tab and folder, including protected/collapsed children and profile favourites.
+    /// Larger outlines retain the existing lazy path; this does not solve arbitrary scale.
+    nonisolated static func usesBoundedEagerRows(tabCount: Int, folderCount: Int) -> Bool {
+        let structuralCount = tabCount + folderCount
+        return structuralCount > 40 && structuralCount <= 128
+    }
 
     static func retainsRows(in store: TabStore) -> Bool {
         let folders = store.pins.entries.filter { $0.folder != nil }.count
@@ -69,8 +81,11 @@ import Foundation
                         depth: row.visible.depth), tab: row.tab)
                 }
         }
+        let folders = store.pins.entries.filter { $0.folder != nil }.count
+            + store.todayShape.entries.filter { $0.folder != nil }.count
         let result = Snapshot(rows: rows, todayCount: accessible.filter { $0.kind == .today }.count,
-            retainedRows: retainedRows)
+            retainedRows: retainedRows,
+            eagerlyMountsVisibleRows: Self.usesBoundedEagerRows(tabCount: store.tabs.count, folderCount: folders))
         key = next
         snapshot = result
         return result

@@ -2616,8 +2616,21 @@ struct Stash {
     /// between the two: arming either name field puts the other away, or two rows in the
     /// same list are both waiting to be typed into and only one of them can be.
     @Published var renamingTab: Tab.ID? {
-        didSet { if renamingTab != nil { renamingFolder = nil } }
+        didSet {
+            if let id = renamingTab {
+                if oldValue != id {
+                    // Finish before replacing authority: an outgoing row's later
+                    // disappearance must not overwrite a more recent edit.
+                    tabRenameSession?.commit()
+                    tabRenameSession = TabRenameSession(tabID: id)
+                }
+                renamingFolder = nil
+            }
+        }
     }
+    /// A row can change its mounting container while its name is being edited.
+    /// Keep the draft and completion authority outside that view's lifetime.
+    var tabRenameSession: TabRenameSession?
     /// Arc's multi-select: which rows are ticked, and which section they are in. Per window,
     /// like the sidebar itself. See Selection.swift — everything done with it is there.
     @Published var selection = Selection() { didSet { if oldValue != selection { extensions.sync() } } }

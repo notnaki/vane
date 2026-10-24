@@ -2,7 +2,8 @@ import SwiftUI
 
 /// Small outlines keep their controls warm. A folder changes the slots' geometry,
 /// not the lifetime of every tooltip, focus target and drag destination inside it.
-/// The cache supplies no retained rows for a large outline, preserving virtualization.
+/// Medium outlines eagerly mount only visible rows under a captured structural bound.
+/// Larger outlines keep the existing lazy mounting path.
 struct SidebarSectionRows<Content: View>: View {
     @State private var virtualizesRetainedRows = RetainedRowVirtualizationExperiment.enabled
     @SidebarObserved var store: TabStore
@@ -41,6 +42,12 @@ struct SidebarSectionRows<Content: View>: View {
             .environment(\.sidebarRetainsControls, true)
             .padding(.bottom, rows.isEmpty ? 0 : -Look.rowGap)
             .vaneMotionPolicy()
+        } else if snapshot.retainedRows == nil && snapshot.eagerlyMountsVisibleRows {
+            VStack(spacing: Look.rowGap) {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    content(row, index, rows.count).transition(transition)
+                }
+            }
         } else {
             LazyVStack(spacing: Look.rowGap) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in

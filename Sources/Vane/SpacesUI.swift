@@ -475,6 +475,7 @@ struct SpacePreviewList: View, Equatable {
     let favorites: [URL]
     let includingFavorites: Bool
     let pinnedCollapsed: Bool
+    let eagerlyMountsVisibleRows: Bool
 
     /// Capture once, before the preview moves. Decoding interaction states and rebuilding
     /// folders in body would repeat disk work on every frame of a populated Space swipe.
@@ -543,9 +544,16 @@ struct SpacePreviewList: View, Equatable {
                                   liveShape: state?.pins, splits: splits, live: live, unlocked: unlocked)
         let today = Self.section(space: space, kind: .today, tabs: self.liveTabs,
                                  liveShape: state?.todayShape, splits: splits, live: nil, unlocked: unlocked)
-        pinnedAvailable = !pinned.isEmpty
+        pinnedAvailable = !pinned.rows.isEmpty
         todayCount = self.liveTabs?.filter { $0.kind == .today }.count ?? space.tabURLs.count
-        rows = (pinnedCollapsed ? [] : pinned, today)
+        let regularCount = self.liveTabs?.filter { $0.kind != .favourite }.count ?? diskTabs.count
+        let tabCount = regularCount + favoriteItems.count
+        let folderCount = pinned.folderCount + today.folderCount
+        // Preserve the existing small-preview lazy path, including the retained-lazy
+        // experiment. Only the new medium-outline path needs preview/live parity.
+        eagerlyMountsVisibleRows = Feel02SidebarRowsCache.usesBoundedEagerRows(
+            tabCount: tabCount, folderCount: folderCount)
+        rows = (pinnedCollapsed ? [] : pinned.rows, today.rows)
     }
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.identity == rhs.identity }
@@ -597,24 +605,32 @@ struct SpacePreviewList: View, Equatable {
                 .padding(.bottom, pinnedCollapsed || !pinnedAvailable ? 0 : Look.sectionGap / 2 - Look.rowGap)
             } rows: {
                 if pinnedAvailable {
-                    LazyVStack(spacing: Look.rowGap) {
-                        ForEach(Array(rows.pinned.enumerated()), id: \.offset) { _, entry in
-                            row(entry, selected: isSelected(entry))
-                        }
-                    }
+                    sectionRows(rows.pinned)
                     .padding(.bottom, pinnedCollapsed ? -Look.rowGap : 0)
                 }
                 tidy
                 newTab
-                LazyVStack(spacing: Look.rowGap) {
-                    ForEach(Array(rows.today.enumerated()), id: \.offset) { _, entry in
-                        row(entry, selected: isSelected(entry))
-                    }
-                }
+                sectionRows(rows.today)
                 Color.clear.frame(maxWidth: .infinity, minHeight: Look.rowHeight)
             }
         }
         .environment(\.feel02PressFeedbackEnabled, false)
+    }
+
+    @ViewBuilder private func sectionRows(_ rows: [Row]) -> some View {
+        if eagerlyMountsVisibleRows {
+            VStack(spacing: Look.rowGap) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, entry in
+                    row(entry, selected: isSelected(entry))
+                }
+            }
+        } else {
+            LazyVStack(spacing: Look.rowGap) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, entry in
+                    row(entry, selected: isSelected(entry))
+                }
+            }
+        }
     }
 
     private func isSelected(_ row: Row) -> Bool {
@@ -632,7 +648,8 @@ struct SpacePreviewList: View, Equatable {
     /// Disk shapes name URLs; live shapes name Tab IDs, so restore the former with the
     /// same counted URL mapping as the real section (duplicates remain distinct).
     private static func section(space: Space, kind: TabKind, tabs: [Tab]?,
-                                liveShape: Pins?, splits: [Split], live: LiveFolders?, unlocked: Set<UUID>) -> [Row] {
+                                liveShape: Pins?, splits: [Split], live: LiveFolders?, unlocked: Set<UUID>)
+        -> (rows: [Row], folderCount: Int) {
         let urls = kind == .pinned ? space.pinnedTabURLs ?? [] : space.tabURLs
         let loaded = tabs?.filter { $0.kind == kind }
         let savedShape = TabStore.savedShape(kind, space: space.id, profileID: space.profileID)
@@ -643,11 +660,15 @@ struct SpacePreviewList: View, Equatable {
             tabs.map { tab in (tab.pinnedURL?.absoluteString ?? "", tab.id.uuidString) }
         } ?? ordered.enumerated().map { ($0.element.absoluteString, String($0.offset)) }
         var shape = liveShape ?? TabStore.adopted(disk, opened: opened)
+        // A live snapshot counts its raw shape. Cold restoration removes stale empty
+        // Today folders before the arriving live sidebar evaluates its structural bound.
+        let liveFolderCount = liveShape?.entries.filter { $0.folder != nil }.count
         if kind == .today { shape.removeEmptyFolders() }
+        let folderCount = liveFolderCount ?? shape.entries.filter { $0.folder != nil }.count
         let byID = Dictionary(uniqueKeysWithValues: opened.map { ($0.id, $0.url) })
         let liveByID = Dictionary(uniqueKeysWithValues: (loaded ?? []).map { ($0.id.uuidString, $0) })
         let strip = (tabs ?? []).map { ($0.id, $0.kind) }
-        return shape.visible(unlocked: unlocked).compactMap { visible in
+        let rows: [Row] = shape.visible(unlocked: unlocked).compactMap { visible in
             if let folder = visible.entry.folder { return .folder(folder, depth: visible.depth) }
             guard let id = visible.entry.tab, let name = byID[id] else { return nil }
             let tab = liveByID[id]
@@ -662,6 +683,7 @@ struct SpacePreviewList: View, Equatable {
             }
             return .site(url, kind, tab, depth: visible.depth, pr: pr, savedIndex: tab == nil ? Int(id) : nil)
         }
+        return (rows, folderCount)
     }
 
     private var favoriteGrid: some View {

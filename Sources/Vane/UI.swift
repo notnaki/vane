@@ -3151,7 +3151,33 @@ struct SidebarScrollCutoffs: Equatable {
 /// Identifies the sections viewport without assuming it is the first native
 /// scroller in a hosted sidebar. This marker owns no input or accessibility node.
 @MainActor struct SidebarSectionsViewport: NSViewRepresentable {
+    var tracesLiveInput = false
     final class Marker: NSView {
+        var tracesLiveInput = false { didSet { refreshTrace() } }
+        private var scrollTrace: SidebarScrollTrace?
+        private weak var tracedClip: NSClipView?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            refreshTrace()
+        }
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            refreshTrace()
+        }
+        func refreshTrace() {
+            guard SidebarScrollTrace.enabled else { return }
+            let clip = tracesLiveInput && window != nil ? enclosingScrollView?.contentView : nil
+            guard clip !== tracedClip else { return }
+            stopTrace()
+            tracedClip = clip
+            if let clip { scrollTrace = SidebarScrollTrace(clip: clip, marker: self) }
+        }
+        func stopTrace() {
+            scrollTrace?.detach()
+            scrollTrace = nil
+            tracedClip = nil
+        }
         override init(frame: NSRect) {
             super.init(frame: frame)
             setAccessibilityElement(false)
@@ -3161,7 +3187,16 @@ struct SidebarScrollCutoffs: Equatable {
     }
 
     func makeNSView(context: Context) -> Marker { Marker(frame: .zero) }
-    func updateNSView(_ view: Marker, context: Context) {}
+    func updateNSView(_ view: Marker, context: Context) {
+        view.tracesLiveInput = tracesLiveInput
+        if SidebarScrollTrace.enabled {
+            DispatchQueue.main.async { [weak view] in view?.refreshTrace() }
+        }
+    }
+    static func dismantleNSView(_ view: Marker, coordinator: ()) {
+        view.tracesLiveInput = false
+        view.stopTrace()
+    }
 
     /// Called only when a prepared sidebar is claimed, never during finger tracking.
     static func scrollView(in root: NSView) -> NSScrollView? {
@@ -3183,6 +3218,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     var initialOffset: CGFloat = 0
     var animatesCutoffs = true
     var retainsRows = false
+    var tracesLiveInput = false
     var reportOffset: (CGFloat) -> Void = { _ in }
     @ViewBuilder let header: () -> Header
     @ViewBuilder let rows: () -> Rows
@@ -3198,7 +3234,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
                 rowStack
                     .frame(minHeight: scrollHeight, alignment: .top)
                     .background(WindowDragArea())
-                    .background(SidebarSectionsViewport())
+                    .background(SidebarSectionsViewport(tracesLiveInput: tracesLiveInput))
             }
             .scrollIndicators(.never)
             .modifier(ScrollViewportPosition(initialOffset: initialOffset))
@@ -3272,6 +3308,7 @@ private struct SidebarSpaceSectionContent: View {
 
     var body: some View {
         SpaceSectionsLayout(retainsRows: Feel02SidebarRowsCache.retainsRows(in: store),
+                            tracesLiveInput: true,
                             reportOffset: { store.spaceGesture.sidebarOffset = $0 }) { SpaceRow() } rows: {
             PinnedTabs(store: store)
             TidyRow()
