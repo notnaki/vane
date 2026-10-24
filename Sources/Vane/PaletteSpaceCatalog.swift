@@ -1,31 +1,89 @@
+import Combine
 import Foundation
 
-/// Saved Space metadata belongs to the open palette, rather than each query. Keep
-/// persistence reads unchanged elsewhere; live previews are folded over this snapshot.
-@MainActor final class PaletteSpaceCatalog {
-    typealias Loader = @MainActor (ProfileManager, [Profile]) -> [Space]
-    private let load: Loader
-    private weak var cachedManager: ProfileManager?
-    private var profileIDs: [UUID] = []
-    private var revision: Int?
-    private var persisted: [Space] = []
+/// The palette only renders an in-memory snapshot. Reading and decoding the saved
+/// metadata belongs to a worker; previews remain live and never enter persistence.
+@MainActor final class PaletteSpaceCatalog: ObservableObject {
+    typealias Loader = @Sendable (URL, [UUID]) -> [Space]
+    private struct Key: Equatable {
+        let manager: ObjectIdentifier
+        let directory: URL
+        let profiles: [UUID]
+        let revision: Int
 
-    init(load: @escaping Loader = { manager, profiles in
-        Spaces.strip(profiles: profiles) { manager.spaces(for: $0.id) }
-    }) {
-        self.load = load
-    }
-
-    func strip(manager: ProfileManager = .shared, preview: Space? = nil) -> [Space] {
-        let ids = manager.profiles.map(\.id)
-        if cachedManager !== manager || ids != profileIDs || revision != manager.spacesRevision {
-            persisted = load(manager, manager.profiles)
-            cachedManager = manager
-            profileIDs = ids
+        @MainActor init(_ manager: ProfileManager) {
+            self.manager = ObjectIdentifier(manager)
+            directory = manager.directory
+            profiles = manager.profiles.map(\.id)
             revision = manager.spacesRevision
         }
-        guard let preview, let index = persisted.firstIndex(where: { $0.id == preview.id })
-        else { return persisted }
+    }
+
+    @Published private(set) var generation = 0
+    private let load: Loader
+    private var loadedKey: Key?
+    private var requestedKey: Key?
+    private var persisted: [Space] = []
+    private var request = 0
+    private var task: Task<Void, Never>?
+
+    init(load: @escaping Loader = PaletteSpaceCatalog.read) { self.load = load }
+
+    /// No migrations, writes, live models, or UI objects cross onto this worker.
+    nonisolated static func read(directory: URL, profiles: [UUID]) -> [Space] {
+        profiles.flatMap { profile -> [Space] in
+            guard !Task.isCancelled,
+                  let data = try? Data(contentsOf: ProfileManager.spacesURL(for: profile, in: directory)),
+                  let spaces = try? JSONDecoder().decode([Space].self, from: data)
+            else { return [] }
+            return spaces.filter { $0.profileID == profile }
+        }
+    }
+
+    @discardableResult func prepare(manager: ProfileManager = .shared) -> Task<Void, Never>? {
+        let key = Key(manager)
+        guard key != loadedKey, key != requestedKey else { return task }
+        task?.cancel()
+        request &+= 1
+        let ticket = request, load = load
+        requestedKey = key
+        task = Task { [weak self, weak manager] in
+            let worker = Task.detached(priority: .userInitiated) { load(key.directory, key.profiles) }
+            let spaces = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled, let self,
+                  self.request == ticket, self.requestedKey == key
+            else { return }
+            self.requestedKey = nil
+            self.task = nil
+            guard let manager, Key(manager) == key else { return }
+            self.persisted = spaces
+            self.loadedKey = key
+            self.generation &+= 1
+        }
+        return task
+    }
+
+    /// Dismissal invalidates even workers that cannot cancel an in-progress file read.
+    func cancel() {
+        request &+= 1
+        task?.cancel()
+        task = nil
+        requestedKey = nil
+        loadedKey = nil
+        persisted = []
+    }
+
+    deinit { task?.cancel() }
+
+    func strip(manager: ProfileManager = .shared, preview: Space? = nil) -> [Space] {
+        guard loadedKey == Key(manager) else { return [] }
+        guard let preview, let index = persisted.firstIndex(where: {
+            $0.id == preview.id && $0.profileID == preview.profileID
+        }) else { return persisted }
         var result = persisted
         result[index] = preview
         return result

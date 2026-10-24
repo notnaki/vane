@@ -3136,7 +3136,6 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     @ViewBuilder let header: () -> Header
     @ViewBuilder let rows: () -> Rows
     @State private var scrollHeight: CGFloat = 0
-    @State private var scrollPosition = ScrollPosition(edge: .top)
     @State private var cutoffs = SidebarScrollCutoffs()
     @State private var measuredCutoffs = false
     @Environment(\.displayScale) private var displayScale
@@ -3150,7 +3149,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
                     .background(WindowDragArea())
             }
             .scrollIndicators(.never)
-            .scrollPosition($scrollPosition)
+            .modifier(ScrollViewportPosition(initialOffset: initialOffset))
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
                 reportOffset(offset)
             }
@@ -3167,9 +3166,6 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
             }
             .overlay(alignment: .top) { cutoffLine(visible: cutoffs.top) }
             .overlay(alignment: .bottom) { cutoffLine(visible: cutoffs.bottom) }
-            .onAppear {
-                if initialOffset != 0 { scrollPosition.scrollTo(y: initialOffset) }
-            }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
         }
     }

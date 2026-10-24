@@ -857,7 +857,7 @@ struct CommandField: NSViewRepresentable {
 /// Every entry point — ⌘L, ⌘T, the address pill, ⌘⇧P, ⌘⇧A — lands here, looking the same.
 @MainActor struct PaletteView: View {
     @ObservedObject private var profileManager = ProfileManager.shared
-    @State private var spaceCatalog = PaletteSpaceCatalog()
+    @StateObject private var spaceCatalog = PaletteSpaceCatalog()
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -885,7 +885,6 @@ struct CommandField: NSViewRepresentable {
     @State private var acceptingInput = true
     @State private var fieldFocusRequest = 0
     @State private var scrollRequest = 0
-    @State private var listPosition = ScrollPosition()
     /// The last query's history and engine rows, held while this query's are pending so
     /// the list does not collapse to its defaults and refill on every keystroke.
     @State private var heldSuggestions: [PaletteRow] = []
@@ -999,12 +998,14 @@ struct CommandField: NSViewRepresentable {
         .vaneMotionPolicy()
         .onDisappear {
             acceptingInput = false
+            spaceCatalog.cancel()
             if store.palette == nil { store.clearSuggestions() }
         }
         .onExitCommand { close() }
         .onReceive(store.$palette) { presented in
             guard let presented else {
                 acceptingInput = false
+                spaceCatalog.cancel()
                 store.clearSuggestions()
                 return
             }
@@ -1059,8 +1060,12 @@ struct CommandField: NSViewRepresentable {
         .onChange(of: currentTabContent) { refresh(reset: false) }
         .onChange(of: tabSpaceID) { refresh() }
         // Space metadata changes between queries still update the open palette.
-        .onChange(of: profileManager.spacesRevision) { refresh(reset: false) }
-        .onChange(of: profileManager.profiles) { refresh(reset: false) }
+        .onChange(of: profileManager.spacesRevision) { prepareCatalog(); refresh(reset: false) }
+        .onChange(of: profileManager.profiles) { prepareCatalog(); refresh(reset: false) }
+        .onChange(of: spaceCatalog.generation) {
+            guard acceptingInput else { return }
+            refresh(reset: false)
+        }
         .onChange(of: store.previewSpace) { refresh(reset: false) }
         .onChange(of: store.currentSpaceID) { refresh(reset: false) }
         // Tabs opened or closed while the bar is up: watch the new set, and list it.
@@ -1069,6 +1074,12 @@ struct CommandField: NSViewRepresentable {
 
     private var catalogStrip: [Space] {
         store.isPrivate || store.isLittle ? [] : spaceCatalog.strip(manager: profileManager, preview: store.previewSpace)
+    }
+
+    private func prepareCatalog() {
+        guard acceptingInput else { return }
+        guard !store.isPrivate, !store.isLittle else { spaceCatalog.cancel(); return }
+        spaceCatalog.prepare(manager: profileManager)
     }
 
     private var catalogSpaces: [Space] {
@@ -1225,10 +1236,9 @@ struct CommandField: NSViewRepresentable {
             }
             .frame(height: listHeight + listPadding)
             .scrollIndicators(.never)
-            .scrollPosition($listPosition)
             // The scroll view's edge, not the first row's: aligning the row would scroll
             // the list's top padding away whenever there are enough results to scroll.
-            .onChange(of: scrollRequest) { listPosition.scrollTo(edge: .top) }
+            .modifier(ScrollViewportPosition(resetRequest: scrollRequest))
             .onChange(of: index) {
                 guard rows.indices.contains(index) else { return }
                 proxy.scrollTo(index)
@@ -1384,6 +1394,7 @@ struct CommandField: NSViewRepresentable {
     /// back — otherwise the address bar's own overlay inherits a stale list.
     private func beginSession(_ presented: PaletteMode) {
         acceptingInput = true
+        prepareCatalog()
         actionsOnly = false
         activeBang = nil
         tabSpaceID = nil
@@ -1396,6 +1407,7 @@ struct CommandField: NSViewRepresentable {
 
     private func close() {
         acceptingInput = false
+        spaceCatalog.cancel()
         store.clearSuggestions()
         dismiss()
     }
