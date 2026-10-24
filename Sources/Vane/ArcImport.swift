@@ -598,6 +598,8 @@ enum ArcImport {
         /// under `User Data` is gone, which `vaults` by definition has no entry for.
         var directories: [String] = []
         var vaults: [String: Vault] = [:]
+        var routing: ArcLinkRouting? = nil
+        var routingUnavailable = false
 
         /// Arc's `User Data`, where the Chromium half of the installation lives.
         var userData: URL { root.appendingPathComponent("User Data") }
@@ -615,6 +617,9 @@ enum ArcImport {
         var cookies = 0, cookiesSkipped = 0, history = 0, bookmarks = 0
         var historyImportFailures: [String] = []
         var sidebarWarnings = ArcSidebar.Warnings()
+        var routingRules = 0, routingRulesSkipped = 0, routingRulesAlready = 0
+        var routingDefault: String? = nil
+        var routingUnavailable = false, routingDefaultUnsupported = false
         /// Rows the Safe Storage key would not open, of either kind.
         var locked = 0
         /// Rows that came out in the clear and the keychain would not take.
@@ -752,6 +757,11 @@ enum ArcImport {
                 FileManager.default.fileExists(atPath: userData.appendingPathComponent($0).path)
             }
             var scan = Scan(root: root, sidebar: sidebar, profiles: listed, directories: directories)
+            let routingFile = root.appendingPathComponent("StorableLinkRouting.json")
+            if FileManager.default.fileExists(atPath: routingFile.path) {
+                scan.routing = (try? Data(contentsOf: routingFile)).flatMap(ArcLinkRouting.parse)
+                scan.routingUnavailable = scan.routing == nil
+            }
             for directory in directories {
                 let path = userData.appendingPathComponent(directory)
                 guard FileManager.default.fileExists(atPath: path.path) else { continue }
@@ -846,13 +856,13 @@ enum ArcImport {
     /// second run safe: there is no field-by-field merge to get wrong, and a user who wants
     /// one space again can rename or delete the one they have.
     ///
-    /// False for a space that was skipped, so the caller knows whether the profile's window
-    /// has anything new to be told about.
+    /// The new Space identity, or nil when skipped. Link rules only target Spaces actually
+    /// imported by this run, never an unrelated Vane Space sharing the same display name.
     @MainActor private static func write(_ arc: ArcSpace, into profileID: UUID,
-                                         counts: inout Counts) async throws -> Bool {
+                                         counts: inout Counts) async throws -> UUID? {
         guard !ProfileManager.shared.spaces(for: profileID)
             .contains(where: { $0.name.caseInsensitiveCompare(arc.title) == .orderedSame })
-        else { counts.spacesSkipped += 1; return false }
+        else { counts.spacesSkipped += 1; return nil }
 
         let (pins, pinnedURLs, pinnedTitles) = shape(arc.pinned)
         // Today has a shape of its own on disk — a second key of exactly the same form, named
@@ -893,7 +903,25 @@ enum ArcImport {
         }
         try await saveImportedTitles(parked, space: space.id, profileID: profileID, in: Store.directory)
         counts.spaces += 1
-        return true
+        return space.id
+    }
+
+    /// Accepted routing preferences merge after the user's existing rules, preserving their
+    /// precedence. A valid Arc default is part of the same explicitly reviewed import.
+    @MainActor static func importRouting(_ routing: ArcLinkRouting?, unavailable: Bool,
+                                         spaceIDs: [String: UUID], counts: inout Counts) {
+        counts.routingUnavailable = unavailable
+        guard let routing else { return }
+        let plan = routing.plan(existing: AirTraffic.rules, spaceIDs: spaceIDs)
+        if plan.added > 0 { AirTraffic.rules = plan.rules }
+        counts.routingRules += plan.added
+        counts.routingRulesAlready += plan.already
+        counts.routingRulesSkipped += plan.skipped
+        counts.routingDefaultUnsupported = routing.unsupportedDefault
+        if let target = routing.defaultTarget {
+            UserDefaults.vane.set(target, forKey: LinkTarget.key)
+            counts.routingDefault = target
+        }
     }
 
     /// Arc titles share the ordered session lane. Awaiting durability leaves MainActor
@@ -1098,13 +1126,18 @@ enum ArcImport {
         counts.noKey = key == nil
 
         var gained: Set<UUID> = []
+        var spaceIDs: [String: UUID] = [:]
         defer { refreshSpaces(afterImporting: gained) }
         for space in scan.sidebar.spaces {
             try Task.checkCancellation()
             guard let profileID = ids[space.profileDirectory],
                   ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
-            if try await write(space, into: profileID, counts: &counts) { gained.insert(profileID) }
+            if let id = try await write(space, into: profileID, counts: &counts) {
+                spaceIDs[space.id] = id
+                gained.insert(profileID)
+            }
         }
+        importRouting(scan.routing, unavailable: scan.routingUnavailable, spaceIDs: spaceIDs, counts: &counts)
         for (directory, urls) in scan.sidebar.favourites.sorted(by: { $0.key < $1.key }) {
             try Task.checkCancellation()
             guard let profileID = ids[directory],
@@ -1228,7 +1261,7 @@ enum ArcImport {
     /// read without running an import.
     static func summary(_ scan: Scan) -> String {
         func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
-        return "Found " + [
+        let found = "Found " + [
             // `directories`, not `vaults`: a profile whose folder Arc has lost still gets a
             // Vane profile and still brings its spaces, and the alert has to advertise what
             // the import will actually do.
@@ -1237,7 +1270,11 @@ enum ArcImport {
             plural(scan.pinnedCount, "pinned tab", "pinned tabs"),
             plural(scan.passwordCount, "password", "passwords"),
             plural(scan.cookieCount, "cookie", "cookies"),
-        ].joined(separator: ", ") + "." + scan.sidebar.warnings.messages.map { " " + $0 }.joined()
+        ].joined(separator: ", ") + "."
+        var notes = scan.sidebar.warnings.messages
+        if let routing = scan.routing { notes.append(routing.consent) }
+        if scan.routingUnavailable { notes.append("Arc's link routing file could not be read; existing link settings will be kept.") }
+        return ([found] + notes).joined(separator: " ")
     }
 
     /// The toast: what happened, and then what did not.
@@ -1254,6 +1291,8 @@ enum ArcImport {
         if c.liveFolders > 0 {
             parts.append("\(c.liveFolders) live folder\(c.liveFolders == 1 ? "" : "s")")
         }
+        if c.routingRules > 0 { parts.append("\(c.routingRules) Air Traffic Control rule\(c.routingRules == 1 ? "" : "s")") }
+        if c.routingDefault != nil { parts.append("link-opening preference") }
         if c.favourites > 0 { parts.append("\(c.favourites) favourite\(c.favourites == 1 ? "" : "s")") }
         if c.passwords > 0 { parts.append("\(c.passwords) password\(c.passwords == 1 ? "" : "s")") }
         if c.cookies > 0 { parts.append("\(c.cookies) cookie\(c.cookies == 1 ? "" : "s")") }
@@ -1261,6 +1300,10 @@ enum ArcImport {
         if c.bookmarks > 0 { parts.append("\(c.bookmarks) bookmark\(c.bookmarks == 1 ? "" : "s")") }
 
         var tail = c.sidebarWarnings.messages
+        if c.routingRulesSkipped > 0 { tail.append("\(c.routingRulesSkipped) Air Traffic Control rules were skipped (unsupported match or destination, or Space not imported).") }
+        if c.routingRulesAlready > 0 { tail.append("\(c.routingRulesAlready) duplicate or existing Air Traffic Control rules were kept.") }
+        if c.routingUnavailable { tail.append("Arc's link routing file could not be read; existing link settings were kept.") }
+        if c.routingDefaultUnsupported { tail.append("Arc's default link destination was unsupported; Vane's default was kept.") }
         if c.noKey {
             tail.append("Passwords and sessions need Arc's keychain key.")
         } else if c.wrongKey {
