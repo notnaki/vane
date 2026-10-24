@@ -1,10 +1,123 @@
 import AppKit
 import Darwin
 import WebKit
+@testable import vane
 
 /// Failure-only diagnostics for the WebContent process owned by a fixture's live view.
 /// Never enumerate or sample another application's WebKit processes.
 @MainActor enum NativeFixtureDiagnostics {
+    enum SQLiteHandleKind: String, Sendable { case database, wal, shm }
+
+    struct DescriptorSnapshot: Sendable {
+        let count: Int?
+        // Bounded IDs support owned-pipe tests; summary output never includes them.
+        let identifiers: [Int32]
+        let capacity: Int
+        let truncated: Bool
+        let error: Int32?
+
+        var summary: String {
+            "fdCount=\(count.map(String.init) ?? "unavailable"), fdCapacity=\(capacity), fdAtCapacity=\(truncated), fdError=\(error.map(String.init) ?? "none")"
+        }
+    }
+
+    /// Classify only the app's immediate per-profile database filenames. No paths
+    /// or arbitrary descriptor metadata leave the resource snapshot.
+    nonisolated static func sqliteHandleKind(path: String, directory: URL) -> SQLiteHandleKind? {
+        guard directory.isFileURL, path.hasPrefix("/") else { return nil }
+        let file = URL(fileURLWithPath: path).standardizedFileURL
+        guard file.deletingLastPathComponent().path == directory.standardizedFileURL.path else { return nil }
+        var name = file.lastPathComponent
+        let kind: SQLiteHandleKind
+        if name.hasSuffix("-wal") { kind = .wal; name = String(name.dropLast(4)) }
+        else if name.hasSuffix("-shm") { kind = .shm; name = String(name.dropLast(4)) }
+        else { kind = .database }
+        guard name.hasSuffix(".db") else { return nil }
+        let stem = String(name.dropLast(3))
+        guard stem == "vane" || (stem.hasPrefix("vane-") && UUID(uuidString: String(stem.dropFirst(5))) != nil) else { return nil }
+        return kind
+    }
+
+    nonisolated static func currentProcessDescriptors(limit: Int = 4_096) -> DescriptorSnapshot {
+        descriptors(pid: getpid(), limit: limit).snapshot
+    }
+
+    private nonisolated static func descriptors(pid: Int32, limit: Int = 4_096)
+        -> (entries: [proc_fdinfo], snapshot: DescriptorSnapshot) {
+        let capacity = min(4_096, max(1, limit))
+        var entries = [proc_fdinfo](repeating: proc_fdinfo(), count: capacity)
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        errno = 0
+        let bytes = entries.withUnsafeMutableBytes {
+            proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count))
+        }
+        let code = errno
+        guard bytes > 0, Int(bytes) <= capacity * stride, Int(bytes) % stride == 0 else {
+            return ([], DescriptorSnapshot(count: nil, identifiers: [], capacity: capacity, truncated: false,
+                                            error: code == 0 ? EIO : code))
+        }
+        let count = Int(bytes) / stride
+        return (Array(entries.prefix(count)), DescriptorSnapshot(count: count, identifiers: entries.prefix(count).map(\.proc_fd), capacity: capacity,
+                                                                 truncated: count == capacity, error: nil))
+    }
+
+    private nonisolated static func sqliteSummary(_ entries: [proc_fdinfo], truncated: Bool, directory: URL?) -> String {
+        guard let directory, directory.isFileURL, directory.path != "/" else { return "sqliteHandles=unavailable" }
+        // Kernel vnode paths resolve aliases such as /var -> /private/var. Resolve
+        // only the explicitly isolated root, never unrelated descriptor paths.
+        let root = directory.standardizedFileURL.resolvingSymlinksInPath()
+        let deadline = ContinuousClock.now + .milliseconds(50)
+        var database = 0, wal = 0, shm = 0, examined = 0, unreadable = 0
+        for entry in entries.prefix(512) {
+            guard ContinuousClock.now < deadline else { break }
+            examined += 1
+            guard entry.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) else { continue }
+            var info = vnode_fdinfowithpath()
+            let size = Int32(MemoryLayout<vnode_fdinfowithpath>.size)
+            guard proc_pidfdinfo(getpid(), entry.proc_fd, PROC_PIDFDVNODEPATHINFO, &info, size) == size else {
+                unreadable += 1
+                continue
+            }
+            let path = withUnsafeBytes(of: info.pvip.vip_path) {
+                String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self)
+            }
+            switch sqliteHandleKind(path: path, directory: root) {
+            case .database: database += 1
+            case .wal: wal += 1
+            case .shm: shm += 1
+            case nil: break
+            }
+        }
+        return "sqliteDB=\(database), sqliteWAL=\(wal), sqliteSHM=\(shm), sqliteFDsExamined=\(examined), sqliteReadErrors=\(unreadable), sqlitePartial=\(truncated || examined < entries.count || unreadable > 0)"
+    }
+
+    /// UI-only when no view is supplied. This performs no AppKit initialization,
+    /// process enumeration, descriptor opening, or subprocess launch.
+    static func resourceSnapshot(for web: WKWebView? = nil) -> String {
+        let ui = descriptors(pid: getpid())
+        var limits = rlimit()
+        let limitResult = getrlimit(RLIMIT_NOFILE, &limits)
+        let limitError = errno
+        let limit = limitResult == 0
+            ? "fdSoftLimit=\(limits.rlim_cur), fdHardLimit=\(limits.rlim_max)"
+            : "fdLimits=unavailable, fdLimitError=\(limitError)"
+        let directory = Store.overrideDirectory.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let sqlite = ui.snapshot.count == nil ? "sqliteHandles=unavailable"
+            : sqliteSummary(ui.entries, truncated: ui.snapshot.truncated, directory: directory)
+        let current = "uiResources={\(ui.snapshot.summary), \(limit), \(sqlite)}"
+        guard let web else { return current }
+        guard let pid = contentPID(web), let captured = identity(pid),
+              maySample(captured, observed: identity(pid), ownedPID: contentPID(web)) else {
+            return current + "; contentResources=unavailable (fixture ownership unverified)"
+        }
+        // Only count the getter-owned child's descriptors; never inspect their paths.
+        let content = descriptors(pid: pid).snapshot
+        guard maySample(captured, observed: identity(pid), ownedPID: contentPID(web)) else {
+            return current + "; contentResources=discarded (fixture process changed)"
+        }
+        return current + "; contentResources={pid=\(pid), start=\(captured.start), \(content.summary), fdLimits=unavailable}"
+    }
+
     /// Write straight to stdout: failure context must survive XCTest error
     /// formatting and must already be visible if a later native diagnostic fails.
     nonisolated static func emit(_ message: String, descriptor: Int32 = STDOUT_FILENO) {
@@ -90,7 +203,9 @@ import WebKit
             "windowVisible=\(window?.isVisible ?? false), windowOcclusion=\(window?.occlusionState.rawValue ?? 0)"
         emit("native UI before content PID getter: " + windowState)
         let pid = contentPID(web)
-        let ui = windowState + ", contentPID=\(pid.map(String.init) ?? "unavailable")"
+        let resources = resourceSnapshot(for: web)
+        emit("native resources before sampling: " + resources)
+        let ui = windowState + ", contentPID=\(pid.map(String.init) ?? "unavailable"); " + resources
         emit("native snapshot before sampling: " + ui)
         guard let pid, let captured = identity(pid) else { return ui + "; native process identity unavailable" }
         let metadata = ui + ", contentStart=\(captured.start), contentPath=\(captured.path), contentState=\(captured.state)"
