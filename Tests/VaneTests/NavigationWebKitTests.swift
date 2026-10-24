@@ -652,14 +652,27 @@ import XCTest
         server.heldPaths.insert("/old-pending")
         let old = try XCTUnwrap(tab.web.load(URLRequest(url: try server.url("/old-pending"))))
         try await compatibilityWait { self.server.requests.contains { $0.hasPrefix("GET /old-pending ") } && self.tab.loading }
-        tab.go(try server.url("/replacement"))
+        let replacement = try server.url("/replacement")
+        tab.go(replacement)
+        let requested = (title: tab.title, address: tab.address, loading: tab.loading,
+                         progress: tab.progress, document: tab.readingDocumentGeneration)
         // WKWebView.load has returned B, but B's start callback has not run yet.
         tab.webView(tab.web, didFailProvisionalNavigation: old,
             withError: URLError(.cannotConnectToHost, userInfo: [NSURLErrorFailingURLErrorKey: try server.url("/old-pending")]))
+        // Assert before yielding: waiting for B cannot hide a stale callback's mutation.
+        XCTAssertEqual(tab.title, requested.title, "A retired failure cannot replace the title")
+        XCTAssertEqual(tab.address, requested.address, "A retired failure cannot replace the address")
+        XCTAssertEqual(tab.loading, requested.loading, "A retired failure cannot stop the replacement")
+        XCTAssertEqual(tab.progress, requested.progress, "A retired failure cannot change the progress")
+        XCTAssertEqual(tab.readingDocumentGeneration, requested.document)
         server.heldPaths.remove("/old-pending")
-        try await compatibilityWait { !self.tab.web.isLoading && !self.tab.loading }
+        // Loading can become false before WebKit publishes its final title KVO.
+        try await compatibilityWait {
+            self.tab.web.url == replacement && self.tab.currentURL == replacement
+                && self.tab.title == "Page /replacement" && !self.tab.web.isLoading && !self.tab.loading
+        }
         XCTAssertEqual(tab.title, "Page /replacement")
-        XCTAssertEqual(tab.address, try server.url("/replacement").absoluteString)
+        XCTAssertEqual(tab.address, replacement.absoluteString)
     }
 
     func testMacOS27PolicyProvidesUpcomingNavigationIdentity() async throws {
