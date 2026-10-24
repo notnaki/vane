@@ -80,6 +80,19 @@ caches; successful `main` checks save them and retain the two newest Swift debug
 The release workflow builds and smoke-tests the optimized app; its build products are
 never cached because they can contain the OAuth secret.
 
+### Client certificate fixture
+
+`swift test --jobs 1 --filter ClientCertificateTests` checks identity eligibility,
+selection, cancellation, and profile/private/session boundaries with generated
+identities imported into memory only. `python3 Tests/ClientCertificates/fixture.py`
+compiles the authentication core and tests a generated three-tier client chain
+against a local TLS server that trusts only its root. It needs no window server or
+user keychain changes and removes its generated keys and server on exit. Add
+`--rollover` to exercise a same-subject CA rollover with a partial local chain.
+`swift test --jobs 1 --filter ClientCertificateChallengeTests` needs a window server
+and checks the native chooser, cancellation, navigation, and tab closure using an
+injected provider of generated in-memory identities.
+
 ### Routine CI commands
 
 To run the same checks configuration locally:
