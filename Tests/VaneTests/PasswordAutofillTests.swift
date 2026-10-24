@@ -5,6 +5,32 @@ import XCTest
 @testable import vane
 
 @MainActor final class PasswordAutofillTests: XCTestCase {
+    private var nativeFixtureProfiles: Set<UUID> = []
+
+    override func tearDown() async throws {
+        // A normal Tab caches its named store beyond the lifetime of its web view.
+        // Every native fixture has already torn down its tabs and windows here.
+        // Release these disposable stores between tests rather than accumulating
+        // another persistent WebKit backend for every continuation scenario.
+        for profile in nativeFixtureProfiles {
+            var store: WKWebsiteDataStore? = ProfileManager.dataStore(for: profile)
+            await store!.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+            store = nil
+            ProfileManager.releaseDataStore(for: profile)
+            let identifier = try XCTUnwrap(ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: Store.overrideDirectory))
+            let error: Error? = await withCheckedContinuation { continuation in
+                WKWebsiteDataStore.remove(forIdentifier: identifier) { continuation.resume(returning: $0) }
+            }
+            if let error {
+                let failure = error as NSError
+                XCTAssertEqual(failure.domain, "WKWebSiteDataStore")
+                XCTAssertEqual(failure.code, 1, "Unexpected password fixture unregister failure: \(error)")
+                print("Password fixture \(identifier): contents erased and cache released; WebKit still has the empty store in use.")
+            }
+        }
+        nativeFixtureProfiles.removeAll()
+    }
+
     private final class Capture: NSObject, WKScriptMessageHandler {
         var messages: [[String: Any]] = []
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -183,6 +209,7 @@ import XCTest
         guard Passwords.save(origin: origin, account: "ada", password: "ada-secret", profileID: profile),
               Passwords.save(origin: origin, account: "bob", password: "bob-secret", profileID: profile)
         else { throw XCTSkip("Disposable Keychain fixtures unavailable") }
+        nativeFixtureProfiles.insert(profile)
         let tab = Tab(profileID: profile)
         let window = NSWindow(contentRect: CGRect(x: -4000, y: -4000, width: 800, height: 600),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -214,6 +241,7 @@ import XCTest
         guard Passwords.save(origin: origin, account: "bob", password: "bob-secret", profileID: profile),
               Passwords.save(origin: origin, account: "ada", password: "ada-secret", profileID: profile)
         else { throw XCTSkip("Disposable Keychain fixtures unavailable") }
+        nativeFixtureProfiles.insert(profile)
         let tab = Tab(profileID: profile)
         let window = NSWindow(contentRect: CGRect(x: -4000, y: -4000, width: 800, height: 600),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -482,6 +510,7 @@ import XCTest
             (profile, false, "https://isolation.example.test:8443/", "")
         ]
         for (scope, privateMode, address, expected) in cases {
+            if !privateMode { nativeFixtureProfiles.insert(scope) }
             let tab = Tab(isPrivate: privateMode, profileID: scope)
             let window = NSWindow(contentRect: CGRect(x: -4000, y: -4000, width: 800, height: 600),
                                   styleMask: [.titled], backing: .buffered, defer: false)
