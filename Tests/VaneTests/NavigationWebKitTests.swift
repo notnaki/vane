@@ -7,6 +7,7 @@ import XCTest
 @MainActor final class NavigationWebKitTests: XCTestCase {
     var server: NavigationHTTPFixture!
     var tab: Tab!
+    private var nativeFixtureProfiles: Set<UUID> = []
 
     override func setUp() async throws {
         TestEnvironment.prepare()
@@ -17,6 +18,7 @@ import XCTest
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         tab = Tab(popup: config, isPrivate: false, profileID: UUID())
+        nativeFixtureProfiles.insert(tab.profileID)
     }
 
     override func tearDown() async throws {
@@ -24,6 +26,9 @@ import XCTest
         tab = nil
         server.stop()
         server = nil
+        let profiles = nativeFixtureProfiles
+        nativeFixtureProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(profiles)
     }
 
     @discardableResult func load(_ path: String) async throws -> WKNavigation {
@@ -176,6 +181,7 @@ import XCTest
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         let other = Tab(popup: config, isPrivate: false, profileID: UUID())
+        nativeFixtureProfiles.insert(other.profileID)
         defer { other.tearDown() }
         window.contentView = other.web
         other.go(try server.url("/other"))
@@ -461,6 +467,7 @@ import XCTest
 
     func testFirstHeldLoadSurvivesSessionSnapshotAndPinning() async throws {
         let profile = UUID()
+        nativeFixtureProfiles.insert(profile)
         let space = Space(name: "First navigation fixture", profileID: profile)
         XCTAssertTrue(ProfileManager.shared.saveSpaces([space], for: profile))
         let store = TabStore(profileID: profile, space: space, session: [])

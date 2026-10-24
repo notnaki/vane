@@ -4,10 +4,20 @@ import XCTest
 @testable import vane
 
 @MainActor final class DraftProtectionTests: XCTestCase {
-    private func fixture(_ html: String, isPrivate: Bool = true, profileID: UUID = UUID(), url: URL = URL(string: "https://draft.example.test/editor")!, configure: (WKWebView) -> Void = { _ in }) async throws -> Tab {
+    private var nativeFixtureProfiles: Set<UUID> = []
+
+    override func tearDown() async throws {
+        let profiles = nativeFixtureProfiles
+        nativeFixtureProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(profiles)
+    }
+
+    private func fixture(_ html: String, isPrivate: Bool = true, profileID: UUID = UUID(), cleanUpProfile: Bool = true,
+                         url: URL = URL(string: "https://draft.example.test/editor")!, configure: (WKWebView) -> Void = { _ in }) async throws -> Tab {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         WebKitStartup.prepare()
+        if !isPrivate && cleanUpProfile { nativeFixtureProfiles.insert(profileID) }
         let tab = Tab(isPrivate: isPrivate, profileID: profileID)
         addTeardownBlock { @MainActor in tab.tearDown() }
         configure(tab.web)
@@ -254,7 +264,9 @@ import XCTest
         let spaces = [Space(name: "Compose", profileID: profile), Space(name: "Browse", profileID: profile)]
         XCTAssertTrue(ProfileManager.shared.saveSpaces(spaces, for: profile))
         let store = TabStore(profileID: profile, space: spaces[0], session: [])
-        let tab = try await fixture("<title>Draft fixture</title><textarea id=field></textarea>", isPrivate: false, profileID: profile)
+        // This fixture owns a real manager-created profile; delete(profile) below
+        // already performs its lifecycle cleanup, so do not recreate its store later.
+        let tab = try await fixture("<title>Draft fixture</title><textarea id=field></textarea>", isPrivate: false, profileID: profile, cleanUpProfile: false)
         let web = tab.web
         store.tabs = [tab]; store.current = tab.id
         addTeardownBlock { @MainActor in

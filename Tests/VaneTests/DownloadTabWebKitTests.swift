@@ -10,6 +10,7 @@ import XCTest
     var child: Tab?
     var manager: Downloads!
     var root: URL!
+    private var nativeFixtureProfiles: Set<UUID> = []
 
     override func setUp() async throws {
         TestEnvironment.prepare()
@@ -21,6 +22,7 @@ import XCTest
         server.pages["/download"] = "download fixture bytes"
         server.redirects["/redirect"] = try server.url("/download")
         store = TabStore(isPrivate: false, urls: [], profileID: UUID(), session: [])
+        nativeFixtureProfiles.insert(store.profileID)
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
@@ -47,6 +49,9 @@ import XCTest
         server.stop()
         try? FileManager.default.removeItem(at: root)
         child = nil; opener = nil; store = nil; server = nil; manager = nil
+        let profiles = nativeFixtureProfiles
+        nativeFixtureProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(profiles)
     }
 
     func loadOpener(_ html: String) async throws {

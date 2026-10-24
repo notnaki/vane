@@ -146,6 +146,14 @@ private final class Feel04WaitingServer: @unchecked Sendable {
 }
 
 @MainActor final class Feel04CookieRendererTests: XCTestCase {
+    private var nativeFixtureProfiles: Set<UUID> = []
+
+    override func tearDown() async throws {
+        let profiles = nativeFixtureProfiles
+        nativeFixtureProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(profiles)
+    }
+
     func testDestinationCookieDoesNotCancelPreviewButProfileCookieChangeDoes() async throws {
         try await checkSession(observerEnabled: true)
     }
@@ -168,9 +176,11 @@ private final class Feel04WaitingServer: @unchecked Sendable {
         _ = NSApplication.shared
         let server = try Feel04WaitingServer(body: "<title>Cookie preview</title><body style='margin:0'><div style='height:240px;background:#1976d2'>Preview</div><div style='height:240px;background:#e53935'></div><div style='height:240px;background:#43a047'></div></body>", cookie: true)
         let url = try await server.start(), clock = Feel04DebounceFixture()
+        let profile = UUID()
+        nativeFixtureProfiles.insert(profile)
         let previews = Previews(sessionObserverFactory: { profile, changed in
             observerEnabled ? Feel04PreviewSessionObserver(profileID: profile, changed: changed) : nil
-        }, debounceSleep: clock.sleep), tab = Tab(profileID: UUID())
+        }, debounceSleep: clock.sleep), tab = Tab(profileID: profile)
         let enabled = Previews.enabled, mode = BatterySaver.shared.mode
         Previews.enabled = true; BatterySaver.shared.setMode(.off)
         // A page-originated preview always has a live persistent source WebView.
