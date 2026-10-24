@@ -1207,6 +1207,46 @@ import XCTest
                        "Changed viewport geometry still needs a fresh capture")
     }
 
+    func testCancelledSwipeRepreparesBothNeighbours() async throws {
+        try await cancelledSwipeRepreparesBothNeighbours(withPendingPreparation: false)
+    }
+
+    func testCancelledSwipeWhilePreparationPendingRepreparesBothNeighbours() async throws {
+        try await cancelledSwipeRepreparesBothNeighbours(withPendingPreparation: true)
+    }
+
+    private func cancelledSwipeRepreparesBothNeighbours(withPendingPreparation pending: Bool) async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        store.switchTo(space: spaces[1])
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await waitForPreparation(monitor, target: spaces[0].id)
+        try await waitForPreparation(monitor, target: spaces[2].id)
+        let left = try XCTUnwrap(monitor.preparedSlides[spaces[0].id])
+        let right = try XCTUnwrap(monitor.preparedSlides[spaces[2].id])
+        if pending {
+            // Vertical scrolling keeps the warm surfaces but schedules delayed work.
+            // The next horizontal claim must cancel that work without wedging the queue.
+            monitor.postponePreparation(in: store, by: 0.6, preservingSurfaces: true)
+        }
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === right,
+                      "The claim must consume the existing right-hand capture")
+        XCTAssertTrue(monitor.preparedSlides[spaces[0].id] === left)
+        XCTAssertNil(monitor.preparedSlides[spaces[2].id])
+        monitor.abort()
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        monitor.schedulePreparation(in: store)
+        try await waitForPreparation(monitor, target: spaces[2].id)
+        XCTAssertEqual(Set(monitor.preparedSlides.keys), Set([spaces[0].id, spaces[2].id]),
+                       "Returning to the middle Space must warm both directions again")
+        let restored = try XCTUnwrap(monitor.preparedSlides[spaces[2].id])
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === restored,
+                      "The following swipe must reuse the replacement, rather than build cold")
+        monitor.abort()
+    }
+
     func testSearchPresentationAndSuggestionsKeepPreparedSidebars() async throws {
         let (store, spaces, _, monitor) = try fixture()
         try await waitForPreparation(monitor, target: spaces[1].id)

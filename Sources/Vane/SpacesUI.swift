@@ -1050,6 +1050,7 @@ private struct SpaceSwipe: ViewModifier {
         slide.updatePreparedScrollOffset(store.spaceGesture.sidebarOffset)
         preparedSlides.removeValue(forKey: target.id)
         preparation?.cancel()
+        preparation = nil
         return slide
     }
 
@@ -1058,6 +1059,11 @@ private struct SpaceSwipe: ViewModifier {
               let host = store.window?.contentView as? BrowserWindowHost,
               let origin = store.swipeSpace else { return false }
         let strip = store.strip
+        guard let index = strip.firstIndex(where: { $0.id == store.currentSpaceID }) else { return false }
+        let adjacent = [-1, 1].compactMap { direction in
+            strip.indices.contains(index + direction) ? strip[index + direction].id : nil
+        }
+        guard Set(preparedSlides.keys) == Set(adjacent) else { return false }
         return preparedSlides.allSatisfy { id, slide in
             guard let target = strip.first(where: { $0.id == id }),
                   let anchor = target.profileID != store.profileID
