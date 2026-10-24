@@ -203,10 +203,10 @@ private struct ExtensionManagementView: View {
             Spacer(minLength: 8)
             Feel06ActivityLine(busy: busy, text: "Checking…")
                 .frame(width: 100)
-            Button("Install from Folder…", systemImage: "plus") { host.chooseAndInstall() }
+            Button("Install Extension…", systemImage: "plus") { host.chooseAndInstall() }
                 .disabled(isPrivate || busy)
                 .accessibilityIdentifier("extension-manager.install")
-                .help("Choose an unpacked MV2 or MV3 extension folder and review its access before installing.")
+                .help("Choose an unpacked extension folder or an app containing signed Safari web extensions, then review its access.")
         }.padding(.horizontal, 22).padding(.vertical, 18)
     }
 
@@ -297,7 +297,7 @@ private struct ExtensionManagementView: View {
             Text("Install local extensions to improve pages, block distractions, and add useful tools. Each profile keeps its own extensions and access.")
                 .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: 390)
-            Button("Choose Extension Folder…") { host.chooseAndInstall() }
+            Button("Choose Extension…") { host.chooseAndInstall() }
                 .buttonStyle(.borderedProminent).disabled(busy)
             Text("Or drop a folder containing manifest.json here.\nMV2 and MV3 support depends on the APIs available in WebKit and Vane.")
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -523,7 +523,7 @@ private struct ExtensionDetailView: View {
                 }
             }
         }
-        Button("Update from Folder…", systemImage: "arrow.clockwise") { host.chooseUpdate(for: entry.path) }
+        Button(entry.safariApp ? "Update from App…" : "Update from Folder…", systemImage: "arrow.clockwise") { host.chooseUpdate(for: entry.path) }
         if entry.context == nil && entry.failure == nil {
             Button("Retry", systemImage: "arrow.trianglehead.clockwise") { retry() }
         }
@@ -532,20 +532,20 @@ private struct ExtensionDetailView: View {
     private var source: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text("Installation source").font(.headline)
-            Label(entry.managed ? "Managed local copy" : "Local folder", systemImage: "folder")
+            Label(entry.safariApp ? "Signed Safari extension from app" : entry.managed ? "Managed local copy" : "Local folder", systemImage: entry.safariApp ? "app" : "folder")
                 .font(.callout)
             Text(entry.sourcePath).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             if !entry.sourceAvailable {
-                Label(entry.managed ? "The source folder is missing or unreadable. Your accepted code is still available."
+                Label(entry.safariApp ? "The source app is missing or unreadable. Reinstall the original app and choose Retry, or locate it with Update from App." : entry.managed ? "The source folder is missing or unreadable. Your accepted code is still available."
                       : "The folder moved, disappeared, or cannot be read. Choose its current location to recover this installation.",
                       systemImage: "exclamationmark.folder")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Text(entry.managed ? "Source-folder edits apply only through Update from Folder. Vane validates and reviews the new copy before activating it."
+            Text(entry.safariApp ? "Vane verifies the app and Safari extension’s signatures and runs an accepted copy. App updates are checked at restart or with Update from App and require review before activation. Native messaging to the app is unavailable." : entry.managed ? "Source-folder edits apply only through Update from Folder. Vane validates and reviews the new copy before activating it."
                  : "Vane will keep a validated managed copy when this installation is next loaded or updated. Its identity and existing settings are preserved.")
                 .font(.caption).foregroundStyle(.secondary)
-            Button("Reveal Source Folder", systemImage: "folder") {
+            Button(entry.safariApp ? "Reveal Source App" : "Reveal Source Folder", systemImage: "folder") {
                 NSWorkspace.shared.selectFile(entry.sourcePath, inFileViewerRootedAtPath: URL(fileURLWithPath: entry.sourcePath).deletingLastPathComponent().path)
             }.controlSize(.small).disabled(!entry.sourceAvailable)
         }

@@ -16,6 +16,7 @@ struct ExtensionCodeStore: Sendable {
         var optional: ExtensionAccess
         var compatibility: [String]
         var integratedCapabilities: Set<String>? = nil
+        var safari: SafariExtensionSource? = nil
     }
 
     struct Stage: Sendable {
@@ -83,7 +84,11 @@ struct ExtensionCodeStore: Sendable {
         guard records.count <= 1000,
               Set(records.values.map { $0.identity.lowercased() }).count == records.count,
               Set(records.values.map { $0.revision.lowercased() }).count == records.count,
-              records.values.allSatisfy({ UUID(uuidString: $0.identity) != nil && UUID(uuidString: $0.revision) != nil }) else {
+              records.allSatisfy({ key, record in
+                  UUID(uuidString: record.identity) != nil && UUID(uuidString: record.revision) != nil
+                      && (record.safari.map { $0.isValid && $0.key == key } ?? !key.hasPrefix("/safari-extension/"))
+              }),
+              Set(records.values.compactMap { $0.safari?.runtimeID }).count == records.values.filter({ $0.safari != nil }).count else {
             throw Problem("Saved extension metadata is invalid or exceeds the 1,000 installation limit. Your extension files have been retained.")
         }
     }
@@ -139,7 +144,7 @@ struct ExtensionCodeStore: Sendable {
         }
     }
 
-    func stage(_ source: URL) throws -> Stage {
+    func stage(_ source: URL, appExtension: Bool = false) throws -> Stage {
         let revision = UUID().uuidString.lowercased()
         let lease = try Self.activeStages.withLock { active in
             try withStorageLock { profile in
@@ -171,7 +176,14 @@ struct ExtensionCodeStore: Sendable {
         }
         defer { close(sourceFD) }
         var budget = Budget()
-        try copyDirectory(sourceFD, to: destination, depth: 0, budget: &budget)
+        let target = appExtension ? destination.appendingPathComponent("extension.appex", isDirectory: true) : destination
+        if appExtension { try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]) }
+        try copyDirectory(sourceFD, to: target, depth: 0, budget: &budget, bundleRoot: appExtension ? target : nil)
+        if appExtension, let entries = FileManager.default.enumerator(at: target, includingPropertiesForKeys: [.isSymbolicLinkKey]) {
+            for case let url as URL in entries where (try url.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink == true {
+                guard url.resolvingSymlinksInPath().path.hasPrefix(target.path + "/") else { throw Problem("The signed bundle contains a link outside its own files.") }
+            }
+        }
         committed = true
         return Stage(revision: revision, url: destination, lease: lease)
     }
@@ -341,7 +353,7 @@ struct ExtensionCodeStore: Sendable {
 
     /// Walk using directory descriptors and openat(O_NOFOLLOW), rather than reopening
     /// enumerated paths. Replacing a parent with a symlink cannot redirect a later read.
-    private func copyDirectory(_ sourceFD: Int32, to destination: URL, depth: Int, budget: inout Budget) throws {
+    private func copyDirectory(_ sourceFD: Int32, to destination: URL, depth: Int, budget: inout Budget, bundleRoot: URL? = nil) throws {
         guard depth <= 64 else { throw Problem("The extension has too many nested folders (maximum 64 levels).") }
         let listingFD = dup(sourceFD)
         guard listingFD >= 0 else { throw Problem("The source folder could not be read. Check its permissions and retry.") }
@@ -372,7 +384,7 @@ struct ExtensionCodeStore: Sendable {
                 guard child >= 0 else { throw Problem("A source folder changed or became unreadable during import. Retry.") }
                 defer { close(child) }
                 try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-                try copyDirectory(child, to: target, depth: depth + 1, budget: &budget)
+                try copyDirectory(child, to: target, depth: depth + 1, budget: &budget, bundleRoot: bundleRoot)
             case S_IFREG:
                 let child = openat(sourceFD, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
                 guard child >= 0 else { throw Problem("An extension file is unreadable. Check its permissions and retry.") }
@@ -389,7 +401,14 @@ struct ExtensionCodeStore: Sendable {
                 }
                 budget.bytes += data.count
                 try data.write(to: target, options: .withoutOverwriting)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+                try FileManager.default.setAttributes([.posixPermissions: bundleRoot != nil && opened.st_mode & 0o111 != 0 ? 0o700 : 0o600], ofItemAtPath: target.path)
+            case S_IFLNK where bundleRoot != nil:
+                var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
+                let count = readlinkat(sourceFD, name, &buffer, buffer.count - 1)
+                guard count > 0, count < Int(PATH_MAX) else { throw Problem("A signed bundle link is invalid.") }
+                let link = String(decoding: buffer.prefix(count).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+                guard !link.hasPrefix("/"), target.deletingLastPathComponent().appendingPathComponent(link).standardizedFileURL.path.hasPrefix(bundleRoot!.path + "/") else { throw Problem("A signed bundle link points outside its own files.") }
+                try FileManager.default.createSymbolicLink(atPath: target.path, withDestinationPath: link)
             default:
                 throw Problem("The extension contains a symbolic link or special file. Use a folder containing only regular files and folders.")
             }

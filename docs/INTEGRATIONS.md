@@ -23,17 +23,29 @@ follows Reduce Motion and Vane's Battery Saver policy.
 
 ### Install and inspect
 
-Choose **Install from Folder…** in the manager or **Extensions → Install Extension…**,
-or drop one local unpacked MV2/MV3 folder into the manager. Select the folder containing
+Choose **Install Extension…** in the manager or **Extensions → Install Extension…**.
+Select an installed app containing Safari web extensions, or choose/drop an unpacked
+MV2/MV3 folder. For an unpacked extension, select the folder containing
 `manifest.json`, rather than its parent. Extract ZIP downloads in Finder first: the
 manager does not import ZIP or CRX files or install from the Chrome Web Store.
 
-Vane copies regular files into profile-owned staging, rejects internal symbolic links
+For Safari apps, Vane verifies Apple-issued signatures on both the containing app and
+its embedded `com.apple.Safari.web-extension` bundle, including sealed resources. The
+bundle and signing identifiers must match, and both bundles must have the same verified
+Team ID. If the app contains several Safari web extensions, choose one to review.
+Unsigned, ad-hoc, modified, or mismatched bundles are rejected before consent. Vane
+never derives a signing team or runtime identity from an untrusted manifest or claimed
+Info.plist team. Its runtime ID is the genuine Safari `<extension bundle ID> (<Team ID>)`,
+so sites can address an allowlisted Safari extension through external messaging.
+
+For unpacked folders, Vane copies regular files into profile-owned staging, rejects internal symbolic links
 and special files, and limits imports to 20,000 files/folders, 64 MB per file, 256 MB total,
 and 64 nested folder levels. It validates the manifest and referenced scripts, popups,
 options pages, and rulesets before presenting installation consent. Review capabilities,
 website access, and compatibility limitations before installing. Cancel leaves the
-extension uninstalled. Optional permissions are not silently granted.
+extension uninstalled. Optional permissions are not silently granted. Signed bundle
+snapshots use the same size/count limits and allow relative links only when their
+resolved targets stay inside the verified bundle.
 
 Details show source, version, required installation access, declared optional
 capabilities/sites, current additional grants, keyboard commands, and compatibility
@@ -76,6 +88,18 @@ visible failure and retains its code, approval, identity, and settings. Recreati
 controller may not repair this WebKit state in the current process; quit and reopen
 Vane if **Retry** continues to fail.
 
+Safari app installations keep a resource-verified signed bundle snapshot in the
+profile and persist the app/extension bundle identifiers and signing team. They are
+resolved against the installed app again at launch or enable. **Update from App…** can
+select a moved app or check an App Store update. A changed extension is staged, verified,
+and reviewed before activation, including same-access updates; changes do not replace
+running accepted code silently. A valid update retains the Safari runtime ID, private
+origin, approval, settings, disabled state, and pins. Duplicate copies of the same
+verified extension update one installation per profile. A missing app, changed signing
+identity, invalid signature, or ambiguous replacement fails closed and leaves an entry
+with recovery guidance. Reinstall the original app or choose its current location.
+Profiles retain separate controllers and extension storage; private profiles run none.
+
 Existing folder installations migrate when next loaded or updated: Vane validates a
 separate copy and preserves their UUID, approval, disabled state, pins, and storage
 identity. The migration always asks for review before adopting and loading the copy,
@@ -98,7 +122,9 @@ active toolbar control; unpin them to free a slot.
 
 **Remove…** asks for confirmation, then clears installation metadata, approval, identity,
 disabled state, pin, and Vane-owned code. It keeps the original source folder. Reinstalling
-creates a new identity and cannot inherit old settings. Removal is not a promise of
+creates a new origin and cannot inherit old settings. Safari runtime IDs remain the
+genuine signed identity; before a new Safari installation runs, Vane clears residual
+WebKit extension storage for that identity in the owning profile. Removal is not a promise of
 forensic erasure of WebKit-managed storage.
 
 ### Runtime access and diagnostics

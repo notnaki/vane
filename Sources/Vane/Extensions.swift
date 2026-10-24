@@ -36,6 +36,18 @@ import WebKit
 
     private static var hosts: [UUID: ExtensionHost] = [:]
 
+    private struct DataPurgeKey: Hashable {
+        let profileID: UUID
+        let runtimeID: String
+    }
+    private struct DataPurge {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
+    // A WebKit deletion already submitted cannot be cancelled. Keep it visible across
+    // host replacement so no successor loads that identity before deletion finishes.
+    private static var dataPurges: [DataPurgeKey: DataPurge] = [:]
+
     static func host(for profileID: UUID) -> ExtensionHost {
         if let hit = hosts[profileID] { return hit }
         let fresh = ExtensionHost(profileID: profileID)
@@ -94,6 +106,7 @@ import WebKit
         var managed: Bool = false
         var sourceAvailable: Bool = false
         var sourcePath: String = ""
+        var safariApp: Bool = false
         var requiredAccess: ExtensionAccess? = nil
         var optionalAccess: ExtensionAccess? = nil
         var compatibility: [String] = []
@@ -121,6 +134,23 @@ import WebKit
 
     var isBusy: Bool { !operations.isEmpty || !restoring.isEmpty }
 
+    private struct InstallationGeneration: Equatable {
+        let identity: String?
+        let revision: String?
+        let contextID: String?
+        let disabled: Bool
+    }
+
+    /// Discovery initially has no trusted extension key. Once verification supplies
+    /// one, compare its installation against this snapshot before adopting anything.
+    private func installationGenerations() -> [String: InstallationGeneration] {
+        let identities = contextIdentifiers
+        return Dictionary(uniqueKeysWithValues: folders.keys.map { path in
+            (path, InstallationGeneration(identity: records[path]?.identity, revision: records[path]?.revision,
+                contextID: identities[path], disabled: disabled.contains(path)))
+        })
+    }
+
     var entries: [Entry] {
         folders.keys.sorted { (folders[$0] ?? "").localizedStandardCompare(folders[$1] ?? "") == .orderedAscending }.map { path in
             let context = loaded.first { $0.path == path }?.context
@@ -137,8 +167,8 @@ import WebKit
                          summary: record?.summary ?? context?.webExtension.displayDescription ?? legacyMetadata[path]?.summary ?? "",
                          icon: metadataIcons[path] ?? context?.webExtension.icon(for: CGSize(width: 40, height: 40)),
                          enabled: context != nil, managed: record != nil,
-                         sourceAvailable: FileManager.default.isReadableFile(atPath: source.appendingPathComponent("manifest.json").path),
-                         sourcePath: source.path,
+                         sourceAvailable: FileManager.default.isReadableFile(atPath: record?.safari != nil ? source.path : source.appendingPathComponent("manifest.json").path),
+                         sourcePath: source.path, safariApp: record?.safari != nil || path.hasPrefix("/safari-extension/"),
                          requiredAccess: record?.required ?? ExtensionConsent.saved(for: URL(fileURLWithPath: path), profileID: profileID),
                          optionalAccess: record?.optional ?? legacyMetadata[path]?.optional,
                          compatibility: record?.compatibility ?? limitations[path] ?? [])
@@ -179,7 +209,7 @@ import WebKit
             records = try codeStore.records()
             try? codeStore.sweepUnreferencedRevisions()
         }
-        catch { metadataFailure = "Saved extension metadata could not be read. Choose Update from Folder to review and repair each installation. Existing code files and settings are retained. " + error.localizedDescription }
+        catch { metadataFailure = "Saved extension metadata could not be read. Choose Update from Folder or Update from App to review and repair each installation. Existing code files and settings are retained. " + error.localizedDescription }
         folders = UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(Self.namesKey, profileID)) as? [String: String] ?? [:]
         disabled = Set(UserDefaults.vane.stringArray(forKey: ProfileManager.defaultsKey(Self.disabledKey, profileID)) ?? [])
         for (path, record) in records { folders[path] = record.name }
@@ -208,7 +238,7 @@ import WebKit
         for path in contextIdentifiers.keys where folders[path] == nil { folders[path] = URL(fileURLWithPath: path).lastPathComponent }
         for path in Array(folders.keys) {
             if let metadataFailure { failures[path] = metadataFailure; continue }
-            if let record = records[path] { cacheIcon(for: path, in: codeStore.code(for: record)) }
+            if let record = records[path] { cacheIcon(for: path, in: record.safari == nil ? codeStore.code(for: record) : codeStore.code(for: record).appendingPathComponent("extension.appex/Contents/Resources")) }
             else if let manifest = try? Self.validate(sourceFolder(for: path)) {
                 func optional(_ key: String) -> [String] { manifest[key] as? [String] ?? [] }
                 let declarations = optional("optional_permissions")
@@ -223,6 +253,7 @@ import WebKit
     }
 
     private func sourceFolder(for path: String) -> URL {
+        if let source = records[path]?.safari { return URL(fileURLWithPath: source.appPath, isDirectory: true) }
         if let bookmark = contextBookmarks[path],
            let resolved = ScopedPaths.bookmarkedURL(bookmark) {
             return resolved.resolvingSymlinksInPath()
@@ -335,7 +366,18 @@ import WebKit
     @discardableResult
     func refresh(_ path: String,
                  review: @MainActor (ExtensionConsent.Review) -> Bool = ExtensionConsent.ask) async throws -> Bool {
-        guard folders[path] != nil else { throw Failure("This extension has been removed. Install its folder again.") }
+        guard folders[path] != nil else { throw Failure("This extension has been removed. Install it again.") }
+        if let source = records[path]?.safari {
+            guard operations[path] == nil else { return false }
+            let token = UUID()
+            operations[path] = token
+            defer { if operations[path] == token { operations[path] = nil }; rebuild() }
+            let candidate = try await source.resolve()
+            try Task.checkCancellation()
+            guard !invalidated, operations[path] == token else { throw CancellationError() }
+            return try await loadSafariCandidate(candidate, path: path, installing: false,
+                enable: !disabled.contains(path), operationToken: token, review: review)
+        }
         return try await loadCandidate(sourceFolder(for: path), path: path, installing: false,
                                        replacing: true, enable: !disabled.contains(path), review: review)
     }
@@ -357,6 +399,7 @@ import WebKit
 
     func chooseUpdate(for path: String) {
         guard folders[path] != nil, profileID != Profile.incognito.id else { return }
+        if records[path]?.safari != nil || path.hasPrefix("/safari-extension/") { chooseAndInstall(updating: path); return }
         let panel = NSOpenPanel()
         panel.title = "Update Extension from Folder"
         panel.message = "Choose the replacement extension folder containing manifest.json. Vane checks a separate copy and reviews added access. Your extension identity and settings are kept."
@@ -391,6 +434,15 @@ import WebKit
     @discardableResult
     func load(_ folder: URL, installing: Bool, replacing: Bool = false,
               review: @MainActor (ExtensionConsent.Review) -> Bool = ExtensionConsent.ask) async throws -> Bool {
+        if ["app", "appex"].contains(folder.pathExtension.lowercased()) {
+            let generations = installationGenerations()
+            let candidates = try await Task.detached(priority: .utility) { try SafariExtensionSource.candidates(in: folder) }.value
+            try Task.checkCancellation()
+            guard candidates.count == 1, let candidate = candidates.first else { throw Failure("This app contains several Safari extensions. Choose its specific .appex bundle, or use Install Extension in the extension manager.") }
+            let path = candidate.source.key
+            guard !invalidated, installationGenerations()[path] == generations[path] else { throw CancellationError() }
+            return try await loadSafariCandidate(candidate, path: path, installing: folders[path] == nil, enable: !disabled.contains(path), review: review)
+        }
         let path = folder.resolvingSymlinksInPath().path
         return try await loadCandidate(folder, path: path, installing: installing, replacing: replacing,
                                        enable: !disabled.contains(path), review: review)
@@ -400,6 +452,7 @@ import WebKit
     private func loadCandidate(_ source: URL, path: String, installing: Bool, replacing: Bool,
                                enable: Bool, review: @MainActor (ExtensionConsent.Review) -> Bool = ExtensionConsent.ask) async throws -> Bool {
         guard !invalidated, profileID != Profile.incognito.id else { throw CancellationError() }
+        guard records[path]?.safari == nil, !path.hasPrefix("/safari-extension/") else { throw Failure("Use Update from App for this Safari extension.") }
         if let metadataFailure, !replacing || installing || folders[path] == nil { throw Failure(metadataFailure) }
         try Task.checkCancellation()
         guard operations[path] == nil else { return false }
@@ -544,10 +597,191 @@ import WebKit
         }
     }
 
-    private func makeContext(_ ext: WKWebExtension, identity: String) -> WKWebExtensionContext {
+    private func waitForDataPurge(_ runtimeID: String, checkLifetime: () throws -> Void) async throws {
+        if let purge = Self.dataPurges[DataPurgeKey(profileID: profileID, runtimeID: runtimeID)] {
+            await purge.task.value
+        }
+        try checkLifetime()
+    }
+
+    // Session storage belongs to the old context in memory. WebKit cannot query
+    // or delete it after unload; a fresh context receives a fresh session store.
+    // Only local/synchronized storage survives a removed Safari installation.
+    private static let persistentExtensionDataTypes: Set<WKWebExtension.DataType> = [.local, .synchronized]
+
+    private func purgeData(_ data: WKWebExtension.DataRecord, runtimeID: String) async {
+        let key = DataPurgeKey(profileID: profileID, runtimeID: runtimeID)
+        let token = UUID(), controller = controller
+        let task = Task { @MainActor in
+            await controller.removeData(ofTypes: Self.persistentExtensionDataTypes, from: [data])
+        }
+        Self.dataPurges[key] = DataPurge(token: token, task: task)
+        await task.value
+        if Self.dataPurges[key]?.token == token { Self.dataPurges[key] = nil }
+    }
+
+    private static func verifySnapshot(_ url: URL, source: SafariExtensionSource) async throws {
+        try await Task.detached(priority: .utility) {
+            let signature = try SafariExtensionSource.verify(url)
+            guard signature.identifier == source.extensionBundleID, signature.team == source.teamID,
+                  signature.hash == source.signatureHash else {
+                throw Failure("The accepted Safari extension’s verified signing identity or resources changed. Choose Update from App to review a fresh copy.")
+            }
+        }.value
+    }
+
+    /// Run the same consent/transaction lifecycle as unpacked code, but preserve the
+    /// signed bundle and derive runtime.id solely from its verified identity.
+    @discardableResult
+    private func loadSafariCandidate(_ candidate: SafariExtensionSource.Candidate, path: String,
+                                     installing: Bool, enable: Bool, operationToken: UUID? = nil,
+                                     review: @MainActor (ExtensionConsent.Review) -> Bool = ExtensionConsent.ask) async throws -> Bool {
+        guard !invalidated, profileID != Profile.incognito.id else { throw CancellationError() }
+        guard candidate.source.isValid, candidate.source.key == path else { throw Failure("Invalid Safari extension identity.") }
+        if let metadataFailure, installing || folders[path] == nil { throw Failure(metadataFailure) }
+        try Task.checkCancellation()
+        let token: UUID
+        if let operationToken {
+            guard operations[path] == operationToken else { throw CancellationError() }
+            token = operationToken
+        } else {
+            guard operations[path] == nil else { return false }
+            token = UUID()
+        }
+        let oldRecord = records[path]
+        if let saved = oldRecord?.safari, !saved.matches(candidate.source) {
+            throw Failure("The app’s verified Safari extension identity changed. The saved installation is retained.")
+        }
+        guard oldRecord == nil || oldRecord?.safari != nil else { throw Failure("That identity conflicts with a folder installation.") }
+        operations[path] = token
+        let consentURL = URL(fileURLWithPath: path)
+        let previous = ExtensionConsent.saved(for: consentURL, profileID: profileID)
+        var stage: ExtensionCodeStore.Stage?
+        var accepted = false, replaced = false, approvalChanged = false
+        defer {
+            if operations[path] == token { operations[path] = nil }
+            if !accepted, let stage { codeStore.discard(stage) }
+            prunePins(); rebuild()
+        }
+        func checkLifetime() throws {
+            try Task.checkCancellation()
+            guard !invalidated, operations[path] == token else { throw CancellationError() }
+        }
+        do {
+            let store = codeStore
+            let frozen = try await Task.detached(priority: .utility) { try store.stage(candidate.bundleURL, appExtension: true) }.value
+            stage = frozen
+            try checkLifetime()
+            let bundleURL = frozen.url.appendingPathComponent("extension.appex", isDirectory: true)
+            try await Self.verifySnapshot(bundleURL, source: candidate.source)
+            let resources = bundleURL.appendingPathComponent("Contents/Resources", isDirectory: true)
+            let manifest = try Self.validate(resources)
+            try ExtensionDiagnostics.validateResources(manifest, in: resources)
+            guard let bundle = Bundle(url: bundleURL) else { throw Failure("The Safari extension bundle is invalid.") }
+            let ext = try await WKWebExtension(appExtensionBundle: bundle)
+            try checkLifetime()
+            let errors = ExtensionDiagnostics.blockingErrors(ext.errors, manifest: manifest)
+            guard errors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(errors)) }
+            let issues = ExtensionDiagnostics.limitations(manifest, extension: ext)
+            let requested = ExtensionAccess(ext)
+            let request = ExtensionConsent.Review(name: ext.displayName ?? candidate.source.extensionBundleID,
+                requested: requested, previous: previous, installing: installing, limitations: issues,
+                newlySupportedCapabilities: installing ? [] : requested.permissions.intersection(Self.integratedCapabilities).subtracting(oldRecord?.integratedCapabilities ?? []),
+                updating: !installing, currentVersion: oldRecord?.version, candidateVersion: ext.version)
+            if request.needsApproval, !review(request) {
+                try checkLifetime()
+                if folders[path] != nil { failures[path] = "The app update was not approved. Your accepted code, access, identity, and settings are retained. Choose Update from App when ready to review it." }
+                return false
+            }
+            try checkLifetime()
+            // Verify both live signed bundles again after the modal review, before any
+            // candidate can run. The immutable private snapshot supplies every web file.
+            let current = try await Task.detached(priority: .utility) {
+                try SafariExtensionSource.candidates(in: URL(fileURLWithPath: candidate.source.appPath))
+                    .first { candidate.source.matches($0.source) }
+            }.value
+            guard current?.source.signatureHash == candidate.source.signatureHash else {
+                throw Failure("The app changed while Vane was reviewing it. Retry to review its current Safari extension.")
+            }
+            try checkLifetime()
+            let identity = oldRecord?.identity ?? contextIdentifiers[path].flatMap(UUID.init(uuidString:))?.uuidString ?? UUID().uuidString
+            let record = ExtensionCodeStore.Record(identity: identity, revision: frozen.revision,
+                sourcePath: candidate.source.appPath, name: ext.displayName ?? candidate.source.extensionBundleID,
+                version: ext.version ?? "Unknown", summary: ext.displayDescription ?? "", required: requested,
+                optional: ExtensionAccess(permissions: Set(ext.optionalPermissions.map(\.rawValue)), sites: Set(ext.optionalPermissionMatchPatterns.map(\.string))),
+                compatibility: issues, integratedCapabilities: requested.permissions.intersection(Self.integratedCapabilities), safari: candidate.source)
+            if enable {
+                try deactivate(path); replaced = true
+                let context = makeContext(ext, identity: identity, runtimeID: candidate.source.runtimeID)
+                candidates[path] = context
+                try await waitForDataPurge(candidate.source.runtimeID, checkLifetime: checkLifetime)
+                if oldRecord == nil && folders[path] == nil {
+                    let types = Self.persistentExtensionDataTypes
+                    let data = await controller.dataRecord(ofTypes: types, for: context)
+                    try checkLifetime()
+                    if let data {
+                        await purgeData(data, runtimeID: candidate.source.runtimeID)
+                        try checkLifetime()
+                        guard data.errors.isEmpty else { throw Failure("Data from a removed Safari extension could not be cleared. Retry before reinstalling it.\n" + ExtensionDiagnostics.describe(data.errors)) }
+                    }
+                }
+                try checkLifetime()
+                try controller.load(context)
+                if ext.hasBackgroundContent { try await ExtensionBackgroundStartup.load(context, checkLifetime: checkLifetime) }
+                try checkLifetime()
+                let errors = ExtensionDiagnostics.blockingErrors(context.errors, manifest: manifest)
+                guard errors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(errors)) }
+            }
+            try checkLifetime()
+            try ExtensionConsent.save(requested, for: consentURL, profileID: profileID); approvalChanged = true
+            var next = records; next[path] = record
+            if metadataFailure != nil { try codeStore.retainUnusableIndex() }
+            try codeStore.save(next)
+            records = next; metadataFailure = nil
+            var identities = contextIdentifiers; identities[path] = identity; contextIdentifiers = identities
+            folders[path] = record.name
+            if enable { disabled.remove(path) }
+            failures[path] = nil; limitations[path] = issues
+            saveManagement()
+            metadataIcons[path] = ext.icon(for: CGSize(width: 40, height: 40))
+            if let context = candidates.removeValue(forKey: path) { loaded.append((path, context)) }
+            accepted = true
+            if let oldRecord { codeStore.discard(oldRecord) }
+            startPolling(); SiteChanges.shared.bump()
+            return true
+        } catch {
+            if !invalidated, operations[path] == token {
+                if approvalChanged {
+                    if let previous { try? ExtensionConsent.save(previous, for: consentURL, profileID: profileID) }
+                    else { ExtensionConsent.remove(for: consentURL, profileID: profileID) }
+                }
+                if replaced {
+                    try? deactivate(path)
+                    if let oldRecord, enable {
+                        // Updates retain the prior verified snapshot. The installed app
+                        // can already have changed, so recovery checks its signed identity
+                        // without requiring the old resource digest still be installed.
+                        do {
+                            let restored = try await Task { @MainActor in
+                                try await self.context(for: oldRecord, path: path, recoveringSafariUpdate: true) {
+                                    guard !self.invalidated, self.operations[path] == token else { throw CancellationError() }
+                                }
+                            }.value
+                            guard !invalidated, operations[path] == token else { try? controller.unload(restored); throw CancellationError() }
+                            loaded.append((path, restored))
+                        } catch { failures[path] = "The app update failed and the accepted extension could not restart. Choose Retry. Your settings are retained. " + error.localizedDescription }
+                    }
+                }
+                if folders[path] != nil, failures[path] == nil { failures[path] = error.localizedDescription + "\nChoose Retry or Update from App. Your installation and settings are retained." }
+            }
+            throw error
+        }
+    }
+
+    private func makeContext(_ ext: WKWebExtension, identity: String, runtimeID: String? = nil) -> WKWebExtensionContext {
         let context = WKWebExtensionContext(for: ext)
-        context.uniqueIdentifier = identity.lowercased()
-        context.baseURL = URL(string: "webkit-extension://\(context.uniqueIdentifier)/")!
+        context.uniqueIdentifier = runtimeID ?? identity.lowercased()
+        context.baseURL = URL(string: "webkit-extension://\(identity.lowercased())/")!
         context.isInspectable = Settings.inspectorEnabled
         context.inspectionName = ext.displayName
         context.unsupportedAPIs = ExtensionDiagnostics.unsupportedAPIs
@@ -558,20 +792,35 @@ import WebKit
         return context
     }
 
-    private func context(for record: ExtensionCodeStore.Record, path: String,
-                         checkLifetime: @escaping @MainActor () throws -> Void) async throws -> WKWebExtensionContext {
-        let folder = codeStore.code(for: record)
+    private func context(for record: ExtensionCodeStore.Record, path: String, recoveringSafariUpdate: Bool = false, checkLifetime: @escaping @MainActor () throws -> Void) async throws -> WKWebExtensionContext {
+        let folder: URL
+        let appBundle: Bundle?
+        if let safari = record.safari {
+            let current = try await safari.resolve()
+            guard recoveringSafariUpdate || current.source.signatureHash == safari.signatureHash else { throw Failure("The app was updated. Choose Update from App to review its extension before enabling it.") }
+            let bundleURL = codeStore.code(for: record).appendingPathComponent("extension.appex", isDirectory: true)
+            try await Self.verifySnapshot(bundleURL, source: safari)
+            folder = bundleURL.appendingPathComponent("Contents/Resources")
+            guard let bundle = Bundle(url: bundleURL) else { throw Failure("The accepted Safari extension bundle is unavailable.") }
+            appBundle = bundle
+        } else {
+            folder = codeStore.code(for: record)
+            appBundle = nil
+        }
         let manifest = try Self.validate(folder)
         try ExtensionDiagnostics.validateResources(manifest, in: folder)
-        let ext = try await WKWebExtension(resourceBaseURL: folder)
+        let ext: WKWebExtension
+        if let appBundle { ext = try await WKWebExtension(appExtensionBundle: appBundle) }
+        else { ext = try await WKWebExtension(resourceBaseURL: folder) }
         let errors = ExtensionDiagnostics.blockingErrors(ext.errors, manifest: manifest)
         guard errors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(errors)) }
         // Record access is checked against the actual code before anything can execute.
-        guard ExtensionAccess(ext) == record.required else { throw Failure("The accepted extension files changed. Choose Update from Folder to validate and review a fresh copy.") }
+        guard ExtensionAccess(ext) == record.required else { throw Failure("The accepted extension files changed. Choose " + (record.safari == nil ? "Update from Folder" : "Update from App") + " to validate and review a fresh copy.") }
         try checkLifetime()
-        let context = makeContext(ext, identity: record.identity)
+        let context = makeContext(ext, identity: record.identity, runtimeID: record.safari?.runtimeID)
         candidates[path] = context
         do {
+            if let safari = record.safari { try await waitForDataPurge(safari.runtimeID, checkLifetime: checkLifetime) }
             try controller.load(context)
             if ext.hasBackgroundContent { try await ExtensionBackgroundStartup.load(context, checkLifetime: checkLifetime) }
             try checkLifetime()
@@ -595,6 +844,16 @@ import WebKit
         defer { if operations[path] == token { operations[path] = nil }; prunePins(); rebuild() }
         do {
             try Task.checkCancellation()
+            if let safari = record.safari {
+                let current = try await safari.resolve()
+                try Task.checkCancellation()
+                guard !invalidated, operations[path] == token else { throw CancellationError() }
+                if current.source.signatureHash != safari.signatureHash {
+                    _ = try await loadSafariCandidate(current, path: path, installing: false,
+                        enable: enabling, operationToken: token, review: ask)
+                    return
+                }
+            }
             let previous = ExtensionConsent.saved(for: URL(fileURLWithPath: path), profileID: profileID)
             let review = ExtensionConsent.Review(name: record.name, requested: record.required, previous: previous, installing: false, limitations: record.compatibility,
                 newlySupportedCapabilities: record.required.permissions.intersection(Self.integratedCapabilities).subtracting(record.integratedCapabilities ?? []))
@@ -632,7 +891,7 @@ import WebKit
             startPolling()
             SiteChanges.shared.bump()
         } catch {
-            if operations[path] == token, !invalidated { failures[path] = error.localizedDescription + "\nChoose Retry or Update from Folder. Your saved identity and settings are retained." }
+            if operations[path] == token, !invalidated { failures[path] = error.localizedDescription + "\nChoose Retry or " + (record.safari == nil ? "Update from Folder" : "Update from App") + ". Your saved identity and settings are retained." }
             throw error
         }
     }
@@ -912,19 +1171,72 @@ import WebKit
 
     // MARK: UI
 
-    func chooseAndInstall() {
+    func chooseAndInstall(updating path: String? = nil) {
         guard profileID != Profile.incognito.id else { ExtensionManagement.show(for: self); return }
+        let generations = installationGenerations()
+        let expectedSource = path.flatMap { records[$0]?.safari }
+        let operationToken: UUID?
+        if let path {
+            guard folders[path] != nil, operations[path] == nil else { return }
+            operationToken = UUID()
+            operations[path] = operationToken
+        } else { operationToken = nil }
+        var transferred = false
+        defer {
+            if !transferred, let path, let operationToken, operations[path] == operationToken {
+                operations[path] = nil; rebuild()
+            }
+        }
         let panel = NSOpenPanel()
-        panel.title = "Install Extension"
-        panel.message = "Choose an unpacked extension folder — the one containing manifest.json."
+        panel.title = path == nil ? "Install Extension" : "Update Extension from App"
+        panel.message = path == nil ? "Choose an unpacked extension folder containing manifest.json, or an installed app containing Safari web extensions." : "Choose the installed app containing this Safari extension. Its verified identity must match the saved installation."
         panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseFiles = true
+        panel.treatsFilePackagesAsDirectories = false
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let folder = panel.url else { return }
+        transferred = true
         Task {
-            do { try await install(folder: folder) }
+            defer {
+                if let path, let operationToken, operations[path] == operationToken { operations[path] = nil; rebuild() }
+            }
+            @MainActor func checkLifetime(_ key: String) throws {
+                try Task.checkCancellation()
+                guard !invalidated, installationGenerations()[key] == generations[key] else { throw CancellationError() }
+                if let operationToken, operations[key] != operationToken { throw CancellationError() }
+            }
+            do {
+                if ["app", "appex"].contains(folder.pathExtension.lowercased()) {
+                    var candidates = try await Task.detached(priority: .utility) { try SafariExtensionSource.candidates(in: folder) }.value
+                    if let path {
+                        try checkLifetime(path)
+                        candidates = candidates.filter { candidate in
+                            candidate.source.key == path && (expectedSource.map { $0.matches(candidate.source) } ?? true)
+                        }
+                        guard !candidates.isEmpty else { throw Failure("That app does not contain the saved Safari extension with the same verified signing identity.") }
+                    }
+                    let candidate: SafariExtensionSource.Candidate
+                    if candidates.count == 1 { candidate = candidates[0] }
+                    else {
+                        let alert = NSAlert(); alert.messageText = "Choose a Safari extension"
+                        let choice = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 420, height: 28))
+                        choice.addItems(withTitles: candidates.map { $0.source.extensionBundleID })
+                        alert.accessoryView = choice
+                        alert.addButton(withTitle: "Review Extension"); alert.addButton(withTitle: "Cancel")
+                        guard alert.runModal() == .alertFirstButtonReturn else { return }
+                        candidate = candidates[choice.indexOfSelectedItem]
+                    }
+                    let key = candidate.source.key
+                    try checkLifetime(key)
+                    _ = try await loadSafariCandidate(candidate, path: key, installing: folders[key] == nil,
+                        enable: !disabled.contains(key), operationToken: operationToken)
+                } else {
+                    guard path == nil else { throw Failure("Choose the original signed app to update this Safari extension.") }
+                    try await install(folder: folder)
+                }
+            }
             catch is CancellationError { }
-            catch { warn("Could not install that folder.", error.localizedDescription) }
+            catch { warn("Could not install that extension.", error.localizedDescription) }
         }
     }
 

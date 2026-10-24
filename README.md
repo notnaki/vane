@@ -74,7 +74,7 @@ prompt once. Local, debug, and prerelease builds skip it. The manual
 | Visual tools | Easels with notes, drawing, captures, live web views, and editable JSON or PNG export; per-site Boosts for styles, Zap, and opt-in scripts. |
 | Data | Separate profiles, local Keychain passwords and account chooser, browser imports, exports, complete library backups, and local recovery points. |
 | Controls | Custom search engines and site-search shortcuts, keyboard bindings, themes, app icons, Battery Saver, and site controls. |
-| Integrations | Unpacked WebExtensions, EasyList-subset blocking and HTTPS subscriptions, GitHub Live Folders, and optional AI providers using your own keys. |
+| Integrations | Unpacked WebExtensions and verified Safari extensions from apps, EasyList-subset blocking and HTTPS subscriptions, GitHub Live Folders, and optional AI providers using your own keys. |
 
 “Implemented” describes available behavior. Verification is scoped to the
 revision, macOS version, signing, and fixture or service recorded in each audit.
