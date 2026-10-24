@@ -55,6 +55,7 @@ import XCTest
     }
 
     private func wait(for stage: String = "fixture condition", file: StaticString = #filePath, line: UInt = #line,
+                      diagnostics: () -> String = { "" },
                       _ condition: () async throws -> Bool) async throws {
         let deadline = Date.now.addingTimeInterval(5)
         do {
@@ -63,7 +64,7 @@ import XCTest
                 try await Task.sleep(for: .milliseconds(20))
             }
         } catch {
-            XCTFail("Failed waiting for \(stage): \(error)", file: file, line: line)
+            XCTFail("Failed waiting for \(stage): \(error). \(diagnostics())", file: file, line: line)
             throw error
         }
     }
@@ -224,8 +225,34 @@ import XCTest
     }
 
     private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String) async throws {
-        tab.web.loadSimulatedRequest(URLRequest(url: origin.url.appendingPathComponent(path)), responseHTML: html)
-        try await wait(for: "continuation document \(path) to finish loading") { !tab.web.isLoading }
+        let web = tab.web, url = origin.url.appendingPathComponent(path)
+        let started = Date.now
+        var document = "not sampled", nextSample = started.addingTimeInterval(0.5), samplePending = false
+        web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
+        try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
+            "expected=\(url), actual=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), " +
+            "progress=\(web.estimatedProgress), tabLoading=\(tab.loading), suspended=\(tab.suspended), " +
+            "recovery=\(tab.needsRecovery), document=\(document), samplePending=\(samplePending)"
+        }) {
+            // Sample only slow loads. Do not await JavaScript here: an unresponsive
+            // content process must still leave the fixture's timeout bounded.
+            if web.isLoading, Date.now >= nextSample, !samplePending {
+                nextSample = Date.now.addingTimeInterval(0.5)
+                samplePending = true
+                web.evaluateJavaScript("JSON.stringify({url:location.href,ready:document.readyState,password:!!document.getElementById('password')})",
+                                       in: nil, in: .page) { result in
+                    switch result {
+                    case .success(let value): document = String(describing: value)
+                    case .failure(let error): document = String(describing: error)
+                    }
+                    samplePending = false
+                }
+            }
+            return !web.isLoading
+        }
+        if Date.now.timeIntervalSince(started) >= 0.5 {
+            print("Continuation fixture \(path) loaded in \(Date.now.timeIntervalSince(started))s; document=\(document)")
+        }
     }
 
     private func submitUsernameAndLoadPassword(_ tab: Tab, origin: PasswordOrigin, identity: String = "") async throws {
