@@ -71,6 +71,9 @@ Import from Arc reads local SQLite snapshots and decrypts supported `v10` creden
 using Arc's Keychain Safe Storage key. Passwords keep their scheme and port; autofill
 uses HTTPS and matches the full origin. Existing Vane passwords are kept, and duplicate
 Arc logins use the most recently modified password (creation time in older schemas).
+Pinned Arc split views keep their pane order, orientation, shares, focus, and sidebar
+position. Unsupported or damaged splits keep their available pages as ordinary tabs in
+order; skipped sidebar row types are reported and their reachable children are preserved.
 Session imports preserve HttpOnly, SameSite, Secure, domain, path, and lifetime.
 Expired, partitioned, or unsupported cookies are skipped and reported; those sessions
 may need a fresh sign-in. No decrypted value is logged or written to an import file.
