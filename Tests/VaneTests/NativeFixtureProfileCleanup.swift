@@ -18,6 +18,8 @@ import XCTest
             }
             // The normal profile's cached extension controller also owns its named store.
             ExtensionHost.forget(profile)
+            await Store.forgetAsync(profile)
+            Favicons.forget(profile)
             var store: WKWebsiteDataStore? = ProfileManager.dataStore(for: profile)
             await store!.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
             store = nil
