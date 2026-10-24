@@ -10,6 +10,21 @@ import XCTest
         weak var value: Tab?
         init(_ value: Tab?) { self.value = value }
     }
+    @MainActor private final class FaviconFetchGate {
+        var started = false
+        private var reply: CheckedContinuation<Data?, Never>?
+        private var finished = false
+
+        func fetch() async -> Data? {
+            guard !finished else { return nil }
+            return await withCheckedContinuation { reply in
+                self.reply = reply
+                started = true
+            }
+        }
+
+        func finish() { finished = true; reply?.resume(returning: nil); reply = nil }
+    }
 
     override func setUp() async throws {
         TestEnvironment.prepare()
@@ -101,6 +116,23 @@ import XCTest
         XCTAssertEqual(reopened.web.backForwardList.forwardList.map { $0.url.path }, ["/c"])
         _ = try XCTUnwrap(reopened.web.goForward())
         try await settled("/c", in: reopened)
+    }
+
+    func testPendingFaviconFetchDoesNotRetainClosedTab() async throws {
+        let store = store()
+        var original: Tab? = store.newBlankTab()
+        let retired = WeakTab(original)
+        try await load("/pending-icon", in: original!)
+        let gate = FaviconFetchGate()
+        let cache = Favicons(profileID: store.profileID, fetch: { _ in await gate.fetch() })
+        defer { gate.finish() }
+        cache.load(for: original!)
+        try await compatibilityWait { gate.started }
+        store.close(original!.id)
+        XCTAssertNil(original?.existingWeb, "Closing must release the live page")
+        original = nil
+        XCTAssertNil(retired.value, "An unfinished icon request cannot retain a closed tab")
+        withExtendedLifetime(cache) {}
     }
 
     func testClosingSuspendedTabPreservesHistoryWithoutWakingIt() async throws {
