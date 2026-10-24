@@ -744,11 +744,10 @@ struct LibraryPanel: View {
                     .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
             }
         }
-        // Toasts live in the sidebar, and the sidebar is not in the tree while this is: with
-        // nowhere to draw one, ⌘Q's "hold to quit" warning was given invisibly and the app
-        // simply refused to quit. Same place the sidebar puts it, above the footer.
+        // The window's single toast host follows this slot while Library is open,
+        // keeping warnings and their actions above the footer.
         .overlay(alignment: .bottom) {
-            ToastHost()
+            ToastAnchor(target: .library)
                 .padding(.horizontal, Look.inset)
                 .padding(.bottom, Look.footer + Look.footerInset + Look.inset)
         }

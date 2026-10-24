@@ -416,7 +416,8 @@ struct BrowserWindow: View {
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
                 page: WebCard().anchorPreference(key: DownloadFeedbackBounds.self,
-                                                value: .bounds) { [.page: $0] },
+                                                value: .bounds) { [.page: $0] }
+                    .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
                 sidebar: sidebarSurface, panel: LibraryPanel())
             edgeStrip
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
@@ -440,6 +441,7 @@ struct BrowserWindow: View {
         // traffic lights instead of beside them, and the card loses its top inset.
         .ignoresSafeArea()
         .modifier(PeekContentTracking(area: store.peekContent))
+        .modifier(ToastPresentation(store: store, sidebarWidth: sidebar.width))
         .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
@@ -913,7 +915,10 @@ private struct Sidebar: View {
         // Toasts and the mini audio player fade in above the footer and sit just
         // above it, over the list — the toast above the player, so neither covers the other.
         .overlay(alignment: .bottom) {
-            VStack(spacing: Look.inset) { ToastHost(); MediaTrayView() }
+            VStack(spacing: Look.inset) {
+                ToastAnchor(target: .sidebar, covered: downloadsHover.isVisible)
+                MediaTrayView()
+            }
                 .padding(.bottom, Look.footer + Look.footerInset + Look.inset)
                 .opacity(downloadsHover.isVisible ? 0 : 1)
                 .allowsHitTesting(!downloadsHover.isVisible)
