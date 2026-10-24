@@ -12,30 +12,9 @@ import XCTest
     }
 
     private func releaseNativeFixtureProfiles() async throws {
-        // A normal Tab caches its named store beyond the lifetime of its web view.
-        // Every native fixture has already torn down its tabs and windows here.
-        // Release these disposable stores between tests rather than accumulating
-        // another persistent WebKit backend for every continuation scenario.
-        for profile in nativeFixtureProfiles {
-            // A normal Tab also caches an extension controller whose configuration
-            // strongly owns this same store, even when no extensions are installed.
-            ExtensionHost.forget(profile)
-            var store: WKWebsiteDataStore? = ProfileManager.dataStore(for: profile)
-            await store!.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
-            store = nil
-            ProfileManager.releaseDataStore(for: profile)
-            let identifier = try XCTUnwrap(ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: Store.overrideDirectory))
-            let error: Error? = await withCheckedContinuation { continuation in
-                WKWebsiteDataStore.remove(forIdentifier: identifier) { continuation.resume(returning: $0) }
-            }
-            if let error {
-                let failure = error as NSError
-                XCTAssertEqual(failure.domain, "WKWebSiteDataStore")
-                XCTAssertEqual(failure.code, 1, "Unexpected password fixture unregister failure: \(error)")
-                print("Password fixture \(identifier): contents erased and cache released; WebKit still has the empty store in use.")
-            }
-        }
+        let profiles = nativeFixtureProfiles
         nativeFixtureProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(profiles)
     }
 
     func testNativeContinuationCleanupReleasesExtensionControllerAndStore() async throws {

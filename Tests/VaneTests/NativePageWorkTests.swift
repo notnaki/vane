@@ -18,26 +18,9 @@ private final class PasswordReadGate: @unchecked Sendable {
     }
 
     private func releaseNativeFixtureProfiles() async throws {
-        // loadedTab uses normal named stores and extension controllers. Its caller
-        // has already torn down the tab before this owned-profile cleanup runs.
-        for profile in nativeFixtureProfiles {
-            ExtensionHost.forget(profile)
-            var store: WKWebsiteDataStore? = ProfileManager.dataStore(for: profile)
-            await store!.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
-            store = nil
-            ProfileManager.releaseDataStore(for: profile)
-            let identifier = try XCTUnwrap(ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: Store.overrideDirectory))
-            let error: Error? = await withCheckedContinuation { continuation in
-                WKWebsiteDataStore.remove(forIdentifier: identifier) { continuation.resume(returning: $0) }
-            }
-            if let error {
-                let failure = error as NSError
-                XCTAssertEqual(failure.domain, "WKWebSiteDataStore")
-                XCTAssertEqual(failure.code, 1, "Unexpected native worker fixture unregister failure: \(error)")
-                print("Native worker fixture \(identifier): contents erased and cache released; WebKit still has the empty store in use.")
-            }
-        }
+        let profiles = nativeFixtureProfiles
         nativeFixtureProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(profiles)
     }
 
     func testNativeWorkerCleanupReleasesExtensionControllerAndStore() async throws {
