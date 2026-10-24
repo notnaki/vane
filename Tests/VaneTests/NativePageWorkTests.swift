@@ -11,6 +11,59 @@ private final class PasswordReadGate: @unchecked Sendable {
 }
 
 @MainActor final class NativePageWorkTests: XCTestCase {
+    private var nativeFixtureProfiles: Set<UUID> = []
+
+    override func tearDown() async throws {
+        try await releaseNativeFixtureProfiles()
+    }
+
+    private func releaseNativeFixtureProfiles() async throws {
+        // loadedTab uses normal named stores and extension controllers. Its caller
+        // has already torn down the tab before this owned-profile cleanup runs.
+        for profile in nativeFixtureProfiles {
+            ExtensionHost.forget(profile)
+            var store: WKWebsiteDataStore? = ProfileManager.dataStore(for: profile)
+            await store!.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+            store = nil
+            ProfileManager.releaseDataStore(for: profile)
+            let identifier = try XCTUnwrap(ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: Store.overrideDirectory))
+            let error: Error? = await withCheckedContinuation { continuation in
+                WKWebsiteDataStore.remove(forIdentifier: identifier) { continuation.resume(returning: $0) }
+            }
+            if let error {
+                let failure = error as NSError
+                XCTAssertEqual(failure.domain, "WKWebSiteDataStore")
+                XCTAssertEqual(failure.code, 1, "Unexpected native worker fixture unregister failure: \(error)")
+                print("Native worker fixture \(identifier): contents erased and cache released; WebKit still has the empty store in use.")
+            }
+        }
+        nativeFixtureProfiles.removeAll()
+    }
+
+    func testNativeWorkerCleanupReleasesExtensionControllerAndStore() async throws {
+        weak var host: ExtensionHost?
+        weak var controller: WKWebExtensionController?
+        weak var store: WKWebsiteDataStore?
+        func disposeWorker() async throws {
+            let tab = try await loadedTab(reader: Passwords.Reader())
+            defer { tab.tearDown() }
+            host = tab.extensions
+            controller = tab.web.configuration.webExtensionController
+            store = controller?.configuration.defaultWebsiteDataStore
+            XCTAssertTrue(store === ProfileManager.dataStore(for: tab.profileID))
+        }
+        try await disposeWorker()
+        XCTAssertNotNil(host)
+        try await releaseNativeFixtureProfiles()
+        let deadline = Date.now.addingTimeInterval(5)
+        while host != nil || controller != nil || store != nil, Date.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertNil(host, "A disposed worker must release its profile's cached extension host")
+        XCTAssertNil(controller, "A disposed worker must release its extension controller")
+        XCTAssertNil(store, "A disposed worker must release its named WebKit store")
+    }
+
     func testBlockedKeychainMetadataLeavesMainActorAvailable() async throws {
         let gate = PasswordReadGate(), profile = UUID()
         let origin = PasswordOrigin(host: "worker.invalid")
@@ -57,7 +110,9 @@ private final class PasswordReadGate: @unchecked Sendable {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         WebKitStartup.prepare()
-        let tab = Tab(profileID: UUID())
+        let profile = UUID()
+        nativeFixtureProfiles.insert(profile)
+        let tab = Tab(profileID: profile)
         tab.passwordReader = reader
         tab.web.loadSimulatedRequest(URLRequest(url: URL(string: "https://worker.invalid/")!),
             responseHTML: "<form><input autocomplete=username><input type=password></form>")
