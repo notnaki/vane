@@ -35,6 +35,14 @@ enum SavedReaderNavigation {
 }
 
 @MainActor enum SavedReaderWindow {
+    struct LoadSnapshot {
+        let web: WKWebView
+        let document: URL
+        let state: String
+        let policy: String
+        let failure: String?
+    }
+
     private struct Key: Hashable { var profile: UUID; var article: UUID }
     private static var sessions: [Key: SavedReaderSession] = [:]
     private static var opening = Set<Key>()
@@ -74,6 +82,11 @@ enum SavedReaderNavigation {
     }
     static func close(articleID: UUID, profileID: UUID) {
         sessions[Key(profile: profileID, article: articleID)]?.window.close()
+    }
+    static func loadSnapshot(articleID: UUID, profileID: UUID) -> LoadSnapshot? {
+        guard let session = sessions[Key(profile: profileID, article: articleID)] else { return nil }
+        return LoadSnapshot(web: session.web, document: session.presentation.appendingPathComponent("article.html"),
+                            state: session.loadState, policy: session.loadPolicy, failure: session.loadFailure)
     }
 }
 
@@ -118,6 +131,9 @@ private enum SavedReaderPresentation {
     @Published var message: String?
     private var observation: AnyCancellable?
     private var appliedPreferences: String?
+    private(set) var loadState = "not requested"
+    private(set) var loadPolicy = "not received"
+    private(set) var loadFailure: String?
     init(article: ReadingArticle, directory: URL, repository: ReadingQueueStore, origin: TabStore) {
         let articleID = article.id
         self.articleID = articleID; self.repository = repository; self.origin = origin
@@ -133,7 +149,10 @@ private enum SavedReaderPresentation {
         window.delegate = self; web.navigationDelegate = self
         window.contentView = NSHostingView(rootView: SavedReaderView(session: self, repository: repository))
         window.center()
-        web.loadFileURL(directory.appendingPathComponent("article.html"), allowingReadAccessTo: directory)
+        loadState = "requested"
+        if web.loadFileURL(directory.appendingPathComponent("article.html"), allowingReadAccessTo: directory) == nil {
+            loadState = "loadFileURL returned nil"
+        }
         observation = repository.$revision.sink { [weak self] _ in
             guard let self else { return }
             if self.repository.invalidated || !self.repository.articles.contains(where: { $0.id == articleID }) { self.window.close() }
@@ -153,6 +172,7 @@ private enum SavedReaderPresentation {
         web.evaluateJavaScript(script)
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        loadState = "finished"
         appliedPreferences = nil
         applyPreferences()
     }
@@ -163,12 +183,27 @@ private enum SavedReaderPresentation {
         onClose?(); onClose = nil
     }
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
-        guard let url = action.request.url else { return .cancel }
-        if SavedReaderNavigation.allowed(url: url, articleDirectory: presentation, userInitiated: false) { return .allow }
+        guard let url = action.request.url else { loadPolicy = "cancel nil URL"; return .cancel }
+        if SavedReaderNavigation.allowed(url: url, articleDirectory: presentation, userInitiated: false) {
+            loadPolicy = "allow \(url.absoluteString)"
+            return .allow
+        }
+        loadPolicy = "cancel \(url.absoluteString)"
         if action.navigationType == .linkActivated { open(url) }
         return .cancel
     }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { message = "Could not open the saved copy. \(error.localizedDescription)" }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { loadState = "provisional" }
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { loadState = "committed" }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { recordFailure(error, stage: "committed failure") }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        recordFailure(error, stage: "provisional failure")
+        message = "Could not open the saved copy. \(error.localizedDescription)"
+    }
+    private func recordFailure(_ error: Error, stage: String) {
+        let native = error as NSError
+        loadState = stage
+        loadFailure = "domain=\(native.domain), code=\(native.code), message=\(String(native.localizedDescription.prefix(2_048)))"
+    }
 }
 
 private struct SavedReaderView: View {

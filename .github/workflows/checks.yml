@@ -68,6 +68,17 @@ jobs:
       - name: App icon migration and bundled selections
         run: scripts/check-app-icons.sh
 
+      # Temporary fresh-process comparison; the required complete suite still runs below.
+      - name: Fresh saved reader and password continuation diagnostics
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          set +e
+          swift test --filter 'SavedReaderTests|PasswordAutofillTests/testFullFormSelectionCannotAuthorizeUnrelatedUsernameStep|PasswordAutofillTests/testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep|PasswordAutofillTests/testReplacementUsernameFormCannotReuseExplicitSelection'
+          diagnostic_status=$?
+          echo "Fresh saved reader/password diagnostic exit status: $diagnostic_status"
+          exit "$diagnostic_status"
+
       - name: Search typing regressions
         run: swift test
 

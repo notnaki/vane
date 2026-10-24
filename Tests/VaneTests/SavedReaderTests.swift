@@ -45,7 +45,7 @@ import XCTest
         let description: String
     }
 
-    private func waitForLocalImage(_ web: WKWebView, resource: String,
+    private func waitForLocalImage(_ web: WKWebView, image: URL, sessionState: () -> String,
                                    file: StaticString = #filePath, line: UInt = #line) async throws {
         let probe = ImageProbe()
         defer { probe.stop() }
@@ -57,11 +57,11 @@ import XCTest
                 return
             }
             if ContinuousClock.now >= deadline {
-                let image = web.url?.deletingLastPathComponent().appendingPathComponent("images/" + resource)
                 let state = "url=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), progress=\(web.estimatedProgress), " +
                     "bounds=\(web.bounds), policy=\(NSApplication.shared.activationPolicy().rawValue), " +
-                    "fileExists=\(image.map { FileManager.default.fileExists(atPath: $0.path) } ?? false), " +
-                    "imageProbePending=\(probe.pending), image=\(probe.snapshot), javascriptError=\(probe.error ?? "none")"
+                    "expectedImage=\(image.absoluteString), fileExists=\(FileManager.default.fileExists(atPath: image.path)), " +
+                    "imageProbePending=\(probe.pending), image=\(probe.snapshot), javascriptError=\(probe.error ?? "none"), " +
+                    "session=\(sessionState())"
                 let failure = "\(file):\(line): Saved reader local image did not decode within 10 seconds. \(state)"
                 NativeFixtureDiagnostics.emit(failure + "; collecting native diagnostics")
                 let native = await NativeFixtureDiagnostics.failureReport(for: web)
@@ -162,7 +162,18 @@ import XCTest
         func findWeb(_ view: NSView) -> WKWebView? { if let web = view as? WKWebView { return web }; return view.subviews.compactMap(findWeb).first }
         try await compatibilityWait { window.contentView?.layoutSubtreeIfNeeded(); return window.contentView.flatMap(findWeb) != nil }
         let web = try XCTUnwrap(window.contentView.flatMap(findWeb))
-        try await waitForLocalImage(web, resource: raster.resource.name)
+        let initial = try XCTUnwrap(SavedReaderWindow.loadSnapshot(articleID: article.id, profileID: article.profileID))
+        XCTAssertTrue(web === initial.web, "The displayed view must be the saved-reader session's actual WebKit view")
+        let image = initial.document.deletingLastPathComponent().appendingPathComponent("images/" + raster.resource.name)
+        try await waitForLocalImage(web, image: image, sessionState: {
+            guard let state = SavedReaderWindow.loadSnapshot(articleID: article.id, profileID: article.profileID) else {
+                return "session missing"
+            }
+            return "selectedViewMatches=\(state.web === web), expectedDocument=\(state.document.absoluteString), " +
+                "documentExists=\(FileManager.default.fileExists(atPath: state.document.path)), " +
+                "state=\(state.state), policy=\(state.policy), navigationFailure=\(state.failure ?? "none")"
+        })
+        XCTAssertEqual(web.url, initial.document)
         let raw = try await web.evaluateJavaScript("document.body.innerText")
         let text = try XCTUnwrap(raw as? String)
         XCTAssertTrue(text.contains("Saved copy")); XCTAssertTrue(text.contains("nebula"))
