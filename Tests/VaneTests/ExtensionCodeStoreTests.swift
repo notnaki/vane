@@ -82,3 +82,142 @@ final class ExtensionCodeStoreTests: XCTestCase {
     }
 
 }
+
+extension ExtensionCodeStoreTests {
+    func testSweepPreservesActiveStageAcrossStoreValuesThenCollectsReleasedStage() throws {
+        var active: ExtensionCodeStore.Stage? = try store.stage(source)
+        let revision = try XCTUnwrap(active?.url)
+        let otherValue = ExtensionCodeStore(profileID: try XCTUnwrap(UUID(uuidString: store.root.lastPathComponent)), directory: directory)
+        try otherValue.sweepUnreferencedRevisions()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: revision.path))
+        active = nil
+        try otherValue.sweepUnreferencedRevisions()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: revision.path))
+    }
+
+    func testSweepUnlinksNestedSymlinksWithoutDeletingTheirTargets() throws {
+        let outside = source.appendingPathComponent("keep.js")
+        try Data("keep".utf8).write(to: outside)
+        var orphan: URL!
+        do {
+            let stage = try store.stage(source)
+            orphan = stage.url
+            try FileManager.default.createSymbolicLink(at: stage.url.appendingPathComponent("external"), withDestinationURL: source)
+        }
+        try store.sweepUnreferencedRevisions()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        XCTAssertEqual(try String(contentsOf: outside, encoding: .utf8), "keep")
+    }
+
+    func testSweepRefusesSymlinkedExtensionsParent() throws {
+        var orphanName: String!
+        do { orphanName = try store.stage(source).url.lastPathComponent }
+        let extensions = directory.appendingPathComponent("Extensions")
+        let protected = directory.appendingPathComponent("protected")
+        try FileManager.default.moveItem(at: extensions, to: protected)
+        try FileManager.default.createSymbolicLink(at: extensions, withDestinationURL: protected)
+        try store.sweepUnreferencedRevisions()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: protected.appendingPathComponent(store.root.lastPathComponent)
+            .appendingPathComponent("revisions").appendingPathComponent(orphanName).path))
+    }
+}
+
+extension ExtensionCodeStoreTests {
+    private func leaseHolder(_ revision: String, committedIndex: URL? = nil) throws -> (Process, Pipe) {
+        let ready = directory.appendingPathComponent("lease-ready-" + UUID().uuidString)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-c", """
+            import fcntl, os, select, sys
+            with open(sys.argv[1], 'r+') as lease:
+                fcntl.flock(lease, fcntl.LOCK_EX)
+                open(sys.argv[2], 'w').close()
+                if not select.select([sys.stdin], [], [], 5)[0]: sys.exit(2)
+                command = sys.stdin.buffer.read(1)
+                if command == b'C': os.replace(sys.argv[3], sys.argv[4])
+            """, store.root.appendingPathComponent(".revision-" + revision.lowercased() + ".lease").path,
+            ready.path, committedIndex?.path ?? "", store.root.appendingPathComponent("installations.json").path]
+        let input = Pipe()
+        process.standardInput = input
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !FileManager.default.fileExists(atPath: ready.path), process.isRunning, ContinuousClock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        guard FileManager.default.fileExists(atPath: ready.path) else {
+            if process.isRunning { process.terminate() }
+            process.waitUntilExit()
+            throw ExtensionCodeStore.Problem("Child process did not acquire its revision lease")
+        }
+        return (process, input)
+    }
+
+    func testSweepPreservesRevisionLeasedByAnotherProcessThenCollectsAfterExit() throws {
+        var revision: String!
+        var code: URL!
+        do { let stage = try store.stage(source); revision = stage.revision; code = stage.url }
+        let (child, input) = try leaseHolder(revision)
+        defer { if child.isRunning { child.terminate() }; child.waitUntilExit() }
+        try store.sweepUnreferencedRevisions()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: code.path))
+        try input.fileHandleForWriting.write(contentsOf: Data("R".utf8))
+        child.waitUntilExit()
+        XCTAssertEqual(child.terminationStatus, 0)
+        try store.sweepUnreferencedRevisions()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: code.path))
+    }
+
+    func testSweepRechecksAcceptedIndexAfterAnotherProcessCommitsAndReleasesLease() throws {
+        var record: ExtensionCodeStore.Record!
+        do {
+            let stage = try store.stage(source)
+            record = .init(identity: UUID().uuidString, revision: stage.revision, sourcePath: source.path,
+                name: "Committed by child", version: "1", summary: "", required: .init(permissions: [], sites: []),
+                optional: .init(permissions: [], sites: []), compatibility: [])
+        }
+        let committedIndex = directory.appendingPathComponent("child-index.json")
+        try JSONEncoder().encode([source.path: record!]).write(to: committedIndex)
+        let (child, input) = try leaseHolder(record.revision, committedIndex: committedIndex)
+        defer { if child.isRunning { child.terminate() }; child.waitUntilExit() }
+        try store.sweepUnreferencedRevisions()
+        XCTAssertTrue(try store.records().isEmpty)
+        try input.fileHandleForWriting.write(contentsOf: Data("C".utf8))
+        child.waitUntilExit()
+        XCTAssertEqual(child.terminationStatus, 0)
+        try store.sweepUnreferencedRevisions()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.code(for: record).path))
+        XCTAssertEqual(try store.records()[source.path]?.revision, record.revision)
+    }
+}
+
+extension ExtensionCodeStoreTests {
+    func testSweepPreservesUnleasedRevisionFromAnOlderProcess() throws {
+        try store.save([:])
+        let legacy = store.root.appendingPathComponent("revisions").appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: false)
+        try Data("legacy code".utf8).write(to: legacy.appendingPathComponent("bg.js"))
+        try store.sweepUnreferencedRevisions()
+        XCTAssertEqual(try String(contentsOf: legacy.appendingPathComponent("bg.js"), encoding: .utf8), "legacy code")
+    }
+}
+
+extension ExtensionCodeStoreTests {
+    func testSweepSkipsUnusableTransactionAndRevisionLocksWithoutBlocking() throws {
+        var revision: String!
+        var code: URL!
+        do { let stage = try store.stage(source); revision = stage.revision; code = stage.url }
+        let transaction = store.root.appendingPathComponent(".revisions.lock")
+        try FileManager.default.removeItem(at: transaction)
+        XCTAssertEqual(mkfifo(transaction.path, 0o600), 0)
+        try store.sweepUnreferencedRevisions()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: code.path))
+        try FileManager.default.removeItem(at: transaction)
+        let lease = store.root.appendingPathComponent(".revision-" + revision + ".lease")
+        try FileManager.default.removeItem(at: lease)
+        XCTAssertEqual(mkfifo(lease.path, 0o600), 0)
+        try store.sweepUnreferencedRevisions()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: code.path))
+    }
+}

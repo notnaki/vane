@@ -61,6 +61,21 @@ A successful update replaces the prior accepted revision; there is no manual ver
 history. Code recovery cannot undo storage or website changes made by a candidate that
 already ran.
 
+Background startup reports WebKit errors and stops waiting after ten seconds if WebKit
+never completes. A failed candidate is unloaded and its staged copy is removed; failed
+restoration keeps accepted code and exposes **Retry**. At launch, Vane also collects
+unused revisions created with the current staging lease protocol, while preserving
+accepted revisions and stages owned by another running process. Missing, unreadable, or
+retained recovery metadata, and older revisions without a lease, prevent automatic
+collection when ownership cannot be established safely.
+
+Some WebKit releases can lose extension API bindings when an MV3 worker restarts in
+a different process ([upstream WebKit fix](https://github.com/WebKit/WebKit/commit/001f7dbb8bbfc1f05310c7c6eed4e092d674c523)).
+If accepted code cannot restart after a failed update, Vane keeps it inactive with a
+visible failure and retains its code, approval, identity, and settings. Recreating the
+controller may not repair this WebKit state in the current process; quit and reopen
+Vane if **Retry** continues to fail.
+
 Existing folder installations migrate when next loaded or updated: Vane validates a
 separate copy and preserves their UUID, approval, disabled state, pins, and storage
 identity. The migration always asks for review before adopting and loading the copy,

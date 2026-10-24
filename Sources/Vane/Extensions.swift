@@ -175,7 +175,10 @@ import WebKit
                 }.store(in: &metadataObservations)
         }
         guard profileID != Profile.incognito.id else { return }
-        do { records = try codeStore.records() }
+        do {
+            records = try codeStore.records()
+            try? codeStore.sweepUnreferencedRevisions()
+        }
         catch { metadataFailure = "Saved extension metadata could not be read. Choose Update from Folder to review and repair each installation. Existing code files and settings are retained. " + error.localizedDescription }
         folders = UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(Self.namesKey, profileID)) as? [String: String] ?? [:]
         disabled = Set(UserDefaults.vane.stringArray(forKey: ProfileManager.defaultsKey(Self.disabledKey, profileID)) ?? [])
@@ -463,7 +466,7 @@ import WebKit
                 let context = makeContext(ext, identity: identity)
                 candidates[path] = context
                 try controller.load(context)
-                if ext.hasBackgroundContent { try await context.loadBackgroundContent() }
+                if ext.hasBackgroundContent { try await ExtensionBackgroundStartup.load(context, checkLifetime: checkLifetime) }
                 try checkLifetime()
                 let errors = ExtensionDiagnostics.blockingErrors(context.errors, manifest: manifest)
                 guard errors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(errors)) }
@@ -555,7 +558,8 @@ import WebKit
         return context
     }
 
-    private func context(for record: ExtensionCodeStore.Record, path: String, checkLifetime: () throws -> Void) async throws -> WKWebExtensionContext {
+    private func context(for record: ExtensionCodeStore.Record, path: String,
+                         checkLifetime: @escaping @MainActor () throws -> Void) async throws -> WKWebExtensionContext {
         let folder = codeStore.code(for: record)
         let manifest = try Self.validate(folder)
         try ExtensionDiagnostics.validateResources(manifest, in: folder)
@@ -569,7 +573,7 @@ import WebKit
         candidates[path] = context
         do {
             try controller.load(context)
-            if ext.hasBackgroundContent { try await context.loadBackgroundContent() }
+            if ext.hasBackgroundContent { try await ExtensionBackgroundStartup.load(context, checkLifetime: checkLifetime) }
             try checkLifetime()
             let errors = ExtensionDiagnostics.blockingErrors(context.errors, manifest: manifest)
             guard errors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(errors)) }
