@@ -2596,6 +2596,9 @@ struct Stash {
     // Outlive the Find bar and profile parking, but never the owning store.
     lazy var findSession = Find()
     let feedback = InteractionFeedback()
+    /// Protection changes can revoke a captured sidebar without changing its shape.
+    let sidebarPreviewInvalidated = PassthroughSubject<Void, Never>()
+    lazy var sidebarObservation = SidebarObservation(store: self)
     var sharingReady = false
     var sharedUpdateQueued = false
     @Published var tabs: [Tab] = [] { didSet { SharedTabs.schedule(from: self) } }
@@ -2788,8 +2791,12 @@ struct Stash {
     }
 
     func clearSuggestions() {
-        suggestTask?.cancel(); suggestions = []; suggestionIndex = -1; suggestionsPending = false
-        historyPending = false; enginePending = false
+        suggestTask?.cancel()
+        if !suggestions.isEmpty { suggestions = [] }
+        if suggestionIndex != -1 { suggestionIndex = -1 }
+        if suggestionsPending { suggestionsPending = false }
+        if historyPending { historyPending = false }
+        if enginePending { enginePending = false }
     }
 
     let isPrivate: Bool

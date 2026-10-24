@@ -281,6 +281,7 @@ extension TabStore {
     }
 
     func enforceFolderLocks() {
+        sidebarPreviewInvalidated.send()
         objectWillChange.send()
         selection.keep(accessibleTabs.map(\.id))
         if lockedPageFolder != nil {

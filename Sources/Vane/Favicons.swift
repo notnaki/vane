@@ -115,7 +115,7 @@ import WebKit
     }
 
     nonisolated static let maxBytes = 512_000     // an icon that big is a mistake, not an icon
-    private static let maxFiles = 300
+    nonisolated private static let maxFiles = 300
     nonisolated static let maxPixelDimension = 64
 
     // MARK: Public
@@ -125,9 +125,13 @@ import WebKit
     func icon(for url: URL) -> NSImage? {
         guard let key = Favicons.key(for: url) else { return nil }
         if let img = memory[key] { return img }
-        if let img = readDisk(key, fallback: Favicons.fallback(for: url)) { memory[key] = img; return img }
-        guard diskInflight[key] == nil, !missed(key), let fallback = Favicons.fallback(for: url) else { return nil }
-        warm(key: key, urls: [fallback], persist: profileID != Profile.incognito.id, fallback: fallback)
+        guard !missed(key), diskInflight[key] == nil, inflight[key] == nil,
+              let fallback = Favicons.fallback(for: url) else { return nil }
+        if profileID == Profile.incognito.id {
+            warm(key: key, urls: [fallback], persist: false, fallback: fallback)
+        } else {
+            readDisk(key, fallback: fallback)
+        }
         return nil
     }
 
@@ -149,9 +153,14 @@ import WebKit
                 await Favicons.decoded(file)
             } else { nil as NSImage? }
             guard let self, let tab, tab.existingWeb === web, tab.currentURL == url else { return }
-            if let img = self.memory[key] ?? diskImage {
-                self.memory[key] = img
+            if let img = self.memory[key] {
                 tab.favicon = img
+            } else if let diskImage {
+                self.memory[key] = diskImage
+                tab.favicon = diskImage
+                // Cache-only leaves may be waiting on the same host. Publish even
+                // when restoration's worker beats their own pending disk read.
+                self.generation += 1
             }
             if tab.suspended {
                 tab.favicon = self.memory[key]
@@ -215,13 +224,17 @@ import WebKit
                 self.memory[key] = img
                 received = url
                 self.misses.removeValue(forKey: key)
-                // A public fallback does not authorize storing another tab's private-only
-                // declaration. Eligibility follows the successful URL, not the batch.
-                if self.pending[key]?.persistentURLs.contains(url) == true { self.writeDisk(key, data) }
+                // Eligibility belongs to the successful URL, before publication can
+                // synchronously notify observers that enqueue another request.
+                let shouldPersist = self.pending[key]?.persistentURLs.contains(url) == true
                 for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
                     tab.favicon = img
                 }
                 self.generation += 1
+                // Show decoded artwork before utility-priority persistence and pruning.
+                // A public fallback does not authorize storing another tab's private-only
+                // declaration. Eligibility follows the successful URL, not the batch.
+                if shouldPersist { await self.writeDisk(key, data) }
                 // A restored row may already be fetching /favicon.ico when its page
                 // supplies better artwork. Let that queued declaration upgrade it.
                 if self.pending[key]?.fallbackURLs.contains(url) != true { return }
@@ -476,26 +489,17 @@ import WebKit
         return visible >= 32 && transparent >= 32 && solid >= 32
     }
 
-    /// ponytail: synchronous file IO on the main thread. These are sub-10KB reads on a
-    /// local SSD, once per host per launch; if it ever shows up in a trace, move it behind
-    /// the same Task the network fetch already uses.
-    private var dir: URL {
-        let d = ProfileManager.faviconDir(for: profileID, in: Store.directory)
-        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
-        return d
-    }
+    /// Resolve once per profile, never recreate directories from a row's body.
+    private lazy var dir = ProfileManager.faviconDir(for: profileID, in: Store.directory)
 
-    private func readDisk(_ key: String, fallback: URL?) -> NSImage? {
-        guard profileID != Profile.incognito.id,
-              let data = Self.readData(dir.appendingPathComponent(key)) else { return nil }
-        if let bitmap = Self.thumbnail(from: data) { return Self.displayImage(bitmap) }
-        // Legacy SVG cache files must also rasterize off the UI actor. Keep this
-        // separate from the network queue so a newly declared icon can still upgrade it.
-        guard diskInflight[key] == nil else { return nil }
+    private func readDisk(_ key: String, fallback: URL) {
+        let file = dir.appendingPathComponent(key)
         diskInflight[key] = Task { @MainActor [weak self] in
-            let image = await Self.decoded(data)
+            // PNG/ICO reads and decode are just as capable of blocking a frame as
+            // SVG rasterization. One pending read per host also coalesces row redraws.
+            let image = await Self.decoded(file)
             guard let self else { return }
-            self.diskInflight[key] = nil
+            defer { self.diskInflight[key] = nil }
             guard self.memory[key] == nil else { return }
             if let image {
                 self.memory[key] = image
@@ -503,11 +507,10 @@ import WebKit
                     tab.favicon = image
                 }
                 self.generation += 1
-            } else if let fallback, !self.missed(key) {
+            } else if !self.missed(key) {
                 self.warm(key: key, urls: [fallback], persist: true, fallback: fallback)
             }
         }
-        return nil
     }
 
     /// Freshly made here and handed over untouched, which is the whole of what the box
@@ -535,17 +538,21 @@ import WebKit
         await Task.detached(priority: .userInitiated) { Icon(image: image(from: data)) }.value.image
     }
 
-    private func writeDisk(_ key: String, _ data: Data) {
+    private func writeDisk(_ key: String, _ data: Data) async {
         guard profileID != Profile.incognito.id else { return }
-        try? data.write(to: dir.appendingPathComponent(key))
-        prune()
+        let directory = dir
+        await Task.detached(priority: .utility) {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try? data.write(to: directory.appendingPathComponent(key))
+            Self.prune(in: directory)
+        }.value
     }
 
     /// Oldest-first eviction once the directory gets silly. Modification date is the only
     /// access record kept, which makes this LRU-by-write rather than true LRU.
-    private func prune() {
+    private nonisolated static func prune(in directory: URL) {
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: dir,
+        guard let files = try? fm.contentsOfDirectory(at: directory,
                                                       includingPropertiesForKeys: [.contentModificationDateKey]),
               files.count > Favicons.maxFiles else { return }
         let byAge = files.sorted {

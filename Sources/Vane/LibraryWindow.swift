@@ -715,13 +715,26 @@ extension Look {
 /// window, so media, the mini player and picture-in-picture all carry on.
 struct LibraryPanel: View {
     @EnvironmentObject var store: TabStore
+
+    var body: some View {
+        LibraryPanelSurface(store: store, isOpen: store.libraryOpen,
+                            ownsEscape: store.libraryOpen && store.palette == nil && !store.findOpen)
+    }
+}
+
+/// Keep search typing and unrelated window publications outside the retained,
+/// offscreen Library graph. Only its presentation state crosses this boundary.
+private struct LibraryPanelSurface: View {
+    let store: TabStore
+    let isOpen: Bool
+    let ownsEscape: Bool
     @ObservedObject private var library = Library.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         HStack(spacing: 0) {
-            LibraryRail()
+            LibraryRail(store: store)
             content
                 .transition(.opacity)
         }
@@ -738,7 +751,7 @@ struct LibraryPanel: View {
         // while the command bar is up — that reads Escape itself, and the innermost cancel
         // action would otherwise win.
         .background {
-            if store.libraryOpen && store.palette == nil && !store.findOpen {
+            if ownsEscape {
                 Button("Close Library") { Library.close(store) }
                     .keyboardShortcut(.cancelAction)
                     .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
@@ -754,9 +767,9 @@ struct LibraryPanel: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Library")
-        .onAppear { if store.libraryOpen { axAnnounce("Library, \(library.section.title).") } }
-        .onChange(of: store.libraryOpen) {
-            if store.libraryOpen { axAnnounce("Library, \(library.section.title).") }
+        .onAppear { if isOpen { axAnnounce("Library, \(library.section.title).") } }
+        .onChange(of: isOpen) {
+            if isOpen { axAnnounce("Library, \(library.section.title).") }
         }
     }
 
@@ -770,7 +783,7 @@ struct LibraryPanel: View {
         case .spaces where !store.isPrivate: SpacesPane()
         // History never becomes the section, and Spaces is not offered in a private
         // window — either way the archive is what a Library with nothing else shows.
-        default: ArchivedTabsPane(archives: ArchiveLibrary.library(for: store.profileID))
+        default: ArchivedTabsPane(store: store, archives: ArchiveLibrary.library(for: store.profileID))
         }
     }
 }
@@ -778,7 +791,7 @@ struct LibraryPanel: View {
 // MARK: - The rail
 
 private struct LibraryRail: View {
-    @EnvironmentObject var store: TabStore
+    let store: TabStore
     @ObservedObject private var library = Library.shared
 
     private var sections: [LibrarySection] {
@@ -796,7 +809,7 @@ private struct LibraryRail: View {
             ScrollView {
                 VStack(spacing: Look.rowGap) {
                     ForEach(sections) { section in
-                        LibraryTile(section: section, selected: library.section == section) {
+                        LibraryTile(store: store, section: section, selected: library.section == section) {
                             Library.open(section, in: store)
                             axAnnounce(section.title)
                         }
@@ -837,13 +850,13 @@ private struct LibraryRail: View {
 /// selections stacked on each other — the glyph is drawn bare and the card is what says
 /// which section this is.
 private struct LibraryTile: View {
+    let store: TabStore
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let section: LibrarySection
     let selected: Bool
     let action: () -> Void
     @State private var hovering = false
     @State private var focused = false
-    @EnvironmentObject private var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
@@ -1099,7 +1112,9 @@ private struct LibraryColumn<Head: View, Body_: View>: View {
 // MARK: - Archived Tabs
 
 private struct ArchivedTabsPane: View {
-    @EnvironmentObject var store: TabStore
+    // Window selection, disclosure and search do not change the archive. Holding
+    // the action target must not subscribe every hidden archive row to TabStore.
+    let store: TabStore
     @ObservedObject var archives: ArchiveLibrary
     @ObservedObject private var library = Library.shared
 
@@ -1128,7 +1143,7 @@ private struct ArchivedTabsPane: View {
         } content: {
             LibraryList(groups: groups, id: \ArchiveLibrary.Entry.id) { row in
                 if let archive = archives.owner(of: row) {
-                    ArchivedRow(entry: row.entry, profile: row.profile, archive: archive,
+                    ArchivedRow(store: store, entry: row.entry, profile: row.profile, archive: archive,
                                 canAct: { rowsAreCurrent })
                         .disabled(!rowsAreCurrent)
                 }
@@ -1178,7 +1193,7 @@ private struct ArchivedTabsPane: View {
 /// One archived tab. Its own view so the hover state belongs to the row: held in the pane,
 /// every pointer move redrew the whole list.
 private struct ArchivedRow: View {
-    @EnvironmentObject var store: TabStore
+    let store: TabStore
     let entry: Archive.Entry
     let profile: Profile
     @ObservedObject var archive: Archive
@@ -1197,8 +1212,9 @@ private struct ArchivedRow: View {
         LibraryRow(title: entry.title, subtitle: subtitle,
                    spoken: "Archived tab, \(subtitle), \(HistoryWindow.time(entry.at))"
                     + (entry.isLittleArc ? ", Little Vane" : "")) {
-            SiteIcon(icon: URL(string: entry.url).flatMap(store.favicons.icon(for:)),
-                     size: Look.libraryThumb)
+            CachedFavicon(cache: store.favicons, url: URL(string: entry.url)) {
+                SiteIcon(icon: $0, size: Look.libraryThumb)
+            }
         } actions: {
             Button("Restore") { restore() }
             Button("Copy Link") { copyLink() }
@@ -1267,7 +1283,9 @@ private struct BoostsPane: View {
                                 LibraryRow(title: entry.origin,
                                            subtitle: "\(entry.profileName) · \(entry.boost.enabled ? "Enabled" : "Disabled")",
                                            spoken: "\(entry.profileName), \(entry.boost.enabled ? "Enabled" : "Disabled"), \(entry.origin)") {
-                                    SiteIcon(icon: store.favicons.icon(for: url), size: Look.libraryThumb)
+                                    CachedFavicon(cache: store.favicons, url: url) {
+                                        SiteIcon(icon: $0, size: Look.libraryThumb)
+                                    }
                                 } actions: {
                                     Button("Open Site") { open(entry) }
                                     Button(entry.boost.enabled ? "Disable Boost" : "Enable Boost") { toggle(entry) }
@@ -2014,7 +2032,9 @@ private struct PageRow: View {
 
     var body: some View {
         HStack(spacing: Look.captionGap * 3) {
-            SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.captionGap * 7)
+            CachedFavicon(cache: Favicons.cache(for: space.profileID), url: url) {
+                SiteIcon(icon: $0, size: Look.captionGap * 7)
+            }
             Text(title).font(Look.caption).foregroundStyle(Look.inkPrimary).lineLimit(1)
             Spacer(minLength: Look.captionGap)
         }

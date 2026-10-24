@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import vane
 
@@ -76,6 +77,26 @@ import XCTest
         store.clearSuggestions()
         try await Task.sleep(for: .milliseconds(350))
         XCTAssertTrue(store.suggestions.isEmpty)
+    }
+
+    func testRepeatedDismissalDoesNotRepublishClearedSearchState() {
+        let store = window()
+        var publications = 0
+        let subscription = store.objectWillChange.sink { publications += 1 }
+        defer { subscription.cancel() }
+        store.clearSuggestions()
+        XCTAssertEqual(publications, 0, "Dismissing an empty search must not invalidate window chrome")
+        store.suggestions = [Suggestion(url: "https://result.example", title: "Result", bookmarked: false)]
+        store.suggestionIndex = 0
+        publications = 0
+        store.clearSuggestions()
+        XCTAssertTrue(store.suggestions.isEmpty)
+        XCTAssertEqual(store.suggestionIndex, -1)
+        XCTAssertGreaterThan(publications, 0, "Real result changes must still publish")
+        let cleared = publications
+        for _ in 0..<3 { store.clearSuggestions() }
+        XCTAssertEqual(publications, cleared,
+                       "Close, presentation removal and fade completion share one cleared state")
     }
 
     func testLateSuggestionsKeepTheKeyboardDestinationSelected() {

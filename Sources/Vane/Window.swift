@@ -691,6 +691,12 @@ extension VaneWindow {
         arriving.switchTo(space: space)         // a no-op for a store built into it just now
         arriving.applySpaceAppearance()
         delegate.shown.store = arriving         // expose only the finalized destination
+        // A cached host can take another display turn to acknowledge visibility.
+        // The next gesture already belongs to this profile when hop returns.
+        arriving.librarySwipeMonitor.install(arriving)
+        if arriving.sidebarShown || arriving.sidebarPeeking {
+            arriving.spaceGesture.monitor.install(arriving)
+        }
         SharedTabs.refreshPresentation()
         store.extensions.sync()
         arriving.extensions.sync()
@@ -1082,6 +1088,18 @@ extension VaneWindow {
     func prepare() {
         outgoing.layoutSubtreeIfNeeded()
         incoming.layoutSubtreeIfNeeded()
+    }
+
+    /// Scrolling changes the viewport, not the captured row structure. Bring the
+    /// existing outgoing clip view to the live offset when the gesture claims it.
+    func updatePreparedScrollOffset(_ offset: CGFloat) {
+        func scrollView(in view: NSView) -> NSScrollView? {
+            (view as? NSScrollView) ?? view.subviews.lazy.compactMap { scrollView(in: $0) }.first
+        }
+        guard let scroll = scrollView(in: outgoing),
+              abs(scroll.documentVisibleRect.minY - offset) > 0.5 else { return }
+        scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.minX, y: offset))
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     fileprivate var groundStart: ThemeWashPresentation?

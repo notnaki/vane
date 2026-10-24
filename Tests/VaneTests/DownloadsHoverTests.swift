@@ -75,7 +75,7 @@ import Combine
     func testMovingFromButtonIntoPreviewKeepsItOpen() async throws {
         let hover = DownloadsHover()
         hover.setHovered(true, over: .button)
-        try await Task.sleep(for: .milliseconds(400))
+        try await compatibilityWait { hover.isVisible }
         XCTAssertTrue(hover.isVisible)
         hover.setHovered(false, over: .button)
         hover.setHovered(true, over: .preview)
@@ -94,7 +94,7 @@ import Combine
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertFalse(hover.isVisible)
         hover.setHovered(true, over: .button)
-        try await Task.sleep(for: .milliseconds(400))
+        try await compatibilityWait { hover.isVisible }
         XCTAssertTrue(hover.isVisible)
         hover.dismiss()
         XCTAssertFalse(hover.isVisible)

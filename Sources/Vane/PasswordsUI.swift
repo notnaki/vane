@@ -1509,9 +1509,9 @@ struct PasswordSiteIcon: View {
     let profileID: UUID
 
     var body: some View {
-        SiteIcon(icon: URL(string: "https://" + host).flatMap {
-            Favicons.cache(for: profileID).icon(for: $0)
-        }, fallback: "key.fill", size: Look.rowIcon)
+        CachedFavicon(cache: Favicons.cache(for: profileID), url: URL(string: "https://" + host)) {
+            SiteIcon(icon: $0, fallback: "key.fill", size: Look.rowIcon)
+        }
             .frame(width: 32, height: 32)
             .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
             .accessibilityHidden(true)

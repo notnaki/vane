@@ -305,7 +305,9 @@ struct TabPage: View {
                     // once more while removing it after a termination publication.
                     if !tab.needsRecovery {
                         WebView(web: tab.web,
-                            live: keepPages ? store.everyTab.filter { !store.isTabLocked($0.id) && store.ownsPage($0) }.compactMap(\.existingWeb) : [],
+                            live: keepPages ? store.everyTab.filter {
+                                $0.existingWeb != nil && store.ownsPage($0) && !store.isTabLocked($0.id)
+                            }.compactMap(\.existingWeb) : [],
                             offscreen: offscreen, tab: tab, store: store)
                     }
                 }
@@ -427,13 +429,20 @@ struct BrowserWindow: View {
                     .zIndex(1)
             }
             // Last, so the search bar composites over the sidebar as well as the page.
-            if let mode = store.palette {
-                PaletteView(mode: mode) { dismissPalette() }
-                    // The bar fades itself in; this is the way out — Escape and a click
-                    // on the scrim dissolve it rather than cutting to the page.
-                    .transition(.opacity)
-                    .zIndex(2)
+            ZStack {
+                if let mode = store.palette {
+                    PaletteView(mode: mode) { dismissPalette() }
+                        // The bar fades itself in; this is the way out — Escape and a click
+                        // on the scrim dissolve it rather than cutting to the page.
+                        .transition(.opacity)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Keep the fade transaction inside the persistent overlay. Opening search
+            // also disables the sidebar; those controls do not need to animate with it.
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
+                       value: store.palette == nil)
+            .zIndex(2)
         }
         // The window is `.fullSizeContentView`, but SwiftUI still keeps a titlebar-sized
         // safe area at the top. Without this the sidebar's first row sits *below* the
@@ -469,7 +478,6 @@ struct BrowserWindow: View {
         .animation(reduceMotion || batterySaver.isActive ? nil
                    : Look.floatingSidebarAnimation, value: peeking)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.libraryOpen)
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.palette == nil)
         // Arc hides the traffic lights along with the sidebar: a collapsed window is the
         // page and nothing else. They come back the moment either sidebar does.
         .onChange(of: chrome, initial: true) { showTrafficLights(chrome) }
@@ -1643,7 +1651,7 @@ private struct ZoomChip: View {
 private struct Favorites: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
-    @EnvironmentObject var store: TabStore
+    @SidebarObserved var store: TabStore
     @EnvironmentObject var dragPreview: SidebarDragPreview
     @ObservedObject private var dragging = Dragging.shared
     /// A narrow sidebar drops a column instead of shrinking every tile to a sliver.
@@ -1662,7 +1670,7 @@ private struct Favorites: View {
                         slot
                     } else {
                         // Keep the native drag source mounted while its slot moves.
-                        FavoriteTile(tab: tab)
+                        FavoriteTile(store: store, tab: tab)
                             .opacity(dragPreview.destination != nil && moving.contains(tab.id) ? 0 : 1)
                             .overlay {
                                 if dragPreview.destination != nil && moving.contains(tab.id) { slot }
@@ -1755,7 +1763,7 @@ struct FavoriteTileBackground: View {
 
 private struct FavoriteTile: View {
     @Environment(\.sidebarDropMarker) private var dropMarker
-    @EnvironmentObject var store: TabStore
+    @SidebarObserved var store: TabStore
     @EnvironmentObject var dragPreview: SidebarDragPreview
     @ObservedObject var tab: Tab
     @State private var hovering = false
@@ -3128,7 +3136,6 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     @ViewBuilder let header: () -> Header
     @ViewBuilder let rows: () -> Rows
     @State private var scrollHeight: CGFloat = 0
-    @State private var scrollPosition = ScrollPosition(edge: .top)
     @State private var cutoffs = SidebarScrollCutoffs()
     @State private var measuredCutoffs = false
     @Environment(\.displayScale) private var displayScale
@@ -3142,7 +3149,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
                     .background(WindowDragArea())
             }
             .scrollIndicators(.never)
-            .scrollPosition($scrollPosition)
+            .modifier(ScrollViewportPosition(initialOffset: initialOffset))
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
                 reportOffset(offset)
             }
@@ -3159,9 +3166,6 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
             }
             .overlay(alignment: .top) { cutoffLine(visible: cutoffs.top) }
             .overlay(alignment: .bottom) { cutoffLine(visible: cutoffs.bottom) }
-            .onAppear {
-                if initialOffset != 0 { scrollPosition.scrollTo(y: initialOffset) }
-            }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
         }
     }
@@ -3189,21 +3193,34 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
 struct SidebarSpaceContent: View {
     @EnvironmentObject var store: TabStore
 
+    var body: some View { SidebarSpacePresentation(store: store) }
+}
+
+private struct SidebarSpacePresentation: View {
+    @SidebarObserved var store: TabStore
+
     var body: some View {
-        SpaceSidebarStrip(store: store, favorites: Favorites(), sections: SidebarSpaceSections())
+        SpaceSidebarStrip(store: store, favorites: Favorites(store: store),
+                          sections: SidebarSpaceSectionContent(store: store))
     }
 }
 
 struct SidebarSpaceSections: View {
     @EnvironmentObject private var store: TabStore
 
+    var body: some View { SidebarSpaceSectionContent(store: store) }
+}
+
+private struct SidebarSpaceSectionContent: View {
+    @SidebarObserved var store: TabStore
+
     var body: some View {
         SpaceSectionsLayout(retainsRows: Feel02SidebarRowsCache.retainsRows(in: store),
                             reportOffset: { store.spaceGesture.sidebarOffset = $0 }) { SpaceRow() } rows: {
-            PinnedTabs()
+            PinnedTabs(store: store)
             TidyRow()
             NewTabRow()
-            OpenTabs()
+            OpenTabs(store: store)
             TodayEndDropArea()
         }
     }
@@ -3215,18 +3232,18 @@ struct SidebarSpaceSections: View {
 /// which. What differs is behaviour: a pinned tab never auto-archives, and ⌘W leaves it
 /// exactly where it is.
 private struct PinnedTabs: View {
-    @EnvironmentObject var store: TabStore
+    @SidebarObserved var store: TabStore
 
     /// One observer of `LiveFolders` for the whole section, rather than one per row: the
     /// glyphs all come out of the same object, and a hundred pinned rows each watching it
     /// is a hundred redraws for one refresh.
     var body: some View {
-        PinnedSection(live: LiveFolders.shared(for: store.profileID))
+        PinnedSection(store: store, live: LiveFolders.shared(for: store.profileID))
     }
 }
 
 private struct PinnedSection: View {
-    @EnvironmentObject var store: TabStore
+    @SidebarObserved var store: TabStore
     @ObservedObject var live: LiveFolders
     @State private var sheet = false
     @State private var rowsCache = Feel02SidebarRowsCache()
@@ -3245,9 +3262,9 @@ private struct PinnedSection: View {
         // `Landing`'s arithmetic with it. The way in is the divider below, which is the end
         // of this list and takes a drop as one; the space row above; ⌘⇧D; or New Folder.
         if !available.isEmpty {
-            SidebarSectionRows(snapshot: snapshot, collapsed: store.pinnedSectionCollapsed,
+            SidebarSectionRows(store: store, snapshot: snapshot, collapsed: store.pinnedSectionCollapsed,
                                transition: .rowCollapse) { row, index, count in
-                ShapeRow(row: row.visible, tab: row.tab, index: index, rows: count,
+                ShapeRow(store: store, row: row.visible, tab: row.tab, index: index, rows: count,
                          shape: \.pins, pr: presentation(of: row.visible))
             }
             .padding(.bottom, store.pinnedSectionCollapsed ? -Look.rowGap : 0)
@@ -3280,7 +3297,7 @@ private struct PinnedSection: View {
 /// which is exactly how Arc says it. Pinned draws these and so does Today; `shape` is which
 /// of the two, and the only thing that differs between them.
 private struct ShapeRow: View {
-    @EnvironmentObject var store: TabStore
+    @SidebarObserved var store: TabStore
     let row: Pins.Visible
     let tab: Tab?
     /// Its place among the section's rows, and how many there are — see `TabDrop.row`.
@@ -3298,11 +3315,11 @@ private struct ShapeRow: View {
         // exposes the conditional subtree, making scrolling resolve its view list again.
         HStack(spacing: 0) {
             if let folder = row.entry.folder {
-                FolderRow(folder: folder, shape: shape)
+                FolderRow(store: store, folder: folder, shape: shape)
             } else if let tab {
                 // StripRow, not TabRow: a tab that is a pane of a split is drawn as the
                 // split's one row, at its lead pane's place.
-                StripRow(tab: tab, index: index, rows: rows)
+                StripRow(store: store, tab: tab, index: index, rows: rows)
             }
         }
         .padding(.leading, CGFloat(row.depth) * Look.folderIndent)
@@ -3322,7 +3339,7 @@ private struct FolderRow: View {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
-    @EnvironmentObject var store: TabStore
+    @SidebarObserved var store: TabStore
     let folder: Folder
     /// Which section's shape this folder is in — `\.pins` or `\.todayShape`.
     let shape: ReferenceWritableKeyPath<TabStore, Pins>
@@ -3649,6 +3666,7 @@ private struct FolderDrop: DropDelegate {
 /// trailing edge. One shape so the list reads as one list.
 struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.feel02PressFeedbackEnabled) private var interactiveSurface
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let selected: Bool
     /// In a multi-select. It wears the same fill as `selected` — a selection is a selection —
@@ -3671,6 +3689,34 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     @Environment(\.ghostTileMorph) private var morph
 
     var body: some View {
+        if interactiveSurface {
+            surface
+                .modifier(Feel02PressFeedback(enabled: keyboardEnabled && !held, hoverChanged: { next in
+                    if hovering != next { hovering = next }
+                }))
+                .contentShape(.rect)
+                .onGeometryChange(for: CGRect?.self) { [tracksFrame = hovering] in
+                    tracksFrame ? $0.frame(in: .global) : nil
+                } action: { previous, next in
+                    // AppKit may omit an exit when disclosure/scrolling moves a
+                    // hovered row away from a stationary pointer. Unhovered rows
+                    // do not need global frame tracking during every scroll frame.
+                    guard let previous, let next, previous != next else { return }
+                    hovering = false
+                }
+                .onDisappear { hovering = false }
+                .onChange(of: isEnabled) { _, enabled in if !enabled { hovering = false } }
+                .onTapGesture { InteractionSounds.play(.press); action() }
+                .vaneKeyboardAction(enabled: keyboardEnabled && !held, action: action)
+                .environment(\.rowHovering, isEnabled && (held || hovering))
+        } else {
+            // Frozen swipe surfaces share the pixels, without installing focus,
+            // pointer and keyboard handlers for each invisible row.
+            surface.environment(\.rowHovering, held)
+        }
+    }
+
+    private var surface: some View {
         // Spacing sits only between the icon and the title. The title runs straight up to
         // the trailing controls, whose pressable squares already hold their glyphs clear.
         HStack(spacing: 0) {
@@ -3712,13 +3758,6 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
                     .position(x: morph.iconX, y: morph.height / 2)
             }
         }
-        .modifier(Feel02PressFeedback(enabled: keyboardEnabled && !held))
-        .contentShape(.rect)
-        .onHover { hovering = $0 && isEnabled }
-        .onChange(of: isEnabled) { _, enabled in if !enabled { hovering = false } }
-        .onTapGesture { InteractionSounds.play(.press); action() }
-        .vaneKeyboardAction(enabled: keyboardEnabled && !held, action: action)
-        .environment(\.rowHovering, isEnabled && (held || hovering))
     }
 
     private var highlightOpacity: Double {
@@ -3927,7 +3966,7 @@ private struct TodayEndDropArea: View {
 }
 
 private struct OpenTabs: View {
-    @EnvironmentObject var store: TabStore
+    @SidebarObserved var store: TabStore
     @State private var rowsCache = Feel02SidebarRowsCache()
 
     var body: some View {
@@ -3936,8 +3975,8 @@ private struct OpenTabs: View {
         // tidy's folders live here now, and a folder is not a tab. Only the entries that
         // actually draw a row are counted — a pane that is not its split's lead, and an
         // entry whose tab has gone, draw nothing. See `PinnedSection`.
-        SidebarSectionRows(snapshot: snapshot, transition: .todayRow) { row, index, count in
-            ShapeRow(row: row.visible, tab: row.tab, index: index, rows: count, shape: \.todayShape)
+        SidebarSectionRows(store: store, snapshot: snapshot, transition: .todayRow) { row, index, count in
+            ShapeRow(store: store, row: row.visible, tab: row.tab, index: index, rows: count, shape: \.todayShape)
         }
         // A container of rows, so VoiceOver reads this as a tab list and steps through the
         // tabs instead of announcing an anonymous stack.
@@ -3956,7 +3995,7 @@ private struct StripRow: View {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
-    @EnvironmentObject var store: TabStore
+    @SidebarObserved var store: TabStore
     let tab: Tab
     /// Its place in the section it is drawn in, and how many rows that section draws — see
     /// `TabDrop.row`.
@@ -3982,11 +4021,11 @@ private struct StripRow: View {
                 // The transition stays on the row, not on the Group: a pane that is not the
                 // lead draws nothing, and a height pinned around nothing is a phantom row.
                 if store.leadPane(split) == tab.id {
-                    SplitRow(split: split, lead: tab, spot: spot)
+                    SplitRow(store: store, split: split, lead: tab, spot: spot)
                         .transition(tab.kind == .today ? .todayRow : .rowCollapse)
                 }
             } else {
-                TabRow(tab: tab, spot: spot)
+                TabRow(store: store, tab: tab, spot: spot)
                     .transition(tab.kind == .today ? .todayRow : .rowCollapse)
             }
         }
@@ -4044,7 +4083,7 @@ private struct StripRow: View {
 /// last-but-one pane hands the row back to the tab it was. Upgrade path: give `Split` a title
 /// and a `TabKind` of its own and it becomes a fourth kind of strip item.
 private struct SplitRow: View {
-    @EnvironmentObject var store: TabStore
+    @SidebarObserved var store: TabStore
     let split: Split
     /// The pane whose place in the strip this row stands in — what a drag of the row moves
     /// and what a drop beside it lands next to.
@@ -4168,26 +4207,45 @@ struct LivePRTitle: View {
 }
 
 struct SidebarTabSurface: View {
-    @ObservedObject var store: TabStore
+    @SidebarObserved var store: TabStore
+    let tab: Tab
+    var held = false
+    @Binding var returnHovering: Bool
+    var pr: GitHub.Row?
+    var action: () -> Void
+    var previewSelected: Bool? = nil
+    var previewTicked = false
+
+    var body: some View {
+        // Map window publications to the few values this row draws. The expensive
+        // row subtree remains unchanged during command-field/suggestion updates.
+        SidebarTabPresentation(store: store, tab: tab, held: held, returnHovering: $returnHovering,
+            pr: pr, action: action, selected: previewSelected ?? (store.current == tab.id),
+            ticked: previewSelected == nil ? store.selection.contains(tab.id) : previewTicked,
+            previewing: previewSelected != nil, renaming: previewSelected == nil && store.renamingTab == tab.id)
+    }
+}
+
+private struct SidebarTabPresentation: View {
+    let store: TabStore
     @ObservedObject var tab: Tab
     var held = false
     @Binding var returnHovering: Bool
     var pr: GitHub.Row?
     var action: () -> Void
-    /// A swipe renders the incoming selection without mutating the outgoing window.
-    var previewSelected: Bool? = nil
-    var previewTicked = false
+    let selected: Bool
+    let ticked: Bool
+    let previewing: Bool
+    let renaming: Bool
     @Environment(\.ghostTileMorph) private var morph
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
-        let selected = previewSelected ?? (store.current == tab.id)
-        let ticked = previewSelected == nil ? store.selection.contains(tab.id) : previewTicked
         let returning = tab.kind == .pinned && !tab.atHome
         let title = TidyTitles.title(for: tab)
         SidebarRow(selected: selected, ticked: ticked, held: held,
-                   keyboardEnabled: previewSelected == nil && store.renamingTab != tab.id,
+                   keyboardEnabled: !previewing && !renaming,
                    action: action) {
             TabHomeIcon(store: store, tab: tab, returnHovering: held ? .constant(returnHovering) : $returnHovering)
         } label: {
@@ -4200,7 +4258,7 @@ struct SidebarTabSurface: View {
                         .accessibilityHidden(true)
                 }
                 // Keep the away marker visible during rename and Return hover too.
-                if previewSelected == nil && !held && store.renamingTab == tab.id {
+                if !previewing && !held && renaming {
                     RenameField(store: store, tab: tab, initialTitle: title)
                 } else {
                     LivePRTitle(title: title, reveal: tab.titleReveal, pr: pr,
@@ -4240,7 +4298,7 @@ struct SidebarTabSurface: View {
 }
 
 private struct TabRow: View {
-    @EnvironmentObject var store: TabStore
+    @SidebarObserved var store: TabStore
     @ObservedObject var tab: Tab
     /// Its place in the strip, so a drag can say where it started — see `Landing`.
     var spot: Landing.Spot?
@@ -5080,6 +5138,16 @@ private struct FaviconPlaceholder: View {
             .frame(width: size, height: size)
             .accessibilityHidden(true)
     }
+}
+
+/// Observe asynchronous cache arrivals at the icon leaf, without invalidating its row
+/// or reranking the search results that contain it.
+struct CachedFavicon<Content: View>: View {
+    @ObservedObject var cache: Favicons
+    let url: URL?
+    @ViewBuilder let content: (NSImage?) -> Content
+
+    var body: some View { content(url.flatMap(cache.icon(for:))) }
 }
 
 /// A site's own icon, with a placeholder until it arrives (or forever, for a page that

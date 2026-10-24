@@ -72,7 +72,8 @@ extension PaletteCommand {
     ///
     /// The order here is only a tie-break: `Palette.rank` decides everything, and nothing is
     /// listed at all until a letter is typed.
-    @MainActor static func all(for store: TabStore) -> [PaletteCommand] {
+    @MainActor static func all(for store: TabStore, strip: [Space]? = nil,
+                               ownSpaces: [Space]? = nil) -> [PaletteCommand] {
         var out: [PaletteCommand] = [
             PaletteCommand(.newTab, icon: "plus"),
             PaletteCommand(.reopenClosedTab, icon: "arrow.uturn.left"),
@@ -211,7 +212,7 @@ extension PaletteCommand {
             out.append(PaletteCommand(.newSpace, icon: "square.stack"))
             // The strip: the two arrows walk every profile's Spaces, so one Space in this
             // profile and one in the next is still somewhere to go.
-            if store.strip.count > 1 {
+            if (strip ?? store.strip).count > 1 {
                 out += [
                     PaletteCommand(.nextSpace, icon: "arrow.right"),
                     PaletteCommand(.previousSpace, icon: "arrow.left"),
@@ -220,7 +221,7 @@ extension PaletteCommand {
             // Arc's "Move to Space ▸" is a submenu, and a search bar has no submenus — so it
             // is one row per Space, which is also the row typing the Space's name lands on.
             if let tab = store.active, TabAddress.restorable(tab.currentURL) {
-                for space in store.spaces where space.id != store.currentSpaceID {
+                for space in (ownSpaces ?? store.spaces) where space.id != store.currentSpaceID {
                     out.append(PaletteCommand("Move Tab to \(space.name)",
                                               icon: space.icon ?? "square.on.square",
                                               id: "moveToSpace:" + space.id.uuidString) {
