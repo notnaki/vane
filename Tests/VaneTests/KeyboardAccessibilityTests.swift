@@ -10,6 +10,14 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
 }
 
 @MainActor final class KeyboardAccessibilityTests: XCTestCase {
+    private var nativeProfiles: Set<UUID> = []
+
+    override func tearDown() async throws {
+        let profiles = nativeProfiles
+        nativeProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(profiles)
+    }
+
     private func fixture(isPrivate: Bool = true) -> (TabStore, NSWindow, WKWebView) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -18,6 +26,7 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
         store.current = tab.id
         store.palette = nil
         let web = tab.web
+        if !store.isPrivate { nativeProfiles.insert(store.profileID) }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -29,8 +38,8 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
             store.window = nil
             window.close()
             store.dropStashes()
-            SharedTabs.release(store.tabs)
             TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(store.tabs)
         }
         return (store, window, web)
     }
