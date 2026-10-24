@@ -27,6 +27,31 @@ import Combine
 }
 
 enum SavedReaderNavigation {
+    static func failureDescription(_ error: NSError, presentation: URL) -> String {
+        var chain = [error]
+        for _ in 0..<2 {
+            guard let next = chain.last?.userInfo[NSUnderlyingErrorKey] as? NSError else { break }
+            chain.append(next)
+        }
+        var report = "domain=\(String(error.domain.prefix(256))), code=\(error.code), message=\(String(error.localizedDescription.prefix(2_048)))"
+        for (index, underlying) in chain.dropFirst().enumerated() {
+            report += "; underlying[\(index)]={domain=\(String(underlying.domain.prefix(256))), code=\(underlying.code)}"
+        }
+        for native in chain {
+            let path = native.userInfo[NSFilePathErrorKey] as? String
+            let candidates = [native.userInfo[NSURLErrorFailingURLErrorKey] as? URL,
+                              (native.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:)),
+                              path.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil }]
+            if let url = candidates.compactMap({ $0 }).first(where: {
+                allowed(url: $0, articleDirectory: presentation, userInitiated: false)
+            }) {
+                report += "; failingURL=\(String(url.absoluteString.prefix(2_048)))"
+                break
+            }
+        }
+        return report
+    }
+
     static func allowed(url: URL, articleDirectory: URL, userInitiated: Bool) -> Bool {
         guard url.isFileURL else { return false }
         let root = articleDirectory.standardizedFileURL.resolvingSymlinksInPath().path + "/"
@@ -202,7 +227,7 @@ private enum SavedReaderPresentation {
     private func recordFailure(_ error: Error, stage: String) {
         let native = error as NSError
         loadState = stage
-        loadFailure = "domain=\(native.domain), code=\(native.code), message=\(String(native.localizedDescription.prefix(2_048)))"
+        loadFailure = SavedReaderNavigation.failureDescription(native, presentation: presentation)
     }
 }
 

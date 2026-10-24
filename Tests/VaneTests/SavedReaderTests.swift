@@ -4,6 +4,50 @@ import XCTest
 @testable import vane
 
 @MainActor final class SavedReaderTests: XCTestCase {
+    func testNativeFileFailureIncludesBoundedUnderlyingErrnoAndPresentationURL() {
+        let directory = URL(fileURLWithPath: "/tmp/vane-saved-reader-diagnostic")
+        let file = directory.appendingPathComponent("article.html")
+        let posix = NSError(domain: NSPOSIXErrorDomain, code: 13)
+        let network = NSError(domain: "kCFErrorDomainCFNetwork", code: -3001, userInfo: [NSUnderlyingErrorKey: posix])
+        let error = NSError(domain: NSURLErrorDomain, code: -3001, userInfo: [
+            NSLocalizedDescriptionKey: "Cannot open file", NSUnderlyingErrorKey: network,
+            NSURLErrorFailingURLErrorKey: file,
+        ])
+        let report = SavedReaderNavigation.failureDescription(error, presentation: directory)
+        XCTAssertTrue(report.hasPrefix("domain=NSURLErrorDomain, code=-3001, message=Cannot open file"))
+        XCTAssertTrue(report.contains("underlying[0]={domain=kCFErrorDomainCFNetwork, code=-3001}"))
+        XCTAssertTrue(report.contains("underlying[1]={domain=NSPOSIXErrorDomain, code=13}"))
+        XCTAssertTrue(report.contains("failingURL=" + file.absoluteString))
+    }
+
+    func testNativeFileFailureStopsAfterTwoUnderlyingErrors() {
+        var error = NSError(domain: "OUTSIDE-DEPTH-BOUND", code: 99)
+        for depth in (0..<3).reversed() {
+            error = NSError(domain: "level-\(depth)", code: depth, userInfo: [NSUnderlyingErrorKey: error])
+        }
+        let report = SavedReaderNavigation.failureDescription(error, presentation: URL(fileURLWithPath: "/tmp/fixture"))
+        XCTAssertTrue(report.contains("underlying[0]={domain=level-1, code=1}"))
+        XCTAssertTrue(report.contains("underlying[1]={domain=level-2, code=2}"))
+        XCTAssertFalse(report.contains("OUTSIDE-DEPTH-BOUND"))
+        XCTAssertFalse(report.contains("underlying[2]"))
+    }
+
+    func testNativeFileFailureOmitsUnrelatedPathAndAcceptsOwnedFilePath() {
+        let directory = URL(fileURLWithPath: "/tmp/vane-saved-reader-diagnostic")
+        let outside = "/tmp/OTHER-PRIVATE-PATH/article.html"
+        let error = NSError(domain: NSURLErrorDomain, code: -3001, userInfo: [
+            NSLocalizedDescriptionKey: "Cannot open file", NSURLErrorFailingURLStringErrorKey: "file://" + outside,
+            NSFilePathErrorKey: outside,
+        ])
+        let report = SavedReaderNavigation.failureDescription(error, presentation: directory)
+        XCTAssertFalse(report.contains("OTHER-PRIVATE-PATH"))
+        let file = directory.appendingPathComponent("images/fixture.png")
+        let owned = NSError(domain: NSURLErrorDomain, code: -3001, userInfo: [
+            NSLocalizedDescriptionKey: "Cannot open file", NSFilePathErrorKey: file.path,
+        ])
+        XCTAssertTrue(SavedReaderNavigation.failureDescription(owned, presentation: directory).contains("failingURL=" + file.absoluteString))
+    }
+
     @MainActor private final class ImageProbe {
         private(set) var pending = false
         private(set) var width: Int?
