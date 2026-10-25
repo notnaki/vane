@@ -16,10 +16,19 @@ import XCTest
                 XCTFail("Native fixture cleanup refuses default and incognito profiles", file: file, line: line)
                 continue
             }
+            var deferred = false
+            do { deferred = try NativeFixtureRetirement.recordIfEnabled(profile: profile, directory: directory) }
+            catch {
+                XCTFail("Cannot record owned backend retirement; performing immediate cleanup: \(error)", file: file, line: line)
+            }
             // The normal profile's cached extension controller also owns its named store.
             ExtensionHost.forget(profile)
             await Store.forgetAsync(profile)
             Favicons.forget(profile)
+            if deferred {
+                ProfileManager.releaseDataStore(for: profile)
+                continue
+            }
             var store: WKWebsiteDataStore? = ProfileManager.dataStore(for: profile)
             await store!.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
             store = nil

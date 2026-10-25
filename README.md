@@ -191,6 +191,20 @@ clean-Mac install/upgrade checks are still required for distribution claims.
 
 ## Contributing
 
+For native fixture tests, use `python3 scripts/run-native-tests.py --jobs 1`.
+The wrapper passes its arguments to the complete `swift test` command; focused runs
+can add `--filter 'PasswordAutofillTests|SavedReaderTests'`. After the test host exits,
+it starts the same test bundle in a fresh process to delete only the exact owned
+WebKit stores recorded by those fixtures and verifies their absence. Cleanup runs
+even when the primary tests fail, and a cleanup failure fails an otherwise passing
+run. An unverified cleanup keeps its private manifest and reports its path.
+The post-exit retirement phase has a 60-second budget for all owned IDs; its fresh
+driver has a 90-second ceiling. These bounds do not alter primary fixture deadlines.
+
+Direct `swift test` remains supported and performs the existing immediate cleanup.
+The wrapper defers destructive WebKit cleanup for shared-helper-owned normal profiles;
+it does not change test assertions, original fixture deadlines, or product behavior.
+
 Follow [AGENTS.md](AGENTS.md) for isolated branches, relevant validation,
 independent PR review, required CI, and squash-merging. Use focused local checks
 for the affected behavior; documentation changes do not need the full app suite.

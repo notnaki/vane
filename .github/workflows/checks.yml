@@ -68,8 +68,11 @@ jobs:
       - name: App icon migration and bundled selections
         run: scripts/check-app-icons.sh
 
-      - name: Search typing regressions
-        run: swift test
+      - name: Native fixture runner safety
+        run: python3 scripts/test-native-fixture-runner.py
+
+      - name: Native regression tests
+        run: python3 scripts/run-native-tests.py
 
       - name: CLI password import errors
         run: bash scripts/test-cli-import.sh .build/debug/vane
