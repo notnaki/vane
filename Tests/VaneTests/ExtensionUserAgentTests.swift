@@ -10,12 +10,49 @@ import XCTest
     private var previousUserAgent: Any?
     #if DEBUG
     private var backgroundObservations: [ObjectIdentifier: BackgroundObservation] = [:]
+    private var backgroundObservers: [BackgroundObserver] = []
+
+    @MainActor private final class BackgroundObserver {
+        weak var host: ExtensionHost?
+        let previous: ((WKWebView, WKWebExtensionContext) -> Void)?
+
+        init(host: ExtensionHost, previous: ((WKWebView, WKWebExtensionContext) -> Void)?) {
+            self.host = host
+            self.previous = previous
+        }
+
+        func restore() { host?.backgroundCreationObserver = previous }
+    }
+
+    private func observeBackgroundCreation(of host: ExtensionHost) throws {
+        guard !backgroundObservers.contains(where: { $0.host === host }) else { return }
+        let expectedStore = try XCTUnwrap(host.controller.configuration.defaultWebsiteDataStore)
+        let previous = host.backgroundCreationObserver
+        backgroundObservers.append(BackgroundObserver(host: host, previous: previous))
+        // The observer stays active through the actual popup/worker reply, including
+        // WebKit background recreation. Teardown restores every still-live host.
+        host.backgroundCreationObserver = { [weak self] web, context in
+            previous?(web, context)
+            guard let self else { return }
+            let identity = ObjectIdentifier(context)
+            let observation: BackgroundObservation
+            if let existing = self.backgroundObservations[identity], existing.context === context {
+                observation = existing
+            } else {
+                observation = BackgroundObservation()
+            }
+            observation.capture(web, context: context, expectedStore: expectedStore)
+            self.backgroundObservations[identity] = observation
+        }
+    }
 
     // A snapshot never keeps the background page, its context, or its host alive.
     @MainActor private final class BackgroundObservation {
         weak var web: WKWebView?
         weak var context: WKWebExtensionContext?
         var count = 0
+        private weak var initialWeb: WKWebView?
+        var matchesInitialWeb = true
         var customUserAgent: String?
         var poolMatchesApplication = false
         var storeMatchesProfile = false
@@ -26,6 +63,8 @@ import XCTest
         var actualPersistent = false
 
         func capture(_ web: WKWebView, context: WKWebExtensionContext, expectedStore: WKWebsiteDataStore) {
+            if count == 0 { initialWeb = web }
+            matchesInitialWeb = initialWeb === web
             self.web = web
             self.context = context
             count += 1
@@ -55,6 +94,10 @@ import XCTest
     }
 
     override func tearDown() async throws {
+        #if DEBUG
+        for observer in backgroundObservers { observer.restore() }
+        backgroundObservers.removeAll()
+        #endif
         func removeInstallations() {
             let host = ExtensionHost.host(for: profile)
             for context in host.installed { host.remove(context) }
@@ -95,17 +138,7 @@ import XCTest
             """.utf8).write(to: folder.appendingPathComponent("popup.js"))
         let host = ExtensionHost.host(for: targetProfile ?? profile)
         #if DEBUG
-        let expectedStore = try XCTUnwrap(host.controller.configuration.defaultWebsiteDataStore)
-        let previousObserver = host.backgroundCreationObserver
-        host.backgroundCreationObserver = { [weak self] web, context in
-            previousObserver?(web, context)
-            guard let self else { return }
-            let identity = ObjectIdentifier(context)
-            let observation = self.backgroundObservations[identity] ?? BackgroundObservation()
-            observation.capture(web, context: context, expectedStore: expectedStore)
-            self.backgroundObservations[identity] = observation
-        }
-        defer { host.backgroundCreationObserver = previousObserver }
+        try observeBackgroundCreation(of: host)
         #endif
         let accepted = try await host.load(folder, installing: true) { _ in true }
         XCTAssertTrue(accepted)
@@ -162,7 +195,7 @@ import XCTest
             print("UA fixture \(scenario): no matching live context observation")
             return
         }
-        print("UA fixture \(scenario): callbackCount=\(observation.count), customUA=\(observation.customUserAgent ?? "<nil>"), applicationPool=\(observation.poolMatchesApplication), profileStore=\(observation.storeMatchesProfile), expectedNamed=\(observation.expectedNamed), actualNamed=\(observation.actualNamed), identifiersMatch=\(observation.identifiersMatch), expectedPersistent=\(observation.expectedPersistent), actualPersistent=\(observation.actualPersistent)")
+        print("UA fixture \(scenario): callbackCount=\(observation.count), landingLive=\(observation.web != nil), matchesInitialLanding=\(observation.matchesInitialWeb), customUA=\(observation.customUserAgent ?? "<nil>"), applicationPool=\(observation.poolMatchesApplication), profileStore=\(observation.storeMatchesProfile), expectedNamed=\(observation.expectedNamed), actualNamed=\(observation.actualNamed), identifiersMatch=\(observation.identifiersMatch), expectedPersistent=\(observation.expectedPersistent), actualPersistent=\(observation.actualPersistent)")
         #endif
     }
 
@@ -187,7 +220,7 @@ import XCTest
             // This is a synthetic extension. Print its own URL only, never another page.
             let fixtureURL = href?.scheme == context.baseURL.scheme && href?.host == context.baseURL.host
                 ? href?.absoluteString ?? "<nil>" : "<outside fixture>"
-            print("UA fixture \(scenario): landingUA=\(result?["ua"] ?? "<nil>"), landingURL=\(fixtureURL)")
+            print("UA fixture \(scenario): landingUA=\(result?["ua"] ?? "<nil>"), landingURL=\(fixtureURL), latestLandingAtRead=\(observation.web === landing), callbackCountAfterRead=\(observation.count)")
         } catch {
             print("UA fixture \(scenario): landing observation unavailable (\(type(of: error)))")
         }
@@ -402,6 +435,9 @@ import XCTest
         action.closePopup()
         ExtensionHost.forget(profile)
         let restoredHost = ExtensionHost.host(for: profile)
+        #if DEBUG
+        try observeBackgroundCreation(of: restoredHost)
+        #endif
         let deadline = ContinuousClock.now + .seconds(10)
         while restoredHost.installed.isEmpty && ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
