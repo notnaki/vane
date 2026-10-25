@@ -218,6 +218,37 @@ jobs:
           path: .build
           key: ${{ steps.swift-cache.outputs.cache-primary-key }}
 
+  webkit-comparator:
+    # Separate diagnostic engine: never substitutes for the system-WebKit suite.
+    # Official archive 324648@main descends from the custom-scheme SW client fix
+    # 319898@main (86ddc7a7); loading and same-host fixture attestation are mandatory.
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Comparator guard fixtures
+        run: python3 scripts/run-webkit-comparator.py --self-test
+
+      - name: Build native tests against the normal SDK
+        run: swift build -c debug --build-tests
+
+      # The immediate teardown ownership case stays in the ordinary UA6 suite:
+      # it has no live script observation to attest without changing its timing.
+      - name: Attested official WebKit probe and bounded UA5/PW2 cases
+        env:
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: python3 scripts/run-webkit-comparator.py
+
+      - name: Preserve comparator failure evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: webkit-comparator-logs
+          path: ${{ runner.temp }}/vane-webkit-comparator-*/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   prune-caches:
     # Keep deletion credentials away from the build and from pull request runs.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

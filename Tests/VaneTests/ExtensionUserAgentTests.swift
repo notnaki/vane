@@ -44,6 +44,7 @@ import XCTest
     // Inspect only the real callback view. The snapshot retains no WebKit object.
     @MainActor private final class BackgroundObservation {
         weak var context: WKWebExtensionContext?
+        weak var web: WKWebView?
         let poolMatchesApplication: Bool
         let identifiersMatch: Bool
         let persistenceMatches: Bool
@@ -52,6 +53,7 @@ import XCTest
 
         init(_ web: WKWebView, context: WKWebExtensionContext, expectedStore: WKWebsiteDataStore) {
             self.context = context
+            self.web = web
             let configuration = web.configuration
             poolMatchesApplication = configuration.processPool === WebKitStartup.extensionProcessPool
             let actualStore = configuration.websiteDataStore
@@ -194,6 +196,18 @@ import XCTest
         XCTAssertEqual(identity?["popup"], expected, "\(scenario): Popup startup", file: file, line: line)
         XCTAssertEqual(identity?["background"], startup ?? expected, "\(scenario): Background startup", file: file, line: line)
         XCTAssertEqual(identity?["current"], expected, "\(scenario): Background current", file: file, line: line)
+        if WebKitComparatorAttestation.isRequested {
+            #if DEBUG
+            guard let observation = backgroundObservations[ObjectIdentifier(context)],
+                  observation.context === context, let background = observation.web else {
+                throw WebKitComparatorAttestation.unavailable("current user-agent fixture background is unavailable")
+            }
+            try WebKitComparatorAttestation.attestFixture(self, scope: .userAgentIdentity,
+                views: [web, background], store: configuration.websiteDataStore)
+            #else
+            throw WebKitComparatorAttestation.unavailable("user-agent fixture background observation is unavailable")
+            #endif
+        }
     }
 
     private func assertStore(_ actual: WKWebsiteDataStore, matches expected: WKWebsiteDataStore,

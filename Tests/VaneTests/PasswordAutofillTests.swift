@@ -366,6 +366,10 @@ import XCTest
         }) {
             return !web.isLoading
         }
+        if WebKitComparatorAttestation.isRequested {
+            try WebKitComparatorAttestation.attestFixture(self, scope: .passwordContinuation,
+                views: [web], store: web.configuration.websiteDataStore)
+        }
         if Date.now.timeIntervalSince(started) >= 0.5 {
             print("Continuation fixture \(path) loaded in \(Date.now.timeIntervalSince(started))s")
         }

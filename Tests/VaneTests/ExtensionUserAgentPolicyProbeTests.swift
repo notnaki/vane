@@ -28,6 +28,7 @@ import XCTest
         case policyUnavailable
     }
 
+    private var comparator: WebKitComparatorAttestation.Configuration?
     private var ownedProfile: UUID!
     private var directory: URL!
     private var store: WKWebsiteDataStore?
@@ -77,6 +78,7 @@ import XCTest
     override func setUp() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
+        comparator = try WebKitComparatorAttestation.configurationIfRequested()
         ownedProfile = UUID()
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("webkit-ua-policy-probe-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -174,7 +176,8 @@ import XCTest
             const generation = '\(generation)';
             browser.runtime.onMessage.addListener(async message => {
                 if (message === 'popup-visibility') {
-                    const result = {generation, runtime:browser.runtime.id, available:false, visible:false};
+                    const result = {generation, runtime:browser.runtime.id, host:location.host,
+                        scheme:location.protocol, available:false, visible:false};
                     try {
                         if (typeof clients !== 'undefined' && typeof clients.matchAll === 'function') {
                             const popupURL = new URL('/popup.html', location.href).href;
@@ -270,6 +273,34 @@ import XCTest
         }
     }
 
+    private func requirePopupVisibility(in web: WKWebView, context: WKWebExtensionContext,
+                                        generation: String) async throws {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
+            let reply = Reply<Any?>()
+            web.callAsyncJavaScript("return await browser.runtime.sendMessage('popup-visibility')",
+                                    arguments: [:], in: nil, in: .page) { result in
+                do { reply.value = .success(try result.get()) }
+                catch { reply.value = .failure(error) }
+            }
+            let result: [String: Any]?
+            do { result = try await wait(reply, stage: "comparator popup client", until: deadline) as? [String: Any] }
+            catch { throw WebKitComparatorAttestation.unavailable("current popup client observation failed or timed out") }
+            guard result?["generation"] as? String == generation,
+                  result?["runtime"] as? String == context.uniqueIdentifier,
+                  result?["host"] as? String == context.baseURL.host,
+                  result?["scheme"] as? String == "webkit-extension:" else {
+                throw WebKitComparatorAttestation.unavailable("popup client reply does not belong to the current context")
+            }
+            if result?["available"] as? Bool == true, result?["visible"] as? Bool == true {
+                NativeFixtureDiagnostics.emit("WEBKIT COMPARATOR CLIENT ASSOCIATED: generation=true; runtime=true; origin=true; currentPopup=true")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw WebKitComparatorAttestation.unavailable("current popup was not enumerable by its worker within the observation bound")
+    }
+
     func testFullUserAgentPolicyAgainstPublicBackgroundCallbackControl() async throws {
         let arms: [Arm]
         if let selected = ProcessInfo.processInfo.environment["VANE_WEBKIT_UA_POLICY_PROBE_ARM"] {
@@ -315,13 +346,21 @@ import XCTest
                 XCTAssertEqual(identity.popupStartup, arm == .policy ? selected : Self.safariIdentity, "\(label): popup startup control")
                 XCTAssertEqual(identity.worker["startup"], selected, "\(label): background startup")
                 XCTAssertEqual(identity.worker["current"], selected, "\(label): background current")
+                if let comparator {
+                    try WebKitComparatorAttestation.attestServices(comparator, views: [web, landing], store: try XCTUnwrap(store))
+                    NativeFixtureDiagnostics.emit("WEBKIT COMPARATOR SERVICES ATTESTED: popup=true; background=true; networking=true")
+                }
                 // As in the prior probe, exercise the public popup property only
                 // AFTER the actual worker reply. It cannot repair these assertions.
                 web.customUserAgent = selected
                 let current = try await evaluate("navigator.userAgent", in: web, until: ContinuousClock.now + .seconds(10)) as? String
                 XCTAssertEqual(current, selected, "\(label): public popup setter control")
                 if version == 3 {
-                    await observePopupVisibility(in: web, context: context, generation: generation, label: label)
+                    if comparator?.requireClient == true {
+                        try await requirePopupVisibility(in: web, context: context, generation: generation)
+                    } else {
+                        await observePopupVisibility(in: web, context: context, generation: generation, label: label)
+                    }
                 }
                 print("WebKit UA policy probe \(label): callback=\(delegate.callbacks > 0), generation=\(identity.worker["generation"] == generation), runtime=\(identity.worker["runtime"] == context.uniqueIdentifier), origin=\(identity.worker["host"] == context.baseURL.host), workerStartup=\(identity.worker["startup"] ?? "<missing>"), workerCurrent=\(identity.worker["current"] ?? "<missing>")")
                 try close(context)
