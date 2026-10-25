@@ -8,7 +8,25 @@ import XCTest
 @MainActor final class WebKitExtensionUserAgentBoundaryTests: XCTestCase {
     // Retain one finite pool through the test process, avoiding the independently
     // observed legacy-WebKit pool-destruction trap during controller retirement.
-    private static let processPool = WKProcessPool()
+    private static var ownedPool: WKProcessPool?
+    private static var foreignPool: WKProcessPool?
+
+    private static func processPool(explicitOrder: String? = nil) throws -> WKProcessPool {
+        if let ownedPool { return ownedPool }
+        switch explicitOrder {
+        case nil:
+            ownedPool = WKProcessPool()
+        case "owned-first":
+            ownedPool = WKProcessPool()
+            foreignPool = WKProcessPool()
+        case "foreign-first":
+            foreignPool = WKProcessPool()
+            ownedPool = WKProcessPool()
+        default:
+            throw Failure.invalidPoolOrder
+        }
+        return try XCTUnwrap(ownedPool)
+    }
     private static let suffix = "Version/26.0 Safari/605.1.15"
     private static let safariIdentity = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) \(suffix)"
     private static let backgroundSelector = NSSelectorFromString("_webExtensionController:didCreateBackgroundWebView:forExtensionContext:")
@@ -65,10 +83,17 @@ import XCTest
 
     private enum Failure: Error {
         case timeout(String)
-        case invalidReply
+        case invalidPoolOrder
     }
 
     override func setUp() async throws {
+        if let order = ProcessInfo.processInfo.environment["VANE_WEBKIT_UA_POOL_ORDER"] {
+            _ = NSApplication.shared
+            _ = try Self.processPool(explicitOrder: order)
+            // This is only the order of our two explicit objects. Framework code
+            // may have created another pool before the test entry point.
+            print("WebKit UA boundary explicit pool order=\(order); two retained pools; foreign has no page or UA setter")
+        }
         TestEnvironment.prepare()
         _ = NSApplication.shared
         ownedProfile = UUID()
@@ -110,7 +135,7 @@ import XCTest
         configuration.defaultWebsiteDataStore = store
         let seed: WKWebViewConfiguration = configuration.webViewConfiguration
         seed.websiteDataStore = store
-        seed.processPool = Self.processPool
+        seed.processPool = try Self.processPool()
         seed.applicationNameForUserAgent = Self.suffix
         // No private WKWebpagePreferences/full-UA policy setter.
         let controller = WKWebExtensionController(configuration: configuration)

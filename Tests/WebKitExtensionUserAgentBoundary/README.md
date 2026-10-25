@@ -71,6 +71,35 @@ references are cleared. The measurement uses no `ExtensionHost`, `Settings`, `Ta
 private `WKWebpagePreferences`, or Vane UA helper. The callback keeps context/view
 references weak. The six existing functional/security regressions are unchanged.
 
+## Optional two-pool construction-order comparison
+
+Only this test-only environment variable enables the comparator. Without it, the
+original two arms retain exactly one pool and their initialization order is unchanged.
+Each comparator must run in its own fresh primary host:
+
+```sh
+VANE_WEBKIT_UA_POOL_ORDER=owned-first python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter 'WebKitExtensionUserAgentBoundaryTests/testPublicSafariSuffixReachesMV2AndMV3Backgrounds'
+VANE_WEBKIT_UA_POOL_ORDER=foreign-first python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter 'WebKitExtensionUserAgentBoundaryTests/testPublicSafariSuffixReachesMV2AndMV3Backgrounds'
+```
+
+The comparator initializes NSApplication, then constructs two finite retained pools
+in the selected explicit order, before TestEnvironment, named-store lookup and
+controller configuration. Only the owned pool is assigned to the identical seed.
+The foreign pool never receives a web view, page, UA setter or configuration.
+Subsequent MV2/MV3 resources, generation checks, suffix, stores, callbacks (none in
+this arm), readiness bounds and assertions are identical. An unknown order fails
+fixture setup rather than silently selecting another mode.
+
+The log describes only our explicit construction order, not a verified global pool
+index. WebKit/framework initialization before the test entry point is uncontrolled.
+Official reference source selects processPools()[0] when a requesting process is
+absent, even if it later uses the existing service-worker page's process. A differing
+worker result between the two arms would support investigating that fallback; equal
+results would not prove the requesting process was present. The actual failing CI
+has not demonstrated a nil requester. WKProcessPool's public deprecation also means
+multiple pool objects do not promise process isolation. This is a source-supported
+construction-order discriminator, not a production eager-initialization fix.
+
 ## Interpretation
 
 - A public-suffix MV3 mismatch reproduces without Vane's host or any private UA
