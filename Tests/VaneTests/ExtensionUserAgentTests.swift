@@ -19,15 +19,26 @@ import XCTest
         var customUserAgent: String?
         var poolMatchesApplication = false
         var storeMatchesProfile = false
+        var expectedNamed = false
+        var actualNamed = false
+        var identifiersMatch = false
+        var expectedPersistent = false
+        var actualPersistent = false
 
-        func capture(_ web: WKWebView, context: WKWebExtensionContext, storeID: ObjectIdentifier) {
+        func capture(_ web: WKWebView, context: WKWebExtensionContext, expectedStore: WKWebsiteDataStore) {
             self.web = web
             self.context = context
             count += 1
             customUserAgent = web.customUserAgent
             let configuration = web.configuration
             poolMatchesApplication = configuration.processPool === WebKitStartup.processPool
-            storeMatchesProfile = ObjectIdentifier(configuration.websiteDataStore) == storeID
+            let actualStore = configuration.websiteDataStore
+            storeMatchesProfile = actualStore === expectedStore
+            expectedNamed = expectedStore.identifier != nil
+            actualNamed = actualStore.identifier != nil
+            identifiersMatch = actualStore.identifier == expectedStore.identifier
+            expectedPersistent = expectedStore.isPersistent
+            actualPersistent = actualStore.isPersistent
         }
     }
     #endif
@@ -61,7 +72,7 @@ import XCTest
         try await NativeFixtureProfileCleanup.release(released)
     }
 
-    private func install(version: Int) async throws -> WKWebExtensionContext {
+    private func install(version: Int, in targetProfile: UUID? = nil) async throws -> WKWebExtensionContext {
         #if DEBUG
         backgroundObservations.removeAll()
         #endif
@@ -82,16 +93,16 @@ import XCTest
             window.startupUserAgent = navigator.userAgent;
             browser.runtime.sendMessage('identity').then(reply => { window.backgroundIdentity = reply; });
             """.utf8).write(to: folder.appendingPathComponent("popup.js"))
-        let host = ExtensionHost.host(for: profile)
+        let host = ExtensionHost.host(for: targetProfile ?? profile)
         #if DEBUG
-        let storeID = ObjectIdentifier(host.controller.configuration.defaultWebsiteDataStore)
+        let expectedStore = try XCTUnwrap(host.controller.configuration.defaultWebsiteDataStore)
         let previousObserver = host.backgroundCreationObserver
         host.backgroundCreationObserver = { [weak self] web, context in
             previousObserver?(web, context)
             guard let self else { return }
             let identity = ObjectIdentifier(context)
             let observation = self.backgroundObservations[identity] ?? BackgroundObservation()
-            observation.capture(web, context: context, storeID: storeID)
+            observation.capture(web, context: context, expectedStore: expectedStore)
             self.backgroundObservations[identity] = observation
         }
         defer { host.backgroundCreationObserver = previousObserver }
@@ -104,6 +115,12 @@ import XCTest
             let missing = BackgroundObservation()
             missing.context = context
             backgroundObservations[ObjectIdentifier(context)] = missing
+        }
+        if let observation = backgroundObservations[ObjectIdentifier(context)], observation.context === context {
+            XCTAssertGreaterThan(observation.count, 0, "Installing a background must observe its real view")
+            XCTAssertTrue(observation.identifiersMatch, "Background must use the selected profile's store identifier")
+            XCTAssertEqual(observation.actualPersistent, observation.expectedPersistent,
+                           "Background must retain the selected profile's persistence")
         }
         #endif
         return context
@@ -124,7 +141,11 @@ import XCTest
     }
 
     private func assertIdentity(in web: WKWebView, context: WKWebExtensionContext, expected: String, startup: String? = nil,
-                                scenario: String = "Extension", file: StaticString = #filePath, line: UInt = #line) async throws {
+                                scenario: String = "Extension", expectedStore: WKWebsiteDataStore? = nil,
+                                file: StaticString = #filePath, line: UInt = #line) async throws {
+        assertStore(web.configuration.websiteDataStore,
+                    matches: expectedStore ?? ExtensionHost.host(for: profile).controller.configuration.defaultWebsiteDataStore,
+                    scenario: "\(scenario) popup", file: file, line: line)
         let identity = try await web.evaluateJavaScript("({popup:window.startupUserAgent, background:window.backgroundIdentity.startup, current:window.backgroundIdentity.current})") as? [String: String]
         reportCallbackObservation(for: context, scenario: scenario)
         XCTAssertEqual(identity?["popup"], expected, "\(scenario): Popup startup", file: file, line: line)
@@ -141,7 +162,7 @@ import XCTest
             print("UA fixture \(scenario): no matching live context observation")
             return
         }
-        print("UA fixture \(scenario): callbackCount=\(observation.count), customUA=\(observation.customUserAgent ?? "<nil>"), applicationPool=\(observation.poolMatchesApplication), profileStore=\(observation.storeMatchesProfile)")
+        print("UA fixture \(scenario): callbackCount=\(observation.count), customUA=\(observation.customUserAgent ?? "<nil>"), applicationPool=\(observation.poolMatchesApplication), profileStore=\(observation.storeMatchesProfile), expectedNamed=\(observation.expectedNamed), actualNamed=\(observation.actualNamed), identifiersMatch=\(observation.identifiersMatch), expectedPersistent=\(observation.expectedPersistent), actualPersistent=\(observation.actualPersistent)")
         #endif
     }
 
@@ -174,7 +195,17 @@ import XCTest
     }
 
 
-    func testBrowserAndExtensionPoolsShareOwnershipWithoutSharingProfileStorage() throws {
+    private func assertStore(_ actual: WKWebsiteDataStore, matches expected: WKWebsiteDataStore,
+                             scenario: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(actual.identifier == expected.identifier, "\(scenario): store identifier", file: file, line: line)
+        XCTAssertEqual(actual.isPersistent, expected.isPersistent, "\(scenario): persistence", file: file, line: line)
+        // Nil identifiers alone cannot distinguish different ephemeral stores.
+        if !expected.isPersistent {
+            XCTAssertTrue(actual === expected, "\(scenario): private session", file: file, line: line)
+        }
+    }
+
+    func testBrowserAndExtensionPoolsShareOwnershipWithoutSharingProfileStorage() async throws {
         let otherProfile = UUID()
         ownedProfiles.insert(otherProfile)
         defer { ExtensionHost.forget(otherProfile) }
@@ -206,12 +237,33 @@ import XCTest
         XCTAssertFalse(privateExtensions.configuration.defaultWebsiteDataStore.isPersistent)
         XCTAssertFalse(privateBrowser.websiteDataStore === browser.websiteDataStore)
         XCTAssertFalse(privateExtensions.configuration.defaultWebsiteDataStore === browser.websiteDataStore)
+        XCTAssertNotNil(browser.websiteDataStore.identifier)
+        XCTAssertNotNil(otherBrowser.websiteDataStore.identifier)
+        XCTAssertFalse(browser.websiteDataStore.identifier == otherBrowser.websiteDataStore.identifier)
+        assertStore(seed.websiteDataStore, matches: browser.websiteDataStore, scenario: "Normal seed")
+        assertStore(otherSeed.websiteDataStore, matches: otherBrowser.websiteDataStore, scenario: "Other profile seed")
+        assertStore(privateSeed.websiteDataStore, matches: privateExtensions.configuration.defaultWebsiteDataStore,
+                    scenario: "Private seed")
+        XCTAssertNil(privateSeed.websiteDataStore.identifier)
+        do {
+            _ = try await ExtensionHost.host(for: Profile.incognito.id).load(folder, installing: true) { _ in true }
+            XCTFail("Private hosts must continue rejecting extension installation")
+        } catch is CancellationError { }
+        XCTAssertTrue(privateExtensions.extensionContexts.isEmpty)
 
         ExtensionHost.forget(otherProfile)
         let replacement = ExtensionHost.host(for: otherProfile).controller
         XCTAssertFalse(replacement === otherExtensions)
         XCTAssertTrue(replacement.configuration.webViewConfiguration.processPool === browser.processPool)
         XCTAssertTrue(replacement.configuration.defaultWebsiteDataStore === otherBrowser.websiteDataStore)
+        assertStore(replacement.configuration.webViewConfiguration.websiteDataStore,
+                    matches: otherBrowser.websiteDataStore, scenario: "Recreated other profile seed")
+        let context = try await install(version: 2, in: otherProfile)
+        let (action, web) = try await popup(context)
+        try await assertIdentity(in: web, context: context, expected: safariUA,
+                                 scenario: "Other profile", expectedStore: otherBrowser.websiteDataStore)
+        action.closePopup()
+        ExtensionHost.host(for: otherProfile).remove(context)
     }
 
     @MainActor private final class ReleasedInstallation {
