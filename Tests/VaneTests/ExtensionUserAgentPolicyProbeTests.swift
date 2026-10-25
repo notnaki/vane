@@ -82,6 +82,7 @@ import XCTest
         ownedProfile = UUID()
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("webkit-ua-policy-probe-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try await NativeFixtureApplication.admitCompletedLaunch()
         // Vane helpers select only a disposable named store and its safe retirement.
         store = ProfileManager.dataStore(for: ownedProfile)
         XCTAssertNotNil(store?.identifier)

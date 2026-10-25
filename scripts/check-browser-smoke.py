@@ -32,7 +32,7 @@ UA_LABELS = ("UA normal-loop host", "UA normal-loop safari-mv2", "UA normal-loop
 UA_OUTPUT_LIMIT = 1024 * 1024
 
 
-def validate_ua_report(path):
+def validate_ua_report(path, echo_verified=False):
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         try:
@@ -59,11 +59,17 @@ def validate_ua_report(path):
         if finding["result"] != "VERIFIED" or not isinstance(finding["detail"], str) or len(finding["detail"].encode()) > 8192:
             raise ValueError("UA stage failed, was unavailable, or has invalid detail")
         labels.append(finding["workflow"])
-        if finding["workflow"] == UA_LABELS[0] and not re.fullmatch(
-                r"finishedLaunching=true; appRunning=true; WebKit=[^\r\n;]{1,160}; OS=[^\r\n]{1,160}", finding["detail"]):
-            raise ValueError("UA normal application-loop attestation is missing")
+        if finding["workflow"] == UA_LABELS[0]:
+            host = re.fullmatch(r"finishedLaunching=true; appRunning=true; WebKit=([^\r\n;]{1,160}); OS=[^\r\n]{1,160}", finding["detail"])
+            if host is None or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*\+?", host.group(1)):
+                raise ValueError("UA normal application-loop attestation needs a concrete WebKit version")
     if any(not isinstance(label, str) for label in labels) or sorted(labels) != sorted(UA_LABELS):
         raise ValueError("UA stages were missing, duplicated, or unknown")
+    if echo_verified:
+        # All five records are validated before any positive evidence is emitted.
+        # Each detail is already bounded to 8192 UTF-8 bytes; JSON escaping keeps
+        # quotes, control characters and Unicode within one bounded ASCII line.
+        for finding in findings: print(json.dumps(finding, ensure_ascii=True, sort_keys=True), flush=True)
     return report["profileID"]
 
 
@@ -240,7 +246,7 @@ def run_ua_mode(binary, root, downloads):
                                                     bundle_root / (phase + ".log"), interrupted)
             if status == 0 and exited:
                 try:
-                    if phase == "primary": validate_ua_report(data / "extensioncheck-results.json")
+                    if phase == "primary": validate_ua_report(data / "extensioncheck-results.json", echo_verified=True)
                     else: validate_ua_cleanup(output); cleanup_verified = True
                 except ValueError as error:
                     print(f"FAIL UA {phase} attestation: {error}", file=sys.stderr, flush=True)

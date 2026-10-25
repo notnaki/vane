@@ -8,6 +8,7 @@ import XCTest
     private var ownedProfiles: Set<UUID> = []
     private var folder: URL!
     private var previousUserAgent: Any?
+    private var launchAdmitted = false
     // Runtime identity survives host restoration; the accepted script generation does too.
     private var generations: [String: String] = [:]
     #if DEBUG
@@ -79,6 +80,7 @@ import XCTest
     #endif
 
     override func setUp() async throws {
+        launchAdmitted = false
         TestEnvironment.prepare()
         _ = NSApplication.shared
         previousUserAgent = UserDefaults.vane.object(forKey: "userAgent")
@@ -87,6 +89,8 @@ import XCTest
         ownedProfiles.insert(profile)
         folder = Store.directory.appendingPathComponent("user-agent-extension-\(UUID())")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try await NativeFixtureApplication.admitCompletedLaunch()
+        launchAdmitted = true
     }
 
     override func tearDown() async throws {
@@ -99,7 +103,8 @@ import XCTest
             for context in host.installed { host.remove(context) }
             ExtensionHost.forget(profile)
         }
-        removeInstallations()
+        if launchAdmitted { removeInstallations() }
+        launchAdmitted = false
         generations.removeAll()
         #if DEBUG
         backgroundObservations.removeAll()

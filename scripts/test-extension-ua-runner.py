@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Pure runner guards. Never build or launch Vane, AppKit, or WebKit."""
 import copy
+from contextlib import redirect_stdout
 from argparse import Namespace
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -39,6 +41,41 @@ class ReportTests(unittest.TestCase):
             changed = copy.deepcopy(self.report); changed[field] = value
             with self.subTest(field=field, value=str(value)[:30]), self.assertRaises(ValueError):
                 runner.validate_ua_report(self.write(changed))
+
+    def test_verified_echo_is_five_unique_bounded_json_records_with_real_host_metadata(self):
+        self.report["findings"][0]["detail"] = "finishedLaunching=true; appRunning=true; WebKit=22624.5.1+; OS=Version 26.6.2 (Build 25G83)"
+        self.report["findings"][1]["detail"] = 'Quoted "identity" \\ path\nCafé\t' * 100
+        output = io.StringIO()
+        with redirect_stdout(output):
+            profile = runner.validate_ua_report(self.write(), echo_verified=True)
+        self.assertEqual(profile, self.report["profileID"])
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 5)
+        records = [json.loads(line) for line in lines]
+        self.assertEqual(records, self.report["findings"])
+        self.assertEqual(len({r["workflow"] for r in records}), 5)
+        self.assertTrue(all(r["result"] == "VERIFIED" for r in records))
+        self.assertLessEqual(len(output.getvalue().encode()), 5 * (6 * 8192 + 512))
+        silent = io.StringIO()
+        with redirect_stdout(silent): self.assertEqual(runner.validate_ua_report(self.path), profile)
+        self.assertEqual(silent.getvalue(), "")
+
+    def test_invalid_report_never_emits_partial_positive_records(self):
+        for mutation in ["last-failed", "last-duplicate", "host-unavailable"]:
+            report = copy.deepcopy(self.report)
+            if mutation == "last-failed": report["findings"][-1]["result"] = "FAILED"
+            elif mutation == "last-duplicate": report["findings"][-1]["workflow"] = LABELS[0]
+            else: report["findings"][0]["detail"] = "finishedLaunching=true; appRunning=true; WebKit=unavailable; OS=Version 26.6.2"
+            output = io.StringIO()
+            with self.subTest(mutation=mutation), redirect_stdout(output):
+                with self.assertRaises(ValueError): runner.validate_ua_report(self.write(report), echo_verified=True)
+                self.assertEqual(output.getvalue(), "")
+
+    def test_host_version_requires_concrete_numeric_components(self):
+        for version in ["unavailable", "", ".", "123..456", "123.beta", "+", "123+extra"]:
+            report = copy.deepcopy(self.report)
+            report["findings"][0]["detail"] = "finishedLaunching=true; appRunning=true; WebKit=" + version + "; OS=Version 26.6.2"
+            with self.subTest(version=version), self.assertRaises(ValueError): runner.validate_ua_report(self.write(report))
 
     def test_missing_duplicate_unknown_failed_and_unavailable_are_rejected(self):
         for mutation in ["missing", "duplicate", "unknown", "FAILED", "UNAVAILABLE", "launch"]:
