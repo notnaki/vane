@@ -70,7 +70,7 @@ import XCTest
             count += 1
             customUserAgent = web.customUserAgent
             let configuration = web.configuration
-            poolMatchesApplication = configuration.processPool === WebKitStartup.processPool
+            poolMatchesApplication = configuration.processPool === WebKitStartup.extensionProcessPool
             let actualStore = configuration.websiteDataStore
             storeMatchesProfile = actualStore === expectedStore
             expectedNamed = expectedStore.identifier != nil
@@ -151,6 +151,7 @@ import XCTest
         }
         if let observation = backgroundObservations[ObjectIdentifier(context)], observation.context === context {
             XCTAssertGreaterThan(observation.count, 0, "Installing a background must observe its real view")
+            XCTAssertTrue(observation.poolMatchesApplication, "Background must use the application's extension pool")
             XCTAssertTrue(observation.identifiersMatch, "Background must use the selected profile's store identifier")
             XCTAssertEqual(observation.actualPersistent, observation.expectedPersistent,
                            "Background must retain the selected profile's persistence")
@@ -176,7 +177,10 @@ import XCTest
     private func assertIdentity(in web: WKWebView, context: WKWebExtensionContext, expected: String, startup: String? = nil,
                                 scenario: String = "Extension", expectedStore: WKWebsiteDataStore? = nil,
                                 file: StaticString = #filePath, line: UInt = #line) async throws {
-        assertStore(web.configuration.websiteDataStore,
+        let configuration = web.configuration
+        XCTAssertTrue(configuration.processPool === WebKitStartup.extensionProcessPool,
+                      "\(scenario): popup must use the application's extension pool", file: file, line: line)
+        assertStore(configuration.websiteDataStore,
                     matches: expectedStore ?? ExtensionHost.host(for: profile).controller.configuration.defaultWebsiteDataStore,
                     scenario: "\(scenario) popup", file: file, line: line)
         let identity = try await web.evaluateJavaScript("({popup:window.startupUserAgent, background:window.backgroundIdentity.startup, current:window.backgroundIdentity.current})") as? [String: String]
@@ -252,9 +256,15 @@ import XCTest
         let otherSeed = try XCTUnwrap(otherExtensions.configuration.webViewConfiguration)
         let privateSeed = try XCTUnwrap(privateExtensions.configuration.webViewConfiguration)
 
-        for configuration in [otherBrowser, privateBrowser, seed, otherSeed, privateSeed] {
+        XCTAssertTrue(browser.processPool === WebKitStartup.processPool)
+        for configuration in [otherBrowser, privateBrowser] {
             XCTAssertTrue(configuration.processPool === browser.processPool,
-                          "WebKit-owned extension pages must use the application's browser pool")
+                          "Browser pages must retain the application's browser pool")
+        }
+        XCTAssertFalse(WebKitStartup.extensionProcessPool === browser.processPool)
+        for configuration in [seed, otherSeed, privateSeed] {
+            XCTAssertTrue(configuration.processPool === WebKitStartup.extensionProcessPool,
+                          "WebKit-owned extension pages must retain the application's extension pool")
         }
         XCTAssertFalse(extensions === otherExtensions)
         XCTAssertFalse(extensions === privateExtensions)
@@ -287,7 +297,7 @@ import XCTest
         ExtensionHost.forget(otherProfile)
         let replacement = ExtensionHost.host(for: otherProfile).controller
         XCTAssertFalse(replacement === otherExtensions)
-        XCTAssertTrue(replacement.configuration.webViewConfiguration.processPool === browser.processPool)
+        XCTAssertTrue(replacement.configuration.webViewConfiguration.processPool === WebKitStartup.extensionProcessPool)
         XCTAssertTrue(replacement.configuration.defaultWebsiteDataStore === otherBrowser.websiteDataStore)
         assertStore(replacement.configuration.webViewConfiguration.websiteDataStore,
                     matches: otherBrowser.websiteDataStore, scenario: "Recreated other profile seed")
