@@ -308,13 +308,50 @@ import XCTest
             "suspended=\(tab.suspended), recovery=\(tab.needsRecovery), " + native
     }
 
+    #if DEBUG
+    @MainActor private final class NavigationStages {
+        private var events: [Tab.NavigationStageEvent] = []
+        private var dropped = 0
+
+        func append(_ event: Tab.NavigationStageEvent) {
+            guard events.count < 48 else { dropped += 1; return }
+            events.append(event)
+        }
+
+        func snapshot(expected: ObjectIdentifier) -> String {
+            var tokens: [Tab.NavigationStageIdentity: Int] = [.navigation(expected): 1]
+            let records = events.map { event in
+                let token: String
+                if let identity = event.identity {
+                    if tokens[identity] == nil { tokens[identity] = tokens.count + 1 }
+                    token = "object#\(tokens[identity]!)"
+                } else { token = "no-object" }
+                return "\(event.stage)(\(token), \(event.detail))"
+            }
+            return "expected=object#1, events=[\(records.joined(separator: "; "))], dropped=\(dropped)"
+        }
+    }
+    #endif
+
     private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String) async throws {
         let web = tab.web, url = origin.url.appendingPathComponent(path)
         let started = Date.now
+        #if DEBUG
+        let stages = NavigationStages()
+        let previousObserver = tab.navigationStageObserver
+        tab.navigationStageObserver = { [weak stages] event in
+            previousObserver?(event)
+            stages?.append(event)
+        }
+        defer { tab.navigationStageObserver = previousObserver }
+        #endif
         let before = continuationLoadState(tab, web: web, requestedURL: url)
         let navigationID = ObjectIdentifier(web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html))
         let after = continuationLoadState(tab, web: web, requestedURL: url)
         try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
+            #if DEBUG
+            NativeFixtureDiagnostics.emit("continuation callback stages: " + stages.snapshot(expected: navigationID))
+            #endif
             let state = "before={\(before)}; returnedNavigation=\(navigationID); after={\(after)}; " +
                 "timeout={\(continuationLoadState(tab, web: web, requestedURL: url))}"
             NativeFixtureDiagnostics.emit("continuation document \(path) cached state before sampling: " + state)
