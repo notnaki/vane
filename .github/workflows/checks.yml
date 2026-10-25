@@ -72,7 +72,18 @@ jobs:
         run: python3 scripts/test-native-fixture-runner.py
 
       - name: Native regression tests
-        run: python3 scripts/run-native-tests.py
+        env:
+          # Capture the original process/order, even when no ReportCrash file appears.
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          set -o pipefail
+          python3 scripts/run-native-tests.py 2>&1 | tee "$RUNNER_TEMP/vane-swift-tests.log"
+          # Swift's signal handler can return after a software-raised trap. A fatal
+          # signal remains a failed test run even if the process then exits zero.
+          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-swift-tests.log"; then
+            echo '::error::Swift runtime captured a fatal signal during tests.'
+            exit 1
+          fi
 
       - name: CLI password import errors
         run: bash scripts/test-cli-import.sh .build/debug/vane
