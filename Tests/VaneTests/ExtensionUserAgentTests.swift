@@ -35,50 +35,36 @@ import XCTest
             previous?(web, context)
             guard let self else { return }
             let identity = ObjectIdentifier(context)
-            let observation: BackgroundObservation
-            if let existing = self.backgroundObservations[identity], existing.context === context {
-                observation = existing
-            } else {
-                observation = BackgroundObservation()
-            }
-            observation.capture(web, context: context, expectedStore: expectedStore)
-            self.backgroundObservations[identity] = observation
+            self.backgroundObservations[identity] = BackgroundObservation(web, context: context, expectedStore: expectedStore)
         }
     }
 
-    // A snapshot never keeps the background page, its context, or its host alive.
+    // Inspect only the real callback view. The snapshot retains no WebKit object.
     @MainActor private final class BackgroundObservation {
-        weak var web: WKWebView?
         weak var context: WKWebExtensionContext?
-        var count = 0
-        private weak var initialWeb: WKWebView?
-        var matchesInitialWeb = true
-        var customUserAgent: String?
-        var poolMatchesApplication = false
-        var storeMatchesProfile = false
-        var expectedNamed = false
-        var actualNamed = false
-        var identifiersMatch = false
-        var expectedPersistent = false
-        var actualPersistent = false
+        let poolMatchesApplication: Bool
+        let identifiersMatch: Bool
+        let persistenceMatches: Bool
 
-        func capture(_ web: WKWebView, context: WKWebExtensionContext, expectedStore: WKWebsiteDataStore) {
-            if count == 0 { initialWeb = web }
-            matchesInitialWeb = initialWeb === web
-            self.web = web
+        init(_ web: WKWebView, context: WKWebExtensionContext, expectedStore: WKWebsiteDataStore) {
             self.context = context
-            count += 1
-            customUserAgent = web.customUserAgent
             let configuration = web.configuration
             poolMatchesApplication = configuration.processPool === WebKitStartup.extensionProcessPool
             let actualStore = configuration.websiteDataStore
-            storeMatchesProfile = actualStore === expectedStore
-            expectedNamed = expectedStore.identifier != nil
-            actualNamed = actualStore.identifier != nil
             identifiersMatch = actualStore.identifier == expectedStore.identifier
-            expectedPersistent = expectedStore.isPersistent
-            actualPersistent = actualStore.isPersistent
+            persistenceMatches = actualStore.isPersistent == expectedStore.isPersistent
         }
+    }
+
+    private func assertBackgroundOwnership(for context: WKWebExtensionContext,
+                                           file: StaticString = #filePath, line: UInt = #line) {
+        guard let observation = backgroundObservations[ObjectIdentifier(context)], observation.context === context else {
+            XCTFail("Background ownership must be observed for this actual context", file: file, line: line)
+            return
+        }
+        XCTAssertTrue(observation.poolMatchesApplication, "Background must use the application's extension pool", file: file, line: line)
+        XCTAssertTrue(observation.identifiersMatch, "Background must use the selected profile's store identifier", file: file, line: line)
+        XCTAssertTrue(observation.persistenceMatches, "Background must retain the selected profile's persistence", file: file, line: line)
     }
     #endif
 
@@ -144,18 +130,7 @@ import XCTest
         XCTAssertTrue(accepted)
         let context = try XCTUnwrap(host.installed.first)
         #if DEBUG
-        if backgroundObservations[ObjectIdentifier(context)]?.context !== context {
-            let missing = BackgroundObservation()
-            missing.context = context
-            backgroundObservations[ObjectIdentifier(context)] = missing
-        }
-        if let observation = backgroundObservations[ObjectIdentifier(context)], observation.context === context {
-            XCTAssertGreaterThan(observation.count, 0, "Installing a background must observe its real view")
-            XCTAssertTrue(observation.poolMatchesApplication, "Background must use the application's extension pool")
-            XCTAssertTrue(observation.identifiersMatch, "Background must use the selected profile's store identifier")
-            XCTAssertEqual(observation.actualPersistent, observation.expectedPersistent,
-                           "Background must retain the selected profile's persistence")
-        }
+        assertBackgroundOwnership(for: context)
         #endif
         return context
     }
@@ -184,53 +159,13 @@ import XCTest
                     matches: expectedStore ?? ExtensionHost.host(for: profile).controller.configuration.defaultWebsiteDataStore,
                     scenario: "\(scenario) popup", file: file, line: line)
         let identity = try await web.evaluateJavaScript("({popup:window.startupUserAgent, background:window.backgroundIdentity.startup, current:window.backgroundIdentity.current})") as? [String: String]
-        reportCallbackObservation(for: context, scenario: scenario)
+        #if DEBUG
+        assertBackgroundOwnership(for: context, file: file, line: line)
+        #endif
         XCTAssertEqual(identity?["popup"], expected, "\(scenario): Popup startup", file: file, line: line)
         XCTAssertEqual(identity?["background"], startup ?? expected, "\(scenario): Background startup", file: file, line: line)
         XCTAssertEqual(identity?["current"], expected, "\(scenario): Background current", file: file, line: line)
-        if identity?["background"] != (startup ?? expected) || identity?["current"] != expected {
-            await reportBackgroundObservation(for: context, scenario: scenario)
-        }
     }
-
-    private func reportCallbackObservation(for context: WKWebExtensionContext, scenario: String) {
-        #if DEBUG
-        guard let observation = backgroundObservations[ObjectIdentifier(context)], observation.context === context else {
-            print("UA fixture \(scenario): no matching live context observation")
-            return
-        }
-        print("UA fixture \(scenario): callbackCount=\(observation.count), landingLive=\(observation.web != nil), matchesInitialLanding=\(observation.matchesInitialWeb), customUA=\(observation.customUserAgent ?? "<nil>"), applicationPool=\(observation.poolMatchesApplication), profileStore=\(observation.storeMatchesProfile), expectedNamed=\(observation.expectedNamed), actualNamed=\(observation.actualNamed), identifiersMatch=\(observation.identifiersMatch), expectedPersistent=\(observation.expectedPersistent), actualPersistent=\(observation.actualPersistent)")
-        #endif
-    }
-
-    private func reportBackgroundObservation(for context: WKWebExtensionContext, scenario: String) async {
-        #if DEBUG
-        guard let observation = backgroundObservations[ObjectIdentifier(context)], observation.context === context else { return }
-        guard let landing = observation.web else {
-            print("UA fixture \(scenario): existing landing view released")
-            return
-        }
-        // Observe the existing landing document only after the worker has replied.
-        // Never fetch a context/popup getter or create/load another page for diagnostics.
-        var result: [String: String]?
-        do {
-            try await ExtensionBackgroundStartup.wait(timeout: .seconds(2), start: { completion in
-                landing.callAsyncJavaScript("return {ua:navigator.userAgent, href:location.href}", arguments: [:], in: nil, in: .page) { reply in
-                    do { result = try reply.get() as? [String: String]; completion(nil) }
-                    catch { completion(error) }
-                }
-            }, check: {})
-            let href = result?["href"].flatMap(URL.init(string:))
-            // This is a synthetic extension. Print its own URL only, never another page.
-            let fixtureURL = href?.scheme == context.baseURL.scheme && href?.host == context.baseURL.host
-                ? href?.absoluteString ?? "<nil>" : "<outside fixture>"
-            print("UA fixture \(scenario): landingUA=\(result?["ua"] ?? "<nil>"), landingURL=\(fixtureURL), latestLandingAtRead=\(observation.web === landing), callbackCountAfterRead=\(observation.count)")
-        } catch {
-            print("UA fixture \(scenario): landing observation unavailable (\(type(of: error)))")
-        }
-        #endif
-    }
-
 
     private func assertStore(_ actual: WKWebsiteDataStore, matches expected: WKWebsiteDataStore,
                              scenario: String, file: StaticString = #filePath, line: UInt = #line) {

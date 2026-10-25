@@ -88,7 +88,7 @@ import WebKit
     private let userAgent = ExtensionUserAgent()
 
     #if DEBUG
-    // Test-owned diagnostics observe only an already-created background page.
+    // DEBUG assertions inspect only an already-created background page.
     var backgroundCreationObserver: ((WKWebView, WKWebExtensionContext) -> Void)?
     #endif
 
