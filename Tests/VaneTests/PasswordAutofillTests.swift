@@ -356,7 +356,13 @@ import XCTest
             let state = "before={\(before)}; returnedNavigation=\(navigationID); after={\(after)}; " +
                 "timeout={\(continuationLoadState(tab, web: web, requestedURL: url))}"
             NativeFixtureDiagnostics.emit("continuation document \(path) cached state before sampling: " + state)
-            return state + "; " + (await NativeFixtureDiagnostics.failureReport(for: web))
+            let report = await NativeFixtureDiagnostics.failureReport(for: web)
+            let afterDiagnostics = continuationLoadState(tab, web: web, requestedURL: url)
+            NativeFixtureDiagnostics.emit("continuation document \(path) cached state after diagnostics: " + afterDiagnostics)
+            #if DEBUG
+            NativeFixtureDiagnostics.emit("continuation callback stages after diagnostics: " + stages.snapshot(expected: navigationID))
+            #endif
+            return state + "; " + report + "; afterDiagnostics={\(afterDiagnostics)}"
         }) {
             return !web.isLoading
         }

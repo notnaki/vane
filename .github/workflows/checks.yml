@@ -155,6 +155,30 @@ jobs:
           done
           echo 'All eight reproduction trials passed; no intermittent failure was captured.'
 
+      # An independent password cohort still runs when the combined cohort stops
+      # on a worker failure, so the two investigations cannot block one another.
+      - name: Bounded continuation-only reproduction
+        if: ${{ always() && !cancelled() && (steps.native_tests.outcome == 'success' || steps.native_tests.outcome == 'failure') }}
+        timeout-minutes: 6
+        env:
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          for trial in {1..8}; do
+            echo "Continuation-only reproduction trial $trial/8"
+            trial_log="$RUNNER_TEMP/vane-continuation-trial-$trial.log"
+            set +e
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests\.PasswordAutofillTests/(testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep|testReplacementUsernameFormCannotReuseExplicitSelection)$' 2>&1 | tee "$trial_log"
+            statuses=("${PIPESTATUS[@]}")
+            set -e
+            if (( statuses[0] != 0 || statuses[1] != 0 )); then exit 1; fi
+            if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$trial_log"; then exit 1; fi
+            for test_case in testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep testReplacementUsernameFormCannotReuseExplicitSelection; do
+              grep -Fq "Test Case '-[VaneTests.PasswordAutofillTests $test_case]' passed" "$trial_log" || { echo '::error::An original continuation case did not pass.'; exit 1; }
+            done
+            grep -Fq 'Native suite primary status=0; cleanup status=0' "$trial_log" || { echo '::error::Continuation retirement was not verified.'; exit 1; }
+          done
+          echo 'All eight continuation trials passed; no intermittent failure was captured.'
+
       - name: CLI password import errors
         run: bash scripts/test-cli-import.sh .build/debug/vane
 
