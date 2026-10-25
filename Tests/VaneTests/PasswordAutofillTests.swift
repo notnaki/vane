@@ -351,6 +351,7 @@ import XCTest
         try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
             #if DEBUG
             NativeFixtureDiagnostics.emit("continuation callback stages: " + stages.snapshot(expected: navigationID))
+            NativeFixtureDiagnostics.emit("continuation observer ownership: delegateIsTab=\(web.navigationDelegate === tab), currentView=\(tab.existingWeb === web), observerInstalled=\(tab.navigationStageObserver != nil)")
             #endif
             let state = "before={\(before)}; returnedNavigation=\(navigationID); after={\(after)}; " +
                 "timeout={\(continuationLoadState(tab, web: web, requestedURL: url))}"
