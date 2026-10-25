@@ -72,6 +72,7 @@ jobs:
         run: python3 scripts/test-native-fixture-runner.py
 
       - name: Native regression tests
+        id: native_tests
         env:
           # Capture the original process/order, even when no ReportCrash file appears.
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
@@ -84,6 +85,41 @@ jobs:
             echo '::error::Swift runtime captured a fatal signal during tests.'
             exit 1
           fi
+
+      # Diagnostic-only follow-up: the unchanged full suite runs first. A failed
+      # primary step stays failed; each fresh host also verifies its real case,
+      # fatal-signal guard and post-exit retirement rather than accepting zero tests.
+      - name: Fresh worker UA public-callback control
+        if: ${{ always() && !cancelled() && (steps.native_tests.outcome == 'success' || steps.native_tests.outcome == 'failure') }}
+        timeout-minutes: 4
+        env:
+          VANE_WEBKIT_UA_POLICY_PROBE_ARM: control
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          set +e
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests.WebKitExtensionUserAgentPolicyProbeTests/testFullUserAgentPolicyAgainstPublicBackgroundCallbackControl$' 2>&1 | tee "$RUNNER_TEMP/vane-ua-policy-control.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if (( statuses[0] != 0 || statuses[1] != 0 )); then exit 1; fi
+          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-ua-policy-control.log"; then exit 1; fi
+          grep -Fq "Test Case '-[VaneTests.WebKitExtensionUserAgentPolicyProbeTests testFullUserAgentPolicyAgainstPublicBackgroundCallbackControl]' passed" "$RUNNER_TEMP/vane-ua-policy-control.log" || { echo '::error::Expected worker control case did not pass.'; exit 1; }
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-ua-policy-control.log" || { echo '::error::Worker control cleanup was not verified.'; exit 1; }
+
+      - name: Fresh worker UA full-page-policy comparison
+        if: ${{ always() && !cancelled() && (steps.native_tests.outcome == 'success' || steps.native_tests.outcome == 'failure') }}
+        timeout-minutes: 4
+        env:
+          VANE_WEBKIT_UA_POLICY_PROBE_ARM: policy
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          set +e
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests.WebKitExtensionUserAgentPolicyProbeTests/testFullUserAgentPolicyAgainstPublicBackgroundCallbackControl$' 2>&1 | tee "$RUNNER_TEMP/vane-ua-policy-policy.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if (( statuses[0] != 0 || statuses[1] != 0 )); then exit 1; fi
+          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-ua-policy-policy.log"; then exit 1; fi
+          grep -Fq "Test Case '-[VaneTests.WebKitExtensionUserAgentPolicyProbeTests testFullUserAgentPolicyAgainstPublicBackgroundCallbackControl]' passed" "$RUNNER_TEMP/vane-ua-policy-policy.log" || { echo '::error::Expected worker policy case did not pass.'; exit 1; }
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-ua-policy-policy.log" || { echo '::error::Worker policy cleanup was not verified.'; exit 1; }
 
       - name: CLI password import errors
         run: bash scripts/test-cli-import.sh .build/debug/vane
