@@ -8,6 +8,29 @@ import XCTest
     private var ownedProfiles: Set<UUID> = []
     private var folder: URL!
     private var previousUserAgent: Any?
+    #if DEBUG
+    private var backgroundObservations: [ObjectIdentifier: BackgroundObservation] = [:]
+
+    // A snapshot never keeps the background page, its context, or its host alive.
+    @MainActor private final class BackgroundObservation {
+        weak var web: WKWebView?
+        weak var context: WKWebExtensionContext?
+        var count = 0
+        var customUserAgent: String?
+        var poolMatchesApplication = false
+        var storeMatchesProfile = false
+
+        func capture(_ web: WKWebView, context: WKWebExtensionContext, storeID: ObjectIdentifier) {
+            self.web = web
+            self.context = context
+            count += 1
+            customUserAgent = web.customUserAgent
+            let configuration = web.configuration
+            poolMatchesApplication = configuration.processPool === WebKitStartup.processPool
+            storeMatchesProfile = ObjectIdentifier(configuration.websiteDataStore) == storeID
+        }
+    }
+    #endif
 
     override func setUp() async throws {
         TestEnvironment.prepare()
@@ -27,6 +50,9 @@ import XCTest
             ExtensionHost.forget(profile)
         }
         removeInstallations()
+        #if DEBUG
+        backgroundObservations.removeAll()
+        #endif
         UserDefaults.vane.set(previousUserAgent, forKey: "userAgent")
         Settings.apply()
         try? FileManager.default.removeItem(at: folder)
@@ -36,6 +62,9 @@ import XCTest
     }
 
     private func install(version: Int) async throws -> WKWebExtensionContext {
+        #if DEBUG
+        backgroundObservations.removeAll()
+        #endif
         var manifest: [String: Any] = ["manifest_version": version, "name": "User Agent Fixture",
             "version": "1.0", "permissions": ["storage"]]
         manifest[version == 2 ? "browser_action" : "action"] = ["default_popup": "popup.html"]
@@ -54,9 +83,30 @@ import XCTest
             browser.runtime.sendMessage('identity').then(reply => { window.backgroundIdentity = reply; });
             """.utf8).write(to: folder.appendingPathComponent("popup.js"))
         let host = ExtensionHost.host(for: profile)
+        #if DEBUG
+        let storeID = ObjectIdentifier(host.controller.configuration.defaultWebsiteDataStore)
+        let previousObserver = host.backgroundCreationObserver
+        host.backgroundCreationObserver = { [weak self] web, context in
+            previousObserver?(web, context)
+            guard let self else { return }
+            let identity = ObjectIdentifier(context)
+            let observation = self.backgroundObservations[identity] ?? BackgroundObservation()
+            observation.capture(web, context: context, storeID: storeID)
+            self.backgroundObservations[identity] = observation
+        }
+        defer { host.backgroundCreationObserver = previousObserver }
+        #endif
         let accepted = try await host.load(folder, installing: true) { _ in true }
         XCTAssertTrue(accepted)
-        return try XCTUnwrap(host.installed.first)
+        let context = try XCTUnwrap(host.installed.first)
+        #if DEBUG
+        if backgroundObservations[ObjectIdentifier(context)]?.context !== context {
+            let missing = BackgroundObservation()
+            missing.context = context
+            backgroundObservations[ObjectIdentifier(context)] = missing
+        }
+        #endif
+        return context
     }
 
     private func popup(_ context: WKWebExtensionContext) async throws -> (WKWebExtension.Action, WKWebView) {
@@ -73,12 +123,47 @@ import XCTest
         throw NSError(domain: "ExtensionUserAgentTests.PopupTimeout", code: 1)
     }
 
-    private func assertIdentity(in web: WKWebView, expected: String, startup: String? = nil,
+    private func assertIdentity(in web: WKWebView, context: WKWebExtensionContext, expected: String, startup: String? = nil,
                                 scenario: String = "Extension", file: StaticString = #filePath, line: UInt = #line) async throws {
         let identity = try await web.evaluateJavaScript("({popup:window.startupUserAgent, background:window.backgroundIdentity.startup, current:window.backgroundIdentity.current})") as? [String: String]
         XCTAssertEqual(identity?["popup"], expected, "\(scenario): Popup startup", file: file, line: line)
         XCTAssertEqual(identity?["background"], startup ?? expected, "\(scenario): Background startup", file: file, line: line)
         XCTAssertEqual(identity?["current"], expected, "\(scenario): Background current", file: file, line: line)
+        if identity?["background"] != (startup ?? expected) || identity?["current"] != expected {
+            await reportBackgroundObservation(for: context, scenario: scenario)
+        }
+    }
+
+    private func reportBackgroundObservation(for context: WKWebExtensionContext, scenario: String) async {
+        #if DEBUG
+        guard let observation = backgroundObservations[ObjectIdentifier(context)], observation.context === context else {
+            print("UA fixture \(scenario): no matching live context observation")
+            return
+        }
+        print("UA fixture \(scenario): callbackCount=\(observation.count), customUA=\(observation.customUserAgent ?? "<nil>"), applicationPool=\(observation.poolMatchesApplication), profileStore=\(observation.storeMatchesProfile)")
+        guard let landing = observation.web else {
+            print("UA fixture \(scenario): existing landing view released")
+            return
+        }
+        // Observe the existing landing document only after the worker has replied.
+        // Never fetch a context/popup getter or create/load another page for diagnostics.
+        var result: [String: String]?
+        do {
+            try await ExtensionBackgroundStartup.wait(timeout: .seconds(2), start: { completion in
+                landing.callAsyncJavaScript("return {ua:navigator.userAgent, href:location.href}", arguments: [:], in: nil, in: .page) { reply in
+                    do { result = try reply.get() as? [String: String]; completion(nil) }
+                    catch { completion(error) }
+                }
+            }, check: {})
+            let href = result?["href"].flatMap(URL.init(string:))
+            // This is a synthetic extension. Print its own URL only, never another page.
+            let fixtureURL = href?.scheme == context.baseURL.scheme && href?.host == context.baseURL.host
+                ? href?.absoluteString ?? "<nil>" : "<outside fixture>"
+            print("UA fixture \(scenario): landingUA=\(result?["ua"] ?? "<nil>"), landingURL=\(fixtureURL)")
+        } catch {
+            print("UA fixture \(scenario): landing observation unavailable (\(type(of: error)))")
+        }
+        #endif
     }
 
 
@@ -166,7 +251,7 @@ import XCTest
         for version in [2, 3] {
             let context = try await install(version: version)
             let (action, web) = try await popup(context)
-            try await assertIdentity(in: web, expected: safariUA, scenario: "Manifest v\(version)")
+            try await assertIdentity(in: web, context: context, expected: safariUA, scenario: "Manifest v\(version)")
             let ua = try await web.evaluateJavaScript("navigator.userAgent") as? String
             XCTAssertEqual(ua?.components(separatedBy: " Safari/").count, 2, "Safari must appear once")
             XCTAssertEqual(ua?.components(separatedBy: " Version/").count, 2, "Version must appear once")
@@ -184,7 +269,7 @@ import XCTest
             Settings.userAgent = identity
             let context = try await install(version: 3)
             let (action, web) = try await popup(context)
-            try await assertIdentity(in: web, expected: identity, scenario: stage)
+            try await assertIdentity(in: web, context: context, expected: identity, scenario: stage)
             XCTAssertTrue(host.controller === controller, "Changing UA must retain the profile's controller")
             action.closePopup()
             host.remove(context)
@@ -207,7 +292,7 @@ import XCTest
         host.run(context, for: nil, from: anchor)
         let (action, web) = try await popup(context)
         try await waitForPresentation(action)
-        try await assertIdentity(in: web, expected: safariUA)
+        try await assertIdentity(in: web, context: context, expected: safariUA)
         let controller = host.controller
         let granted = context.grantedPermissions
         let sites = context.grantedPermissionMatchPatterns
@@ -222,7 +307,7 @@ import XCTest
         try await closePresentedPopup(action)
         let (recreatedAction, recreated) = try await popup(context)
         XCTAssertFalse(recreated === web, "Recreation must inspect a fresh popup, not cached startup values")
-        try await assertIdentity(in: recreated, expected: custom, startup: safariUA)
+        try await assertIdentity(in: recreated, context: context, expected: custom, startup: safariUA)
         XCTAssertTrue(ExtensionHost.host(for: profile).controller === controller)
         XCTAssertTrue(context.isLoaded)
         XCTAssertEqual(context.grantedPermissions, granted)
@@ -254,7 +339,7 @@ import XCTest
         let context = try await install(version: 2)
         let identity = context.uniqueIdentifier
         let (action, web) = try await popup(context)
-        try await assertIdentity(in: web, expected: custom)
+        try await assertIdentity(in: web, context: context, expected: custom)
         action.closePopup()
         ExtensionHost.forget(profile)
         let restoredHost = ExtensionHost.host(for: profile)
@@ -265,7 +350,7 @@ import XCTest
         let restored = try XCTUnwrap(restoredHost.installed.first)
         XCTAssertEqual(restored.uniqueIdentifier, identity)
         let (restoredAction, restoredWeb) = try await popup(restored)
-        try await assertIdentity(in: restoredWeb, expected: custom)
+        try await assertIdentity(in: restoredWeb, context: restored, expected: custom)
         restoredAction.closePopup()
     }
 }

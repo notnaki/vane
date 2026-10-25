@@ -87,6 +87,11 @@ import WebKit
     let controller: WKWebExtensionController
     private let userAgent = ExtensionUserAgent()
 
+    #if DEBUG
+    // Test-owned diagnostics observe only an already-created background page.
+    var backgroundCreationObserver: ((WKWebView, WKWebExtensionContext) -> Void)?
+    #endif
+
     static func applyUserAgent() {
         for host in hosts.values { host.userAgent.apply() }
     }
@@ -1584,6 +1589,9 @@ import WebKit
                              for context: WKWebExtensionContext) {
         guard controller === self.controller else { return }
         userAgent.track(web)
+        #if DEBUG
+        backgroundCreationObserver?(web, context)
+        #endif
     }
 
     // MARK: Helpers
