@@ -6,10 +6,15 @@ import WebKit
 /// Opt-in checks against unmodified upstream packages in an isolated signed app.
 /// Run: VANE_DATA_DIR=~/Downloads/<isolated-folder> Vane.app/Contents/MacOS/vane extensioncheck
 /// The fixture folders and accepted installation records are retained for restart checks.
+/// DEBUG builds also accept --user-agent-only for a fresh synthetic application-loop comparison.
 @MainActor enum ExtensionAppChecks {
     private static var runner: Runner?
 
     static func run() -> Never {
+        let userAgentOnly = CommandLine.arguments.contains("--user-agent-only")
+        #if !DEBUG
+        if userAgentOnly { refuse("The user-agent-only diagnostic requires a DEBUG build.") }
+        #endif
         let manager = FileManager.default
         guard let override = Store.overrideDirectory,
               let downloads = manager.urls(for: .downloadsDirectory, in: .userDomainMask).first else {
@@ -23,17 +28,22 @@ import WebKit
               Bundle.main.bundleURL.pathExtension == "app", sandboxedSignature() else {
             refuse("Requires a signed sandboxed .app and an existing isolated VANE_DATA_DIR under Downloads.")
         }
-        for name in ["darkreader-mv3", "ubolite-safari", "bitwarden-firefox"] {
-            let fixture = directory.appendingPathComponent("fixtures/" + name)
-            guard fixture.resolvingSymlinksInPath().path.hasPrefix(directory.path + "/"),
-                  manager.fileExists(atPath: fixture.appendingPathComponent("manifest.json").path) else {
-                refuse("Missing local fixture fixtures/" + name + "/manifest.json.")
+        if !userAgentOnly {
+            for name in ["darkreader-mv3", "ubolite-safari", "bitwarden-firefox"] {
+                let fixture = directory.appendingPathComponent("fixtures/" + name)
+                guard fixture.resolvingSymlinksInPath().path.hasPrefix(directory.path + "/"),
+                      manager.fileExists(atPath: fixture.appendingPathComponent("manifest.json").path) else {
+                    refuse("Missing local fixture fixtures/" + name + "/manifest.json.")
+                }
             }
         }
         // A Downloads location alone does not prove this is a disposable profile.
         // Mint a marker only before Vane has written any library or preferences here;
         // reruns require that marker to identify this exact canonical directory.
         let marker = directory.appendingPathComponent("extensioncheck-fixture.json")
+        if userAgentOnly, manager.fileExists(atPath: marker.path) {
+            refuse("The user-agent-only comparison requires a fresh isolated directory.")
+        }
         if manager.fileExists(atPath: marker.path) {
             guard (try? marker.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == false,
                   let data = try? Data(contentsOf: marker),
@@ -52,7 +62,7 @@ import WebKit
                 try JSONEncoder().encode(identity).write(to: marker, options: .withoutOverwriting)
             } catch { refuse("Could not mint the isolated fixture-directory marker.") }
         }
-        let check = Runner(directory: directory)
+        let check = Runner(directory: directory, userAgentOnly: userAgentOnly)
         runner = check
         DispatchQueue.main.asyncAfter(deadline: .now() + 240) {
             check.record("overall deadline", .failed, "Exceeded 240 seconds; a platform callback did not finish.")
@@ -91,14 +101,61 @@ import WebKit
 
     @MainActor private final class Runner {
         let directory: URL
+        let userAgentOnly: Bool
         var profileID: UUID?
         var store: TabStore?
         var server: Server?
         var findings: [Finding] = []
         var permissionTimer: Timer?
         var popupAnchors: [NSView] = []
+        private var userAgentActions: [WKWebExtension.Action] = []
+        private var userAgentViews: [WKWebView] = []
+        private var userAgentPaths: Set<String> = []
+        private var userAgentLaunchVerified = false
+        private var userAgentStagesVerified = 0
+        #if DEBUG
+        private weak var userAgentHost: ExtensionHost?
+        private var previousBackgroundObserver: ((WKWebView, WKWebExtensionContext) -> Void)?
+        private var hasBackgroundObserverSnapshot = false
+        private var previousUserAgent: Any?
+        private var hasUserAgentSnapshot = false
+        private var backgrounds: [ObjectIdentifier: UserAgentBackground] = [:]
 
-        init(directory: URL) { self.directory = directory }
+        // All native objects in the callback observation are weak. No retired
+        // context/view/host survives solely because this diagnostic observed it.
+        @MainActor private final class UserAgentBackground {
+            weak var context: WKWebExtensionContext?
+            weak var web: WKWebView?
+            let selected: String
+            let applied: String?
+            let finishedLaunching: Bool
+            let running: Bool
+            let poolMatches: Bool
+            let storeMatches: Bool
+
+            init(_ web: WKWebView, context: WKWebExtensionContext, storeID: UUID?, persistent: Bool) {
+                self.context = context
+                self.web = web
+                selected = Settings.userAgent
+                applied = web.customUserAgent
+                finishedLaunching = NSRunningApplication.current.isFinishedLaunching
+                running = NSApp.isRunning
+                let configuration = web.configuration
+                poolMatches = configuration.processPool === WebKitStartup.extensionProcessPool
+                storeMatches = configuration.websiteDataStore.identifier == storeID
+                    && configuration.websiteDataStore.isPersistent == persistent
+            }
+        }
+
+        @MainActor private final class UserAgentEvaluation {
+            var result: Swift.Result<Any?, Error>?
+        }
+        #endif
+
+        init(directory: URL, userAgentOnly: Bool) {
+            self.directory = directory
+            self.userAgentOnly = userAgentOnly
+        }
 
         func record(_ workflow: String, _ result: Result, _ detail: String) {
             findings.append(Finding(workflow: workflow, result: result, detail: detail))
@@ -107,6 +164,15 @@ import WebKit
         }
 
         func run() async {
+            if userAgentOnly {
+                #if DEBUG
+                do { try await userAgentIdentity() }
+                catch { record("UA normal-loop comparison", .failed, error.localizedDescription) }
+                #else
+                record("UA normal-loop comparison", .failed, "DEBUG background observation is unavailable.")
+                #endif
+                finish()
+            }
             do {
                 HTTPSOnly.enabled = false
                 let profile = ProfileManager.shared.active
@@ -149,6 +215,176 @@ import WebKit
             }
             finish()
         }
+
+        #if DEBUG
+        private func userAgentIdentity() async throws {
+            // NSApp.run, rather than an explicit finishLaunching call or event
+            // drain, must supply the completed application lifecycle here.
+            try await wait("UA application launch") {
+                NSRunningApplication.current.isFinishedLaunching && NSApp.isRunning
+            }
+            userAgentLaunchVerified = true
+            func bounded(_ value: String) -> String {
+                String(value.components(separatedBy: .controlCharacters).joined().prefix(160))
+            }
+            let version = Bundle(for: WKWebView.self).object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unavailable"
+            record("UA normal-loop host", .verified,
+                   "finishedLaunching=true; appRunning=true; WebKit=\(bounded(version)); OS=\(bounded(ProcessInfo.processInfo.operatingSystemVersionString))")
+
+            let profile = ProfileManager.shared.active
+            profileID = profile.id
+            previousUserAgent = UserDefaults.vane.object(forKey: "userAgent")
+            hasUserAgentSnapshot = true
+            let host = ExtensionHost.host(for: profile.id)
+            userAgentHost = host
+            let dataStore = ProfileManager.dataStore(for: profile.id)
+            guard let storeID = dataStore.identifier, dataStore.isPersistent,
+                  host.controller.configuration.defaultWebsiteDataStore.identifier == storeID,
+                  host.controller.configuration.defaultWebsiteDataStore.isPersistent,
+                  host.installed.isEmpty, !host.isBusy else {
+                throw Failure("UA comparison requires an empty isolated persistent profile.")
+            }
+            let previous = host.backgroundCreationObserver
+            previousBackgroundObserver = previous
+            hasBackgroundObserverSnapshot = true
+            host.backgroundCreationObserver = { [weak self] web, context in
+                previous?(web, context)
+                self?.backgrounds[ObjectIdentifier(context)] = UserAgentBackground(web, context: context, storeID: storeID, persistent: true)
+            }
+            defer { cleanupUserAgentIdentity() }
+
+            let stages = [(2, safariUA, "safari-mv2"), (3, safariUA, "safari-mv3"),
+                          (3, "Vane Prior Worker Identity/1.0 (no Safari token)", "custom-mv3"),
+                          (3, safariUA, "safari-after-custom-mv3")]
+            for (manifestVersion, selected, stage) in stages {
+                Settings.userAgent = selected
+                backgrounds.removeAll()
+                let generation = UUID().uuidString
+                let folder = directory.appendingPathComponent("fixtures/ua-" + generation, isDirectory: true)
+                guard folder.resolvingSymlinksInPath().path.hasPrefix(directory.path + "/"),
+                      !FileManager.default.fileExists(atPath: folder.path) else {
+                    throw Failure("UA generated fixture must remain inside its fresh isolated directory.")
+                }
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                var manifest: [String: Any] = ["manifest_version": manifestVersion, "name": "Vane App Loop UA Fixture",
+                    "description": "Synthetic application-loop worker identity comparison", "version": "1.0", "permissions": ["storage"]]
+                manifest[manifestVersion == 2 ? "browser_action" : "action"] = ["default_popup": "popup.html"]
+                manifest["background"] = manifestVersion == 2
+                    ? ["scripts": ["background.js"], "persistent": true] as [String: Any]
+                    : ["service_worker": "background.js"]
+                try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
+                try Data("""
+                    const startup = navigator.userAgent;
+                    const generation = '\(generation)';
+                    browser.runtime.onMessage.addListener(async () => ({startup, current:navigator.userAgent,
+                        generation, runtime:browser.runtime.id, host:location.host, scheme:location.protocol,
+                        version:String(browser.runtime.getManifest().manifest_version)}));
+                    """.utf8).write(to: folder.appendingPathComponent("background.js"))
+                try Data("<script src='popup.js'></script>".utf8).write(to: folder.appendingPathComponent("popup.html"))
+                try Data("""
+                    window.popupStartup = navigator.userAgent;
+                    window.popupGeneration = '\(generation)';
+                    browser.runtime.sendMessage('identity').then(worker => { window.identityResult = worker; });
+                    """.utf8).write(to: folder.appendingPathComponent("popup.js"))
+                let path = folder.resolvingSymlinksInPath().path
+                userAgentPaths.insert(path)
+                let accepted = try await host.load(folder, installing: true) { _ in true }
+                guard accepted, let context = host.loaded.first(where: { $0.path == path })?.context, context.isLoaded else {
+                    throw Failure("UA \(stage): synthetic installation was not accepted.")
+                }
+                guard let action = context.action(for: nil) else { throw Failure("UA \(stage): no popup action.") }
+                userAgentActions.append(action)
+                guard let web = action.popupWebView else { throw Failure("UA \(stage): no actual popup view.") }
+                userAgentViews.append(web)
+                let identity = try await userAgentReply(in: web)
+                guard let background = backgrounds[ObjectIdentifier(context)], background.context === context,
+                      background.web != nil, background.finishedLaunching, background.running,
+                      background.poolMatches, background.storeMatches,
+                      background.selected == selected, background.applied == selected else {
+                    throw Failure("UA \(stage): actual background launch, selected/applied UA, pool or profile store did not match.")
+                }
+                let configuration = web.configuration
+                guard configuration.processPool === WebKitStartup.extensionProcessPool,
+                      configuration.websiteDataStore.identifier == storeID, configuration.websiteDataStore.isPersistent else {
+                    throw Failure("UA \(stage): actual popup pool or persistent profile store did not match.")
+                }
+                let expected = ["popupGeneration": generation, "generation": generation,
+                    "popupRuntime": context.uniqueIdentifier, "runtime": context.uniqueIdentifier,
+                    "popupHost": context.baseURL.host ?? "", "host": context.baseURL.host ?? "",
+                    "scheme": "webkit-extension:", "version": String(manifestVersion)]
+                for (key, value) in expected where identity[key] != value {
+                    throw Failure("UA \(stage): current-context \(key) did not match.")
+                }
+                for key in ["popupStartup", "popupCurrent", "startup", "current"] where identity[key] != selected {
+                    throw Failure("UA \(stage): \(key) expected \(selected); observed \(bounded(identity[key] ?? "missing")).")
+                }
+                userAgentStagesVerified += 1
+                record("UA normal-loop \(stage)", .verified,
+                       "startup/current UA, nonce/runtime/origin/version, callback identity/launch and popup/background pool/store verified.")
+                try closeUserAgentStage()
+            }
+        }
+
+        private func userAgentReply(in web: WKWebView) async throws -> [String: String] {
+            let deadline = ContinuousClock.now + .seconds(10)
+            while ContinuousClock.now < deadline {
+                if !web.isLoading {
+                    let reply = UserAgentEvaluation()
+                    web.evaluateJavaScript("""
+                        window.identityResult ? ({popupStartup:window.popupStartup, popupCurrent:navigator.userAgent,
+                            popupGeneration:window.popupGeneration, popupRuntime:browser.runtime.id, popupHost:location.host,
+                            ...window.identityResult}) : null
+                        """) { value, error in
+                        if let error { reply.result = .failure(error) }
+                        else { reply.result = .success(value) }
+                    }
+                    while reply.result == nil && ContinuousClock.now < deadline {
+                        try await Task.sleep(for: .milliseconds(20))
+                    }
+                    guard let result = reply.result else { throw Failure("UA existing-popup JavaScript exceeded ten seconds.") }
+                    if let identity = try result.get() as? [String: String] { return identity }
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            throw Failure("UA actual popup/background identity did not arrive within ten seconds.")
+        }
+
+        private func closeUserAgentStage() throws {
+            userAgentActions.forEach { $0.closePopup() }
+            userAgentActions.removeAll()
+            userAgentViews.forEach { $0.stopLoading() }
+            userAgentViews.removeAll()
+            guard userAgentPaths.isEmpty || userAgentHost != nil else {
+                throw Failure("UA owned installation host disappeared before removal.")
+            }
+            if let host = userAgentHost {
+                for path in userAgentPaths.sorted() {
+                    try host.remove(folder: path)
+                    guard !host.loaded.contains(where: { $0.path == path }) else {
+                        throw Failure("UA owned installation remains active after removal.")
+                    }
+                    userAgentPaths.remove(path)
+                }
+            }
+            backgrounds.removeAll()
+        }
+
+        private func cleanupUserAgentIdentity() {
+            do { try closeUserAgentStage() }
+            catch { record("UA owned context cleanup", .failed, error.localizedDescription) }
+            if hasBackgroundObserverSnapshot {
+                userAgentHost?.backgroundCreationObserver = previousBackgroundObserver
+                previousBackgroundObserver = nil
+                hasBackgroundObserverSnapshot = false
+            }
+            if hasUserAgentSnapshot {
+                UserDefaults.vane.set(previousUserAgent, forKey: "userAgent")
+                Settings.apply()
+                hasUserAgentSnapshot = false
+                previousUserAgent = nil
+            }
+        }
+        #endif
 
         private func install(_ fixture: String) async throws -> WKWebExtensionContext {
             guard let profileID else { throw Failure("No isolated profile.") }
@@ -387,6 +623,14 @@ import WebKit
         }
 
         func finish() -> Never {
+            if userAgentOnly {
+                #if DEBUG
+                cleanupUserAgentIdentity()
+                #endif
+                if !userAgentLaunchVerified || userAgentStagesVerified != 4 || findings.contains(where: { $0.result == .unavailable }) {
+                    record("UA required-stage coverage", .failed, "Completed launch and all four verified identity stages are required.")
+                }
+            }
             permissionTimer?.invalidate()
             if let profileID {
                 ExtensionManagement.close(for: profileID)
@@ -403,7 +647,8 @@ import WebKit
                         .write(to: directory.appendingPathComponent("extensioncheck-results.json"), options: .atomic)
                 } catch { print("FAILED extensioncheck: could not save fixture report: " + error.localizedDescription); exit(1) }
             }
-            print("extensioncheck summary: verified=\(findings.filter { $0.result == .verified }.count), unavailable=\(findings.filter { $0.result == .unavailable }.count), failed=\(failed); accepted installs retained for restart")
+            let lifecycle = userAgentOnly ? "synthetic installs removed; isolated stores require post-exit cleanup" : "accepted installs retained for restart"
+            print("extensioncheck summary: verified=\(findings.filter { $0.result == .verified }.count), unavailable=\(findings.filter { $0.result == .unavailable }.count), failed=\(failed); \(lifecycle)")
             fflush(stdout)
             exit(failed == 0 ? 0 : 1)
         }

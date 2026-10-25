@@ -112,6 +112,23 @@ import XCTest
         try await NativeFixtureProfileCleanup.release(released)
     }
 
+    func testExtensionFixtureCompletesAppKitLaunchAcrossIdle() async throws {
+        func assertLaunched(file: StaticString = #filePath, line: UInt = #line) {
+            let app = NSApplication.shared
+            let running = NSRunningApplication.current
+            // Background extensions do not require activation or a visible window.
+            // Report those states only to distinguish launch from presentation.
+            XCTAssertTrue(running.isFinishedLaunching,
+                          "The extension fixture must complete AppKit launch before creating controllers; " +
+                          "appActive=\(app.isActive), runningActive=\(running.isActive), appRunning=\(app.isRunning), " +
+                          "visibleWindow=\(app.windows.contains { $0.isVisible }), keyWindow=\(app.keyWindow != nil)",
+                          file: file, line: line)
+        }
+        assertLaunched()
+        try await Task.sleep(for: .milliseconds(100))
+        assertLaunched()
+    }
+
     private func install(version: Int, in targetProfile: UUID? = nil) async throws -> WKWebExtensionContext {
         let generation = UUID().uuidString
         #if DEBUG

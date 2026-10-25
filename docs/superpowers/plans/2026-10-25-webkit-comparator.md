@@ -42,10 +42,20 @@
 - [x] In comparator mode, require the loaded framework's canonical path and public version to match the archive.
 - [x] Require existing owned WebContent and Networking service executable paths to match the archive in the probe and each actual original fixture while live; unavailable proof fails acceptance. Bind exact marker counts to each XCTest case. The teardown-only UA case remains in ordinary CI and is excluded from this comparator because it does not await script identities.
 - [x] After the existing worker identity assertions, require bounded current-popup client enumeration in comparator mode only.
-- [ ] Review Swift availability, ownership/privacy boundaries and unchanged ordinary-system behavior; native validation runs in CI if the peer reservation continues.
+- [x] Review Swift availability, ownership/privacy boundaries and unchanged ordinary-system behavior at `71f7ea3`; both jobs completed in CI.
 
 ### Task 3: Combined review and evidence
 
-- [ ] Obtain independent review of the current combined diff and address findings.
-- [ ] Push the diagnostic draft, update #484 with the exact head and wait for both ordinary and comparator CI.
-- [ ] Record provenance, first failures and verified cleanup. Use the result to select a justified repair or identify the external engine boundary; a green diagnostic alone is not a fix.
+- [x] Independently review and publish `71f7ea3`, update #484 and collect both jobs in run40227653569.
+- [x] Record the system failure and the attested comparator passes with cleanup. The archive ran on arm64 macOS26.6.2 and declares minimum macOS26.5/SDK26.5; it cannot replace Vane's engine across26.0–26.4. Vane's minimum remains26.0. The comparison does not isolate one WebKit commit as the cause.
+
+### Task 4: Native host and owned-window presentation comparison
+
+PR505 merged as `c40c2f4` after exact review and green ordinary PR CI (1,897 tests,140 skipped,0 failures). Its actual-main run40233105701 failed before navigation: Password EmbeddedSelection reached active/key/on-screen/finished-launch state but occlusion8192 lacked the visible bit2. The later strict contract, Replacement, UA6, Reader18 and toast6 passed; all203 owned backends retired, wrapper1/0. This is not a verified repair or a reason to rerun an unchanged commit.
+
+- [x] Review a one-shot owned-window layout/display request after queued activation/key events during setup; keep the strict visibility predicate, five-second deadline and original assertions. Add only finite failure metadata for active Space, minimization, dirty layout/display and positive alpha. Source review does not establish effectiveness.
+- [x] Review and run a finite original-UA fixture contract: finished launch at entry and after100ms idle. The fresh local host failed both assertions as expected (one test, two expected failures, zero unexpected,1.227s). Activation/key/visible windows are diagnostic only; background workers must remain valid without them. Original setup merely instantiates NSApplication.shared. This proves a local fixture gap, not UA causation; a later-sorting contract cannot certify earlier controller creation. Cleanup verified one backend absent and all36 tracked compiler/test PID/start identities exited.
+- [x] Review DEBUG-only `extensioncheck --user-agent-only` using the existing normal NSApp.run driver, fresh signed sandboxed isolated data and four synthetic production-host identity stages. Require completed launch and appRunning before profile/controller creation; no manual finish/activation/event drain. Preserve startup/current-UA, nonce/runtime/origin/version and actual callback pool/store/identity checks.
+- [x] Independently review and validate the bounded runner and15 pure guards. Require five unique positive findings, a valid report, process exit and positive post-exit isolated-store cleanup. Preserve the first failure and stop; do not claim unrecorded backend PID provenance. AST/YAML/diff checks and the local native-test build passed; the signed normal-loop mode has not run yet.
+- [ ] Run the source-reviewed diagnostic on actual macOS26 CI while preserving ordinary native failures. The original six-UA/two-password cohort remains exactly eight cases; the new launch contract is checked separately in the full suite.
+- [ ] Use the results to distinguish fixture readiness from production behavior. A green XCTest contract or isolated probe does not prove Bitwarden compatibility or repair the system worker-UA boundary. Keep #484 open and #503 draft.

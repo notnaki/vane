@@ -55,6 +55,7 @@ jobs:
       # to build, even on an exact cache hit, so it validates the restored outputs.
       # The release workflow still builds and smoke-tests the optimized, signed app.
       - name: Build
+        id: build
         run: swift build -c debug
 
       # --pure stops before the keychain and WebKit assertions, which need a real signed
@@ -85,6 +86,31 @@ jobs:
             echo '::error::Swift runtime captured a fatal signal during tests.'
             exit 1
           fi
+
+      # Diagnostic-only normal AppKit loop; the original native result remains
+      # authoritative. No packaged Bundle step is needed when native tests fail.
+      - name: UA fixture launch contract
+        if: ${{ always() && !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 3
+        env:
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          set +e
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests.ExtensionUserAgentTests/testExtensionFixtureCompletesAppKitLaunchAcrossIdle$' 2>&1 | tee "$RUNNER_TEMP/vane-ua-launch-contract.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if (( statuses[0] != 0 || statuses[1] != 0 )); then exit 1; fi
+          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-ua-launch-contract.log"; then exit 1; fi
+          grep -Fq "Test Case '-[VaneTests.ExtensionUserAgentTests testExtensionFixtureCompletesAppKitLaunchAcrossIdle]' passed" "$RUNNER_TEMP/vane-ua-launch-contract.log" || { echo '::error::Expected launch-contract case did not pass.'; exit 1; }
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-ua-launch-contract.log" || { echo '::error::Launch-contract retirement was not verified.'; exit 1; }
+
+      - name: Signed normal-loop worker UA comparison
+        if: ${{ always() && !cancelled() && steps.build.outcome == 'success' }}
+        # Eight bounded signing/app/retirement launches plus owned-process cleanup.
+        timeout-minutes: 22
+        run: |
+          python3 -B scripts/test-extension-ua-runner.py
+          python3 -B scripts/check-browser-smoke.py --binary .build/debug/vane --extension-user-agent-only
 
       # Diagnostic-only follow-up: the unchanged full suite runs first. A failed
       # primary step stays failed; each fresh host also verifies its real case,
@@ -143,7 +169,7 @@ jobs:
             echo "Original-case reproduction trial $trial/8"
             trial_log="$RUNNER_TEMP/vane-original-case-trial-$trial.log"
             set +e
-            python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests\.(ExtensionUserAgentTests/|PasswordAutofillTests/(testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep|testReplacementUsernameFormCannotReuseExplicitSelection)$)' 2>&1 | tee "$trial_log"
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests\.(ExtensionUserAgentTests/(testBrowserAndExtensionPoolsShareOwnershipWithoutSharingProfileStorage|testDefaultSafariIdentityReachesBackgroundAndPopupBeforeTheirScriptsRun|testDevelopChangeUpdatesLiveBackgroundAndRecreatedPopupWithoutChangingAccess|testExplicitCustomIdentitySurvivesHostRestoration|testRepeatedBackgroundTeardownReleasesRetiredHostsControllersAndContexts|testServiceWorkerIdentityFollowsSelectionWhenSharedPoolIsReused)|PasswordAutofillTests/(testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep|testReplacementUsernameFormCannotReuseExplicitSelection))$' 2>&1 | tee "$trial_log"
             statuses=("${PIPESTATUS[@]}")
             set -e
             if (( statuses[0] != 0 || statuses[1] != 0 )); then exit 1; fi
