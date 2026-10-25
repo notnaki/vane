@@ -121,6 +121,40 @@ jobs:
           grep -Fq "Test Case '-[VaneTests.WebKitExtensionUserAgentPolicyProbeTests testFullUserAgentPolicyAgainstPublicBackgroundCallbackControl]' passed" "$RUNNER_TEMP/vane-ua-policy-policy.log" || { echo '::error::Expected worker policy case did not pass.'; exit 1; }
           grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-ua-policy-policy.log" || { echo '::error::Worker policy cleanup was not verified.'; exit 1; }
 
+      # Stop on the first failure; later successes never replace it. Each trial
+      # has a fresh test host and verified backend retirement, not an in-place retry.
+      - name: Bounded reproduction of original worker and continuation cases
+        if: ${{ always() && !cancelled() && (steps.native_tests.outcome == 'success' || steps.native_tests.outcome == 'failure') }}
+        timeout-minutes: 8
+        env:
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          cases=(
+            'ExtensionUserAgentTests testBrowserAndExtensionPoolsShareOwnershipWithoutSharingProfileStorage'
+            'ExtensionUserAgentTests testDefaultSafariIdentityReachesBackgroundAndPopupBeforeTheirScriptsRun'
+            'ExtensionUserAgentTests testDevelopChangeUpdatesLiveBackgroundAndRecreatedPopupWithoutChangingAccess'
+            'ExtensionUserAgentTests testExplicitCustomIdentitySurvivesHostRestoration'
+            'ExtensionUserAgentTests testRepeatedBackgroundTeardownReleasesRetiredHostsControllersAndContexts'
+            'ExtensionUserAgentTests testServiceWorkerIdentityFollowsSelectionWhenSharedPoolIsReused'
+            'PasswordAutofillTests testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep'
+            'PasswordAutofillTests testReplacementUsernameFormCannotReuseExplicitSelection'
+          )
+          for trial in {1..8}; do
+            echo "Original-case reproduction trial $trial/8"
+            trial_log="$RUNNER_TEMP/vane-original-case-trial-$trial.log"
+            set +e
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests\.(ExtensionUserAgentTests/|PasswordAutofillTests/(testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep|testReplacementUsernameFormCannotReuseExplicitSelection)$)' 2>&1 | tee "$trial_log"
+            statuses=("${PIPESTATUS[@]}")
+            set -e
+            if (( statuses[0] != 0 || statuses[1] != 0 )); then exit 1; fi
+            if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$trial_log"; then exit 1; fi
+            for test_case in "${cases[@]}"; do
+              grep -Fq "Test Case '-[VaneTests.$test_case]' passed" "$trial_log" || { echo '::error::An original reproduction case did not pass.'; exit 1; }
+            done
+            grep -Fq 'Native suite primary status=0; cleanup status=0' "$trial_log" || { echo '::error::Original-case retirement was not verified.'; exit 1; }
+          done
+          echo 'All eight reproduction trials passed; no intermittent failure was captured.'
+
       - name: CLI password import errors
         run: bash scripts/test-cli-import.sh .build/debug/vane
 

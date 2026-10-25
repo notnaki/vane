@@ -292,6 +292,45 @@ import WebKit
         return "nativeClosed=\(value(closed)), nativeSuspended=\(value(suspended)), nativeResponsiveCached=\(value(responsive))"
     }
 
+    private final class ScriptProbeReply {
+        var report: String?
+        var finished = false
+    }
+
+    /// A public callback proves more than WebKit's cached responsiveness flag.
+    /// The callback retains only sanitized state and the committed URL, never the view.
+    static func scriptResponsiveness(committedURL: URL?, stillOwned: () -> Bool, isClosed: () -> Bool?,
+                                     timeout: Duration = .seconds(1),
+                                     evaluate: (@escaping @MainActor @Sendable (Any?, Error?) -> Void) -> Void) async -> String {
+        guard stillOwned() else { return "jsProbe=ownership-unverified, inconclusive=true" }
+        guard isClosed() == false else { return "jsProbe=page-unavailable, inconclusive=true" }
+        let deadline = ContinuousClock.now + max(.zero, min(timeout, .seconds(1)))
+        let reply = ScriptProbeReply()
+        defer { reply.finished = true; reply.report = nil }
+        evaluate { value, error in
+            guard !reply.finished, reply.report == nil, ContinuousClock.now < deadline else { return }
+            guard error == nil else { reply.report = "jsProbe=error, inconclusive=true"; return }
+            guard let values = value as? [Any], values.count == 2,
+                  let ready = values[0] as? String, ["loading", "interactive", "complete"].contains(ready),
+                  let raw = values[1] as? String, !raw.isEmpty, raw.utf8.count <= 16_384,
+                  let actual = URL(string: raw), actual.scheme != nil else {
+                reply.report = "jsProbe=malformed-reply, inconclusive=true"
+                return
+            }
+            let oldDocument = committedURL.map { String(actual == $0) } ?? "unavailable"
+            reply.report = "jsProbe=reply, readyState=\(ready), oldCommittedDocument=\(oldDocument), inconclusive=\(committedURL == nil)"
+        }
+        while reply.report == nil, ContinuousClock.now < deadline {
+            guard stillOwned() else { return "jsProbe=process-changed, inconclusive=true" }
+            guard isClosed() == false else { return "jsProbe=page-unavailable, inconclusive=true" }
+            do { try await Task.sleep(until: min(deadline, ContinuousClock.now + .milliseconds(20)), clock: .continuous) }
+            catch { return "jsProbe=cancelled, inconclusive=true" }
+        }
+        guard stillOwned() else { return "jsProbe=process-changed, inconclusive=true" }
+        guard isClosed() == false else { return "jsProbe=page-unavailable, inconclusive=true" }
+        return reply.report ?? "jsProbe=no-response, inconclusive=true"
+    }
+
     static func failureReport(for web: WKWebView) async -> String {
         let window = web.window
         let windowState = "uiPID=\(getpid()), appActive=\(NSApplication.shared.isActive), " +
@@ -307,19 +346,28 @@ import WebKit
             return ui + "; native process identity unavailable"
         }
         let owned = maySample(captured, observed: identity(pid), ownedPID: contentPID(web))
-        let cached = cachedNativeState(owned: owned) { name in
+        let readNative: (String) -> Bool? = { name in
             let selector = NSSelectorFromString(name)
             guard web.responds(to: selector) else { return nil }
             typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
             return unsafeBitCast(web.method(for: selector), to: Getter.self)(web, selector)
         }
+        let cached = cachedNativeState(owned: owned, read: readNative)
         emit("native cached state before sampling: " + cached)
         let metadata = ui + ", contentStart=\(captured.start), contentPath=\(captured.path), contentState=\(captured.state); " + cached
         emit("native identity before sampling: " + metadata)
+        let committed = owned && readNative("_isClosed") == false ? web.backForwardList.currentItem?.url : nil
+        let probe = await scriptResponsiveness(committedURL: committed,
+            stillOwned: { maySample(captured, observed: identity(pid), ownedPID: contentPID(web)) },
+            isClosed: { readNative("_isClosed") }) { reply in
+                web.evaluateJavaScript("[document.readyState, location.href]", completionHandler: reply)
+            }
+        emit("native document responsiveness before sampling: " + probe)
+        let probedMetadata = metadata + "; " + probe
         guard maySample(captured, observed: identity(pid), ownedPID: contentPID(web)) else {
-            return metadata + "; sample unavailable: live fixture process ownership could not be verified"
+            return probedMetadata + "; sample unavailable: live fixture process ownership could not be verified"
         }
-        return metadata + "; " + (await sample(captured, stillOwned: { contentPID(web) == pid }))
+        return probedMetadata + "; " + (await sample(captured, stillOwned: { contentPID(web) == pid }))
     }
 
     private static func sample(_ captured: Identity, stillOwned: () -> Bool) async -> String {

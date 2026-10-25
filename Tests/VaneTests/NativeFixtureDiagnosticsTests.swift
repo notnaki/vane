@@ -203,4 +203,66 @@ final class NativeFixtureDiagnosticsTests: XCTestCase {
         XCTAssertEqual(calls, ["_isClosed", "_isSuspended", "_webProcessIsResponsive"])
         XCTAssertEqual(state, "nativeClosed=false, nativeSuspended=true, nativeResponsiveCached=false")
     }
+
+    @MainActor func testScriptProbeRecognizesResponsiveOldCommittedDocumentWithoutExposingURL() async {
+        let committed = URL(string: "https://fixture.invalid/PRIVATE-PATH?PRIVATE-QUERY")!
+        let report = await NativeFixtureDiagnostics.scriptResponsiveness(committedURL: committed,
+            stillOwned: { true }, isClosed: { false }) { reply in
+                Task { @MainActor in
+                    await Task.yield()
+                    reply(["complete", committed.absoluteString], nil)
+                }
+            }
+        XCTAssertEqual(report, "jsProbe=reply, readyState=complete, oldCommittedDocument=true, inconclusive=false")
+        XCTAssertFalse(report.contains("PRIVATE"))
+        let changed = await NativeFixtureDiagnostics.scriptResponsiveness(committedURL: committed,
+            stillOwned: { true }, isClosed: { false }) { $0(["interactive", "https://fixture.invalid/password"], nil) }
+        XCTAssertEqual(changed, "jsProbe=reply, readyState=interactive, oldCommittedDocument=false, inconclusive=false")
+    }
+
+    @MainActor func testScriptProbeTreatsErrorsMalformedRepliesAndMissingCommitAsInconclusive() async {
+        let committed = URL(string: "https://fixture.invalid/username")!
+        let error = NSError(domain: "PRIVATE-ERROR", code: 9, userInfo: [NSLocalizedDescriptionKey: "PRIVATE-DESCRIPTION"])
+        let failed = await NativeFixtureDiagnostics.scriptResponsiveness(committedURL: committed,
+            stillOwned: { true }, isClosed: { false }) { $0(nil, error) }
+        XCTAssertEqual(failed, "jsProbe=error, inconclusive=true")
+        let malformedReplies: [Any] = [NSNull(), ["complete"], ["PRIVATE-STATE", committed.absoluteString], ["complete", 7]]
+        for malformed in malformedReplies {
+            let report = await NativeFixtureDiagnostics.scriptResponsiveness(committedURL: committed,
+                stillOwned: { true }, isClosed: { false }) { $0(malformed, nil) }
+            XCTAssertEqual(report, "jsProbe=malformed-reply, inconclusive=true")
+        }
+        let missingCommit = await NativeFixtureDiagnostics.scriptResponsiveness(committedURL: nil,
+            stillOwned: { true }, isClosed: { false }) { $0(["loading", committed.absoluteString], nil) }
+        XCTAssertEqual(missingCommit, "jsProbe=reply, readyState=loading, oldCommittedDocument=unavailable, inconclusive=true")
+    }
+
+    @MainActor func testScriptProbeNeverEvaluatesWithoutVerifiedOwnershipAndOpenPage() async {
+        for (owned, closed) in [(false, false as Bool?), (true, true), (true, nil)] {
+            var evaluated = false
+            let report = await NativeFixtureDiagnostics.scriptResponsiveness(committedURL: nil,
+                stillOwned: { owned }, isClosed: { closed }) { _ in evaluated = true }
+            XCTAssertFalse(evaluated)
+            XCTAssertEqual(report, owned ? "jsProbe=page-unavailable, inconclusive=true" : "jsProbe=ownership-unverified, inconclusive=true")
+        }
+    }
+
+    @MainActor func testScriptProbeDiscardsReplyAfterOwnedProcessChanges() async {
+        var owned = true
+        let report = await NativeFixtureDiagnostics.scriptResponsiveness(committedURL: nil,
+            stillOwned: { owned }, isClosed: { false }) { reply in
+                owned = false
+                reply(["complete", "https://fixture.invalid/PRIVATE-PATH"], nil)
+            }
+        XCTAssertEqual(report, "jsProbe=process-changed, inconclusive=true")
+    }
+
+    @MainActor func testScriptProbeMissingCallbackReturnsAtItsBoundAndLateReplyIsHarmless() async {
+        var lateReply: (@MainActor @Sendable (Any?, Error?) -> Void)?
+        let report = await NativeFixtureDiagnostics.scriptResponsiveness(committedURL: nil,
+            stillOwned: { true }, isClosed: { false }, timeout: .milliseconds(20)) { lateReply = $0 }
+        XCTAssertEqual(report, "jsProbe=no-response, inconclusive=true")
+        lateReply?(["complete", "https://fixture.invalid/PRIVATE-PATH"], nil)
+        XCTAssertEqual(report, "jsProbe=no-response, inconclusive=true")
+    }
 }
