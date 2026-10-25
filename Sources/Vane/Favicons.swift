@@ -179,27 +179,29 @@ import WebKit
             let diskImage = if self?.memory[key] == nil, let file {
                 await Favicons.decoded(file)
             } else { nil as NSImage? }
-            guard let self, let tab, tab.existingWeb === web, tab.currentURL == url else { return }
+            // Neither the page's script reply nor an icon download belongs to the tab's
+            // lifetime. Keep it weak across both awaits so Close can release it at once.
+            guard let self, tab?.existingWeb === web, tab?.currentURL == url else { return }
             if let img = self.memory[key] {
-                tab.favicon = img
+                tab?.favicon = img
             } else if let diskImage {
                 self.memory[key] = diskImage
-                tab.favicon = diskImage
+                tab?.favicon = diskImage
                 // Cache-only leaves may be waiting on the same host. Publish even
                 // when restoration's worker beats their own pending disk read.
                 self.publishArrival(for: key)
             }
-            if tab.suspended {
-                tab.favicon = self.memory[key]
+            if tab?.suspended == true {
+                tab?.favicon = self.memory[key]
                 if self.memory[key] == nil, !self.missed(key), let fallback = Favicons.fallback(for: url) {
-                    self.warm(key: key, urls: [fallback], persist: !tab.isPrivate, fallback: fallback)
+                    self.warm(key: key, urls: [fallback], persist: tab?.isPrivate == false, fallback: fallback)
                 }
                 return
             }
             guard let web else { return }
             // A failed root probe says nothing about the icons declared by this page.
             let declared = Favicons.declared(try? await web.evaluateJavaScript(Favicons.linkJS))
-            guard tab.existingWeb === web, tab.currentURL == url else { return }
+            guard tab?.existingWeb === web, tab?.currentURL == url else { return }
             if !declared.isEmpty, self.discoveries[key] == declared, self.memory[key] != nil { return }
             if !declared.isEmpty {
                 self.discoveries[key] = declared
@@ -211,10 +213,11 @@ import WebKit
             var candidates = declared
             let fallback = self.memory[key] != nil || self.missed(key) ? nil : Favicons.fallback(for: url)
             if let fallback { candidates.append(fallback) }
-            guard !candidates.isEmpty else { tab.favicon = self.memory[key]; return }
-            await self.warm(key: key, urls: candidates, persist: !tab.isPrivate, fallback: fallback).value
-            guard tab.existingWeb === web, tab.currentURL == url else { return }
-            tab.favicon = self.memory[key]
+            guard !candidates.isEmpty else { tab?.favicon = self.memory[key]; return }
+            let persist = tab?.isPrivate == false
+            await self.warm(key: key, urls: candidates, persist: persist, fallback: fallback).value
+            guard tab?.existingWeb === web, tab?.currentURL == url else { return }
+            tab?.favicon = self.memory[key]
         }
     }
 

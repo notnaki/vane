@@ -407,6 +407,27 @@ struct TitleReveal: Equatable, Sendable {
     private(set) var existingWeb: WKWebView?
     private static var preparedFirstPage: (profileID: UUID, web: WKWebView)?
 
+    #if DEBUG
+    enum NavigationStageIdentity: Hashable {
+        case navigation(ObjectIdentifier)
+        case action(Int)
+    }
+    struct NavigationStageEvent {
+        let stage: String
+        let identity: NavigationStageIdentity?
+        let detail: String
+    }
+    // A fixture may observe the real delegate without replacing it. Events contain
+    // primitive metadata only, never a retained WebKit object or a request URL.
+    var navigationStageObserver: ((NavigationStageEvent) -> Void)?
+    private var navigationActionStageSerial = 0
+
+    private func recordNavigationStage(_ stage: String, navigation: WKNavigation?, detail: String = "") {
+        navigationStageObserver?(NavigationStageEvent(stage: stage,
+            identity: navigation.map { .navigation(ObjectIdentifier($0)) }, detail: detail))
+    }
+    #endif
+
     /// Pay WebKit/configuration setup after the first window appears, before the first
     /// navigation. An unloaded view has no URL, history or WebContent process.
     static func prepareFirstPage(profileID: UUID) {
@@ -1743,8 +1764,15 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        #if DEBUG
+        recordNavigationStage("provisional-received", navigation: navigation,
+                              detail: "viewOwned=\(w === existingWeb), tornDown=\(tornDown), suspended=\(suspended)")
+        #endif
         guard w === existingWeb, !tornDown, !suspended else { return }
         guard navigationState.begin(navigation) else { return }
+        #if DEBUG
+        recordNavigationStage("provisional-accepted", navigation: navigation)
+        #endif
         provisional = true
         retitleTask?.cancel()
         if w === existingWeb {
@@ -1773,7 +1801,14 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        #if DEBUG
+        recordNavigationStage("failure-received", navigation: navigation,
+                              detail: "code=\((error as NSError).code), owned=\(ownsNavigation(navigation, in: w))")
+        #endif
         guard ownsNavigation(navigation, in: w) else { return }
+        #if DEBUG
+        recordNavigationStage("failure-accepted", navigation: navigation)
+        #endif
         navigationState.finished = true
         finishCertificateNavigation(navigation, in: w)
         loading = false
@@ -1781,9 +1816,16 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        #if DEBUG
+        recordNavigationStage("provisional-failure-received", navigation: navigation,
+                              detail: "code=\((error as NSError).code), owned=\(ownsNavigation(navigation, in: w))")
+        #endif
         // Only the current navigation's failure means nothing is pending: a superseded
         // load fails after its replacement was allowed.
         guard ownsNavigation(navigation, in: w) else { return }
+        #if DEBUG
+        recordNavigationStage("provisional-failure-accepted", navigation: navigation)
+        #endif
         // Back to the page that never left; WebKit's url falls back to it as well.
         provisional = false
         if !editing { address = committedURL?.absoluteString ?? "" }
@@ -1866,7 +1908,14 @@ struct TitleReveal: Equatable, Sendable {
     /// redirect applies the wrong site's level) and didFinish is too late (the page has
     /// already painted at the old zoom, which reads as a visible reflow bug).
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
+        #if DEBUG
+        recordNavigationStage("commit-received", navigation: navigation,
+                              detail: "owned=\(ownsNavigation(navigation, in: w))")
+        #endif
         guard ownsNavigation(navigation, in: w) else { return }
+        #if DEBUG
+        recordNavigationStage("commit-accepted", navigation: navigation)
+        #endif
         provisional = false; showCommitted(w)
         if let item = w.backForwardList.currentItem {
             if navigationState.simulated === navigation {
@@ -1937,11 +1986,29 @@ struct TitleReveal: Equatable, Sendable {
     /// scheme from here — WebKit does not let the delegate rewrite the request.
     func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-        guard w === existingWeb, !tornDown, !suspended else { decisionHandler(.cancel); return }
+        #if DEBUG
+        let policyHandler: @MainActor (WKNavigationActionPolicy) -> Void
+        if let observer = navigationStageObserver {
+            navigationActionStageSerial &+= 1
+            let identity = NavigationStageIdentity.action(navigationActionStageSerial)
+            let method = navigationAction.request.httpMethod ?? "GET"
+            let normalizedMethod = ["GET", "HEAD", "POST"].contains(method) ? method : "OTHER"
+            observer(NavigationStageEvent(stage: "action-received", identity: identity,
+                detail: "type=\(navigationAction.navigationType.rawValue), method=\(normalizedMethod), main=\(navigationAction.targetFrame?.isMainFrame == true), viewOwned=\(w === existingWeb), tornDown=\(tornDown), suspended=\(suspended)"))
+            policyHandler = { policy in
+                decisionHandler(policy)
+                observer(NavigationStageEvent(stage: "action-decision-returned", identity: identity,
+                                               detail: "policy=\(policy.rawValue)"))
+            }
+        } else { policyHandler = decisionHandler }
+        #else
+        let policyHandler = decisionHandler
+        #endif
+        guard w === existingWeb, !tornDown, !suspended else { policyHandler(.cancel); return }
         // The address stops following WebKit's url from the moment a main-frame load is
         // allowed: a cross-site load that swaps processes publishes its destination as the
         // url before didStartProvisionalNavigation arrives.
-        let decided = decisionHandler
+        let decided = policyHandler
         let decisionHandler: @MainActor (WKNavigationActionPolicy) -> Void = { [weak self] policy in
             if policy == .allow, navigationAction.targetFrame?.isMainFrame == true,
                !Tab.sameDocument(navigationAction, from: self?.committedURL) {

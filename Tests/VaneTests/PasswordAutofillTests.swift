@@ -8,27 +8,32 @@ import XCTest
     private var nativeFixtureProfiles: Set<UUID> = []
 
     override func tearDown() async throws {
-        // A normal Tab caches its named store beyond the lifetime of its web view.
-        // Every native fixture has already torn down its tabs and windows here.
-        // Release these disposable stores between tests rather than accumulating
-        // another persistent WebKit backend for every continuation scenario.
-        for profile in nativeFixtureProfiles {
-            var store: WKWebsiteDataStore? = ProfileManager.dataStore(for: profile)
-            await store!.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
-            store = nil
-            ProfileManager.releaseDataStore(for: profile)
-            let identifier = try XCTUnwrap(ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: Store.overrideDirectory))
-            let error: Error? = await withCheckedContinuation { continuation in
-                WKWebsiteDataStore.remove(forIdentifier: identifier) { continuation.resume(returning: $0) }
-            }
-            if let error {
-                let failure = error as NSError
-                XCTAssertEqual(failure.domain, "WKWebSiteDataStore")
-                XCTAssertEqual(failure.code, 1, "Unexpected password fixture unregister failure: \(error)")
-                print("Password fixture \(identifier): contents erased and cache released; WebKit still has the empty store in use.")
-            }
-        }
+        try await releaseNativeFixtureProfiles()
+    }
+
+    private func releaseNativeFixtureProfiles() async throws {
+        let profiles = nativeFixtureProfiles
         nativeFixtureProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(profiles)
+    }
+
+    func testNativeContinuationCleanupReleasesExtensionControllerAndStore() async throws {
+        weak var host: ExtensionHost?
+        weak var controller: WKWebExtensionController?
+        weak var store: WKWebsiteDataStore?
+        try await withNativeContinuationFixture { tab, _ in
+            host = tab.extensions
+            controller = tab.web.configuration.webExtensionController
+            store = controller?.configuration.defaultWebsiteDataStore
+            XCTAssertTrue(store === ProfileManager.dataStore(for: tab.profileID))
+        }
+        XCTAssertNotNil(host, "The fixture must exercise the normal profile's cached extension host")
+        try await releaseNativeFixtureProfiles()
+        try await wait(for: "disposed native fixture's extension host, controller and store to be released", diagnostics: {
+            "hostRetained=\(host != nil), controllerRetained=\(controller != nil), storeRetained=\(store != nil)"
+        }) {
+            host == nil && controller == nil && store == nil
+        }
     }
 
     private final class Capture: NSObject, WKScriptMessageHandler {
@@ -80,8 +85,37 @@ import XCTest
         var description: String { "Password fixture timed out waiting for \(stage)" }
     }
 
+    private struct FixtureFailure: Error, CustomStringConvertible {
+        let stage: String
+        let cause: Error
+        let diagnostics: String
+        let file: StaticString
+        let line: UInt
+        var description: String {
+            "\(file):\(line): Failed waiting for \(stage): \(cause). \(diagnostics)"
+        }
+    }
+
+    func testFixtureConditionFailureKeepsOriginalContextWithoutRecordingTwice() async throws {
+        enum ConditionFailure: Error { case rejected }
+        do {
+            try await wait(for: "injected fixture condition", file: "fixture.swift", line: 17,
+                           diagnostics: { "native diagnostic" }) {
+                throw ConditionFailure.rejected
+            }
+            XCTFail("The failing condition must abort the fixture")
+        } catch {
+            let failure = try XCTUnwrap(error as? FixtureFailure)
+            XCTAssertEqual(failure.stage, "injected fixture condition")
+            XCTAssertTrue(failure.cause is ConditionFailure)
+            XCTAssertEqual(failure.diagnostics, "native diagnostic")
+            XCTAssertEqual(String(describing: failure.file), "fixture.swift")
+            XCTAssertEqual(failure.line, 17)
+        }
+    }
+
     private func wait(for stage: String = "fixture condition", file: StaticString = #filePath, line: UInt = #line,
-                      diagnostics: () -> String = { "" },
+                      diagnostics: () async -> String = { "" },
                       _ condition: () async throws -> Bool) async throws {
         let deadline = Date.now.addingTimeInterval(5)
         do {
@@ -90,8 +124,12 @@ import XCTest
                 try await Task.sleep(for: .milliseconds(20))
             }
         } catch {
-            XCTFail("Failed waiting for \(stage): \(error). \(diagnostics())", file: file, line: line)
-            throw error
+            NativeFixtureDiagnostics.emit("\(file):\(line): Failed waiting for \(stage): \(error); collecting native diagnostics")
+            // XCTest records the thrown failure once. Recording XCTFail here too
+            // obscures the original failure with a second, unexpected thrown error.
+            let report = await diagnostics()
+            NativeFixtureDiagnostics.emit("\(file):\(line): Failed waiting for \(stage): \(error). \(report)")
+            throw FixtureFailure(stage: stage, cause: error, diagnostics: report, file: file, line: line)
         }
     }
 
@@ -252,34 +290,77 @@ import XCTest
         try await body(tab, origin)
     }
 
+    private func continuationLoadState(_ tab: Tab, web: WKWebView, requestedURL: URL) -> String {
+        let selector = NSSelectorFromString("_webProcessIdentifier")
+        var process: NativeFixtureDiagnostics.Identity?
+        if web.responds(to: selector) {
+            typealias Getter = @convention(c) (AnyObject, Selector) -> Int32
+            let pid = unsafeBitCast(web.method(for: selector), to: Getter.self)(web, selector)
+            process = NativeFixtureDiagnostics.identity(pid)
+        }
+        let native = process.map {
+            "contentPID=\($0.pid), contentStart=\($0.start), contentPath=\($0.path), contentState=\($0.state)"
+        } ?? "contentIdentity=unavailable"
+        return "requested=\(requestedURL.absoluteString), webURL=\(web.url?.absoluteString ?? "nil"), " +
+            "tabCurrentURL=\(tab.currentURL?.absoluteString ?? "nil"), " +
+            "historyURL=\(web.backForwardList.currentItem?.url.absoluteString ?? "nil"), " +
+            "loading=\(web.isLoading), progress=\(web.estimatedProgress), tabLoading=\(tab.loading), " +
+            "suspended=\(tab.suspended), recovery=\(tab.needsRecovery), " + native
+    }
+
+    #if DEBUG
+    @MainActor private final class NavigationStages {
+        private var events: [Tab.NavigationStageEvent] = []
+        private var dropped = 0
+
+        func append(_ event: Tab.NavigationStageEvent) {
+            guard events.count < 48 else { dropped += 1; return }
+            events.append(event)
+        }
+
+        func snapshot(expected: ObjectIdentifier) -> String {
+            var tokens: [Tab.NavigationStageIdentity: Int] = [.navigation(expected): 1]
+            let records = events.map { event in
+                let token: String
+                if let identity = event.identity {
+                    if tokens[identity] == nil { tokens[identity] = tokens.count + 1 }
+                    token = "object#\(tokens[identity]!)"
+                } else { token = "no-object" }
+                return "\(event.stage)(\(token), \(event.detail))"
+            }
+            return "expected=object#1, events=[\(records.joined(separator: "; "))], dropped=\(dropped)"
+        }
+    }
+    #endif
+
     private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String) async throws {
         let web = tab.web, url = origin.url.appendingPathComponent(path)
         let started = Date.now
-        var document = "not sampled", nextSample = started.addingTimeInterval(0.5), samplePending = false
-        web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
+        #if DEBUG
+        let stages = NavigationStages()
+        let previousObserver = tab.navigationStageObserver
+        tab.navigationStageObserver = { [weak stages] event in
+            previousObserver?(event)
+            stages?.append(event)
+        }
+        defer { tab.navigationStageObserver = previousObserver }
+        #endif
+        let before = continuationLoadState(tab, web: web, requestedURL: url)
+        let navigationID = ObjectIdentifier(web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html))
+        let after = continuationLoadState(tab, web: web, requestedURL: url)
         try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
-            "expected=\(url), actual=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), " +
-            "progress=\(web.estimatedProgress), tabLoading=\(tab.loading), suspended=\(tab.suspended), " +
-            "recovery=\(tab.needsRecovery), document=\(document), samplePending=\(samplePending)"
+            #if DEBUG
+            NativeFixtureDiagnostics.emit("continuation callback stages: " + stages.snapshot(expected: navigationID))
+            #endif
+            let state = "before={\(before)}; returnedNavigation=\(navigationID); after={\(after)}; " +
+                "timeout={\(continuationLoadState(tab, web: web, requestedURL: url))}"
+            NativeFixtureDiagnostics.emit("continuation document \(path) cached state before sampling: " + state)
+            return state + "; " + (await NativeFixtureDiagnostics.failureReport(for: web))
         }) {
-            // Sample only slow loads. Do not await JavaScript here: an unresponsive
-            // content process must still leave the fixture's timeout bounded.
-            if web.isLoading, Date.now >= nextSample, !samplePending {
-                nextSample = Date.now.addingTimeInterval(0.5)
-                samplePending = true
-                web.evaluateJavaScript("JSON.stringify({url:location.href,ready:document.readyState,password:!!document.getElementById('password')})",
-                                       in: nil, in: .page) { result in
-                    switch result {
-                    case .success(let value): document = String(describing: value)
-                    case .failure(let error): document = String(describing: error)
-                    }
-                    samplePending = false
-                }
-            }
             return !web.isLoading
         }
         if Date.now.timeIntervalSince(started) >= 0.5 {
-            print("Continuation fixture \(path) loaded in \(Date.now.timeIntervalSince(started))s; document=\(document)")
+            print("Continuation fixture \(path) loaded in \(Date.now.timeIntervalSince(started))s")
         }
     }
 

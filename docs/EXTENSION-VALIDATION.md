@@ -33,6 +33,45 @@ Local validation on 2026-10-12, macOS **27.0.1 (26A434)** / **Xcode 27.0 (27A266
 
 The final PR records its reviewed head and CI outcome separately. The integrated broad run preceded only the final hidden-row selection guard; the focused run above includes that fix.
 
+## Signed Safari app fixtures — 2026-10-24
+
+On macOS **27.0.1 (26A434)** / **Xcode 27.0 (27A266a)**, an isolated Apple
+Development-signed app containing a Safari web extension passed **12 tests**. These
+exercise the production app-bundle installer, consent rejection and reviewed updates,
+verified identity, modified/ad-hoc signature rejection, duplicate installs, missing-app
+restore, metadata recovery, accepted-installation restart with persistent storage, profile storage
+separation, removal during asynchronous
+refresh, and reinstall without inheriting `storage.local`, `storage.sync`, or
+`storage.session`. The external-message test opens a real Vane tab with a local fixture
+page at an allowed HTTPS origin and verifies its nonce reply through
+`browser.runtime.sendMessage` addressed to the genuine signed Safari runtime ID.
+No provider account, Proton sign-in, native messaging host, or upstream extension
+package was exercised by this fixture.
+
+The separate metadata/signature/store batch passed **8 tests**, including resource-seal
+verification and a read-only signature check against an installed, unmodified Mac App
+Store app. Mac App Store signatures use Apple's store certificate; developer signatures
+bind the Team ID to the signing certificate's organization unit. The store-certificate
+alternative follows [Apple TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements).
+This signature check does not establish runtime compatibility of a Mac App Store Safari
+extension. The existing folder-extension regressions plus the signed restart check passed
+**82 tests**. The pure self-check also passed.
+
+Signed fixture tests skip unless an existing Apple signing identity and its verified
+Team ID are explicitly supplied. They create and remove disposable local bundles and
+never execute their native fixture binaries:
+
+```sh
+VANE_TEST_SIGNING_IDENTITY='<existing Apple signing identity>' \
+VANE_TEST_SIGNING_TEAM='<verified Team ID>' \
+swift test --filter 'SafariAppExtensionTests|SafariAppSignatureTests|SafariAppExtensionMetadataTests'
+```
+
+The optional read-only Mac App Store check additionally requires
+`VANE_TEST_MAC_APP_STORE_BUNDLE` and `VANE_TEST_MAC_APP_STORE_TEAM`. It never launches,
+modifies, copies, or re-signs the selected installed app. No signing identity or account
+credentials are included in the repository.
+
 ## Official third-party packages — 2026-10-12
 
 Packages came directly from the projects’ GitHub release assets. Archives were extracted into a temporary fixture directory using bounded Python ZIP handling: absolute/traversal/ambiguous duplicate paths, symlinks/special files, encrypted entries, excessive entries, and excessive expanded sizes were rejected. Each archive SHA-256 matched GitHub’s release-asset digest. This preparation tool does not add ZIP import to Vane. No credentials or accounts were used; parser verification did not execute extension code.

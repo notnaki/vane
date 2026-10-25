@@ -5,12 +5,14 @@ import XCTest
 
 @MainActor final class ExtensionManagementTests: XCTestCase {
     private var profile: UUID!
+    private var ownedProfiles = Set<UUID>()
     private var folder: URL!
 
     override func setUp() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         profile = UUID()
+        ownedProfiles.insert(profile)
         folder = Store.directory.appendingPathComponent("management-extension-\(UUID())").resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         folder = URL(fileURLWithPath: folder.path).resolvingSymlinksInPath()
@@ -25,6 +27,9 @@ import XCTest
             UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(key, profile))
         }
         try? FileManager.default.removeItem(at: folder)
+        let released = ownedProfiles
+        ownedProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
     }
 
     private func writeManifest(extra: [String: Any] = [:]) throws {

@@ -11,6 +11,42 @@ private final class PasswordReadGate: @unchecked Sendable {
 }
 
 @MainActor final class NativePageWorkTests: XCTestCase {
+    private var nativeFixtureProfiles: Set<UUID> = []
+
+    override func tearDown() async throws {
+        try await releaseNativeFixtureProfiles()
+    }
+
+    private func releaseNativeFixtureProfiles() async throws {
+        let profiles = nativeFixtureProfiles
+        nativeFixtureProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(profiles)
+    }
+
+    func testNativeWorkerCleanupReleasesExtensionControllerAndStore() async throws {
+        weak var host: ExtensionHost?
+        weak var controller: WKWebExtensionController?
+        weak var store: WKWebsiteDataStore?
+        func disposeWorker() async throws {
+            let tab = try await loadedTab(reader: Passwords.Reader())
+            defer { tab.tearDown() }
+            host = tab.extensions
+            controller = tab.web.configuration.webExtensionController
+            store = controller?.configuration.defaultWebsiteDataStore
+            XCTAssertTrue(store === ProfileManager.dataStore(for: tab.profileID))
+        }
+        try await disposeWorker()
+        XCTAssertNotNil(host)
+        try await releaseNativeFixtureProfiles()
+        let deadline = Date.now.addingTimeInterval(5)
+        while host != nil || controller != nil || store != nil, Date.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertNil(host, "A disposed worker must release its profile's cached extension host")
+        XCTAssertNil(controller, "A disposed worker must release its extension controller")
+        XCTAssertNil(store, "A disposed worker must release its named WebKit store")
+    }
+
     func testBlockedKeychainMetadataLeavesMainActorAvailable() async throws {
         let gate = PasswordReadGate(), profile = UUID()
         let origin = PasswordOrigin(host: "worker.invalid")
@@ -57,7 +93,9 @@ private final class PasswordReadGate: @unchecked Sendable {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         WebKitStartup.prepare()
-        let tab = Tab(profileID: UUID())
+        let profile = UUID()
+        nativeFixtureProfiles.insert(profile)
+        let tab = Tab(profileID: profile)
         tab.passwordReader = reader
         tab.web.loadSimulatedRequest(URLRequest(url: URL(string: "https://worker.invalid/")!),
             responseHTML: "<form><input autocomplete=username><input type=password></form>")

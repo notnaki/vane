@@ -4,10 +4,19 @@ import XCTest
 @testable import vane
 
 @MainActor final class ExtensionConsentTests: XCTestCase {
+    private var ownedProfiles = Set<UUID>()
+
+    override func tearDown() async throws {
+        let released = ownedProfiles
+        ownedProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
+    }
+
     func testCancellingInstallationDoesNotRememberTheFolder() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let profile = UUID()
+        ownedProfiles.insert(profile)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("vane-extension-\(UUID())")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try Data(#"{"manifest_version":3,"name":"Consent Fixture","version":"1.0","permissions":["tabs"],"host_permissions":["https://example.com/*"]}"#.utf8)
@@ -33,7 +42,7 @@ import XCTest
 }
 
 @MainActor final class ExtensionAccessLifecycleTests: XCTestCase {
-    private var profiles: [UUID] = []
+    private var profiles = Set<UUID>()
     private var folders: [URL] = []
 
     override func setUp() async throws {
@@ -50,11 +59,15 @@ import XCTest
             }
         }
         for folder in folders { try? FileManager.default.removeItem(at: folder) }
+        folders.removeAll()
+        let released = profiles
+        profiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
     }
 
     private func host() -> ExtensionHost {
         let profile = UUID()
-        profiles.append(profile)
+        profiles.insert(profile)
         return ExtensionHost.host(for: profile)
     }
 
@@ -333,7 +346,7 @@ import XCTest
 
     func testInvalidFirstRestoreDoesNotEraseALaterValidExtensionsPin() async throws {
         let profile = UUID()
-        profiles.append(profile)
+        profiles.insert(profile)
         let invalid = try folder(version: 99)
         let valid = try folder(permissions: [], sites: [])
         XCTAssertTrue(ScopedPaths.add(invalid, to: ExtensionHost.key(for: profile)))

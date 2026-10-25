@@ -7,14 +7,22 @@ import WebKit
 
 // MARK: - What Arc writes down
 
-/// One row of an Arc space's sidebar: a tab, or a folder holding more rows.
+/// One row of an Arc space's sidebar: a tab, split view, or folder holding more rows.
 ///
 /// Arc's own file is a flat `items` array where every row names its parent and every parent
 /// lists its children in order; this is that array walked back into the tree it describes,
 /// which is the only shape the folder half of the import can be written against. Only
 /// `http(s)` tabs survive the walk — see `ArcSidebar.rows`.
 enum ArcRow: Equatable, Sendable {
-    case tab(url: URL, title: String)
+    /// Cached page title and user rename are distinct: only the latter stays fixed when
+    /// a restored page changes its title or navigates elsewhere.
+    case tab(url: URL, title: String, customName: String? = nil)
+    struct Pane: Equatable, Sendable {
+        var url: URL
+        var title: String
+        var customName: String? = nil
+    }
+    case split(panes: [Pane], vertical: Bool, weights: [Double], active: Int)
     /// `live` is Arc's one automatic folder — its "Pull Requests" — carried as the
     /// `LiveSource` Vane fills the same folder from. nil for every folder somebody put rows
     /// in by hand, which is why it has a default: an ordinary folder is still written
@@ -36,6 +44,7 @@ struct ArcSpace: Equatable, Sendable {
     let themeHex: String?
     let pinned: [ArcRow]
     let today: [ArcRow]
+    var hasSplitViews = false
 }
 
 /// Everything Vane wants out of `StorableSidebar.json`: the spaces, and each profile's
@@ -49,6 +58,23 @@ struct ArcSidebar: Equatable, Sendable {
     /// icons and Vane's grid is a grid, so a folder that somehow got in there gives up its
     /// tabs rather than becoming a folder nothing could draw.
     var favourites: [String: [URL]] = [:]
+    var warnings = Warnings()
+
+    struct Warnings: Equatable, Sendable {
+        var flattenedSplits = 0
+        var skippedRowTypes: [String: Int] = [:]
+
+        var messages: [String] {
+            var messages: [String] = []
+            if flattenedSplits > 0 {
+                messages.append("\(flattenedSplits) Arc split view\(flattenedSplits == 1 ? "" : "s") could not be represented; available pages were kept as ordinary tabs in order.")
+            }
+            for (type, count) in skippedRowTypes.sorted(by: { $0.key < $1.key }) {
+                messages.append("\(count) unsupported or damaged Arc sidebar row\(count == 1 ? "" : "s") (\(type)) \(count == 1 ? "was" : "were") skipped; available children were kept.")
+            }
+            return messages
+        }
+    }
 
     /// Arc writes its dictionaries as flat, alternating `[id, object, id, object]` arrays
     /// rather than as JSON objects — `spaces`, `items` and `topAppsContainerIDs` all have
@@ -134,40 +160,68 @@ struct ArcSidebar: Equatable, Sendable {
     /// of ids with nothing in the format stopping a parent appearing inside its own subtree,
     /// and a walk that met one would never return. No file read so far has one.
     private static func rows(of containerID: String, items: [String: [String: Any]],
-                             seen: inout Set<String>) -> [ArcRow] {
+                             seen: inout Set<String>, warnings: inout Warnings) -> [ArcRow] {
         guard let container = items[containerID], seen.insert(containerID).inserted else { return [] }
         var out: [ArcRow] = []
-        for id in container["childrenIds"] as? [String] ?? [] {
-            guard let item = items[id] else { continue }
+        let children = container["childrenIds"] as? [Any] ?? []
+        if container["childrenIds"] != nil, !(container["childrenIds"] is [Any]) {
+            warnings.skippedRowTypes["invalid child list", default: 0] += 1
+        }
+        for child in children {
+            guard let id = child as? String else {
+                warnings.skippedRowTypes["invalid child reference", default: 0] += 1
+                continue
+            }
+            guard !seen.contains(id) else { continue }
+            guard let item = items[id] else {
+                warnings.skippedRowTypes["missing item", default: 0] += 1
+                continue
+            }
             let data = item["data"] as? [String: Any] ?? [:]
             if let tab = data["tab"] as? [String: Any] {
-                // Only web pages. An `arc://` or `file://` row is a place Vane has nothing to
-                // put, and letting one through would mean a sidebar row that opens nothing.
+                seen.insert(id)
+                // Arc-only and local pages have no equivalent in this web-page importer.
                 guard let raw = tab["savedURL"] as? String, let url = URL(string: raw),
-                      url.scheme == "http" || url.scheme == "https",
-                      seen.insert(id).inserted else { continue }
-                // The item's own `title` is the name the user typed over the row — null on
-                // most tabs and not on a renamed one (7 of 28 on this Mac). `savedTitle` is
-                // the name the page came with, and is what Arc draws when there is no
-                // rename. Taking only `savedTitle` turned "Vane Browser" back into
-                // "notnaki/vane: Native macOS browser in Swift/SwiftUI on WebKit".
+                      url.scheme == "http" || url.scheme == "https", url.host?.isEmpty == false else { continue }
                 let renamed = (item["title"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                out.append(.tab(url: url, title: renamed ?? (tab["savedTitle"] as? String ?? "")))
+                out.append(.tab(url: url, title: tab["savedTitle"] as? String ?? "", customName: renamed))
             } else if let list = data["list"] {
-                // A folder. Its name is the *item's* title, not anything inside `data` —
-                // `{"list": {}}` is empty on every folder a person made.
-                let kids = rows(of: id, items: items, seen: &seen)
+                let kids = rows(of: id, items: items, seen: &seen, warnings: &warnings)
                 let live = liveSource(list)
-                // An empty ordinary folder is a row with nothing behind it and is dropped; an
-                // empty *live* folder is the normal state of one, because what fills it is a
-                // search that has not run yet. Dropping those lost the user's Pull Requests
-                // folder — the one folder in Arc that Vane has a real equivalent for.
                 guard !kids.isEmpty || live != nil else { continue }
-                out.append(.folder(name: item["title"] as? String ?? "Folder", rows: kids,
-                                   live: live))
+                out.append(.folder(name: item["title"] as? String ?? "Folder", rows: kids, live: live))
+            } else if data["splitView"] != nil {
+                let kids = rows(of: id, items: items, seen: &seen, warnings: &warnings)
+                let childIDs = item["childrenIds"] as? [String] ?? []
+                let panes = kids.compactMap { row -> ArcRow.Pane? in
+                    if case .tab(let url, let title, let customName) = row {
+                        return .init(url: url, title: title, customName: customName)
+                    }
+                    return nil
+                }
+                if let split = data["splitView"] as? [String: Any],
+                   (2...Split.maxPanes).contains(childIDs.count), Set(childIDs).count == childIDs.count,
+                   panes.count == childIDs.count, kids.count == panes.count,
+                   let orientation = split["layoutOrientation"] as? String,
+                   ["horizontal", "vertical"].contains(orientation),
+                   let weights = split["itemWidthFactors"] as? [Double], weights.count == panes.count,
+                   weights.allSatisfy({ $0.isFinite && $0 > 0 }), weights.reduce(0, +).isFinite,
+                   let focus = split["focusItemID"] as? String, let active = childIDs.firstIndex(of: focus) {
+                    out.append(.split(panes: panes, vertical: orientation == "vertical",
+                                      weights: Split.normalised(weights), active: active))
+                } else {
+                    warnings.flattenedSplits += 1
+                    out += flatten(kids).map { .tab(url: $0.url, title: $0.title, customName: $0.customName) }
+                }
+            } else {
+                // Containers are transparent. A future row type gives up its children too,
+                // and is counted so a format change can never look like a complete import.
+                if data["itemContainer"] == nil {
+                    warnings.skippedRowTypes[data.keys.sorted().joined(separator: ",").isEmpty
+                        ? "unknown" : data.keys.sorted().joined(separator: ","), default: 0] += 1
+                }
+                out += rows(of: id, items: items, seen: &seen, warnings: &warnings)
             }
-            // Anything else is an `itemContainer` (a root) nested where it cannot be, or a
-            // row type this version of Arc invented after this was written. Skipped.
         }
         return out
     }
@@ -202,20 +256,23 @@ struct ArcSidebar: Equatable, Sendable {
             // One `seen` per space: the two sections of one space cannot share a row, and a
             // row that somehow appears in both should be drawn once.
             var seen = Set<String>()
-            let pinned = containerID["pinned"].map { rows(of: $0, items: items, seen: &seen) } ?? []
-            let today = containerID["unpinned"].map { rows(of: $0, items: items, seen: &seen) } ?? []
+            let pinned = containerID["pinned"].map { rows(of: $0, items: items, seen: &seen, warnings: &out.warnings) } ?? []
+            let today = containerID["unpinned"].map { rows(of: $0, items: items, seen: &seen, warnings: &out.warnings) } ?? []
             out.spaces.append(ArcSpace(id: id,
                                        title: (space["title"] as? String) ?? "Space",
                                        profileDirectory: directory,
                                        themeHex: themeHex(space["customInfo"]),
-                                       pinned: pinned, today: today))
+                                       pinned: pinned, today: today,
+                                       hasSplitViews: seen.contains { id in
+                                           (items[id]?["data"] as? [String: Any])?["splitView"] != nil
+                                       }))
         }
 
         for (descriptor, container) in pairs(box["topAppsContainerIDs"]) {
             guard let directory = profileDirectory(descriptor),
                   let container = container as? String else { continue }
             var seen = Set<String>()
-            let urls = flatten(rows(of: container, items: items, seen: &seen))
+            let urls = flatten(rows(of: container, items: items, seen: &seen, warnings: &out.warnings))
             guard !urls.isEmpty else { continue }
             out.favourites[directory, default: []] += urls.map(\.url)
         }
@@ -225,11 +282,12 @@ struct ArcSidebar: Equatable, Sendable {
     /// Every tab in a tree, in drawing order, folders given up. What the favourites row and
     /// the Space's flat url lists are made of — the folders themselves travel separately, in
     /// a `Pins`.
-    static func flatten(_ rows: [ArcRow]) -> [(url: URL, title: String)] {
-        rows.flatMap { row -> [(url: URL, title: String)] in
+    static func flatten(_ rows: [ArcRow]) -> [ArcRow.Pane] {
+        rows.flatMap { row -> [ArcRow.Pane] in
             switch row {
-            case .tab(let url, let title): [(url, title)]
+            case .tab(let url, let title, let customName): [.init(url: url, title: title, customName: customName)]
             case .folder(_, let kids, _): flatten(kids)
+            case .split(let panes, _, _, _): panes
             }
         }
     }
@@ -412,15 +470,18 @@ enum ArcImport {
         func walk(_ rows: [ArcRow], parent: UUID?, depth: Int) {
             for row in rows {
                 switch row {
-                case .tab(let url, let title):
+                case .tab(let url, let title, let customName):
                     pins.entries.append(Pins.Entry(row: .tab(url.absoluteString), parent: parent))
                     urls.append(url)
                     // Two rows on the same page are one key in the sidecar, exactly as they
                     // are for a Space Vane wrote itself; the first title wins rather than the
                     // last, so the page keeps the name of the row drawn first.
-                    if !title.isEmpty, titles[url.absoluteString] == nil {
-                        titles[url.absoluteString] = title
+                    let label = customName ?? title
+                    if !label.isEmpty, titles[url.absoluteString] == nil {
+                        titles[url.absoluteString] = label
                     }
+                case .split(let panes, _, _, _):
+                    walk(panes.map { .tab(url: $0.url, title: $0.title, customName: $0.customName) }, parent: parent, depth: depth)
                 case .folder(let name, let kids, let live):
                     // Arc nests as deep as it likes and Vane's sidebar stops at
                     // `Pins.maxDepth`. A folder past that gives up its rows to the folder it
@@ -442,6 +503,67 @@ enum ArcImport {
         }
         walk(rows, parent: nil, depth: 0)
         return (pins, urls, titles)
+    }
+
+    /// Identity-based persistence is required for split panes, including two on the same
+    /// URL. Space restoration already consumes this layout without opening any pages.
+    static func layout(pinned: [ArcRow], today: [ArcRow]) -> SpaceLayout {
+        var layout = SpaceLayout(tabs: [], pins: Pins(), today: Pins(), splits: [], selected: nil)
+        func section(_ rows: [ArcRow], kind: TabKind) -> Pins {
+            var shape = Pins()
+            @discardableResult
+            func page(_ url: URL, _ title: String, customName: String?, parent: UUID?) -> UUID {
+                let id = UUID()
+                layout.tabs.append(.init(id: id, url: url, kind: kind, title: title,
+                                         customName: customName,
+                                         home: kind == .pinned ? url : nil))
+                shape.entries.append(.init(row: .tab(id.uuidString), parent: parent))
+                return id
+            }
+            func walk(_ rows: [ArcRow], parent: UUID?, depth: Int) {
+                for row in rows {
+                    switch row {
+                    case .tab(let url, let title, let customName): page(url, title, customName: customName, parent: parent)
+                    case .split(let panes, let vertical, let weights, let active):
+                        let ids = panes.map { page($0.url, $0.title, customName: $0.customName, parent: parent) }
+                        layout.splits.append(.init(urls: panes.map { $0.url.absoluteString }, vertical: vertical,
+                                                   active: active, ids: ids.map(\.uuidString), weights: weights))
+                    case .folder(let name, let kids, let live):
+                        guard depth <= Pins.maxDepth else {
+                            walk(kids, parent: parent, depth: depth)
+                            continue
+                        }
+                        var folder = Folder(name: name)
+                        folder.live = live
+                        shape.entries.append(.init(row: .folder(folder), parent: parent))
+                        walk(kids, parent: folder.id, depth: depth + 1)
+                    }
+                }
+            }
+            walk(rows, parent: nil, depth: 0)
+            return shape
+        }
+        layout.pins = section(pinned, kind: .pinned)
+        layout.today = section(today, kind: .today)
+        // Selecting a lead pane also changes its split's focus. Land on the saved active
+        // pane instead, or ordinary cold restoration would immediately overwrite it.
+        if let landing = layout.tabs.first(where: { $0.kind == .today }) ?? layout.tabs.first {
+            if let split = layout.splits.first(where: { $0.ids?.contains(landing.id.uuidString) == true }),
+               let ids = split.ids, ids.indices.contains(split.active) {
+                layout.selected = UUID(uuidString: ids[split.active])
+            } else { layout.selected = landing.id }
+        }
+        return layout
+    }
+
+    /// Cached titles belong in the sidecar; a user rename belongs only in layout metadata.
+    /// Duplicate URL occurrences share one sidecar slot, with the first cached title kept.
+    static func parkedTitles(in layout: SpaceLayout) -> [String: Parked] {
+        var parked: [String: Parked] = [:]
+        for page in layout.tabs where !page.title.isEmpty && parked[page.savedURL.absoluteString] == nil {
+            parked[page.savedURL.absoluteString] = Parked(title: page.title)
+        }
+        return parked
     }
 
     // MARK: What is on disk
@@ -500,6 +622,8 @@ enum ArcImport {
         /// under `User Data` is gone, which `vaults` by definition has no entry for.
         var directories: [String] = []
         var vaults: [String: Vault] = [:]
+        var routing: ArcLinkRouting? = nil
+        var routingUnavailable = false
 
         /// Arc's `User Data`, where the Chromium half of the installation lives.
         var userData: URL { root.appendingPathComponent("User Data") }
@@ -516,6 +640,10 @@ enum ArcImport {
         var passwords = 0, passwordsAlready = 0, passwordsSkipped = 0
         var cookies = 0, cookiesSkipped = 0, history = 0, bookmarks = 0
         var historyImportFailures: [String] = []
+        var sidebarWarnings = ArcSidebar.Warnings()
+        var routingRules = 0, routingRulesSkipped = 0, routingRulesAlready = 0
+        var routingDefault: String? = nil
+        var routingUnavailable = false, routingDefaultUnsupported = false
         /// Rows the Safe Storage key would not open, of either kind.
         var locked = 0
         /// Rows that came out in the clear and the keychain would not take.
@@ -653,6 +781,11 @@ enum ArcImport {
                 FileManager.default.fileExists(atPath: userData.appendingPathComponent($0).path)
             }
             var scan = Scan(root: root, sidebar: sidebar, profiles: listed, directories: directories)
+            let routingFile = root.appendingPathComponent("StorableLinkRouting.json")
+            if FileManager.default.fileExists(atPath: routingFile.path) {
+                scan.routing = (try? Data(contentsOf: routingFile)).flatMap(ArcLinkRouting.parse)
+                scan.routingUnavailable = scan.routing == nil
+            }
             for directory in directories {
                 let path = userData.appendingPathComponent(directory)
                 guard FileManager.default.fileExists(atPath: path.path) else { continue }
@@ -747,13 +880,13 @@ enum ArcImport {
     /// second run safe: there is no field-by-field merge to get wrong, and a user who wants
     /// one space again can rename or delete the one they have.
     ///
-    /// False for a space that was skipped, so the caller knows whether the profile's window
-    /// has anything new to be told about.
+    /// The new Space identity, or nil when skipped. Link rules only target Spaces actually
+    /// imported by this run, never an unrelated Vane Space sharing the same display name.
     @MainActor private static func write(_ arc: ArcSpace, into profileID: UUID,
-                                         counts: inout Counts) async throws -> Bool {
+                                         counts: inout Counts) async throws -> UUID? {
         guard !ProfileManager.shared.spaces(for: profileID)
             .contains(where: { $0.name.caseInsensitiveCompare(arc.title) == .orderedSame })
-        else { counts.spacesSkipped += 1; return false }
+        else { counts.spacesSkipped += 1; return nil }
 
         let (pins, pinnedURLs, pinnedTitles) = shape(arc.pinned)
         // Today has a shape of its own on disk — a second key of exactly the same form, named
@@ -765,6 +898,8 @@ enum ArcImport {
         var space = ProfileManager.shared.createSpace(name: arc.title, in: profileID)
         space.pinnedTabURLs = pinnedURLs
         space.tabURLs = todayURLs
+        let workspace = layout(pinned: arc.pinned, today: arc.today)
+        if arc.hasSplitViews || !workspace.splits.isEmpty { space.layout = workspace }
         if let hex = arc.themeHex { Spaces.setThemeColors([hex], on: &space) }
         ProfileManager.shared.updateSpace(space)
 
@@ -786,13 +921,29 @@ enum ArcImport {
         // And the names, in the sidecar, keyed by url exactly as `saveCurrentSpace` keys it.
         // Without this every restored row comes up named after its host — "github.com"
         // instead of the page Arc was showing.
-        var parked: [String: Parked] = [:]
-        for (url, title) in pinnedTitles.merging(todayTitles, uniquingKeysWith: { a, _ in a }) {
-            parked[url] = Parked(title: title)
-        }
+        let parked = space.layout != nil ? parkedTitles(in: workspace)
+            : pinnedTitles.merging(todayTitles, uniquingKeysWith: { a, _ in a }).mapValues { Parked(title: $0) }
         try await saveImportedTitles(parked, space: space.id, profileID: profileID, in: Store.directory)
         counts.spaces += 1
-        return true
+        return space.id
+    }
+
+    /// Accepted routing preferences merge after the user's existing rules, preserving their
+    /// precedence. A valid Arc default is part of the same explicitly reviewed import.
+    @MainActor static func importRouting(_ routing: ArcLinkRouting?, unavailable: Bool,
+                                         spaceIDs: [String: UUID], counts: inout Counts) {
+        counts.routingUnavailable = unavailable
+        guard let routing else { return }
+        let plan = routing.plan(existing: AirTraffic.rules, spaceIDs: spaceIDs)
+        if plan.added > 0 { AirTraffic.rules = plan.rules }
+        counts.routingRules += plan.added
+        counts.routingRulesAlready += plan.already
+        counts.routingRulesSkipped += plan.skipped
+        counts.routingDefaultUnsupported = routing.unsupportedDefault
+        if let target = routing.defaultTarget {
+            UserDefaults.vane.set(target, forKey: LinkTarget.key)
+            counts.routingDefault = target
+        }
     }
 
     /// Arc titles share the ordered session lane. Awaiting durability leaves MainActor
@@ -990,19 +1141,25 @@ enum ArcImport {
 
     @MainActor private static func applyAccepted(_ scan: Scan, admission: ImportOperations.Admission) async throws -> Counts {
         var counts = Counts()
+        counts.sidebarWarnings = scan.sidebar.warnings
         let ids = profileIDs(for: scan, counts: &counts)
         let key = await Task.detached(priority: .userInitiated) { safeStorageKey() }.value
         try Task.checkCancellation()
         counts.noKey = key == nil
 
         var gained: Set<UUID> = []
+        var spaceIDs: [String: UUID] = [:]
         defer { refreshSpaces(afterImporting: gained) }
         for space in scan.sidebar.spaces {
             try Task.checkCancellation()
             guard let profileID = ids[space.profileDirectory],
                   ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
-            if try await write(space, into: profileID, counts: &counts) { gained.insert(profileID) }
+            if let id = try await write(space, into: profileID, counts: &counts) {
+                spaceIDs[space.id] = id
+                gained.insert(profileID)
+            }
         }
+        importRouting(scan.routing, unavailable: scan.routingUnavailable, spaceIDs: spaceIDs, counts: &counts)
         for (directory, urls) in scan.sidebar.favourites.sorted(by: { $0.key < $1.key }) {
             try Task.checkCancellation()
             guard let profileID = ids[directory],
@@ -1126,7 +1283,7 @@ enum ArcImport {
     /// read without running an import.
     static func summary(_ scan: Scan) -> String {
         func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
-        return "Found " + [
+        let found = "Found " + [
             // `directories`, not `vaults`: a profile whose folder Arc has lost still gets a
             // Vane profile and still brings its spaces, and the alert has to advertise what
             // the import will actually do.
@@ -1136,6 +1293,10 @@ enum ArcImport {
             plural(scan.passwordCount, "password", "passwords"),
             plural(scan.cookieCount, "cookie", "cookies"),
         ].joined(separator: ", ") + "."
+        var notes = scan.sidebar.warnings.messages
+        if let routing = scan.routing { notes.append(routing.consent) }
+        if scan.routingUnavailable { notes.append("Arc's link routing file could not be read; existing link settings will be kept.") }
+        return ([found] + notes).joined(separator: " ")
     }
 
     /// The toast: what happened, and then what did not.
@@ -1152,13 +1313,19 @@ enum ArcImport {
         if c.liveFolders > 0 {
             parts.append("\(c.liveFolders) live folder\(c.liveFolders == 1 ? "" : "s")")
         }
+        if c.routingRules > 0 { parts.append("\(c.routingRules) Air Traffic Control rule\(c.routingRules == 1 ? "" : "s")") }
+        if c.routingDefault != nil { parts.append("link-opening preference") }
         if c.favourites > 0 { parts.append("\(c.favourites) favourite\(c.favourites == 1 ? "" : "s")") }
         if c.passwords > 0 { parts.append("\(c.passwords) password\(c.passwords == 1 ? "" : "s")") }
         if c.cookies > 0 { parts.append("\(c.cookies) cookie\(c.cookies == 1 ? "" : "s")") }
         if c.history > 0 { parts.append("\(c.history) history entr\(c.history == 1 ? "y" : "ies")") }
         if c.bookmarks > 0 { parts.append("\(c.bookmarks) bookmark\(c.bookmarks == 1 ? "" : "s")") }
 
-        var tail: [String] = []
+        var tail = c.sidebarWarnings.messages
+        if c.routingRulesSkipped > 0 { tail.append("\(c.routingRulesSkipped) Air Traffic Control rules were skipped (unsupported match or destination, or Space not imported).") }
+        if c.routingRulesAlready > 0 { tail.append("\(c.routingRulesAlready) duplicate or existing Air Traffic Control rules were kept.") }
+        if c.routingUnavailable { tail.append("Arc's link routing file could not be read; existing link settings were kept.") }
+        if c.routingDefaultUnsupported { tail.append("Arc's default link destination was unsupported; Vane's default was kept.") }
         if c.noKey {
             tail.append("Passwords and sessions need Arc's keychain key.")
         } else if c.wrongKey {
@@ -1305,7 +1472,7 @@ enum ArcImport {
         assert("arc sidebar: a tab that is not a web page is not imported",
                !ArcSidebar.flatten(sidebar.spaces[0].pinned).contains { $0.title == "Library" })
         assert("arc sidebar: a row Arc renamed comes across under the name the user gave it",
-               ArcSidebar.flatten(sidebar.spaces[0].pinned).first?.title == "Apple Newsroom")
+               ArcSidebar.flatten(sidebar.spaces[0].pinned).first?.customName == "Apple Newsroom")
         assert("arc sidebar: a row nobody renamed keeps the name the page came with",
                ArcSidebar.flatten(sidebar.spaces[0].pinned).map(\.title).contains("Swift Blog"))
         assert("arc sidebar: an empty folder nothing fills is not a row",

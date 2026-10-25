@@ -1,14 +1,31 @@
 import AppKit
+import WebKit
 import XCTest
 @testable import vane
 
 @MainActor final class ClosedTabHistoryTests: XCTestCase {
     private var stores: [TabStore] = []
+    private var ownedProfiles = Set<UUID>()
     private var server: CompatibilityServer!
     private var oldHTTPS = false
     private final class WeakTab {
         weak var value: Tab?
         init(_ value: Tab?) { self.value = value }
+    }
+    @MainActor private final class FaviconFetchGate {
+        var started = false
+        private var reply: CheckedContinuation<Data?, Never>?
+        private var finished = false
+
+        func fetch() async -> Data? {
+            guard !finished else { return nil }
+            return await withCheckedContinuation { reply in
+                self.reply = reply
+                started = true
+            }
+        }
+
+        func finish() { finished = true; reply?.resume(returning: nil); reply = nil }
     }
 
     override func setUp() async throws {
@@ -35,10 +52,15 @@ import XCTest
         server.stop()
         server = nil
         HTTPSOnly.enabled = oldHTTPS
+        let released = ownedProfiles
+        ownedProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
     }
 
-    private func store(profile: UUID = UUID(), isPrivate: Bool = false) -> TabStore {
-        let made = TabStore(isPrivate: isPrivate, profileID: profile, session: [])
+    private func store(profile: UUID? = nil, isPrivate: Bool = false) -> TabStore {
+        let ownedProfile = profile ?? UUID()
+        if profile == nil && !isPrivate { ownedProfiles.insert(ownedProfile) }
+        let made = TabStore(isPrivate: isPrivate, profileID: ownedProfile, session: [])
         stores.append(made)
         return made
     }
@@ -101,6 +123,57 @@ import XCTest
         XCTAssertEqual(reopened.web.backForwardList.forwardList.map { $0.url.path }, ["/c"])
         _ = try XCTUnwrap(reopened.web.goForward())
         try await settled("/c", in: reopened)
+    }
+
+    func testPendingFaviconFetchDoesNotRetainClosedTab() async throws {
+        let store = store()
+        var original: Tab? = store.newBlankTab()
+        let retired = WeakTab(original)
+        try await load("/pending-icon", in: original!)
+        let gate = FaviconFetchGate()
+        let cache = Favicons(profileID: store.profileID, fetch: { _ in await gate.fetch() })
+        defer { gate.finish() }
+        cache.load(for: original!)
+        try await compatibilityWait { gate.started }
+        store.close(original!.id)
+        XCTAssertNil(original?.existingWeb, "Closing must release the live page")
+        original = nil
+        XCTAssertNil(retired.value, "An unfinished icon request cannot retain a closed tab")
+        withExtendedLifetime(cache) {}
+    }
+
+    func testPendingSiteBoostDocumentProbeDoesNotRetainClosedTab() async throws {
+        let store = store()
+        var original: Tab? = store.newBlankTab()
+        let retired = WeakTab(original)
+        let web = original!.web
+        let controller = web.configuration.userContentController
+        let scripts = controller.userScripts.map { $0 }
+        controller.removeAllUserScripts()
+        controller.addUserScript(WKUserScript(source: """
+            window.__boostIdentityReads = 0;
+            const pending = new Promise(() => {});
+            Object.defineProperty(document, '__vaneBoostPageToken', {
+                get() { window.__boostIdentityReads++; return pending; }
+            });
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        for script in scripts { controller.addUserScript(script) }
+        original!.navigate(to: try server.url("/pending-boost"))
+        // The page identity installer reads once. A second read is the native probe,
+        // whose callAsyncJavaScript reply waits for this document's pending promise.
+        try await compatibilityWait {
+            try await web.evaluateJavaScript("window.__boostIdentityReads >= 2") as? Bool == true
+        }
+        let processSelector = NSSelectorFromString("_webProcessIdentifier")
+        if web.responds(to: processSelector) {
+            typealias Getter = @convention(c) (AnyObject, Selector) -> Int32
+            let pid = unsafeBitCast(web.method(for: processSelector), to: Getter.self)(web, processSelector)
+            print("Owned boost probe WebContent: \(String(describing: NativeFixtureDiagnostics.identity(pid)))")
+        }
+        store.close(original!.id)
+        XCTAssertNil(original?.existingWeb, "Closing must release the live page")
+        original = nil
+        XCTAssertNil(retired.value, "An unfinished document probe cannot retain a closed tab")
     }
 
     func testClosingSuspendedTabPreservesHistoryWithoutWakingIt() async throws {

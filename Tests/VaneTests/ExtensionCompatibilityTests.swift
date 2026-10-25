@@ -5,6 +5,7 @@ import XCTest
 
 @MainActor final class ExtensionCompatibilityTests: XCTestCase {
     private var profile: UUID!
+    private var ownedProfiles = Set<UUID>()
     private var folder: URL!
     private var views: [WKWebView] = []
 
@@ -12,6 +13,7 @@ import XCTest
         TestEnvironment.prepare()
         _ = NSApplication.shared
         profile = UUID()
+        ownedProfiles.insert(profile)
         folder = Store.directory.appendingPathComponent("compat-extension-\(UUID())")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try Data(#"{"manifest_version":3,"name":"Compatibility Fixture","version":"1.0","permissions":["storage"],"options_ui":{"page":"options.html"},"content_scripts":[{"matches":["https://example.test/*"],"js":["content.js"]}]}"#.utf8)
@@ -25,12 +27,18 @@ import XCTest
     override func tearDown() async throws {
         for view in views { view.stopLoading(); view.removeFromSuperview() }
         views.removeAll()
-        let host = ExtensionHost.host(for: profile)
-        for context in host.installed { host.remove(context) }
-        ExtensionHost.forget(profile)
+        func removeInstallations() {
+            let host = ExtensionHost.host(for: profile)
+            for context in host.installed { host.remove(context) }
+            ExtensionHost.forget(profile)
+        }
+        removeInstallations()
         ScopedPaths.remove(path: folder.path, from: ExtensionHost.key(for: profile))
         ExtensionConsent.remove(for: folder, profileID: profile)
         try? FileManager.default.removeItem(at: folder)
+        let released = ownedProfiles
+        ownedProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
     }
 
     func testDeletingProfileRemovesOnlyItsExtensionIdentities() {
@@ -106,7 +114,9 @@ import XCTest
     func testApprovedContentScriptExecutesOnlyInItsProfileAndMatchingOrigin() async throws {
         _ = try await load()
         let tab = Tab(profileID: profile)
-        let other = Tab(profileID: UUID())
+        let otherProfile = UUID()
+        ownedProfiles.insert(otherProfile)
+        let other = Tab(profileID: otherProfile)
         let privateTab = Tab(isPrivate: true)
         defer {
             tab.tearDown(); other.tearDown(); privateTab.tearDown()

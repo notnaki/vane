@@ -5,6 +5,7 @@ import XCTest
 
 @MainActor final class ExtensionRuntimePermissionTests: XCTestCase {
     private var profile: UUID!
+    private var ownedProfiles = Set<UUID>()
     private var folder: URL!
     private var view: WKWebView?
 
@@ -12,6 +13,7 @@ import XCTest
         TestEnvironment.prepare()
         _ = NSApplication.shared
         profile = UUID()
+        ownedProfiles.insert(profile)
         folder = Store.directory.appendingPathComponent("runtime-extension-\(UUID())")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try Data(#"{"manifest_version":3,"name":"Runtime Fixture","version":"1.0","optional_permissions":["cookies"],"optional_host_permissions":["https://example.test/*"],"options_ui":{"page":"options.html"}}"#.utf8)
@@ -21,11 +23,17 @@ import XCTest
 
     override func tearDown() async throws {
         view?.stopLoading(); view = nil
-        let host = ExtensionHost.host(for: profile)
-        for context in host.installed { host.remove(context) }
-        ExtensionHost.forget(profile)
+        func removeInstallations() {
+            let host = ExtensionHost.host(for: profile)
+            for context in host.installed { host.remove(context) }
+            ExtensionHost.forget(profile)
+        }
+        removeInstallations()
         ScopedPaths.remove(path: folder.path, from: ExtensionHost.key(for: profile))
         try? FileManager.default.removeItem(at: folder)
+        let released = ownedProfiles
+        ownedProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
     }
 
     private func load() async throws -> (ExtensionHost, WKWebExtensionContext) {

@@ -3,6 +3,16 @@ import XCTest
 @testable import vane
 
 @MainActor final class EaselTabTests: XCTestCase {
+    // Only fixtures that actually open normal-profile extension/WebKit resources.
+    // Direct native-board/model checks must not create a backend during cleanup.
+    private var nativeProfiles: Set<UUID> = []
+
+    override func tearDown() async throws {
+        let profiles = nativeProfiles
+        nativeProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(profiles)
+    }
+
     func testProfileMoveCannotStrandLocalEaselBoards() async throws {
         TestEnvironment.prepare()
         let directory = Store.directory.appendingPathComponent("easel-profile-move-\(UUID())")
@@ -49,6 +59,7 @@ import XCTest
             Store.forget(profile)
         }
         let tab = try XCTUnwrap(store.openEasel(board.id))
+        nativeProfiles.insert(store.profileID)
         let folder = Folder(name: "Research")
         store.pins.entries = [.init(row: .folder(folder)),
                               .init(row: .tab(tab.id.uuidString), parent: folder.id)]
@@ -100,6 +111,7 @@ import XCTest
             Store.forget(profile)
         }
         let tab = try XCTUnwrap(store.openEasel(board.id))
+        nativeProfiles.insert(store.profileID)
         Spaces.move(tab.id, to: second.id, as: .pinned, from: store)
         XCTAssertFalse(store.tabs.contains { $0.easelID == board.id })
         store.switchTo(space: second)
@@ -126,6 +138,7 @@ import XCTest
         tab.navigate(to: URL(string: "about:blank")!)
         XCTAssertNil(tab.easelSession)
         XCTAssertNotNil(tab.existingWeb)
+        if tab.existingWeb != nil { nativeProfiles.insert(tab.profileID) }
         tab.navigate(to: EaselAddress.url(board.id))
         XCTAssertEqual(tab.easelID, board.id)
         XCTAssertNil(tab.existingWeb)
@@ -211,6 +224,7 @@ import XCTest
             TabStore.all.removeAll { $0 === store }
         }
         let tab = try XCTUnwrap(store.openEasel(board.id))
+        nativeProfiles.insert(store.profileID)
         XCTAssertEqual(tab.kind, .pinned)
         XCTAssertEqual(store.current, tab.id)
         XCTAssertFalse(PageCapture.available(tab))
@@ -276,6 +290,7 @@ import XCTest
         let captured = await EaselWindow.addCapture(image, title: "A useful passage", source: "https://example.com/research",
                                                     to: target.id, in: store)
         XCTAssertTrue(captured)
+        if captured { nativeProfiles.insert(store.profileID) }
         XCTAssertTrue(repository.board(first.id)?.items.isEmpty == true)
         let item = try XCTUnwrap(repository.board(target.id)?.items.first)
         XCTAssertEqual(item.source, "https://example.com/research")

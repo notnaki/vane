@@ -41,10 +41,19 @@ final class ExtensionManagerModelTests: XCTestCase {
 }
 
 @MainActor final class ExtensionManagerPaletteTests: XCTestCase {
+    private var ownedProfiles = Set<UUID>()
+
+    override func tearDown() async throws {
+        let released = ownedProfiles
+        ownedProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(released)
+    }
+
     func testManagerSearchOwnsCommandFOnlyInItsWindow() throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let profileID = UUID()
+        ownedProfiles.insert(profileID)
         let host = ExtensionHost.host(for: profileID)
         defer { ExtensionManagement.close(for: profileID); ExtensionHost.forget(profileID) }
         ExtensionManagement.show(for: host)
