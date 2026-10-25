@@ -111,6 +111,72 @@ import XCTest
                        99 * (Look.rowHeight + Look.rowGap), accuracy: 1)
     }
 
+    /// Causal experiment: remove offscreen responders without changing the scroll
+    /// owner, row controls, hosting root or native Space transition machinery.
+    func testBufferedSidebarBoundsControlsWithoutChangingExtentOrRowIdentity() async throws {
+        let flag = "VANE_EXPERIMENT_BUFFERED_SIDEBAR"
+        let previous = ProcessInfo.processInfo.environment[flag]
+        setenv(flag, "1", 1)
+        defer {
+            if let previous { setenv(flag, previous, 1) } else { unsetenv(flag) }
+        }
+        for count in [100, 1_000] {
+            let store = fixture(count: count), controls = Controls(), offset = Offset()
+            let (_, host) = mount(Outline(store: store, controls: controls, offset: offset))
+            try await compatibilityWait { !controls.byID.isEmpty }
+            try await Task.sleep(for: .milliseconds(200))
+            let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
+            let document = try XCTUnwrap(scroll.documentView)
+            let originalHeight = document.frame.height
+            let originalFirst = try XCTUnwrap(controls.byID[store.tabs[0].id.uuidString]?.view)
+            XCTAssertLessThan(controls.byID.values.compactMap(\.view).count, 40,
+                              "Only the viewport and its buffer may contribute responder nodes")
+            XCTAssertNil(controls.byID[store.tabs[count - 1].id.uuidString]?.view)
+
+            // Small movement must reuse the existing controls, rather than remounting
+            // a new range for every pixel of a native gesture.
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: 20))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            try await Task.sleep(for: .milliseconds(80))
+            XCTAssertTrue(controls.byID[store.tabs[0].id.uuidString]?.view === originalFirst)
+            XCTAssertEqual(document.frame.height, originalHeight, accuracy: 1)
+
+            // A scrollbar-sized jump must realize the destination, with the same exact
+            // row pitch and full content extent as the unwindowed section.
+            scroll.contentView.scroll(to: NSPoint(x: 0,
+                y: originalHeight - scroll.contentView.bounds.height))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            try await compatibilityWait { controls.byID[store.tabs[count - 1].id.uuidString]?.view?.window != nil }
+            host.layoutSubtreeIfNeeded()
+            let last = try XCTUnwrap(controls.byID[store.tabs[count - 1].id.uuidString]?.view)
+            let penultimate = try XCTUnwrap(controls.byID[store.tabs[count - 2].id.uuidString]?.view)
+            XCTAssertGreaterThan(last.visibleRect.intersection(last.bounds).height, 1)
+            XCTAssertEqual(abs(last.convert(last.bounds, to: document).minY
+                               - penultimate.convert(penultimate.bounds, to: document).minY),
+                           Look.rowHeight + Look.rowGap, accuracy: 1)
+            XCTAssertEqual(document.frame.height, originalHeight, accuracy: 1)
+            XCTAssertEqual(offset.value, scroll.contentView.bounds.minY, accuracy: 1)
+            XCTAssertLessThan(controls.byID.values.compactMap(\.view).count, 40)
+        }
+    }
+
+    func testBufferedWindowChangesInBatchesRatherThanPerPixel() {
+        var window = SidebarRowWindow()
+        let pitch = Look.rowHeight + Look.rowGap
+        _ = window.update(count: 1_000, visible: CGRect(x: 0, y: 0, width: 250, height: 300), pitch: pitch)
+        let first = window.range
+        for pixel in 1...80 {
+            XCTAssertFalse(window.update(count: 1_000,
+                visible: CGRect(x: 0, y: pixel, width: 250, height: 300), pitch: pitch))
+            XCTAssertEqual(window.range, first)
+        }
+        XCTAssertTrue(window.update(count: 1_000,
+            visible: CGRect(x: 0, y: 400, width: 250, height: 300), pitch: pitch))
+        XCTAssertLessThanOrEqual(window.range.count, 40)
+        XCTAssertTrue(window.range.contains(Int(400 / pitch)))
+        XCTAssertTrue(window.range.contains(Int(699 / pitch)))
+    }
+
     func testStructuralBoundaryMounts127AndKeeps129Virtualized() async throws {
         for count in [127, 129] {
             let store = fixture(count: count), controls = Controls()

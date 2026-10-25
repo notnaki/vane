@@ -5,6 +5,7 @@ import SwiftUI
 /// Medium outlines eagerly mount only visible rows under a captured structural bound.
 /// Larger outlines keep the existing lazy mounting path.
 struct SidebarSectionRows<Content: View>: View {
+    @State private var buffersRows = BufferedSidebarRowsExperiment.enabled
     @State private var virtualizesRetainedRows = RetainedRowVirtualizationExperiment.enabled
     @SidebarObserved var store: TabStore
     let snapshot: Feel02SidebarRowsCache.Snapshot
@@ -14,7 +15,9 @@ struct SidebarSectionRows<Content: View>: View {
 
     var body: some View {
         let rows = collapsed ? [] : snapshot.rows
-        if let retained = snapshot.retainedRows, !virtualizesRetainedRows {
+        if buffersRows && snapshot.retainedRows == nil {
+            BufferedSidebarSectionRows(rows: rows, content: content)
+        } else if let retained = snapshot.retainedRows, !virtualizesRetainedRows {
             let indices = Dictionary(rows.enumerated().map { ($0.element.id, $0.offset) },
                 uniquingKeysWith: { first, _ in first })
             VStack(spacing: 0) {

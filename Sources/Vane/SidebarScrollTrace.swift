@@ -6,8 +6,12 @@ import Darwin
 @MainActor final class SidebarScrollTrace {
     static let enabled = ProcessInfo.processInfo.environment["VANE_DIAG_SCROLL_TRACE"] == "1"
     private static var claimed = false
+    private static weak var activeTrace: SidebarScrollTrace?
     private struct Record: Codable, Sendable {
-        var kind: Int = 0 // 1=input, 2=bounds, 3=start, 4=end
+        var kind: Int = 0 // 1=input, 2=bounds, 3=start, 4=end, 5=row-window update
+        var rowLower: Int?
+        var rowUpper: Int?
+        var rowCount: Int?
         var ticks: UInt64 = 0
         var uptime: Double = 0
         var eventTime: Double = 0
@@ -85,6 +89,15 @@ import Darwin
         buffer[used] = record
         used += 1
     }
+    static func recordRowWindow(_ range: Range<Int>, count: Int, clip: NSClipView?) {
+        guard enabled, let clip, let trace = activeTrace, trace.clip === clip,
+              trace.armed, !trace.finished else { return }
+        var record = trace.snapshot(kind: 5)
+        record.rowLower = range.lowerBound
+        record.rowUpper = range.upperBound
+        record.rowCount = count
+        trace.append(record)
+    }
     private func receive(_ event: NSEvent) {
         guard !finished, armed || !Self.claimed, event.hasPreciseScrollingDeltas,
               let clip, let marker, let window = clip.window, event.window === window else { return }
@@ -97,6 +110,7 @@ import Darwin
                   window.occlusionState.contains(.visible) else { return }
             Self.claimed = true
             armed = true
+            Self.activeTrace = self
             append(snapshot(kind: 3))
             let work = DispatchWorkItem { [weak self] in
                 MainActor.assumeIsolated { self?.finish(reason: "deadline") }
@@ -125,6 +139,7 @@ import Darwin
         guard armed, !finished else { return }
         append(snapshot(kind: 4))
         finished = true
+        if Self.activeTrace === self { Self.activeTrace = nil }
         deadline?.cancel(); deadline = nil
         var timebase = mach_timebase_info_data_t()
         mach_timebase_info(&timebase)

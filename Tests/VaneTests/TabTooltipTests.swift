@@ -4,6 +4,54 @@ import XCTest
 @testable import vane
 
 final class TabTooltipTests: XCTestCase {
+    @MainActor func testVisibleRectTrackingAreaSurvivesRepeatedClippingUpdates() throws {
+        let (anchor, _, _) = nestedAnchors()
+        anchor.updateTrackingAreas()
+        let area = try XCTUnwrap(anchor.trackingAreas.first)
+        XCTAssertTrue(area.options.contains(.inVisibleRect))
+        XCTAssertTrue(area.options.contains(.activeInKeyWindow))
+        XCTAssertTrue(area.options.contains(.mouseEnteredAndExited))
+        XCTAssertTrue(area.owner as AnyObject? === anchor)
+
+        // AppKit owns the effective rectangle for .inVisibleRect. Rebuilding this
+        // registration for each row geometry update adds tracking-region work.
+        let parent = try XCTUnwrap(anchor.superview)
+        parent.bounds.size.height = 16
+        XCTAssertEqual(anchor.visibleRect.height, 16, accuracy: 0.01)
+        for _ in 0..<20 { anchor.updateTrackingAreas() }
+        XCTAssertEqual(anchor.trackingAreas.count, 1)
+        XCTAssertTrue(anchor.trackingAreas.first === area,
+            "Clipping changes must reuse the existing native tracking registration")
+        parent.bounds.size.height = 32
+        anchor.updateTrackingAreas()
+        XCTAssertEqual(anchor.visibleRect.height, 32, accuracy: 0.01)
+        XCTAssertTrue(anchor.trackingAreas.first === area)
+        XCTAssertNil(anchor.hitTest(CGPoint(x: 10, y: 10)))
+    }
+
+    @MainActor func testTrackingOwnerKeepsHoverCancellationAcrossDisableAndWindowDetach() throws {
+        let (anchor, _, tooltip) = nestedAnchors()
+        anchor.updateTrackingAreas()
+        let area = try XCTUnwrap(anchor.trackingAreas.first)
+        let owner = try XCTUnwrap(area.owner as? TabTooltipAnchorView)
+        owner.mouseEntered(with: hoverEvent(.mouseEntered))
+        XCTAssertTrue(tooltip.isPending)
+        owner.mouseExited(with: hoverEvent(.mouseExited))
+        XCTAssertFalse(tooltip.isPending)
+        owner.mouseEntered(with: hoverEvent(.mouseEntered))
+        anchor.configure(title: "Page title", enabled: false)
+        XCTAssertFalse(tooltip.isPending)
+        owner.mouseEntered(with: hoverEvent(.mouseEntered))
+        XCTAssertFalse(tooltip.isPending)
+        anchor.configure(title: "Page title", enabled: true)
+        owner.mouseEntered(with: hoverEvent(.mouseEntered))
+        XCTAssertTrue(tooltip.isPending)
+        anchor.removeFromSuperview()
+        XCTAssertNil(anchor.window)
+        XCTAssertFalse(tooltip.isPending)
+        XCTAssertFalse(tooltip.isVisible)
+    }
+
     @MainActor func testInputStaysDismissedThroughUnrelatedDisabledControlUpdates() {
         let (row, control, tooltip) = nestedAnchors()
         row.mouseEntered(with: hoverEvent(.mouseEntered))
