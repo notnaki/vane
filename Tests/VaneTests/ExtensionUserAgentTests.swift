@@ -126,6 +126,7 @@ import XCTest
     private func assertIdentity(in web: WKWebView, context: WKWebExtensionContext, expected: String, startup: String? = nil,
                                 scenario: String = "Extension", file: StaticString = #filePath, line: UInt = #line) async throws {
         let identity = try await web.evaluateJavaScript("({popup:window.startupUserAgent, background:window.backgroundIdentity.startup, current:window.backgroundIdentity.current})") as? [String: String]
+        reportCallbackObservation(for: context, scenario: scenario)
         XCTAssertEqual(identity?["popup"], expected, "\(scenario): Popup startup", file: file, line: line)
         XCTAssertEqual(identity?["background"], startup ?? expected, "\(scenario): Background startup", file: file, line: line)
         XCTAssertEqual(identity?["current"], expected, "\(scenario): Background current", file: file, line: line)
@@ -134,13 +135,19 @@ import XCTest
         }
     }
 
-    private func reportBackgroundObservation(for context: WKWebExtensionContext, scenario: String) async {
+    private func reportCallbackObservation(for context: WKWebExtensionContext, scenario: String) {
         #if DEBUG
         guard let observation = backgroundObservations[ObjectIdentifier(context)], observation.context === context else {
             print("UA fixture \(scenario): no matching live context observation")
             return
         }
         print("UA fixture \(scenario): callbackCount=\(observation.count), customUA=\(observation.customUserAgent ?? "<nil>"), applicationPool=\(observation.poolMatchesApplication), profileStore=\(observation.storeMatchesProfile)")
+        #endif
+    }
+
+    private func reportBackgroundObservation(for context: WKWebExtensionContext, scenario: String) async {
+        #if DEBUG
+        guard let observation = backgroundObservations[ObjectIdentifier(context)], observation.context === context else { return }
         guard let landing = observation.web else {
             print("UA fixture \(scenario): existing landing view released")
             return

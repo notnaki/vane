@@ -20,6 +20,9 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
+        # Temporary diagnostic: preserve the failed head's test order; restore default checkout before shipping.
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Identify Swift toolchain
         id: toolchain
