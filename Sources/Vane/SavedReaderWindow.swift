@@ -19,7 +19,7 @@ import Combine
         let mapping = Dictionary(uniqueKeysWithValues: article.resources.map { ("images/" + $0.name, "images/" + $0.name) })
         let extraction = Reader.Extraction(title: article.title, byline: article.byline, nodes: nodes(article.nodes))
         let html = Reader.html(for: extraction, url: URL(string: article.sourceURL), localImages: mapping)
-        let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self' file:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; connect-src 'none'\">"
+        let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; connect-src 'none'\">"
         let notice = "<p class=\"by\">Saved copy · \(Reader.esc(article.capturedAt.formatted(date: .abbreviated, time: .shortened)))\(article.missingImages > 0 ? " · Some images were unavailable" : "")</p>"
         return "<!doctype html><html>" + html.replacingOccurrences(of: "<head>", with: "<head>" + csp)
             .replacingOccurrences(of: "<header>", with: "<header>" + notice) + "</html>"
@@ -27,7 +27,7 @@ import Combine
 }
 
 enum SavedReaderNavigation {
-    static func failureDescription(_ error: NSError, presentation: URL) -> String {
+    static func failureDescription(_ error: NSError, document: URL) -> String {
         var chain = [error]
         for _ in 0..<2 {
             guard let next = chain.last?.userInfo[NSUnderlyingErrorKey] as? NSError else { break }
@@ -38,13 +38,9 @@ enum SavedReaderNavigation {
             report += "; underlying[\(index)]={domain=\(String(underlying.domain.prefix(256))), code=\(underlying.code)}"
         }
         for native in chain {
-            let path = native.userInfo[NSFilePathErrorKey] as? String
             let candidates = [native.userInfo[NSURLErrorFailingURLErrorKey] as? URL,
-                              (native.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:)),
-                              path.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil }]
-            if let url = candidates.compactMap({ $0 }).first(where: {
-                allowed(url: $0, articleDirectory: presentation, userInitiated: false)
-            }) {
+                              (native.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:))]
+            if let url = candidates.compactMap({ $0 }).first(where: { $0.absoluteString == document.absoluteString }) {
                 report += "; failingURL=\(String(url.absoluteString.prefix(2_048)))"
                 break
             }
@@ -52,11 +48,6 @@ enum SavedReaderNavigation {
         return report
     }
 
-    static func allowed(url: URL, articleDirectory: URL, userInitiated: Bool) -> Bool {
-        guard url.isFileURL else { return false }
-        let root = articleDirectory.standardizedFileURL.resolvingSymlinksInPath().path + "/"
-        return url.standardizedFileURL.resolvingSymlinksInPath().path.hasPrefix(root)
-    }
 }
 
 @MainActor enum SavedReaderWindow {
@@ -89,13 +80,11 @@ enum SavedReaderNavigation {
                 if let prepared = await preparation?.takeOrWait(articleID, repository: repository) { candidate = prepared }
                 else { candidate = try await repository.candidate(articleID) }
                 let html = SavedReaderDocument.html(article: candidate.article)
-                let directory = try await Task.detached(priority: .userInitiated) {
-                    try SavedReaderPresentation.prepare(candidate: candidate, html: html)
+                let content = try await Task.detached(priority: .userInitiated) {
+                    try SavedReaderContent(candidate: candidate, html: html)
                 }.value
-                guard !origin.isPrivate, !repository.invalidated, repository.articles.contains(where: { $0.id == articleID }) else {
-                    try? FileManager.default.removeItem(at: directory); return
-                }
-                let session = SavedReaderSession(article: candidate.article, directory: directory, repository: repository, origin: origin)
+                guard !origin.isPrivate, !repository.invalidated, repository.articles.contains(where: { $0.id == articleID }) else { return }
+                let session = SavedReaderSession(article: candidate.article, content: content, repository: repository, origin: origin)
                 sessions[key] = session
                 session.onClose = { sessions[key] = nil }
                 session.window.makeKeyAndOrderFront(nil)
@@ -110,24 +99,8 @@ enum SavedReaderNavigation {
     }
     static func loadSnapshot(articleID: UUID, profileID: UUID) -> LoadSnapshot? {
         guard let session = sessions[Key(profile: profileID, article: articleID)] else { return nil }
-        return LoadSnapshot(web: session.web, document: session.presentation.appendingPathComponent("article.html"),
+        return LoadSnapshot(web: session.web, document: session.document,
                             state: session.loadState, policy: session.loadPolicy, failure: session.loadFailure)
-    }
-}
-
-/// File preparation uses only validated immutable bytes, away from browser input.
-private enum SavedReaderPresentation {
-    static func prepare(candidate: ReadingQueueCandidate, html: String) throws -> URL {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vane-saved-reader-\(UUID().uuidString)")
-        try ReadingQueueFiles.ensureDirectory(directory)
-        do {
-            if !candidate.images.isEmpty {
-                let images = directory.appendingPathComponent("images"); try ReadingQueueFiles.ensureDirectory(images)
-                for (name, bytes) in candidate.images { try bytes.write(to: images.appendingPathComponent(name), options: .atomic) }
-            }
-            try Data(html.utf8).write(to: directory.appendingPathComponent("article.html"), options: .atomic)
-            return directory
-        } catch { try? FileManager.default.removeItem(at: directory); throw error }
     }
 }
 
@@ -150,7 +123,8 @@ private enum SavedReaderPresentation {
     let web: WKWebView
     let repository: ReadingQueueStore
     let articleID: UUID
-    let presentation: URL
+    let document: URL
+    private let transport: SavedReaderSchemeHandler
     weak var origin: TabStore?
     var onClose: (() -> Void)?
     @Published var message: String?
@@ -159,13 +133,15 @@ private enum SavedReaderPresentation {
     private(set) var loadState = "not requested"
     private(set) var loadPolicy = "not received"
     private(set) var loadFailure: String?
-    init(article: ReadingArticle, directory: URL, repository: ReadingQueueStore, origin: TabStore) {
+    init(article: ReadingArticle, content: SavedReaderContent, repository: ReadingQueueStore, origin: TabStore) {
         let articleID = article.id
         self.articleID = articleID; self.repository = repository; self.origin = origin
-        presentation = directory
+        document = content.document
+        transport = SavedReaderSchemeHandler(content: content)
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        configuration.setURLSchemeHandler(transport, forURLScheme: SavedReaderContent.scheme)
         web = WKWebView(frame: .zero, configuration: configuration)
         window = NSWindow(contentRect: .init(x: 0, y: 0, width: 850, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         super.init()
@@ -175,8 +151,8 @@ private enum SavedReaderPresentation {
         window.contentView = NSHostingView(rootView: SavedReaderView(session: self, repository: repository))
         window.center()
         loadState = "requested"
-        if web.loadFileURL(directory.appendingPathComponent("article.html"), allowingReadAccessTo: directory) == nil {
-            loadState = "loadFileURL returned nil"
+        if web.load(URLRequest(url: document)) == nil {
+            loadState = "load returned nil"
         }
         observation = repository.$revision.sink { [weak self] _ in
             guard let self else { return }
@@ -202,14 +178,13 @@ private enum SavedReaderPresentation {
         applyPreferences()
     }
     func windowWillClose(_ notification: Notification) {
-        observation = nil; web.stopLoading(); web.navigationDelegate = nil
+        observation = nil; transport.revoke(); web.stopLoading(); web.navigationDelegate = nil
         web.removeFromSuperview(); window.contentView = nil
-        try? FileManager.default.removeItem(at: presentation)
         onClose?(); onClose = nil
     }
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
         guard let url = action.request.url else { loadPolicy = "cancel nil URL"; return .cancel }
-        if SavedReaderNavigation.allowed(url: url, articleDirectory: presentation, userInitiated: false) {
+        if action.targetFrame?.isMainFrame == true, (action.request.httpMethod ?? "GET") == "GET", transport.allowsNavigation(url) {
             loadPolicy = "allow \(url.absoluteString)"
             return .allow
         }
@@ -227,7 +202,7 @@ private enum SavedReaderPresentation {
     private func recordFailure(_ error: Error, stage: String) {
         let native = error as NSError
         loadState = stage
-        loadFailure = SavedReaderNavigation.failureDescription(native, presentation: presentation)
+        loadFailure = SavedReaderNavigation.failureDescription(native, document: document)
     }
 }
 

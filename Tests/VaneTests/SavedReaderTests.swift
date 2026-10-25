@@ -4,16 +4,15 @@ import XCTest
 @testable import vane
 
 @MainActor final class SavedReaderTests: XCTestCase {
-    func testNativeFileFailureIncludesBoundedUnderlyingErrnoAndPresentationURL() {
-        let directory = URL(fileURLWithPath: "/tmp/vane-saved-reader-diagnostic")
-        let file = directory.appendingPathComponent("article.html")
+    func testNativeFailureIncludesBoundedUnderlyingErrnoAndOwnedDocumentURL() {
+        let file = URL(string: "vane-saved-reader://diagnostic/article.html")!
         let posix = NSError(domain: NSPOSIXErrorDomain, code: 13)
         let network = NSError(domain: "kCFErrorDomainCFNetwork", code: -3001, userInfo: [NSUnderlyingErrorKey: posix])
         let error = NSError(domain: NSURLErrorDomain, code: -3001, userInfo: [
             NSLocalizedDescriptionKey: "Cannot open file", NSUnderlyingErrorKey: network,
             NSURLErrorFailingURLErrorKey: file,
         ])
-        let report = SavedReaderNavigation.failureDescription(error, presentation: directory)
+        let report = SavedReaderNavigation.failureDescription(error, document: file)
         XCTAssertTrue(report.hasPrefix("domain=NSURLErrorDomain, code=-3001, message=Cannot open file"))
         XCTAssertTrue(report.contains("underlying[0]={domain=kCFErrorDomainCFNetwork, code=-3001}"))
         XCTAssertTrue(report.contains("underlying[1]={domain=NSPOSIXErrorDomain, code=13}"))
@@ -25,27 +24,30 @@ import XCTest
         for depth in (0..<3).reversed() {
             error = NSError(domain: "level-\(depth)", code: depth, userInfo: [NSUnderlyingErrorKey: error])
         }
-        let report = SavedReaderNavigation.failureDescription(error, presentation: URL(fileURLWithPath: "/tmp/fixture"))
+        let report = SavedReaderNavigation.failureDescription(error, document: URL(string: "vane-saved-reader://diagnostic/article.html")!)
         XCTAssertTrue(report.contains("underlying[0]={domain=level-1, code=1}"))
         XCTAssertTrue(report.contains("underlying[1]={domain=level-2, code=2}"))
         XCTAssertFalse(report.contains("OUTSIDE-DEPTH-BOUND"))
         XCTAssertFalse(report.contains("underlying[2]"))
     }
 
-    func testNativeFileFailureOmitsUnrelatedPathAndAcceptsOwnedFilePath() {
-        let directory = URL(fileURLWithPath: "/tmp/vane-saved-reader-diagnostic")
+    func testNativeFailureOmitsUnrelatedPathsAndForeignOrigins() {
+        let document = URL(string: "vane-saved-reader://diagnostic/article.html")!
         let outside = "/tmp/OTHER-PRIVATE-PATH/article.html"
         let error = NSError(domain: NSURLErrorDomain, code: -3001, userInfo: [
             NSLocalizedDescriptionKey: "Cannot open file", NSURLErrorFailingURLStringErrorKey: "file://" + outside,
             NSFilePathErrorKey: outside,
         ])
-        let report = SavedReaderNavigation.failureDescription(error, presentation: directory)
+        let report = SavedReaderNavigation.failureDescription(error, document: document)
         XCTAssertFalse(report.contains("OTHER-PRIVATE-PATH"))
-        let file = directory.appendingPathComponent("images/fixture.png")
         let owned = NSError(domain: NSURLErrorDomain, code: -3001, userInfo: [
-            NSLocalizedDescriptionKey: "Cannot open file", NSFilePathErrorKey: file.path,
+            NSLocalizedDescriptionKey: "Cannot open document", NSURLErrorFailingURLErrorKey: document,
         ])
-        XCTAssertTrue(SavedReaderNavigation.failureDescription(owned, presentation: directory).contains("failingURL=" + file.absoluteString))
+        XCTAssertTrue(SavedReaderNavigation.failureDescription(owned, document: document).contains("failingURL=" + document.absoluteString))
+        let foreign = NSError(domain: NSURLErrorDomain, code: -3001, userInfo: [
+            NSURLErrorFailingURLErrorKey: URL(string: "vane-saved-reader://foreign/article.html")!,
+        ])
+        XCTAssertFalse(SavedReaderNavigation.failureDescription(foreign, document: document).contains("failingURL="))
     }
 
     @MainActor private final class ImageProbe {
@@ -89,7 +91,7 @@ import XCTest
         let description: String
     }
 
-    private func waitForLocalImage(_ web: WKWebView, image: URL, startedAt: Date, sessionState: () -> String,
+    private func waitForLocalImage(_ web: WKWebView, image: URL, sessionState: () -> String,
                                    file: StaticString = #filePath, line: UInt = #line) async throws {
         let probe = ImageProbe()
         defer { probe.stop() }
@@ -101,17 +103,15 @@ import XCTest
                 return
             }
             if ContinuousClock.now >= deadline {
-                let logEnd = Date()
                 let state = "url=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), progress=\(web.estimatedProgress), " +
                     "bounds=\(web.bounds), policy=\(NSApplication.shared.activationPolicy().rawValue), " +
-                    "expectedImage=\(image.absoluteString), fileExists=\(FileManager.default.fileExists(atPath: image.path)), " +
+                    "expectedImage=\(image.absoluteString), " +
                     "imageProbePending=\(probe.pending), image=\(probe.snapshot), javascriptError=\(probe.error ?? "none"), " +
                     "session=\(sessionState())"
                 let failure = "\(file):\(line): Saved reader local image did not decode within 10 seconds. \(state)"
                 NativeFixtureDiagnostics.emit(failure + "; collecting native diagnostics")
                 let native = await NativeFixtureDiagnostics.failureReport(for: web)
                 NativeFixtureDiagnostics.emit(failure + "; " + native)
-                NativeFixtureDiagnostics.emit(await ReaderNativeLog.report(image: image, startedAt: startedAt, failedAt: logEnd))
                 throw ImageFixtureFailure(description: failure + "; " + native)
             }
             if !web.isLoading { probe.sample(web) }
@@ -127,14 +127,17 @@ import XCTest
         XCTAssertTrue(html.contains("Saved copy"))
         XCTAssertTrue(html.contains("Content-Security-Policy"))
         XCTAssertTrue(html.contains("default-src 'none'"))
+        XCTAssertTrue(html.contains("img-src 'self';"))
+        XCTAssertFalse(html.contains("file:"))
         XCTAssertFalse(html.contains("<script>"))
         XCTAssertFalse(html.contains("src=\"https://"))
     }
-    func testNavigationRejectsSiblingAndUnrequestedLivePage() {
-        let directory = URL(fileURLWithPath: "/tmp/article")
-        XCTAssertTrue(SavedReaderNavigation.allowed(url: directory.appendingPathComponent("article.html"), articleDirectory: directory, userInitiated: false))
-        XCTAssertFalse(SavedReaderNavigation.allowed(url: URL(fileURLWithPath: "/tmp/article-other/article.html"), articleDirectory: directory, userInitiated: false))
-        XCTAssertFalse(SavedReaderNavigation.allowed(url: URL(string: "https://tracker.test/pixel")!, articleDirectory: directory, userInitiated: false))
+    func testNavigationRejectsSiblingAndUnrequestedLivePage() throws {
+        let article = makeReadingArticle()
+        let content = try SavedReaderContent(candidate: .init(article: article, images: [:]), html: SavedReaderDocument.html(article: article))
+        XCTAssertTrue(content.allowsNavigation(content.document))
+        XCTAssertFalse(content.allowsNavigation(content.document.deletingLastPathComponent().appendingPathComponent("sibling.html")))
+        XCTAssertFalse(content.allowsNavigation(URL(string: "https://tracker.test/pixel")!))
     }
     func testCurrentPreferencesDoNotChangeSnapshot() throws {
         TestEnvironment.prepare()
@@ -202,7 +205,6 @@ import XCTest
         let origin = TabStore(profileID: UUID())
         XCTAssertNotEqual(origin.profileID, repository.profileID)
         defer { origin.tabs.forEach { $0.tearDown() }; TabStore.all.removeAll { $0 === origin }; SavedReaderWindow.forget(profileID: article.profileID) }
-        let nativeLogStart = Date()
         SavedReaderWindow.show(articleID: article.id, repository: repository, origin: origin)
         try await compatibilityWait { NSApp.windows.contains { $0.title == "Saved copy — \(article.title)" } }
         let window = try XCTUnwrap(NSApp.windows.first { $0.title == "Saved copy — \(article.title)" })
@@ -210,25 +212,37 @@ import XCTest
         try await compatibilityWait { window.contentView?.layoutSubtreeIfNeeded(); return window.contentView.flatMap(findWeb) != nil }
         let web = try XCTUnwrap(window.contentView.flatMap(findWeb))
         let initial = try XCTUnwrap(SavedReaderWindow.loadSnapshot(articleID: article.id, profileID: article.profileID))
+        XCTAssertEqual(initial.document.scheme, "vane-saved-reader", "Offline rendering must not depend on Networking file sandbox grants")
+        XCTAssertFalse(initial.document.isFileURL)
+        XCTAssertFalse(web.configuration.defaultWebpagePreferences.allowsContentJavaScript)
+        let transport = try XCTUnwrap(web.configuration.urlSchemeHandler(forURLScheme: SavedReaderContent.scheme) as? SavedReaderSchemeHandler)
         XCTAssertTrue(web === initial.web, "The displayed view must be the saved-reader session's actual WebKit view")
         let image = initial.document.deletingLastPathComponent().appendingPathComponent("images/" + raster.resource.name)
         NativeFixtureDiagnostics.emit("saved reader loading resources: " + NativeFixtureDiagnostics.resourceSnapshot(for: web))
-        try await waitForLocalImage(web, image: image, startedAt: nativeLogStart, sessionState: {
+        try await waitForLocalImage(web, image: image, sessionState: {
             guard let state = SavedReaderWindow.loadSnapshot(articleID: article.id, profileID: article.profileID) else {
                 return "session missing"
             }
             return "selectedViewMatches=\(state.web === web), expectedDocument=\(state.document.absoluteString), " +
-                "documentExists=\(FileManager.default.fileExists(atPath: state.document.path)), " +
                 "state=\(state.state), policy=\(state.policy), navigationFailure=\(state.failure ?? "none")"
         })
         XCTAssertEqual(web.url, initial.document)
+        let currentImage = try await web.evaluateJavaScript("document.images[0].currentSrc") as? String
+        XCTAssertEqual(currentImage, image.absoluteString)
         let raw = try await web.evaluateJavaScript("document.body.innerText")
         let text = try XCTUnwrap(raw as? String)
         XCTAssertTrue(text.contains("Saved copy")); XCTAssertTrue(text.contains("nebula"))
+        let fragment = try XCTUnwrap(URL(string: initial.document.absoluteString + "#saved-paragraph"))
+        web.load(URLRequest(url: fragment))
+        try await compatibilityWait { web.url == fragment && !web.isLoading }
+        let fragmentImage = try await web.evaluateJavaScript("document.images[0].naturalWidth") as? Int
+        XCTAssertEqual(fragmentImage, 1, "Same-document fragment navigation must retain the rendered offline image")
         XCTAssertFalse(repository.articles[0].isRead)
-        let directory = try XCTUnwrap(web.url?.deletingLastPathComponent())
         try await repository.remove(article.id)
         XCTAssertFalse(window.isVisible)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        let revoked = SavedReaderTaskRecorder(URLRequest(url: initial.document))
+        transport.start(revoked)
+        XCTAssertEqual(revoked.events, ["failure"])
+        XCTAssertTrue(revoked.bytes.isEmpty, "Closing a removed article must revoke future reads even while WebKit retains its handler")
     }
 }
