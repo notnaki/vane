@@ -100,8 +100,8 @@ Click the Space buttons in the sidebar footer for the same sliding change, inclu
 between profiles. Each button shows a square, rounded highlight on hover. In
 **Settings → General**, turn **Show Space icons in the footer** off to use dots for
 inactive Spaces. The preference applies across windows, including when the strip
-scrolls. Icons blend their emphasis during swipes; Reduce Motion and Battery Saver
-keep decorative icon changes immediate.
+scrolls. Swipe progress blends brightness; icon size changes in a quick animation when
+selection changes. Reduce Motion and Battery Saver keep decorative icon changes immediate.
 
 For saved workspace layouts, see [Space templates](FEATURES.md#space-templates). To
 restrict access to a folder, see [folder locks](DATA-AND-PRIVACY.md#folder-locks).

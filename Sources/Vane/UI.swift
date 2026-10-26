@@ -2967,7 +2967,7 @@ private struct SpaceIcons: View {
 }
 
 /// The footer preference chooses icons or dots, independently of strip overflow.
-/// Selection and swipe progress share one emphasis value for each marker.
+/// Swipe progress blends emphasis while selection animates each icon's size separately.
 /// Only a private window has no Spaces, and it does not draw this at all.
 private struct SpaceDots: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
@@ -3037,7 +3037,8 @@ private struct SpaceDots: View {
         let showLive = Binding(get: { live == space.id },
                                set: { live = $0 ? space.id : nil })
         SpaceFooterMarker(icon: icon, layout: layout, hovered: hovered == space.id,
-                          emphasis: reduceMotion || batterySaver.isActive ? (here ? 1 : 0) : lit)
+                          emphasis: reduceMotion || batterySaver.isActive ? (here ? 1 : 0) : lit,
+                          selected: here, reducedMotion: reduceMotion || batterySaver.isActive)
         // Finger/native progress already supplies intermediate frames. Idle selection
         // animates the actual emphasis, rather than a separate selection identity.
         .transaction(value: lit) { transaction in
