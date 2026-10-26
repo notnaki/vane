@@ -244,13 +244,83 @@ heartbeat gap during opening, and worst native field-edit/layout cost, without a
 timing limit. Hidden adjacent Space preview preparation must stay paused until search
 closes and its dismissal fade finishes.
 
+Unchanged prepared sidebars survive search presentation, suggestion updates, and vertical
+scrolling. A claimed Space surface updates its outgoing native scroll viewport before
+travel; structural changes and folder-protection revocation still invalidate immediately.
+Hiding the sidebar suspends its gesture input and keeps valid hidden captures. Revealing
+it validates their geometry after travel; profile/window teardown releases them fully.
+The tab, folder, split and favourite row hierarchy observes `SidebarObservation`, which
+forwards structure, selection, rename and protection changes synchronously. General
+window visibility and search publications do not invalidate that entire hierarchy.
+`SidebarObservationTests` verifies both the publication boundary and mounted-view updates.
+`SpaceNativeRenderingTests` checks cache identity across search/scroll, the actual native
+scroll position, rapid profile reversals, and synchronous protection invalidation. Visible
+animation fixtures activate their test window and restore the prior activation policy.
+
 ```sh
 VANE_UI_PERFORMANCE=1 swift test --filter SearchPresentationPerformanceTests
 ```
 
+`LiveSidebarResponsivenessTests` mounts the production browser host with three loaded
+WebKit documents, a selected page in the content card, and 47 archived entries in the
+closed Library. Its normal run serves a
+150-card HTML document over local HTTP and checks that folder disclosure, search edits,
+and tab selection preserve the page and its input. Timing runs compare 28- and 300-tab
+outlines through native scroll events and AppKit's normal display cycle, without forcing
+whole-window layout on each input. They check that events reach the intended list, keep
+vertical scrolling out of Space navigation, and report input admission separately from
+field readiness and main-thread display-callback gaps. To exercise a public website in
+the content card instead:
+
+```sh
+VANE_UI_PERFORMANCE=1 VANE_LIVE_SITE_URL=https://obsidian.md/ swift test --filter LiveSidebarResponsivenessTests
+```
+
+Only three pages are loaded; the remaining rows are suspended tabs. These timings measure
+native input and display-cycle availability, not compositor-presented frame rate or the
+cost of loading hundreds of websites. Verify frame presentation separately in the affected
+profile with its actual pages, using the target display refresh rate. A 60 Hz session
+cannot establish 120 FPS.
+Run timing diagnostics on an unlocked, otherwise idle desktop and keep the fixture
+visible. The fixture skips detected occlusion; also discard a run if the desktop locks
+or another workload interferes, even if AppKit still reports the window as visible.
+
+The native sidebar keeps each row in a stable hosting owner and attaches owners around
+the visible viewport. The normal resident range is 24 rows; canonical owner boundaries
+can require up to 40 controls. Active editors, menus, reordered owners and larger
+viewports can retain more. Scrolling does not walk detached cached control trees.
+Accessibility queries preserve the real controls and editor instead of expanding the
+entire outline. Set `VANE_EXPERIMENT_NATIVE_ROW_BATCH_CACHE=0` or
+`VANE_EXPERIMENT_THREE_RESIDENT_BATCHES=0` only for legacy comparisons.
+
+For presentation timing, launch the exact Release test app with
+`VANE_DIAG_SCROLL_TRACE=1`, confirm its real website tabs and selected content, then run:
+
+```sh
+python3 scripts/record-ui-frames.py --pid PID --executable /absolute/path/to/vane --output /absolute/new/capture --seconds 60
+python3 scripts/analyze-ui-frames.py --run /absolute/new/capture --output /absolute/new/analysis --scroll-trace /absolute/path/to/vane-scroll-PID-UUID.json --expected-sidebar-rows 100
+```
+
+Start physical sidebar scrolling only after `RECORDING_STARTED`. The recorder saves the
+full raw trace, including after an early stop. Analysis requires exact process identity,
+input-clock alignment, foreground input, populated rows and movement. It reports every
+joined target context separately, including p50, average, p95, p99, maximum and censored
+tails. Compositor transactions alone do not prove changing pixels or a window's FPS.
+The trace arms on the first physical sidebar scroll; relaunch the same signed app after
+functional checks so those checks do not consume the measurement interval.
+
+The offline recorder and analysis checks are:
+
+```sh
+python3 scripts/test-ui-frame-recording.py
+python3 scripts/test-ui-frame-analysis.py
+python3 scripts/test-ui-scroll-trace-analysis.py
+```
+
 Folder-opening diagnostics report toggle time, opening/closing layout, run-loop gaps, and
 mounted native tab controls for 20/300-tab folders. They also guard against repeated
-lock scans in an unprotected 3,000-tab strip:
+lock scans in an unprotected 3,000-tab strip and inactive-tab scans in the offscreen
+media layer:
 
 ```sh
 VANE_UI_PERFORMANCE=1 swift test --filter FolderOpeningPerformanceTests

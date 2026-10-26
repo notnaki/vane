@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor final class FaviconContrastTests: XCTestCase {
     private func cachedIcon(foreground: NSColor, background: NSColor = .clear,
-                            detail: NSColor? = nil) throws -> NSImage {
+                            detail: NSColor? = nil) async throws -> NSImage {
         TestEnvironment.prepare()
         let profile = UUID()
         let directory = ProfileManager.faviconDir(for: profile, in: Store.directory)
@@ -33,20 +33,22 @@ import XCTest
         let file = directory.appendingPathComponent("contrast.example")
         try data.write(to: file)
         let cache = Favicons(profileID: profile)
+        XCTAssertNil(cache.icon(for: URL(string: "https://contrast.example")!))
+        try await compatibilityWait { cache.generation == 1 }
         let image = try XCTUnwrap(cache.icon(for: URL(string: "https://contrast.example")!))
         XCTAssertEqual(try Data(contentsOf: file), data, "Display adaptation must not rewrite the site's icon")
         XCTAssertTrue(cache.icon(for: URL(string: "https://contrast.example/other")!) === image)
         return image
     }
 
-    func testCachedDarkTransparentMarkAdaptsToInterfaceInk() throws {
-        let image = try cachedIcon(foreground: NSColor(white: 0.08, alpha: 1))
+    func testCachedDarkTransparentMarkAdaptsToInterfaceInk() async throws {
+        let image = try await cachedIcon(foreground: NSColor(white: 0.08, alpha: 1))
         XCTAssertTrue(image.isTemplate, "A GitHub-style dark mark must follow the interface's light/dark ink")
         XCTAssertEqual(image.size, NSSize(width: 16, height: 16))
     }
 
-    func testMarkRendersWithLightInkInDarkChromeAndDarkInkInLightChrome() throws {
-        let image = try cachedIcon(foreground: NSColor(white: 0.08, alpha: 1))
+    func testMarkRendersWithLightInkInDarkChromeAndDarkInkInLightChrome() async throws {
+        let image = try await cachedIcon(foreground: NSColor(white: 0.08, alpha: 1))
         for (scheme, ink, expected) in [(ColorScheme.dark, Color.white, 1.0),
                                         (ColorScheme.light, Color.black, 0.0)] {
             let renderer = ImageRenderer(content: SiteIcon(icon: image)
@@ -60,14 +62,17 @@ import XCTest
         }
     }
 
-    func testColoredAndOpaqueIconsKeepTheirOriginalArtwork() throws {
-        XCTAssertFalse(try cachedIcon(foreground: .systemRed).isTemplate)
-        XCTAssertFalse(try cachedIcon(foreground: .black, background: .white).isTemplate)
-        XCTAssertFalse(try cachedIcon(foreground: .black, background: .black).isTemplate)
+    func testColoredAndOpaqueIconsKeepTheirOriginalArtwork() async throws {
+        let colored = try await cachedIcon(foreground: .systemRed)
+        let white = try await cachedIcon(foreground: .black, background: .white)
+        let black = try await cachedIcon(foreground: .black, background: .black)
+        XCTAssertFalse(colored.isTemplate)
+        XCTAssertFalse(white.isTemplate)
+        XCTAssertFalse(black.isTemplate)
     }
 
-    func testOpaqueSiteIconRendersAsRoundBadgeAtRetinaScale() throws {
-        let image = try cachedIcon(foreground: .systemGreen, background: .systemGreen)
+    func testOpaqueSiteIconRendersAsRoundBadgeAtRetinaScale() async throws {
+        let image = try await cachedIcon(foreground: .systemGreen, background: .systemGreen)
         let renderer = ImageRenderer(content: SiteIcon(icon: image, size: 16))
         renderer.scale = 2
         let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
@@ -131,7 +136,7 @@ import XCTest
     }
 
     func testParkingAtUncachedHostClearsPreviousSiteArtwork() async throws {
-        let image = try cachedIcon(foreground: .systemGreen, background: .systemGreen)
+        let image = try await cachedIcon(foreground: .systemGreen, background: .systemGreen)
         let tab = Tab(profileID: UUID())
         defer { tab.tearDown(); Favicons.forget(tab.profileID) }
         tab.favicon = image
@@ -146,23 +151,26 @@ import XCTest
         XCTAssertNil(tab.existingWeb, "Clearing parked artwork must not create a page")
     }
 
-    func testLightArtworkAndInternalDetailsAreNotFlattened() throws {
-        XCTAssertFalse(try cachedIcon(foreground: .white).isTemplate)
-        XCTAssertFalse(try cachedIcon(foreground: .black, detail: .white).isTemplate)
-        XCTAssertFalse(try cachedIcon(foreground: .black, detail: .systemBlue).isTemplate)
-        XCTAssertFalse(try cachedIcon(foreground: .clear).isTemplate)
+    func testLightArtworkAndInternalDetailsAreNotFlattened() async throws {
+        let white = try await cachedIcon(foreground: .white)
+        let detailed = try await cachedIcon(foreground: .black, detail: .white)
+        let colored = try await cachedIcon(foreground: .black, detail: .systemBlue)
+        let clear = try await cachedIcon(foreground: .clear)
+        for image in [white, detailed, colored, clear] { XCTAssertFalse(image.isTemplate) }
     }
 
-    func testTranslucentEdgesKeepColorClassification() throws {
-        XCTAssertTrue(try cachedIcon(foreground: NSColor(white: 0.08, alpha: 0.5)).isTemplate)
-        XCTAssertFalse(try cachedIcon(foreground:
-            NSColor(calibratedRed: 0, green: 0, blue: 1, alpha: 0.15)).isTemplate)
+    func testTranslucentEdgesKeepColorClassification() async throws {
+        let gray = try await cachedIcon(foreground: NSColor(white: 0.08, alpha: 0.5))
+        let blue = try await cachedIcon(foreground: NSColor(calibratedRed: 0, green: 0, blue: 1, alpha: 0.15))
+        XCTAssertTrue(gray.isTemplate)
+        XCTAssertFalse(blue.isTemplate)
     }
 
-    func testDarkGrayDetailsAndMutedBrandColorsAreNotFlattened() throws {
-        XCTAssertFalse(try cachedIcon(foreground: NSColor(white: 0.08, alpha: 1),
-            detail: NSColor(white: 0.20, alpha: 1)).isTemplate)
-        XCTAssertFalse(try cachedIcon(foreground:
-            NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.14, alpha: 1)).isTemplate)
+    func testDarkGrayDetailsAndMutedBrandColorsAreNotFlattened() async throws {
+        let gray = try await cachedIcon(foreground: NSColor(white: 0.08, alpha: 1),
+            detail: NSColor(white: 0.20, alpha: 1))
+        let colored = try await cachedIcon(foreground: NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.14, alpha: 1))
+        XCTAssertFalse(gray.isTemplate)
+        XCTAssertFalse(colored.isTemplate)
     }
 }

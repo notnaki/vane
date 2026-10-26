@@ -35,10 +35,19 @@ jobs:
       - name: Parallel checks workflow regression
         run: python3 scripts/test-checks-workflow.py
 
+      - name: Native shard coverage fixtures
+        run: python3 scripts/test-native-test-shards.py
+
   native:
-    # Keep the complete native prefix and suite on one isolated macOS desktop.
-    name: Native regressions
+    # Each shard owns an isolated desktop; UI tests remain sequential within it.
+    name: Native regressions (${{ matrix.shard }}/4)
     runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      NATIVE_SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v7
 
@@ -95,8 +104,18 @@ jobs:
       - name: Build native tests for the owned-loop preflight
         run: swift build -c debug --build-tests
 
+      - name: Discover and partition all native tests
+        run: |
+          set -euo pipefail
+          swift test list --skip-build > "$RUNNER_TEMP/vane-native-tests.txt"
+          python3 scripts/native-test-shards.py plan \
+            --inventory "$RUNNER_TEMP/vane-native-tests.txt" \
+            --index "$NATIVE_SHARD" --count 4 \
+            --manifest "$RUNNER_TEMP/vane-native-shard.json" \
+            --filter-output "$RUNNER_TEMP/vane-native-shard.filter"
+
       # A fresh selected host verifies startup, async progress and two owned
-      # stop-and-return cycles before the full suite uses the same loop helper.
+      # stop-and-return cycles before this shard uses the same loop helper.
       - name: Owned AppKit loop preflight
         timeout-minutes: 3
         env:
@@ -117,8 +136,10 @@ jobs:
           # Capture the original process/order, even when no ReportCrash file appears.
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
-          set -o pipefail
-          python3 scripts/run-native-tests.py 2>&1 | tee "$RUNNER_TEMP/vane-swift-tests.log"
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 \
+            --filter "$(cat "$RUNNER_TEMP/vane-native-shard.filter")" \
+            2>&1 | tee "$RUNNER_TEMP/vane-swift-tests.log"
           # Swift's signal handler can return after a software-raised trap. A fatal
           # signal remains a failed test run even if the process then exits zero.
           if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-swift-tests.log"; then
@@ -126,22 +147,32 @@ jobs:
             exit 1
           fi
 
+      - name: Verify every selected native test completed
+        run: |
+          python3 scripts/native-test-shards.py verify \
+            --manifest "$RUNNER_TEMP/vane-native-shard.json" \
+            --log "$RUNNER_TEMP/vane-swift-tests.log"
+
       - name: Preserve native loop failure evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
-          name: native-loop-logs
+          name: native-loop-logs-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/vane-appkit-loop-preflight.log
             ${{ runner.temp }}/vane-swift-tests.log
+            ${{ runner.temp }}/vane-native-tests.txt
+            ${{ runner.temp }}/vane-native-shard.json
+            ${{ runner.temp }}/vane-native-shard.filter
           if-no-files-found: ignore
           retention-days: 7
 
       - name: Save source timestamps for the build cache
+        if: matrix.shard == 1
         run: python3 scripts/ci-source-state.py save
 
       - name: Save Swift debug build
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swift-cache.outputs.cache-hit != 'true'
+        if: matrix.shard == 1 && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swift-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: .build
@@ -149,7 +180,7 @@ jobs:
 
   packaging:
     # An independent desktop keeps Finder/DMG work away from the XCTest host.
-    # Both macOS jobs validate their restored build; only native saves main caches.
+    # Every macOS job validates its restored build; only native shard 1 saves caches.
     name: Packaging and integrations
     runs-on: macos-26
     steps:

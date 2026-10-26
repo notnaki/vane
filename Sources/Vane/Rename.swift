@@ -48,6 +48,34 @@ enum Rename {
     }
 }
 
+@MainActor final class TabRenameSession: ObservableObject {
+    let tabID: Tab.ID
+    @Published var draft = ""
+    private(set) var initialized = false
+    var done = false
+    private weak var tab: Tab?
+
+    init(tabID: Tab.ID) { self.tabID = tabID }
+
+    func prepare(_ title: String, tab: Tab) {
+        guard !initialized, !done else { return }
+        initialized = true
+        self.tab = tab
+        draft = title
+    }
+
+    func commit() {
+        guard !done else { return }
+        done = true
+        guard initialized, let tab else { return }
+        switch Rename.outcome(typed: draft, current: TabActions.rename(tab), pageTitle: tab.title) {
+        case .keep: return
+        case .clear: TidyTitles.rename(tab, to: nil); axAnnounce("Using the page's own title.")
+        case .set(let name): TidyTitles.rename(tab, to: name); axAnnounce("Renamed to \(name).")
+        }
+    }
+}
+
 /// The row's title while it is being edited. Sized and inked like the title it replaces, so
 /// the row does not change shape when the field appears.
 struct RenameField: View {
@@ -56,12 +84,28 @@ struct RenameField: View {
     var font: Font = Look.rowTitle
     /// A row may show the wandered page's title rather than its saved pinned name.
     var initialTitle: String?
-    @State private var draft = ""
-    @State private var done = false
+    @ObservedObject private var session: TabRenameSession
     @FocusState private var focused: Bool
 
+    init(store: TabStore, tab: Tab, font: Font = Look.rowTitle, initialTitle: String? = nil) {
+        self.store = store
+        self.tab = tab
+        self.font = font
+        self.initialTitle = initialTitle
+        if let active = store.tabRenameSession, active.tabID == tab.id {
+            session = active
+        } else {
+            // A stale row may be rendered once after another rename has started.
+            // It must never acquire authority over that newer session.
+            let stale = TabRenameSession(tabID: tab.id)
+            stale.done = true
+            session = stale
+        }
+        session.prepare(initialTitle ?? TidyTitles.title(for: tab), tab: tab)
+    }
+
     var body: some View {
-        TextField("Tab name", text: $draft)
+        TextField("Tab name", text: $session.draft)
             .textFieldStyle(.plain)
             .font(font)
             .foregroundStyle(Look.inkPrimary)
@@ -72,7 +116,7 @@ struct RenameField: View {
             .onExitCommand { cancel() }
             // What the row showed, selected whole: focusing an NSTextField selects its text,
             // so the first keystroke replaces the name rather than appending to it.
-            .onAppear { draft = initialTitle ?? TidyTitles.title(for: tab); focused = true }
+            .onAppear { if !session.done { focused = true } }
             // Clicking away commits, the way the Finder does — the alternative is a field the
             // user has to press Return in to be rid of.
             .onChange(of: focused) { _, now in if !now { commit() } }
@@ -84,18 +128,18 @@ struct RenameField: View {
     }
 
     private func commit() {
-        guard !done else { return }
-        done = true
-        defer { if store.renamingTab == tab.id { store.renamingTab = nil } }
-        switch Rename.outcome(typed: draft, current: TabActions.rename(tab), pageTitle: tab.title) {
-        case .keep: return
-        case .clear: TidyTitles.rename(tab, to: nil); axAnnounce("Using the page's own title.")
-        case .set(let name): TidyTitles.rename(tab, to: name); axAnnounce("Renamed to \(name).")
-        }
+        session.commit()
+        endSession()
     }
 
     private func cancel() {
-        done = true
-        if store.renamingTab == tab.id { store.renamingTab = nil }
+        session.done = true
+        endSession()
+    }
+
+    private func endSession() {
+        if store.tabRenameSession === session, store.renamingTab == tab.id {
+            store.renamingTab = nil
+        }
     }
 }

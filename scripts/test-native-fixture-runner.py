@@ -75,6 +75,38 @@ class ManifestTests(unittest.TestCase):
         runner.require_exited_hosts([self.record], lambda pid: reused)
         runner.require_exited_hosts([self.record], lambda pid: None)
 
+    def test_cleanup_preserves_selected_backend_and_build_location(self):
+        cases = (
+            ["--build-system", "native", "--scratch-path", "/tmp/owned-build", "-c", "debug"],
+            ["--build-system=native", "--scratch-path=/tmp/owned-build", "--configuration=release"],
+        )
+        for location in cases:
+            with self.subTest(location=location), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp) / "manifest"
+                directory.mkdir()
+                commands = []
+                def launch(command, **kwargs):
+                    commands.append(list(command))
+                    child = mock.Mock(pid=123456)
+                    child.wait.return_value = 0
+                    return child
+                result = {"schema": 1, "token": self.token,
+                          "retiredIDs": [self.record["profiles"][0]["storeID"]]}
+                arguments = location + ["--jobs", "1", "--filter", "LibrarySpaceCatalogTests"]
+                with (mock.patch.object(runner.sys, "platform", "darwin"),
+                      mock.patch.object(runner.tempfile, "mkdtemp", return_value=str(directory)),
+                      mock.patch.object(runner.uuid, "uuid4", return_value=uuid.UUID(self.token)),
+                      mock.patch.object(runner, "load_records", return_value=[self.record]),
+                      mock.patch.object(runner, "require_exited_hosts"),
+                      mock.patch.object(runner, "finish_recorded_cleanup_host"),
+                      mock.patch.object(runner, "read_private_json", return_value=result),
+                      mock.patch.object(runner.subprocess, "Popen", side_effect=launch)):
+                    self.assertEqual(runner.main(arguments), 0)
+                self.assertEqual(commands, [
+                    ["swift", "test", *arguments],
+                    ["swift", "test", "--skip-build", "--filter", runner.SELECTOR, *location],
+                ], "Cleanup must find the same bundle without inheriting the primary test filter")
+
     def test_cleanup_signals_only_exact_recorded_launch_and_verifies_exit(self):
         host = self.record["host"]
         observed = {key: host[key] for key in ("pid", "start", "path")}

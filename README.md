@@ -192,6 +192,15 @@ clean-Mac install/upgrade checks are still required for distribution claims.
 ## Contributing
 
 For native fixture tests, use `python3 scripts/run-native-tests.py --jobs 1`.
+CI runs four groups on separate macOS runners, keeping each test class together
+and each runner's UI tests sequential. `swift test list --skip-build` supplies the
+complete inventory; `scripts/native-test-shards.py` balances classes using advisory
+durations in `scripts/native-test-durations.json`, assigns new classes automatically,
+and verifies every selected test completed. Each group runs its own startup
+preflight and cleanup, and all four must pass the required `checks` gate.
+Same-desktop `--parallel` execution remains unsupported because UI fixtures share
+focus and application state. Duration estimates affect balancing only, never coverage.
+
 The wrapper passes its arguments to the complete `swift test` command; focused runs
 can add `--filter 'PasswordAutofillTests|SavedReaderTests'`. After the test host exits,
 it starts the same test bundle in a fresh process to delete only the exact owned

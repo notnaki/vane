@@ -172,11 +172,12 @@ final class ScrollEvent: NSEvent, @unchecked Sendable {
     private let dx: CGFloat
     private let dy: CGFloat
     private let x: CGFloat
+    private let y: CGFloat
     private let momentum: NSEvent.Phase
     private let precise: Bool
 
     @MainActor init(window: NSWindow, dx: CGFloat = 0, dy: CGFloat = 0,
-         phase: NSEvent.Phase = .changed, x: CGFloat = 30,
+         phase: NSEvent.Phase = .changed, x: CGFloat = 30, y: CGFloat = 150,
          momentum: NSEvent.Phase = [], precise: Bool = true) {
         owner = window
         ownerNumber = window.windowNumber
@@ -184,6 +185,7 @@ final class ScrollEvent: NSEvent, @unchecked Sendable {
         self.dy = dy
         eventPhase = phase
         self.x = x
+        self.y = y
         self.momentum = momentum
         self.precise = precise
         super.init()
@@ -193,7 +195,7 @@ final class ScrollEvent: NSEvent, @unchecked Sendable {
     override var type: NSEvent.EventType { .scrollWheel }
     override var window: NSWindow? { owner }
     override var windowNumber: Int { ownerNumber }
-    override var locationInWindow: NSPoint { NSPoint(x: x, y: 150) }
+    override var locationInWindow: NSPoint { NSPoint(x: x, y: y) }
     override var hasPreciseScrollingDeltas: Bool { precise }
     override var isDirectionInvertedFromDevice: Bool { true }
     override var scrollingDeltaX: CGFloat { dx }

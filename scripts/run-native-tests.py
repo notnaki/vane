@@ -258,7 +258,7 @@ def main(arguments):
     primary = ["swift", "test", *arguments]
     cleanup = ["swift", "test", "--skip-build", "--filter", SELECTOR]
     # Mirror configuration/toolchain options that locate the exact test bundle.
-    pair_options = {"--configuration", "-c", "--scratch-path", "--package-path", "--triple", "--sdk", "--toolchain", "--arch"}
+    pair_options = {"--configuration", "-c", "--build-system", "--scratch-path", "--package-path", "--triple", "--sdk", "--toolchain", "--arch"}
     index = 0
     while index < len(arguments):
         arg = arguments[index]

@@ -4,8 +4,12 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceNativeRenderingTests: XCTestCase {
-    private func fixture(floatingWindow: Bool = false, coloured: Bool = false, defaultColours: Bool = false) throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
+    private func fixture(floatingWindow: Bool = false, coloured: Bool = false, defaultColours: Bool = false, activateWindow: Bool = true) throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
         TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let activationPolicy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.accessory)
+        addTeardownBlock { @MainActor in NSApp.setActivationPolicy(activationPolicy) }
         try XCTSkipIf(Motion.spaceReduced, "Animated interruption requires motion")
         let profile = ProfileManager.shared.create(name: "Continuity fixture").id
         let spaces = ["First", "Second", "Third", "Fourth"].enumerated().map { index, name in
@@ -26,7 +30,12 @@ import XCTest
         store.window = window
         window.contentView = BrowserWindowHost(shown: ShownStore(store))
         window.contentView?.layoutSubtreeIfNeeded()
-        window.orderFront(nil)
+        // Presentation-layer frame assertions require a visible active test window.
+        // A user's running Vane copy can otherwise keep this fixture occluded.
+        if activateWindow {
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
+        }
         let monitor = store.spaceGesture.monitor
         monitor.install(store)
         addTeardownBlock { @MainActor in
@@ -82,7 +91,9 @@ import XCTest
         try await Task.sleep(for: .milliseconds(120))
         let surface = try XCTUnwrap(colourSurface(in: XCTUnwrap(window.contentView)))
         let start = try firstColour(of: surface, presented: true).redComponent
+        let selectionStart = ContinuousClock.now
         monitor.select(spaces[1], in: store)
+        let selectionTime = selectionStart.duration(to: .now)
         var samples = [start]
         let deadline = ProcessInfo.processInfo.systemUptime + 2
         repeat {
@@ -97,6 +108,7 @@ import XCTest
         XCTAssertTrue(samples.contains { abs($0 - start) > 0.05 && abs($0 - end) > 0.05 },
                       "The actual BrowserWindowHost must show intermediate background colours")
         let largestStep = zip(samples, samples.dropFirst()).map { abs($0 - $1) }.max() ?? 0
+        print("NATIVE_CLICK_TINT select=\(selectionTime) reds=\(samples)")
         XCTAssertLessThan(largestStep, abs(start - end) * 0.6,
                           "The background must blend during native travel instead of cutting at handoff")
     }
@@ -556,6 +568,57 @@ import XCTest
         }
     }
 
+    func testCachedArrivingWashIsPrimedBeforeItsNextSwiftUIUpdate() async throws {
+        let (source, spaces, window, _) = try fixture(coloured: true)
+        let container = try XCTUnwrap(window.contentView)
+        let arriving = TabStore(profileID: source.profileID, space: spaces[1], session: [])
+        let target = ThemeWash.space(spaces[1], fallback: source.profile,
+                                     profiles: ProfileManager.shared.profiles, systemDark: true)
+        // A parked host last rendered its settled destination, so its installed
+        // callback still captures two identical blue endpoints when attach runs.
+        let cached = NSHostingView(rootView: NativeThemeWash(wash: target, reduced: false,
+            gesture: arriving.spaceGesture, origin: target, destination: target,
+            fallback: source.profile, profiles: ProfileManager.shared.profiles, systemDark: true))
+        cached.frame = NSRect(x: 0, y: 0, width: 200, height: 300)
+        container.addSubview(cached)
+        defer {
+            cached.removeFromSuperview()
+            arriving.window = nil
+            TabStore.all.removeAll { $0 === arriving }
+        }
+        cached.layoutSubtreeIfNeeded()
+        try await compatibilityWait { arriving.spaceGesture.trackGround != nil }
+        let surface = try XCTUnwrap(colourSurface(in: cached))
+        let origin = ThemeWash.space(spaces[0], fallback: source.profile,
+            profiles: ProfileManager.shared.profiles, systemDark: true)
+        // Interpolate in the wash's color space before converting for the native
+        // layer read; device-RGB conversion is not itself a linear interpolation.
+        func expectedRed(at fraction: Double) throws -> CGFloat {
+            try XCTUnwrap(origin.mixed(towards: target, fraction: fraction)
+                .colors[0].nsColor.usingColorSpace(.deviceRGB)).redComponent
+        }
+        cached.isHidden = true
+        let slide = ProfileSpaceSlide(frame: cached.frame,
+            outgoing: source.swipePreview(in: spaces[0]), incoming: source.swipePreview(in: spaces[1]),
+            drag: -70, direction: 1, source: source, includesFavorites: true, travelWidth: 228)
+        container.addSubview(slide)
+        defer { slide.cancel() }
+        slide.prepare()
+        slide.start(duration: 1) {}
+        slide.attach(arriving)
+        XCTAssertEqual(try XCTUnwrap(arriving.spaceGesture.nativeDrag), -70, accuracy: 0.001,
+                       "SwiftUI must receive the same published progress as the primed native wash")
+        // No await/layout occurs between attachment and this read. The pixels must
+        // be ready before the cached host is exposed, even before CA presents the
+        // new position animation (whose model position already holds its endpoint).
+        XCTAssertEqual(try firstColour(of: surface).redComponent,
+                       try expectedRed(at: 70.0 / 228.0), accuracy: 0.001,
+                       "A cached host must not expose its settled target color before tracking catches up")
+        arriving.spaceGesture.trackGround?(0.5)
+        XCTAssertEqual(try firstColour(of: surface).redComponent, try expectedRed(at: 0.5), accuracy: 0.001,
+                       "The installed callback must resolve the new gesture endpoints before SwiftUI renders again")
+    }
+
     private func checkRepeatedProfileSwipes(mixedThemes: Bool) async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
@@ -597,20 +660,37 @@ import XCTest
             let showing = try XCTUnwrap(TabStore.all.first { $0.window === window })
             let direction = index == 1 ? 1 : -1
             let monitor = showing.spaceGesture.monitor
-            XCTAssertNotNil(showing.beginSpaceSelection(spaces[index]))
-            monitor.track(-CGFloat(direction) * 70, width: SidebarWidth.shared.width, in: showing)
             let sampler = ProfileWashSampler(host: host)
             sampler.start(on: try XCTUnwrap(window.screen))
+            defer { sampler.stop() }
+            // A new display link and a freshly restored hosting tree may not have
+            // presented yet. Establish actual source-color samples before asking
+            // this sampler to verify the subsequent transition's continuity.
+            try await compatibilityWait { sampler.reds.count >= 3 }
+            sampler.beginTransitionSampling()
+            XCTAssertNotNil(showing.beginSpaceSelection(spaces[index]))
+            monitor.track(-CGFloat(direction) * 70, width: SidebarWidth.shared.width, in: showing)
             monitor.land(direction, to: spaces[index], width: SidebarWidth.shared.width,
                          store: showing, duration: 0.3)
-            try await Task.sleep(for: .milliseconds(450))
+            // Hosting/layout can defer CA's first commit beyond the nominal
+            // duration. Sample the entire handoff, including its actual endpoint,
+            // rather than stopping at an assumed 450 ms wall-clock deadline.
+            let retirementDeadline = ContinuousClock.now + .seconds(2)
+            while host.spaceSlide != nil, ContinuousClock.now < retirementDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
             sampler.stop()
             XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, spaces[index].id)
             XCTAssertGreaterThan(sampler.reds.count, 3)
+            XCTAssertEqual(sampler.unadmittedTransitionCallbacks, 0,
+                           "Every transition callback must identify exactly one presented wash; missing samples cannot pass continuity")
             let reversals = zip(sampler.reds, sampler.reds.dropFirst()).map { previous, next in
                 (direction == 1) != mixedThemes ? next - previous : previous - next
             }
-            print("PROFILE_WASH_SAMPLE mixed=\(mixedThemes) leg=\(leg) direction=\(direction) frames=\(sampler.reds.count) max_reverse=\(reversals.max() ?? 0) max_gap_ms=\(sampler.maxGap * 1000)")
+            print("PROFILE_WASH_SAMPLE mixed=\(mixedThemes) leg=\(leg) direction=\(direction) frames=\(sampler.reds.count) max_reverse=\(reversals.max() ?? 0) max_gap_ms=\(sampler.maxGap * 1000) first_callback_ms=\((sampler.firstCallbackLatency ?? 0) * 1000)")
+            if (reversals.max() ?? 0) >= 0.08 || sampler.unadmittedTransitionCallbacks > 0 {
+                sampler.dumpDiagnostics(label: "mixed=\(mixedThemes) leg=\(leg) direction=\(direction)")
+            }
             XCTAssertLessThan(reversals.max() ?? 0, 0.08,
                               "The displayed background must not flash back toward its source after profile activation")
             XCTAssertNil(host.spaceSlide)
@@ -622,8 +702,37 @@ import XCTest
         try await checkEarlyProfilePageSelection(cached: true)
     }
 
+    func testCachedProfileReturnInstallsInputBeforeTheNextRender() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let profiles = [manager.create(name: "Input origin"), manager.create(name: "Input arrival")]
+        let spaces = profiles.map { manager.createSpace(name: "Input", in: $0.id) }
+        let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
+        let window = try XCTUnwrap(source.window)
+        defer {
+            window.close()
+            profiles.forEach { _ = manager.delete($0.id) }
+            manager.active = previous
+        }
+        source.palette = nil
+        try await compatibilityWait { source.spaceGesture.monitor.isInstalled }
+        let arriving = try XCTUnwrap(Windows.hop(source, to: spaces[1]))
+        try await compatibilityWait {
+            !source.spaceGesture.monitor.isInstalled && arriving.spaceGesture.monitor.isInstalled
+        }
+        XCTAssertTrue(Windows.hop(arriving, to: spaces[0]) === source)
+        XCTAssertTrue(source.spaceGesture.monitor.isInstalled,
+                      "Cached profiles must accept the next gesture before SwiftUI renders their visibility change")
+    }
+
     func testRapidProfileBoundarySwipesCanImmediatelyReverse() async throws {
         TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let activationPolicy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.accessory)
+        defer { NSApp.setActivationPolicy(activationPolicy) }
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
         let manager = ProfileManager.shared
         let previous = manager.active
@@ -631,7 +740,8 @@ import XCTest
         let spaces = profiles.map { manager.createSpace(name: "Rapid", in: $0.id) }
         let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
         let window = try XCTUnwrap(source.window)
-        window.orderFrontRegardless()
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
         defer {
             window.close()
             profiles.forEach { _ = manager.delete($0.id) }
@@ -645,6 +755,8 @@ import XCTest
             NSApp.sendEvent(ScrollEvent(window: window, dx: direction * 100))
             NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
             try await Task.sleep(for: .milliseconds(40))
+            let showing = TabStore.all.first { $0.window === window }
+            print("RAPID_PROFILE leg=\(leg) actual=\(showing?.profileID == profiles[0].id ? 0 : 1) installed=\(showing?.spaceGesture.monitor.isInstalled == true) swiping=\(showing?.spaceSwiping == true) anchor=\(showing?.spaceGesture.stripView?.window === window)")
             XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID,
                            spaces[leg.isMultiple(of: 2) ? 1 : 0].id,
                            "Every fast boundary crossing and reversal must be accepted")
@@ -1063,10 +1175,29 @@ import XCTest
         XCTAssertNil(host.spaceSlide)
     }
 
+    func testAnotherWindowLosingFocusDoesNotCancelThisWindowsSpaceGesture() throws {
+        let (store, _, window, monitor) = try fixture()
+        monitor.track(-40, width: SidebarWidth.shared.width, in: store)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let slide = try XCTUnwrap(host.spaceSlide)
+        let unrelated = NSWindow(contentRect: .zero, styleMask: .borderless,
+                                 backing: .buffered, defer: false)
+        unrelated.isReleasedWhenClosed = false
+        defer { unrelated.close() }
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: unrelated)
+        XCTAssertTrue(store.spaceSwiping, "Focus notifications belong to their own browser window")
+        XCTAssertTrue(host.spaceSlide === slide)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        XCTAssertFalse(store.spaceSwiping, "This window losing focus must still cancel an uncommitted drag")
+        XCTAssertNil(host.spaceSlide)
+    }
+
     func testDisappearingSourceDoesNotUncoverAVisibleArrivingSidebarBeforeAcknowledgement() async throws {
         let (source, spaces, window, _) = try fixture()
         let (profile, target) = adjacentProfile(to: source, after: spaces.last!)
         let arriving = TabStore(profileID: profile, space: target, session: [])
+        let population = try EmptyNativeSidebarPopulationFixture(store: arriving, spaceID: target.id)
+        defer { population.close() }
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
         window.contentView = container
         let slide = ProfileSpaceSlide(frame: container.bounds,
@@ -1086,6 +1217,7 @@ import XCTest
         XCTAssertTrue(slide.isDestination(arriving))
         XCTAssertTrue(slide.superview === container,
                       "Completion must recheck the arriving visibility instead of unconditionally retiring")
+        population.complete()
         slide.sidebarDidUpdate(arriving, renderedSpaceID: target.id, atRest: true)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertNil(slide.superview, "A visible arrival retires after its real rendered acknowledgement")
@@ -1121,7 +1253,7 @@ import XCTest
         try await Task.sleep(for: .milliseconds(250))
         let previous = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
         _ = store.newBlankTab(focus: false)
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitForPreparation(monitor, target: spaces[1].id)
         let refreshed = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
         XCTAssertFalse(previous === refreshed, "Changed sidebar content must invalidate the prepared capture")
         XCTAssertNil(previous.superview)
@@ -1129,6 +1261,219 @@ import XCTest
         monitor.remove()
         XCTAssertTrue(monitor.preparedSlides.isEmpty)
         XCTAssertTrue(remaining.allSatisfy { $0.superview == nil })
+    }
+
+    func testUnchangedAnchorUpdatesKeepPreparedSidebars() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        for _ in 0..<5 { monitor.schedulePreparation(in: store) }
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                      "Repeated layout acknowledgements must not rebuild identical hidden trees")
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared)
+        window.setContentSize(NSSize(width: 340, height: 500))
+        window.contentView?.layoutSubtreeIfNeeded()
+        monitor.schedulePreparation(in: store)
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        XCTAssertFalse(monitor.preparedSlides[spaces[1].id] === prepared,
+                       "Changed viewport geometry still needs a fresh capture")
+    }
+
+    func testUnchangedSpaceSavesAndAbsentWarningsKeepPreparedCaptureClaimable() async throws {
+        let (store, spaces, window, monitor) = try fixture(activateWindow: false)
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        let manager = ProfileManager.shared
+        let committed = manager.spaces(for: store.profileID)
+        XCTAssertTrue(committed.contains { $0.id == store.currentSpaceID })
+        XCTAssertFalse(manager.saveFailures.contains { $0.id == .spaces(store.profileID) })
+        let revision = manager.spacesRevision
+        // Model the same durable metadata save made by periodic session capture.
+        // Keep a delayed preparation queued, as ordinary scrolling does.
+        monitor.postponePreparation(in: store, by: 0.35, preservingSurfaces: true)
+        for _ in 0..<3 {
+            XCTAssertTrue(manager.saveSpaces(committed, for: store.profileID))
+            manager.dismissSaveFailure(.spaces(store.profileID))
+        }
+        XCTAssertEqual(manager.spacesRevision, revision)
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                      "Unchanged saves and absent warning dismissal must not revoke a ready native capture")
+        // This is a negative lifetime assertion through the existing quiet deadline,
+        // not a readiness sleep: a capture was positively admitted above.
+        try await Task.sleep(for: .milliseconds(550))
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                      "Idle scheduling after an unchanged save must retain the same laid-out trees")
+        XCTAssertTrue(prepared.superview === window.contentView)
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === prepared,
+                      "The first directional claim must consume the same warm capture")
+        XCTAssertNil(monitor.preparedSlides[spaces[1].id])
+        monitor.abort()
+    }
+
+    func testActualMetadataContentAndFolderProtectionStillRevokePreparedCaptures() async throws {
+        let (store, spaces, window, monitor) = try fixture(activateWindow: false)
+        store.sharingReady = false
+        store.folderAuthentication = FolderAuthentication()
+        let child = store.newBlankTab(focus: false)
+        let folder = Folder(name: "Protected fixture folder")
+        store.todayShape = Pins(entries: [.init(row: .folder(folder)),
+            .init(row: .tab(child.id.uuidString), parent: folder.id)])
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let original = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        let manager = ProfileManager.shared
+        var renamed = try XCTUnwrap(manager.spaces(for: store.profileID).first { $0.id == spaces[1].id })
+        renamed.name += " renamed"
+        XCTAssertTrue(manager.updateSpace(renamed))
+        XCTAssertNil(monitor.preparedSlides[spaces[1].id], "Real adjacent metadata changes must revoke on the sending turn")
+        XCTAssertNil(original.superview)
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let afterMetadata = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        XCTAssertFalse(afterMetadata === original)
+
+        _ = store.newBlankTab(focus: false)
+        XCTAssertNil(monitor.preparedSlides[spaces[1].id], "Real sidebar content changes must still revoke synchronously")
+        XCTAssertNil(afterMetadata.superview)
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let afterContent = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        XCTAssertFalse(afterContent === afterMetadata)
+
+        store.lockFolder(folder.id)
+        XCTAssertTrue(store.isFolderLocked(folder.id))
+        XCTAssertTrue(store.todayShape.folder(folder.id)?.requiresAuthentication == true)
+        XCTAssertNil(monitor.preparedSlides[spaces[1].id], "Actual folder protection must revoke before any following claim")
+        XCTAssertNil(afterContent.superview)
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let afterProtection = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        XCTAssertFalse(afterProtection === afterContent)
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === afterProtection,
+                      "Fresh protected content must remain ready for Space navigation")
+        monitor.abort()
+    }
+
+    func testCancelledSwipeRepreparesBothNeighbours() async throws {
+        try await cancelledSwipeRepreparesBothNeighbours(withPendingPreparation: false)
+    }
+
+    func testCancelledSwipeWhilePreparationPendingRepreparesBothNeighbours() async throws {
+        try await cancelledSwipeRepreparesBothNeighbours(withPendingPreparation: true)
+    }
+
+    private func cancelledSwipeRepreparesBothNeighbours(withPendingPreparation pending: Bool) async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        store.switchTo(space: spaces[1])
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await waitForPreparation(monitor, target: spaces[0].id)
+        try await waitForPreparation(monitor, target: spaces[2].id)
+        let left = try XCTUnwrap(monitor.preparedSlides[spaces[0].id])
+        let right = try XCTUnwrap(monitor.preparedSlides[spaces[2].id])
+        if pending {
+            // Vertical scrolling keeps the warm surfaces but schedules delayed work.
+            // The next horizontal claim must cancel that work without wedging the queue.
+            monitor.postponePreparation(in: store, by: 0.6, preservingSurfaces: true)
+        }
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === right,
+                      "The claim must consume the existing right-hand capture")
+        XCTAssertTrue(monitor.preparedSlides[spaces[0].id] === left)
+        XCTAssertNil(monitor.preparedSlides[spaces[2].id])
+        monitor.abort()
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        monitor.schedulePreparation(in: store)
+        try await waitForPreparation(monitor, target: spaces[2].id)
+        XCTAssertEqual(Set(monitor.preparedSlides.keys), Set([spaces[0].id, spaces[2].id]),
+                       "Returning to the middle Space must warm both directions again")
+        let restored = try XCTUnwrap(monitor.preparedSlides[spaces[2].id])
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === restored,
+                      "The following swipe must reuse the replacement, rather than build cold")
+        monitor.abort()
+    }
+
+    func testSearchPresentationAndSuggestionsKeepPreparedSidebars() async throws {
+        let (store, spaces, _, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        store.palette = .newTab
+        store.suggestions = [Suggestion(url: "https://example.com", title: "Example", bookmarked: false)]
+        store.clearSuggestions()
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                      "Search state must not discard unchanged hidden sidebars")
+        store.palette = nil
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                      "Search dismissal must reuse the same trees, without another expensive layout")
+    }
+
+    func testSidebarHideAndRevealReusePreparedSurfaces() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        for _ in 0..<2 {
+            Motion.instant { store.sidebarShown = false }
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(80))
+            XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                          "Hiding chrome must retain unchanged, hidden Space surfaces")
+            XCTAssertFalse(monitor.mine(ScrollEvent(window: window, phase: .began), store),
+                           "A hidden sidebar cannot claim gestures")
+            Motion.instant { store.sidebarShown = true }
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(450))
+            XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                          "Cmd-S must not rebuild the entire neighboring sidebar graph")
+        }
+        monitor.track(-40, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === prepared,
+                      "The reused surface must still be claimable for a real Space switch")
+    }
+
+    func testHiddenSidebarStillRevokesStructurallyInvalidPreparedSurfaces() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        Motion.instant { store.sidebarShown = false }
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared)
+        store.sidebarPreviewInvalidated.send()
+        XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                      "Protection changes must revoke hidden captures synchronously")
+        XCTAssertNil(prepared.superview)
+        Motion.instant { store.sidebarShown = true }
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        XCTAssertFalse(monitor.preparedSlides[spaces[1].id] === prepared)
+        let ready = Array(monitor.preparedSlides.values)
+        monitor.remove()
+        XCTAssertTrue(monitor.preparedSlides.isEmpty)
+        XCTAssertTrue(ready.allSatisfy { $0.superview == nil },
+                      "Full profile/window teardown must still release retained surfaces")
+    }
+
+    func testSearchDefersDestructionOfStructurallyInvalidatedHostingTrees() async throws {
+        let (store, spaces, _, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        weak var retiredCapture = monitor.preparedSlides[spaces[1].id]
+        weak var outgoing = monitor.preparedSlides[spaces[1].id]?.outgoing
+        XCTAssertNotNil(outgoing)
+        store.palette = .newTab
+        store.todayShape = Pins(entries: [.init(row: .folder(Folder(name: "Changed during search")))])
+        XCTAssertTrue(monitor.preparedSlides.isEmpty)
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertNotNil(outgoing, "Opening search must retire eligibility without destroying whole SwiftUI trees on the key event")
+        store.palette = nil
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        XCTAssertNil(retiredCapture, "Idle cleanup must release Vane's retired capture ownership")
+        // AppKit can retain a detached hosting view until its pending display work
+        // drains. Require eventual idle release, rather than same-turn deallocation.
+        try await compatibilityWait { outgoing == nil }
+        XCTAssertNil(outgoing, "The retired tree must be released once search dismissal settles")
     }
 
     private func waitForPreparation(_ monitor: SwipeMonitor, target: UUID) async throws {
@@ -1173,7 +1518,7 @@ import XCTest
         XCTAssertNil(monitor.preparedSlides[target.id],
                      "A peer mutation must invalidate before a same-turn gesture can claim the capture")
         XCTAssertNil(stale.superview)
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitForPreparation(monitor, target: target.id)
         let refreshed = try XCTUnwrap(monitor.preparedSlides[target.id])
         XCTAssertFalse(refreshed === stale)
         monitor.track(-30, width: SidebarWidth.shared.width, in: store)
@@ -1233,7 +1578,7 @@ import XCTest
     }
 
     func testSidebarPreparationWaitsUntilLibraryDragIsIdle() async throws {
-        let (store, _, _, monitor) = try fixture()
+        let (store, spaces, _, monitor) = try fixture()
         store.librarySwipeProgress = 0.2
         monitor.schedulePreparation(in: store)
         try await Task.sleep(for: .milliseconds(180))
@@ -1241,7 +1586,7 @@ import XCTest
                       "Background sidebar layout must not interrupt an active Library drag")
         store.librarySwipeProgress = nil
         monitor.schedulePreparation(in: store)
-        try await Task.sleep(for: .milliseconds(180))
+        try await waitForPreparation(monitor, target: spaces[1].id)
         XCTAssertFalse(monitor.preparedSlides.isEmpty)
     }
 
@@ -1293,6 +1638,69 @@ import XCTest
         while monitor.preparedSlides.isEmpty, ProcessInfo.processInfo.systemUptime < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
+        XCTAssertFalse(monitor.preparedSlides.isEmpty)
+    }
+
+    func testSnapshotBurstWaitsForQuietThenWarmsBothNeighbours() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        store.switchTo(space: spaces[1])
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await waitForPreparation(monitor, target: spaces[0].id)
+        try await waitForPreparation(monitor, target: spaces[2].id)
+        let old = Array(monitor.preparedSlides.values)
+        // These are real snapshot-revision publications, not a test-only timer API.
+        // Every publication must revoke reuse immediately, but a burst should not
+        // repeatedly create and destroy complete neighboring hosting trees.
+        var prematureCaptures: Set<ObjectIdentifier> = []
+        for _ in 0..<4 {
+            store.spacesChanged()
+            XCTAssertTrue(monitor.preparedSlides.isEmpty)
+            try await Task.sleep(for: .milliseconds(130))
+            prematureCaptures.formUnion(monitor.preparedSlides.values.map(ObjectIdentifier.init))
+        }
+        XCTAssertTrue(prematureCaptures.isEmpty, "A continuing mutation burst must produce zero replacement captures")
+        try await waitForPreparation(monitor, target: spaces[0].id)
+        try await waitForPreparation(monitor, target: spaces[2].id)
+        XCTAssertEqual(Set(monitor.preparedSlides.keys), Set([spaces[0].id, spaces[2].id]))
+        XCTAssertTrue(old.allSatisfy { $0.superview == nil })
+        let right = try XCTUnwrap(monitor.preparedSlides[spaces[2].id])
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === right,
+                      "Quiet-time rebuilding must still supply the first directional claim")
+        monitor.abort()
+    }
+
+    func testPageInputExtendsPendingPreparationWithoutDiscardingWarmSurfaces() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let warm = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 10, phase: .began, x: 290))
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === warm,
+                      "Input must preserve valid warm first-swipe surfaces")
+        store.spacesChanged()
+        for index in 0..<4 {
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 10,
+                phase: index == 0 ? .began : .changed, x: 290))
+            try await Task.sleep(for: .milliseconds(130))
+            XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                          "Pending hidden trees must not rebuild during continuing page/Library input")
+        }
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended, x: 290))
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        XCTAssertFalse(monitor.preparedSlides[spaces[1].id] === warm)
+    }
+
+    func testCreateFormDefersReplacementPreparationUntilDismissed() async throws {
+        let (store, spaces, _, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        store.creatingSpace = true
+        store.spacesChanged()
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                      "The Create Space form must not compete with replacement preview layout")
+        store.creatingSpace = false
+        try await waitForPreparation(monitor, target: spaces[1].id)
         XCTAssertFalse(monitor.preparedSlides.isEmpty)
     }
 
@@ -1406,31 +1814,96 @@ import XCTest
         XCTAssertTrue(tabs.allSatisfy { $0.existingWeb == nil })
     }
 
-    func testScrollingRetiresStaleSurfacesOnlyAfterIdle() async throws {
-        let (_, spaces, window, monitor) = try fixture()
+    func testMissingSectionsViewportRejectsPreparedReuse() async throws {
+        try await assertMalformedSectionsViewportRejectsPreparedReuse(duplicate: false)
+    }
+
+    func testDuplicateSectionsViewportsRejectPreparedReuse() async throws {
+        try await assertMalformedSectionsViewportRejectsPreparedReuse(duplicate: true)
+    }
+
+    private func assertMalformedSectionsViewportRejectsPreparedReuse(duplicate: Bool) async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        func markers(in view: NSView) -> [SidebarSectionsViewport.Marker] {
+            (view as? SidebarSectionsViewport.Marker).map { [$0] }
+                ?? view.subviews.flatMap { markers(in: $0) }
+        }
+        let readyMarkers = markers(in: prepared.outgoing)
+        XCTAssertEqual(readyMarkers.count, 1, "The real hosted preview must identify one sections viewport")
+        let marker = try XCTUnwrap(readyMarkers.first)
+        let scroll = try XCTUnwrap(marker.enclosingScrollView)
+        let before = scroll.documentVisibleRect.minY
+        if duplicate {
+            marker.addSubview(SidebarSectionsViewport.Marker(frame: .zero))
+        } else {
+            marker.removeFromSuperview()
+        }
+        XCTAssertFalse(prepared.updatePreparedScrollOffset(180),
+                       "Missing or ambiguous viewport identity must reject cached reuse")
+        XCTAssertEqual(scroll.documentVisibleRect.minY, before, accuracy: 0.5,
+                       "An invalid marker set must not scroll an arbitrary native view")
+
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        let replacement = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        XCTAssertFalse(replacement === prepared, "The gesture must fall back to a fresh native cover")
+        XCTAssertTrue(replacement.isActive)
+        XCTAssertNil(prepared.superview, "The invalid cached cover must be revoked")
+        monitor.abort()
+    }
+
+    func testScrollingReusesPreparedSurfacesAndRefreshesNativeOffset() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        store.sharingReady = false
+        store.tabs = (0..<60).map { index in
+            let tab = Tab(profileID: store.profileID)
+            tab.park(url: URL(string: "about:blank#scroll-reuse-\(index)")!, Parked(title: "Document \(index)"))
+            return tab
+        }
+        store.syncShapes()
+        window.contentView?.layoutSubtreeIfNeeded()
         let deadline = ProcessInfo.processInfo.systemUptime + 2
         while monitor.preparedSlides[spaces[1].id] == nil, ProcessInfo.processInfo.systemUptime < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
-        let stale = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
         NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 20, phase: .began))
-        XCTAssertNil(monitor.preparedSlides[spaces[1].id], "The old scroll position must not be reused")
-        XCTAssertNotNil(stale.superview, "Tearing down hidden hosting trees must not block the first scroll event")
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared)
         for _ in 0..<8 {
             try await Task.sleep(for: .milliseconds(25))
             NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 20))
         }
-        XCTAssertNotNil(stale.superview, "Keep disposal out of continued scrolling too")
-        let refreshedDeadline = ProcessInfo.processInfo.systemUptime + 2
-        while monitor.preparedSlides[spaces[1].id] == nil, ProcessInfo.processInfo.systemUptime < refreshedDeadline {
-            try await Task.sleep(for: .milliseconds(20))
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertTrue(monitor.preparedSlides[spaces[1].id] === prepared,
+                      "Scrolling must not reconstruct two whole hidden hosting trees after every pause")
+        func scrollView(in view: NSView) -> NSScrollView? {
+            (view as? NSScrollView) ?? view.subviews.lazy.compactMap { scrollView(in: $0) }.first
         }
-        XCTAssertNil(stale.superview, "Idle preparation must retire the stale trees")
-        let refreshed = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
-        NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 20, phase: .began))
-        XCTAssertNotNil(refreshed.superview)
+        let scroll = try XCTUnwrap(scrollView(in: prepared.outgoing))
+        // An unrelated native scroller can precede the sections viewport in a
+        // hosted sidebar. Keep the real target before inserting that decoy.
+        let decoy = NSScrollView(frame: NSRect(x: 0, y: 0, width: 20, height: 20))
+        decoy.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 20, height: 1000))
+        decoy.contentView.scroll(to: NSPoint(x: 0, y: 40))
+        decoy.reflectScrolledClipView(decoy.contentView)
+        decoy.isHidden = true
+        let nativeContainer = try XCTUnwrap(scroll.superview)
+        nativeContainer.addSubview(decoy, positioned: .below, relativeTo: scroll)
+        defer { decoy.removeFromSuperview() }
+        XCTAssertTrue(scrollView(in: prepared.outgoing) === decoy,
+                      "The decoy must precede the real sections viewport in native traversal")
+        XCTAssertEqual(decoy.documentVisibleRect.minY, 40, accuracy: 1)
+
+        store.spaceGesture.sidebarOffset = 180
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === prepared)
+        XCTAssertEqual(scroll.documentVisibleRect.minY, 180, accuracy: 1,
+                       "The reused outgoing sidebar must start at the live scroll position")
+        XCTAssertEqual(decoy.documentVisibleRect.minY, 40, accuracy: 1,
+                       "Refreshing a reused sidebar must not scroll an unrelated native view")
         monitor.remove()
-        XCTAssertNil(refreshed.superview, "Removing the monitor must drain deferred surfaces too")
+        XCTAssertNil(prepared.superview)
     }
 
     func testPageScrollingKeepsThePreparedSidebarReady() async throws {
@@ -1516,6 +1989,8 @@ import XCTest
 
     func testNativeCoverWaitsForTheLiveSidebarAcknowledgement() async throws {
         let (store, spaces, window, _) = try fixture()
+        let population = try EmptyNativeSidebarPopulationFixture(store: store, spaceID: spaces[1].id)
+        defer { population.close() }
         // A host that has not rendered its new live sidebar cannot acknowledge handoff.
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
         window.contentView = container
@@ -1535,6 +2010,9 @@ import XCTest
         slide.sidebarDidUpdate(store, renderedSpaceID: spaces[1].id, atRest: false)
         try await Task.sleep(for: .milliseconds(30))
         XCTAssertTrue(slide.superview === container, "The hidden tree still offset by the drag is not ready")
+        population.complete()
+        XCTAssertTrue(slide.superview === container,
+                      "Ready empty population must still wait for the final identity/rest acknowledgement")
         slide.sidebarDidUpdate(store, renderedSpaceID: spaces[1].id, atRest: true)
         try await Task.sleep(for: .milliseconds(60))
         XCTAssertNil(slide.superview, "An acknowledged destination retires without waiting for the safeguard")
@@ -1552,6 +2030,9 @@ import XCTest
 
     func testSynchronousLiveSidebarAcknowledgementIsNotLostDuringCompletion() async throws {
         let (store, spaces, window, _) = try fixture()
+        let population = try EmptyNativeSidebarPopulationFixture(store: store, spaceID: spaces[1].id)
+        defer { population.close() }
+        population.complete()
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
         window.contentView = container
         let slide = ProfileSpaceSlide(frame: container.bounds,
@@ -1763,30 +2244,116 @@ import XCTest
 @MainActor private final class ProfileWashSampler: NSObject {
     weak var host: BrowserWindowHost?
     var reds: [Double] = []
+    private(set) var unadmittedTransitionCallbacks = 0
+    private var samplingTransition = false
     var maxGap: TimeInterval = 0
+    private(set) var firstCallbackLatency: TimeInterval?
+    private var started: TimeInterval?
     private var last: TimeInterval?
     private var link: CADisplayLink?
+    private let diagnosticsEnabled = ProcessInfo.processInfo.environment["VANE_DIAG_PROFILE_WASH_SAMPLES"] == "1"
+    private var diagnosticFrames: [String] = []
     init(host: BrowserWindowHost) { self.host = host }
+    private func presentedSurfaces(in view: NSView) -> [ThemeWashSurface] {
+        if let layer = view.layer {
+            // The model host switches before its next compositor commit. Mixing
+            // model visibility with presentation colors can sample the hidden
+            // cached profile's old endpoint and fabricate a full-color reversal.
+            guard let presentation = layer.presentation(), !presentation.isHidden,
+                  presentation.opacity > 0 else { return [] }
+        } else if view.isHidden { return [] }
+        if let surface = view as? ThemeWashSurface { return [surface] }
+        return view.subviews.flatMap { presentedSurfaces(in: $0) }
+    }
     private func visibleSurface(in view: NSView) -> ThemeWashSurface? {
-        guard !view.isHidden else { return nil }
-        if let surface = view as? ThemeWashSurface { return surface }
-        return view.subviews.lazy.compactMap { self.visibleSurface(in: $0) }.first
+        let candidates = presentedSurfaces(in: view)
+        return candidates.count == 1 ? candidates[0] : nil
     }
     func start(on screen: NSScreen) {
+        started = ProcessInfo.processInfo.systemUptime
         let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
         self.link = link
     }
-    func stop() { link?.invalidate(); link = nil }
+    func beginTransitionSampling() {
+        reds.removeAll(keepingCapacity: true)
+        diagnosticFrames.removeAll(keepingCapacity: true)
+        unadmittedTransitionCallbacks = 0
+        samplingTransition = true
+        maxGap = 0
+        // Include delay before the first transition callback in the gap diagnostic.
+        last = ProcessInfo.processInfo.systemUptime
+    }
+    func stop() { samplingTransition = false; link?.invalidate(); link = nil }
     @objc private func tick(_ link: CADisplayLink) {
         let now = ProcessInfo.processInfo.systemUptime
+        if firstCallbackLatency == nil, let started { firstCallbackLatency = now - started }
         if let last { maxGap = max(maxGap, now - last) }
         last = now
+        if diagnosticsEnabled, let host { recordDiagnostics(at: now, in: host) }
         guard let host, let surface = visibleSurface(in: host),
               let cg = (surface.base.presentation()?.colors as? [CGColor])?.first,
-              let colour = NSColor(cgColor: cg)?.usingColorSpace(.deviceRGB) else { return }
+              let colour = NSColor(cgColor: cg)?.usingColorSpace(.deviceRGB) else {
+            if samplingTransition { unadmittedTransitionCallbacks += 1 }
+            return
+        }
         reds.append(colour.redComponent)
     }
+    func dumpDiagnostics(label: String) {
+        guard diagnosticsEnabled else { return }
+        print("PROFILE_WASH_DIAGNOSTICS_BEGIN \(label)")
+        diagnosticFrames.forEach { print($0) }
+        print("PROFILE_WASH_DIAGNOSTICS_END \(label)")
+    }
+    private func identity(_ object: AnyObject?) -> String {
+        object.map { String(describing: ObjectIdentifier($0)) } ?? "nil"
+    }
+    private func red(_ colors: Any?) -> String {
+        guard let cg = (colors as? [CGColor])?.first,
+              let color = NSColor(cgColor: cg)?.usingColorSpace(.deviceRGB) else { return "nil" }
+        return String(format: "%.6f", Double(color.redComponent))
+    }
+    private func firstSurface(in view: NSView) -> ThemeWashSurface? {
+        if let surface = view as? ThemeWashSurface { return surface }
+        return view.subviews.lazy.compactMap { self.firstSurface(in: $0) }.first
+    }
+    private func recordDiagnostics(at now: TimeInterval, in host: BrowserWindowHost) {
+        let selected = visibleSurface(in: host)
+        let current = host.window.flatMap { window in TabStore.all.first { $0.window === window } }
+        let profile = current?.profileID.uuidString ?? "nil"
+        let space = current?.currentSpaceID?.uuidString ?? "nil"
+        let slide = host.spaceSlide
+        let offset = slide.map { String(format: "%.3f", Double($0.offset)) } ?? "nil"
+        var details: [String] = []
+        for (index, root) in host.subviews.enumerated() {
+            guard let surface = firstSurface(in: root) else { continue }
+            let rootPresentation = root.layer?.presentation()
+            let surfacePresentation = surface.layer?.presentation()
+            let modelRootHidden = root.isHiddenOrHasHiddenAncestor
+            let presentationRootHidden = rootPresentation.map { String($0.isHidden) } ?? "nil"
+            let presentationRootOpacity = rootPresentation.map { String($0.opacity) } ?? "nil"
+            let modelRed = red(surface.base.colors)
+            let presentationRed = red(surface.base.presentation()?.colors)
+            var ancestors: [String] = []
+            var node: NSView? = surface
+            while let view = node {
+                let presentation = view.layer?.presentation()
+                let hidden = presentation.map { String($0.isHidden) } ?? "nil"
+                let opacity = presentation.map { String($0.opacity) } ?? "nil"
+                ancestors.append("\(identity(view)):modelHidden=\(view.isHidden),presentHidden=\(hidden),presentOpacity=\(opacity)")
+                if view === root { break }
+                node = view.superview
+            }
+            details.append("rootIndex=\(index),root=\(identity(root)),surface=\(identity(surface)),selected=\(surface === selected),modelRootHidden=\(modelRootHidden),presentRootHidden=\(presentationRootHidden),presentRootOpacity=\(presentationRootOpacity),modelRed=\(modelRed),presentRed=\(presentationRed),nativeAnimating=\(surface.nativeAnimating),ancestors=[\(ancestors.joined(separator: ";"))]")
+            _ = surfacePresentation // Ancestor diagnostics include this layer as well.
+        }
+        let appActive = NSApp.isActive
+        let key = host.window?.isKeyWindow ?? false
+        let visible = host.window?.isVisible ?? false
+        let compositorVisible = host.window?.occlusionState.contains(.visible) ?? false
+        diagnosticFrames.append("PROFILE_WASH_FRAME t=\(now) sampleIndex=\(reds.count) activeProfile=\(profile) activeSpace=\(space) offset=\(offset) slideActive=\(slide?.isActive ?? false) appActive=\(appActive) key=\(key) windowVisible=\(visible) occlusionVisible=\(compositorVisible) roots={\(details.joined(separator: " | "))}")
+    }
+
 }
 
 @MainActor private final class SwipeColourSampler: NSObject {

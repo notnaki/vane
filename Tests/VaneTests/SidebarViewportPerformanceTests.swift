@@ -4,7 +4,9 @@ import XCTest
 @testable import vane
 
 @MainActor final class SidebarViewportPerformanceTests: XCTestCase {
+    /// Characterize the legacy wrapper; native row ownership has separate bounded-control gates.
     func testSidebarMountsOnlyRowsNearTheViewport() async throws {
+        useLegacySidebarMountingPolicy()
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 250, height: 400),

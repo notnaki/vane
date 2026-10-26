@@ -2678,6 +2678,9 @@ struct Stash {
     // Outlive the Find bar and profile parking, but never the owning store.
     lazy var findSession = Find()
     let feedback = InteractionFeedback()
+    /// Protection changes can revoke a captured sidebar without changing its shape.
+    let sidebarPreviewInvalidated = PassthroughSubject<Void, Never>()
+    lazy var sidebarObservation = SidebarObservation(store: self)
     var sharingReady = false
     var sharedUpdateQueued = false
     @Published var tabs: [Tab] = [] { didSet { SharedTabs.schedule(from: self) } }
@@ -2685,8 +2688,21 @@ struct Stash {
     /// between the two: arming either name field puts the other away, or two rows in the
     /// same list are both waiting to be typed into and only one of them can be.
     @Published var renamingTab: Tab.ID? {
-        didSet { if renamingTab != nil { renamingFolder = nil } }
+        didSet {
+            if let id = renamingTab {
+                if oldValue != id {
+                    // Finish before replacing authority: an outgoing row's later
+                    // disappearance must not overwrite a more recent edit.
+                    tabRenameSession?.commit()
+                    tabRenameSession = TabRenameSession(tabID: id)
+                }
+                renamingFolder = nil
+            }
+        }
     }
+    /// A row can change its mounting container while its name is being edited.
+    /// Keep the draft and completion authority outside that view's lifetime.
+    var tabRenameSession: TabRenameSession?
     /// Arc's multi-select: which rows are ticked, and which section they are in. Per window,
     /// like the sidebar itself. See Selection.swift — everything done with it is there.
     @Published var selection = Selection() { didSet { if oldValue != selection { extensions.sync() } } }
@@ -2870,8 +2886,12 @@ struct Stash {
     }
 
     func clearSuggestions() {
-        suggestTask?.cancel(); suggestions = []; suggestionIndex = -1; suggestionsPending = false
-        historyPending = false; enginePending = false
+        suggestTask?.cancel()
+        if !suggestions.isEmpty { suggestions = [] }
+        if suggestionIndex != -1 { suggestionIndex = -1 }
+        if suggestionsPending { suggestionsPending = false }
+        if historyPending { historyPending = false }
+        if enginePending { enginePending = false }
     }
 
     let isPrivate: Bool
@@ -3575,11 +3595,17 @@ struct Stash {
             tab.tearDown()
             Motion.animate(Look.tabClose) { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
-            pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it
-            // A Today folder does not: it is a grouping of tabs that are still archiving
-            // themselves, so the last one leaving — swept, closed or cleared — ends it.
-            todayShape.remove(tab: id.uuidString)
-            todayShape.removeEmptyFolders()
+            // Mutating @Published values also publishes when the mutation is a
+            // no-op. Closing Today must not invalidate the unchanged pinned outline.
+            var remainingPins = pins
+            remainingPins.remove(tab: id.uuidString) // Pinned keeps empty folders.
+            if remainingPins != pins { pins = remainingPins }
+            // Publish Today's completed removal and pruning together, so observers
+            // never lay out an intermediate empty folder on the close input event.
+            var remainingToday = todayShape
+            remainingToday.remove(tab: id.uuidString)
+            remainingToday.removeEmptyFolders()
+            if remainingToday != todayShape { todayShape = remainingToday }
             MediaState.shared.forget(id)
             // Closing GitHub's consent page by hand is abandoning the sign-in: the next
             // "New Live Folder…" starts a fresh one rather than pointing at a tab that has
@@ -3592,7 +3618,9 @@ struct Stash {
         // A selection may only ever name tabs that exist: one closed under it — by ⌘W, by a
         // bulk archive, by the auto-archive sweep — drops out of it here rather than
         // lingering as an id no row will ever be drawn for.
-        selection.keep(tabs.map(\.id))
+        var remainingSelection = selection
+        remainingSelection.keep(tabs.map(\.id))
+        if remainingSelection != selection { selection = remainingSelection }
         extensions.sync()
         // A split loses a pane with the tab, and a split down to one pane is a plain tab
         // again. Its remaining pane is a better answer than "the neighbouring row": the user

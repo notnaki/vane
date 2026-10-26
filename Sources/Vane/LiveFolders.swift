@@ -747,6 +747,8 @@ enum GitHubOAuth {
     private var active: NSObjectProtocol?
 
     private let readCredential: () -> Passwords.CredentialRead
+    private let readCredentialAsync: (@Sendable () async -> Passwords.CredentialRead)?
+    private var pendingCredentialRead: (id: UUID, version: Int, task: Task<Passwords.CredentialRead, Never>)?
     private let deleteCredential: (String) -> Bool
     private let storeCredential: (String, String) -> Bool
     private let systemStoreCredential: Bool
@@ -760,6 +762,7 @@ enum GitHubOAuth {
 
     init(profileID: UUID,
          readCredential: (() -> Passwords.CredentialRead)? = nil,
+         readCredentialAsync: (@Sendable () async -> Passwords.CredentialRead)? = nil,
          deleteCredential: ((String) -> Bool)? = nil,
          storeCredential: ((String, String) -> Bool)? = nil,
          credentialAccess: IntegrationTokens.Access = .init(),
@@ -777,6 +780,16 @@ enum GitHubOAuth {
             tokens.save(account: login, password: value)
         }
         self.readCredential = read
+        if let readCredentialAsync {
+            self.readCredentialAsync = readCredentialAsync
+        } else if readCredential == nil {
+            self.readCredentialAsync = {
+                (try? await Passwords.perform { tokens.read() }) ?? .unavailable(errSecNotAvailable)
+            }
+        } else {
+            // Existing offline fixtures can keep their synchronous in-memory reader.
+            self.readCredentialAsync = nil
+        }
         self.storeCredential = write
         self.fetchPullRequests = fetchPullRequests ?? { await LiveFolders.fetch($0, token: $1) }
         self.renewal = GitHubTokenRenewal(
@@ -823,6 +836,33 @@ enum GitHubOAuth {
     var connectedLogin: String? {
         let saved = signIn
         return needsReconnect ? nil : saved?.login
+    }
+
+    /// Automatic refresh must never synchronously join the shared Keychain lane:
+    /// another request there can be waiting for user interaction. Concurrent focus,
+    /// timer and disclosure requests share one cold read without caching failures.
+    func signInAsync() async throws -> (login: String, token: String)? {
+        guard !signingOut else { throw CancellationError() }
+        if let saved = credential.cached { return saved }
+        guard let readCredentialAsync else { return signIn }
+        let version = credentialVersion
+        let pending: (id: UUID, version: Int, task: Task<Passwords.CredentialRead, Never>)
+        if let existing = pendingCredentialRead, existing.version == version { pending = existing }
+        else {
+            pendingCredentialRead?.task.cancel()
+            pending = (UUID(), version, Task { await readCredentialAsync() })
+            pendingCredentialRead = pending
+        }
+        let result = await pending.task.value
+        if pendingCredentialRead?.id == pending.id { pendingCredentialRead = nil }
+        try Task.checkCancellation()
+        guard !pending.task.isCancelled, credentialVersion == pending.version, !signingOut,
+              ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else {
+            throw CancellationError()
+        }
+        let saved = credential.read { result }
+        if needsReconnect != credential.needsReconnect { needsReconnect = credential.needsReconnect }
+        return saved
     }
 
     @discardableResult
@@ -1148,6 +1188,8 @@ enum GitHubOAuth {
     }
 
     private func stop() {
+        pendingCredentialRead?.task.cancel()
+        pendingCredentialRead = nil
         timer?.invalidate()
         timer = nil
         if let active { NotificationCenter.default.removeObserver(active) }
@@ -1157,18 +1199,38 @@ enum GitHubOAuth {
     /// A folder was unfolded: Arc refreshes what you are about to look at.
     func expanded(_ folder: UUID) {
         guard let q = live()[folder] else { return }
-        refresh(folder, query: q, token: signIn?.token)
+        requestRefresh([folder: q])
     }
 
     /// "Refresh Now" — the one trigger that ignores the floor, because the user asked.
     func refreshNow(_ folder: UUID) {
         guard let q = live()[folder] else { return }
-        refresh(folder, query: q, token: signIn?.token, force: true)
+        requestRefresh([folder: q], force: true)
     }
 
     func refreshAll() {
-        let token = signIn?.token
-        for (id, q) in live() { refresh(id, query: q, token: token) }
+        requestRefresh(live())
+    }
+
+    private func requestRefresh(_ requested: [UUID: GitHubQuery], force: Bool = false) {
+        guard !requested.isEmpty, !signingOut else { return }
+        if let saved = credential.cached {
+            for (id, query) in requested { refresh(id, query: query, token: saved.token, force: force) }
+        } else if readCredentialAsync == nil {
+            let token = signIn?.token
+            for (id, query) in requested { refresh(id, query: query, token: token, force: force) }
+        } else {
+            Task { [weak self] in
+                guard let self else { return }
+                let saved: (login: String, token: String)?
+                do { saved = try await signInAsync() } catch { return }
+                // The folder may have been deleted/reconfigured while Keychain waited.
+                let current = live()
+                for (id, query) in requested where current[id] == query {
+                    refresh(id, query: query, token: saved?.token, force: force)
+                }
+            }
+        }
     }
 
     /// A folder has been deleted, or has stopped being live. Its metadata goes with it — this is
@@ -1239,13 +1301,16 @@ enum GitHubOAuth {
         saidSignedOut = false
         busy.insert(folder)
         last[folder] = .now
+        let version = credentialVersion
         Task {
             let response = await fetchAuthorized(query, token: token)
             let requestedToken = response.token
             let answer = response.answer
             defer { busy.remove(folder) }
+            // A late result must not re-enter Keychain after sign-out or replacement.
+            guard credentialVersion == version, !signingOut else { return }
             var details: [String: GitHub.Row] = [:]
-            if case .success(let prs) = answer, signIn?.token == requestedToken {
+            if case .success(let prs) = answer, credential.cached?.token == requestedToken {
                 let found = Set(prs.map(\.url))
                 let have = Set(stores().flatMap { store -> [String] in
                     guard let record = store.pins.folder(folder) else { return [] }
@@ -1276,6 +1341,7 @@ enum GitHubOAuth {
                 }
                 guard live()[folder] == query else { return }
             }
+            guard credentialVersion == version, !signingOut else { return }
             receive(answer, for: folder, token: requestedToken, details: details)
         }
     }
@@ -1308,7 +1374,8 @@ enum GitHubOAuth {
         let version = credentialVersion
         let answer = await renewal.token(after: token, force: force)
         guard credentialVersion == version else {
-            return signIn.map { .success($0.token) } ?? .failure(.offline)
+            guard !signingOut else { return .failure(.offline) }
+            return credential.cached.map { .success($0.token) } ?? .failure(.offline)
         }
         return answer.map { session in
             credential = LiveCredentialCache(login: session.login, token: session.credential.stored)
@@ -1674,6 +1741,7 @@ struct LiveCredentialCache {
     private var hit: (login: String, token: String)?
     private(set) var grant: GitHubCredential?
     private var rejectedToken: String?
+    var cached: (login: String, token: String)? { hit }
     var needsReconnect: Bool { rejectedToken != nil && rejectedToken == hit?.token }
     private(set) var unavailableStatus: OSStatus?
 
