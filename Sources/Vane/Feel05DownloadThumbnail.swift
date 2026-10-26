@@ -4,7 +4,14 @@ import SwiftUI
 /// cache hits that need file-signature validation when a row reappears.
 struct Feel05DownloadThumbnail: View {
     @ObservedObject var item: Downloads.Item
-    @ObservedObject private var thumbnails = Thumbnails.shared
+    @ObservedObject private var thumbnails: Thumbnails
+    @Environment(\.renderSurfaceActive) private var surfaceActive
+    private var workActive: Bool { !RenderPerformanceExperiment.hiddenSurfaces || surfaceActive }
+
+    init(item: Downloads.Item, thumbnails: Thumbnails = .shared) {
+        self.item = item
+        self.thumbnails = thumbnails
+    }
 
     var body: some View {
         Group {
@@ -19,7 +26,10 @@ struct Feel05DownloadThumbnail: View {
                 }
                 .frame(width: Look.libraryThumb, height: Look.libraryThumb)
                 .clipShape(.rect(cornerRadius: Look.captionGap))
-                .task(id: url) { await thumbnails.requestVisible(url) }
+                .task(id: workActive ? url : nil) {
+                    guard workActive, !Task.isCancelled else { return }
+                    await thumbnails.requestVisible(url)
+                }
             } else {
                 DownloadIcon(item: item)
             }

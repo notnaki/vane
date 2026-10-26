@@ -2,7 +2,8 @@
 """Launch an isolated native release fixture for manual UI/profiler comparisons.
 
 Use Ctrl-C to stop the owned app/server. Evidence and synthetic data are retained.
-No user profile, network website, credentials or global preferences are used.
+No user profile, credentials or global preferences are used. Pages are local
+unless --website explicitly supplies real network pages.
 """
 import argparse
 from datetime import datetime
@@ -22,7 +23,11 @@ import uuid
 from urllib.parse import urlsplit
 
 PROFILE = "00000000-0000-0000-0000-000056616E65"
-RENDER_FLAGS = ("VANE_RENDER_EXPERIMENT", "VANE_RENDER_SIGNALS", "VANE_RENDER_TOPOLOGY", "VANE_RENDER_LAYERS")
+RENDER_FLAGS = (
+    "VANE_RENDER_EXPERIMENT", "VANE_RENDER_SIGNALS", "VANE_RENDER_TOPOLOGY", "VANE_RENDER_LAYERS",
+    "VANE_RENDER_SELECTION", "VANE_RENDER_HOST_REUSE", "VANE_RENDER_PANEL_MOTION",
+    "VANE_RENDER_VIEWPORT", "VANE_RENDER_HIDDEN",
+)
 
 
 def launch_environment(data, source=None):

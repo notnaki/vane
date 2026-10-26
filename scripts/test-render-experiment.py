@@ -20,7 +20,7 @@ class RenderExperimentLaunchTests(unittest.TestCase):
             self.assertEqual(child[key], value)
 
     def test_baseline_and_independent_opt_outs_are_preserved(self):
-        source = dict(zip(fixture.RENDER_FLAGS, ("0", "1", "0", "0")))
+        source = {key: str(index % 2) for index, key in enumerate(fixture.RENDER_FLAGS)}
         child = fixture.launch_environment(Path("/tmp/synthetic"), source)
         for key, value in source.items():
             self.assertEqual(child[key], value)

@@ -858,6 +858,8 @@ private struct LibraryRail: View {
 /// selections stacked on each other — the glyph is drawn bare and the card is what says
 /// which section this is.
 private struct LibraryTile: View {
+    @Environment(\.renderSurfaceActive) private var surfaceActive
+    private var workActive: Bool { !RenderPerformanceExperiment.hiddenSurfaces || surfaceActive }
     let store: TabStore
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let section: LibrarySection
@@ -891,8 +893,8 @@ private struct LibraryTile: View {
         // Spaces has no search field to take focus after a click. Use the same
         // keyboard-only outline as the sidebar rather than the native focus ring.
         .vaneKeyboardAction(radius: Look.cardRadius, focusChanged: { focused = $0 }, action: action)
-        .task(id: (hovering || focused) && !selected && !batterySaver.isActive) {
-            guard hovering || focused, !selected, !batterySaver.isActive else { return }
+        .task(id: workActive && (hovering || focused) && !selected && !batterySaver.isActive) {
+            guard workActive, hovering || focused, !selected, !batterySaver.isActive else { return }
             do { try await Task.sleep(for: .milliseconds(140)) } catch { return }
             guard !Task.isCancelled else { return }
             if section == .archived {
@@ -1120,6 +1122,9 @@ private struct LibraryColumn<Head: View, Body_: View>: View {
 // MARK: - Archived Tabs
 
 private struct ArchivedTabsPane: View {
+    @Environment(\.renderSurfaceActive) private var surfaceActive
+    private var workActive: Bool { !RenderPerformanceExperiment.hiddenSurfaces || surfaceActive }
+    @Environment(\.librarySurfaceWorkRecorder) private var recordWork
     // Window selection, disclosure and search do not change the archive. Holding
     // the action target must not subscribe every hidden archive row to TabStore.
     let store: TabStore
@@ -1128,8 +1133,10 @@ private struct ArchivedTabsPane: View {
 
     @State private var groups: Feel05ArchiveSearch.Groups = []
     @State private var searching = true
+    @State private var exposureReady = false
     @State private var resultGate = Feel05ResultGate<Request>()
-    private var rowsAreCurrent: Bool { resultGate.isCurrent(request, refreshing: searching) }
+    private var rowsAreCurrent: Bool { workActive && (!RenderPerformanceExperiment.hiddenSurfaces || exposureReady)
+        && resultGate.isCurrent(request, refreshing: searching) }
     private struct Request: Equatable {
         let revision: Int
         let query: String
@@ -1156,9 +1163,12 @@ private struct ArchivedTabsPane: View {
                         .disabled(!rowsAreCurrent)
                 }
             }
+            .opacity(!RenderPerformanceExperiment.hiddenSurfaces || exposureReady ? 1 : 0)
+            .allowsHitTesting(rowsAreCurrent)
+            .accessibilityHidden(!workActive || (RenderPerformanceExperiment.hiddenSurfaces && !exposureReady))
             .overlay {
-                if groups.isEmpty {
-                    LibraryEmpty(text: searching ? "Loading archived tabs…" : archives.entries.isEmpty
+                if groups.isEmpty || (RenderPerformanceExperiment.hiddenSurfaces && !exposureReady) {
+                    LibraryEmpty(text: searching || !exposureReady ? "Loading archived tabs…" : archives.entries.isEmpty
                         ? "Nothing archived yet — a tab you close with \(Keybindings.binding(for: .closeTab).display) is kept here."
                         : "No archived tab matches this filter.")
                 }
@@ -1171,18 +1181,24 @@ private struct ArchivedTabsPane: View {
                 }
             }
         }
-        .task(id: request) {
+        .onChange(of: workActive) {
+            if !workActive { exposureReady = false }
+        }
+        .task(id: workActive ? request : nil) {
+            guard workActive else { return }
             let asked = request
             searching = true
             if !asked.query.isEmpty {
                 do { try await Task.sleep(for: LocalSuggestionReader.debounce) } catch { return }
             }
+            recordWork?(.archiveSearch)
             let found = await archives.search.groups(archives.entries, revision: asked.revision,
                 query: asked.query, littleOnly: asked.littleOnly)
-            guard !Task.isCancelled, asked == request else { return }
+            guard !Task.isCancelled, workActive, asked == request else { return }
             groups = found
             resultGate.present(asked)
             searching = false
+            exposureReady = true
         }
     }
 
@@ -1345,20 +1361,35 @@ private struct BoostsPane: View {
 // MARK: - Downloads
 
 private struct DownloadsPane: View {
+    @Environment(\.renderSurfaceActive) private var surfaceActive
+    private var workActive: Bool { !RenderPerformanceExperiment.hiddenSurfaces || surfaceActive }
+    @Environment(\.librarySurfaceWorkRecorder) private var recordWork
     @EnvironmentObject private var store: TabStore
     let downloads: DownloadLibrary
     @ObservedObject private var library = Library.shared
 
     @ObservedObject private var presentation: Feel05DownloadPresentation
     @State private var groups: [(title: String, items: [Downloads.Item])] = []
+    @State private var exposureReady = false
+    private var presentationReady: Bool {
+        !RenderPerformanceExperiment.hiddenSurfaces || exposureReady
+    }
 
     init(downloads: DownloadLibrary) {
         self.downloads = downloads
         presentation = Feel05DownloadPresentation.shared(for: downloads)
     }
 
+    private func refreshVisible() {
+        guard workActive else { return }
+        downloads.refreshMissing(); presentation.refresh(); refresh()
+    }
+
     private func refresh() {
+        guard workActive else { return }
+        recordWork?(.downloadsRefresh)
         groups = presentation.groups(query: library.query, completedOnly: library.completedOnly)
+        exposureReady = true
     }
 
     var body: some View {
@@ -1377,17 +1408,24 @@ private struct DownloadsPane: View {
                     DownloadListRow(item: item, downloads: owner)
                 }
             }
+            .opacity(presentationReady ? 1 : 0)
+            .disabled(!workActive || !presentationReady)
+            .allowsHitTesting(workActive && presentationReady)
+            .accessibilityHidden(!workActive || !presentationReady)
             .overlay {
                 if groups.isEmpty {
-                    LibraryEmpty(text: presentation.rows.isEmpty
+                    LibraryEmpty(text: !presentationReady ? "Loading downloads…" : presentation.rows.isEmpty
                         ? "Nothing downloaded yet — files you save are listed here."
                         : "No download matches this filter.")
                 }
             }
         }
-        .onAppear { downloads.refreshMissing(); presentation.refresh(); refresh() }
+        .onAppear { refreshVisible() }
+        .onChange(of: workActive) {
+            if workActive { refreshVisible() } else { exposureReady = false }
+        }
         .onChange(of: store.libraryOpen) {
-            if store.libraryOpen { downloads.refreshMissing(); presentation.refresh(); refresh() }
+            if store.libraryOpen { refreshVisible() }
         }
         .onChange(of: presentation.rows) { refresh() }
         .onChange(of: library.query) { refresh() }
@@ -1475,25 +1513,40 @@ private struct DownloadVerbs: View {
 /// second thing to keep in step for no answer it could give that this cannot. Ceiling: an
 /// image the user looked at but never downloaded is not here.
 private struct MediaPane: View {
+    @Environment(\.renderSurfaceActive) private var surfaceActive
+    private var workActive: Bool { !RenderPerformanceExperiment.hiddenSurfaces || surfaceActive }
+    @Environment(\.librarySurfaceWorkRecorder) private var recordWork
     @EnvironmentObject private var store: TabStore
     let downloads: DownloadLibrary
     @ObservedObject private var library = Library.shared
     @ObservedObject private var presentation: Feel05DownloadPresentation
     @State private var items: [Downloads.Item] = []
     @State private var wall: [[Cell]] = []
+    @State private var exposureReady = false
+    private var presentationReady: Bool {
+        !RenderPerformanceExperiment.hiddenSurfaces || exposureReady
+    }
 
     init(downloads: DownloadLibrary) {
         self.downloads = downloads
         presentation = Feel05DownloadPresentation.shared(for: downloads)
     }
 
+    private func refreshVisible() {
+        guard workActive else { return }
+        downloads.refreshMissing(); presentation.refresh(); refresh()
+    }
+
     private func refresh() {
+        guard workActive else { return }
+        recordWork?(.mediaRefresh)
         items = presentation.media(query: library.query)
         var columns = [[Cell]](repeating: [], count: Look.mediaColumns)
         for (index, item) in items.enumerated() {
             columns[index % Look.mediaColumns].append(Cell(item: item, height: Look.mediaColumn, order: index))
         }
         wall = columns
+        exposureReady = true
     }
 
     var body: some View {
@@ -1521,19 +1574,26 @@ private struct MediaPane: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Look.inset)
                 .padding(.bottom, Look.cardInset)
+                .opacity(presentationReady ? 1 : 0)
+                .disabled(!workActive || !presentationReady)
+                .allowsHitTesting(workActive && presentationReady)
+                .accessibilityHidden(!workActive || !presentationReady)
             }
             .scrollContentBackground(.hidden)
             .overlay {
                 if items.isEmpty {
-                    LibraryEmpty(text: presentation.rows.contains(where: { $0.image })
+                    LibraryEmpty(text: !presentationReady ? "Loading pictures…" : presentation.rows.contains(where: { $0.image })
                         ? "No picture matches that."
                         : "No pictures yet — images you save are shown here.")
                 }
             }
         }
-        .onAppear { downloads.refreshMissing(); presentation.refresh(); refresh() }
+        .onAppear { refreshVisible() }
+        .onChange(of: workActive) {
+            if workActive { refreshVisible() } else { exposureReady = false }
+        }
         .onChange(of: store.libraryOpen) {
-            if store.libraryOpen { downloads.refreshMissing(); presentation.refresh(); refresh() }
+            if store.libraryOpen { refreshVisible() }
         }
         .onChange(of: presentation.rows) { refresh() }
         .onChange(of: library.query) { refresh() }
@@ -1553,6 +1613,8 @@ private struct MediaPane: View {
 /// One picture, at column width and its own height. Clicking opens it, the way clicking a
 /// finished download does; the pointer brings up the same verbs the list row has.
 private struct MediaTile: View {
+    @Environment(\.renderSurfaceActive) private var surfaceActive
+    private var workActive: Bool { !RenderPerformanceExperiment.hiddenSurfaces || surfaceActive }
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var item: Downloads.Item
     let downloads: Downloads
@@ -1603,8 +1665,8 @@ private struct MediaTile: View {
         .accessibilityActions { DownloadVerbs(item: item, downloads: downloads) }
         // Higher is read first, so the newest picture leads however the columns fell.
         .accessibilitySortPriority(Double(-order))
-        .task(id: item.url) {
-            if let url = item.url { await thumbnails.requestVisible(url) }
+        .task(id: workActive ? item.url : nil) {
+            if workActive, let url = item.url { await thumbnails.requestVisible(url) }
         }
     }
 }
@@ -1637,13 +1699,16 @@ private struct MediaTile: View {
     }
     private let cache = NSCache<NSString, Record>()
     private let loader: Feel05ThumbnailLoader
+    private let didRequestVisible: (@MainActor (URL) -> Void)?
     private var loading: Set<String> = []
     private var wanted: [URL] = []
     private var wantedKeys: Set<String> = []
     private var drainingWanted = false
 
-    init(loader: Feel05ThumbnailLoader = Feel05ThumbnailLoader()) {
+    init(loader: Feel05ThumbnailLoader = Feel05ThumbnailLoader(),
+         didRequestVisible: (@MainActor (URL) -> Void)? = nil) {
         self.loader = loader
+        self.didRequestVisible = didRequestVisible
         cache.totalCostLimit = 32 * 1024 * 1024
         cache.countLimit = 256
     }
@@ -1654,6 +1719,7 @@ private struct MediaTile: View {
     /// Keep decode work inside the visible view's task. Cancellation also follows the
     /// hop to the serial loader, so scrolled-off requests skip queued file work.
     func requestVisible(_ url: URL) async {
+        didRequestVisible?(url)
         let key = url.path
         while loading.count >= 64 || loading.contains(key) {
             do { try await Task.sleep(for: .milliseconds(20)) } catch { return }

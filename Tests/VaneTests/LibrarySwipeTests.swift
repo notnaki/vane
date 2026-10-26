@@ -506,6 +506,84 @@ import XCTest
         XCTAssertNil(store.librarySwipeProgress)
     }
 
+    func testExperimentalProgrammaticNavigationDefersWebKitWidthUntilRest() async throws {
+        try XCTSkipUnless(RenderPerformanceExperiment.deferredPageResize, "Opt-in viewport experiment")
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, _) = fixture(withSpaces: true)
+        Library.open(.downloads, in: store)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        let tab = store.newBlankTab(loading: URL(string: "about:blank"))
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(150))
+        let page = tab.web
+        let initialWidth = page.bounds.width
+        XCTAssertGreaterThan(initialWidth, 100)
+        Library.open(.downloads, in: store)
+        for _ in 0..<5 {
+            try await Task.sleep(for: .milliseconds(25))
+            XCTAssertTrue(tab.web === page)
+            XCTAssertEqual(page.bounds.width, initialWidth, accuracy: 0.5,
+                           "Programmatic travel must not repeatedly reflow the live page")
+        }
+        try await Task.sleep(for: .milliseconds(220))
+        XCTAssertLessThan(page.bounds.width, initialWidth - 50)
+        let narrow = page.bounds.width
+        Library.close(store)
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertGreaterThan(page.bounds.width, narrow,
+                             "Growing viewports must resize live so the host stays filled")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(page.bounds.width, initialWidth, accuracy: 0.5)
+        store.sidebarShown = false
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertGreaterThan(page.bounds.width, initialWidth,
+                             "Hiding the sidebar grows the live page immediately")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertGreaterThan(page.bounds.width, initialWidth + 100)
+    }
+
+    func testExperimentalGestureTakesOverThePresentedProgrammaticPosition() async throws {
+        try XCTSkipUnless(RenderPerformanceExperiment.panelMotion, "Opt-in panel motion experiment")
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, monitor) = fixture(withSpaces: true)
+        Library.open(.downloads, in: store)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(100))
+        Library.open(.downloads, in: store)
+        try await Task.sleep(for: .milliseconds(45))
+        let marker = try XCTUnwrap(monitor.presentationView)
+        let layer = try XCTUnwrap(marker.layer?.presentation())
+        let root = try XCTUnwrap(host.layer?.presentation())
+        let width = Library.panelWidth(section: .downloads, spaces: 0,
+                                      private: store.isPrivate, available: host.bounds.width)
+        let presented = min(1, max(0, 1 + layer.convert(.zero, to: root).x / width))
+        XCTAssertGreaterThan(presented, 0)
+        XCTAssertLessThan(presented, 0.95)
+        send(window, phase: .began)
+        send(window, dx: -12)
+        let takeover = try XCTUnwrap(store.librarySwipeProgress)
+        XCTAssertLessThan(takeover, 0.95,
+                          "A reverse swipe must start at the visible panel, rather than the open endpoint")
+        XCTAssertEqual(takeover, max(0, presented - 12 / width), accuracy: 0.15)
+        send(window, phase: .cancelled)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(store.libraryOpen)
+        XCTAssertNil(store.librarySwipeProgress)
+    }
+
     func testClickOpeningPresentsIntermediatePanelPositions() async throws {
         try XCTSkipIf(Motion.reduced, "Requires animated navigation")
         let (store, window, monitor) = fixture(withSpaces: true)

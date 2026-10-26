@@ -52,6 +52,12 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
                         * (1 - progress) + panelWidth * progress)
                     // Resolve navigation geometry once per surface, rather than per leaf.
                     page.environment(\.libraryPageLeadingInset, gesture.pageLeadingInset)
+                        .environment(\.navigationViewportIntent,
+                            RenderPerformanceExperiment.deferredPageResize
+                                ? NavigationViewportIntent(libraryOpen: libraryOpen,
+                                    sidebarShown: sidebarShown, sidebarWidth: sidebarWidth,
+                                    panelWidth: panelWidth,
+                                    tracking: gesture.progress != nil) : nil)
                         .geometryGroup().frame(width: gesture.pageWidth ?? max(0,
                         geometry.size.width - ((sidebarShown ? sidebarWidth : 0) * (1 - progress)
                             + panelWidth * progress)))
@@ -61,6 +67,9 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
                 .accessibilityHidden(palettePresented)
                 // Adjacent surfaces follow the same translation, clipped at the page seam.
                 sidebar
+                    .frame(width: RenderPerformanceExperiment.panelMotion
+                        ? sidebarWidth + (floating ? 2 * Look.floatingSidebarGap : 0) : nil,
+                           alignment: .leading)
                     .geometryGroup()
                     .offset(x: panelWidth * progress)
                     .frame(width: (sidebarWidth + (floating ? 2 * Look.floatingSidebarGap : 0))
@@ -72,6 +81,7 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
                 // Keep the panel laid out offscreen. Mounting its search field and list
                 // during the first directional sample otherwise stalls that frame.
                 panel
+                    .renderSurfaceActivity(active: libraryOpen || gesture.progress != nil)
                     .frame(width: panelWidth)
                     .overlay(alignment: .leading) {
                         LibrarySwipePosition(monitor: monitor)
@@ -341,7 +351,8 @@ private struct LibrarySwipe: ViewModifier {
         if claim == .mine, valid(action, in: store), !Motion.reduced {
             if dragOrigin == nil {
                 let endpoint: CGFloat = switch action { case .close: 1; case .open: 0 }
-                dragOrigin = store.librarySwipeProgress == nil ? endpoint
+                dragOrigin = store.librarySwipeProgress == nil
+                    ? (RenderPerformanceExperiment.panelMotion ? presentedProgress ?? endpoint : endpoint)
                     : (presentedProgress ?? store.librarySwipeProgress ?? endpoint)
                 settlement = UUID()
                 if store.libraryGesture.pageWidth == nil, let window = store.window {

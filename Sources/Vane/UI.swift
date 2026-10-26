@@ -33,6 +33,9 @@ import Combine
 /// when the sidebar was last shown. Returning the proposal says "I take whatever you give
 /// me", which is what a page inside a card actually wants.
 struct WebView: NSViewRepresentable {
+    @Environment(\.navigationViewportIntent) private var viewportIntent
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     let web: WKWebView
     /// Every page the window still has, so the host can tell a page that is merely not on
     /// screen from one whose tab has been closed. Only the card passes it — see `WebCard`
@@ -53,6 +56,9 @@ struct WebView: NSViewRepresentable {
     func updateNSView(_ host: WebHost, context: Context) {
         if mayMount { host.show(web, keeping: live) } else { host.removePage() }
         host.offscreen = offscreen
+        host.prepareNavigationViewport(offscreen ? nil : viewportIntent,
+            animated: context.transaction.animation != nil && !context.transaction.disablesAnimations,
+            reduced: reduceMotion || batterySaver.isActive)
     }
     static func dismantleNSView(_ host: WebHost, coordinator: ()) {
         host.removePage()
@@ -103,6 +109,7 @@ final class WebHost: NSView {
     }
 
     func removePage() {
+        viewportDeferral.finish()
         for page in recent {
             Inspector.hideAttached(to: page, in: self)
             if page.superview === self { page.removeFromSuperview() }
@@ -114,6 +121,7 @@ final class WebHost: NSView {
     /// Release both ownership edges immediately when a tab closes or suspends.
     /// Removing only the subview leaves the page in `recent` until another render.
     func remove(_ page: WKWebView) {
+        viewportDeferral.finish()
         Inspector.hideAttached(to: page, in: self)
         if page.superview === self { page.removeFromSuperview() }
         recent.removeAll { $0 === page }
@@ -182,6 +190,33 @@ final class WebHost: NSView {
     /// The pages this host is holding, most recently shown first — the order `dropping`
     /// measures the ceiling against.
     private var recent: [WKWebView] = []
+    private let viewportDeferral = NavigationViewportDeferral()
+
+    private var viewportDeferralEligible: Bool {
+        !offscreen && subviews.allSatisfy { child in recent.contains { $0 === child } }
+    }
+
+    func prepareNavigationViewport(_ intent: NavigationViewportIntent?, animated: Bool, reduced: Bool) {
+        viewportDeferral.prepare(intent, in: self, pages: recent.filter { $0.superview === self },
+            animated: animated, reduced: reduced, eligible: viewportDeferralEligible)
+    }
+
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        viewportDeferral.hostDidResize(eligible: viewportDeferralEligible)
+    }
+
+    override func viewWillStartLiveResize() {
+        viewportDeferral.finish()
+        super.viewWillStartLiveResize()
+    }
+
+    override func didAddSubview(_ subview: NSView) {
+        super.didAddSubview(subview)
+        // WebKit can dock its inspector in the middle of a navigation. Give
+        // width ownership back before that sibling installs its own geometry.
+        if !viewportDeferralEligible { viewportDeferral.finish() }
+    }
 
     /// Show `next`, keep every other page whose tab still has it, and let the rest go.
     ///
@@ -199,9 +234,11 @@ final class WebHost: NSView {
     /// redrawing keeps its page until the next switch, which is the next thing that happens.
     func show(_ next: WKWebView, keeping live: [WKWebView] = []) {
         let outgoing = web
+        if outgoing !== next || next.superview !== self { viewportDeferral.finish() }
         if let outgoing, outgoing !== next { Inspector.hideAttached(to: outgoing, in: self) }
         if next.superview !== self {
             if let previousHost = next.superview {
+                (previousHost as? WebHost)?.viewportDeferral.finish()
                 Inspector.hideAttached(to: next, in: previousHost)
             }
             next.frame = bounds
@@ -241,6 +278,7 @@ final class WebHost: NSView {
         }
         for page in held where page !== next {
             if going.contains(ObjectIdentifier(page)) {
+                viewportDeferral.finish()
                 Inspector.hideAttached(to: page, in: self)
                 page.removeFromSuperview()
             }
@@ -546,6 +584,7 @@ struct BrowserWindow: View {
         let visible = store.sidebarShown || peeking
         let floating = !store.sidebarShown
         return Sidebar()
+            .environment(\.renderSurfaceActive, visible && !store.libraryOpen)
             .disabled(!visible || store.palette != nil || store.libraryOpen)
             .accessibilityHidden(!visible || store.palette != nil || store.libraryOpen)
             .frame(width: sidebar.width)
@@ -1710,6 +1749,10 @@ private struct Favorites: View {
     @ObservedObject private var sidebar = SidebarWidth.shared
     @State private var side: Landing.Band?
 
+    init(store: TabStore) {
+        _store = SidebarObserved(wrappedValue: store, scope: .structure)
+    }
+
     var body: some View {
         let pinned = previewTabs
         if !pinned.isEmpty {
@@ -1827,6 +1870,11 @@ private struct FavoriteTile: View {
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.strip) private var strip
     @Environment(\.colorScheme) private var colorScheme
+
+    init(store: TabStore, tab: Tab) {
+        _store = SidebarObserved(wrappedValue: store, scope: .tab(tab.id))
+        self.tab = tab
+    }
 
     var body: some View {
         let selected = store.current == tab.id
@@ -2264,7 +2312,7 @@ struct PaneStrip: View {
 private struct PanePill: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
     /// See `PaneStrip`: handed in, because this is drawn in the drag preview too.
-    @ObservedObject var store: TabStore
+    @SidebarObserved var store: TabStore
     @ObservedObject var tab: Tab
     let active: Bool
     let index: Int
@@ -2272,6 +2320,17 @@ private struct PanePill: View {
     var held = false
     var previewing = false
     @Environment(\.ghostTileMorph) private var morph
+
+    init(store: TabStore, tab: Tab, active: Bool, index: Int, of: Int,
+         held: Bool = false, previewing: Bool = false) {
+        _store = SidebarObserved(wrappedValue: store, scope: .tab(tab.id), legacyWholeStore: true)
+        self.tab = tab
+        self.active = active
+        self.index = index
+        self.of = of
+        self.held = held
+        self.previewing = previewing
+    }
 
     var body: some View {
         HStack(spacing: Look.rowSpacing * (1 - (morph?.progress ?? 0))) {
@@ -3320,6 +3379,10 @@ private struct SidebarSpacePresentation: View {
     /// roots must also pass cross-root row/tile morph parity before production.
     @Namespace private var strip
 
+    init(store: TabStore) {
+        _store = SidebarObserved(wrappedValue: store, scope: .structure)
+    }
+
     var body: some View {
         SpaceSidebarStrip(store: store, favorites: Favorites(store: store),
                           sections: SidebarSpaceSectionContent(store: store))
@@ -3337,6 +3400,10 @@ private struct SidebarSpaceSectionContent: View {
     @SidebarObserved var store: TabStore
     @State private var pinnedRowsCache = Feel02SidebarRowsCache()
     @Environment(\.nativeCachedSidebarBatches) private var groupedNativeRows
+
+    init(store: TabStore) {
+        _store = SidebarObserved(wrappedValue: store, scope: .structure)
+    }
 
     var body: some View {
         let pinned = pinnedRowsCache.resolve(in: store, shape: store.pins)
@@ -3375,6 +3442,11 @@ private struct PinnedTabs: View {
     /// One observer of `LiveFolders` for the whole section, rather than one per row: the
     /// glyphs all come out of the same object, and a hundred pinned rows each watching it
     /// is a hundred redraws for one refresh.
+    init(store: TabStore, snapshot: Feel02SidebarRowsCache.Snapshot) {
+        _store = SidebarObserved(wrappedValue: store, scope: .structure)
+        self.snapshot = snapshot
+    }
+
     var body: some View {
         PinnedSection(store: store, live: LiveFolders.shared(for: store.profileID), snapshot: snapshot)
     }
@@ -3385,6 +3457,12 @@ private struct PinnedSection: View {
     @ObservedObject var live: LiveFolders
     let snapshot: Feel02SidebarRowsCache.Snapshot
     @State private var sheet = false
+
+    init(store: TabStore, live: LiveFolders, snapshot: Feel02SidebarRowsCache.Snapshot) {
+        _store = SidebarObserved(wrappedValue: store, scope: .structure)
+        self.live = live
+        self.snapshot = snapshot
+    }
 
     var body: some View {
         // Drawn from `store.pins`, not from the strip: a folder is not a tab, and the order
@@ -3447,6 +3525,17 @@ private struct ShapeRow: View {
     /// the app — Today, a pane strip, the Library — correctly gets the default of nil.
     var pr: GitHub.Row?
 
+    init(store: TabStore, row: Pins.Visible, tab: Tab?, index: Int, rows: Int,
+         shape: ReferenceWritableKeyPath<TabStore, Pins>, pr: GitHub.Row? = nil) {
+        _store = SidebarObserved(wrappedValue: store, scope: .structure)
+        self.row = row
+        self.tab = tab
+        self.index = index
+        self.rows = rows
+        self.shape = shape
+        self.pr = pr
+    }
+
     var body: some View {
         // A concrete container gives LazyVStack one child per resolved row. Group
         // exposes the conditional subtree, making scrolling resolve its view list again.
@@ -3489,6 +3578,12 @@ private struct FolderRow: View {
     @ObservedObject private var dragging = Dragging.shared
     private var locked: Bool { store.isFolderLocked(folder.id) }
     private var receiving: Bool { isEnabled && dragging.active && zone == .inside }
+
+    init(store: TabStore, folder: Folder, shape: ReferenceWritableKeyPath<TabStore, Pins>) {
+        _store = SidebarObserved(wrappedValue: store, scope: .folder(folder.id))
+        self.folder = folder
+        self.shape = shape
+    }
 
     var body: some View {
         dropRow
@@ -4161,6 +4256,10 @@ private struct OpenTabs: View {
     @SidebarObserved var store: TabStore
     @State private var rowsCache = Feel02SidebarRowsCache()
 
+    init(store: TabStore) {
+        _store = SidebarObserved(wrappedValue: store, scope: .structure)
+    }
+
     var body: some View {
         let snapshot = rowsCache.resolve(in: store, shape: store.todayShape)
         // Drawn from `store.todayShape`, exactly as Pinned is drawn from `store.pins`: a
@@ -4206,6 +4305,13 @@ private struct StripRow: View {
     /// which counts up to the right whichever way the window reads, while the alignment the
     /// half is drawn with mirrors itself. See `Landing.drawsLeft`.
     @Environment(\.layoutDirection) private var direction
+
+    init(store: TabStore, tab: Tab, index: Int? = nil, rows: Int = 0) {
+        _store = SidebarObserved(wrappedValue: store, scope: .structure)
+        self.tab = tab
+        self.index = index
+        self.rows = rows
+    }
 
     var body: some View {
         Group {
@@ -4286,7 +4392,17 @@ private struct SplitRow: View {
     @Environment(\.strip) private var strip
     @Environment(\.colorScheme) private var colorScheme
 
+    init(store: TabStore, split: Split, lead: Tab, spot: Landing.Spot? = nil) {
+        _store = SidebarObserved(wrappedValue: store, scope: .tab(lead.id))
+        self.split = split
+        self.lead = lead
+        self.spot = spot
+    }
+
     var body: some View {
+        // The structural parent skips focus-only publications. Resolve the current
+        // value here rather than retaining the Split captured when it last laid out.
+        let split = store.split(containing: lead.id) ?? self.split
         let panes = split.tabs.compactMap { id in store.tabs.first { $0.id == id } }
         let selected = split.tabs.contains { $0 == store.current }
         // The split's one row stands for its lead pane in the strip, so that is the id the
@@ -4408,6 +4524,19 @@ struct SidebarTabSurface: View {
     var previewSelected: Bool? = nil
     var previewTicked = false
 
+    init(store: TabStore, tab: Tab, held: Bool = false, returnHovering: Binding<Bool>,
+         pr: GitHub.Row? = nil, action: @escaping () -> Void,
+         previewSelected: Bool? = nil, previewTicked: Bool = false) {
+        _store = SidebarObserved(wrappedValue: store, scope: .surface(tab.id))
+        self.tab = tab
+        self.held = held
+        _returnHovering = returnHovering
+        self.pr = pr
+        self.action = action
+        self.previewSelected = previewSelected
+        self.previewTicked = previewTicked
+    }
+
     var body: some View {
         // Map window publications to the few values this row draws. The expensive
         // row subtree remains unchanged during command-field/suggestion updates.
@@ -4490,6 +4619,24 @@ private struct SidebarTabPresentation: View {
 }
 
 private struct TabRow: View {
+    let store: TabStore
+    @ObservedObject var tab: Tab
+    var spot: Landing.Spot?
+    @Environment(\.livePR) private var pr
+    @State private var returnHovering = false
+
+    var body: some View {
+        // Bulk counts, global tooltip availability and AX state belong to the
+        // modifier below. Updating those consumers leaves this captured content
+        // intact, including its current bindings, action and rename editor.
+        SidebarTabSurface(store: store, tab: tab, returnHovering: $returnHovering,
+                          pr: pr, action: { selectSidebarTab(tab, in: store) })
+            .modifier(SidebarTabRowInteractions(store: store, tab: tab, spot: spot,
+                                               returnHovering: $returnHovering))
+    }
+}
+
+struct SidebarTabRowInteractions: ViewModifier {
     @SidebarObserved var store: TabStore
     @ObservedObject var tab: Tab
     /// Its place in the strip, so a drag can say where it started — see `Landing`.
@@ -4499,14 +4646,22 @@ private struct TabRow: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @Environment(\.livePR) private var pr
-    @State private var returnHovering = false
+    @Binding var returnHovering: Bool
 
-    var body: some View {
+    init(store: TabStore, tab: Tab, spot: Landing.Spot? = nil, returnHovering: Binding<Bool>,
+         experimental: Bool = RenderPerformanceExperiment.rowSelection) {
+        _store = SidebarObserved(wrappedValue: store, scope: .tab(tab.id), experimental: experimental)
+        self.tab = tab
+        self.spot = spot
+        _returnHovering = returnHovering
+    }
+
+    func body(content: Content) -> some View {
         let selected = store.current == tab.id
         let ticked = store.selection.contains(tab.id)
         let returning = tab.kind == .pinned && !tab.atHome
         let title = TidyTitles.title(for: tab)
-        surface()
+        content
         .inStrip(tab.id, strip)
         .tabTooltip(title, enabled: store.renamingTab == nil)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { dragWidth = $0 }
@@ -4597,36 +4752,38 @@ private struct TabRow: View {
     /// modifier-aware gesture. SwiftUI's tap carries no flags, and the only alternative is a
     /// second hit-testing layer over every row. Ceiling: it reads the *current* state of the
     /// keyboard, so a modifier released inside the same click's few milliseconds is missed.
-    private func select() {
-        let mods = NSEvent.modifierFlags
-        switch TabActions.rowClick(option: mods.contains(.option),
-                                   command: mods.contains(.command),
-                                   shift: mods.contains(.shift),
-                                   isCurrent: store.current == tab.id) {
-        // Showing a tab is the one click that is about *this* row and no other, so it is
-        // also what ends a selection.
-        case .show:
-            store.selection.clear()
-            store.current = tab.id
-        case .split:  store.addPane(tab.id)
-        case .tick:   store.toggleSelection(tab.id)
-        case .range:  store.extendSelection(to: tab.id)
-        // A row with no page yet — a parked favourite that has never loaded — has nothing to
-        // hand over, so it is shown instead of opening an empty window.
-        case .little:
-            // A Private Window's row must not float out into a window that keeps cookies
-            // and writes history — the Little Arc inherits the window's privacy.
-            if let url = tab.currentURL {
-                LittleArc.open(url, isPrivate: store.isPrivate)
-            } else {
-                store.current = tab.id
-            }
-        }
-    }
+    private func select() { selectSidebarTab(tab, in: store) }
 
     private func closeOthers() {
         // Favourites and pinned tabs are not "other tabs" — they stay whatever happens.
         for t in store.tabs where t.id != tab.id && t.kind == .today { store.archive(t.id) }
+    }
+}
+
+@MainActor private func selectSidebarTab(_ tab: Tab, in store: TabStore) {
+    let mods = NSEvent.modifierFlags
+    switch TabActions.rowClick(option: mods.contains(.option),
+                               command: mods.contains(.command),
+                               shift: mods.contains(.shift),
+                               isCurrent: store.current == tab.id) {
+    // Showing a tab is the one click that is about *this* row and no other, so it is
+    // also what ends a selection.
+    case .show:
+        store.selection.clear()
+        store.current = tab.id
+    case .split:  store.addPane(tab.id)
+    case .tick:   store.toggleSelection(tab.id)
+    case .range:  store.extendSelection(to: tab.id)
+    // A row with no page yet — a parked favourite that has never loaded — has nothing to
+    // hand over, so it is shown instead of opening an empty window.
+    case .little:
+        // A Private Window's row must not float out into a window that keeps cookies
+        // and writes history — the Little Arc inherits the window's privacy.
+        if let url = tab.currentURL {
+            LittleArc.open(url, isPrivate: store.isPrivate)
+        } else {
+            store.current = tab.id
+        }
     }
 }
 

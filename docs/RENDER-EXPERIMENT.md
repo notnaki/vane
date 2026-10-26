@@ -22,6 +22,24 @@ different GPU backend. No change is proposed for the shipping defaults yet.
    keyboard targets and accessibility stay in the original SwiftUI hierarchy.
    Favourite/row morphs retain their existing renderer. Reduce Motion and Battery
    Saver finish the compositor animations immediately.
+4. **Narrow selection and rename observation.** Structural owners ignore row-only
+   mutations. Lightweight row controls observe the affected selection, split and
+   rename state; title/editor surfaces keep their own narrower subscriptions.
+   Full pane metadata notifications and replacement-object rebinding remain live.
+5. **Defer unchanged detached row roots.** Mounted roots still refresh. Detached
+   hosts retain their current root only while entry, depth, position, population
+   and Tab object identity match; the latest root is installed before reattachment.
+   Protection and membership changes sanitize immediately.
+6. **Keep panel geometry stable.** Preserve the existing native translation path
+   and carry its actual presented position into interrupted gestures. Eligible
+   programmatic shrinking transitions briefly hold WebKit width, then apply the
+   settled width. Growing pages, live window resize, inspector layouts, ownership
+   changes and reduced motion keep or restore normal autoresizing.
+7. **Pause hidden Library work.** Cancel archive filtering, thumbnail requests and
+   rail prewarming while hidden, and avoid downloads/media regrouping. Retained
+   content refreshes before interaction on exposure. Work stays admitted through
+   the closing animation; reopening cancels pending deactivation. Catalog
+   preparation stays live because it determines panel width.
 
 Full row-host rasterization is deliberately excluded: these owners span the
 entire logical sidebar document, even when only a few controls are attached.
@@ -47,19 +65,33 @@ The existing supervisor creates a uniquely signed app and independent test data.
 It records the actual sites, flags, PID, executable, bundle, start time and
 resource samples, and verifies its owned app exits. It does not use the normal
 Vane profile. Evidence directories must be new; keep them for comparison.
-Use `signals`, `topology`, or `layers` to attribute each candidate separately.
+Use `signals`, `topology`, `layers`, `selection`, `hosts`, `panels`, `viewport`,
+or `hidden` to attribute each candidate separately.
 Keep window sizes, display refresh, motion policy and interaction sequence equal.
 
-The corresponding environment flags are `VANE_RENDER_EXPERIMENT=1`, with
-`VANE_RENDER_SIGNALS=0`, `VANE_RENDER_TOPOLOGY=0`, or `VANE_RENDER_LAYERS=0` as
-independent opt-outs. They are captured per process and never saved to preferences.
+The master flag is `VANE_RENDER_EXPERIMENT=1`. Independent opt-outs are
+`VANE_RENDER_SIGNALS=0`, `VANE_RENDER_TOPOLOGY=0`, `VANE_RENDER_LAYERS=0`,
+`VANE_RENDER_SELECTION=0`, `VANE_RENDER_HOST_REUSE=0`,
+`VANE_RENDER_PANEL_MOTION=0`, `VANE_RENDER_VIEWPORT=0`, and `VANE_RENDER_HIDDEN=0`.
+Flags are captured per process and never saved to
+preferences.
+
+## Rejected candidate
+
+A bounded compositor grain texture was evaluated and removed. Although it
+reproduced a detached CGContext reference, strict comparisons with the actual
+mounted legacy NSView failed at both 1x and 2x. The existing native grain renderer
+remains unchanged; no grain performance gain is claimed. Diagnostic logs and
+images were retained locally under `/tmp/vane-render-expanded-final-tests.log`
+and the development Mac's temporary `vane-grain-parity` directory. The candidate
+source and tests were preserved as `/tmp/vane-grain-rejected-{source,tests}.swift`.
 
 ## Verification and measurements
 
 ```sh
 VANE_RENDER_EXPERIMENT=1 python3 scripts/run-native-tests.py -c release -j 4 \
   -Xswiftc -enable-testing --filter \
-  'RenderPerformanceExperimentTests|Feel02SidebarTests|SidebarObservationTests|SidebarHoverLayoutTests|TabTooltipTests|NativeSidebarMotionTests|SearchTypingTests'
+  'RenderPerformanceExperimentTests|RenderSurfaceActivityTests|NavigationViewportDeferralTests|SidebarSelectionObservationTests|NativeSidebarHostReuseTests|LibraryHiddenSurfaceTests|LibrarySwipeTests|Feel05ThumbnailTests|SidebarObservationTests|KeyboardAccessibilityTests'
 VANE_RENDER_BENCHMARK=1 python3 scripts/run-native-tests.py --skip-build -c release \
   --filter RenderPerformanceExperimentTests
 # Real-page comparison; repeat with the experiment set to 1, and with each site:
@@ -105,6 +137,93 @@ The pure selfcheck and six Python launcher/URL-isolation checks passed. Independ
 review found appearance and launcher-flag issues; both were corrected and reviewed
 again with no remaining actionable findings.
 
-The earlier local-page display-callback comparison was mixed and does not establish
-a general FPS gain. Real-page comparisons are recorded separately; neither display
-callbacks nor submitted compositor transactions establish presented-frame FPS.
+The initial three-candidate version also passed six real-site runs: Wikipedia,
+GitHub and MDN, each with 28 and 300 seeded tabs, a matching live host/title, and
+nonempty remote document content. The 300-tab sidebar callback p95 was mixed:
+
+| Real page | Legacy | Initial experiment |
+| --- | ---: | ---: |
+| Wikipedia Swift article | 9.35 ms | 11.54 ms |
+| Vane GitHub repository | 9.98 ms | 11.37 ms |
+| MDN JavaScript | 10.18 ms | 10.21 ms |
+
+These single A/B runs show no consistent general improvement. They measure
+display-callback cadence, not presented-frame FPS; larger populations still had
+long stalls. The expanded candidates above require their own combined validation
+and attribution before promotion. Raw initial logs were retained under
+`/tmp/vane-render-real-sites-20261026` on the development Mac; this temporary path
+is local evidence, not a portable benchmark archive.
+
+## Expanded validation
+
+The retained eight flags passed 310 broader release tests, with four skipped and
+no failures. A final focused run passed 116 tests with two opt-in diagnostics
+skipped; the same 116-test selection passed in legacy mode, with six experimental
+or diagnostic checks skipped. The pure selfcheck and six Python launcher checks
+also passed. Every native wrapper verified host exit and backend cleanup.
+
+Mechanism checks demonstrate that unrelated mounted rows avoid selection redraws,
+unchanged detached roots avoid replacements, and ten shrinking host-width changes
+produce one WebKit width update at rest. Hidden archive queries and download
+thumbnail requests remain unadmitted until exposure; queued thumbnail work is
+cancelled when hidden. Closing retains admission through the bounded animation
+tail, and reopening rejects the old completion. Battery Saver exercises immediate
+policy cancellation; system Reduce Motion is source-reviewed rather than changed
+by the test harness.
+
+Native keyboard tests passed. Two broader native AX parity checks were skipped
+because their unbuffered AX route or external controller was unavailable; full
+VoiceOver traversal parity is unverified. The other skips are opt-in timing
+diagnostics. Independent reviews found closing-tail and hidden-download-thumbnail
+gaps, both corrected and re-reviewed with no remaining actionable findings.
+
+## Expanded real-site comparison
+
+All three real websites passed in both modes at 28 and 300 tabs. Original baseline
+samples overlapped compiler activity and were excluded. Quiet repeats were admitted
+only after process-activity checks; an additional GitHub repeat was also excluded.
+Remote documents were checked for the requested host, expected title and nonempty
+body. Native test hosts and their WebKit stores retired successfully after each run.
+
+| 300-tab sidebar callback p95 | Legacy | Eight flags together |
+| --- | ---: | ---: |
+| Wikipedia Swift article | 9.31 ms | 10.59 ms |
+| Vane GitHub repository | 9.29 ms | 10.53 ms |
+| MDN JavaScript | 9.73 ms | 11.18 ms |
+
+The combined preset was about 13–15% worse on this diagnostic. Median callback
+intervals stayed near 8.33 ms, and both modes still had long 113–140 ms tails.
+These are individual admitted comparisons, not a statistical or presented-FPS
+claim. Reduced mechanism work has not established better overall smoothness.
+Keep the master flag off for ordinary use; `all` exists for comparison, not as a
+recommended fast preset. Per-flag attribution is recorded separately.
+
+Raw expanded evidence is local to `/tmp/vane-render-expanded-real-20261026`,
+including accepted log identities, rejected samples and activity observations.
+
+## Individual flag diagnostic
+
+Each flag was also attempted independently against the live Wikipedia page, with
+legacy runs before and after. Clean 300-tab callback p95 samples were:
+
+| Mode | p95 |
+| --- | ---: |
+| Legacy before | 9.99 ms |
+| Topology only | 9.57 ms |
+| Decoration layers only | 10.55 ms |
+| Selection observation only | 9.46 ms |
+| Viewport only | 9.93 ms |
+| Hidden work only | 10.65 ms |
+| Legacy after | 9.98 ms |
+
+Topology and selection are promising in this single diagnostic; decoration layers
+and hidden-work admission did not improve this scroll sample. The test does not
+exercise every candidate's intended workload equally. Signals, native host reuse
+and panel-only timings remain unverified: both bounded attempts were excluded
+for competing activity or visibility prerequisites. One host run skipped before
+its 300-tab sample after losing visibility; its repeat passed functional checks
+but had competing activity. No rejected result is treated as an FPS measurement.
+
+These are isolated diagnostic runs, not evidence for shipping defaults. Raw logs,
+flag values, activity checks and admission decisions are retained locally under
+`/tmp/vane-render-attribution-20261026`.

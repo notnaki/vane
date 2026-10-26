@@ -10,6 +10,11 @@ enum RenderPerformanceExperiment {
     static let isolatedSignals = enabled && environment["VANE_RENDER_SIGNALS"] != "0"
     static let cachedTopology = enabled && environment["VANE_RENDER_TOPOLOGY"] != "0"
     static let layerDecoration = enabled && environment["VANE_RENDER_LAYERS"] != "0"
+    static let rowSelection = enabled && environment["VANE_RENDER_SELECTION"] != "0"
+    static let hostReuse = enabled && environment["VANE_RENDER_HOST_REUSE"] != "0"
+    static let panelMotion = enabled && environment["VANE_RENDER_PANEL_MOTION"] != "0"
+    static let deferredPageResize = enabled && environment["VANE_RENDER_VIEWPORT"] != "0"
+    static let hiddenSurfaces = enabled && environment["VANE_RENDER_HIDDEN"] != "0"
 }
 
 /// High-frequency page signals have two small consumers. Legacy mode relays the
