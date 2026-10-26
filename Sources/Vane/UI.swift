@@ -827,6 +827,15 @@ struct EmptyPane: View {
 /// fill; both go together behind the same fade.
 struct LoadingBar: View {
     @ObservedObject var tab: Tab
+    @ObservedObject private var signals: TabRenderSignals
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    init(tab: Tab, hidden: Bool = false, accessible: Bool = false) {
+        self.tab = tab
+        self.signals = tab.renderSignals
+        self.hidden = hidden
+        self.accessible = accessible
+    }
     /// The find bar shares the top of the card; while it is open the pill steps aside
     /// entirely rather than sitting off-centre for the rest of the time.
     var hidden = false
@@ -837,14 +846,10 @@ struct LoadingBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            Capsule().fill(Look.loadingTrack)
-            GeometryReader { geo in
-                Capsule()
-                    .fill(Color(white: 0.5))
-                    .frame(width: geo.size.width * tab.progress)
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: tab.progress)
-            }
+        Group {
+            if RenderPerformanceExperiment.layerDecoration {
+                CompositedLoadingTrack(progress: signals.progress, reduced: reduceMotion || batterySaver.isActive)
+            } else { legacyTrack }
         }
         .frame(width: Look.loadingPill.width, height: Look.loadingPill.height)
         .padding(.top, Look.loadingInset)
@@ -858,10 +863,22 @@ struct LoadingBar: View {
         // The main window already announces loading in its tab row; a popup has none.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Loading page")
-        .accessibilityValue(Text("\(Int(tab.progress * 100))%"))
+        .accessibilityValue(Text("\(Int(signals.progress * 100))%"))
         .accessibilityHidden(!accessible || !tab.loading || hidden)
         .vaneMotionPolicy()
     }
+    private var legacyTrack: some View {
+        ZStack(alignment: .leading) {
+            Capsule().fill(Look.loadingTrack)
+            GeometryReader { geo in
+                Capsule()
+                    .fill(Color(white: 0.5))
+                    .frame(width: geo.size.width * signals.progress)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: signals.progress)
+            }
+        }
+    }
+
 }
 
 // MARK: - Sidebar
@@ -3865,16 +3882,23 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
         .padding(.trailing, Look.rowTrailingInset)
         .frame(width: morph?.width, height: morph?.height ?? Look.rowHeight)
         .background {
-            RoundedRectangle(cornerRadius: Look.pillRadius)
-                // Fade one ink colour rather than interpolating toward transparent black.
-                .fill(Look.ink(1))
-                .opacity(highlightOpacity * (1 - (morph?.progress ?? 0)))
-                // Clear the old highlight promptly as the pointer moves to another row.
-                // Titles, inline editors and hit targets keep their final geometry.
-                .animation(reduceMotion || batterySaver.isActive ? nil
-                           : .easeOut(duration: highlightOpacity == 0 ? 0.08 : 0.12),
-                           value: highlightOpacity)
-                .id(reduceMotion || batterySaver.isActive)
+            if RenderPerformanceExperiment.layerDecoration, morph == nil {
+                CompositedRowHighlight(opacity: highlightOpacity, color: Look.ink(1),
+                    radius: Look.pillRadius, reduced: reduceMotion || batterySaver.isActive)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            } else {
+                RoundedRectangle(cornerRadius: Look.pillRadius)
+                    // Fade one ink colour rather than interpolating toward transparent black.
+                    .fill(Look.ink(1))
+                    .opacity(highlightOpacity * (1 - (morph?.progress ?? 0)))
+                    // Clear the old highlight promptly as the pointer moves to another row.
+                    // Titles, inline editors and hit targets keep their final geometry.
+                    .animation(reduceMotion || batterySaver.isActive ? nil
+                               : .easeOut(duration: highlightOpacity == 0 ? 0.08 : 0.12),
+                               value: highlightOpacity)
+                    .id(reduceMotion || batterySaver.isActive)
+            }
         }
         .hairline(radius: Look.pillRadius, ticked && selected
                   ? chromeTheme.selectedEdge.opacity(1 - (morph?.progress ?? 0)) : .clear)

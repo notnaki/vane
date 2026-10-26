@@ -19,11 +19,21 @@ import subprocess
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 
 PROFILE = "00000000-0000-0000-0000-000056616E65"
+RENDER_FLAGS = ("VANE_RENDER_EXPERIMENT", "VANE_RENDER_SIGNALS", "VANE_RENDER_TOPOLOGY", "VANE_RENDER_LAYERS")
 
 
-def seed(directory, port, large):
+def launch_environment(data, source=None):
+    source = os.environ if source is None else source
+    allowed = ("HOME", "PATH", "TMPDIR", "USER", "LOGNAME", "LANG", "VANE_DIAG_SCROLL_TRACE", *RENDER_FLAGS)
+    environment = {key: source[key] for key in allowed if key in source}
+    environment["VANE_DATA_DIR"] = str(data)
+    return environment
+
+
+def seed(directory, port, large, websites=()):
     directory.mkdir()
     base = f"http://127.0.0.1:{port}"
     def write(name, value):
@@ -34,12 +44,12 @@ def seed(directory, port, large):
     for n in range(10 if large else 2):
         sid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"vane-ui-space-{n}")).upper()
         rows = [{"id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"vane-ui-tab-{n}-{t}")).upper(),
-                 "url": f"{base}/page.html?space={n}&tab={t}", "title": f"Fixture {n + 1} Tab {t + 1}",
+                 "url": websites[(n + t) % len(websites)] if websites else f"{base}/page.html?space={n}&tab={t}", "title": f"Fixture {n + 1} Tab {t + 1}",
                  "kind": 1 if t < 8 else 2} for t in range(20 if large else 4)]
         spaces.append({"id": sid, "profileID": PROFILE, "name": f"Fixture {n + 1}",
                        "tabURLs": [r["url"] for r in rows if r["kind"] == 2],
                        "pinnedTabURLs": [r["url"] for r in rows if r["kind"] == 1],
-                       "pinnedURLs": [f"{base}/page.html?favorite={f}" for f in range(4)],
+                       "pinnedURLs": [websites[f % len(websites)] if websites else f"{base}/page.html?favorite={f}" for f in range(4)],
                        "icon": "cloud", "colorHex": "#6E7DD2"})
         windows.append(rows)
     write("profiles.json", {"profiles": [{"id": PROFILE, "name": "UI Fixture", "colorHex": "#6E7DD2"}], "activeID": PROFILE})
@@ -84,7 +94,11 @@ def main():
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--large", action="store_true")
+    parser.add_argument("--website", action="append", default=[],
+                        help="Real HTTP(S) page to cycle through browser tabs; repeat for multiple sites")
     args = parser.parse_args()
+    if any(urlsplit(url).scheme not in ("http", "https") or not urlsplit(url).netloc for url in args.website):
+        parser.error("--website requires an absolute HTTP(S) URL")
     root = Path(__file__).resolve().parents[1]
     evidence = args.evidence.resolve(); evidence.mkdir(parents=True, exist_ok=False)
     web = evidence / "web"; web.mkdir()
@@ -97,7 +111,7 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     # Downloads is covered by the app's existing sandbox entitlement.
     data = Path.home() / "Downloads" / (".vane-ui-fixture-" + uuid.uuid4().hex)
-    seed(data, server.server_port, args.large)
+    seed(data, server.server_port, args.large, args.website)
     app = evidence / "Vane UI Fixture.app"
     executable = app / "Contents/MacOS/vane"; executable.parent.mkdir(parents=True)
     shutil.copy2(args.binary.resolve(), executable)
@@ -119,15 +133,16 @@ def main():
     suite = "vane.datadir." + encoded
     # Sandboxed preferences belong to the signed app's container. Host `defaults`
     # writes do not configure that domain; retain native defaults for both runs.
-    env = {key: os.environ[key] for key in ("HOME", "PATH", "TMPDIR", "USER", "LOGNAME", "LANG") if key in os.environ}
-    env["VANE_DATA_DIR"] = str(data)
+    env = launch_environment(data)
     with (evidence / "app.log").open("w") as log:
         process = subprocess.Popen([str(executable)], env=env, stdout=log, stderr=log)
         try:
             started = subprocess.check_output(["ps", "-p", str(process.pid), "-o", "lstart="], text=True).strip()
             metadata = {"pid": process.pid, "start": started, "bundle": str(app), "data": str(data),
                         "suite": suite, "large": args.large, "launched": datetime.now().isoformat(),
-                        "binary_sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}
+                        "binary_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                        "render_flags": {key: env.get(key) for key in RENDER_FLAGS},
+                        "websites": args.website}
             (evidence / "instance.json").write_text(json.dumps(metadata, indent=2)); print(json.dumps(metadata), flush=True)
             with (evidence / "resources.tsv").open("w") as samples:
                 while process.poll() is None:

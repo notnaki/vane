@@ -474,7 +474,13 @@ struct TitleReveal: Equatable, Sendable {
     /// `ShimmerTitle` in UI.swift.
     @Published private(set) var titleReveal = TitleReveal()
     @Published var address = ""          // what the URL field shows
-    @Published var progress = 0.0
+    lazy var renderSignals = TabRenderSignals(owner: self)
+    var progress: Double {
+        get { renderSignals.progress }
+        set {
+            if !renderSignals.isolated || renderSignals.progress != newValue { renderSignals.progress = newValue }
+        }
+    }
     @Published var loading = false
     /// Only an actual provisional load may offer a certificate exception. An anchor
     /// navigation receives policy approval too, but never starts a new document load.
@@ -544,7 +550,12 @@ struct TitleReveal: Equatable, Sendable {
     @Published var audible = false
     @Published var favicon: NSImage?
     /// The link under the pointer, for the status bar. nil when nothing is hovered.
-    @Published var hoveredLink: StatusBar.Hover?
+    var hoveredLink: StatusBar.Hover? {
+        get { renderSignals.hoveredLink }
+        set {
+            if !renderSignals.isolated || renderSignals.hoveredLink != newValue { renderSignals.hoveredLink = newValue }
+        }
+    }
     /// The frames of this page that say they hold a caret — an input, a textarea, a
     /// contenteditable. Kept current by the page itself (see `PageFocus`) so the key monitor
     /// can ask without an await: it is what stops ⌘← navigating out of a half-typed comment.

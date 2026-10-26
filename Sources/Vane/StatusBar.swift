@@ -129,6 +129,12 @@ enum StatusBar {
 struct StatusBarView: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var tab: Tab
+    @ObservedObject private var signals: TabRenderSignals
+
+    init(tab: Tab) {
+        self.tab = tab
+        self.signals = tab.renderSignals
+    }
     @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var shown: StatusBar.Hover?
     @State private var pending: Task<Void, Never>?
@@ -179,8 +185,8 @@ struct StatusBarView: View {
         }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.statusFade, value: shown)
         .vaneMotionPolicy()
-        .onChange(of: tab.hoveredLink, initial: true) { _, link in schedule(link) }
-        .onChange(of: modifiers) { _, _ in schedule(tab.hoveredLink) }
+        .onChange(of: signals.hoveredLink, initial: true) { _, link in schedule(link) }
+        .onChange(of: modifiers) { _, _ in schedule(signals.hoveredLink) }
         .onAppear {
             modifiers = NSEvent.modifierFlags
             modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
