@@ -284,7 +284,7 @@ import XCTest
 
     func testFloatingSidebarLibraryLandingKeepsInnerWebWidthFixed() async throws {
         try XCTSkipIf(Motion.reduced, "Requires animated navigation")
-        let (store, window, _) = fixture(withSpaces: true)
+        let (store, window, monitor) = fixture(withSpaces: true)
         Library.open(.downloads, in: store)
         store.sidebarShown = false
         let tab = store.newBlankTab(loading: URL(string: "about:blank"))
@@ -300,7 +300,7 @@ import XCTest
         send(window, dx: -80)
         try await Task.sleep(for: .milliseconds(40))
         send(window, phase: .ended)
-        XCTAssertFalse(store.libraryOpen)
+        XCTAssertFalse(monitor.intendsOpen(in: store))
         var landingSamples = 0
         for _ in 0..<4 {
             try await Task.sleep(for: .milliseconds(30))
@@ -372,24 +372,196 @@ import XCTest
             try await Task.sleep(for: .milliseconds(8))
         }
         let releasedAt = try x()
-        var targetAtActivation: CGFloat?
+        var activatedAtX: CGFloat?
         let activation = store.$libraryOpen.dropFirst().sink { open in
-            if open { targetAtActivation = store.librarySwipeProgress }
+            if open { activatedAtX = try? x() }
         }
         defer { activation.cancel() }
         send(window, phase: .ended, time: 1.041)
-        XCTAssertEqual(targetAtActivation, 1,
-                      "Prepare the remaining slide before Library activation invalidates the browser")
+        XCTAssertFalse(store.libraryOpen,
+                       "Keep browser control updates out of the remaining slide")
         try await Task.sleep(for: .milliseconds(60))
         let moving = try x()
         XCTAssertGreaterThan(moving, releasedAt + 5)
         XCTAssertLessThan(moving, -5, "A quick release still has visible travel to finish")
         try await Task.sleep(for: .milliseconds(40))
         XCTAssertGreaterThan(try x(), moving + 5)
-        XCTAssertTrue(store.libraryOpen)
         try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(store.libraryOpen)
+        XCTAssertEqual(try XCTUnwrap(activatedAtX), 0, accuracy: 1,
+                       "Activate controls only after the visible panel has arrived")
         XCTAssertNil(store.librarySwipeProgress)
         XCTAssertEqual(try x(), 0, accuracy: 1)
+    }
+
+    private func releasedOpening(nativeWindow: Bool = false) async throws -> (TabStore, NSWindow, LibrarySwipeMonitor, NSView) {
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, original, monitor) = fixture(withSpaces: true)
+        let window: NSWindow
+        if nativeWindow {
+            monitor.remove()
+            window = VaneWindow(contentRect: original.frame, styleMask: [.titled, .fullSizeContentView],
+                                backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            store.window = window
+            monitor.install(store)
+            addTeardownBlock { @MainActor in window.contentView = nil; window.close() }
+        } else { window = original }
+        Library.open(.downloads, in: store)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(150))
+        send(window, phase: .began)
+        for _ in 0..<5 {
+            send(window, dx: 20)
+            try await Task.sleep(for: .milliseconds(8))
+        }
+        send(window, phase: .ended)
+        return (store, window, monitor, host)
+    }
+
+    func testReverseSwipeDuringOpeningLandingUsesReleasedIntent() async throws {
+        let (store, window, monitor, host) = try await releasedOpening()
+        try await Task.sleep(for: .milliseconds(30))
+        let marker = try XCTUnwrap(monitor.presentationView)
+        func x() throws -> CGFloat {
+            try XCTUnwrap(marker.layer?.presentation()).convert(.zero,
+                to: host.layer?.presentation()).x
+        }
+        let before = try x()
+        send(window, phase: .began)
+        send(window, dx: -90)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(try x(), before - 90, accuracy: 4,
+                       "Reverse from the visible panel, even before opening is published")
+        send(window, phase: .ended)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertNil(store.librarySwipeProgress)
+        XCTAssertEqual(try x(), -Look.libraryRail - Look.libraryList, accuracy: 1)
+    }
+
+    func testCancelledReverseDuringOpeningStillReachesReleasedDestination() async throws {
+        let (store, window, _, _) = try await releasedOpening()
+        try await Task.sleep(for: .milliseconds(30))
+        send(window, phase: .began)
+        send(window, dx: -20)
+        send(window, phase: .cancelled)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertTrue(store.libraryOpen, "A cancelled reversal retains the first released destination")
+        XCTAssertNil(store.librarySwipeProgress)
+    }
+
+    func testExplicitCloseSupersedesOpeningLanding() async throws {
+        let (store, _, monitor, host) = try await releasedOpening()
+        try await Task.sleep(for: .milliseconds(30))
+        let marker = try XCTUnwrap(monitor.presentationView)
+        func x() throws -> CGFloat {
+            try XCTUnwrap(marker.layer?.presentation()).convert(.zero,
+                to: host.layer?.presentation()).x
+        }
+        let before = try x()
+        Library.close(store)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertLessThan(try x(), before)
+        XCTAssertGreaterThan(try x(), -Look.libraryRail - Look.libraryList + 1,
+                             "An explicit close reverses the landing instead of snapping shut")
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(store.libraryOpen, "A retired opening completion must not reopen Library")
+        XCTAssertNil(store.librarySwipeProgress)
+    }
+
+    func testToggleDuringOpeningLandingClosesTheReleasedDestination() async throws {
+        let (store, _, _, _) = try await releasedOpening()
+        Library.toggle(.downloads, in: store)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertNil(store.librarySwipeProgress)
+    }
+
+    func testOpeningCommandBarSupersedesPendingLibraryOpening() async throws {
+        let (store, _, _, _) = try await releasedOpening()
+        store.palette = .address
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertNotNil(store.palette, "A late Library completion must not dismiss the new command bar")
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertNil(store.librarySwipeProgress)
+    }
+
+    func testFindDuringOpeningLandingTargetsLibrarySearch() async throws {
+        let (store, _, _, _) = try await releasedOpening()
+        store.openFind()
+        XCTAssertFalse(store.findOpen, "Find follows the released Library destination")
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertTrue(store.libraryOpen)
+    }
+
+    func testCloseCommandDuringOpeningLandingDoesNotArchiveThePage() async throws {
+        let (store, window, monitor, _) = try await releasedOpening(nativeWindow: true)
+        let tab = store.newBlankTab(focus: false, loading: URL(string: "about:blank"))
+        let oldMenu = NSApp.mainMenu
+        let oldActions = Keybindings.actions
+        defer { NSApp.mainMenu = oldMenu; Keybindings.actions = oldActions }
+        rebuild()
+        window.makeKeyAndOrderFront(nil)
+        // XCTest can remain inactive; exercise the real command's supported
+        // current-window fallback as well as a key window when AppKit grants it.
+        XCTAssertTrue(Windows.current === store)
+        try XCTUnwrap(Keybindings.actions[.closeTab])()
+        XCTAssertTrue(store.tabs.contains { $0 === tab }, "Close must dismiss Library before its underlying page")
+        XCTAssertFalse(monitor.intendsOpen(in: store))
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertTrue(store.tabs.contains { $0 === tab })
+    }
+
+    func testEscapeDuringOpeningLandingClosesLibrary() async throws {
+        let (store, window, monitor, _) = try await releasedOpening(nativeWindow: true)
+        XCTAssertTrue(monitor.intendsOpen(in: store))
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil,
+            characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        window.sendEvent(escape)
+        XCTAssertFalse(monitor.intendsOpen(in: store))
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertNil(store.librarySwipeProgress)
+    }
+
+    func testProfileDepartureSupersedesPendingLibraryOpening() async throws {
+        let (store, _, _, _) = try await releasedOpening()
+        store.profileVisible = false
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(store.libraryOpen, "A departing profile must not activate its Library later")
+        XCTAssertNil(store.librarySwipeProgress)
+    }
+
+    func testReducedMotionFinishesReleasedLibraryDestination() async throws {
+        let (store, _, monitor, _) = try await releasedOpening()
+        monitor.finishForReducedMotion()
+        XCTAssertTrue(store.libraryOpen)
+        XCTAssertNil(store.librarySwipeProgress)
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertTrue(store.libraryOpen)
+        XCTAssertNil(store.librarySwipeProgress)
+    }
+
+    func testSpaceChangeSupersedesPendingLibraryOpening() async throws {
+        let (store, window, _, _) = try await releasedOpening()
+        send(window, phase: .began)
+        send(window, dx: -20)
+        store.switchTo(space: try XCTUnwrap(store.strip.last))
+        send(window, phase: .cancelled)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertNil(store.librarySwipeProgress)
     }
 
     func testFingerUpdatesDoNotInvalidateBrowserState() throws {
@@ -519,8 +691,26 @@ import XCTest
                 observation.cancel()
                 times.sort()
                 print("LIBRARY_SWIPE_PERF tabs=\(count) visit=\(visit) opening=\(opening) first_ms=\(first) median_ms=\(times[15]) p95_ms=\(times[28]) max_ms=\(times.last!) max_gap_ms=\(maxGap * 1000) browser_publications=\(publications)")
+                let marker = try XCTUnwrap(monitor.presentationView)
+                func panelX() throws -> CGFloat {
+                    try XCTUnwrap(marker.layer?.presentation()).convert(.zero,
+                        to: host.layer?.presentation()).x
+                }
+                let releasedAt = try panelX()
+                maxGap = 0
+                lastTick = ProcessInfo.processInfo.systemUptime
+                let release = lastTick
                 send(window, phase: .ended)
-                try await Task.sleep(for: .milliseconds(300))
+                let handler = (ProcessInfo.processInfo.systemUptime - release) * 1000
+                var firstMotion: Double?
+                for _ in 0..<25 {
+                    try await Task.sleep(for: .milliseconds(8))
+                    if firstMotion == nil, abs(try panelX() - releasedAt) > 1 {
+                        firstMotion = (ProcessInfo.processInfo.systemUptime - release) * 1000
+                    }
+                }
+                print("LIBRARY_LANDING tabs=\(count) visit=\(visit) opening=\(opening) from_x=\(releasedAt) first_motion_ms=\(firstMotion ?? -1) handler_ms=\(handler) max_gap_ms=\(maxGap * 1000)")
+                try await Task.sleep(for: .milliseconds(100))
             }
         }
         XCTAssertEqual(ArchiveLibrary.library(for: store.profileID).entries.count, 2000)
@@ -605,7 +795,7 @@ import XCTest
         saver.setMode(.off)
         defer { saver.setMode(previousMode) }
         try XCTSkipIf(Motion.reduced, "Requires animated presentation")
-        let (store, window, _) = fixture(withSpaces: true)
+        let (store, window, monitor) = fixture(withSpaces: true)
         Library.open(.downloads, in: store)
         store.libraryOpen = false
         store.sidebarShown = true
@@ -666,7 +856,7 @@ import XCTest
                        "Returning reveals a moving sidebar, not a stationary layer")
         send(window, phase: .ended)
         try await Task.sleep(for: .milliseconds(40))
-        XCTAssertFalse(store.libraryOpen)
+        XCTAssertFalse(monitor.intendsOpen(in: store))
         XCTAssertNotNil(field.superview, "Keep the departing panel mounted through its landing")
         XCTAssertLessThan(try origin(), resting - 80)
         XCTAssertEqual(field.bounds.width, width, accuracy: 1,
