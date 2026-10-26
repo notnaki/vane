@@ -1,8 +1,23 @@
 import AppKit
 import XCTest
+import NativeTestHostBootstrap
 
 @MainActor final class NativeApplicationLoopSmokeTests: XCTestCase {
+    func testNativeHostBootstrapPrecedesAppKit() throws {
+        try assertNativeHostBootstrap()
+    }
+
+    private func assertNativeHostBootstrap() throws {
+        XCTAssertTrue(VaneNativeTestHostBootstrapRan(), "The test-only bootstrap object must be linked")
+        XCTAssertTrue(VaneNativeTestHostBootstrapWasEarly(), "The workaround must run before NSApplication is created")
+        XCTAssertTrue(VaneNativeTestHostBootstrapConfigured(), "Late or ineffective AppKit setup must fail clearly")
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        let enabled = try XCTUnwrap(arguments["NSEventConcurrentProcessingEnabled"] as? Bool)
+        XCTAssertFalse(enabled, "Only this process's volatile argument domain configures the test host")
+    }
+
     func testOwnedLoopAdmitsAsyncWorkAndStops() async throws {
+        try assertNativeHostBootstrap()
         TestEnvironment.prepare()
         guard ProcessInfo.processInfo.environment["VANE_APPKIT_LOOP_SMOKE"] == "1" else {
             throw XCTSkip("Requires a fresh selected process and the owned 20-second driver bound")
