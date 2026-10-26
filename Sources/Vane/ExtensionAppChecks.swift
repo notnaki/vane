@@ -311,6 +311,17 @@ import WebKit
             host.backgroundCreationObserver = { [weak self] web, context in
                 previous?(web, context)
                 self?.backgrounds[ObjectIdentifier(context)] = UserAgentBackground(web, context: context, storeID: storeID, persistent: true)
+                let selector = NSSelectorFromString("_allProcessPoolsForTesting")
+                if WKProcessPool.responds(to: selector),
+                   let pools = WKProcessPool.perform(selector)?.takeUnretainedValue() as? [WKProcessPool],
+                   let first = pools.first {
+                    let owner = web.configuration.processPool
+                    print("UA POOL SNAPSHOT count=\(pools.count) backgroundUsesFirst=\(owner === first)")
+                    fflush(stdout)
+                } else {
+                    print("UA POOL SNAPSHOT unavailable")
+                    fflush(stdout)
+                }
             }
             defer { cleanupUserAgentIdentity() }
 
