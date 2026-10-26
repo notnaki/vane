@@ -66,6 +66,37 @@ class SelfTests(unittest.TestCase):
         ca,d0,d1,tb=self.data();ca.extend([Event(60,(7,1),1,1,(0,2,0,0)),Event(70,(7,1),1,2,(0,0,0,0))])
         r,f=join(ca,d0,d1,tb,7)
         self.assertEqual(r['diagnostics']['client_commits_without_exact_observed_presentation'],1)
+    def test_old_auxiliary_seconds_do_not_drop_a_valid_presented_tail(self):
+        ca,d0,d1,_=self.data();tb=Timebase(100_000_000_000,1,1)
+        ca.extend([Event(30,(7,1),1,1,(0,2,0,0)),Event(31,(7,1),119,1,(77,0,2,0)),
+                   Event(32,(7,1),119,2,(2,0,0,0)),Event(33,(7,1),1,2,(0,0,0,0))])
+        shifted=[]
+        for event in d1:
+            args=event.args
+            if event.code==81 and event.ns>40:args=(77,7,2,0)
+            elif event.code==82 and event.fn==1:args=(*args[:3],args[3]+tb.epoch)
+            elif event.code==82 and event.fn==2:
+                values=[analysis.doubles_seconds(x)+100 for x in args[:2]]
+                if event.ns>40:values[0]-=53.93834675
+                args=(*(struct.unpack('<Q',struct.pack('<d',x))[0] for x in values),*args[2:])
+            shifted.append(Event(event.ns,event.thread,event.code,event.fn,args))
+        result,frames=join(ca,d0,shifted,tb,7)
+        self.assertEqual(len(frames),2)
+        self.assertEqual([f['presentation_ns'] for f in frames],[30,50])
+        self.assertLess(frames[1]['earliest_ns'],0)
+        self.assertEqual(result['diagnostics']['unique_client_commits_presented'],2)
+
+    def test_finite_auxiliary_fields_do_not_validate_wrong_presentation_epoch(self):
+        ca,d0,d1,tb=self.data()
+        bits=lambda seconds:struct.unpack('<Q',struct.pack('<d',seconds))[0]
+        changed=[]
+        for event in d1:
+            args=event.args
+            if event.code==82 and event.fn==1:args=(*args[:3],args[3]+2_000_000_000)
+            elif event.code==82 and event.fn==2:args=(bits(2),bits(2),*args[2:])
+            changed.append(Event(event.ns,event.thread,event.code,event.fn,args))
+        with self.assertRaisesRegex(InvalidTrace,'epoch'):join(ca,d0,changed,tb,7)
+
     def test_no_default_cadence(self):
         r,f=join(*self.data(),7);self.assertIsNone(r['presentation_cadence']);self.assertNotIn('fps',r)
     def test_inventory_includes_unfinished_and_never_presented_contexts(self):

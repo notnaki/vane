@@ -1,12 +1,25 @@
 import AppKit
 import SwiftUI
 
+private protocol Feel02PressHostingContainer: AnyObject {}
+extension NSHostingView: Feel02PressHostingContainer {}
+
 /// One passive monitor for all mounted row targets. It returns every native event
 /// unchanged: tap, double-click, scrolling, context menus and drag initiation retain
 /// their existing recognizers and activation timing.
 @MainActor final class Feel02PressMonitor {
     static let shared = Feel02PressMonitor()
     private let anchors = NSHashTable<Feel02PressAnchorView>.weakObjects()
+    private final class Container {
+        weak var view: NSView?
+        weak var window: NSWindow?
+        let anchors = NSHashTable<Feel02PressAnchorView>.weakObjects()
+        init(view: NSView, window: NSWindow) { self.view = view; self.window = window }
+    }
+    private var containers: [ObjectIdentifier: Container] = [:]
+    /// Opt-in fixture evidence, counted once per admitted bucket, not per node.
+    var recordsCandidateVisits = false
+    private(set) var candidateVisits = 0
     private weak var pressed: Feel02PressAnchorView?
     private weak var hovered: Feel02PressAnchorView?
     private var origin = CGPoint.zero
@@ -17,6 +30,7 @@ import SwiftUI
     func register(_ anchor: Feel02PressAnchorView) {
         anchors.add(anchor)
         anchor.pressMonitor = self
+        placementChanged(anchor)
         anchor.feedbackScope?.track(self)
         guard monitor == nil else { return }
         pointerPosition = NSEvent.mouseLocation
@@ -47,12 +61,64 @@ import SwiftUI
         if pressed === anchor { release() }
         if hovered === anchor { releaseHover(afterLayout: true) }
         anchors.remove(anchor)
+        removePlacement(anchor)
         anchor.pressMonitor = nil
         guard anchors.allObjects.isEmpty else { return }
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         if let resignation { NotificationCenter.default.removeObserver(resignation) }
         resignation = nil
+    }
+
+    private func removePlacement(_ anchor: Feel02PressAnchorView) {
+        if let key = anchor.feedbackContainerID {
+            containers[key]?.anchors.remove(anchor)
+            if containers[key]?.anchors.allObjects.isEmpty == true { containers[key] = nil }
+        }
+        anchor.feedbackContainerID = nil
+    }
+
+    func placementChanged(_ anchor: Feel02PressAnchorView) {
+        removePlacement(anchor)
+        guard let window = anchor.window, let container = nativeContainer(from: anchor.superview, in: window) else { return }
+        let key = ObjectIdentifier(container)
+        let bucket: Container
+        if let existing = containers[key], existing.view === container, existing.window === window { bucket = existing }
+        else { bucket = Container(view: container, window: window); containers[key] = bucket }
+        bucket.anchors.add(anchor)
+        anchor.feedbackContainerID = key
+    }
+
+    private func nativeContainer(from view: NSView?, in window: NSWindow) -> NSView? {
+        var current = view
+        while let node = current {
+            if node is NSScrollView || node is any Feel02PressHostingContainer { return node }
+            current = node.superview
+        }
+        return window.contentView
+    }
+
+    private func candidates(for event: NSEvent) -> [Feel02PressAnchorView] {
+        guard let window = event.window, let content = window.contentView else { return [] }
+        // hitTest takes a point in its superview's coordinates. Resolve the real
+        // front route once; web content, another scroll container, and an overlay
+        // outside a row host must never search the underlying row owners.
+        let point = content.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+        guard let hit = content.hitTest(point) else { return [] }
+        var result: [Feel02PressAnchorView] = []
+        var current: NSView? = hit
+        while let node = current {
+            if let bucket = containers[ObjectIdentifier(node)], bucket.view === node, bucket.window === window {
+                result.append(contentsOf: bucket.anchors.allObjects)
+            }
+            if node === content { break }
+            current = node.superview
+        }
+        // A native child may introduce its own scroll/hosting boundary without
+        // feedback targets. Keep its actual ancestor control eligible as well;
+        // bounds and smallest-target arbitration still choose the real control.
+        if recordsCandidateVisits { candidateVisits += result.count }
+        return result
     }
 
     func cancel(for anchor: Feel02PressAnchorView) {
@@ -117,7 +183,7 @@ import SwiftUI
             if let hovered, !contains(event, in: hovered) { releaseHover() }
             return
         }
-        let next = anchors.allObjects.filter {
+        let next = candidates(for: event).filter {
             $0.hoverChanged != nil && contains(event, in: $0)
         }.min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }
         if hovered !== next { releaseHover(); hovered = next }
@@ -143,7 +209,7 @@ import SwiftUI
             guard let window = event.window else { return event }
             pointerPosition = window.convertPoint(toScreen: event.locationInWindow)
             if let hovered, !contains(event, in: hovered) { releaseHover() }
-            let targets = anchors.allObjects.filter { anchor in
+            let targets = candidates(for: event).filter { anchor in
                 contains(event, in: anchor)
             }
             pressed = targets.min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }
@@ -179,6 +245,7 @@ final class Feel02PressAnchorView: NSView {
         }
     }
     weak var pressMonitor: Feel02PressMonitor?
+    fileprivate var feedbackContainerID: ObjectIdentifier?
     weak var feedbackScope: FeedbackOcclusionScope? {
         didSet { feedbackScope?.track(pressMonitor) }
     }
@@ -215,7 +282,12 @@ final class Feel02PressAnchorView: NSView {
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        pressMonitor?.placementChanged(self)
         requestPointerMotion()
+    }
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        pressMonitor?.placementChanged(self)
     }
     private func requestPointerMotion() {
         // Rows also appear in app-owned sheets, not only VaneWindow. Request input

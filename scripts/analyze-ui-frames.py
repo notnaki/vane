@@ -131,8 +131,11 @@ def join(ca,d0,d1,tb,pid):
         need(key not in presentations,'Duplicate frame-seed/display presentation')
         earliest,requested=map(doubles_seconds,e.args[:2])
         pres_abs=mat*tb.num/tb.den/1e9
-        need(all(math.isfinite(x) and abs(x-pres_abs)<5 for x in (earliest,requested)),
-             'D1 END seconds encoding unvalidated (old MAT CLIPS interpretation is not accepted)')
+        # These END seconds are auxiliary eligibility/request timestamps, not
+        # the actual presentation clock used for joins or cadence. A captured
+        # valid frame can retain an earliest value from before recording began.
+        need(all(math.isfinite(x) for x in (earliest,requested)),
+             'Nonfinite D1 END auxiliary seconds')
         refresh=tb.duration_ns(e.args[3]);need(1_000_000<=refresh<=100_000_000,'Invalid refresh MAT duration')
         pres=tb.mat_ns(mat)
         if display in last_presentation:
@@ -140,8 +143,14 @@ def join(ca,d0,d1,tb,pid):
             need(seed>old_seed and pres>old_time,'Nonmonotonic display frame seeds/presentation clock')
         last_presentation[display]=(seed,pres)
         need(abs(pres-b.ns)<1_000_000_000,'Presentation MAT not on this trace epoch')
+        earliest_ns,requested_ns=tb.seconds_ns(earliest),tb.seconds_ns(requested)
+        diag['presentation_auxiliary_earliest_before_trace_epoch']+=int(earliest_ns<0)
+        diag['maximum_auxiliary_earliest_to_presentation_ns']=max(
+            diag['maximum_auxiliary_earliest_to_presentation_ns'],pres-earliest_ns)
+        diag['maximum_auxiliary_requested_to_presentation_ns']=max(
+            diag['maximum_auxiliary_requested_to_presentation_ns'],pres-requested_ns)
         presentations[key]={'seed':seed,'display':display,'surface':surface,'presentation_ns':pres,
-            'earliest_ns':tb.seconds_ns(earliest),'requested_ns':tb.seconds_ns(requested),
+            'earliest_ns':earliest_ns,'requested_ns':requested_ns,
             'refresh_ns':refresh,'notification_ns':b.ns}
     diag['server_render_pairs']=len(renders);diag['display_presentations']=len(presentations)
     last={};updates=collections.defaultdict(list);compositions=collections.Counter();seen_updates=set()

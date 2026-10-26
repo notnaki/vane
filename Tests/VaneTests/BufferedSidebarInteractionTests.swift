@@ -34,7 +34,7 @@ import XCTest
         let state: State
         let buffered: Bool
         var generation = 0
-        @State private var cache = Feel02SidebarRowsCache()
+        @SwiftUI.State private var cache = Feel02SidebarRowsCache()
         var body: some View {
             VStack(spacing: 0) {
                 SpaceSectionsLayout(animatesCutoffs: false) {
