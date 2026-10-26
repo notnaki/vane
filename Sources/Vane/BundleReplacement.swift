@@ -165,7 +165,8 @@ enum BundleReplacement {
     static func executing(_ expected: URL, pid: Int32 = getpid()) -> Bool {
         var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { return false }
-        return URL(fileURLWithPath: String(cString: path)).resolvingSymlinksInPath()
+        let executablePath = String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        return URL(fileURLWithPath: executablePath).resolvingSymlinksInPath()
             == expected.resolvingSymlinksInPath()
     }
 

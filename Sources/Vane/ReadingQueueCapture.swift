@@ -20,7 +20,7 @@ import WebKit
         guard sources.insert(key).inserted else { return }
         Motion.list { capturing.insert(tab.id); messages[tab.id] = "Saving…" }
         Toasts.show("Saving article…", in: store)
-        defer { sources.remove(key); Motion.list { capturing.remove(tab.id) } }
+        defer { sources.remove(key); _ = Motion.list { capturing.remove(tab.id) } }
         do {
             let repository = try ReadingQueueStore.shared(profileID: store.profileID, directory: Store.directory)
             var alreadySaved = false
