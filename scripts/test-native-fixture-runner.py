@@ -223,4 +223,328 @@ class OrderingTests(unittest.TestCase):
         self.assertEqual(events[-1], ["cleanup"])
 
 
+class PrimaryTimeoutTests(unittest.TestCase):
+    class Driver:
+        pid = 101
+        def __init__(self, ignore_term=False, ignore_kill=False):
+            self.code = None
+            self.ignore_term = ignore_term
+            self.ignore_kill = ignore_kill
+            self.events = []
+        def poll(self): return self.code
+        def terminate(self):
+            self.events.append("driver-TERM")
+            if not self.ignore_term: self.code = -15
+        def kill(self):
+            self.events.append("driver-KILL")
+            if not self.ignore_kill: self.code = -9
+        def wait(self, timeout=None):
+            self.events.append(("driver-wait", timeout))
+            if self.code is None: raise subprocess.TimeoutExpired(["swift", "test"], timeout)
+            return self.code
+
+    def setUp(self):
+        fixture = ManifestTests()
+        fixture.setUp()
+        self.record = fixture.record
+        self.token = fixture.token
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name).resolve()
+        os.chmod(self.directory, 0o700)
+        self.private_json(self.directory / "contract.json", {"schema": 1, "token": self.token})
+
+    def private_json(self, path, body):
+        path.write_text(json.dumps(body))
+        os.chmod(path, 0o600)
+
+    def write_record(self, record):
+        host = record["host"]
+        self.private_json(self.directory / f'host-{host["pid"]}-{host["start"]}.json', record)
+
+    def test_primary_timeout_unset_keeps_existing_unbounded_wait(self):
+        self.assertIsNone(runner.parse_primary_timeout(None))
+
+    def test_primary_timeout_accepts_only_finite_integer_seconds(self):
+        for raw in ("1", "60", "3600"):
+            with self.subTest(raw=raw): self.assertEqual(runner.parse_primary_timeout(raw), int(raw))
+        for raw in ("", "0", "3601", "01", "-1", "1.0", "inf", "nan", " 1", "1\n", "１", True, 7):
+            with self.subTest(raw=raw), self.assertRaises(ValueError): runner.parse_primary_timeout(raw)
+
+    def test_all_private_records_validated_before_any_host_signal_and_driver_still_stops(self):
+        self.write_record(self.record)
+        bad = copy.deepcopy(self.record)
+        bad["host"]["pid"] = 124
+        bad["schema"] = 2
+        self.write_record(bad)
+        driver = self.Driver()
+        with mock.patch.object(runner, "stop_recorded_host") as stop:
+            with self.assertRaises(ValueError): runner.retire_timed_out_primary(driver, self.directory, self.token)
+        stop.assert_not_called()
+        self.assertIn("driver-TERM", driver.events)
+        self.assertIsNotNone(driver.poll())
+        self.assertTrue(self.directory.exists())
+
+    def test_timeout_retires_only_recorded_hosts_after_driver_exit_and_checks_exit(self):
+        self.write_record(self.record)
+        driver = self.Driver()
+        events = []
+        load = runner.load_records
+        def read(directory, token):
+            events.append("validate-all")
+            return load(directory, token)
+        def stop(host):
+            self.assertIsNotNone(driver.poll(), "The driver must not launch another host after the snapshot")
+            events.append(("stop", host["pid"]))
+        with mock.patch.object(runner, "load_records", side_effect=read), \
+             mock.patch.object(runner, "stop_recorded_host", side_effect=stop), \
+             mock.patch.object(runner, "require_exited_hosts", side_effect=lambda records: events.append("verify-exit")):
+            runner.retire_timed_out_primary(driver, self.directory, self.token)
+        self.assertEqual(events, ["validate-all", "validate-all", ("stop", 123), "verify-exit"])
+        self.assertEqual(driver.events, ["driver-TERM", ("driver-wait", 5)])
+        self.assertTrue(self.directory.exists())
+
+    def test_no_host_identity_is_inconclusive_and_driver_is_bounded(self):
+        driver = self.Driver(ignore_term=True)
+        with self.assertRaisesRegex(ValueError, "host"):
+            runner.retire_timed_out_primary(driver, self.directory, self.token)
+        self.assertEqual(driver.events, ["driver-TERM", ("driver-wait", 5), "driver-KILL", ("driver-wait", 5)])
+        survivor = self.Driver(ignore_term=True, ignore_kill=True)
+        with self.assertRaises(subprocess.TimeoutExpired): runner.stop_primary_driver(survivor)
+        self.assertEqual(survivor.events[-1], ("driver-wait", 5))
+        exited = self.Driver(); exited.code = 0
+        runner.stop_primary_driver(exited)
+        self.assertEqual(exited.events, [])
+
+    def test_changed_executable_refuses_host_signal_and_preserves_manifest(self):
+        self.write_record(self.record)
+        driver = self.Driver()
+        changed = {"pid": 123, "start": self.record["host"]["start"], "path": "/tmp/unrelated-user-app"}
+        real_stop = runner.stop_recorded_host
+        with mock.patch.object(runner, "stop_recorded_host",
+                               side_effect=lambda host: real_stop(host, identity=lambda pid: changed, send=mock.Mock())), \
+             mock.patch.object(runner, "require_exited_hosts", side_effect=ValueError("changed host not exited")):
+            with self.assertRaisesRegex(ValueError, "identity changed"):
+                runner.retire_timed_out_primary(driver, self.directory, self.token)
+        self.assertIsNotNone(driver.poll())
+        self.assertTrue(list(self.directory.glob("host-*.json")))
+
+    def test_pid_reuse_is_not_signaled_and_other_recorded_host_is_still_checked(self):
+        second = copy.deepcopy(self.record); second["host"]["pid"] = 124
+        self.write_record(self.record); self.write_record(second)
+        identities = {
+            123: {"pid": 123, "start": 999, "path": "/tmp/unrelated-user-app"},
+            124: {"pid": 124, "start": second["host"]["start"], "path": second["host"]["path"]}}
+        sent = []
+        def send(pid, sig): sent.append((pid, sig)); identities[pid] = None
+        real_stop, real_exited = runner.stop_recorded_host, runner.require_exited_hosts
+        with mock.patch.object(runner, "stop_recorded_host", side_effect=lambda host: real_stop(host, identity=lambda pid: identities[pid], send=send)), \
+             mock.patch.object(runner, "require_exited_hosts", side_effect=lambda records: real_exited(records, identity=lambda pid: identities[pid])):
+            runner.retire_timed_out_primary(self.Driver(), self.directory, self.token)
+        self.assertEqual(sent, [(124, signal.SIGTERM)])
+
+    def main_mocks(self, timeout, retirement_error=None, primary_timeout=True, cleanup_status=0, checked_records=None, retired_records=None, real_retirement=False):
+        self.directory.mkdir(mode=0o700, exist_ok=True)
+        fixed = uuid.UUID(self.token)
+        primary = self.Driver() if real_retirement else mock.Mock()
+        if not real_retirement:
+            primary.wait.side_effect = subprocess.TimeoutExpired(["swift", "test"], 2) if primary_timeout else None
+            primary.wait.return_value = 0
+        cleanup = mock.Mock(); cleanup.wait.return_value = cleanup_status
+        expected = sorted({entry["storeID"].lower() for record in ([self.record] if checked_records is None else checked_records) for entry in record["profiles"]})
+        retired = [self.record] if retired_records is None else retired_records
+        checked = [self.record] if checked_records is None else checked_records
+        retirement = {"wraps": runner.retire_timed_out_primary} if real_retirement else {
+            "side_effect": retirement_error, "return_value": retired}
+        snapshots = {"side_effect": [retired, retired, checked]} if real_retirement else {"return_value": checked}
+        # The full orchestration is exercised without any child process or signal.
+        with mock.patch.object(runner.sys, "platform", "darwin"), \
+             mock.patch.dict(runner.os.environ, {runner.PRIMARY_TIMEOUT_ENV: timeout} if timeout is not None else {}, clear=True), \
+             mock.patch.object(runner.tempfile, "mkdtemp", return_value=str(self.directory)), \
+             mock.patch.object(runner.uuid, "uuid4", return_value=fixed), \
+             mock.patch.object(runner.subprocess, "Popen", side_effect=[primary, cleanup]) as popen, \
+             mock.patch.object(runner, "retire_timed_out_primary", **retirement) as retire, \
+             mock.patch.object(runner, "load_records", **snapshots), \
+             mock.patch.object(runner, "stop_recorded_host"), \
+             mock.patch.object(runner, "require_exited_hosts"), \
+             mock.patch.object(runner, "finish_recorded_cleanup_host", return_value=True), \
+             mock.patch.object(runner, "read_private_json", return_value={"schema": 1, "token": self.token, "retiredIDs": expected}):
+            code = runner.main(["--skip-build", "--jobs", "1"])
+        return code, primary, cleanup, popen.call_count, retire
+
+    def test_primary_timeout_124_survives_cleanup_failure_and_uses_existing_90_second_cleanup(self):
+        code, primary, cleanup, count, retire = self.main_mocks("2", cleanup_status=7)
+        self.assertEqual(code, 124)
+        primary.wait.assert_called_once_with(timeout=2)
+        cleanup.wait.assert_called_once_with(timeout=90)
+        self.assertEqual(count, 2)
+        retire.assert_called_once()
+
+    def test_invalid_opt_in_fails_before_any_manifest_or_driver_is_created(self):
+        for value in ("", "0", "3601", "1.5"):
+            with self.subTest(value=value), mock.patch.object(runner.sys, "platform", "darwin"), \
+                 mock.patch.dict(runner.os.environ, {runner.PRIMARY_TIMEOUT_ENV: value}, clear=True), \
+                 mock.patch.object(runner.tempfile, "mkdtemp") as directory, \
+                 mock.patch.object(runner.subprocess, "Popen") as popen:
+                with self.assertRaises(ValueError): runner.main(["--skip-build"])
+                directory.assert_not_called()
+                popen.assert_not_called()
+
+    def test_late_invalid_record_is_revalidated_after_driver_exit_before_any_host_signal(self):
+        driver = self.Driver()
+        with mock.patch.object(runner, "load_records", side_effect=[[self.record], ValueError("late invalid record")]), \
+             mock.patch.object(runner, "stop_recorded_host") as stop:
+            with self.assertRaisesRegex(ValueError, "late invalid record"):
+                runner.retire_timed_out_primary(driver, self.directory, self.token)
+        self.assertIsNotNone(driver.poll())
+        stop.assert_not_called()
+
+    def test_fresh_snapshot_cannot_drop_one_known_host_while_another_remains(self):
+        second = copy.deepcopy(self.record); second["host"]["pid"] = 124
+        driver = self.Driver()
+        with mock.patch.object(runner, "load_records", side_effect=[[self.record, second], [second]]), \
+             mock.patch.object(runner, "stop_recorded_host") as stop, \
+             mock.patch.object(runner, "require_exited_hosts") as exited:
+            with self.assertRaisesRegex(ValueError, "lost|changed"):
+                runner.retire_timed_out_primary(driver, self.directory, self.token)
+        self.assertIsNotNone(driver.poll())
+        stop.assert_not_called()
+        exited.assert_not_called()
+        self.assertTrue(self.directory.exists())
+
+    def test_fresh_snapshot_cannot_replace_an_immutable_known_host_identity(self):
+        for field, value in [("pid", 124), ("start", 999), ("path", "/tmp/replacement.xctest/Contents/MacOS/Tests"),
+                             ("testBundlePath", "/tmp/replacement.xctest"), ("processName", "Changed"),
+                             ("bundleIdentifier", "changed.tests")]:
+            changed = copy.deepcopy(self.record); changed["host"][field] = value
+            driver = self.Driver()
+            with self.subTest(field=field), \
+                 mock.patch.object(runner, "load_records", side_effect=[[self.record], [changed]]), \
+                 mock.patch.object(runner, "stop_recorded_host") as stop, \
+                 mock.patch.object(runner, "require_exited_hosts"):
+                with self.assertRaisesRegex(ValueError, "lost|changed"):
+                    runner.retire_timed_out_primary(driver, self.directory, self.token)
+                self.assertIsNotNone(driver.poll())
+                stop.assert_not_called()
+
+    def test_fresh_snapshot_allows_added_hosts_and_profile_entries(self):
+        expanded = copy.deepcopy(self.record)
+        profile_fixture = ManifestTests(); profile_fixture.setUp()
+        expanded["profiles"].append(copy.deepcopy(profile_fixture.record["profiles"][0]))
+        second = copy.deepcopy(self.record); second["host"]["pid"] = 124
+        stopped = []
+        with mock.patch.object(runner, "load_records", side_effect=[[self.record], [expanded, second]]), \
+             mock.patch.object(runner, "stop_recorded_host", side_effect=lambda host: stopped.append(host["pid"])), \
+             mock.patch.object(runner, "require_exited_hosts") as exited:
+            runner.retire_timed_out_primary(self.Driver(), self.directory, self.token)
+        self.assertEqual(stopped, [123, 124])
+        exited.assert_called_once_with([expanded, second])
+
+    def test_fresh_snapshot_cannot_drop_one_known_backend_while_another_remains(self):
+        expanded = copy.deepcopy(self.record)
+        profile_fixture = ManifestTests(); profile_fixture.setUp()
+        expanded["profiles"].append(copy.deepcopy(profile_fixture.record["profiles"][0]))
+        reduced = copy.deepcopy(expanded); reduced["profiles"].pop(0)
+        driver = self.Driver()
+        with mock.patch.object(runner, "load_records", side_effect=[[expanded], [reduced]]), \
+             mock.patch.object(runner, "stop_recorded_host") as stop, \
+             mock.patch.object(runner, "require_exited_hosts") as exited:
+            with self.assertRaisesRegex(ValueError, "backend|profile"):
+                runner.retire_timed_out_primary(driver, self.directory, self.token)
+        self.assertIsNotNone(driver.poll())
+        stop.assert_not_called()
+        exited.assert_not_called()
+        self.assertTrue(self.directory.exists())
+
+    def test_final_cleanup_admission_cannot_drop_a_verified_host(self):
+        second = copy.deepcopy(self.record); second["host"]["pid"] = 124
+        code, primary, cleanup, count, retire = self.main_mocks(
+            "2", retired_records=[self.record, second], checked_records=[second])
+        self.assertEqual(code, 124)
+        self.assertEqual(count, 1)
+        cleanup.wait.assert_not_called()
+        self.assertTrue(self.directory.exists())
+
+    def test_final_cleanup_admission_cannot_change_a_verified_host_identity(self):
+        for field, value in [("pid", 124), ("start", 999), ("path", "/tmp/replacement.xctest/Contents/MacOS/Tests"),
+                             ("testBundlePath", "/tmp/replacement.xctest"), ("processName", "Changed"),
+                             ("bundleIdentifier", "changed.tests")]:
+            changed = copy.deepcopy(self.record); changed["host"][field] = value
+            with self.subTest(field=field):
+                code, primary, cleanup, count, retire = self.main_mocks(
+                    "2", retired_records=[self.record], checked_records=[changed])
+                self.assertEqual(code, 124)
+                self.assertEqual(count, 1)
+                cleanup.wait.assert_not_called()
+                self.assertTrue(self.directory.exists())
+
+    def test_final_cleanup_admission_cannot_drop_a_verified_backend(self):
+        expanded = copy.deepcopy(self.record)
+        profile_fixture = ManifestTests(); profile_fixture.setUp()
+        expanded["profiles"].append(copy.deepcopy(profile_fixture.record["profiles"][0]))
+        reduced = copy.deepcopy(expanded); reduced["profiles"].pop(0)
+        code, primary, cleanup, count, retire = self.main_mocks(
+            "2", retired_records=[expanded], checked_records=[reduced])
+        self.assertEqual(code, 124)
+        self.assertEqual(count, 1)
+        cleanup.wait.assert_not_called()
+        self.assertTrue(self.directory.exists())
+
+    def test_real_retirement_snapshot_remains_required_at_final_cleanup_admission(self):
+        second = copy.deepcopy(self.record); second["host"]["pid"] = 124
+        second["profiles"] = []
+        code, primary, cleanup, count, retire = self.main_mocks(
+            "2", retired_records=[self.record, second], checked_records=[second], real_retirement=True)
+        self.assertEqual(code, 124)
+        self.assertEqual(count, 1)
+        self.assertIsNotNone(primary.poll())
+        self.assertIn("driver-TERM", primary.events)
+        cleanup.wait.assert_not_called()
+        self.assertTrue(self.directory.exists())
+
+    def test_final_cleanup_admission_accepts_appended_hosts_and_backends(self):
+        expanded = copy.deepcopy(self.record)
+        profile_fixture = ManifestTests(); profile_fixture.setUp()
+        expanded["profiles"].append(copy.deepcopy(profile_fixture.record["profiles"][0]))
+        second = copy.deepcopy(self.record); second["host"]["pid"] = 124
+        code, primary, cleanup, count, retire = self.main_mocks(
+            "2", retired_records=[self.record], checked_records=[expanded, second])
+        self.assertEqual(code, 124)
+        self.assertEqual(count, 2)
+        cleanup.wait.assert_called_once_with(timeout=90)
+        self.assertFalse(self.directory.exists())
+
+    def test_unverified_timeout_identity_blocks_cleanup_and_retains_manifest(self):
+        code, primary, cleanup, count, retire = self.main_mocks("2", retirement_error=ValueError("unverified host"))
+        self.assertEqual(code, 124)
+        self.assertEqual(count, 1)
+        self.assertTrue(self.directory.exists())
+        cleanup.wait.assert_not_called()
+
+    def test_disappeared_timeout_manifest_records_cannot_be_treated_as_verified_empty_cleanup(self):
+        code, primary, cleanup, count, retire = self.main_mocks("2", checked_records=[])
+        self.assertEqual(code, 124)
+        self.assertTrue(self.directory.exists())
+        self.assertEqual(count, 1)
+        cleanup.wait.assert_not_called()
+
+    def test_disabled_timeout_leaves_primary_wait_and_cleanup_behavior_unchanged(self):
+        code, primary, cleanup, count, retire = self.main_mocks(None, primary_timeout=False)
+        self.assertEqual(code, 0)
+        primary.wait.assert_called_once_with(timeout=None)
+        cleanup.wait.assert_called_once_with(timeout=90)
+        retire.assert_not_called()
+        self.assertEqual(count, 2)
+
+    def test_timeout_diagnostic_error_keeps_primary_124_but_still_calls_cleanup_guard(self):
+        events = []
+        def invoke(command):
+            events.append(command)
+            if command == ["primary"]: raise runner.PrimaryTimeoutError("ownership unverified")
+            return 7
+        result = runner.run_commands(["primary"], ["cleanup"], invoke, lambda: events.append("guard"))
+        self.assertEqual(result, 124)
+        self.assertEqual(events, [["primary"], "guard", ["cleanup"]])
+
+
 if __name__ == "__main__": unittest.main()

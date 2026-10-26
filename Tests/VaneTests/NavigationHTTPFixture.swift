@@ -17,6 +17,8 @@ import XCTest
     var interruptedPaths: Set<String> = []
     var attachmentPaths: Set<String> = []
     var authPaths: Set<String> = []
+    var contentTypes: [String: String] = [:]
+    var responseHeaders: [String: [String: String]] = [:]
 
     init() throws {
         let parameters = NWParameters.tcp
@@ -78,9 +80,12 @@ import XCTest
                 let status = self.authPaths.contains(path) ? "401 Unauthorized" : (destination == nil ? "200 OK" : "302 Found")
                 let extras = (self.authPaths.contains(path) ? "WWW-Authenticate: Basic realm=\"Navigation fixture\"\r\n" : "")
                     + (self.attachmentPaths.contains(path) ? "Content-Disposition: attachment; filename=fixture.txt\r\n" : "")
+                let customHeaders = (self.responseHeaders[path] ?? [:]).sorted { $0.key < $1.key }
+                    .map { "\($0.key): \($0.value)\r\n" }.joined()
+                let contentType = self.contentTypes[path] ?? "text/html; charset=utf-8"
                 let responseLength = responseBody.utf8.count + (self.interruptedPaths.contains(path) ? 10000 : 0)
                 let location = destination.map { "Location: \($0.absoluteString)\r\n" } ?? ""
-                let response = "HTTP/1.1 \(status)\r\n\(location)\(extras)Content-Type: text/html; charset=utf-8\r\nContent-Length: \(responseLength)\r\nConnection: close\r\n\r\n" + responseBody
+                let response = "HTTP/1.1 \(status)\r\n\(location)\(extras)\(customHeaders)Content-Type: \(contentType)\r\nContent-Length: \(responseLength)\r\nConnection: close\r\n\r\n" + responseBody
                 connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
             }
         }

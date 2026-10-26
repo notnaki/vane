@@ -3,6 +3,8 @@
 
 Use this for full or focused native validation: run-native-tests.py [swift test args].
 Failed/unverified cleanup keeps its private manifest for a concrete follow-up.
+Diagnostic opt-in: VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT=1..3600 bounds only the
+primary driver. Unset retains the ordinary wait; fresh cleanup keeps its 90s bound.
 """
 import ctypes
 import errno
@@ -25,6 +27,71 @@ TOKEN_ENV = "VANE_NATIVE_FIXTURE_MANIFEST_TOKEN"
 PHASE_ENV = "VANE_NATIVE_FIXTURE_RETIREMENT_PHASE"
 SELECTOR = "VaneTests.NativeFixtureRetirementTests/testRetireManifest"
 FORBIDDEN = {"00000000-0000-0000-0000-000056616e65", "00000000-0000-0000-0000-000000000001"}
+PRIMARY_TIMEOUT_ENV = "VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT"
+
+
+class PrimaryTimeoutError(RuntimeError):
+    pass
+
+
+def parse_primary_timeout(value):
+    if value is None: return None
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,3}", value) or int(value) > 3600:
+        raise ValueError(PRIMARY_TIMEOUT_ENV + " must be an integer from 1 through 3600 seconds")
+    return int(value)
+
+
+def stop_primary_driver(process):
+    # Popen owns this unreaped direct child; its PID cannot be reused before
+    # wait/poll reaps it. Never target a process name, descendant, or group.
+    if process.poll() is not None: return
+    try: process.terminate()
+    except ProcessLookupError:
+        if process.poll() is not None: return
+        raise
+    try: process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        if process.poll() is None: process.kill()
+        process.wait(timeout=5)
+
+
+def require_record_inclusion(previous, current):
+    def host_identity(record):
+        host = record["host"]
+        return (host["pid"], host["start"], os.path.realpath(host["path"]),
+                os.path.realpath(host["testBundlePath"]), host["processName"], host["bundleIdentifier"])
+    def profile_identities(record):
+        return {(str(uuid.UUID(entry["profileID"])), entry["dataDirectory"], str(uuid.UUID(entry["storeID"])))
+                for entry in record["profiles"]}
+    initial_hosts = {host_identity(record) for record in previous}
+    if not initial_hosts.issubset({host_identity(record) for record in current}):
+        raise ValueError("primary timeout lost or changed a previously validated host identity; manifest retained")
+    fresh_profiles = {host_identity(record): profile_identities(record) for record in current}
+    if any(not profile_identities(record).issubset(fresh_profiles[host_identity(record)]) for record in previous):
+        raise ValueError("primary timeout lost a previously validated profile/backend entry; manifest retained")
+
+
+def retire_timed_out_primary(process, directory, token):
+    try:
+        records = load_records(directory, token)  # Validate ALL before any host signal.
+        if not records: raise ValueError("primary timeout has no recorded host identity; manifest retained")
+        initial_records = records
+    finally:
+        # This must run even if the manifest is missing, malformed, or untrusted.
+        stop_primary_driver(process)
+    # The Swift driver has exited and cannot launch another test host. Validate
+    # again so a host recorded while it was exiting is not missed.
+    records = load_records(directory, token)
+    if not records: raise ValueError("primary timeout lost its recorded host identity; manifest retained")
+    require_record_inclusion(initial_records, records)
+    failures = []
+    for record in records:
+        try: stop_recorded_host(record["host"])
+        except Exception as error: failures.append(str(error))
+    try: require_exited_hosts(records)
+    except Exception as error: failures.append(str(error))
+    if failures: raise ValueError("primary timeout retirement unverified: " + "; ".join(failures))
+    return records
 
 
 def _absolute(path):
@@ -158,6 +225,9 @@ def run_commands(primary, cleanup, invoke, require_exited):
     cleanup_status = 1
     try:
         primary_status = invoke(primary)
+    except PrimaryTimeoutError as error:
+        primary_status = 124
+        print("Primary command timed out: " + str(error), file=sys.stderr)
     except KeyboardInterrupt: primary_status = 130
     except Exception as error: print("Primary command failed: " + str(error), file=sys.stderr)
     finally:
@@ -174,6 +244,9 @@ def main(arguments):
     if sys.platform != "darwin": raise SystemExit("native tests require macOS")
     if any(arg == "--parallel" or arg.startswith("--num-workers") for arg in arguments):
         raise SystemExit("native fixture tests require one host; --parallel is unsupported")
+    # Unset preserves the ordinary primary wait. Only explicitly bounded
+    # diagnostics opt in; malformed values fail before launching any process.
+    primary_timeout = parse_primary_timeout(os.environ.get(PRIMARY_TIMEOUT_ENV))
     directory = Path(tempfile.mkdtemp(prefix="vane-native-retirement-")).resolve()
     os.chmod(directory, 0o700)
     token = uuid.uuid4().hex
@@ -203,14 +276,22 @@ def main(arguments):
     previous = {signum: signal.signal(signum, forward) for signum in (signal.SIGINT, signal.SIGTERM)}
     records = []
     verified_cleanup = False
+    primary_timed_out = False
+    primary_timeout_verified = False
+    timeout_verified_records = []
     def check_hosts():
         nonlocal records
+        if primary_timed_out and not primary_timeout_verified:
+            raise ValueError("primary timeout ownership/exit unverified; cleanup refused; manifest retained")
         records = load_records(directory, token)  # Validate ALL records before deletion.
+        if primary_timed_out:
+            if not records: raise ValueError("primary timeout has no host records at cleanup recheck; manifest retained")
+            require_record_inclusion(timeout_verified_records, records)
         require_exited_hosts(records)
         prior_cleanup = directory / "cleanup-host.json"
         if prior_cleanup.exists(): require_exited_hosts([validate_record(read_private_json(prior_cleanup), token)])
     def invoke(command):
-        nonlocal active, verified_cleanup
+        nonlocal active, verified_cleanup, primary_timed_out, primary_timeout_verified, timeout_verified_records
         is_cleanup = command is cleanup
         if is_cleanup and not records:
             verified_cleanup = True
@@ -220,8 +301,16 @@ def main(arguments):
         active = subprocess.Popen(command, env=child_environment)
         print(f"NATIVE TEST DRIVER pid={active.pid} phase={'cleanup' if is_cleanup else 'primary'}", flush=True)
         try:
-            status = active.wait(timeout=90 if is_cleanup else None)
+            status = active.wait(timeout=90 if is_cleanup else primary_timeout)
         except subprocess.TimeoutExpired:
+            if not is_cleanup:
+                primary_timed_out = True
+                print(f"NATIVE PRIMARY TIMEOUT seconds={primary_timeout}; validating recorded hosts before retirement", flush=True)
+                try: timeout_verified_records = retire_timed_out_primary(active, directory, token)
+                except Exception as error: raise PrimaryTimeoutError(str(error)) from error
+                primary_timeout_verified = True
+                active = None
+                return 124
             active.terminate()
             try: active.wait(timeout=5)
             except subprocess.TimeoutExpired:

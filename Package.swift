@@ -16,6 +16,13 @@ let package = Package(
                 .linkedLibrary("z"),
             ]
         ),
-        .testTarget(name: "VaneTests", dependencies: ["vane"])
+        // Only the XCTest bundle links this early, process-local AppKit setup.
+        .target(
+            name: "NativeTestHostBootstrap",
+            path: "Tests/NativeTestHostBootstrap",
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedFramework("AppKit")]
+        ),
+        .testTarget(name: "VaneTests", dependencies: ["vane", "NativeTestHostBootstrap"])
     ]
 )

@@ -75,6 +75,7 @@ import Combine
     func testMovingFromButtonIntoPreviewKeepsItOpen() async throws {
         let hover = DownloadsHover()
         hover.setHovered(true, over: .button)
+        // The open task starts its dwell independently of this test's continuation.
         try await compatibilityWait { hover.isVisible }
         XCTAssertTrue(hover.isVisible)
         hover.setHovered(false, over: .button)
