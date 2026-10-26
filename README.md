@@ -201,7 +201,7 @@ Start with the [contributor guide](CONTRIBUTING.md) for setup, choosing relevant
 checks, and opening a pull request. The [development guide](docs/DEVELOPMENT.md)
 covers project structure, native fixtures, and CI details.
 
-Use the [issue forms](https://github.com/notnaki/vane/issues/new/choose) to report
+Use the [issue templates](https://github.com/notnaki/vane/issues/new/choose) to report
 a bug or suggest an improvement. Keep passwords, tokens, personal browsing data,
 and private documents out of reports. For vulnerabilities, follow the
 [security policy](SECURITY.md) and

@@ -75,9 +75,8 @@ local validation. Required PR CI still applies before merging.
 
 CI first checks the diff. Root Markdown files, Markdown under `docs/`, and Markdown
 issue/PR templates take the documentation-only path: diff checks and the final
-`checks` gate, without macOS builds or native tests. YAML issue forms and other
-configuration files take the full path, as do mixed changes and missing comparison
-history. The classifier is [`scripts/ci-change-scope.py`](../scripts/ci-change-scope.py).
+`checks` gate, without macOS builds or native tests. Other configuration files
+take the full path, as do mixed changes and missing comparison history. The classifier is [`scripts/ci-change-scope.py`](../scripts/ci-change-scope.py).
 
 For app changes, one debug build compiles the app and test bundle and assembles
 `Vane.app`. Four native runners and a separate packaging runner reuse a runtime-only
