@@ -40,6 +40,15 @@ final class SpaceSwipeCommitTests: XCTestCase {
                                width: 250, count: 3, index: 1).commit)
     }
 
+    func testQuarterWidthSlowSwipeSwitchesButShortNoiseDoesNot() {
+        for direction: CGFloat in [-1, 1] {
+            XCTAssertEqual(Spaces.Swipe.commit(travel: direction * 62.5, speed: 0,
+                                               width: 250, count: 3, index: 1), direction < 0 ? 1 : -1)
+            XCTAssertNil(Spaces.Swipe.commit(travel: direction * 20, speed: 0,
+                                            width: 250, count: 3, index: 1))
+        }
+    }
+
     func testTinyFastEdgeMovementDoesNotSwitchSpaces() {
         XCTAssertNil(Spaces.Swipe.commit(travel: 4, speed: 1100, width: 250, count: 3, index: 1))
         XCTAssertNil(Spaces.Swipe.commit(travel: -4, speed: -1100, width: 250, count: 3, index: 1))

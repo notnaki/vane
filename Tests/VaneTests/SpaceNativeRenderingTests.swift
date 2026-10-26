@@ -544,6 +544,78 @@ import XCTest
         try await checkEarlyProfilePageSelection(cached: false)
     }
 
+    func testReverseSwipeTakesOverThePresentedLandingWithoutFinishingIt() async throws {
+        for direction in [1, -1] {
+            let (store, spaces, window, monitor) = try fixture()
+            let origin = spaces[direction > 0 ? 0 : 1]
+            let target = spaces[direction > 0 ? 1 : 0]
+            store.switchTo(space: origin)
+            try await checkReverseLanding(store: store, origin: origin, target: target,
+                                          window: window, monitor: monitor, direction: direction)
+        }
+    }
+
+    func testReverseProfileSwipeTakesOverTheSamePresentedNativeRows() async throws {
+        TestEnvironment.prepare()
+        try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let profiles = [manager.create(name: "Catch origin"), manager.create(name: "Catch arrival")]
+        let spaces = profiles.map { manager.createSpace(name: "Catch", in: $0.id) }
+        let store = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
+        let window = try XCTUnwrap(store.window)
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            window.close()
+            profiles.forEach { _ = manager.delete($0.id) }
+            manager.active = previous
+        }
+        try await checkReverseLanding(store: store, origin: spaces[0], target: spaces[1],
+                                      window: window, monitor: store.spaceGesture.monitor, direction: 1)
+    }
+
+    private func checkReverseLanding(store: TabStore, origin: Space, target: Space,
+                                     window: NSWindow, monitor: SwipeMonitor, direction: Int) async throws {
+        store.palette = nil
+        let width = SidebarWidth.shared.width
+        let sign = CGFloat(direction)
+        try await Task.sleep(for: .milliseconds(150))
+        monitor.track(-sign * 60, width: width, in: store)
+        monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let slide = try XCTUnwrap(host.spaceSlide)
+        // Admit a real middle frame with room to move in either direction. Fixed sleeps
+        // can sample the insertion frame or an endpoint on a loaded desktop.
+        try await compatibilityWait {
+            slide.isActive && abs(slide.offset) > width * 0.45 && abs(slide.offset) < width * 0.8
+        }
+        XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, target.id)
+        let originalRows = slide.outgoing
+        let presentedX = try XCTUnwrap(originalRows.layer?.presentation()).frame.minX
+
+        NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
+        NSApp.sendEvent(ScrollEvent(window: window, dx: sign * 12))
+        XCTAssertTrue(host.spaceSlide === slide, "Reversing must retain both captured native surfaces")
+        XCTAssertTrue(slide.isActive, "The next swipe must own the still-unfinished transition")
+        XCTAssertNil(originalRows.layer?.animation(forKey: "space-position"))
+        XCTAssertEqual(originalRows.frame.minX, presentedX + sign * 12, accuracy: 5,
+                       "Take over at the visible position, without snapping to the old endpoint")
+        let held = originalRows.frame.minX
+        try await Task.sleep(for: .milliseconds(850))
+        XCTAssertTrue(host.spaceSlide === slide && slide.isActive,
+                      "The previous animation completion must not retire the new gesture")
+        XCTAssertEqual(originalRows.frame.minX, held, accuracy: 1)
+        NSApp.sendEvent(ScrollEvent(window: window, dx: sign * 40))
+        XCTAssertEqual(originalRows.frame.minX, held + sign * 40, accuracy: 1)
+        NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
+        try await Task.sleep(for: .milliseconds(400))
+        let showing = try XCTUnwrap(TabStore.all.first { $0.window === window })
+        XCTAssertEqual(showing.currentSpaceID, origin.id)
+        XCTAssertFalse(showing.spaceSwiping)
+        XCTAssertNil(host.spaceSlide)
+    }
+
     func testRapidBackToBackSwipesDoNotWaitForThePreviousLanding() async throws {
         for direction: CGFloat in [-1, 1] {
             let (store, spaces, window, _) = try fixture()

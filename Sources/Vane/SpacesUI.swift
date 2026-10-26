@@ -1665,6 +1665,15 @@ private struct SpaceSwipe: ViewModifier {
         list = []
     }
 
+    /// A new owner revokes both the compositor completion and any queued page activation.
+    func interruptLanding() {
+        transition = UUID()
+        pendingSelection = nil
+        landing = false
+        landingFrom = nil
+        returning = false
+    }
+
     /// The gesture is gone rather than finished: put the strip back where an idle sidebar
     /// has it. A cut, not a spring — the fingers have already left, and there is nothing
     /// left for a spring to be the tail of.
@@ -1920,16 +1929,16 @@ private struct SpaceSwipe: ViewModifier {
         // that drift is enough to lose the toss.
         claim = travelled.h > travelled.v * 1.5 ? .mine : .theirs
         guard claim == .mine else { return false }
-        if ownsLanding {
+        if ownsLanding { (window.contentView as? BrowserWindowHost)?.clearQueuedSpaceSelection() }
+        var resumedOffset: CGFloat = 0
+        if ownsLanding, let offset = slide?.resumeTracking(in: store, dx: event.scrollingDeltaX) {
+            resumedOffset = offset
+        } else if ownsLanding {
             // A distinct horizontal gesture can begin before the preceding landing
             // reaches rest. Retire that owned leg only after axis lock; unrelated page
             // and vertical scrolling must leave its presentation alone.
             slide?.finish()
-            transition = UUID()
-            pendingSelection = nil
-            landing = false
-            landingFrom = nil
-            returning = false
+            interruptLanding()
             Motion.spaceHandoff {
                 store.spaceDrag = 0
                 store.spaceSwiping = false
@@ -1938,7 +1947,7 @@ private struct SpaceSwipe: ViewModifier {
         }
         // The first claimed event is the gesture's beginning as far as the state machine is
         // concerned: the `.began` that opened it carried no deltas and went to the tab list.
-        swipe = Spaces.Swipe()
+        swipe = Spaces.Swipe(startingAt: resumedOffset)
         last = 0
         list = store.strip
         return true
