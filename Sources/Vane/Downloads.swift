@@ -1257,7 +1257,7 @@ import CryptoKit
         }
         item.pausedByUser = false
         item.retryPending = false
-        for (key, origin) in retryOrigins.filter({ $0.value.item === item }) {
+        for (key, _) in retryOrigins.filter({ $0.value.item === item }) {
             retryOrigins[key] = nil
             if let pending = pendingDownloads.removeValue(forKey: key) {
                 saveAsDownloads[key] = nil
