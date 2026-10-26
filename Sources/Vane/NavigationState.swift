@@ -12,6 +12,13 @@ import WebKit
     var lastHistoryURL: URL?
     var restoringHistory = false
     var receivedResponse = false
+    private struct PDFTitleResponse {
+        let navigation: WKNavigation
+        let url: URL
+        let filename: String
+    }
+    private var pendingPDFTitle: PDFTitleResponse?
+    private var committedPDFTitle: (url: URL, filename: String)?
     private var generation = UUID()
     var policyGeneration: UUID { generation }
     private var prompt: NSAlert?
@@ -33,6 +40,7 @@ import WebKit
         active = navigation
         finished = false
         receivedResponse = false
+        pendingPDFTitle = nil
         return true
     }
 
@@ -42,11 +50,48 @@ import WebKit
         return expect(navigation)
     }
 
-    func invalidate() {
+    func invalidate(preservingDocument: Bool = false) {
         if let active { retired.add(active) }
         cancelPrompt()
         active = nil
         finished = true
+        pendingPDFTitle = nil
+        if !preservingDocument { committedPDFTitle = nil }
+    }
+
+    /// Response metadata is provisional until this exact navigation commits its final URL.
+    func receiveDocumentResponse(_ response: URLResponse, navigation: WKNavigation?) {
+        guard let navigation, accepts(navigation) else { return }
+        pendingPDFTitle = nil
+        guard let url = response.url, ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              response.mimeType?.lowercased() == "application/pdf",
+              let filename = response.suggestedFilename,
+              !filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        pendingPDFTitle = PDFTitleResponse(navigation: navigation, url: url, filename: filename)
+    }
+
+    func commitDocumentResponse(_ navigation: WKNavigation?, at url: URL?) {
+        guard let navigation, accepts(navigation) else { return }
+        let response = pendingPDFTitle
+        pendingPDFTitle = nil
+        // A new document replaces the old response even when its URL is unchanged.
+        committedPDFTitle = nil
+        guard let response, let url, response.navigation === navigation,
+              Self.sameResponseDocument(response.url, url) else { return }
+        committedPDFTitle = (url, response.filename)
+    }
+
+    func suggestedFilename(for url: URL?) -> String? {
+        guard let url, let committedPDFTitle,
+              Self.sameResponseDocument(committedPDFTitle.url, url) else { return nil }
+        return committedPDFTitle.filename
+    }
+
+    private static func sameResponseDocument(_ first: URL, _ second: URL) -> Bool {
+        var a = URLComponents(url: first, resolvingAgainstBaseURL: false)
+        var b = URLComponents(url: second, resolvingAgainstBaseURL: false)
+        a?.fragment = nil; b?.fragment = nil
+        return a != nil && a == b
     }
 
     func cancelPrompt() {
