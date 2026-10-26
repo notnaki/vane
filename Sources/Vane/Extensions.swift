@@ -1585,8 +1585,9 @@ import WebKit
         ask(context, patterns.map(\.string)) ? (patterns, nil) : ([], nil)
     }
 
-    /// WebKit invokes this optional SPI before loading background content, including a
-    /// recreated service worker. Public customUserAgent then applies before startup.
+    /// WebKit invokes this optional SPI before loading background content. Configure
+    /// the actual view here; this does not acknowledge the UA used when WebKit
+    /// initializes a separate MV3 worker.
     @objc(_webExtensionController:didCreateBackgroundWebView:forExtensionContext:)
     func extensionController(_ controller: WKWebExtensionController, didCreateBackgroundWebView web: WKWebView,
                              for context: WKWebExtensionContext) {
