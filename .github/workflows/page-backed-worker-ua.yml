@@ -1,0 +1,72 @@
+name: page-backed-worker-ua-reduction
+
+on:
+  workflow_call:
+    inputs:
+      runtime:
+        description: Engine for the SPI-assisted framework-only reduction
+        type: string
+        default: macos-26-safari27
+
+permissions:
+  contents: read
+
+jobs:
+  page-backed-worker:
+    name: Page-backed worker without Vane or extension controller (${{ inputs.runtime }})
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Require an explicit supported runtime
+        env:
+          REDUCTION_RUNTIME: ${{ inputs.runtime }}
+        run: |
+          case "$REDUCTION_RUNTIME" in
+            macos-26|macos-26-safari27) ;;
+            *) echo 'Page-backed reduction supports only macOS 26 runtimes'; exit 2 ;;
+          esac
+
+      - name: Install only Apple's Safari 27 update on disposable macOS 26
+        if: ${{ inputs.runtime == 'macos-26-safari27' }}
+        timeout-minutes: 14
+        run: python3 -B scripts/update-ci-safari27.py
+
+      - name: Compile standalone SPI reduction and validate pure guards
+        env:
+          VANE_TEST_STAGED_WEBKIT: ${{ inputs.runtime == 'macos-26-safari27' && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          sw_vers
+          python3 -B scripts/test-page-backed-worker-ua.py
+          linker_flags=(-framework AppKit -framework WebKit)
+          if [[ "$VANE_TEST_STAGED_WEBKIT" == 1 ]]; then
+            linker_flags+=("-Wl,-dyld_env,DYLD_FRAMEWORK_PATH=/System/Cryptexes/App/System/Library/StagedFrameworks/Safari"
+                          "-Wl,-dyld_env,DYLD_LIBRARY_PATH=/System/Cryptexes/App/System/Library/StagedFrameworks/Safari")
+          fi
+          xcrun clang -fobjc-arc -Wno-deprecated-declarations -mmacosx-version-min=26.0 \
+            "${linker_flags[@]}" Tests/Diagnostics/PageBackedWorkerUA/main.m -o "$RUNNER_TEMP/page-worker-ua"
+
+      - name: Three page-backed identities per fresh app, stop at first failure
+        # Eight bounded trials permit 19m20s across signing, verification,
+        # primary execution and post-exit retirement; allow overhead too.
+        timeout-minutes: 22
+        run: |
+          set -euo pipefail
+          python3 -B scripts/check-page-backed-worker-ua.py --binary "$RUNNER_TEMP/page-worker-ua" \
+            --evidence-dir "$RUNNER_TEMP/page-worker-ua-logs" 2>&1 | tee "$RUNNER_TEMP/page-worker-ua.log"
+
+      - name: Preserve all reduction and retirement evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: page-worker-ua-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/page-worker-ua.log
+            ${{ runner.temp }}/page-worker-ua-logs/
+          if-no-files-found: warn
+          retention-days: 14

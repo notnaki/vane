@@ -14,6 +14,10 @@ on:
       - scripts/test-staged-webkit-evidence.py
       - scripts/worker-engine-evidence.py
       - scripts/test-worker-engine-evidence.py
+      - Tests/Diagnostics/PageBackedWorkerUA/main.m
+      - scripts/check-page-backed-worker-ua.py
+      - scripts/test-page-backed-worker-ua.py
+      - .github/workflows/page-backed-worker-ua.yml
       - .github/workflows/signed-extension-ua.yml
   workflow_dispatch:
     inputs:
@@ -31,6 +35,10 @@ on:
         description: Sample a unique app-owned service-worker candidate after UA comparison
         type: boolean
         default: false
+      framework_only:
+        description: Run the SPI-assisted page-backed reduction instead of the Vane comparison
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -41,6 +49,7 @@ concurrency:
 
 jobs:
   signed-normal-app:
+    if: ${{ !inputs.framework_only }}
     name: Signed Vane UA observer arm (${{ matrix.observer_mode }}, ${{ inputs.runtime || 'macos-26' }})
     strategy:
       fail-fast: false
@@ -132,3 +141,9 @@ jobs:
             ${{ runner.temp }}/vane-signed-extension-ua-logs/
           if-no-files-found: warn
           retention-days: 14
+
+  framework-only-reduction:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.framework_only }}
+    uses: ./.github/workflows/page-backed-worker-ua.yml
+    with:
+      runtime: ${{ inputs.runtime || 'macos-26' }}
