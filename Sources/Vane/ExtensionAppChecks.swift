@@ -316,7 +316,32 @@ import WebKit
                     throw Failure("UA \(stage): current-context \(key) did not match.")
                 }
                 for key in ["popupStartup", "popupCurrent", "startup", "current"] where identity[key] != selected {
-                    throw Failure("UA \(stage): \(key) expected \(selected); observed \(bounded(identity[key] ?? "missing")).")
+                    // Observe only after the original reply and identity guards
+                    // have failed their UA comparison. Successful stages do not
+                    // read additional native state or prime a later startup.
+                    func getter(_ object: NSObject?, _ name: String) -> String {
+                        guard let object else { return "unavailable: view released" }
+                        let selector = NSSelectorFromString(name)
+                        guard object.responds(to: selector) else { return "unavailable: selector" }
+                        return bounded(object.perform(selector)?.takeUnretainedValue() as? String ?? "unavailable: value")
+                    }
+                    let backgroundView = background.web
+                    let preferences = backgroundView?.configuration.defaultWebpagePreferences
+                    let observations = [
+                        "popupStartup": bounded(identity["popupStartup"] ?? "missing"),
+                        "popupCurrent": bounded(identity["popupCurrent"] ?? "missing"),
+                        "workerStartup": bounded(identity["startup"] ?? "missing"),
+                        "workerCurrent": bounded(identity["current"] ?? "missing"),
+                        "selectedAtCallback": bounded(background.selected),
+                        "appliedAtCallback": bounded(background.applied ?? "unavailable"),
+                        "selectedNow": bounded(Settings.userAgent),
+                        "backgroundAppliedNow": bounded(backgroundView?.customUserAgent ?? "unavailable"),
+                        "backgroundResolvedNow": getter(backgroundView, "_userAgent"),
+                        "backgroundPreferenceNow": getter(preferences, "_customUserAgent")
+                    ]
+                    let data = try JSONSerialization.data(withJSONObject: observations, options: [.sortedKeys])
+                    let detail = String(decoding: data, as: UTF8.self)
+                    throw Failure("UA \(stage): \(key) expected \(selected); observed \(bounded(identity[key] ?? "missing")). Post-reply observations: \(detail)")
                 }
                 userAgentStagesVerified += 1
                 record("UA normal-loop \(stage)", .verified,
