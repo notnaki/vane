@@ -119,6 +119,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
             return
         }
         guard let store else { return }
+        store.librarySwipeMonitor.cancelPendingActivation(toward: true)
         // A private window has no Spaces, and ⇧⌘L must still open *something*: falling back
         // beats a keystroke that silently does nothing and a rail with no tile lit.
         let section = requested.available(private: store.isPrivate) ? requested : .archived
@@ -143,7 +144,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// ⇧⌘L and the footer glyph: the same keystroke that opened it closes it again.
     static func toggle(_ section: LibrarySection, in store: TabStore?) {
         guard let store else { return }
-        if store.libraryOpen && shared.section == section { close(store); return }
+        if store.librarySwipeMonitor.intendsOpen(in: store) && shared.section == section { close(store); return }
         open(section, in: store)
     }
 
@@ -151,6 +152,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// to the page, so the next keystroke is the page's rather than falling on a rail that is
     /// not there any more.
     static func close(_ store: TabStore) {
+        store.librarySwipeMonitor.cancelPendingActivation(toward: false)
         // The prepared panel stays mounted through its exit. Relinquish its responder
         // before publishing the close, so focusPage can restore the page immediately.
         if store.libraryOpen, store.palette == nil, NSApp.modalWindow == nil,

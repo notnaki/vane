@@ -154,6 +154,81 @@ private struct LibrarySwipe: ViewModifier {
     private var lastWasConsumed = false
     private var travel = (x: CGFloat(0), horizontal: CGFloat(0), vertical: CGFloat(0))
     private var finished = false
+    @MainActor private struct KeyboardOwner {
+        weak var responder: NSResponder?
+        weak var editorDelegate: AnyObject?
+        let fieldEditor: Bool
+
+        init(window: NSWindow?) {
+            responder = window?.firstResponder
+            let editor = responder as? NSTextView
+            fieldEditor = editor?.isFieldEditor == true
+            editorDelegate = fieldEditor ? editor?.delegate : nil
+        }
+
+        func stillOwnsKeyboard(in window: NSWindow?) -> Bool {
+            guard window?.firstResponder === responder else { return false }
+            // AppKit reuses one field editor across the Library and page Find.
+            // Its delegate identifies the field that currently owns that editor.
+            guard fieldEditor else { return true }
+            return (window?.firstResponder as? NSTextView)?.delegate === editorDelegate
+        }
+    }
+    private struct Destination {
+        let open: Bool
+        let space: UUID?
+        let keyboard: KeyboardOwner
+    }
+    private var destination: Destination?
+
+    /// Route a second gesture against the released gesture's intent while the
+    /// visible layout is still landing. The browser itself changes only at rest.
+    func intendsOpen(in store: TabStore) -> Bool { destination?.open ?? store.libraryOpen }
+
+    /// Explicit commands supersede a pending swipe, including a close issued
+    /// before the opening has published its destination.
+    func cancelPendingActivation(toward open: Bool? = nil) {
+        guard destination != nil else { return }
+        destination = nil
+        guard let store else { return }
+        let target: CGFloat = (open ?? store.libraryOpen) ? 1 : 0
+        // A command agreeing with the released endpoint can keep the existing
+        // tail and its cleanup, while retiring only the deferred activation.
+        if !Motion.reduced, presentationView?.window != nil,
+           store.librarySwipeProgress == target { return }
+        let token = UUID()
+        settlement = token
+        let clear = { [weak self, weak store] in
+            guard let self, self.settlement == token, let store else { return }
+            Motion.instant { store.librarySwipeProgress = nil }
+        }
+        if Motion.reduced || presentationView?.window == nil || store.librarySwipeProgress == nil {
+            clear()
+        } else {
+            withAnimation(Look.appear, completionCriteria: .removed) {
+                store.librarySwipeProgress = target
+            } completion: { clear() }
+        }
+    }
+
+    private func activateDestination(in store: TabStore) {
+        guard let destination else { return }
+        self.destination = nil
+        if destination.open {
+            guard store.profileVisible, !store.libraryOpen, store.currentSpaceID == destination.space,
+                  !store.creatingSpace, !store.spaceSwiping, !store.isPrivate, !store.isLittle else { return }
+            store.palette = nil
+            Library.open(Library.shared.section, in: store)
+        } else if store.libraryOpen {
+            if destination.keyboard.stillOwnsKeyboard(in: store.window) {
+                Library.close(store)
+            } else {
+                // A newer focus request (for example page Find) owns the keyboard.
+                // Retire Library without releasing that new responder.
+                store.libraryOpen = false
+            }
+        }
+    }
 
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
@@ -183,7 +258,12 @@ private struct LibrarySwipe: ViewModifier {
     private func reset(clearPresentation: Bool = true) {
         if clearPresentation {
             settlement = UUID()
-            if let store { Motion.instant { store.librarySwipeProgress = nil } }
+            if let store {
+                Motion.instant {
+                    activateDestination(in: store)
+                    store.librarySwipeProgress = nil
+                }
+            }
         }
         dragOrigin = nil
         claim = .idle
@@ -196,44 +276,44 @@ private struct LibrarySwipe: ViewModifier {
 
     func finishForReducedMotion() {
         settlement = UUID()
-        if let store { Motion.instant { store.librarySwipeProgress = nil } }
+        if let store {
+            Motion.instant {
+                activateDestination(in: store)
+                store.librarySwipeProgress = nil
+            }
+        }
     }
 
-    /// The destination changes on release, but keep both surfaces mounted until the
-    /// presentation reaches its endpoint. A new gesture invalidates this completion.
+    /// Finish the small navigation layout before publishing the destination to
+    /// the browser. Publishing at fingers-up invalidates the controls and lists
+    /// in the first animation frame, holding a quick swipe at its release point.
     private func settle(in store: TabStore, commit: Bool) {
         let token = UUID()
         settlement = token
-        let activate = {
-            if commit, let action = self.action {
-                switch action {
-                case .close: Library.close(store)
-                case .open:
-                    store.palette = nil
-                    Library.open(Library.shared.section, in: store)
-                }
+        var open = intendsOpen(in: store)
+        if commit, let action {
+            open = switch action { case .open: true; case .close: false }
+        }
+        let target: CGFloat = open ? 1 : 0
+        let keyboard = !open && destination?.open == false
+            ? destination!.keyboard : KeyboardOwner(window: store.window)
+        let space = open && destination?.open == true ? destination?.space : store.currentSpaceID
+        destination = Destination(open: open, space: space, keyboard: keyboard)
+        let finish = { [weak self, weak store] in
+            guard let self, self.settlement == token, let store else { return }
+            Motion.instant {
+                self.activateDestination(in: store)
+                guard self.settlement == token else { return }
+                store.librarySwipeProgress = nil
             }
         }
-        let clear = { [weak self, weak store] in
-            guard let self, self.settlement == token, let store else { return }
-            Motion.instant { store.librarySwipeProgress = nil }
-        }
-        var target: CGFloat = store.libraryOpen ? 1 : 0
-        if commit, let action {
-            target = switch action { case .open: 1; case .close: 0 }
-        }
-        if Motion.reduced || store.librarySwipeProgress == nil || store.librarySwipeProgress == target {
-            Motion.instant(activate)
-            clear()
+        if Motion.reduced || presentationView?.window == nil
+            || store.librarySwipeProgress == nil || store.librarySwipeProgress == target {
+            finish()
         } else {
             withAnimation(Look.appear, completionCriteria: .removed) {
                 store.librarySwipeProgress = target
-            } completion: { clear() }
-            // Commit the small navigation layout before activating search and the
-            // browser's controls. Otherwise those updates share its first render
-            // pass and hold the panel at the last finger position after a flick.
-            presentationView?.window?.contentView?.layoutSubtreeIfNeeded()
-            Motion.instant(activate)
+            } completion: { finish() }
         }
     }
 
@@ -250,9 +330,9 @@ private struct LibrarySwipe: ViewModifier {
 
     private func valid(_ action: Action, in store: TabStore) -> Bool {
         switch action {
-        case .close: return store.libraryOpen
+        case .close: return intendsOpen(in: store)
         case .open(let space):
-            return !store.libraryOpen && !store.isPrivate && !store.isLittle
+            return !intendsOpen(in: store) && !store.isPrivate && !store.isLittle
                 && !store.creatingSpace && !store.spaceSwiping && store.currentSpaceID == space
         }
     }
@@ -263,7 +343,7 @@ private struct LibrarySwipe: ViewModifier {
     private func startsInNavigationArea(_ event: NSEvent, window: NSWindow, store: TabStore) -> Bool {
         let bounds = window.contentView.map { $0.convert($0.bounds, to: nil) }
             ?? NSRect(origin: .zero, size: window.frame.size)
-        if store.libraryOpen {
+        if intendsOpen(in: store) {
             let spaces = Library.shared.section == .spaces ? ProfileManager.shared.allSpaces.count : 0
             let width = Library.panelWidth(section: Library.shared.section, spaces: spaces,
                                           private: store.isPrivate, available: bounds.width)
@@ -296,7 +376,7 @@ private struct LibrarySwipe: ViewModifier {
                 panelWidth = Library.panelWidth(section: Library.shared.section,
                     spaces: Library.shared.section == .spaces ? ProfileManager.shared.allSpaces.count : 0,
                     private: store.isPrivate, available: bounds.width)
-                if store.libraryOpen { action = .close }
+                if intendsOpen(in: store) { action = .close }
                 else if let space = store.currentSpaceID, !store.isPrivate, !store.isLittle,
                         !store.creatingSpace, !store.spaceSwiping {
                     action = .open(space)

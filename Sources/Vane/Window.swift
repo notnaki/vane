@@ -130,6 +130,17 @@ final class VaneWindow: NSWindow {
                PasswordChooser.dismiss(in: self) || Selection.clear(in: self)
                    || TabActions.stopLoading(in: self)
            }) { return }
+        // A released Library opening has not installed its Escape button yet.
+        // Keep Escape ahead of the page during that short presentation tail.
+        if event.type == .keyDown, event.keyCode == 53,
+           MainActor.assumeIsolated({
+               guard let store = TabStore.all.first(where: { $0.window === self && $0.profileVisible }),
+                     !store.libraryOpen, store.librarySwipeMonitor.intendsOpen(in: store),
+                     store.palette == nil, !store.findOpen, attachedSheet == nil,
+                     NSApp.modalWindow == nil else { return false }
+               Library.close(store)
+               return true
+           }) { return }
         // ⌘A takes the current tab's whole section — but only when nothing that types has
         // the focus, which is the whole of `Selection.selectAll`'s job.
         if event.type == .keyDown, event.charactersIgnoringModifiers == "a",
