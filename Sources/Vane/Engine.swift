@@ -857,27 +857,7 @@ struct TitleReveal: Equatable, Sendable {
         obs = [
             web.observe(\.title, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
-                    // A suspended tab keeps the title it was parked with — the strip must
-                    // not flicker back to "New Tab" the moment the page goes away.
-                    guard let self, self.existingWeb === w, !self.suspended, !self.tornDown else { return }
-                    let update = Files.restoredTitle(cached: self.title,
-                                                     placeholderURL: self.titlePlaceholderURL,
-                                                     page: w.title,
-                                                     url: w.url)
-                    self.title = update.title
-                    self.titlePlaceholderURL = update.placeholderURL
-                    if update.placeholderURL == nil {
-                        self.titleSettleTask?.cancel()
-                        self.titleSettleTask = nil
-                    } else {
-                        self.scheduleTitleSettle(for: w)
-                    }
-                    if let u = w.url { self.scheduleRetitle(u, title: self.title) }
-                    // A pinned row that had no real title to freeze when it was pinned takes
-                    // the first one the page gives it — see `TidyTitles.note`, which is a
-                    // no-op for every other row.
-                    TidyTitles.note(self)
-                    self.extensions.sync()
+                    self?.updatePageTitle(from: w)
                 }
             },
             web.observe(\.isLoading, options: [.new]) { [weak self] w, _ in
@@ -952,6 +932,29 @@ struct TitleReveal: Equatable, Sendable {
         TabAudio.reapply(self)
     }
 
+    private func updatePageTitle(from observedWeb: WKWebView, settled: Bool = false) {
+        // A suspended tab keeps its parked title. During a provisional load, both the
+        // fallback and the history write still belong to the document being displayed.
+        guard existingWeb === observedWeb, !suspended, !tornDown else { return }
+        let url = provisional ? committedURL : observedWeb.url
+        let filename = navigationState.suggestedFilename(for: url)
+        let update = settled
+            ? Files.settledRestoredTitle(cached: title, placeholderURL: titlePlaceholderURL,
+                                        page: observedWeb.title, url: url, suggestedFilename: filename)
+            : Files.restoredTitle(cached: title, placeholderURL: titlePlaceholderURL,
+                                  page: observedWeb.title, url: url, suggestedFilename: filename)
+        title = update.title
+        titlePlaceholderURL = update.placeholderURL
+        if update.placeholderURL == nil {
+            titleSettleTask?.cancel()
+            titleSettleTask = nil
+        } else { scheduleTitleSettle(for: observedWeb) }
+        if let url { scheduleRetitle(url, title: title) }
+        // A row pinned before its document was named takes the first real title.
+        TidyTitles.note(self)
+        extensions.sync()
+    }
+
     /// A restored page reports `isLoading == false` before its final title KVO. Give that
     /// title one short turn to arrive; if it remains a host label, it is now authoritative
     /// rather than a provisional value. This also bounds a titleless page's placeholder.
@@ -963,18 +966,7 @@ struct TitleReveal: Equatable, Sendable {
             guard !Task.isCancelled, let self, let observedWeb,
                   self.existingWeb === observedWeb, !observedWeb.isLoading,
                   self.titlePlaceholderURL != nil else { return }
-            let update = Files.settledRestoredTitle(cached: self.title,
-                                                    placeholderURL: self.titlePlaceholderURL,
-                                                    page: observedWeb.title,
-                                                    url: observedWeb.url)
-            self.title = update.title
-            self.titlePlaceholderURL = update.placeholderURL
-            self.titleSettleTask = nil
-            if let url = observedWeb.url { self.scheduleRetitle(url, title: self.title) }
-            // The settled title is a title too: a row pinned while its page was still a host
-            // label freezes the real name here rather than one KVO earlier.
-            TidyTitles.note(self)
-            self.extensions.sync()
+            self.updatePageTitle(from: observedWeb, settled: true)
         }
     }
 
@@ -1917,6 +1909,7 @@ struct TitleReveal: Equatable, Sendable {
         #if DEBUG
         recordNavigationStage("commit-accepted", navigation: navigation)
         #endif
+        navigationState.commitDocumentResponse(navigation, at: w.url)
         provisional = false; showCommitted(w)
         if let item = w.backForwardList.currentItem {
             if navigationState.simulated === navigation {
@@ -1928,6 +1921,7 @@ struct TitleReveal: Equatable, Sendable {
         }
         displayingNavigationError = navigationState.simulated === navigation
             || w.backForwardList.currentItem.map { navigationState.simulatedItems.contains($0) } == true
+        updatePageTitle(from: w)
         if w === existingWeb {
             Reader.navigationCommitted(self)
             FileUploads.cancel(tabID: id)
@@ -1949,11 +1943,15 @@ struct TitleReveal: Equatable, Sendable {
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
         guard ownsNavigation(navigation, in: w) else { return }
-        if provisional { provisional = false; showCommitted(w) }
+        if provisional {
+            navigationState.commitDocumentResponse(navigation, at: w.url)
+            provisional = false; showCommitted(w)
+        }
         navigationState.finished = true
         finishCertificateNavigation(navigation, in: w)
         progress = 1
         loading = false
+        updatePageTitle(from: w)
         Trace.end(id)
         Trace.note("favicon")
         favicons.load(for: self)
@@ -2141,16 +2139,22 @@ struct TitleReveal: Equatable, Sendable {
     func webView(_ w: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                  decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
         guard w === existingWeb, !tornDown, !suspended else { decisionHandler(.cancel); return }
+        var responseNavigation = navigationState.active
         #if compiler(>=6.4)
         if #available(macOS 27.0, *), navigationResponse.isForMainFrame,
-           let navigation = navigationResponse.mainFrameNavigation,
-           !ownsNavigation(navigation, in: w) { decisionHandler(.cancel); return }
+           let navigation = navigationResponse.mainFrameNavigation {
+            guard ownsNavigation(navigation, in: w) else { decisionHandler(.cancel); return }
+            responseNavigation = navigation
+        }
         #endif
         if navigationResponse.isForMainFrame { navigationState.receivedResponse = true }
         let http = navigationResponse.response as? HTTPURLResponse
         let disposition = (http?.value(forHTTPHeaderField: "Content-Disposition") ?? "").lowercased()
         // The server asked for a save, or WebKit has no way to display it.
         let save = disposition.hasPrefix("attachment") || !navigationResponse.canShowMIMEType
+        if navigationResponse.isForMainFrame, !save {
+            navigationState.receiveDocumentResponse(navigationResponse.response, navigation: responseNavigation)
+        }
         decisionHandler(save ? .download : .allow)
     }
 
@@ -2482,7 +2486,7 @@ struct TitleReveal: Equatable, Sendable {
     }
     func hardReload() { if easelSession == nil { expectNavigation(existingWeb?.reloadFromOrigin()) } }
     func stop() {
-        navigationState.invalidate()
+        navigationState.invalidate(preservingDocument: true)
         readingDocumentGeneration = UUID()
         certificateDestinationURL = nil
         certificateNavigation = nil
