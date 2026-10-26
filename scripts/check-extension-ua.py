@@ -245,7 +245,7 @@ def run_ua_mode(binary, root, downloads, evidence_dir):
             # its exact owned process through the normal bounded path.
             pending_signal = interrupted[0] if phase == "cleanup" else None
             if phase == "cleanup": interrupted[0] = None
-            command = [str(executable), "extensioncheck", "--user-agent-only"] if phase == "primary" else [str(executable), "browsercheck-cleanup"]
+            command = [str(executable), "extensioncheck", "--user-agent-only", "--ua-loader-start-observation"] if phase == "primary" else [str(executable), "browsercheck-cleanup"]
             status, exited, output = run_ua_process(command, environment, 90 if phase == "primary" else 25,
                                                     trial_logs / (phase + ".log"), interrupted)
             if status == 0 and exited:

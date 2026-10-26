@@ -120,6 +120,19 @@ import WebKit
         private var previousUserAgent: Any?
         private var hasUserAgentSnapshot = false
         private var backgrounds: [ObjectIdentifier: UserAgentBackground] = [:]
+        private var loaderStartNonce: String?
+        private var loaderStartWorld: WKContentWorld?
+
+        // A single post-failure read schedules a one-second main-queue timeout. It
+        // never changes the worker-reply deadline or resumes a failed identity check.
+        @MainActor private final class LoaderStartRead {
+            var continuation: CheckedContinuation<[String: String], Never>?
+            func finish(_ result: [String: String]) {
+                guard let continuation else { return }
+                self.continuation = nil
+                continuation.resume(returning: result)
+            }
+        }
 
         // All native objects in the callback observation are weak. No retired
         // context/view/host survives solely because this diagnostic observed it.
@@ -244,6 +257,28 @@ import WebKit
                   host.installed.isEmpty, !host.isBusy else {
                 throw Failure("UA comparison requires an empty isolated persistent profile.")
             }
+            if CommandLine.arguments.contains("--ua-loader-start-observation") {
+                let nonce = UUID().uuidString
+                let world = WKContentWorld.world(name: "vane-ua-loader-start-" + nonce)
+                loaderStartNonce = nonce
+                loaderStartWorld = world
+                // Configuration copies retain this user-content controller. Add
+                // once before any synthetic context or background view exists.
+                // Store locally in the isolated world: no early native IPC, worker
+                // API replacement, registration gate, or extension-file changes.
+                host.controller.configuration.webViewConfiguration.userContentController.addUserScript(
+                    WKUserScript(source: """
+                        (() => {
+                            if (location.protocol !== 'webkit-extension:' ||
+                                (location.pathname !== '/' && location.pathname !== '')) return;
+                            Object.defineProperty(globalThis, '__vaneLoaderStart', {
+                                value: Object.freeze({runNonce:'\(nonce)', userAgent:navigator.userAgent,
+                                    href:location.href, origin:location.origin, readyState:document.readyState}),
+                                writable:false, configurable:false, enumerable:false
+                            });
+                        })();
+                        """, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world))
+            }
             let previous = host.backgroundCreationObserver
             previousBackgroundObserver = previous
             hasBackgroundObserverSnapshot = true
@@ -327,7 +362,7 @@ import WebKit
                     }
                     let backgroundView = background.web
                     let preferences = backgroundView?.configuration.defaultWebpagePreferences
-                    let observations = [
+                    var observations = [
                         "popupStartup": bounded(identity["popupStartup"] ?? "missing"),
                         "popupCurrent": bounded(identity["popupCurrent"] ?? "missing"),
                         "workerStartup": bounded(identity["startup"] ?? "missing"),
@@ -339,6 +374,10 @@ import WebKit
                         "backgroundResolvedNow": getter(backgroundView, "_userAgent"),
                         "backgroundPreferenceNow": getter(preferences, "_customUserAgent")
                     ]
+                    if loaderStartNonce != nil {
+                        observations.merge(await loaderStartObservation(background, context: context,
+                            manifestVersion: manifestVersion)) { _, value in value }
+                    }
                     let data = try JSONSerialization.data(withJSONObject: observations, options: [.sortedKeys])
                     let detail = String(decoding: data, as: UTF8.self)
                     throw Failure("UA \(stage): \(key) expected \(selected); observed \(bounded(identity[key] ?? "missing")). Post-reply observations: \(detail)")
@@ -347,6 +386,49 @@ import WebKit
                 record("UA normal-loop \(stage)", .verified,
                        "startup/current UA, nonce/runtime/origin/version, callback identity/launch and popup/background pool/store verified.")
                 try closeUserAgentStage()
+            }
+        }
+
+        // Called only after the unchanged worker reply, ownership/nonce guards,
+        // and original UA comparator have identified a failure. Success stages
+        // never read the loader snapshot or perform an extra JavaScript roundtrip.
+        private func loaderStartObservation(_ background: UserAgentBackground,
+                                            context: WKWebExtensionContext,
+                                            manifestVersion: Int) async -> [String: String] {
+            func unavailable(_ reason: String) -> [String: String] {
+                ["loaderStartStatus": "UNAVAILABLE", "loaderStartReason": reason]
+            }
+            guard manifestVersion == 3 else { return unavailable("not an MV3 stage") }
+            guard let nonce = loaderStartNonce, let world = loaderStartWorld,
+                  background.context === context, let web = background.web else {
+                return unavailable("current background binding or opt-in snapshot missing")
+            }
+            let expectedHost = context.baseURL.host?.lowercased() ?? ""
+            let expectedOrigin = "webkit-extension://" + expectedHost
+            return await withCheckedContinuation { continuation in
+                let read = LoaderStartRead()
+                read.continuation = continuation
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    read.finish(unavailable("post-failure snapshot read exceeded one second"))
+                }
+                web.evaluateJavaScript("globalThis.__vaneLoaderStart ?? null", in: nil, in: world) { result in
+                    guard case .success(let value) = result,
+                          let snapshot = value as? [String: String],
+                          snapshot["runNonce"] == nonce,
+                          let ua = snapshot["userAgent"], !ua.isEmpty, ua.count <= 2048,
+                          let href = snapshot["href"], let url = URL(string: href),
+                          url.scheme == "webkit-extension", url.host?.lowercased() == expectedHost,
+                          url.path.isEmpty || url.path == "/",
+                          url.query == nil, url.fragment == nil,
+                          snapshot["origin"] == expectedOrigin,
+                          snapshot["readyState"] == "loading" else {
+                        read.finish(unavailable("snapshot absent, unreadable, stale, wrong origin, or not at document start"))
+                        return
+                    }
+                    read.finish(["loaderStartStatus": "OBSERVED", "loaderStartRunNonce": nonce,
+                        "loaderStartUserAgent": ua, "loaderStartHref": href,
+                        "loaderStartOrigin": snapshot["origin"]!, "loaderStartReadyState": snapshot["readyState"]!])
+                }
             }
         }
 
