@@ -123,34 +123,83 @@ extension ExtensionCodeStoreTests {
 }
 
 extension ExtensionCodeStoreTests {
+    private func leaseDiagnosticTail(_ url: URL) -> String {
+        let limit = 4096
+        do {
+            let file = try FileHandle(forReadingFrom: url)
+            defer { try? file.close() }
+            let size = try file.seekToEnd()
+            try file.seek(toOffset: size > UInt64(limit) ? size - UInt64(limit) : 0)
+            let data = try file.read(upToCount: limit) ?? Data()
+            return "bytes=\(size); tail=" + String(reflecting: String(decoding: data, as: UTF8.self))
+        } catch {
+            return "unreadable=" + String(String(describing: error).prefix(512))
+        }
+    }
+
     private func leaseHolder(_ revision: String, committedIndex: URL? = nil) throws -> (Process, Pipe) {
-        let ready = directory.appendingPathComponent("lease-ready-" + UUID().uuidString)
+        let diagnosticID = UUID().uuidString
+        let ready = directory.appendingPathComponent("lease-ready-" + diagnosticID)
+        let stderrURL = directory.appendingPathComponent("lease-stderr-" + diagnosticID)
+        let milestonesURL = directory.appendingPathComponent("lease-milestones-" + diagnosticID)
+        try Data().write(to: stderrURL, options: .withoutOverwriting)
+        let stderr = try FileHandle(forWritingTo: stderrURL)
+        defer { try? stderr.close() }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         process.arguments = ["-c", """
-            import fcntl, os, select, sys
+            import sys, time
+            started = time.monotonic()
+            markers = open(sys.argv[5], 'x', buffering=1)
+            def milestone(name):
+                print(f"{name} elapsed={time.monotonic() - started:.6f}s", file=markers, flush=True)
+            milestone('script-entered')
+            import fcntl, os, select
+            milestone('imports-complete')
             with open(sys.argv[1], 'r+') as lease:
+                milestone('lease-opened')
                 fcntl.flock(lease, fcntl.LOCK_EX)
+                milestone('lease-acquired')
                 open(sys.argv[2], 'w').close()
+                milestone('ready-created')
                 if not select.select([sys.stdin], [], [], 5)[0]: sys.exit(2)
                 command = sys.stdin.buffer.read(1)
                 if command == b'C': os.replace(sys.argv[3], sys.argv[4])
             """, store.root.appendingPathComponent(".revision-" + revision.lowercased() + ".lease").path,
-            ready.path, committedIndex?.path ?? "", store.root.appendingPathComponent("installations.json").path]
+            ready.path, committedIndex?.path ?? "", store.root.appendingPathComponent("installations.json").path,
+            milestonesURL.path]
         let input = Pipe()
         process.standardInput = input
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        process.standardError = stderr
+        let launchStarted = ContinuousClock.now
         try process.run()
-        let deadline = ContinuousClock.now + .seconds(3)
+        let readinessStarted = ContinuousClock.now
+        let deadline = readinessStarted + .seconds(3)
         while !FileManager.default.fileExists(atPath: ready.path), process.isRunning, ContinuousClock.now < deadline {
             Thread.sleep(forTimeInterval: 0.001)
         }
         guard FileManager.default.fileExists(atPath: ready.path) else {
-            if process.isRunning { process.terminate() }
+            let runningBeforeCleanup = process.isRunning
+            let readinessElapsed = readinessStarted.duration(to: .now)
+            if runningBeforeCleanup { process.terminate() }
             process.waitUntilExit()
-            throw ExtensionCodeStore.Problem("Child process did not acquire its revision lease")
+            // Read regular files only after reaping; no diagnostic pipe or reader lifetime.
+            try? stderr.close()
+            throw ExtensionCodeStore.Problem("Child process did not acquire its revision lease"
+                + "; pid=\(process.processIdentifier)"
+                + "; launchElapsed=\(launchStarted.duration(to: readinessStarted))"
+                + "; readinessElapsed=\(readinessElapsed)"
+                + "; runningBeforeCleanup=\(runningBeforeCleanup)"
+                + "; terminationReason=\(process.terminationReason.rawValue)"
+                + "; terminationStatus=\(process.terminationStatus)"
+                + "; milestones: " + leaseDiagnosticTail(milestonesURL)
+                + "; stderr: " + leaseDiagnosticTail(stderrURL))
         }
+        print("Lease child ready; pid=\(process.processIdentifier)"
+            + "; launchElapsed=\(launchStarted.duration(to: readinessStarted))"
+            + "; readinessElapsed=\(readinessStarted.duration(to: .now))"
+            + "; milestones: " + leaseDiagnosticTail(milestonesURL))
         return (process, input)
     }
 
@@ -221,3 +270,4 @@ extension ExtensionCodeStoreTests {
         XCTAssertTrue(FileManager.default.fileExists(atPath: code.path))
     }
 }
+
