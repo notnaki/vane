@@ -21,13 +21,13 @@ jobs:
         run: python3 -B scripts/test-native-fixture-runner.py
       - name: Build controlled native test
         run: swift build -c debug --build-tests --jobs 1
-      - name: Run real wrong-owner control once
+      - name: Verify owner control and cached-profile docking geometry
         timeout-minutes: 5
         env:
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '120'
         run: |
           set -euo pipefail
-          python3 -B scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests[.]SidebarVisibilityTests/testDockingSampleExcludesParkedProfileAndTracksLiveSidebarMovement$' 2>&1 | tee "$RUNNER_TEMP/sidebar-owner-control.log"
+          python3 -B scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests[.]SidebarVisibilityTests/(testDockingSampleExcludesParkedProfileAndTracksLiveSidebarMovement|testReturningToCachedProfileDoesNotReplaySidebarDocking)$' 2>&1 | tee "$RUNNER_TEMP/sidebar-owner-control.log"
       - name: Preserve control evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v6

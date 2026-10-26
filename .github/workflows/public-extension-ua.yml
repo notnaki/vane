@@ -1,0 +1,95 @@
+name: public-extension-ua-reduction
+
+on:
+  pull_request:
+    paths:
+      - Tests/Diagnostics/PublicWorkerUA/**
+      - scripts/check-public-extension-ua.py
+      - scripts/test-public-extension-ua.py
+      - .github/workflows/public-extension-ua.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-extension-ua-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-reduction:
+    name: Public-only signed worker UA reduction
+    runs-on: macos-26
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify immutable reduction inputs and reused process-control source
+        run: |
+          set -euo pipefail
+          test "$(git hash-object scripts/check-extension-ua.py)" = 3314b847f36a99fedeac324ae495ec3fca4bfdc2
+          test "$(git hash-object scripts/run-native-tests.py)" = d9129128574ec0bedaeb1094d20addae1ed85c57
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path('Tests/Diagnostics/PublicWorkerUA')
+          manifest = root / 'SHA256.json'
+          assert hashlib.sha256(manifest.read_bytes()).hexdigest() == 'd9eb2f435688c544ad52f774ec7a1d3e0ddd52efb404053ada5c07f9b3f48c75'
+          inputs = json.loads(manifest.read_text())
+          assert len(inputs) == 14 and not manifest.is_symlink()
+          actual = {str(path.relative_to(root)) for path in root.rglob('*') if path.is_file() or path.is_symlink()}
+          assert actual == set(inputs) | {'SHA256.json'}, 'Unexpected or missing reduction input'
+          for name, expected in inputs.items():
+              path = root / name
+              assert path.is_file() and not path.is_symlink(), name
+              assert hashlib.sha256(path.read_bytes()).hexdigest() == expected, name
+          print('Exact 14 original public-only reduction inputs verified')
+          PY
+          git rev-parse HEAD
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-path
+          probe_sdk=$(xcrun --sdk macosx --show-sdk-version)
+          case "$probe_sdk" in 26|26.*|27|27.*) ;; *) echo "Unsupported SDK for this reduction: $probe_sdk"; exit 1 ;; esac
+          printf 'Public reduction SDK=%s; deployment floor=26.0\n' "$probe_sdk"
+          sw_vers
+
+      - name: Public evidence protocol pure guards
+        run: python3 -B scripts/test-public-extension-ua.py
+
+      - name: Compile and ad-hoc sandbox-sign original public probe
+        id: probe
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          SIGNING_IDENTITY=- bash Tests/Diagnostics/PublicWorkerUA/build.sh > "$RUNNER_TEMP/public-probe-build.stdout" 2> "$RUNNER_TEMP/public-probe-build.stderr"
+          probe_bundle=$(tail -n 1 "$RUNNER_TEMP/public-probe-build.stdout")
+          test -d "$probe_bundle"
+          codesign --verify --strict --verbose=2 "$probe_bundle"
+          codesign -d --entitlements :- "$probe_bundle" 2>&1 | tee "$RUNNER_TEMP/public-probe-entitlements.log"
+          shasum -a 256 "$probe_bundle/Contents/MacOS/WorkerUAProbe" | tee "$RUNNER_TEMP/public-probe-binary.sha256"
+          printf 'bundle=%s\n' "$probe_bundle" >> "$GITHUB_OUTPUT"
+
+      - name: Eight fresh normal-app launches, stop at first failed sample
+        timeout-minutes: 14
+        env:
+          PUBLIC_PROBE_BUNDLE: ${{ steps.probe.outputs.bundle }}
+        run: |
+          set -euo pipefail
+          python3 -B scripts/check-public-extension-ua.py --bundle "$PUBLIC_PROBE_BUNDLE" --evidence-dir "$RUNNER_TEMP/public-probe-logs" 2>&1 | tee "$RUNNER_TEMP/public-probe-run.log"
+
+      - name: Preserve complete capped logs and scoped public evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: public-worker-ua-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/public-probe-build.stdout
+            ${{ runner.temp }}/public-probe-build.stderr
+            ${{ runner.temp }}/public-probe-entitlements.log
+            ${{ runner.temp }}/public-probe-binary.sha256
+            ${{ runner.temp }}/public-probe-run.log
+            ${{ runner.temp }}/public-probe-logs/
+          if-no-files-found: warn
+          retention-days: 14

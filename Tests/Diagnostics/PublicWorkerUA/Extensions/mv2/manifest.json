@@ -1,0 +1,1 @@
+{"manifest_version":2,"name":"WK worker identity MV2","version":"1.0","background":{"scripts":["identity.js","background.js"],"persistent":true},"browser_action":{"default_popup":"popup.html"}}

@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git hash-object Sources/Vane/ExtensionUserAgent.swift)" = e44a762987848113cac89c66a9450174b2d12771
-          test "$(git hash-object Tests/VaneTests/ExtensionUserAgentTests.swift)" = 8f7f420c88fef8d5b063f3c90acafff7f6fa86c2
+          test "$(git hash-object Tests/VaneTests/ExtensionUserAgentTests.swift)" = 57b82e8f0f0031c892d75e0b3a854520331bcd53
           test "$(git hash-object Sources/Vane/Extensions.swift)" = a60171d74f95eed21126dd8005caf548bab7f33f
           test "$(git hash-object Sources/Vane/BrowserChecks.swift)" = 076bee479e904056e567216e40555e21f4f3f133
           test "$(git hash-object Sources/Vane/main.swift)" = 4b2a280a8540dda130b403129de7d7f7d14a50cf
