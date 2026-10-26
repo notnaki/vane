@@ -653,7 +653,9 @@ struct WebCard: View {
     @ObservedObject private var profileManager = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Clearance between the chrome and the page; Little Vane uses no gap.
-    var topGap: CGFloat = Look.cardGap
+    var topGap: CGFloat?
+    @AppStorage(PageBorder.key, store: .vane) private var pageBorder = PageBorder.default.rawValue
+    private var gap: CGFloat { (PageBorder(rawValue: pageBorder) ?? .default).width }
     /// Little Vane's document meets the native window edges beneath its toolbar.
     var edgeToEdge = false
     private var radius: CGFloat { edgeToEdge ? 0 : Look.pageRadius }
@@ -764,9 +766,10 @@ struct WebCard: View {
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
         .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
-        .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
-        .padding(.top, topGap)
-        .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
+        .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : gap))
+        .padding(.top, topGap ?? gap)
+        .padding([.trailing, .bottom], edgeToEdge ? 0 : gap)
+        .animation(Motion.reduced ? nil : Look.quick, value: pageBorder)
     }
 }
 

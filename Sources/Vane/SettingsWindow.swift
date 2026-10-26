@@ -88,6 +88,31 @@ enum FolderUnlockMethod: String, CaseIterable {
     static let key = "folderUnlockMethod"
 }
 
+/// The clearance between the page card and the window edge, chosen in General settings.
+enum PageBorder: String, CaseIterable, Identifiable {
+    case transparent, thin, regular
+    static let key = "pageBorder"
+    static let `default` = PageBorder.regular
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .transparent: "Transparent"
+        case .thin: "Thin"
+        case .regular: "Regular"
+        }
+    }
+    var width: CGFloat {
+        switch self {
+        case .transparent: 0
+        case .thin: 4
+        case .regular: 8
+        }
+    }
+    static var current: PageBorder {
+        UserDefaults.vane.string(forKey: key).flatMap(PageBorder.init(rawValue:)) ?? .default
+    }
+}
+
 /// The two answers the Links pane's "Open links from other apps in" offers.
 enum LinkTarget {
     static let key = "externalLinks"
@@ -467,6 +492,7 @@ private struct GeneralPane: View {
     @AppStorage("warnBeforeQuit") private var warnQuit = true
     @AppStorage("checkForUpdates") private var autoUpdate = true
     @AppStorage(InteractionSounds.preferenceKey) private var interactionSounds = false
+    @AppStorage(PageBorder.key, store: .vane) private var pageBorder = PageBorder.default.rawValue
     @State private var isDefault = URLHandling.isDefaultBrowser
 
     var body: some View {
@@ -483,6 +509,16 @@ private struct GeneralPane: View {
                         .onChange(of: interactionSounds) { _, enabled in
                             if enabled { InteractionSounds.play(.copy) }
                         }
+                }
+            }
+
+            SettingsCard {
+                SettingsRow("Page border") {
+                    Picker("Page border", selection: $pageBorder) {
+                        ForEach(PageBorder.allCases) { border in
+                            Text(border.title).tag(border.rawValue)
+                        }
+                    }.labelsHidden().frame(width: 160)
                 }
             }
 

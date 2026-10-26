@@ -338,7 +338,7 @@ private struct LibrarySwipe: ViewModifier {
                     : (presentedProgress ?? store.librarySwipeProgress ?? endpoint)
                 settlement = UUID()
                 if store.libraryGesture.pageWidth == nil, let window = store.window {
-                    store.libraryGesture.pageLeadingInset = store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap
+                    store.libraryGesture.pageLeadingInset = store.sidebarShown || store.libraryOpen ? 0 : PageBorder.current.width
                     let origin = dragOrigin ?? endpoint
                     let leading = (store.sidebarShown ? SidebarWidth.shared.width : 0) * (1 - origin)
                         + panelWidth * origin
