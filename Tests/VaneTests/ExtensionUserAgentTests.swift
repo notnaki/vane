@@ -343,7 +343,9 @@ import XCTest
         XCTAssertEqual(defaultLive, safariUA)
         Settings.userAgent = custom
         try await closePresentedPopup(action)
+        host.run(context, for: nil, from: anchor)
         let (recreatedAction, recreated) = try await popup(context)
+        try await waitForPresentation(recreatedAction)
         XCTAssertFalse(recreated === web, "Recreation must inspect a fresh popup, not cached startup values")
         try await assertIdentity(in: recreated, context: context, expected: custom, startup: safariUA)
         XCTAssertTrue(ExtensionHost.host(for: profile).controller === controller)
@@ -353,8 +355,6 @@ import XCTest
 
         // Returning to the default must clear the custom policy retained in the
         // controller's copied seed, including a subsequently recreated popup.
-        host.run(context, for: nil, from: anchor)
-        try await waitForPresentation(recreatedAction)
         Settings.userAgent = safariUA
         let resetLive = try await recreated.evaluateJavaScript("navigator.userAgent") as? String
         XCTAssertEqual(resetLive, safariUA)
