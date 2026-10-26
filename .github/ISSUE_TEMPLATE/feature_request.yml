@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest an improvement to Vane.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues and check the
+        [known limitations](https://github.com/notnaki/vane#limitations) first.
+        Describe the situation you want to improve. Keep personal browsing data
+        and private documents out of examples and screenshots.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe a concrete situation and how it affects your browsing.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested behavior
+      description: What would you like Vane to do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional workarounds or other approaches you have tried.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Optional sketches, examples, or relevant macOS constraints.

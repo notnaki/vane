@@ -26,6 +26,11 @@
   macOS 26+ &nbsp;·&nbsp; Built with Swift &amp; WebKit &nbsp;·&nbsp; MIT licensed
 </p>
 
+<p align="center">
+  <a href="https://github.com/notnaki/vane/actions/workflows/checks.yml"><img src="https://github.com/notnaki/vane/actions/workflows/checks.yml/badge.svg?branch=main" alt="CI checks"></a>
+  <a href="https://github.com/notnaki/vane/releases/latest"><img src="https://img.shields.io/github/v/release/notnaki/vane" alt="Latest release"></a>
+</p>
+
 ![Vane showing Wikipedia with sidebar tabs and Spaces](docs/media/vane-spaces-dark.png)
 
 <p align="center"><sub>Spaces, favourites, and the web in one native window. <a href="docs/media/README.md">About this screenshot</a>.</sub></p>
@@ -191,50 +196,15 @@ clean-Mac install/upgrade checks are still required for distribution claims.
 
 ## Contributing
 
-For native fixture tests, use `python3 scripts/run-native-tests.py --jobs 1`.
-CI first checks the diff. Root Markdown files such as `SECURITY.md`, Markdown
-under `docs/`, and GitHub issue/PR templates take the documentation-only path:
-diff checks and the final `checks` gate, without macOS builds or native tests.
-Mixed changes, source/test/resource/workflow changes, and missing comparison
-history run the full checks.
+Bug reports, documentation fixes, and focused code contributions are welcome.
+Start with the [contributor guide](CONTRIBUTING.md) for setup, choosing relevant
+checks, and opening a pull request. The [development guide](docs/DEVELOPMENT.md)
+covers project structure, native fixtures, and CI details.
 
-For app changes, one debug build compiles the app and test bundle and assembles
-`Vane.app`. The four native runners and packaging reuse a runtime-only artifact;
-they verify its revision, checkout path, and Swift toolchain before execution.
-Shared source fixtures and runtime checks each run once. Only the build job
-restores/saves the Swift cache; object files and compiler caches are excluded
-from the runtime transfer.
-
-CI runs four groups on separate macOS runners, keeping each test class together
-and each runner's UI tests sequential. `swift test list --skip-build` supplies the
-complete inventory; `scripts/native-test-shards.py` balances classes using advisory
-durations in `scripts/native-test-durations.json`, assigns new classes automatically,
-and verifies every selected test completed. Each group runs its own startup
-preflight and cleanup, and all four must pass the required `checks` gate.
-Same-desktop `--parallel` execution remains unsupported because UI fixtures share
-focus and application state. Duration estimates affect balancing only, never coverage.
-
-The wrapper passes its arguments to the complete `swift test` command; focused runs
-can add `--filter 'PasswordAutofillTests|SavedReaderTests'`. After the test host exits,
-it starts the same test bundle in a fresh process to delete only the exact owned
-WebKit stores recorded by those fixtures and verifies their absence. Cleanup runs
-even when the primary tests fail, and a cleanup failure fails an otherwise passing
-run. An unverified cleanup keeps its private manifest and reports its path.
-The post-exit retirement phase has a 60-second budget for all owned IDs; its fresh
-driver has a 90-second ceiling. These bounds do not alter primary fixture deadlines.
-
-Direct `swift test` remains supported and performs the existing immediate cleanup.
-The wrapper defers destructive WebKit cleanup for shared-helper-owned normal profiles;
-it does not change test assertions, original fixture deadlines, or product behavior.
-
-Follow [AGENTS.md](AGENTS.md) for isolated branches, relevant validation,
-independent PR review, required CI, and squash-merging. Use focused local checks
-for the affected behavior; documentation changes do not need the full app suite.
-
-Report ordinary bugs with the macOS version, Vane version, steps, and expected behavior
-in the [issue tracker](https://github.com/notnaki/vane/issues). Avoid including
-passwords, tokens, personal browsing data, or private documents in reports.
-For security vulnerabilities, follow the [security policy](SECURITY.md) and
+Use the [issue forms](https://github.com/notnaki/vane/issues/new/choose) to report
+a bug or suggest an improvement. Keep passwords, tokens, personal browsing data,
+and private documents out of reports. For vulnerabilities, follow the
+[security policy](SECURITY.md) and
 [report privately](https://github.com/notnaki/vane/security/advisories/new).
 
 ## License

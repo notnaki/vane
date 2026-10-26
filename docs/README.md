@@ -24,6 +24,7 @@ For blurry Google Docs canvases, read the [rendering investigation](GOOGLE-DOCS-
 
 ## Developer guides
 
+- [Contributing](../CONTRIBUTING.md): first changes, focused validation, and pull requests.
 - [Development](DEVELOPMENT.md): setup, CLI, focused validation, graphical smoke,
   project structure, and contribution workflow.
 - [Releases and distribution](RELEASING.md): publishing, signing/notarization,
