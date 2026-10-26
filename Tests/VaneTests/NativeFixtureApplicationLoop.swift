@@ -1,0 +1,285 @@
+import AppKit
+import CoreFoundation
+
+private enum NativeApplicationLoopFailure: String, Error {
+    case existingOwner, existingLoop, delegatePresent, modalPresent, launchOpenRequest
+    case policyChanged, cancelled, startupWatchdogExpired, shutdownWatchdogExpired
+    case timerUnavailable, wakeEventUnavailable, loopNotRunning, loopStillRunning
+    case launchTimedOut, unexpectedLoopReturn, incompleteHeartbeat
+}
+
+private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let generation: UUID
+    private var cancelled = false
+    private var claimed = false
+
+    init(generation: UUID) { self.generation = generation }
+
+    func cancel(_ generation: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        if self.generation == generation { cancelled = true }
+    }
+
+    func claim(_ generation: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard self.generation == generation, !cancelled, !claimed else { return false }
+        claimed = true
+        return true
+    }
+}
+
+/// Owns only a test-created AppKit loop. Its caller owns the test body and must
+/// close after fixture cleanup; an independent process watchdog remains required.
+@MainActor final class NativeFixtureApplicationLoop {
+    private static var ownerGeneration: UUID?
+    private let generation = UUID()
+    private let originalPolicy = NSApplication.shared.activationPolicy()
+    private let eventTag = Int.random(in: 1...Int.max)
+    private lazy var entryGate = NativeApplicationLoopEntryGate(generation: generation)
+    private var admission: CheckedContinuation<Void, any Error>?
+    private var joinWaiters: [CheckedContinuation<Void, any Error>] = []
+    private var heartbeat: Task<Void, Never>?
+    private var watchdog: CFRunLoopTimer?
+    private var firstFailure: NativeApplicationLoopFailure?
+    private var enteredRun = false
+    private var runReturned = false
+    private var heartbeatFinished = false
+    private var admissionSucceeded = false
+    private var startAborted = false
+    private var stopRequested = false
+    private var closing = false
+    private var closed = false
+
+    private init() {}
+    private var isCurrent: Bool { Self.ownerGeneration == generation && !closed }
+
+    nonisolated private static func enqueue(_ action: @escaping @MainActor @Sendable () -> Void) {
+        CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue) {
+            MainActor.assumeIsolated { action() }
+        }
+        CFRunLoopWakeUp(CFRunLoopGetMain())
+    }
+
+    private func preflightFailure() -> NativeApplicationLoopFailure? {
+        let app = NSApplication.shared
+        if app.isRunning { return .existingLoop }
+        if app.delegate != nil { return .delegatePresent }
+        if app.modalWindow != nil { return .modalPresent }
+        let open = UserDefaults.standard.object(forKey: "NSOpen")
+        if !(open == nil || (open as? String)?.isEmpty == true || (open as? [Any])?.isEmpty == true) {
+            return .launchOpenRequest
+        }
+        if app.activationPolicy() != originalPolicy { return .policyChanged }
+        return nil
+    }
+
+    static func acquire() async throws -> NativeFixtureApplicationLoop {
+        let lease = NativeFixtureApplicationLoop()
+        try await lease.start()
+        if Task.isCancelled { lease.record(.cancelled) }
+        do { try lease.verifyRunning() }
+        catch {
+            // A cancelled or lost admission cannot throw while leaving its loop
+            // behind. close retains the first lifecycle failure and joins first.
+            try await lease.close()
+            throw error
+        }
+        print("Native fixture AppKit loop: acquired=true")
+        return lease
+    }
+
+    private func start() async throws {
+        guard Self.ownerGeneration == nil else { throw NativeApplicationLoopFailure.existingOwner }
+        if let failure = preflightFailure() { throw failure }
+        Self.ownerGeneration = generation
+        let gate = entryGate
+        let token = generation
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                admission = continuation
+                guard armWatchdog(.startupWatchdogExpired) else { abortStart(.timerUnavailable); return }
+                Self.enqueue { self.enter() }
+                // Suspend the caller without synchronously pumping its run loop.
+            }
+        } onCancel: {
+            gate.cancel(token)
+            Self.enqueue { self.cancelOrExpire(.cancelled) }
+        }
+    }
+
+    private func enter() {
+        guard isCurrent else { return }
+        guard entryGate.claim(generation) else { abortStart(.cancelled); return }
+        if let failure = preflightFailure() { abortStart(failure); return }
+        let deadline = ContinuousClock.now + .seconds(5)
+        heartbeat = Task { @MainActor in await self.checkHeartbeat(until: deadline) }
+        enteredRun = true
+        NSApplication.shared.run()
+        runReturned = true
+        if !stopRequested { record(.unexpectedLoopReturn) }
+        if NSApplication.shared.activationPolicy() != originalPolicy { record(.policyChanged) }
+        heartbeat?.cancel()
+        completeIfJoined()
+    }
+
+    private func checkHeartbeat(until deadline: ContinuousClock.Instant) async {
+        defer { finishHeartbeat() }
+        let app = NSApplication.shared
+        guard app.isRunning else { record(.loopNotRunning); return }
+        do {
+            while !NSRunningApplication.current.isFinishedLaunching {
+                guard app.isRunning else { record(.loopNotRunning); return }
+                guard ContinuousClock.now < deadline else { record(.launchTimedOut); return }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            guard ContinuousClock.now < deadline else { record(.launchTimedOut); return }
+            try await Task.sleep(for: .milliseconds(50))
+            try verifyRunning()
+        } catch {
+            if firstFailure == nil { record(.cancelled) }
+        }
+    }
+
+    private func finishHeartbeat() {
+        heartbeatFinished = true
+        heartbeat = nil
+        if firstFailure == nil && !closing {
+            invalidateWatchdog()
+            admissionSucceeded = true
+            let completion = admission
+            admission = nil
+            completion?.resume()
+        } else {
+            closing = true
+            requestStop()
+            completeIfJoined()
+        }
+    }
+
+    func verifyRunning() throws {
+        if let firstFailure { throw firstFailure }
+        guard isCurrent, enteredRun, !runReturned, NSApplication.shared.isRunning else {
+            record(.loopNotRunning)
+            throw firstFailure!
+        }
+        guard NSRunningApplication.current.isFinishedLaunching else {
+            record(.incompleteHeartbeat)
+            throw firstFailure!
+        }
+        guard NSApplication.shared.activationPolicy() == originalPolicy else {
+            record(.policyChanged)
+            throw firstFailure!
+        }
+    }
+
+    func close() async throws {
+        if closed {
+            if let firstFailure { throw firstFailure }
+            return
+        }
+        if Task.isCancelled { record(.cancelled) }
+        let gate = entryGate
+        let token = generation
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                joinWaiters.append(continuation)
+                let wasClosing = closing
+                closing = true
+                if !wasClosing && !runReturned && !startAborted && !armWatchdog(.shutdownWatchdogExpired) {
+                    record(.timerUnavailable)
+                }
+                requestStop()
+                completeIfJoined()
+            }
+        } onCancel: {
+            gate.cancel(token)
+            Self.enqueue { self.cancelOrExpire(.cancelled) }
+        }
+    }
+
+    private func record(_ failure: NativeApplicationLoopFailure) {
+        if firstFailure == nil {
+            firstFailure = failure
+            print("Native fixture AppKit loop: failure=\(failure.rawValue)")
+        }
+    }
+
+    private func armWatchdog(_ failure: NativeApplicationLoopFailure) -> Bool {
+        invalidateWatchdog()
+        guard let timer = CFRunLoopTimerCreateWithHandler(nil, CFAbsoluteTimeGetCurrent() + 12, 0, 0, 0, { _ in
+            MainActor.assumeIsolated { self.cancelOrExpire(failure) }
+        }) else { return false }
+        watchdog = timer
+        CFRunLoopAddTimer(CFRunLoopGetMain(), timer, CFRunLoopMode.commonModes)
+        return true
+    }
+
+    private func invalidateWatchdog() {
+        if let watchdog { CFRunLoopTimerInvalidate(watchdog) }
+        watchdog = nil
+    }
+
+    private func abortStart(_ failure: NativeApplicationLoopFailure) {
+        guard isCurrent else { return }
+        record(failure)
+        entryGate.cancel(generation)
+        startAborted = true
+        closing = true
+        completeIfJoined()
+    }
+
+    private func cancelOrExpire(_ failure: NativeApplicationLoopFailure) {
+        guard isCurrent else { return }
+        record(failure)
+        entryGate.cancel(generation)
+        if !enteredRun { abortStart(failure); return }
+        closing = true
+        heartbeat?.cancel()
+        requestStop()
+        completeIfJoined()
+    }
+
+    private func requestStop() {
+        guard isCurrent, enteredRun, !runReturned, !stopRequested else { return }
+        let app = NSApplication.shared
+        guard app.isRunning else { record(.loopNotRunning); return }
+        guard app.modalWindow == nil else { record(.modalPresent); return }
+        guard let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                                            modifierFlags: [], timestamp: 0, windowNumber: 0,
+                                            context: nil, subtype: 0, data1: eventTag, data2: 0) else {
+            record(.wakeEventUnavailable)
+            return
+        }
+        stopRequested = true
+        app.stop(nil)
+        app.postEvent(event, atStart: false)
+    }
+
+    private func completeIfJoined() {
+        guard isCurrent, closing || !admissionSucceeded,
+              startAborted || (runReturned && heartbeatFinished) else { return }
+        if NSApplication.shared.isRunning { record(.loopStillRunning) }
+        if NSApplication.shared.activationPolicy() != originalPolicy { record(.policyChanged) }
+        closed = true
+        invalidateWatchdog()
+        heartbeat = nil
+        let startup = admission
+        admission = nil
+        let waiters = joinWaiters
+        joinWaiters.removeAll()
+        Self.ownerGeneration = nil
+        if enteredRun && runReturned && heartbeatFinished {
+            print("Native fixture AppKit loop: joined=true")
+        }
+        if let firstFailure {
+            startup?.resume(throwing: firstFailure)
+            for waiter in waiters { waiter.resume(throwing: firstFailure) }
+        } else {
+            startup?.resume()
+            for waiter in waiters { waiter.resume() }
+        }
+    }
+}
