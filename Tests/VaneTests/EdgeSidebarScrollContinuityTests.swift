@@ -43,6 +43,7 @@ import XCTest
         if activePage { SharedTabs.refreshPresentation(changingSelectionIn: store, previous: nil) }
         let host = BrowserWindowHost(shown: ShownStore(store))
         window.contentView = host
+        NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         host.layoutSubtreeIfNeeded()
         addTeardownBlock { @MainActor in
@@ -199,6 +200,53 @@ import XCTest
 
     func testCreateEdgeCommitKeepsScrolledViewportUntilFormTakesOver() async throws {
         try await checkCreateEdge(commit: true)
+    }
+
+    func testCreateEdgeCancellationAnimatesTheLiveViewportHome() async throws {
+        try await checkCreateEdgeReturn(clickCurrentSpace: false)
+    }
+
+    func testClickingCurrentSpaceAtCreateEdgeAnimatesTheLiveViewportHome() async throws {
+        try await checkCreateEdgeReturn(clickCurrentSpace: true)
+    }
+
+    private func checkCreateEdgeReturn(clickCurrentSpace: Bool) async throws {
+        let (store, window, host) = try fixture(left: false)
+        try await Task.sleep(for: .milliseconds(150))
+        let live = try sidebarScroll(host)
+        live.wantsLayer = true
+        let start = try presentedOrigin(live).x
+        let point = live.convert(NSPoint(x: 100, y: 80), to: nil)
+        NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: .began))
+        NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, dx: -60))
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertNil(host.spaceSlide, "The Create edge uses the live SwiftUI track")
+        let departure = try presentedOrigin(live).x
+        XCTAssertLessThan(departure, start - 5)
+        if clickCurrentSpace {
+            store.spaceGesture.monitor.select(try XCTUnwrap(store.swipeSpace), in: store)
+        } else {
+            NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: .cancelled))
+        }
+        // Find an actual intermediate presentation rather than assuming the next
+        // AppKit display pass has already happened after one fixed sleep.
+        var sawIntermediate = false
+        var samples: [CGFloat] = []
+        var sampleTimes: [TimeInterval] = []
+        let samplingStart = ProcessInfo.processInfo.systemUptime
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.35
+        repeat {
+            try await Task.sleep(for: .milliseconds(8))
+            let returning = try presentedOrigin(live).x
+            samples.append(returning)
+            sampleTimes.append(ProcessInfo.processInfo.systemUptime - samplingStart)
+            if returning > departure + 0.1, returning < start - 0.1 { sawIntermediate = true; break }
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        XCTAssertTrue(sawIntermediate,
+                      "Cancellation must animate instead of snapping home; active=\(NSApp.isActive), key=\(window.isKeyWindow), start=\(start), departure=\(departure), times=\(sampleTimes), samples=\(samples)")
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(try presentedOrigin(live).x, start, accuracy: 1)
+        XCTAssertFalse(store.spaceSwiping)
     }
 
     private func checkCreateEdge(commit: Bool) async throws {

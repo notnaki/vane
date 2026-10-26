@@ -12,7 +12,58 @@ import UniformTypeIdentifiers
 /// Publishing them on TabStore would invalidate the entire browser on every scroll event.
 @MainActor final class SpaceGesture: ObservableObject {
     let monitor = SwipeMonitor()
-    @Published var drag: CGFloat = 0
+    struct Presentation: Equatable {
+        var drag: CGFloat = 0
+        var pull: CGFloat = 0
+        var swiping = false
+        var travelsFavorites = false
+        var profileSliding = false
+        var profileSlidesFavorites = false
+    }
+    @Published private(set) var presentation = Presentation()
+    private var pendingPresentation: Presentation?
+    private var presentationDepth = 0
+
+    /// A native input mounts its overlay before publishing one complete state.
+    /// Publishing each flag separately makes SwiftUI synchronously flush several
+    /// intermediate browser layouts while the same input is still being handled.
+    func beginPresentationUpdate() {
+        if presentationDepth == 0 { pendingPresentation = presentation }
+        presentationDepth += 1
+    }
+
+    func endPresentationUpdate() {
+        precondition(presentationDepth > 0)
+        presentationDepth -= 1
+        guard presentationDepth == 0, let next = pendingPresentation else { return }
+        pendingPresentation = nil
+        if next != presentation { presentation = next }
+    }
+
+    func withPresentationUpdate<Result>(_ body: () throws -> Result) rethrows -> Result {
+        beginPresentationUpdate()
+        defer { endPresentationUpdate() }
+        return try body()
+    }
+
+    private func read<Value>(_ key: KeyPath<Presentation, Value>) -> Value {
+        (pendingPresentation ?? presentation)[keyPath: key]
+    }
+
+    private func write<Value: Equatable>(_ key: WritableKeyPath<Presentation, Value>, _ value: Value) {
+        guard read(key) != value else { return }
+        if pendingPresentation != nil { pendingPresentation?[keyPath: key] = value }
+        else {
+            var next = presentation
+            next[keyPath: key] = value
+            presentation = next
+        }
+    }
+
+    var drag: CGFloat {
+        get { read(\.drag) }
+        set { write(\.drag, newValue) }
+    }
     /// While native surfaces follow the fingers, keep raw input out of SwiftUI publication.
     let footer = SpaceFooterProgress()
     var nativeDrag: CGFloat? {
@@ -22,9 +73,18 @@ import UniformTypeIdentifiers
     var captureGround: (() -> ThemeWashPresentation?)?
     var animateGround: ((Space, Space, Double, Double, CABasicAnimation, ThemeWashPresentation?) -> ((Space?) -> Void))?
     var colourDuration = Look.spaceSlideDuration
-    @Published var pull: CGFloat = 0
-    @Published var swiping = false
-    @Published var travelsFavorites = false
+    var pull: CGFloat {
+        get { read(\.pull) }
+        set { write(\.pull, newValue) }
+    }
+    var swiping: Bool {
+        get { read(\.swiping) }
+        set { write(\.swiping, newValue) }
+    }
+    var travelsFavorites: Bool {
+        get { read(\.travelsFavorites) }
+        set { write(\.travelsFavorites, newValue) }
+    }
     var sidebarOffset: CGFloat = 0
     var strip: [Space]?
     var neighbour: Space?
@@ -38,8 +98,14 @@ import UniformTypeIdentifiers
     weak var stripView: NSView?
     weak var sectionsView: NSView?
     weak var outgoingView: NSView?
-    @Published var profileSliding = false
-    @Published var profileSlidesFavorites = false
+    var profileSliding: Bool {
+        get { read(\.profileSliding) }
+        set { write(\.profileSliding, newValue) }
+    }
+    var profileSlidesFavorites: Bool {
+        get { read(\.profileSlidesFavorites) }
+        set { write(\.profileSlidesFavorites, newValue) }
+    }
 
     func isOverScrollingFooter(_ event: NSEvent) -> Bool {
         guard let view = scrollingFooter, let window = view.window,
@@ -321,7 +387,14 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
     // A pull past the last Space keeps the current list. Mounting an outgoing ghost
     // there would expose its initial top offset before scroll restoration takes effect.
     private var showsOutgoingPreview: Bool {
-        gesture.swiping && gesture.neighbour != nil && gesture.outgoing != nil
+        !usesNativePresentation && gesture.swiping && gesture.neighbour != nil && gesture.outgoing != nil
+    }
+
+    /// The native compositor owns these previews. Publishing the initial claim must
+    /// not first construct two fallback SwiftUI lists inside the live browser tree.
+    /// Keep the live rows visible until the native overlay takes ownership instead.
+    private var usesNativePresentation: Bool {
+        store.window?.contentView is BrowserWindowHost && gesture.sectionsView != nil
     }
 
     private func declareNativePopulation(_ scope: SidebarNativeReadinessScope) -> [String: [String]]? {
@@ -383,7 +456,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
 
     @ViewBuilder private var preview: some View {
         let drag = gesture.drag
-        if gesture.swiping, !gesture.profileSliding, let space = gesture.neighbour {
+        if !usesNativePresentation, gesture.swiping, !gesture.profileSliding, let space = gesture.neighbour {
             let preview = store.swipePreview(in: space)
             preview.equatable()
                 .id(space.id)
@@ -466,10 +539,26 @@ private struct SpaceStripAnchor: NSViewRepresentable {
     }
 }
 
+@MainActor private final class LiveSidebarIdentity {
+    private var initialized = false
+    private var spaceID: UUID?
+    private var identity = UUID()
+
+    func resolve(spaceID next: UUID?, covered: Bool) -> UUID {
+        if !initialized || spaceID != next {
+            if !initialized || !covered { identity = UUID() }
+            initialized = true
+            spaceID = next
+        }
+        return identity
+    }
+}
+
 private struct SpaceSlide: ViewModifier {
     @ObservedObject var store: TabStore
     @ObservedObject private var gesture: SpaceGesture
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var liveIdentity = LiveSidebarIdentity()
 
     init(store: TabStore) {
         self.store = store
@@ -478,11 +567,12 @@ private struct SpaceSlide: ViewModifier {
 
     func body(content: Content) -> some View {
         let forwards = store.spaceDirection > 0
+        let covered = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.isActive == true
         content
-            // The identity is the Space, so a switch is a removal and an insertion rather
-            // than a list quietly changing under the pointer — which is the only way SwiftUI
-            // will run a transition on it at all.
-            .id(store.currentSpaceID)
+            // Native travel already owns replacement pixels. Keep its covered live
+            // scroll/layout shell; rebuilding it here blocks the next finger sample.
+            // Uncovered keyboard/menu changes retain their removal/insertion transition.
+            .id(liveIdentity.resolve(spaceID: store.currentSpaceID, covered: covered))
             .transition(.asymmetric(
                 insertion: .move(edge: forwards ? .trailing : .leading).combined(with: .opacity),
                 removal: .move(edge: forwards ? .leading : .trailing).combined(with: .opacity)))
@@ -813,9 +903,9 @@ struct SpacePreviewList: View, Equatable {
                     PaneStrip(store: renderStore, split: focused, panes: panes, selected: selected,
                               ticked: selection.contains(tab.id), previewPRs: capturedPRs)
                 } else {
-                    SidebarTabSurface(store: renderStore, tab: tab, returnHovering: .constant(false),
-                                      pr: row.pr, action: {}, previewSelected: selected,
-                                      previewTicked: selection.contains(tab.id))
+                    SidebarTabPresentation(store: renderStore, tab: tab, returnHovering: .constant(false),
+                                           pr: row.pr, action: {}, selected: selected,
+                                           ticked: selection.contains(tab.id), previewing: true, renaming: false)
                         .environment(\.livePR, row.pr)
                 }
             } else if case .folder(let folder, _) = row {
@@ -1294,6 +1384,17 @@ private struct SpaceSwipe: ViewModifier {
     }
 
     func select(_ space: Space, in store: TabStore) {
+        if hasNativePresentation(store), space.id != store.currentSpaceID
+            || (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.isActive == true {
+            store.spaceGesture.withPresentationUpdate { selectImmediately(space, in: store) }
+        } else { selectImmediately(space, in: store) }
+    }
+
+    private func hasNativePresentation(_ store: TabStore) -> Bool {
+        store.window?.contentView is BrowserWindowHost && store.spaceGesture.sectionsView != nil
+    }
+
+    private func selectImmediately(_ space: Space, in store: TabStore) {
         guard !store.isPrivate, !store.isLittle, !store.isParked else { return }
         let host = store.window?.contentView as? BrowserWindowHost
         host?.clearQueuedSpaceSelection()
@@ -1532,6 +1633,14 @@ private struct SpaceSwipe: ViewModifier {
                                          preservingSurfaces: true)
             }
             guard event.type == .scrollWheel else { return event }
+            // Edge rubber-banding uses SwiftUI's return spring, not a native slide.
+            // Inspect scroll-only APIs and neighboring metadata only for this sidebar.
+            let batchesPresentation = event.hasPreciseScrollingDeltas
+                && self.isOverSidebar(event, store) && self.hasNativePresentation(store)
+                && ((store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.isActive == true
+                    || store.swipeNeighbour(for: event.scrollingDeltaX) != nil)
+            if batchesPresentation { store.spaceGesture.beginPresentationUpdate() }
+            defer { if batchesPresentation { store.spaceGesture.endPresentationUpdate() } }
             if event.hasPreciseScrollingDeltas, let window = event.window, window === store.window {
                 if event.phase.contains(.began) {
                     Self.committedSwipes.remove(window)
@@ -1700,6 +1809,13 @@ private struct SpaceSwipe: ViewModifier {
     /// Mount once when the gesture acquires a neighbour, then follow scroll deltas without
     /// asking SwiftUI to render a translated list for every event.
     func track(_ offset: CGFloat, width: CGFloat, in store: TabStore) {
+        if hasNativePresentation(store), store.swipeNeighbour(for: offset) != nil
+            || offset == 0 && (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.isActive == true {
+            store.spaceGesture.withPresentationUpdate { trackImmediately(offset, width: width, in: store) }
+        } else { trackImmediately(offset, width: width, in: store) }
+    }
+
+    private func trackImmediately(_ offset: CGFloat, width: CGFloat, in store: TabStore) {
         guard width > 0 else { return }
         store.spaceSwiping = true
         if offset == 0, let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
@@ -1750,6 +1866,17 @@ private struct SpaceSwipe: ViewModifier {
     /// Continue the captured sidebar to rest while selecting the committed page underneath.
     func land(_ direction: Int, to target: Space, width: CGFloat, store: TabStore,
               animation: Animation = Look.spaceLanding, duration: TimeInterval = Look.spaceLandingDuration) {
+        if hasNativePresentation(store) {
+            store.spaceGesture.withPresentationUpdate {
+                landImmediately(direction, to: target, width: width, store: store, animation: animation, duration: duration)
+            }
+        } else {
+            landImmediately(direction, to: target, width: width, store: store, animation: animation, duration: duration)
+        }
+    }
+
+    private func landImmediately(_ direction: Int, to target: Space, width: CGFloat, store: TabStore,
+                                 animation: Animation, duration: TimeInterval) {
         let token = UUID()
         transition = token
         pendingSelection = nil
@@ -1772,7 +1899,7 @@ private struct SpaceSwipe: ViewModifier {
         let finish: () -> Void = { [weak self, weak store] in
             guard let self, self.transition == token, let store else { return }
             if store.window != nil, store.currentSpaceID == self.landingFrom,
-               let target = store.spaceGesture.neighbour {
+               let target = store.spaceGesture.neighbour, target.id != store.currentSpaceID {
                 _ = self.activate(target, in: store)
             }
             self.landing = false
@@ -1781,7 +1908,6 @@ private struct SpaceSwipe: ViewModifier {
                 store.spaceDrag = 0
                 store.spaceSwiping = false
             }
-            rebuild()
         }
         if let host = store.window?.contentView as? BrowserWindowHost,
            let anchor = (includesFavorites ? store.spaceGesture.stripView : store.spaceGesture.sectionsView),

@@ -4,6 +4,42 @@ import XCTest
 @testable import vane
 
 @MainActor final class DownloadFeedbackTests: XCTestCase {
+    func testBrowserOnlyMeasuresDownloadAnchorsWhileFeedbackIsVisible() async throws {
+        TestEnvironment.prepare()
+        let previousMode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.alwaysOn)
+        defer { BatterySaver.shared.setMode(previousMode) }
+        let store = TabStore(isPrivate: true)
+        store.palette = nil
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 700, height: 500),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        store.window = window
+        var targets = Set<DownloadFeedbackBounds.Target>()
+        let host = NSHostingView(rootView: BrowserWindow()
+            .environmentObject(store).environmentObject(ProfileManager.shared)
+            .overlayPreferenceValue(DownloadFeedbackBounds.self) { bounds in
+                Color.clear.onChange(of: Set(bounds.keys), initial: true) { _, value in targets = value }
+            })
+        window.contentView = host
+        defer {
+            store.spaceGesture.monitor.remove()
+            store.librarySwipeMonitor.remove()
+            window.contentView = nil
+            window.close()
+            store.window = nil
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+        }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(targets.isEmpty, "Idle chrome must not propagate download-animation anchors")
+        let start = DownloadFeedback.Start(name: "report.pdf", profileID: Profile.incognito.id, window: window)
+        NotificationCenter.default.post(name: DownloadFeedback.started, object: start)
+        try await compatibilityWait { targets.contains(.page) && targets.contains(.bucket) }
+        try await compatibilityWait { targets.isEmpty }
+    }
+
     func testHiddenSidebarRendersFeedbackAndDismissesWithBatterySaver() async throws {
         try await assertHiddenSidebarFeedback(savingBattery: true)
     }
@@ -24,7 +60,7 @@ import XCTest
         window.isReleasedWhenClosed = false
         store.window = window
         let host = NSHostingView(rootView: Color.gray
-            .anchorPreference(key: DownloadFeedbackBounds.self, value: .bounds) { [.page: $0] }
+            .modifier(DownloadFeedbackAnchor(target: .page))
             .modifier(DownloadFeedbackPresentation(store: store, chrome: false)))
         window.contentView = host
         defer {
