@@ -96,23 +96,69 @@ class ProtocolTests(unittest.TestCase):
 
 
 class AdapterTests(unittest.TestCase):
-    def fake_run(self, mismatch=None, exited=True):
+    def fake_run(self, mismatch=None, exited=True, deferred=False, cleanup=True, cleanup_exited=True):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
         bundle = root / "Probe.app"; executable = bundle / "Contents/MacOS/WorkerUAProbe"
         executable.parent.mkdir(parents=True); executable.write_bytes(b"not an executable")
         evidence = root / "logs"
         calls = []
+        store_id = [None]
         def fake_process(command, environment, timeout, log, interrupted):
-            self.assertEqual(command, [str(executable)])
-            self.assertEqual(timeout, 90)
             self.assertNotIn("VANE_DATA_DIR", environment)
-            output = b"x" * 70_000 + b"\n" + encoded(fixture(mismatch=mismatch))
+            if len(command) == 1:
+                self.assertEqual(command, [str(executable)])
+                self.assertEqual(timeout, 90)
+                records = fixture(mismatch=mismatch)
+                store_id[0] = records[0]["ownedDataStoreID"]
+                if deferred:
+                    records[-1].update(ownedStoreRemovalCallbackSucceeded=False, storeRemovalDeferredToPostExit=True)
+                status, verified = (1 if mismatch is not None else 0), exited
+            else:
+                self.assertEqual(command, [str(executable), "--retire-store", store_id[0]])
+                self.assertEqual(timeout, 20)
+                records = [{"event": "retirement", "ownedDataStoreID": store_id[0],
+                            "ownedStoreRemovalCallbackSucceeded": cleanup, "backendRetirementVerified": False}]
+                status, verified = (0 if cleanup else 1), cleanup_exited
+            output = b"x" * 70_000 + b"\n" + encoded(records)
             log.write_bytes(output); calls.append((log, output))
-            return (1 if mismatch is not None else 0), exited, output
+            return status, verified, output
         with patch.object(probe.owned, "run_ua_process", side_effect=fake_process), redirect_stdout(io.StringIO()):
             status = probe.run_public_mode(bundle, evidence)
         return status, evidence, calls
+
+    def test_deferred_store_retirement_requires_a_verified_fresh_cleanup_process(self):
+        status, evidence, calls = self.fake_run(deferred=True)
+        self.assertEqual(status, 0)
+        self.assertEqual(len(calls), 16)
+        self.assertEqual([p.name for p, _ in calls], [name for _ in range(8) for name in ("primary.log", "cleanup.log")])
+        for cleanup, cleanup_exited in [(False, True), (True, False)]:
+            with self.subTest(cleanup=cleanup, cleanup_exited=cleanup_exited):
+                status, evidence, calls = self.fake_run(deferred=True, cleanup=cleanup, cleanup_exited=cleanup_exited)
+                self.assertNotEqual(status, 0)
+                self.assertEqual(len(calls), 2)
+                result = json.loads(calls[0][0].with_name("result.json").read_text())
+                self.assertNotEqual(result["result"], "PUBLIC_ARM_SAMPLE_PASSED")
+        status, evidence, calls = self.fake_run(deferred=True, mismatch=1)
+        self.assertNotEqual(status, 0)
+        self.assertEqual(len(calls), 2)
+        result = json.loads(calls[0][0].with_name("result.json").read_text())
+        self.assertEqual(result["result"], "PUBLIC_UA_MISMATCH_OBSERVED")
+        self.assertTrue(result["ownedStoreRemovalCallbackSucceeded"])
+
+    def test_cleanup_record_must_match_the_launch_store_and_real_callback(self):
+        store_id = str(uuid.uuid4())
+        record = {"event": "retirement", "ownedDataStoreID": store_id,
+                  "ownedStoreRemovalCallbackSucceeded": True, "backendRetirementVerified": False}
+        probe.validate_retirement_output(encoded([record]), 0, store_id)
+        for records, status in [([], 0), ([record, record], 0), ([record], 1)]:
+            with self.subTest(status=status, records=records), self.assertRaises(ValueError):
+                probe.validate_retirement_output(encoded(records), status, store_id)
+        for key, value in [("ownedDataStoreID", str(uuid.uuid4())), ("ownedStoreRemovalCallbackSucceeded", False),
+                           ("ownedStoreRemovalCallbackSucceeded", 1), ("backendRetirementVerified", True)]:
+            invalid = dict(record); invalid[key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                probe.validate_retirement_output(encoded([invalid]), 0, store_id)
 
     def test_fixed_eight_fresh_launches_keep_complete_capped_logs_and_distinct_evidence(self):
         status, evidence, calls = self.fake_run()
@@ -135,7 +181,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_workflow_binds_original_input_manifest_and_archives_logs_without_app_or_profile(self):
         source = (Path(__file__).resolve().parent.parent / ".github/workflows/public-extension-ua.yml").read_text()
-        self.assertIn("6884dde691ea4a785fc8f3011611f5a4c95b3ea7b5c7ce36324875dffa0ef501", source)
+        self.assertIn("c28fdcc4183dd3b52de40b3f23ce85875634db65bbda2ce6080a2c73564dd79c", source)
         self.assertIn("ref: ${{ github.event.pull_request.head.sha || github.sha }}", source)
         self.assertIn("if: ${{ always() }}", source)
         self.assertIn("${{ runner.temp }}/public-probe-logs/", source)

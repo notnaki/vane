@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
+#import <string.h>
 
 // Standalone reduction using only the public suffix API.
 // The existing Vane failure additionally uses SPI; see REPORT.md for that limit.
@@ -180,26 +181,49 @@ static void Emit(NSDictionary *record) {
     self.context = nil; self.controller.delegate = nil; self.controller = nil; self.store = nil; self.pool = nil;
     if (self.folder && ![NSFileManager.defaultManager removeItemAtURL:self.folder error:nil]) self.mismatch = YES;
     [self.window close]; self.window = nil;
-    // inspect: still owns the popup configuration on this callback's stack. Let
-    // that callback return before asking WebKit to retire the named store.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [WKWebsiteDataStore removeDataStoreForIdentifier:self.storeID completionHandler:^(NSError *error) {
-            NSString *cleanupError = error.localizedDescription ?: @"";
-            Emit(@{ @"event": @"summary", @"completedStages": @(self.stage), @"mismatchOrHarnessFailure": @(self.mismatch),
-                @"ownedStoreRemovalCallbackSucceeded": error == nil ? @YES : @NO, @"backendRetirementVerified": @NO,
-                @"storeRemovalError": [cleanupError substringToIndex:MIN(cleanupError.length, 2048)] });
-            exit(self.mismatch || error ? 1 : 0);
-        }];
-    });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        Emit(@{ @"event": @"cleanup-timeout", @"backendRetirementVerified": @NO }); exit(2);
-    });
+    // WebKit can retain its named store until this application exits. The owned
+    // runner verifies exit, then removes this exact UUID from a fresh process.
+    Emit(@{ @"event": @"summary", @"completedStages": @(self.stage), @"mismatchOrHarnessFailure": @(self.mismatch),
+        @"ownedStoreRemovalCallbackSucceeded": @NO, @"storeRemovalDeferredToPostExit": @YES,
+        @"backendRetirementVerified": @NO });
+    exit(self.mismatch ? 1 : 0);
+}
+@end
+
+@interface Retirement : NSObject <NSApplicationDelegate>
+@property (nonatomic, strong) NSUUID *storeID;
+@end
+
+@implementation Retirement
+- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    // Do not construct a data-store wrapper, controller, pool or web view here.
+    [WKWebsiteDataStore removeDataStoreForIdentifier:self.storeID completionHandler:^(NSError *error) {
+        NSString *detail = error.localizedDescription ?: @"";
+        Emit(@{ @"event": @"retirement", @"ownedDataStoreID": self.storeID.UUIDString,
+            @"ownedStoreRemovalCallbackSucceeded": error == nil ? @YES : @NO,
+            @"backendRetirementVerified": @NO,
+            @"storeRemovalError": [detail substringToIndex:MIN(detail.length, 2048)] });
+        exit(error ? 1 : 0);
+    }];
 }
 @end
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSApplication *app = NSApplication.sharedApplication;
+        if (argc == 3 && strcmp(argv[1], "--retire-store") == 0) {
+            NSUUID *storeID = [[NSUUID alloc] initWithUUIDString:[NSString stringWithUTF8String:argv[2]]];
+            if (!storeID) return 2;
+            [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
+            __attribute__((objc_precise_lifetime)) Retirement *retirement = [Retirement new];
+            retirement.storeID = storeID; app.delegate = retirement;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                Emit(@{ @"event": @"cleanup-timeout", @"backendRetirementVerified": @NO }); exit(2);
+            });
+            [app run];
+            return 2;
+        }
+        if (argc != 1) return 2;
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         __attribute__((objc_precise_lifetime)) Probe *probe = [Probe new]; app.delegate = probe;
         [app run]; // A normal application loop, not XCTest/run-loop pumping.

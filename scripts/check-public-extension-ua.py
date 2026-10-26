@@ -29,22 +29,26 @@ def records_from_output(output):
         try: record = json.loads(line)
         except json.JSONDecodeError: raise ValueError("Malformed JSON record") from None
         if not isinstance(record, dict) or record.get("event") not in {
-                "launch", "observation", "failure", "summary", "launch-admission-failure", "cleanup-timeout"}:
+                "launch", "observation", "failure", "summary", "retirement", "launch-admission-failure", "cleanup-timeout"}:
             raise ValueError("Unknown probe record")
         records.append(record)
     return records
 
 
-def validate_probe_output(output, status):
-    records = records_from_output(output)
-    if not records or records[0].get("event") != "launch": raise ValueError("No real launch admission record")
-    launch = records[0]
+def validate_launch_record(launch):
+    if not isinstance(launch, dict) or launch.get("event") != "launch": raise ValueError("No real launch admission record")
     if launch.get("arm") != ARM or launch.get("finishedLaunching") is not True or launch.get("appRunning") is not True:
         raise ValueError("Public normal-application launch was not verified")
     if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*\+?", str(launch.get("WebKit", ""))) or not launch.get("OS"):
         raise ValueError("Concrete system WebKit/OS metadata is required")
     try: uuid.UUID(launch["ownedDataStoreID"])
     except (KeyError, ValueError, TypeError, AttributeError): raise ValueError("Missing owned named-store UUID") from None
+    return launch
+
+
+def validate_probe_output(output, status):
+    records = records_from_output(output)
+    launch = validate_launch_record(records[0] if records else None)
     observations = []
     nonces = set()
     mismatch = False
@@ -94,10 +98,25 @@ def validate_probe_output(output, status):
     if summary.get("mismatchOrHarnessFailure") is not mismatch or summary.get("backendRetirementVerified") is not False:
         raise ValueError("Invalid failure/retirement summary")
     cleanup = summary.get("ownedStoreRemovalCallbackSucceeded") is True
-    if not mismatch and (status != 0 or not cleanup): raise ValueError("App exit or owned-store cleanup was not successful")
-    return {"result": "PUBLIC_UA_MISMATCH_OBSERVED" if mismatch else "PUBLIC_ARM_SAMPLE_PASSED",
+    deferred = summary.get("storeRemovalDeferredToPostExit", False)
+    if not isinstance(deferred, bool) or (deferred and summary.get("ownedStoreRemovalCallbackSucceeded") is not False):
+        raise ValueError("Invalid deferred store retirement")
+    if not mismatch and (status != 0 or not (cleanup or deferred)): raise ValueError("App exit or owned-store cleanup was not successful")
+    return {"result": "PUBLIC_UA_MISMATCH_OBSERVED" if mismatch else "PUBLIC_ARM_PRIMARY_PASSED" if deferred else "PUBLIC_ARM_SAMPLE_PASSED",
             "completedStages": completed, "observedStages": len(observations), "ownedStoreRemovalCallbackSucceeded": cleanup,
+            "storeRemovalDeferredToPostExit": deferred,
             "backendRetirementVerified": False, "ownedDataStoreID": launch["ownedDataStoreID"]}
+
+
+def validate_retirement_output(output, status, store_id):
+    records = records_from_output(output)
+    if status != 0 or len(records) != 1 or records[0].get("event") != "retirement":
+        raise ValueError("Missing successful post-exit retirement callback")
+    record = records[0]
+    if record.get("ownedDataStoreID") != store_id or record.get("ownedStoreRemovalCallbackSucceeded") is not True:
+        raise ValueError("Post-exit retirement did not remove the exact launch store")
+    if record.get("backendRetirementVerified") is not False:
+        raise ValueError("Post-exit retirement cannot attest backend-process exit")
 
 
 def run_public_mode(bundle, evidence_dir):
@@ -118,12 +137,30 @@ def run_public_mode(bundle, evidence_dir):
         status, exited, output = owned.run_ua_process([str(executable)], environment, 90, trial_logs / "primary.log", interrupted)
         result = {"trial": number, "processStatus": status, "ownedAppExitVerified": exited,
                   "result": "HARNESS_FAILED_OR_UNAVAILABLE", "backendRetirementVerified": False}
+        retirement_store = None
         try:
             if not exited: raise ValueError("Exact owned app exit could not be verified; cleanup is unverified")
+            records = records_from_output(output)
+            launch = validate_launch_record(records[0] if records else None)
+            if any(record.get("event") == "summary" and record.get("storeRemovalDeferredToPostExit") is True for record in records):
+                retirement_store = launch["ownedDataStoreID"]
             result.update(validate_probe_output(output, status))
         except ValueError as error:
             result["reason"] = str(error)
             status = status or 1
+        if retirement_store is not None:
+            result["ownedStoreRemovalCallbackSucceeded"] = False
+            try:
+                cleanup_status, cleanup_exited, cleanup_output = owned.run_ua_process(
+                    [str(executable), "--retire-store", retirement_store], environment, 20, trial_logs / "cleanup.log", interrupted)
+                result.update(cleanupProcessStatus=cleanup_status, ownedCleanupExitVerified=cleanup_exited)
+                if not cleanup_exited: raise ValueError("Exact cleanup app exit could not be verified")
+                validate_retirement_output(cleanup_output, cleanup_status, retirement_store)
+                result["ownedStoreRemovalCallbackSucceeded"] = True
+                if result["result"] == "PUBLIC_ARM_PRIMARY_PASSED": result["result"] = "PUBLIC_ARM_SAMPLE_PASSED"
+            except (OSError, ValueError) as error:
+                result["cleanupReason"] = str(error)
+                status = status or 1
         # A mismatch remains a failed trial even if its original store cleanup succeeded.
         if result["result"] != "PUBLIC_ARM_SAMPLE_PASSED": status = status or 1
         (trial_logs / "result.json").write_text(json.dumps(result, sort_keys=True) + "\n")
