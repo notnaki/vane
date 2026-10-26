@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import WebKit
 import Network
 import XCTest
@@ -344,7 +345,8 @@ import XCTest
                     "appDelegateNil=\(app.delegate == nil), NSOpenAbsentOrEmpty=\(openAbsentOrEmpty), " +
                     "isOnActiveSpace=\(window.isOnActiveSpace), isMiniaturized=\(window.isMiniaturized), " +
                     "viewsNeedDisplay=\(window.viewsNeedDisplay), contentNeedsLayout=\(web.needsLayout), " +
-                    "contentNeedsDisplay=\(web.needsDisplay), alphaPositive=\(window.alphaValue > 0)"
+                    "contentNeedsDisplay=\(web.needsDisplay), alphaPositive=\(window.alphaValue > 0), " +
+                    self.nativeWindowVisibilityState(window)
             }) {
                 // The owned AppKit loop supplies event dispatch and deferred drawing.
                 return app.isRunning && NSRunningApplication.current.isFinishedLaunching && app.isActive &&
@@ -361,6 +363,61 @@ import XCTest
             else { XCTFail("Native continuation AppKit loop join also failed: \(error)") }
         }
         if let fixtureError { throw fixtureError }
+    }
+
+    /// Failure-only scalar metadata: no window names, titles, images, or display mutations.
+    private func nativeWindowVisibilityState(_ window: NSWindow) -> String {
+        let app = NSApplication.shared, running = NSRunningApplication.current
+        let owned = app.orderedWindows
+        let ownedRows = owned.prefix(16).map { candidate in
+            "id=\(candidate.windowNumber), level=\(candidate.level.rawValue), " +
+                "visible=\(candidate.isVisible), key=\(candidate.isKeyWindow), " +
+                "occlusion=\(candidate.occlusionState.rawValue), alpha=\(candidate.alphaValue)"
+        }.joined(separator: "; ")
+        let application = "appHidden=\(app.isHidden), runningHidden=\(running.isHidden), " +
+            "appOcclusion=\(app.occlusionState.rawValue), " +
+            "frontmostPID=\(NSWorkspace.shared.frontmostApplication?.processIdentifier.description ?? "unavailable"), " +
+            "ownWindowID=\(window.windowNumber), ownWindowLevel=\(window.level.rawValue), " +
+            "ownWindowOrderedIndex=\(window.orderedIndex), parentWindowID=\(window.parent?.windowNumber.description ?? "none"), " +
+            "tabbedWindowCount=\(window.tabbedWindows?.count ?? 0), " +
+            "orderedAppWindowCount=\(owned.count), orderedAppWindows=[\(ownedRows)]"
+        guard let ownID = CGWindowID(exactly: window.windowNumber), ownID != kCGNullWindowID,
+              let rows = CGWindowListCopyWindowInfo([.optionOnScreenAboveWindow, .optionIncludingWindow], ownID)
+                as? [[String: Any]] else {
+            return application + ", windowServerRows=unavailable"
+        }
+        func number(_ row: [String: Any], _ key: CFString) -> NSNumber? { row[key as String] as? NSNumber }
+        func bounds(_ row: [String: Any]) -> CGRect? {
+            guard let dictionary = row[kCGWindowBounds as String] as? [String: Any] else { return nil }
+            return CGRect(dictionaryRepresentation: dictionary as CFDictionary)
+        }
+        func state(_ row: [String: Any]) -> String {
+            let rectangle = bounds(row).map { "\($0.origin.x),\($0.origin.y),\($0.width),\($0.height)" } ?? "unavailable"
+            return "id=\(number(row, kCGWindowNumber)?.description ?? "unavailable"), " +
+                "pid=\(number(row, kCGWindowOwnerPID)?.description ?? "unavailable"), " +
+                "layer=\(number(row, kCGWindowLayer)?.description ?? "unavailable"), bounds=\(rectangle), " +
+                "alpha=\(number(row, kCGWindowAlpha)?.description ?? "unavailable"), " +
+                "onscreen=\(number(row, kCGWindowIsOnscreen)?.description ?? "unavailable")"
+        }
+        let ownRow = rows.first { number($0, kCGWindowNumber)?.uint32Value == ownID }
+        let ownBounds = ownRow.flatMap(bounds)
+        let intersecting = rows.filter { row in
+            guard number(row, kCGWindowNumber)?.uint32Value != ownID,
+                  number(row, kCGWindowIsOnscreen)?.boolValue == true,
+                  let alpha = number(row, kCGWindowAlpha)?.doubleValue, alpha > 0,
+                  let frame = bounds(row), let ownBounds else { return false }
+            return frame.intersects(ownBounds)
+        }
+        let higher = intersecting.filter {
+            guard let level = number($0, kCGWindowLayer)?.intValue else { return false }
+            return level > window.level.rawValue
+        }.count
+        // Bounds intersection identifies potential coverage, not opaque pixel coverage.
+        let serverRows = rows.prefix(16).map(state).joined(separator: "; ")
+        return application + ", ownWindowServerRowPresent=\(ownRow != nil), " +
+            "ownWindowServerRow={\(ownRow.map(state) ?? "unavailable")}, " +
+            "aboveIntersectingBounds=\(intersecting.count), higherLayerIntersectingBounds=\(higher), " +
+            "windowServerRowCount=\(rows.count), windowServerRows=[\(serverRows)]"
     }
 
     private func continuationLoadState(_ tab: Tab, web: WKWebView, requestedURL: URL) -> String {
