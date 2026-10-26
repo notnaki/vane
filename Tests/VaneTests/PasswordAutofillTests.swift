@@ -46,19 +46,76 @@ import XCTest
                 XCTAssertTrue(NSApplication.shared.isActive, "The native account-selection fixture needs an active test host", file: file, line: line)
                 XCTAssertTrue(window.isKeyWindow, "The owned document window must receive user interaction", file: file, line: line)
                 XCTAssertTrue(window.isVisible, file: file, line: line)
-                XCTAssertTrue(window.occlusionState.contains(.visible), file: file, line: line)
+                XCTAssertFalse(NSApplication.shared.isHidden, file: file, line: line)
+                XCTAssertFalse(NSRunningApplication.current.isHidden, file: file, line: line)
+                XCTAssertTrue(NSApplication.shared.keyWindow === window, file: file, line: line)
+                XCTAssertFalse(window.isMiniaturized, file: file, line: line)
+                XCTAssertTrue(window.isOnActiveSpace, file: file, line: line)
+                XCTAssertGreaterThan(window.alphaValue, 0, file: file, line: line)
                 XCTAssertTrue(NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) },
                               "The owned document window must fit on a real screen", file: file, line: line)
                 XCTAssertTrue(window.contentView === web && web.window === window, file: file, line: line)
                 XCTAssertFalse(web.isHiddenOrHasHiddenAncestor, file: file, line: line)
                 XCTAssertGreaterThan(web.bounds.width, 0, file: file, line: line)
                 XCTAssertGreaterThan(web.bounds.height, 0, file: file, line: line)
+                XCTAssertTrue(nativeContinuationReady(window, document: web), file: file, line: line)
             }
             assertReady()
+            emitNativeContinuationReadiness(window, document: web, stage: "idle-before")
             try await Task.sleep(for: .milliseconds(100))
             assertReady()
+            emitNativeContinuationReadiness(window, document: web, stage: "idle-after")
         }
         XCTAssertFalse(NSApplication.shared.isRunning, "The native fixture must join its AppKit loop before returning")
+    }
+
+    func testNativeContinuationReadinessRejectsHiddenAndDetachedOwnedDocument() async throws {
+        try await withNativeContinuationFixture { tab, origin in
+            let web = tab.web
+            let window = try XCTUnwrap(web.window)
+            // Detach only a loaded root: removing a never-loaded WKWebView can
+            // trigger a separate framework removedFromContainer failure.
+            try await loadContinuationPage(tab, origin: origin, path: "readiness",
+                html: "<p id=fixture>Readiness</p>")
+            expectEqual(try await js(web, "document.getElementById('fixture').textContent") as? String, "Readiness")
+            let originalHidden = web.isHidden
+            defer {
+                web.isHidden = originalHidden
+                window.contentView = web
+            }
+            XCTAssertTrue(nativeContinuationReady(window, document: web))
+            web.isHidden = true
+            XCTAssertFalse(nativeContinuationReady(window, document: web),
+                           "A hidden document cannot receive an account-selection interaction")
+            web.isHidden = originalHidden
+            XCTAssertTrue(nativeContinuationReady(window, document: web))
+            window.contentView = NSView(frame: web.frame)
+            XCTAssertNil(web.window, "The negative case must detach the original document")
+            XCTAssertFalse(nativeContinuationReady(window, document: web),
+                           "A replacement content view cannot admit the detached original document")
+            window.contentView = web
+            XCTAssertTrue(nativeContinuationReady(window, document: web))
+        }
+    }
+
+    func testNativeContinuationReadinessRejectsUnownedAndOffscreenDocument() async throws {
+        try await withNativeContinuationFixture { tab, _ in
+            let web = tab.web
+            let window = try XCTUnwrap(web.window)
+            let originalFrame = window.frame
+            defer { window.setFrame(originalFrame, display: false) }
+            XCTAssertTrue(nativeContinuationReady(window, document: web))
+            XCTAssertFalse(nativeContinuationReady(window, document: NSView(frame: web.frame)),
+                           "An unrelated view cannot borrow the owned window's interaction state")
+            let leftmostDisplay = try XCTUnwrap(NSScreen.screens.map { $0.frame.minX }.min())
+            window.setFrameOrigin(CGPoint(x: leftmostDisplay - window.frame.width - 100, y: originalFrame.minY))
+            XCTAssertFalse(NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) },
+                           "The negative case must place the complete window outside every display")
+            XCTAssertFalse(nativeContinuationReady(window, document: web),
+                           "An offscreen document cannot receive an account-selection interaction")
+            window.setFrame(originalFrame, display: false)
+            XCTAssertTrue(nativeContinuationReady(window, document: web))
+        }
     }
 
     private final class Capture: NSObject, WKScriptMessageHandler {
@@ -297,6 +354,36 @@ import XCTest
         expectTrue(tab.pendingSave == nil, "An unchanged saved password must not create a save prompt")
     }
 
+    /// These tests exercise an owned user-interaction context, not pixel coverage.
+    /// AppKit's occlusion getter can remain stale after activation; retain it in
+    /// diagnostics rather than making it an extra credential-authorization gate.
+    /// https://github.com/flutter/flutter/commit/272fe23e0e32d63fa6c34dbf9659411dcfabb970
+    private func nativeContinuationReady(_ window: NSWindow, document: NSView) -> Bool {
+        let app = NSApplication.shared, running = NSRunningApplication.current
+        return app.isRunning && running.isFinishedLaunching && app.isActive &&
+            !app.isHidden && !running.isHidden && app.keyWindow === window &&
+            window.isKeyWindow && window.isVisible && !window.isMiniaturized &&
+            window.isOnActiveSpace && window.alphaValue > 0 &&
+            NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) } &&
+            window.contentView === document && document.window === window &&
+            !document.isHiddenOrHasHiddenAncestor && document.bounds.width > 0 && document.bounds.height > 0
+    }
+
+    /// One bounded scalar record per admission/idle sample; no WindowServer probes.
+    private func emitNativeContinuationReadiness(_ window: NSWindow, document: NSView, stage: StaticString) {
+        let app = NSApplication.shared, running = NSRunningApplication.current
+        print("Native continuation readiness: stage=\(stage), ready=\(nativeContinuationReady(window, document: document)), " +
+              "appRunning=\(app.isRunning), finishedLaunching=\(running.isFinishedLaunching), active=\(app.isActive), " +
+              "appHidden=\(app.isHidden), runningHidden=\(running.isHidden), exactKey=\(app.keyWindow === window), " +
+              "windowKey=\(window.isKeyWindow), windowVisible=\(window.isVisible), miniaturized=\(window.isMiniaturized), " +
+              "activeSpace=\(window.isOnActiveSpace), alphaPositive=\(window.alphaValue > 0), " +
+              "onScreen=\(NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) }), " +
+              "ownsContent=\(window.contentView === document), attached=\(document.window === window), " +
+              "viewHidden=\(document.isHiddenOrHasHiddenAncestor), " +
+              "positiveBounds=\(document.bounds.width > 0 && document.bounds.height > 0), " +
+              "appOcclusion=\(app.occlusionState.rawValue), windowOcclusion=\(window.occlusionState.rawValue)")
+    }
+
     private func withNativeContinuationFixture(_ body: (Tab, PasswordOrigin) async throws -> Void) async throws {
         TestEnvironment.prepare()
         let profile = UUID(), origin = PasswordOrigin(host: "continuation.example.test")
@@ -349,12 +436,9 @@ import XCTest
                     self.nativeWindowVisibilityState(window)
             }) {
                 // The owned AppKit loop supplies event dispatch and deferred drawing.
-                return app.isRunning && NSRunningApplication.current.isFinishedLaunching && app.isActive &&
-                    window.isKeyWindow && window.isVisible && window.occlusionState.contains(.visible) &&
-                    NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) } &&
-                    window.contentView === web && web.window === window && !web.isHiddenOrHasHiddenAncestor &&
-                    web.bounds.width > 0 && web.bounds.height > 0
+                return nativeContinuationReady(window, document: web)
             }
+            emitNativeContinuationReadiness(window, document: web, stage: "admission")
             try await body(tab, origin)
         } catch { fixtureError = error }
         do { try await loop.close() }
