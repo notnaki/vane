@@ -220,10 +220,10 @@ import XCTest
         let port = try XCTUnwrap(NWEndpoint.Port(rawValue: try XCTUnwrap(server.port)))
         let client = NWConnection(host: "127.0.0.1", port: port, using: .tcp)
         defer { client.cancel() }
-        var peerClosed = false
+        let probe = UploadPeerCloseProbe()
         client.start(queue: .main)
         client.receive(minimumIncompleteLength: 1, maximumLength: 1) { _, _, complete, error in
-            Task { @MainActor in peerClosed = complete || error != nil }
+            Task { @MainActor in probe.closed = complete || error != nil }
         }
         try await wait {
             if case .ready = client.state { return server.acceptedConnections == 1 }
@@ -231,7 +231,7 @@ import XCTest
         }
         XCTAssertNil(server.request, "Connecting without sending must not fabricate a request")
         server.stop()
-        try await wait { peerClosed }
+        try await wait { probe.closed }
         XCTAssertNil(server.request, "A late cancellation callback must not record a request")
     }
 
@@ -282,6 +282,10 @@ import XCTest
         XCTAssertEqual(answers, 2)
         XCTAssertNil(window.attachedSheet)
     }
+}
+
+@MainActor private final class UploadPeerCloseProbe {
+    var closed = false
 }
 
 /// Hold the next page until the old document has opened its upload sheet.
