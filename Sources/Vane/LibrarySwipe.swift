@@ -204,7 +204,7 @@ private struct LibrarySwipe: ViewModifier {
     private func settle(in store: TabStore, commit: Bool) {
         let token = UUID()
         settlement = token
-        let finish = {
+        let activate = {
             if commit, let action = self.action {
                 switch action {
                 case .close: Library.close(store)
@@ -213,19 +213,27 @@ private struct LibrarySwipe: ViewModifier {
                     Library.open(Library.shared.section, in: store)
                 }
             }
-            if store.librarySwipeProgress != nil {
-                store.librarySwipeProgress = store.libraryOpen ? 1 : 0
-            }
         }
         let clear = { [weak self, weak store] in
             guard let self, self.settlement == token, let store else { return }
             Motion.instant { store.librarySwipeProgress = nil }
         }
-        if Motion.reduced {
-            Motion.instant(finish)
+        var target: CGFloat = store.libraryOpen ? 1 : 0
+        if commit, let action {
+            target = switch action { case .open: 1; case .close: 0 }
+        }
+        if Motion.reduced || store.librarySwipeProgress == nil || store.librarySwipeProgress == target {
+            Motion.instant(activate)
             clear()
         } else {
-            withAnimation(Look.appear, completionCriteria: .removed, finish, completion: clear)
+            withAnimation(Look.appear, completionCriteria: .removed) {
+                store.librarySwipeProgress = target
+            } completion: { clear() }
+            // Commit the small navigation layout before activating search and the
+            // browser's controls. Otherwise those updates share its first render
+            // pass and hold the panel at the last finger position after a flick.
+            presentationView?.window?.contentView?.layoutSubtreeIfNeeded()
+            Motion.instant(activate)
         }
     }
 
