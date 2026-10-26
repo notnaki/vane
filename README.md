@@ -192,6 +192,19 @@ clean-Mac install/upgrade checks are still required for distribution claims.
 ## Contributing
 
 For native fixture tests, use `python3 scripts/run-native-tests.py --jobs 1`.
+CI first checks the diff. Root Markdown files such as `SECURITY.md`, Markdown
+under `docs/`, and GitHub issue/PR templates take the documentation-only path:
+diff checks and the final `checks` gate, without macOS builds or native tests.
+Mixed changes, source/test/resource/workflow changes, and missing comparison
+history run the full checks.
+
+For app changes, one debug build compiles the app and test bundle and assembles
+`Vane.app`. The four native runners and packaging reuse a runtime-only artifact;
+they verify its revision, checkout path, and Swift toolchain before execution.
+Shared source fixtures and runtime checks each run once. Only the build job
+restores/saves the Swift cache; object files and compiler caches are excluded
+from the runtime transfer.
+
 CI runs four groups on separate macOS runners, keeping each test class together
 and each runner's UI tests sequential. `swift test list --skip-build` supplies the
 complete inventory; `scripts/native-test-shards.py` balances classes using advisory

@@ -14,7 +14,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Change scope and diff checks
+    runs-on: ubuntu-latest
+    outputs:
+      app_required: ${{ steps.scope.outputs.app_required }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate diff and choose checks
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: python3 scripts/ci-change-scope.py --base "$BASE_SHA" --head "$HEAD_SHA"
+
   source:
+    needs: [changes]
+    if: needs.changes.outputs.app_required == 'true'
     name: Source fixtures
     runs-on: macos-26
     steps:
@@ -38,16 +57,20 @@ jobs:
       - name: Native shard coverage fixtures
         run: python3 scripts/test-native-test-shards.py
 
-  native:
-    # Each shard owns an isolated desktop; UI tests remain sequential within it.
-    name: Native regressions (${{ matrix.shard }}/4)
+      - name: Change scope fixtures
+        run: python3 scripts/test-ci-change-scope.py
+
+      - name: Shared build artifact fixtures
+        run: python3 scripts/test-ci-build-artifact.py
+
+      - name: Native fixture runner safety
+        run: python3 scripts/test-native-fixture-runner.py
+
+  build:
+    name: Shared debug build
+    needs: [changes]
+    if: needs.changes.outputs.app_required == 'true'
     runs-on: macos-26
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    env:
-      NATIVE_SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v7
 
@@ -55,7 +78,7 @@ jobs:
         id: toolchain
         run: |
           set -euo pipefail
-          KEY=$({ swift --version; xcodebuild -version; xcrun --show-sdk-path; xcrun --show-sdk-build-version; } | shasum -a 256 | cut -d ' ' -f 1)
+          KEY=$(python3 scripts/ci-build-artifact.py toolchain)
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
 
       # Only checks builds go into this cache. Release builds compile an OAuth secret
@@ -75,39 +98,70 @@ jobs:
       - name: Restore unchanged source timestamps
         run: python3 scripts/ci-source-state.py restore
 
-      - name: Source timestamp cache fixture
-        run: python3 scripts/test-ci-source-state.py
+      - name: Build app and native tests once
+        run: swift build --build-system native -c debug --build-tests
 
-      - name: Website scene regressions
-        run: node docs/tests/galaxy.test.cjs
+      - name: Bundle
+        run: ./make-app.sh debug
 
-      # Debug avoids whole-module release optimization on every PR. Always ask SwiftPM
-      # to build, even on an exact cache hit, so it validates the restored outputs.
-      # The release workflow still builds and smoke-tests the optimized, signed app.
-      - name: Build
-        run: swift build -c debug
+      - name: Package shared debug runtime
+        run: |
+          set -euo pipefail
+          BIN_PATH=$(swift build --build-system native -c debug --show-bin-path)
+          python3 scripts/ci-build-artifact.py pack \
+            --bin-path "$BIN_PATH" --revision "$GITHUB_SHA" \
+            --archive "$RUNNER_TEMP/vane-debug-runtime.tar.gz"
 
-      # --pure stops before the keychain and WebKit assertions, which need a real signed
-      # bundle and a window server respectively. Those stay a local `vane selfcheck`.
-      - name: Checks
-        run: ./.build/debug/vane selfcheck --pure
+      - name: Share compiled runtime
+        uses: actions/upload-artifact@v6
+        with:
+          name: debug-runtime
+          path: ${{ runner.temp }}/vane-debug-runtime.tar.gz
+          compression-level: 0
+          overwrite: true
+          retention-days: 1
 
-      - name: Cold WebKit registry startup
-        run: scripts/check-webkit-startup.sh
+      - name: Save source timestamps for the build cache
+        run: python3 scripts/ci-source-state.py save
 
-      - name: App icon migration and bundled selections
-        run: scripts/check-app-icons.sh
+      - name: Save Swift debug build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swift-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .build
+          key: ${{ steps.swift-cache.outputs.cache-primary-key }}
 
-      - name: Native fixture runner safety
-        run: python3 scripts/test-native-fixture-runner.py
+  native:
+    # Share compiled products; each shard still owns its own isolated desktop.
+    name: Native regressions (${{ matrix.shard }}/4)
+    needs: [changes, build]
+    if: needs.changes.outputs.app_required == 'true'
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      NATIVE_SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v7
 
-      - name: Build native tests for the owned-loop preflight
-        run: swift build -c debug --build-tests
+      - name: Download compiled runtime
+        uses: actions/download-artifact@v5
+        with:
+          name: debug-runtime
+          path: ${{ runner.temp }}/vane-debug-runtime
+
+      - name: Restore and verify compiled runtime
+        run: |
+          python3 scripts/ci-build-artifact.py restore \
+            --revision "$GITHUB_SHA" \
+            --archive "$RUNNER_TEMP/vane-debug-runtime/vane-debug-runtime.tar.gz"
 
       - name: Discover and partition all native tests
         run: |
           set -euo pipefail
-          swift test list --skip-build > "$RUNNER_TEMP/vane-native-tests.txt"
+          swift test --build-system native list --skip-build > "$RUNNER_TEMP/vane-native-tests.txt"
           python3 scripts/native-test-shards.py plan \
             --inventory "$RUNNER_TEMP/vane-native-tests.txt" \
             --index "$NATIVE_SHARD" --count 4 \
@@ -124,7 +178,7 @@ jobs:
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
           set -euo pipefail
-          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/vane-appkit-loop-preflight.log"
+          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/vane-appkit-loop-preflight.log"
           if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-appkit-loop-preflight.log"; then exit 1; fi
           grep -Fq "Test Case '-[VaneTests.NativeApplicationLoopSmokeTests testOwnedLoopAdmitsAsyncWorkAndStops]' passed" "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Expected owned AppKit loop preflight did not pass.'; exit 1; }
           grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Owned AppKit loop preflight retirement was not verified.'; exit 1; }
@@ -137,7 +191,7 @@ jobs:
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
           set -euo pipefail
-          python3 scripts/run-native-tests.py --skip-build --jobs 1 \
+          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 \
             --filter "$(cat "$RUNNER_TEMP/vane-native-shard.filter")" \
             2>&1 | tee "$RUNNER_TEMP/vane-swift-tests.log"
           # Swift's signal handler can return after a software-raised trap. A fatal
@@ -158,6 +212,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: native-loop-logs-${{ matrix.shard }}
+          overwrite: true
           path: |
             ${{ runner.temp }}/vane-appkit-loop-preflight.log
             ${{ runner.temp }}/vane-swift-tests.log
@@ -167,68 +222,41 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Save source timestamps for the build cache
-        if: matrix.shard == 1
-        run: python3 scripts/ci-source-state.py save
-
-      - name: Save Swift debug build
-        if: matrix.shard == 1 && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swift-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: .build
-          key: ${{ steps.swift-cache.outputs.cache-primary-key }}
-
   packaging:
-    # An independent desktop keeps Finder/DMG work away from the XCTest host.
-    # Every macOS job validates its restored build; only native shard 1 saves caches.
+    # Common runtime/fixture checks run once, away from the native test desktops.
     name: Packaging and integrations
+    needs: [changes, build]
+    if: needs.changes.outputs.app_required == 'true'
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
 
-      - name: Identify Swift toolchain
-        id: toolchain
-        run: |
-          set -euo pipefail
-          KEY=$({ swift --version; xcodebuild -version; xcrun --show-sdk-path; xcrun --show-sdk-build-version; } | shasum -a 256 | cut -d ' ' -f 1)
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
-
-      # Only checks builds go into this cache. Release builds compile an OAuth secret
-      # into the app, so their build products must never enter a PR-readable cache.
-      # PRs reuse main's cache without leaving a separate archive for every revision.
-
-      - name: Restore Swift debug build
-        id: swift-cache
-        uses: actions/cache/restore@v6
+      - name: Download compiled runtime
+        uses: actions/download-artifact@v5
         with:
-          path: .build
-          key: swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
-          restore-keys: |
-            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+          name: debug-runtime
+          path: ${{ runner.temp }}/vane-debug-runtime
 
-      # Checkout gives even unchanged inputs new mtimes. Restore only content-matching
-      # timestamps so Swift can reuse their object files without hiding source changes.
-
-      - name: Restore unchanged source timestamps
-        run: python3 scripts/ci-source-state.py restore
-
-      - name: Build
-        run: swift build -c debug
-
-      # --pure stops before the keychain and WebKit assertions, which need a real signed
-      # bundle and a window server respectively. Those stay a local `vane selfcheck`.
+      - name: Restore and verify compiled runtime
+        run: |
+          python3 scripts/ci-build-artifact.py restore \
+            --revision "$GITHUB_SHA" \
+            --archive "$RUNNER_TEMP/vane-debug-runtime/vane-debug-runtime.tar.gz"
 
       - name: Checks
         run: ./.build/debug/vane selfcheck --pure
+
+      - name: Cold WebKit registry startup
+        run: scripts/check-webkit-startup.sh
+
+      - name: App icon migration and bundled selections
+        run: scripts/check-app-icons.sh
 
       - name: CLI password import errors
         run: bash scripts/test-cli-import.sh .build/debug/vane
 
       - name: Cloud AI transport and privacy checks
         run: scripts/check-cloud-ai.sh
-
-      - name: Bundle
-        run: ./make-app.sh debug
 
       - name: DMG package
         run: ./scripts/test-build-dmg.sh
@@ -245,30 +273,39 @@ jobs:
         run: bash scripts/test-update-installer.sh Vane.app --unsigned
 
   checks:
-    # Preserve the required check name. Skipped/cancelled dependencies are failures.
+    # A docs-only run skips all app jobs intentionally; unexpected skips still fail.
     if: ${{ always() }}
-    needs: [source, native, packaging]
+    needs: [changes, source, build, native, packaging]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Require every checks job to pass
+      - name: Require every selected check to pass
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          APP_REQUIRED: ${{ needs.changes.outputs.app_required }}
           SOURCE_RESULT: ${{ needs.source.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
           NATIVE_RESULT: ${{ needs.native.result }}
           PACKAGING_RESULT: ${{ needs.packaging.result }}
         run: |
           set -euo pipefail
-          for result in "$SOURCE_RESULT" "$NATIVE_RESULT" "$PACKAGING_RESULT"; do
-            if [ "$result" != success ]; then
-              echo "::error::A required checks job did not succeed (result=$result)."
+          [ "$CHANGES_RESULT" = success ] || { echo '::error::Change detection failed.'; exit 1; }
+          case "$APP_REQUIRED" in
+            true) expected=success ;;
+            false) expected=skipped ;;
+            *) echo '::error::Missing or invalid change scope.'; exit 1 ;;
+          esac
+          for result in "$SOURCE_RESULT" "$BUILD_RESULT" "$NATIVE_RESULT" "$PACKAGING_RESULT"; do
+            if [ "$result" != "$expected" ]; then
+              echo "::error::A selected check did not succeed or an app job skipped unexpectedly (result=$result, expected=$expected)."
               exit 1
             fi
           done
 
   prune-caches:
     # Keep deletion credentials away from the build and from pull request runs.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.app_required == 'true'
+    needs: [changes, checks]
     runs-on: ubuntu-latest
     permissions:
       actions: write
