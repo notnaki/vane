@@ -19,7 +19,11 @@ concurrency:
 
 jobs:
   signed-normal-app:
-    name: Signed Vane normal-app UA comparison
+    name: Signed Vane UA observer arm (${{ matrix.observer_mode }})
+    strategy:
+      fail-fast: false
+      matrix:
+        observer_mode: [unregistered, registered]
     runs-on: macos-26
     timeout-minutes: 35
     steps:
@@ -53,13 +57,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/Downloads"
-          python3 -B scripts/check-extension-ua.py --binary .build/debug/vane --evidence-dir "$RUNNER_TEMP/vane-signed-extension-ua-logs" 2>&1 | tee "$RUNNER_TEMP/vane-signed-extension-ua.log"
+          python3 -B scripts/check-extension-ua.py --binary .build/debug/vane --observer-mode "${{ matrix.observer_mode }}" --evidence-dir "$RUNNER_TEMP/vane-signed-extension-ua-logs" 2>&1 | tee "$RUNNER_TEMP/vane-signed-extension-ua.log"
 
       - name: Preserve signed comparison log
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
-          name: signed-vane-ua-${{ github.run_id }}-${{ github.run_attempt }}
+          name: signed-vane-ua-${{ matrix.observer_mode }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/vane-signed-extension-ua.log
             ${{ runner.temp }}/vane-signed-extension-ua-logs/

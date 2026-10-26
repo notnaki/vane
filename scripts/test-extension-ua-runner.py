@@ -210,7 +210,7 @@ class SequencingTests(unittest.TestCase):
 
 
 class EvidenceLogTests(unittest.TestCase):
-    def fake_mode(self, failure=None):
+    def fake_mode(self, failure=None, observer_mode="registered", child_mode=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
@@ -219,8 +219,10 @@ class EvidenceLogTests(unittest.TestCase):
         evidence = root / "evidence"
         calls = []; bundles = []; profiles = []
         outputs = {}
+        self.observer_commands = []
 
         def fake_process(command, environment, timeout, log, interrupted):
+            self.observer_commands.append((list(command), timeout))
             phase = "signing" if command[0] == "/usr/bin/codesign" else ("primary" if "extensioncheck" in command else "cleanup")
             trial = int(log.parent.name.removeprefix("trial-"))
             data = Path(environment["VANE_DATA_DIR"])
@@ -232,6 +234,9 @@ class EvidenceLogTests(unittest.TestCase):
             if phase == "cleanup" and failure != "cleanup-attestation":
                 output += b"PASS browsercheck cleanup: 1 temporary WebKit stores unregistered\n"
             if phase == "primary":
+                actual_mode = observer_mode if child_mode is None else child_mode
+                output += (f"UA OBSERVER CONFIG mode={actual_mode} runNonce={uuid.uuid4()} "
+                           f"scriptRegistered={str(actual_mode == 'registered').lower()}\n").encode()
                 report = {"profileID": str(uuid.uuid4()), "findings": [
                     {"workflow": label, "result": "VERIFIED", "detail": "Verified identity"} for label in LABELS]}
                 report["findings"][0]["detail"] = "finishedLaunching=true; appRunning=true; WebKit=21624.5.1.11.3; OS=Version 26.6.2"
@@ -241,8 +246,10 @@ class EvidenceLogTests(unittest.TestCase):
             code = 7 if failure == "signing" and phase == "signing" else (5 if failure == "primary" and phase == "primary" else 0)
             return code, True, output
 
-        with patch.object(runner, "run_ua_process", side_effect=fake_process), redirect_stdout(io.StringIO()), patch("sys.stderr", new=io.StringIO()):
-            status = runner.run_ua_mode(binary, root, downloads, evidence)
+        captured = io.StringIO()
+        with patch.object(runner, "run_ua_process", side_effect=fake_process), redirect_stdout(captured), patch("sys.stderr", new=io.StringIO()):
+            status = runner.run_ua_mode(binary, root, downloads, evidence, observer_mode)
+        self.observer_stdout = captured.getvalue()
         return status, evidence, calls, outputs, bundles, profiles
 
     def assert_full_logs(self, evidence, outputs):
@@ -288,6 +295,55 @@ class EvidenceLogTests(unittest.TestCase):
         self.assertEqual(len(set(outputs.values())), 24)
         self.assert_full_logs(evidence, outputs)
 
+    def test_each_arm_forwards_only_its_primary_mode_and_keeps_cleanup_and_caps(self):
+        for mode in ("registered", "unregistered"):
+            with self.subTest(mode=mode):
+                status, evidence, calls, outputs, bundles, profiles = self.fake_mode(observer_mode=mode)
+                self.assertEqual(status, 0)
+                self.assertEqual(calls, [(n, phase) for n in range(1, 9) for phase in ("signing", "primary", "cleanup")])
+                for command, timeout in self.observer_commands:
+                    if "extensioncheck" in command:
+                        self.assertEqual(command[1:], ["extensioncheck", "--user-agent-only", "--ua-loader-start-observer-mode", mode])
+                        self.assertEqual(timeout, 90)
+                    elif "browsercheck-cleanup" in command:
+                        self.assertEqual(command[1:], ["browsercheck-cleanup"])
+                        self.assertEqual(timeout, 25)
+                    else: self.assertEqual(timeout, 30)
+                self.assertIn(f"UA OBSERVER ARM mode={mode} plannedFreshLaunches=8 both-success=inconclusive", self.observer_stdout)
+                labels = [json.loads(line.removeprefix("UA OBSERVER ATTESTATION ")) for line in self.observer_stdout.splitlines()
+                          if line.startswith("UA OBSERVER ATTESTATION ")]
+                self.assertEqual(len(labels), 8)
+                self.assertTrue(all(label["observerMode"] == mode and label["scriptRegistered"] == (mode == "registered") for label in labels))
+                for path, output in outputs.items():
+                    if path.name == "primary.log": self.assertIn(f"mode={mode} ".encode(), output)
+                self.assert_full_logs(evidence, outputs)
+
+    def test_wrong_child_arm_never_emits_positive_stages_or_advances_trials(self):
+        for mode, wrong in (("registered", "unregistered"), ("unregistered", "registered")):
+            with self.subTest(mode=mode):
+                status, evidence, calls, outputs, bundles, profiles = self.fake_mode(observer_mode=mode, child_mode=wrong)
+                self.assertNotEqual(status, 0)
+                self.assertEqual(calls, [(1, "signing"), (1, "primary"), (1, "cleanup")])
+                self.assertNotIn('"result": "VERIFIED"', self.observer_stdout)
+                self.assertNotIn("UA OBSERVER ATTESTATION ", self.observer_stdout)
+                self.assert_full_logs(evidence, outputs)
+
+    def test_failure_in_either_arm_still_runs_cleanup_and_stops_that_arm(self):
+        for mode in ("registered", "unregistered"):
+            with self.subTest(mode=mode):
+                status, evidence, calls, outputs, bundles, profiles = self.fake_mode("primary", observer_mode=mode)
+                self.assertEqual(status, 5)
+                self.assertEqual(calls, [(1, "signing"), (1, "primary"), (1, "cleanup")])
+                self.assert_full_logs(evidence, outputs)
+
+    def test_workflow_keeps_independent_fixed_size_arms_and_distinct_artifacts(self):
+        workflow = Path(__file__).resolve().parent.parent / ".github/workflows/signed-extension-ua.yml"
+        source = workflow.read_text()
+        self.assertRegex(source, r"strategy:\n\s+fail-fast: false\n\s+matrix:\n\s+observer_mode: \[unregistered, registered\]")
+        self.assertIn('--observer-mode "${{ matrix.observer_mode }}"', source)
+        self.assertIn('name: signed-vane-ua-${{ matrix.observer_mode }}-', source)
+        self.assertNotIn('continue-on-error:', source)
+
     def test_workflow_uploads_complete_log_directory_and_outer_tee(self):
         workflow = Path(__file__).resolve().parent.parent / ".github/workflows/signed-extension-ua.yml"
         source = workflow.read_text()
@@ -296,6 +352,43 @@ class EvidenceLogTests(unittest.TestCase):
         self.assertIn("if: ${{ always() }}", upload)
         self.assertIn("${{ runner.temp }}/vane-signed-extension-ua.log", upload)
         self.assertIn("${{ runner.temp }}/vane-signed-extension-ua-logs/", upload)
+
+
+class ObserverArmTests(unittest.TestCase):
+    def parse(self, *args):
+        with patch("sys.stderr", new=io.StringIO()):
+            return runner.ua_argument_parser().parse_args(list(args))
+
+    def test_modes_are_required_explicit_and_unambiguous(self):
+        common = ["--evidence-dir", "/tmp/log-only"]
+        for mode in ("registered", "unregistered"):
+            self.assertEqual(self.parse(*common, "--observer-mode", mode).observer_mode, mode)
+        for args in ([], ["--observer-mode"], ["--observer-mode", "disabled"],
+                     ["--observer-mode", "registered", "--observer-mode", "unregistered"],
+                     ["--observer-mode", "registered", "--observer-mode", "registered"]):
+            with self.subTest(args=args), self.assertRaises(SystemExit): self.parse(*common, *args)
+
+    def test_direct_call_rejects_unknown_mode_before_filesystem_or_process_mutation(self):
+        with patch.object(runner, "run_ua_process") as process, patch.object(Path, "mkdir") as mkdir:
+            with self.assertRaises(ValueError):
+                runner.run_ua_mode(Path("/absent/binary"), Path("/absent"), Path("/absent"), Path("/absent/evidence"), "disabled")
+            process.assert_not_called(); mkdir.assert_not_called()
+
+    def test_child_branch_label_requires_exact_mode_registration_and_nonce(self):
+        nonce = str(uuid.uuid4())
+        for mode in ("registered", "unregistered"):
+            flag = str(mode == "registered").lower()
+            line = f"UA OBSERVER CONFIG mode={mode} runNonce={nonce} scriptRegistered={flag}\n".encode()
+            self.assertEqual(runner.validate_ua_observer(line, mode),
+                             {"observerMode": mode, "runNonce": nonce, "scriptRegistered": mode == "registered"})
+            other = "unregistered" if mode == "registered" else "registered"
+            malformed = [b"", line + line, line.replace(mode.encode(), other.encode(), 1),
+                         line.replace(f"scriptRegistered={flag}".encode(), f"scriptRegistered={str(flag != 'true').lower()}".encode()),
+                         line.replace(nonce.encode(), b"-" * 36), b"prefix " + line,
+                         line.rstrip() + b" EXTRA\n"]
+            for output in malformed:
+                with self.subTest(mode=mode, output=output), self.assertRaises(ValueError):
+                    runner.validate_ua_observer(output, mode)
 
 
 if __name__ == "__main__": unittest.main()

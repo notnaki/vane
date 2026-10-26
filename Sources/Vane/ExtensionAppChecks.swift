@@ -12,6 +12,9 @@ import WebKit
 
     static func run() -> Never {
         let userAgentOnly = CommandLine.arguments.contains("--user-agent-only")
+        let observerMode: LoaderObserverMode?
+        do { observerMode = try parseLoaderObserverMode(CommandLine.arguments, userAgentOnly: userAgentOnly) }
+        catch { refuse(error.localizedDescription) }
         #if !DEBUG
         if userAgentOnly { refuse("The user-agent-only diagnostic requires a DEBUG build.") }
         #endif
@@ -62,7 +65,7 @@ import WebKit
                 try JSONEncoder().encode(identity).write(to: marker, options: .withoutOverwriting)
             } catch { refuse("Could not mint the isolated fixture-directory marker.") }
         }
-        let check = Runner(directory: directory, userAgentOnly: userAgentOnly)
+        let check = Runner(directory: directory, userAgentOnly: userAgentOnly, observerMode: observerMode)
         runner = check
         DispatchQueue.main.asyncAfter(deadline: .now() + 240) {
             check.record("overall deadline", .failed, "Exceeded 240 seconds; a platform callback did not finish.")
@@ -71,6 +74,23 @@ import WebKit
         Task { await check.run() }
         NSApp.run()
         refuse("The application run loop ended before extensioncheck completed.")
+    }
+
+    private enum LoaderObserverMode: String { case registered, unregistered }
+
+    private static func parseLoaderObserverMode(_ arguments: [String], userAgentOnly: Bool) throws -> LoaderObserverMode? {
+        let flag = "--ua-loader-start-observer-mode"
+        let positions = arguments.indices.filter { arguments[$0] == flag || arguments[$0].hasPrefix(flag + "=") }
+        guard !arguments.contains("--ua-loader-start-observation") else {
+            throw Failure("Use an explicit --ua-loader-start-observer-mode registered or unregistered instead of the old observation flag.")
+        }
+        guard !positions.isEmpty else { return nil }
+        guard userAgentOnly, positions.count == 1, let position = positions.first,
+              arguments[position] == flag, position + 1 < arguments.count,
+              let mode = LoaderObserverMode(rawValue: arguments[position + 1]) else {
+            throw Failure("The loader observer mode requires --user-agent-only and exactly one --ua-loader-start-observer-mode followed by registered or unregistered.")
+        }
+        return mode
     }
 
     private static func refuse(_ message: String) -> Never {
@@ -102,6 +122,7 @@ import WebKit
     @MainActor private final class Runner {
         let directory: URL
         let userAgentOnly: Bool
+        private let observerMode: LoaderObserverMode?
         var profileID: UUID?
         var store: TabStore?
         var server: Server?
@@ -122,6 +143,7 @@ import WebKit
         private var backgrounds: [ObjectIdentifier: UserAgentBackground] = [:]
         private var loaderStartNonce: String?
         private var loaderStartWorld: WKContentWorld?
+        private var loaderStartScript: WKUserScript?
 
         // A single post-failure read schedules a one-second main-queue timeout. It
         // never changes the worker-reply deadline or resumes a failed identity check.
@@ -165,9 +187,10 @@ import WebKit
         }
         #endif
 
-        init(directory: URL, userAgentOnly: Bool) {
+        init(directory: URL, userAgentOnly: Bool, observerMode: LoaderObserverMode?) {
             self.directory = directory
             self.userAgentOnly = userAgentOnly
+            self.observerMode = observerMode
         }
 
         func record(_ workflow: String, _ result: Result, _ detail: String) {
@@ -257,17 +280,15 @@ import WebKit
                   host.installed.isEmpty, !host.isBusy else {
                 throw Failure("UA comparison requires an empty isolated persistent profile.")
             }
-            if CommandLine.arguments.contains("--ua-loader-start-observation") {
+            if let observerMode {
                 let nonce = UUID().uuidString
                 let world = WKContentWorld.world(name: "vane-ua-loader-start-" + nonce)
                 loaderStartNonce = nonce
                 loaderStartWorld = world
-                // Configuration copies retain this user-content controller. Add
-                // once before any synthetic context or background view exists.
-                // Store locally in the isolated world: no early native IPC, worker
-                // API replacement, registration gate, or extension-file changes.
-                host.controller.configuration.webViewConfiguration.userContentController.addUserScript(
-                    WKUserScript(source: """
+                // Both arms construct identical world/script objects and access
+                // the same retained seed controller before synthetic contexts.
+                // Only the registered arm publishes/injects the user script.
+                let script = WKUserScript(source: """
                         (() => {
                             if (location.protocol !== 'webkit-extension:' ||
                                 (location.pathname !== '/' && location.pathname !== '')) return;
@@ -277,7 +298,12 @@ import WebKit
                                 writable:false, configurable:false, enumerable:false
                             });
                         })();
-                        """, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world))
+                        """, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world)
+                loaderStartScript = script // Keep identical script lifetime in both arms.
+                let seed = host.controller.configuration.webViewConfiguration.userContentController
+                if observerMode == .registered { seed.addUserScript(script) }
+                print("UA OBSERVER CONFIG mode=\(observerMode.rawValue) runNonce=\(nonce) scriptRegistered=\(observerMode == .registered)")
+                fflush(stdout)
             }
             let previous = host.backgroundCreationObserver
             previousBackgroundObserver = previous
@@ -399,6 +425,7 @@ import WebKit
                 ["loaderStartStatus": "UNAVAILABLE", "loaderStartReason": reason]
             }
             guard manifestVersion == 3 else { return unavailable("not an MV3 stage") }
+            guard observerMode == .registered else { return unavailable("unregistered observer arm; no script was installed") }
             guard let nonce = loaderStartNonce, let world = loaderStartWorld,
                   background.context === context, let web = background.web else {
                 return unavailable("current background binding or opt-in snapshot missing")

@@ -28,6 +28,43 @@ TEAM_ID = "T7X84HN3W3"
 UA_LABELS = ("UA normal-loop host", "UA normal-loop safari-mv2", "UA normal-loop safari-mv3",
              "UA normal-loop custom-mv3", "UA normal-loop safari-after-custom-mv3")
 UA_OUTPUT_LIMIT = 1024 * 1024
+UA_OBSERVER_MODES = ("registered", "unregistered")
+
+
+def validate_observer_mode(mode):
+    if mode not in UA_OBSERVER_MODES: raise ValueError("observer mode must be registered or unregistered")
+    return mode
+
+
+def validate_ua_observer(output, expected_mode):
+    """Attest the selected diagnostic branch, never worker UA correctness/injection."""
+    validate_observer_mode(expected_mode)
+    lines = re.findall(rb"(?m)^UA OBSERVER CONFIG[^\r\n]*\r?$", output)
+    if len(lines) != 1: raise ValueError("UA observer branch attestation is missing or duplicated")
+    match = re.fullmatch(rb"UA OBSERVER CONFIG mode=(registered|unregistered) runNonce=([0-9A-Fa-f-]{36}) scriptRegistered=(true|false)\r?", lines[0])
+    if match is None: raise ValueError("UA observer branch attestation is malformed")
+    mode, nonce, registered = (value.decode("ascii") for value in match.groups())
+    try: uuid.UUID(nonce)
+    except ValueError: raise ValueError("UA observer run nonce is invalid") from None
+    if mode != expected_mode or (registered == "true") != (expected_mode == "registered"):
+        raise ValueError("UA observer branch did not match the requested arm")
+    return {"observerMode": mode, "runNonce": nonce, "scriptRegistered": registered == "true"}
+
+
+class ObserverModeArgument(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error("--observer-mode must be specified exactly once")
+        setattr(namespace, self.dest, values)
+
+
+def ua_argument_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--binary', type=Path)
+    parser.add_argument('--evidence-dir', type=Path, required=True, help='fresh log-only directory outside disposable app/profile paths')
+    parser.add_argument('--observer-mode', choices=UA_OBSERVER_MODES, action=ObserverModeArgument, required=True,
+                        help='explicit registered/unregistered loader-script comparison arm; both-success is inconclusive')
+    return parser
 
 
 def validate_ua_report(path, echo_verified=False):
@@ -204,12 +241,14 @@ def run_ua_process(command, environment, timeout, log, interrupted):
     return status, exited, bytes(output)
 
 
-def run_ua_mode(binary, root, downloads, evidence_dir):
+def run_ua_mode(binary, root, downloads, evidence_dir, observer_mode):
+    validate_observer_mode(observer_mode)
     if not binary.is_file(): raise ValueError("requires a built debug Vane executable")
     # This fresh, log-only directory is outside disposable bundles/profiles and
     # intentionally survives every success/failure path. Refuse overwrite/reuse.
     evidence_dir = evidence_dir.resolve()
     evidence_dir.mkdir(mode=0o700)
+    print(f"UA OBSERVER ARM mode={observer_mode} plannedFreshLaunches=8 both-success=inconclusive", flush=True)
     interrupted = [None]
     previous = {sig: signal.signal(sig, lambda signum, frame: interrupted.__setitem__(0, signum))
                 for sig in (signal.SIGINT, signal.SIGTERM)}
@@ -245,12 +284,15 @@ def run_ua_mode(binary, root, downloads, evidence_dir):
             # its exact owned process through the normal bounded path.
             pending_signal = interrupted[0] if phase == "cleanup" else None
             if phase == "cleanup": interrupted[0] = None
-            command = [str(executable), "extensioncheck", "--user-agent-only", "--ua-loader-start-observation"] if phase == "primary" else [str(executable), "browsercheck-cleanup"]
+            command = [str(executable), "extensioncheck", "--user-agent-only", "--ua-loader-start-observer-mode", observer_mode] if phase == "primary" else [str(executable), "browsercheck-cleanup"]
             status, exited, output = run_ua_process(command, environment, 90 if phase == "primary" else 25,
                                                     trial_logs / (phase + ".log"), interrupted)
             if status == 0 and exited:
                 try:
-                    if phase == "primary": validate_ua_report(data / "extensioncheck-results.json", echo_verified=True)
+                    if phase == "primary":
+                        branch = validate_ua_observer(output, observer_mode)
+                        validate_ua_report(data / "extensioncheck-results.json", echo_verified=True)
+                        print("UA OBSERVER ATTESTATION " + json.dumps(branch, sort_keys=True), flush=True)
                     else: validate_ua_cleanup(output); cleanup_verified = True
                 except ValueError as error:
                     print(f"FAIL UA {phase} attestation: {error}", file=sys.stderr, flush=True)
@@ -272,15 +314,13 @@ def run_ua_mode(binary, root, downloads, evidence_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path)
-    parser.add_argument('--evidence-dir', type=Path, required=True, help='fresh log-only directory outside disposable app/profile paths')
+    parser = ua_argument_parser()
     options = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     binary = (options.binary or root / '.build/debug/vane').resolve()
     downloads = Path.home() / 'Downloads'
     if not downloads.is_dir(): parser.error('~/Downloads must exist for isolated sandbox profiles')
-    try: return run_ua_mode(binary, root, downloads, options.evidence_dir)
+    try: return run_ua_mode(binary, root, downloads, options.evidence_dir, options.observer_mode)
     except (OSError, ValueError) as error:
         print(f'FAIL signed extension UA comparison: {error}', file=sys.stderr, flush=True)
         return 1
