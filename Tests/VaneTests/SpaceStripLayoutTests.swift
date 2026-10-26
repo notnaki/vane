@@ -13,19 +13,19 @@ final class SpaceStripLayoutTests: XCTestCase {
         }
     }
 
-    func testOverflowUsesCompactMarkersWithoutChangingTargetSizes() {
+    func testOverflowKeepsSpaceIconsWithoutChangingTargetSizes() {
         let ten = SpaceStripLayout(count: 10, availableWidth: 132)
         let eleven = SpaceStripLayout(count: 11, availableWidth: 132)
         XCTAssertTrue(ten.showsAllIcons)
-        XCTAssertFalse(eleven.showsAllIcons)
+        XCTAssertTrue(eleven.showsAllIcons, "Overflow should scroll icons instead of silently changing their appearance")
         XCTAssertEqual(eleven.itemWidth, ten.itemWidth)
         XCTAssertEqual(eleven.iconSize, ten.iconSize)
     }
 
-    func testNarrowViewportFallsBackOnlyUntilTheIconsFit() {
+    func testNarrowViewportKeepsTheChosenIconAppearance() {
         let narrow = SpaceStripLayout(count: 5, availableWidth: 68)
         let fitting = SpaceStripLayout(count: 5, availableWidth: 80)
-        XCTAssertFalse(narrow.showsAllIcons)
+        XCTAssertTrue(narrow.showsAllIcons)
         XCTAssertTrue(fitting.showsAllIcons)
         XCTAssertGreaterThanOrEqual(fitting.itemWidth, fitting.iconSize + 2)
     }
@@ -34,6 +34,19 @@ final class SpaceStripLayoutTests: XCTestCase {
         let layout = SpaceStripLayout(count: 12, availableWidth: 400)
         XCTAssertTrue(layout.showsAllIcons)
         XCTAssertLessThanOrEqual(layout.itemWidth * 12, 400)
+    }
+
+    func testDotPreferenceIsRespectedAtEveryDensity() {
+        for count in [1, 3, 5, 10, 12] {
+            for width in [68.0, 132.0, 400.0] {
+                let icons = SpaceStripLayout(count: count, availableWidth: width, showIcons: true)
+                let dots = SpaceStripLayout(count: count, availableWidth: width, showIcons: false)
+                XCTAssertFalse(dots.showsAllIcons)
+                XCTAssertEqual(dots.itemWidth, icons.itemWidth)
+                XCTAssertEqual(dots.scrolls, icons.scrolls,
+                               "Changing marker appearance must preserve scroll and click targets")
+            }
+        }
     }
 
     func testThreeSpacesUseArcSpacingAndSizes() {

@@ -467,6 +467,7 @@ private struct GeneralPane: View {
     @AppStorage("warnBeforeQuit") private var warnQuit = true
     @AppStorage("checkForUpdates") private var autoUpdate = true
     @AppStorage(InteractionSounds.preferenceKey) private var interactionSounds = false
+    @AppStorage(SpaceFooterPreferences.showIconsKey) private var showSpaceIcons = true
     @State private var isDefault = URLHandling.isDefaultBrowser
 
     var body: some View {
@@ -484,6 +485,13 @@ private struct GeneralPane: View {
                             if enabled { InteractionSounds.play(.copy) }
                         }
                 }
+            }
+
+            SettingsCard {
+                SettingsRow("Show Space icons in the footer") {
+                    Toggle("Show Space icons in the footer", isOn: $showSpaceIcons).labelsHidden()
+                }
+                Footnote("Keep every Space’s icon visible. Turn off to show dots for inactive Spaces.")
             }
 
             SettingsCard {

@@ -357,6 +357,7 @@ extension EnvironmentValues {
 /// Feedback changes decoration immediately; text and hit rectangles never scale.
 struct Feel02PressFeedback: ViewModifier {
     var enabled = true
+    var cornerRadius = Look.pillRadius
     var hoverChanged: ((Bool) -> Void)?
     @Environment(\.sidebarRetainsControls) private var retainsControls
     @Environment(\.isEnabled) private var controlEnabled
@@ -367,7 +368,7 @@ struct Feel02PressFeedback: ViewModifier {
     func body(content: Content) -> some View {
         content
             .overlay {
-                RoundedRectangle(cornerRadius: Look.pillRadius)
+                RoundedRectangle(cornerRadius: cornerRadius)
                     .fill(Look.inkPrimary.opacity(pressed && interactive ? 0.055 : 0))
                     .transaction { $0.animation = nil; $0.disablesAnimations = true }
                     .allowsHitTesting(false)
