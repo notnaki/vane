@@ -88,7 +88,9 @@ visible exiting content remains intact.
 - [x] Validate on live Wikipedia, GitHub and MDN pages in disposable profiles, verifying requested host, expected title and nonempty content.
 - [x] Compare candidates separately and together in a quiet profiling window. Exclude contaminated samples and distinguish callback cadence from presented FPS.
 - [x] Obtain independent review of the final current diff and resolve findings.
-- [ ] Preserve the side branch and a reviewable draft; do not merge or touch regular Vane sessions.
+- [x] Preserve the side branch and a reviewable draft; do not merge or touch regular Vane sessions.
 - [x] Verify all task-owned native test processes exited; retain this active experiment worktree.
 
 **Attribution outcome:** Combined eight-flag callback p95 regressed about 13–15% at 300 tabs across the three sites. Individual Wikipedia diagnostics admitted topology, layers, selection, viewport and hidden-work samples plus both legacy bookends. Signals, hosts and panels had no uncontaminated sample within two attempts; their timing remains unverified. No shipping promotion or presented-FPS claim.
+
+**Preserved:** Draft PR https://github.com/notnaki/vane/pull/532 on `codex/render-performance-experiment`; not merged. Task-owned native hosts verified exited. Active managed experiment worktree retained.
