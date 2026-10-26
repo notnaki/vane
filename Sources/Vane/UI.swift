@@ -2966,8 +2966,8 @@ private struct SpaceIcons: View {
     }
 }
 
-/// Each Space keeps its own icon when the footer can fit the strip. Selection brightens
-/// the current icon; overflowing strips use dots around the selected icon instead.
+/// The footer preference chooses icons or dots, independently of strip overflow.
+/// Selection and swipe progress share one emphasis value for each marker.
 /// Only a private window has no Spaces, and it does not draw this at all.
 private struct SpaceDots: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
@@ -3036,21 +3036,18 @@ private struct SpaceDots: View {
                                 set: { theme = $0 ? space.id : nil })
         let showLive = Binding(get: { live == space.id },
                                set: { live = $0 ? space.id : nil })
-        ZStack {
-            Circle().fill(hovered == space.id && !layout.showsButtonBackground ? Look.inkSecondary : Look.dotFill)
-                .frame(width: layout.dotSize, height: layout.dotSize)
-                .opacity(layout.showsAllIcons ? 0 : 1 - lit)
-                .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * (1 - lit))
-            Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
-                .font(.system(size: layout.iconSize))
-                .foregroundStyle(Look.inkPrimary)
-                .opacity(layout.showsAllIcons ? (hovered == space.id ? 1 : 0.6 + 0.4 * lit) : lit)
-                .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * lit)
+        SpaceFooterMarker(icon: icon, layout: layout, hovered: hovered == space.id,
+                          emphasis: reduceMotion || batterySaver.isActive ? (here ? 1 : 0) : lit)
+        // Finger/native progress already supplies intermediate frames. Idle selection
+        // animates the actual emphasis, rather than a separate selection identity.
+        .transaction(value: lit) { transaction in
+            if !gesture.swiping && !transaction.disablesAnimations { transaction.animation = animation }
         }
-        .animation(gesture.swiping ? nil : animation, value: here)
-        .frame(width: layout.itemWidth, height: Look.spaceDotHit)
+        .frame(width: layout.buttonSize, height: layout.buttonSize)
         .background(!layout.showsButtonBackground ? .clear : dropTarget == space.id ? chromeTheme.selected : hovered == space.id ? chromeTheme.hovered : .clear,
-                    in: .rect(cornerRadius: Look.pillRadius))
+                    in: .rect(cornerRadius: Look.chipRadius))
+        .modifier(Feel02PressFeedback(enabled: layout.showsButtonBackground, cornerRadius: Look.chipRadius))
+        .frame(width: layout.itemWidth, height: Look.spaceDotHit)
         .overlay {
             if !layout.showsButtonBackground && dropTarget == space.id {
                 Circle().strokeBorder(Look.inkPrimary, lineWidth: 1)
@@ -3064,7 +3061,6 @@ private struct SpaceDots: View {
             if over { hovered = space.id }
             else if hovered == space.id { hovered = nil }
         }
-        .modifier(Feel02PressFeedback(enabled: layout.showsButtonBackground))
         .onTapGesture { gesture.monitor.select(space, in: store) }
         .vaneKeyboardAction { gesture.monitor.select(space, in: store) }
         .onDrag { spaceDragPayload(space) }
@@ -5186,6 +5182,7 @@ struct TabIcon: View {
 // MARK: - Sidebar footer
 
 struct BottomRow: View {
+    @AppStorage(SpaceFooterPreferences.showIconsKey, store: .vane) private var showSpaceIcons = true
     @EnvironmentObject var store: TabStore
     @ObservedObject var downloadsHover: DownloadsHover
     let hasPreviewItems: Bool
@@ -5204,7 +5201,8 @@ struct BottomRow: View {
             if !store.isPrivate {
                 GeometryReader { geometry in
                     let count = store.swipeStrip.count + (store.creatingSpace || gesture.pull > 0 ? 1 : 0)
-                    let layout = SpaceStripLayout(count: count, availableWidth: geometry.size.width)
+                    let layout = SpaceStripLayout(count: count, availableWidth: geometry.size.width,
+                                                  showIcons: showSpaceIcons)
                     ScrollViewReader { proxy in
                         ScrollView(.horizontal) {
                             SpaceDots(layout: layout, footer: gesture.footer)

@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+enum SpaceFooterPreferences {
+    static let showIconsKey = "showSpaceIconsInFooter"
+}
+
 /// Density of the footer's Space targets, within the gap between Library and Create.
 struct SpaceStripLayout: Equatable {
     let count: Int
@@ -10,8 +14,9 @@ struct SpaceStripLayout: Equatable {
     let showsButtonBackground: Bool
     let scrolls: Bool
     let showsAllIcons: Bool
+    var buttonSize: CGFloat { min(itemWidth, Look.spaceDotHit) }
 
-    init(count: Int, availableWidth: CGFloat) {
+    init(count: Int, availableWidth: CGFloat, showIcons: Bool = true) {
         let count = max(0, count)
         self.count = count
         let width = max(0, availableWidth)
@@ -26,9 +31,8 @@ struct SpaceStripLayout: Equatable {
         // At the minimum sidebar width, preserve distinct targets even if that means
         // scrolling sooner. At the standard width, all ten Spaces fit without scrolling.
         scrolls = count > 10 || itemWidth * CGFloat(count) > width + 0.5
-        // Every fitted slot has room for its icon. Only overflow needs the quieter,
-        // compact markers; the selected Space still keeps its icon in that mode.
-        showsAllIcons = itemWidth * CGFloat(count) <= width + 0.5
+        // Overflow changes scrolling, never the user's chosen marker appearance.
+        showsAllIcons = showIcons
     }
 }
 
