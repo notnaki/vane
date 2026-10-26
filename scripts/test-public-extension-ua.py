@@ -137,6 +137,27 @@ class FreshMV3ControlTests(unittest.TestCase):
             self.assertEqual(json.loads((evidence / "trial-01/result.json").read_text())["scenario"], "fresh-mv3")
 
 
+class MV3ChainControlTests(unittest.TestCase):
+    def test_chain_requires_four_distinct_mv3_contexts_and_keeps_first_mismatch(self):
+        records = fixture()
+        records[0]["scenario"] = "mv3-chain"
+        for index in range(4):
+            records[index + 1]["stage"] = f"Safari MV3 context {index + 1}"
+            records[index + 1]["identity"]["worker"]["version"] = "3"
+        self.assertEqual(probe.validate_probe_output(encoded(records), 0, scenario="mv3-chain")["completedStages"], 4)
+        for key, value in [("version", "2"), ("nonce", "stale-context")]:
+            invalid = copy.deepcopy(records); invalid[2]["identity"]["worker"][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                probe.validate_probe_output(encoded(invalid), 0, scenario="mv3-chain")
+        mismatch = copy.deepcopy(records[:3])
+        mismatch[-1]["identity"]["worker"].update(startup="Bare WebKit", current="Bare WebKit")
+        mismatch[-1]["startupAndCurrentMatch"] = False
+        mismatch += [{"event": "failure", "stage": 1, "reason": "Worker/popup startup or current identity mismatch"},
+                     dict(records[-1], completedStages=1, mismatchOrHarnessFailure=True)]
+        self.assertEqual(probe.validate_probe_output(encoded(mismatch), 1, scenario="mv3-chain")["result"], "PUBLIC_UA_MISMATCH_OBSERVED")
+        with self.assertRaises(ValueError): probe.validate_probe_output(encoded(records), 0)
+
+
 class AdapterTests(unittest.TestCase):
     def fake_run(self, mismatch=None, exited=True, deferred=False, cleanup=True, cleanup_exited=True):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
@@ -223,7 +244,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_workflow_binds_original_input_manifest_and_archives_logs_without_app_or_profile(self):
         source = (Path(__file__).resolve().parent.parent / ".github/workflows/public-extension-ua.yml").read_text()
-        self.assertIn("5cd1d2bf98a441d373f560cdc4801f6b0cfb9ef5e26b5253c971c998fb5cf1d0", source)
+        self.assertIn("6763e5522494e913c06d2bc7f4b0d8a8167063974b49407858f3d8eb199835e7", source)
         self.assertIn("ref: ${{ github.event.pull_request.head.sha || github.sha }}", source)
         self.assertIn("if: ${{ always() }}", source)
         self.assertIn("${{ runner.temp }}/public-probe-logs/", source)

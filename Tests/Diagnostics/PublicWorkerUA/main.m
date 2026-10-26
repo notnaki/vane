@@ -73,6 +73,7 @@ static void ReportEngineImages(void) {
 @property (nonatomic) BOOL finishing;
 @property (nonatomic) BOOL mismatch;
 @property (nonatomic) BOOL freshMV3;
+@property (nonatomic) BOOL mv3Chain;
 @end
 
 @implementation Probe
@@ -109,6 +110,13 @@ static void ReportEngineImages(void) {
     ];
     if (self.freshMV3)
         self.stages = @[ @{ @"version": @3, @"label": @"fresh Safari MV3", @"suffix": SafariSuffix } ];
+    else if (self.mv3Chain)
+        self.stages = @[
+            @{ @"version": @3, @"label": @"Safari MV3 context 1", @"suffix": SafariSuffix },
+            @{ @"version": @3, @"label": @"Safari MV3 context 2", @"suffix": SafariSuffix },
+            @{ @"version": @3, @"label": @"Safari MV3 context 3", @"suffix": SafariSuffix },
+            @{ @"version": @3, @"label": @"Safari MV3 context 4", @"suffix": SafariSuffix }
+        ];
     WKWebExtensionControllerConfiguration *configuration = [WKWebExtensionControllerConfiguration nonPersistentConfiguration];
     configuration.defaultWebsiteDataStore = self.store;
     WKWebViewConfiguration *seed = configuration.webViewConfiguration;
@@ -122,7 +130,7 @@ static void ReportEngineImages(void) {
         @"appRunning": @(NSApp.running), @"OS": NSProcessInfo.processInfo.operatingSystemVersionString,
         @"WebKit": [[NSBundle bundleForClass:WKWebView.class] objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"unknown",
         @"ownedDataStoreID": self.storeID.UUIDString, @"arm": @"public-suffix-only",
-        @"scenario": self.freshMV3 ? @"fresh-mv3" : @"ordered" });
+        @"scenario": self.freshMV3 ? @"fresh-mv3" : self.mv3Chain ? @"mv3-chain" : @"ordered" });
     // Schedule after applicationDidFinishLaunching returns to NSApplication.run.
     dispatch_async(dispatch_get_main_queue(), ^{ [self beginStage]; });
 }
@@ -275,10 +283,11 @@ int main(int argc, const char *argv[]) {
             return 2;
         }
         BOOL freshMV3 = argc == 2 && strcmp(argv[1], "--fresh-mv3") == 0;
-        if (argc != 1 && !freshMV3) return 2;
+        BOOL mv3Chain = argc == 2 && strcmp(argv[1], "--mv3-chain") == 0;
+        if (argc != 1 && !freshMV3 && !mv3Chain) return 2;
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         __attribute__((objc_precise_lifetime)) Probe *probe = [Probe new];
-        probe.freshMV3 = freshMV3; app.delegate = probe;
+        probe.freshMV3 = freshMV3; probe.mv3Chain = mv3Chain; app.delegate = probe;
         [app run]; // A normal application loop, not XCTest/run-loop pumping.
         return 2;
     }

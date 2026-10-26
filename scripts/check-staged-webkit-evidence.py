@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Attest loaded Apple Safari-engine images after the unchanged UA checks pass."""
+"""Attest app-process Apple Safari images after UA checks pass.
+
+This does not inspect the service-worker process or establish its engine version.
+"""
 import argparse
 import json
 from pathlib import Path
@@ -62,7 +65,7 @@ def check_cohort(directory):
                 cache[str(path)] = {str(uuid.UUID(value)) for value in re.findall(r"UUID: ([0-9A-Fa-f-]{36})", result.stdout)}
             if str(uuid.UUID(image["uuid"])) not in cache[str(path)]:
                 raise ValueError("Loaded engine UUID does not match its Apple-signed installed image")
-    print("PASS staged WebKit evidence: 8 Hardened Runtime launches; Apple-signed WebKit/WebCore/JavaScriptCore image UUIDs match")
+    print("PASS app-process staged WebKit evidence: 8 Hardened Runtime launches; Apple-signed core image UUIDs match; worker-process images NOT ATTESTED")
 
 
 if __name__ == "__main__":

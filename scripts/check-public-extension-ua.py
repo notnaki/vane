@@ -20,7 +20,8 @@ spec.loader.exec_module(owned)
 ARM = "public-suffix-only"
 SUFFIX = "Version/26.6.2 Safari/605.1.15"
 STAGES = ("Safari MV2", "Safari MV3 after MV2", "second Safari MV3", "third Safari MV3")
-SCENARIOS = {"ordered": STAGES, "fresh-mv3": ("fresh Safari MV3",)}
+SCENARIOS = {"ordered": STAGES, "fresh-mv3": ("fresh Safari MV3",),
+             "mv3-chain": tuple(f"Safari MV3 context {index}" for index in range(1, 5))}
 
 
 def records_from_output(output):
@@ -139,7 +140,7 @@ def run_public_mode(bundle, evidence_dir, scenario="ordered"):
         if interrupted[0]: return 128 + interrupted[0]
         trial_logs = evidence_dir / f"trial-{number:02d}"
         trial_logs.mkdir(mode=0o700)
-        command = [str(executable)] + (["--fresh-mv3"] if scenario == "fresh-mv3" else [])
+        command = [str(executable)] + (["--" + scenario] if scenario != "ordered" else [])
         status, exited, output = owned.run_ua_process(command, environment, 90, trial_logs / "primary.log", interrupted)
         result = {"trial": number, "processStatus": status, "ownedAppExitVerified": exited,
                   "scenario": scenario, "result": "HARNESS_FAILED_OR_UNAVAILABLE", "backendRetirementVerified": False}

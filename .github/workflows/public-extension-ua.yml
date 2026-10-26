@@ -19,10 +19,10 @@ on:
         default: macos-26
         options: [macos-26, macos-26-safari27, xcode-27]
       scenario:
-        description: Ordered reproduction or fresh MV3 control without prior context unload
+        description: Ordered reproduction, fresh MV3, or MV3 reuse without prior MV2
         type: choice
         default: ordered
-        options: [ordered, fresh-mv3]
+        options: [ordered, fresh-mv3, mv3-chain]
 
 permissions:
   contents: read
@@ -60,7 +60,7 @@ jobs:
           from pathlib import Path
           root = Path('Tests/Diagnostics/PublicWorkerUA')
           manifest = root / 'SHA256.json'
-          assert hashlib.sha256(manifest.read_bytes()).hexdigest() == '5cd1d2bf98a441d373f560cdc4801f6b0cfb9ef5e26b5253c971c998fb5cf1d0'
+          assert hashlib.sha256(manifest.read_bytes()).hexdigest() == '6763e5522494e913c06d2bc7f4b0d8a8167063974b49407858f3d8eb199835e7'
           inputs = json.loads(manifest.read_text())
           assert len(inputs) == 14 and not manifest.is_symlink()
           actual = {str(path.relative_to(root)) for path in root.rglob('*') if path.is_file() or path.is_symlink()}
@@ -105,7 +105,7 @@ jobs:
           set -euo pipefail
           python3 -B scripts/check-public-extension-ua.py --bundle "$PUBLIC_PROBE_BUNDLE" --scenario "$PUBLIC_PROBE_SCENARIO" --evidence-dir "$RUNNER_TEMP/public-probe-logs" 2>&1 | tee "$RUNNER_TEMP/public-probe-run.log"
 
-      - name: Attest Hardened Runtime and actual Apple staged engine image UUIDs
+      - name: Attest app-process runtime and staged image UUIDs (worker images unverified)
         if: ${{ inputs.runtime == 'macos-26-safari27' }}
         run: python3 -B scripts/check-staged-webkit-evidence.py "$RUNNER_TEMP/public-probe-logs"
 

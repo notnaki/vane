@@ -81,7 +81,7 @@ jobs:
           mkdir -p "$HOME/Downloads"
           python3 -B scripts/check-extension-ua.py --binary .build/debug/vane --observer-mode "${{ matrix.observer_mode }}" --evidence-dir "$RUNNER_TEMP/vane-signed-extension-ua-logs" 2>&1 | tee "$RUNNER_TEMP/vane-signed-extension-ua.log"
 
-      - name: Attest Hardened Runtime and actual Apple staged engine image UUIDs
+      - name: Attest app-process runtime and staged image UUIDs (worker images unverified)
         if: ${{ inputs.runtime == 'macos-26-safari27' }}
         run: python3 -B scripts/check-staged-webkit-evidence.py "$RUNNER_TEMP/vane-signed-extension-ua-logs"
 
