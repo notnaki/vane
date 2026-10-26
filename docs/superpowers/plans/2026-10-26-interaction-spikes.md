@@ -26,7 +26,7 @@ Review focus: rapid same-direction gestures; reversal before landing; cross-prof
 - Footer display progress observes only marker ink; the menu/popover/keyboard containers retain their body across finger samples.
 - Frozen native captures omit live row observation and invisible close controls, and skip intrinsic-size fitting probes because their native frames are explicit.
 - Landing no longer activates an already-selected neighbor or rebuilds the same menu a second time. The completion-menu identity regression failed before the correction.
-- Short command-bar results are bounded at 24 rows. Lazy realization of that bounded list consumed multiple display intervals during scrolling; eager mounting materially reduced callback gaps. The larger actions catalogue keeps lazy mounting.
+- Eagerly mounting the bounded command-bar results improved debug scrolling but increased optimized typing callback gaps. Discarded it after matched release comparisons; retain the original lazy mounting.
 - Narrowing a cold overlay's display call to its subtree failed the existing compositor-readiness regression. Discarded it; hiding live content before the replacement is attached is incorrect.
 - Giving the palette a separate hosting boundary did not improve measured callback gaps. Discarded it.
 - Eagerly mounting all frozen sidebar rows made populated swipe admission worse and broke the malformed-small-shape fallback assertion. Discarded it.

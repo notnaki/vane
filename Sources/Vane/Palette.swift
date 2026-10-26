@@ -10,9 +10,6 @@ import SwiftUI
 /// database, no network — so `vane selfcheck --pure` can assert the ranking on a headless
 /// box. The view below is the only part that touches the app.
 enum Palette {
-    /// Ordinary search is capped at this many rows. Keep that bounded list
-    /// mounted instead of realizing and measuring rows during every scroll frame.
-    static let eagerRowLimit = 24
     /// Literal relevance tiers followed by the best fuzzy subsequence alignment.
     static func score(_ query: String, _ target: String) -> Int? {
         SearchMatch(query).score(target)
@@ -1271,13 +1268,12 @@ private struct PaletteResultHover: ViewModifier {
     private var list: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                Group {
-                    if rows.count <= Palette.eagerRowLimit {
-                        VStack(spacing: Look.barRowGap) { resultLines }
-                    } else {
-                        // The full actions catalogue is unbounded by ordinary search's
-                        // cap, so retain lazy mounting for that larger surface.
-                        LazyVStack(spacing: Look.barRowGap) { resultLines }
+                LazyVStack(spacing: Look.barRowGap) {
+                    // Slots, not rows: a keystroke rewrites each slot in place rather than
+                    // fading out one row and fading in another where it stood. Only slots
+                    // added or removed at the bottom animate.
+                    ForEach(Array(rows.enumerated()), id: \.offset) { i, row in
+                        line(i, row)
                     }
                 }
                 .padding(.top, Look.barInset - Look.barRowGap)
@@ -1293,11 +1289,6 @@ private struct PaletteResultHover: ViewModifier {
                 proxy.scrollTo(index)
             }
         }
-    }
-
-    private var resultLines: some View {
-        // Slots, not rows: each edit rewrites the result occupying a slot.
-        ForEach(Array(rows.enumerated()), id: \.offset) { i, row in line(i, row) }
     }
 
     private func line(_ i: Int, _ row: PaletteRow) -> some View {
@@ -1529,7 +1520,7 @@ private struct PaletteResultHover: ViewModifier {
         let out = layout.rows(suggestions: layout.acceptsSuggestions ? shownSuggestions() : [])
         // A cap so a bar over a hundred open tabs stays a list and not a scroll marathon —
         // but not while ⇥ is on, where the tail of the catalogue is the whole point.
-        let visible = actionsOnly ? out : Feel03PaletteLayout.visible(out, limit: Palette.eagerRowLimit,
+        let visible = actionsOnly ? out : Feel03PaletteLayout.visible(out, limit: 24,
             retaining: reset ? nil : selectedID,
             // History can cap or deduplicate a completion after it was arrowed onto.
             // Preserve its action through subsequent refreshes of the same query.
