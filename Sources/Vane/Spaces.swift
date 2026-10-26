@@ -479,11 +479,13 @@ enum Spaces {
 
         /// How far across the sidebar a released drag must travel to select a Space.
         /// The fingers can hold or reverse anywhere before release.
-        static let commitFraction: CGFloat = 0.3
+        static let commitFraction: CGFloat = 0.24
         /// …or this fast, in points per second, so a flick that barely moves still switches.
         static let flickSpeed: CGFloat = 600
         /// A few fast pixels at the edge are noise, not a deliberate flick.
         static let flickFraction: CGFloat = 0.1
+        /// Creating a Space keeps its more deliberate pull even when switching is lighter.
+        static let createFraction: CGFloat = 0.3
         /// How much of the travel past the first or last Space actually shows: the strip
         /// gives, so the gesture is answered, but it plainly does not want to go.
         static let bandGive: CGFloat = 0.3
@@ -509,6 +511,13 @@ enum Spaces {
         /// end twice (`.ended` after `.cancelled`), and both would otherwise commit.
         private(set) var armed = true
 
+        /// A new gesture can catch a landing between Spaces instead of starting at rest.
+        private let initialTravel: CGFloat
+        init(startingAt travel: CGFloat = 0) {
+            initialTravel = travel
+            self.travel = travel
+        }
+
         /// Feeds one scroll event. `offset` is where the strip should sit right now, or nil
         /// for "leave it where it is" — an event that is not the fingers moving must never
         /// stomp on a spring that is already running. `commit` is +1 for "next Space", -1
@@ -530,10 +539,10 @@ enum Spaces {
                 armed = false
                 return (nil, nil, 0)
             case .began:
-                travel = 0
+                travel = initialTravel
                 speed = 0
                 armed = true
-                return (0, nil, 0)
+                return (initialTravel, nil, 0)
             case .changed:
                 guard armed else { return (nil, nil, 0) }
                 travel += dx
@@ -573,7 +582,7 @@ enum Spaces {
         static func pull(_ travel: CGFloat, width: CGFloat, count: Int, index: Int,
                          create: Bool) -> CGFloat {
             guard create, travel < 0, index >= count - 1 else { return 0 }
-            return min(pullFull, -travel / (width * commitFraction))
+            return min(pullFull, -travel / (width * createFraction))
         }
 
         /// Where the strip sits for a given travel: 1:1 with the fingers, up to the one
@@ -868,7 +877,7 @@ enum Spaces {
                                create: true)
             let after = s.feed(dx: -w * 0.15, dt: 0.02, phase: .changed, width: w, count: 2, index: 1,
                                create: true)
-            assert("a pull past the last space fills the ring by the same line a swipe commits at",
+            assert("a pull past the last space keeps the deliberate creation threshold",
                    half.commit == nil && abs(half.pull - 0.5) < 0.001
                        && abs(half.offset ?? 0) <= w * Swipe.bandCap)
             assert("…a full ring is not yet a space: the circle still has to fill",

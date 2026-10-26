@@ -969,13 +969,14 @@ extension VaneWindow {
 /// Keep the same two sidebar surfaces on a native track from finger movement through
 /// landing, including page selection underneath it and a profile host handoff.
 @MainActor final class ProfileSpaceSlide: NSView {
-    let outgoing: NSView
-    private let incoming: NSView
-    private let direction: Int
-    private let targetID: UUID
-    private let originPreview: SpacePreviewList
-    private let preparedOrigin: Space
-    private let preparedTarget: Space
+    private(set) var outgoing: NSView
+    private var incoming: NSView
+    private var direction: Int
+    private var targetID: UUID
+    private var originPreview: SpacePreviewList
+    private var targetPreview: SpacePreviewList
+    private var preparedOrigin: Space
+    private var preparedTarget: Space
     private let preparedFrame: NSRect
     private weak var source: TabStore?
     private weak var destination: TabStore?
@@ -1029,6 +1030,7 @@ extension VaneWindow {
         self.direction = direction
         targetID = incoming.space.id
         originPreview = outgoing
+        targetPreview = incoming
         preparedOrigin = outgoing.space
         preparedTarget = incoming.space
         preparedFrame = frame
@@ -1097,6 +1099,57 @@ extension VaneWindow {
     func preparedFor(origin: Space, target: Space, frame: NSRect, width: CGFloat) -> Bool {
         !finished && preparedOrigin == origin && preparedTarget == target
             && preparedFrame == frame && travelWidth == width
+    }
+
+    /// Catch a returning strip or reverse a committed landing. Rebase the same native
+    /// rows around the selected page, retaining their actual compositor positions.
+    func resumeTracking(in store: TabStore, dx: CGFloat) -> CGFloat? {
+        guard isActive, completion != nil, isSource(store) || isDestination(store) else { return nil }
+        let rebase = store.currentSpaceID == preparedTarget.id
+        guard rebase ? dx * CGFloat(direction) > 0 : store.currentSpaceID == preparedOrigin.id else { return nil }
+        let presentedOffset = offset
+        animationID = nil
+        completion = nil
+        progressLink?.invalidate()
+        progressLink = nil
+        source?.spaceGesture.monitor.interruptLanding()
+        destination?.spaceGesture.monitor.interruptLanding()
+        finishGround?(source?.swipeSpace)
+        finishGround = nil
+        if let previous = source, previous !== store {
+            Motion.spaceHandoff {
+                previous.spaceDrag = 0
+                previous.spaceSwiping = false
+                previous.spaceGesture.profileSliding = false
+            }
+        }
+        var drag = presentedOffset
+        if rebase {
+            drag += CGFloat(direction) * travelWidth
+            swap(&outgoing, &incoming)
+            swap(&originPreview, &targetPreview)
+            swap(&preparedOrigin, &preparedTarget)
+            targetID = preparedTarget.id
+            direction = -direction
+        }
+        source = store
+        destination = nil
+        restingSpaceID = nil
+        lastTracking = nil
+        trackingVelocity = 0
+        outgoing.layer?.removeAnimation(forKey: "space-position")
+        incoming.layer?.removeAnimation(forKey: "space-position")
+        Motion.spaceHandoff {
+            store.spaceSwiping = true
+            store.spaceGesture.outgoing = originPreview
+            store.spaceGesture.neighbour = preparedTarget
+            store.spaceGesture.previewDirection = direction
+            store.spaceGesture.travelsFavorites = includesFavorites
+            store.spaceGesture.drag = drag
+            track(drag: drag)
+            publishProgress(drag)
+        }
+        return drag
     }
 
     var preparedPopulationReady: Bool {

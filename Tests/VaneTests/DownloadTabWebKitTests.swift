@@ -110,12 +110,17 @@ import XCTest
 
     func testDownloadFromExistingDocumentKeepsItsTab() async throws {
         try await loadOpener("<a href='/download'>Download</a>")
-        _ = try await opener.web.evaluateJavaScript("document.querySelector('a').click(); void 0")
+        let web = opener.web
+        let source = try server.url("/opener")
+        _ = try await web.evaluateJavaScript("document.querySelector('a').click(); void 0")
         try await waitForDownload()
+        // Transfer completion and cancellation of the provisional navigation arrive
+        // independently. Wait for WebKit to restore the retained document's URL.
+        try await compatibilityWait { !web.isLoading && web.url == source }
         XCTAssertEqual(store.tabs.map(\.id), [opener.id])
         XCTAssertEqual(store.current, opener.id)
-        XCTAssertEqual(opener.web.url, try server.url("/opener"))
-        XCTAssertNotNil(opener.existingWeb)
+        XCTAssertEqual(web.url, source)
+        XCTAssertTrue(opener.existingWeb === web)
     }
 
     func testDownloadFromWrittenBlankDocumentKeepsItsTab() async throws {
