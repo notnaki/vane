@@ -6,29 +6,8 @@ import XCTest
 
 @MainActor final class PasswordAutofillTests: XCTestCase {
     private var nativeFixtureProfiles: Set<UUID> = []
-    private var nativeFixtureLoop: NativeFixtureApplicationLoop?
-    private var nativeFixturePreviousPolicy: NSApplication.ActivationPolicy?
-    private var nativeFixturePolicyRequestAccepted: Bool?
-
     override func tearDown() async throws {
-        // Keep the fixture's policy until its profiles and owned loop are gone.
-        defer {
-            nativeFixtureLoop = nil
-            if let previousPolicy = nativeFixturePreviousPolicy {
-                NSApplication.shared.setActivationPolicy(previousPolicy)
-            }
-            nativeFixturePreviousPolicy = nil
-            nativeFixturePolicyRequestAccepted = nil
-        }
-        var cleanupError: (any Error)?
-        do { try await releaseNativeFixtureProfiles() }
-        catch { cleanupError = error }
-        do { try await nativeFixtureLoop?.close() }
-        catch {
-            if cleanupError == nil { cleanupError = error }
-            else { XCTFail("Native continuation AppKit loop join also failed: \(error)") }
-        }
-        if let cleanupError { throw cleanupError }
+        try await releaseNativeFixtureProfiles()
     }
 
     private func releaseNativeFixtureProfiles() async throws {
@@ -78,6 +57,7 @@ import XCTest
             try await Task.sleep(for: .milliseconds(100))
             assertReady()
         }
+        XCTAssertFalse(NSApplication.shared.isRunning, "The native fixture must join its AppKit loop before returning")
     }
 
     private final class Capture: NSObject, WKScriptMessageHandler {
@@ -325,63 +305,62 @@ import XCTest
         else { throw XCTSkip("Disposable Keychain fixtures unavailable") }
         nativeFixtureProfiles.insert(profile)
         let app = NSApplication.shared
-        let previousPolicy: NSApplication.ActivationPolicy
-        if let savedPolicy = nativeFixturePreviousPolicy {
-            previousPolicy = savedPolicy
-        } else {
-            previousPolicy = app.activationPolicy()
-            nativeFixturePreviousPolicy = previousPolicy
-            if previousPolicy == .prohibited {
-                nativeFixturePolicyRequestAccepted = app.setActivationPolicy(.accessory)
+        let previousPolicy = app.activationPolicy()
+        defer { app.setActivationPolicy(previousPolicy) }
+        let policyRequestAccepted: Bool?
+        if previousPolicy == .prohibited { policyRequestAccepted = app.setActivationPolicy(.accessory) }
+        else { policyRequestAccepted = nil }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var fixtureError: (any Error)?
+        do {
+            let tab = Tab(profileID: profile)
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            defer { tab.tearDown(); window.close() }
+            window.contentView = tab.web
+            let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first, "A native account-selection fixture needs a display")
+            let available = screen.visibleFrame.insetBy(dx: 20, dy: 20)
+            let size = CGSize(width: min(window.frame.width, available.width),
+                              height: min(window.frame.height, available.height))
+            // Fit the complete decorated window, not just its content rectangle.
+            window.setFrame(CGRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
+                                   width: size.width, height: size.height), display: false)
+            window.makeKeyAndOrderFront(nil)
+            app.activate(ignoringOtherApps: true)
+            // These fixtures choose native account rows. Establish that user-facing
+            // context once, before loading; individual navigations must stand alone.
+            let web = tab.web
+            try await wait(for: "native continuation fixture to receive user interaction", diagnostics: {
+                let running = NSRunningApplication.current
+                let openValue = UserDefaults.standard.object(forKey: "NSOpen")
+                let openAbsentOrEmpty = openValue == nil || (openValue as? String)?.isEmpty == true ||
+                    (openValue as? [Any])?.isEmpty == true
+                return "appActive=\(app.isActive), windowKey=\(window.isKeyWindow), windowVisible=\(window.isVisible), " +
+                    "windowOcclusion=\(window.occlusionState.rawValue), onScreen=\(NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) }), " +
+                    "priorPolicy=\(previousPolicy.rawValue), policyRequestAccepted=\(policyRequestAccepted.map(String.init) ?? "not-requested"), " +
+                    "appPolicy=\(app.activationPolicy().rawValue), runningPolicy=\(running.activationPolicy.rawValue), " +
+                    "runningActive=\(running.isActive), finishedLaunching=\(running.isFinishedLaunching), appRunning=\(app.isRunning), " +
+                    "appDelegateNil=\(app.delegate == nil), NSOpenAbsentOrEmpty=\(openAbsentOrEmpty), " +
+                    "isOnActiveSpace=\(window.isOnActiveSpace), isMiniaturized=\(window.isMiniaturized), " +
+                    "viewsNeedDisplay=\(window.viewsNeedDisplay), contentNeedsLayout=\(web.needsLayout), " +
+                    "contentNeedsDisplay=\(web.needsDisplay), alphaPositive=\(window.alphaValue > 0)"
+            }) {
+                // The owned AppKit loop supplies event dispatch and deferred drawing.
+                return app.isRunning && NSRunningApplication.current.isFinishedLaunching && app.isActive &&
+                    window.isKeyWindow && window.isVisible && window.occlusionState.contains(.visible) &&
+                    NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) } &&
+                    window.contentView === web && web.window === window && !web.isHiddenOrHasHiddenAncestor &&
+                    web.bounds.width > 0 && web.bounds.height > 0
             }
+            try await body(tab, origin)
+        } catch { fixtureError = error }
+        do { try await loop.close() }
+        catch {
+            if fixtureError == nil { fixtureError = error }
+            else { XCTFail("Native continuation AppKit loop join also failed: \(error)") }
         }
-        let policyRequestAccepted = nativeFixturePolicyRequestAccepted
-        if let nativeFixtureLoop {
-            try nativeFixtureLoop.verifyRunning()
-        } else {
-            nativeFixtureLoop = try await NativeFixtureApplicationLoop.acquire()
-        }
-        let tab = Tab(profileID: profile)
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { tab.tearDown(); window.close() }
-        window.contentView = tab.web
-        let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first, "A native account-selection fixture needs a display")
-        let available = screen.visibleFrame.insetBy(dx: 20, dy: 20)
-        let size = CGSize(width: min(window.frame.width, available.width),
-                          height: min(window.frame.height, available.height))
-        // Fit the complete decorated window, not just its content rectangle.
-        window.setFrame(CGRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
-                               width: size.width, height: size.height), display: false)
-        window.makeKeyAndOrderFront(nil)
-        app.activate(ignoringOtherApps: true)
-        // These fixtures choose native account rows. Establish that user-facing
-        // context once, before loading; individual navigations must stand alone.
-        let web = tab.web
-        try await wait(for: "native continuation fixture to receive user interaction", diagnostics: {
-            let running = NSRunningApplication.current
-            let openValue = UserDefaults.standard.object(forKey: "NSOpen")
-            let openAbsentOrEmpty = openValue == nil || (openValue as? String)?.isEmpty == true ||
-                (openValue as? [Any])?.isEmpty == true
-            return "appActive=\(app.isActive), windowKey=\(window.isKeyWindow), windowVisible=\(window.isVisible), " +
-                "windowOcclusion=\(window.occlusionState.rawValue), onScreen=\(NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) }), " +
-                "priorPolicy=\(previousPolicy.rawValue), policyRequestAccepted=\(policyRequestAccepted.map(String.init) ?? "not-requested"), " +
-                "appPolicy=\(app.activationPolicy().rawValue), runningPolicy=\(running.activationPolicy.rawValue), " +
-                "runningActive=\(running.isActive), finishedLaunching=\(running.isFinishedLaunching), appRunning=\(app.isRunning), " +
-                "appDelegateNil=\(app.delegate == nil), NSOpenAbsentOrEmpty=\(openAbsentOrEmpty), " +
-                "isOnActiveSpace=\(window.isOnActiveSpace), isMiniaturized=\(window.isMiniaturized), " +
-                "viewsNeedDisplay=\(window.viewsNeedDisplay), contentNeedsLayout=\(web.needsLayout), " +
-                "contentNeedsDisplay=\(web.needsDisplay), alphaPositive=\(window.alphaValue > 0)"
-        }) {
-            // The owned AppKit loop supplies event dispatch and deferred drawing.
-            return app.isRunning && NSRunningApplication.current.isFinishedLaunching && app.isActive &&
-                window.isKeyWindow && window.isVisible && window.occlusionState.contains(.visible) &&
-                NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) } &&
-                window.contentView === web && web.window === window && !web.isHiddenOrHasHiddenAncestor &&
-                web.bounds.width > 0 && web.bounds.height > 0
-        }
-        try await body(tab, origin)
+        if let fixtureError { throw fixtureError }
     }
 
     private func continuationLoadState(_ tab: Tab, web: WKWebView, requestedURL: URL) -> String {
