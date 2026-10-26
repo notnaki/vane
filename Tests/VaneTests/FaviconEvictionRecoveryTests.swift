@@ -1,6 +1,8 @@
 import AppKit
+import SwiftUI
 import WebKit
 import XCTest
+import Darwin
 @testable import vane
 
 private actor FaviconRecoveryRequests {
@@ -13,6 +15,71 @@ private actor FaviconRecoveryRequests {
 @MainActor final class FaviconEvictionRecoveryTests: XCTestCase {
     private static let svg = Data("<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='red'/></svg>".utf8)
 
+    func testRestoredTabDiskLoadPublishesCacheArrival() async throws {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        let directory = ProfileManager.faviconDir(for: profile, in: Store.directory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Self.svg.write(to: directory.appendingPathComponent("restored-cache.invalid"))
+        let cache = Favicons(profileID: profile, fetch: { _ in nil })
+        let tab = Tab()
+        defer { tab.tearDown() }
+        tab.park(url: URL(string: "https://restored-cache.invalid/")!, Parked(title: "Restored"))
+        cache.load(for: tab)
+        try await waitUntil { tab.favicon != nil }
+        XCTAssertEqual(cache.generation, 1, "Restoration must notify cache-only icon leaves too")
+        XCTAssertTrue(cache.icon(for: tab.currentURL!) === tab.favicon)
+    }
+
+    func testMountedIconLeafUpdatesAfterColdDiskDecode() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let profile = UUID()
+        let directory = ProfileManager.faviconDir(for: profile, in: Store.directory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Self.svg.write(to: directory.appendingPathComponent("icon-leaf.invalid"))
+        let cache = Favicons(profileID: profile, fetch: { _ in nil })
+        var displayedIcon = false
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 40, height: 40),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView:
+            CachedFavicon(cache: cache, url: URL(string: "https://icon-leaf.invalid/")) { image in
+                SiteIcon(icon: image)
+                    .onChange(of: image != nil, initial: true) { displayedIcon = image != nil }
+            })
+        window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        try await waitUntil { displayedIcon }
+        XCTAssertEqual(cache.generation, 1)
+    }
+
+    func testSlowDiskCacheReadDoesNotBlockTheCallingUIActor() async throws {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        let directory = ProfileManager.faviconDir(for: profile, in: Store.directory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("slow-cache.invalid")
+        XCTAssertEqual(file.path.withCString { mkfifo($0, S_IRUSR | S_IWUSR) }, 0)
+        // A pipe behaves like a stalled disk read without a mock of the cache.
+        let writer = Task.detached {
+            try await Task.sleep(for: .milliseconds(200))
+            let handle = try FileHandle(forWritingTo: file)
+            try handle.write(contentsOf: Data("invalid icon".utf8))
+            try handle.close()
+        }
+        let cache = Favicons(profileID: profile, fetch: { _ in nil })
+        let start = ContinuousClock.now
+        XCTAssertNil(cache.icon(for: URL(string: "http://slow-cache.invalid/")!))
+        let elapsed = start.duration(to: .now)
+        try await writer.value
+        XCTAssertLessThan(elapsed, .milliseconds(100),
+                          "A view's cache lookup must return before slow disk IO completes")
+    }
+
     private func waitUntil(line: UInt = #line, _ condition: @MainActor () async -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(10)
         while !(await condition()) {
@@ -24,7 +91,7 @@ private actor FaviconRecoveryRequests {
         }
     }
 
-    private func loadIconPage(_ html: String, page: URL, artwork: URL, in tab: Tab) async throws {
+    private func loadIconPage(_ html: String, page: URL, artwork: URL, in tab: vane.Tab) async throws {
         let web = tab.web
         // The injected cache owns this fixture's icons. Tab's didFinish would also
         // start the profile cache, whose failed lookup could clear the injected result.
@@ -97,6 +164,10 @@ private actor FaviconRecoveryRequests {
         let artwork = URL(string: "http://127.0.0.1:1/declared.svg")!
         let html = "<link rel='icon' href='\(artwork.absoluteString)'><p>Private icon fixture</p>"
         let first = Tab(isPrivate: true), replacement = Tab(isPrivate: true)
+        // Exercise this injected cache, without Tab.didFinish starting a second,
+        // unrelated cache request that can overwrite the same favicon property.
+        first.web.navigationDelegate = nil
+        replacement.web.navigationDelegate = nil
         defer { first.tearDown(); replacement.tearDown() }
         try await loadIconPage(html, page: page, artwork: artwork, in: first)
         cache.load(for: first)

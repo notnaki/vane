@@ -1504,7 +1504,7 @@ extension TabStore {
     /// Space. A sidecar file (the way `Suspension.SpaceState` does it) would be the tidier
     /// home, but this is one `Data` of a few hundred bytes and the flat url list it belongs
     /// to already lives here. `forgetShape` is what takes a deleted Space's key with it.
-    static func shapeKey(_ kind: TabKind = .pinned, space: UUID?, profileID: UUID) -> String {
+    nonisolated static func shapeKey(_ kind: TabKind = .pinned, space: UUID?, profileID: UUID) -> String {
         let name = kind == .today ? "todayShape" : "pinShape"
         return ProfileManager.defaultsKey(space.map { "\(name).\($0.uuidString)" } ?? name,
                                           profileID)

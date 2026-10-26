@@ -39,6 +39,7 @@ import SwiftUI
 
     static func ask(over host: NSWindow?) -> Answer {
         isUp = true
+        Feel02PressMonitor.quitDialogDidOpen()
         defer { isUp = false }
         let host = presentationHost(preferred: host, main: NSApp.mainWindow, ordered: NSApp.orderedWindows)
         if let host, let content = host.contentView { return ask(in: host, content: content) }

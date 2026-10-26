@@ -233,6 +233,7 @@ final class TabTooltipAnchorView: NSView {
     private(set) var centered = false
     private(set) var enabled = true
     private var tracking: NSTrackingArea?
+    private let rebuildTracking = ProcessInfo.processInfo.environment["VANE_DIAG_REBUILD_TOOLTIP_TRACKING"] == "1"
 
     init(tooltip: TabTooltip = .shared) {
         self.tooltip = tooltip
@@ -259,6 +260,10 @@ final class TabTooltipAnchorView: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
+        // AppKit recomputes .inVisibleRect as clipping and geometry change; the
+        // registration's owner and options stay constant throughout this view's life.
+        // Keep the old path available for an independent same-binary measurement.
+        if tracking != nil && !rebuildTracking { return }
         if let tracking { removeTrackingArea(tracking) }
         let area = NSTrackingArea(rect: .zero,
             options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)

@@ -290,22 +290,28 @@ extension View {
 
     /// Two-finger horizontal swipe on the sidebar switches Space.
     func spaceSwipe(_ store: TabStore) -> some View {
-        modifier(SpaceSwipe(store: store, visible: store.sidebarShown || store.sidebarPeeking))
+        modifier(SpaceSwipe(store: store))
     }
 }
 
 /// Profile favourites travel with the incoming Space only at a profile boundary.
 /// Observing the gesture here keeps the rest of the browser out of per-frame updates.
 struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
-    let store: TabStore
+    // Section membership changes must refresh the shell's readiness declaration
+    // even when the gesture, store identity and generic section view stay equal.
+    @SidebarObserved var store: TabStore
     let favorites: Favorites
     let sections: Sections
     private let favoriteCount: Int
     @ObservedObject private var gesture: SpaceGesture
     @ObservedObject private var sidebar = SidebarWidth.shared
+    @Environment(\.nativeCachedSidebarBatches) private var nativeCachedBatches
+    @State private var readinessPinnedRows = Feel02SidebarRowsCache()
+    @State private var readinessTodayRows = Feel02SidebarRowsCache()
+    @State private var readinessOwnerID = UUID()
 
     init(store: TabStore, favorites: Favorites, sections: Sections) {
-        self.store = store
+        _store = SidebarObserved(wrappedValue: store)
         self.favorites = favorites
         self.sections = sections
         favoriteCount = store.tabs.filter { $0.kind == .favourite }.count
@@ -318,13 +324,28 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
         gesture.swiping && gesture.neighbour != nil && gesture.outgoing != nil
     }
 
+    private func declareNativePopulation(_ scope: SidebarNativeReadinessScope) -> [String: [String]]? {
+        guard nativeCachedBatches || NativeCachedSidebarBatchesExperiment.enabled else { return nil }
+        let pinned = readinessPinnedRows.resolve(in: store, shape: store.pins).rows
+        let today = readinessTodayRows.resolve(in: store, shape: store.todayShape).rows
+        let sections = ["today": today.map(\.id),
+                        "pinned": store.pinnedSectionCollapsed ? [] : pinned.map(\.id)]
+        SidebarNativeReadinessCoordinator.shared.expectPopulation(scope, sections: sections, populationOwnerID: readinessOwnerID)
+        return sections
+    }
+
     var body: some View {
+        let readinessScope = SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID)
+        let readinessSections = declareNativePopulation(readinessScope)
+
         // Keep both sections in one tree when a gesture starts, reverses or springs back.
         // Only profile boundaries move the grid; ordinary Space switches leave it fixed.
         VStack(spacing: Look.rowGap) {
             favorites.offset(x: gesture.travelsFavorites ? gesture.drag : 0)
             ZStack(alignment: .topLeading) {
                 sections.spaceSlide(store)
+                    .environment(\.sidebarNativeReadinessScope, readinessScope)
+                    .environment(\.sidebarNativeReadinessOwnerID, readinessOwnerID)
                     .transaction(value: store.currentSpaceID) {
                         if gesture.swiping {
                             $0.animation = nil
@@ -345,7 +366,8 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
             }
             .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false, sectionsOnly: true,
                                          renderedSpaceID: store.currentSpaceID,
-                                         renderedAtRest: !gesture.swiping && !gesture.profileSliding && gesture.drag == 0))
+                                         renderedAtRest: !gesture.swiping && !gesture.profileSliding && gesture.drag == 0,
+                                         readinessSections: readinessSections, readinessOwnerID: readinessOwnerID))
             .opacity(gesture.profileSliding ? 0 : 1)
         }
         .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false))
@@ -389,26 +411,58 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
 
 /// Native geometry keeps a profile boundary on the same sidebar track.
 private struct SpaceStripAnchor: NSViewRepresentable {
+    @Environment(\.nativeCachedSidebarBatches) private var nativeCachedBatches
+    final class Anchor: NSView {
+        var readinessScope: SidebarNativeReadinessScope?
+        var readinessOwnerID: UUID?
+        func setReadinessScope(_ next: SidebarNativeReadinessScope?, sections: [String: [String]]? = nil,
+                               populationOwnerID: UUID? = nil) {
+            if readinessScope == next, readinessOwnerID == populationOwnerID {
+                if let next, let sections {
+                    SidebarNativeReadinessCoordinator.shared.retainPopulationExpectation(next,
+                        owner: ObjectIdentifier(self), sections: sections, populationOwnerID: populationOwnerID)
+                }
+                return
+            }
+            if let readinessScope {
+                SidebarNativeReadinessCoordinator.shared.releasePopulationExpectation(readinessScope, owner: ObjectIdentifier(self))
+            }
+            readinessScope = next
+            readinessOwnerID = populationOwnerID
+            if let next {
+                SidebarNativeReadinessCoordinator.shared.retainPopulationExpectation(next, owner: ObjectIdentifier(self),
+                    sections: sections, populationOwnerID: populationOwnerID)
+            }
+        }
+    }
     let store: TabStore
     let gesture: SpaceGesture
     let moving: Bool
     var sectionsOnly = false
     var renderedSpaceID: UUID?
     var renderedAtRest = false
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
+    var readinessSections: [String: [String]]? = nil
+    var readinessOwnerID: UUID? = nil
+    func makeNSView(context: Context) -> Anchor {
+        let view = Anchor()
         view.wantsLayer = true
         if moving { gesture.outgoingView = view }
         else if sectionsOnly { gesture.sectionsView = view }
         else { gesture.stripView = view }
         return view
     }
-    func updateNSView(_ view: NSView, context: Context) {
+    func updateNSView(_ view: Anchor, context: Context) {
         if sectionsOnly {
+            view.setReadinessScope(nativeCachedBatches || NativeCachedSidebarBatchesExperiment.enabled
+                ? SidebarNativeReadinessScope(store: store, spaceID: renderedSpaceID) : nil,
+                sections: readinessSections, populationOwnerID: readinessOwnerID)
             gesture.monitor.schedulePreparation(in: store)
             (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidUpdate(
                 store, renderedSpaceID: renderedSpaceID, atRest: renderedAtRest)
         }
+    }
+    static func dismantleNSView(_ view: Anchor, coordinator: ()) {
+        view.setReadinessScope(nil)
     }
 }
 
@@ -475,6 +529,8 @@ struct SpacePreviewList: View, Equatable {
     let favorites: [URL]
     let includingFavorites: Bool
     let pinnedCollapsed: Bool
+    let eagerlyMountsVisibleRows: Bool
+    private let tracksNativePopulation: Bool
 
     /// Capture once, before the preview moves. Decoding interaction states and rebuilding
     /// folders in body would repeat disk work on every frame of a populated Space swipe.
@@ -483,6 +539,7 @@ struct SpacePreviewList: View, Equatable {
          live: LiveFolders? = nil, renderStore: TabStore? = nil,
          favoriteTabs: [Tab] = [], unlocked: Set<UUID> = [], newProfile: Bool = false,
          selection: Set<UUID> = [], scrollOffset: CGFloat = 0) {
+        tracksNativePopulation = NativeCachedSidebarBatchesExperiment.enabled
         var space = requested
         if newProfile && state == nil && liveTabs == nil {
             // A newly mounted profile uses TabStore.init's restoration path, which removes
@@ -543,9 +600,16 @@ struct SpacePreviewList: View, Equatable {
                                   liveShape: state?.pins, splits: splits, live: live, unlocked: unlocked)
         let today = Self.section(space: space, kind: .today, tabs: self.liveTabs,
                                  liveShape: state?.todayShape, splits: splits, live: nil, unlocked: unlocked)
-        pinnedAvailable = !pinned.isEmpty
+        pinnedAvailable = !pinned.rows.isEmpty
         todayCount = self.liveTabs?.filter { $0.kind == .today }.count ?? space.tabURLs.count
-        rows = (pinnedCollapsed ? [] : pinned, today)
+        let regularCount = self.liveTabs?.filter { $0.kind != .favourite }.count ?? diskTabs.count
+        let tabCount = regularCount + favoriteItems.count
+        let folderCount = pinned.folderCount + today.folderCount
+        // Preserve the existing small-preview lazy path, including the retained-lazy
+        // experiment. Only the new medium-outline path needs preview/live parity.
+        eagerlyMountsVisibleRows = Feel02SidebarRowsCache.usesBoundedEagerRows(
+            tabCount: tabCount, folderCount: folderCount)
+        rows = (pinnedCollapsed ? [] : pinned.rows, today.rows)
     }
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.identity == rhs.identity }
@@ -597,24 +661,44 @@ struct SpacePreviewList: View, Equatable {
                 .padding(.bottom, pinnedCollapsed || !pinnedAvailable ? 0 : Look.sectionGap / 2 - Look.rowGap)
             } rows: {
                 if pinnedAvailable {
-                    LazyVStack(spacing: Look.rowGap) {
-                        ForEach(Array(rows.pinned.enumerated()), id: \.offset) { _, entry in
-                            row(entry, selected: isSelected(entry))
-                        }
-                    }
+                    sectionRows(rows.pinned, section: "pinned")
                     .padding(.bottom, pinnedCollapsed ? -Look.rowGap : 0)
                 }
                 tidy
                 newTab
-                LazyVStack(spacing: Look.rowGap) {
-                    ForEach(Array(rows.today.enumerated()), id: \.offset) { _, entry in
-                        row(entry, selected: isSelected(entry))
-                    }
-                }
+                sectionRows(rows.today, section: "today")
                 Color.clear.frame(maxWidth: .infinity, minHeight: Look.rowHeight)
             }
         }
         .environment(\.feel02PressFeedbackEnabled, false)
+    }
+
+    private func sectionRows(_ rows: [Row], section: String) -> some View {
+        Group {
+            if eagerlyMountsVisibleRows {
+                VStack(spacing: Look.rowGap) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { index, entry in
+                        previewRow(entry, index: index, section: section)
+                    }
+                }
+            } else {
+                LazyVStack(spacing: Look.rowGap) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { index, entry in
+                        previewRow(entry, index: index, section: section)
+                    }
+                }
+            }
+        }
+        .background {
+            if tracksNativePopulation { SidebarPreviewPopulationAnchor(section: section, count: rows.count) }
+        }
+    }
+
+    private func previewRow(_ entry: Row, index: Int, section: String) -> some View {
+        row(entry, selected: isSelected(entry))
+            .background {
+                if tracksNativePopulation { SidebarPreviewPopulationAnchor(section: section, row: index) }
+            }
     }
 
     private func isSelected(_ row: Row) -> Bool {
@@ -632,7 +716,8 @@ struct SpacePreviewList: View, Equatable {
     /// Disk shapes name URLs; live shapes name Tab IDs, so restore the former with the
     /// same counted URL mapping as the real section (duplicates remain distinct).
     private static func section(space: Space, kind: TabKind, tabs: [Tab]?,
-                                liveShape: Pins?, splits: [Split], live: LiveFolders?, unlocked: Set<UUID>) -> [Row] {
+                                liveShape: Pins?, splits: [Split], live: LiveFolders?, unlocked: Set<UUID>)
+        -> (rows: [Row], folderCount: Int) {
         let urls = kind == .pinned ? space.pinnedTabURLs ?? [] : space.tabURLs
         let loaded = tabs?.filter { $0.kind == kind }
         let savedShape = TabStore.savedShape(kind, space: space.id, profileID: space.profileID)
@@ -643,11 +728,15 @@ struct SpacePreviewList: View, Equatable {
             tabs.map { tab in (tab.pinnedURL?.absoluteString ?? "", tab.id.uuidString) }
         } ?? ordered.enumerated().map { ($0.element.absoluteString, String($0.offset)) }
         var shape = liveShape ?? TabStore.adopted(disk, opened: opened)
+        // A live snapshot counts its raw shape. Cold restoration removes stale empty
+        // Today folders before the arriving live sidebar evaluates its structural bound.
+        let liveFolderCount = liveShape?.entries.filter { $0.folder != nil }.count
         if kind == .today { shape.removeEmptyFolders() }
+        let folderCount = liveFolderCount ?? shape.entries.filter { $0.folder != nil }.count
         let byID = Dictionary(uniqueKeysWithValues: opened.map { ($0.id, $0.url) })
         let liveByID = Dictionary(uniqueKeysWithValues: (loaded ?? []).map { ($0.id.uuidString, $0) })
         let strip = (tabs ?? []).map { ($0.id, $0.kind) }
-        return shape.visible(unlocked: unlocked).compactMap { visible in
+        let rows: [Row] = shape.visible(unlocked: unlocked).compactMap { visible in
             if let folder = visible.entry.folder { return .folder(folder, depth: visible.depth) }
             guard let id = visible.entry.tab, let name = byID[id] else { return nil }
             let tab = liveByID[id]
@@ -662,6 +751,7 @@ struct SpacePreviewList: View, Equatable {
             }
             return .site(url, kind, tab, depth: visible.depth, pr: pr, savedIndex: tab == nil ? Int(id) : nil)
         }
+        return (rows, folderCount)
     }
 
     private var favoriteGrid: some View {
@@ -673,14 +763,16 @@ struct SpacePreviewList: View, Equatable {
                     ForEach(Array(favoriteItems.enumerated()), id: \.offset) { _, item in
                         let tab = item.tab
                         let page = tab?.currentURL ?? item.url.flatMap { saved[$0.absoluteString]?.page ?? $0 }
-                        let icon = if let tab { tab.favicon } else { page.flatMap {
-                            $0.isFileURL ? Files.icon(for: $0) : Favicons.cache(for: space.profileID).icon(for: $0)
-                        } }
-                        SidebarPageIcon(icon: icon, easel: page.flatMap(EaselAddress.boardID) != nil,
-                                        rounded: page?.isFileURL != true, size: Look.tileIcon)
-                            .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
-                            .background(FavoriteTileBackground(selected: tab?.id == selectedID && tab != nil,
-                                                              hovering: false, icon: icon))
+                        let fixedIcon = tab?.favicon ?? page.flatMap { $0.isFileURL ? Files.icon(for: $0) : nil }
+                        CachedFavicon(cache: Favicons.cache(for: space.profileID),
+                                      url: fixedIcon == nil && page?.isFileURL != true ? page : nil) { cached in
+                            let icon = fixedIcon ?? cached
+                            SidebarPageIcon(icon: icon, easel: page.flatMap(EaselAddress.boardID) != nil,
+                                            rounded: page?.isFileURL != true, size: Look.tileIcon)
+                                .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
+                                .background(FavoriteTileBackground(selected: tab?.id == selectedID && tab != nil,
+                                                                  hovering: false, icon: icon))
+                        }
                     }
                 }
                 .padding(.bottom, Look.inset - Look.rowGap)
@@ -750,11 +842,13 @@ struct SpacePreviewList: View, Equatable {
             guard case .site(let url, .pinned, _, _, _, _) = row else { return false }
             return tab.map { !$0.atHome } ?? (page != url)
         }()
-        let icon = tab?.favicon ?? page.flatMap { $0.isFileURL ? Files.icon(for: $0)
-            : Favicons.cache(for: space.profileID).icon(for: $0) }
+        let fixedIcon = tab?.favicon ?? page.flatMap { $0.isFileURL ? Files.icon(for: $0) : nil }
         return SidebarRow(selected: selected, action: {}) {
-            SidebarPageIcon(icon: icon, easel: page.flatMap(EaselAddress.boardID) != nil,
-                            pr: row.pr, rounded: page?.isFileURL != true)
+            CachedFavicon(cache: Favicons.cache(for: space.profileID),
+                          url: fixedIcon == nil && page?.isFileURL != true ? page : nil) { cached in
+                SidebarPageIcon(icon: fixedIcon ?? cached, easel: page.flatMap(EaselAddress.boardID) != nil,
+                                pr: row.pr, rounded: page?.isFileURL != true)
+            }
         } label: {
             HStack(spacing: 6) {
                 if returning {
@@ -915,27 +1009,41 @@ extension TabStore {
 
 private struct SpaceSwipe: ViewModifier {
     @ObservedObject var store: TabStore
-    let visible: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var visible: Bool { store.profileVisible && (store.sidebarShown || store.sidebarPeeking) }
+
+    private func reconcileInput() {
+        let monitor = store.spaceGesture.monitor
+        if !store.profileVisible { monitor.remove() }
+        else if visible { monitor.install(store) }
+        else { monitor.suspend() }
+    }
 
     func body(content: Content) -> some View {
         let monitor = store.spaceGesture.monitor
-        let visible = self.visible && store.profileVisible
         content
-            .onAppear { if visible { monitor.install(store) } }
-            .onDisappear { monitor.remove() }
+            .onAppear { reconcileInput() }
+            .onDisappear {
+                // Cached-host callbacks can trail a completed return to this profile.
+                // Model ownership, rather than that old callback, owns current input.
+                if !store.profileVisible || store.window == nil || !TabStore.all.contains(where: { $0 === store }) {
+                    monitor.remove()
+                }
+            }
             // The sidebar stays mounted offscreen between edge reveals. Its gesture
             // lifetime still follows visibility, including cancellation of a live drag.
-            .onChange(of: visible) { _, visible in
+            .onChange(of: visible) {
                 if visible {
-                    if !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35) }
-                    monitor.install(store)
-                } else { monitor.remove() }
+                    if !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35, preservingSurfaces: true) }
+                }
+                reconcileInput()
             }
             .onChange(of: store.sidebarShown) { _, shown in
                 // Docking a peek keeps `visible` true, but still animates the page seam.
-                if shown, !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35) }
+                if shown, !Motion.reduced { monitor.postponePreparation(in: store, by: 0.35, preservingSurfaces: true) }
             }
+            .onChange(of: store.profileVisible) { reconcileInput() }
             .onChange(of: reduceMotion) { _, reduced in
                 if reduced { monitor.finishForReducedMotion() }
             }
@@ -951,9 +1059,11 @@ private struct SpaceSwipe: ViewModifier {
 /// the ends, the one-commit rule — lives in the pure state machine, where `check()` can hold
 /// it to account.
 @MainActor final class SwipeMonitor {
+    var isInstalled: Bool { monitor != nil }
     private(set) var preparedSlides: [UUID: ProfileSpaceSlide] = [:]
     private var preparation: DispatchWorkItem?
     private var preparationNotBefore: TimeInterval = 0
+    private static let preparationQuietInterval: TimeInterval = 0.35
     private var stalePreparedSlides: [ProfileSpaceSlide] = []
     private var preparationObservers: [AnyCancellable] = []
     private var preparationPeers: [ObjectIdentifier: AnyCancellable] = [:]
@@ -965,7 +1075,8 @@ private struct SpaceSwipe: ViewModifier {
         preparationProfiles = profiles
         preparationPeers.removeAll()
         for peer in TabStore.all where peer !== store && profiles.contains(peer.profileID) {
-            preparationPeers[ObjectIdentifier(peer)] = peer.objectWillChange.sink { [weak self, weak store] _ in
+            preparationPeers[ObjectIdentifier(peer)] = peer.sidebarSnapshotChanges.sink { [weak self, weak store] _ in
+                self?.extendPreparationQuietInterval()
                 self?.invalidatePreparation()
                 DispatchQueue.main.async { [weak self, weak store] in
                     guard let self, let store else { return }
@@ -978,17 +1089,33 @@ private struct SpaceSwipe: ViewModifier {
     private func invalidatePreparation() {
         preparation?.cancel()
         preparation = nil
+        // Detach and revoke immediately, including protected peer changes. Keep
+        // ownership until idle so the input event does not also destroy SwiftUI's
+        // focus/hover/layout graphs for every captured row.
+        let retired = Array(preparedSlides.values)
         discardPreparation()
+        stalePreparedSlides.append(contentsOf: retired)
+    }
+
+    private func extendPreparationQuietInterval() {
+        preparationNotBefore = max(preparationNotBefore,
+            ProcessInfo.processInfo.systemUptime + Self.preparationQuietInterval)
+        preparation?.cancel()
+        preparation = nil
     }
 
     /// Hidden hosting trees share the UI thread with visible travel and scrolling.
     /// Keep their work behind a quiet interval, even if another publisher reschedules it.
-    func postponePreparation(in store: TabStore, by delay: TimeInterval) {
+    func postponePreparation(in store: TabStore, by delay: TimeInterval, preservingSurfaces: Bool = false) {
         preparationNotBefore = max(preparationNotBefore, ProcessInfo.processInfo.systemUptime + delay)
+        preparation?.cancel()
+        preparation = nil
         // Invalidate reuse immediately, but retain the hidden trees until idle: their
         // AppKit/SwiftUI teardown is also expensive on the first scroll event.
-        stalePreparedSlides.append(contentsOf: preparedSlides.values)
-        preparedSlides.removeAll()
+        if !preservingSurfaces {
+            stalePreparedSlides.append(contentsOf: preparedSlides.values)
+            preparedSlides.removeAll()
+        }
         schedulePreparation(in: store)
     }
 
@@ -1010,21 +1137,63 @@ private struct SpaceSwipe: ViewModifier {
         }
         guard slide.follows(target, direction: direction),
               slide.preparedFor(origin: origin, target: target, frame: frame, width: width) else { return nil }
+        guard slide.preparedPopulationReady,
+              slide.updatePreparedScrollOffset(store.spaceGesture.sidebarOffset),
+              slide.preparedPopulationReady else {
+            invalidatePreparation()
+            return nil
+        }
         preparedSlides.removeValue(forKey: target.id)
         preparation?.cancel()
+        preparation = nil
         return slide
+    }
+
+    private func preparedGeometryMatches(in store: TabStore) -> Bool {
+        guard !preparedSlides.isEmpty,
+              let host = store.window?.contentView as? BrowserWindowHost,
+              let origin = store.swipeSpace else { return false }
+        let strip = store.strip
+        guard let index = strip.firstIndex(where: { $0.id == store.currentSpaceID }) else { return false }
+        let adjacent = [-1, 1].compactMap { direction in
+            strip.indices.contains(index + direction) ? strip[index + direction].id : nil
+        }
+        guard Set(preparedSlides.keys) == Set(adjacent) else { return false }
+        return preparedSlides.allSatisfy { id, slide in
+            guard let target = strip.first(where: { $0.id == id }),
+                  let anchor = target.profileID != store.profileID
+                    ? store.spaceGesture.stripView : store.spaceGesture.sectionsView else { return false }
+            return slide.preparedFor(origin: origin, target: target,
+                frame: anchor.convert(anchor.bounds, to: host), width: SidebarWidth.shared.width)
+        }
     }
 
     /// Build adjacent sidebar surfaces while idle, never in the first directional sample.
     /// Anchor updates invalidate them when the live sidebar or its geometry changes.
     func schedulePreparation(in store: TabStore) {
         guard monitor != nil, self.store === store, !store.spaceSwiping, !landing,
-              store.palette == nil, !store.libraryOpen, store.librarySwipeProgress == nil else { return }
-        invalidatePreparation()
+              store.palette == nil, !store.creatingSpace, !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+        guard preparation == nil else { return }
+        // The geometry anchor can acknowledge the same layout several times. Store
+        // and peer mutations already invalidate synchronously through the observers;
+        // keep ready captures when only an unchanged acknowledgement arrives.
+        if ProcessInfo.processInfo.systemUptime >= preparationNotBefore {
+            if preparedGeometryMatches(in: store) { return }
+            invalidatePreparation()
+        }
         let work = DispatchWorkItem { [weak self, weak store] in
+            self?.preparation = nil
             guard let self, let store, self.monitor != nil, self.store === store,
                   !store.spaceSwiping, !self.landing, store.palette == nil,
-                  !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+                  !store.creatingSpace, !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+            guard ProcessInfo.processInfo.systemUptime >= self.preparationNotBefore else {
+                self.schedulePreparation(in: store)
+                return
+            }
+            // Reveal anchors can report intermediate offscreen frames. Validate them
+            // after travel settles; claim-time validation still rejects a mismatch.
+            if self.preparedGeometryMatches(in: store) { return }
+            self.invalidatePreparation()
             self.discardStalePreparation()
             guard !Motion.spaceReduced,
                   store.sidebarShown || (store.window as? VaneWindow)?.peekingSidebar == true,
@@ -1296,30 +1465,73 @@ private struct SpaceSwipe: ViewModifier {
 
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
+        if let previous = self.store, previous !== store { remove() }
         self.store = store
+        if preparationObservers.isEmpty { observePreparation(in: store) }
+        installInput(in: store)
+        schedulePreparation(in: store)
+    }
+
+    private func observePreparation(in store: TabStore) {
         // Search owns the input/animation thread until its dismissal fade ends.
         // Read the publisher's new value: @Published sends before the store changes.
-        preparationObservers.append(store.$palette.removeDuplicates().dropFirst().sink { [weak self] mode in
-            guard mode == nil, let self else { return }
+        preparationObservers.append(store.$palette.removeDuplicates().dropFirst().sink { [weak self, weak store] mode in
+            guard let self else { return }
+            self.preparation?.cancel()
+            self.preparation = nil
+            guard mode == nil else { return }
             let delay = Motion.reduced ? 0 : Look.appearDuration
             self.preparationNotBefore = max(self.preparationNotBefore,
                 ProcessInfo.processInfo.systemUptime + delay)
+            DispatchQueue.main.async { [weak self, weak store] in
+                guard let self, let store else { return }
+                self.schedulePreparation(in: store)
+            }
+        })
+        // Form and Library transitions can begin without a scroll event. Preserve
+        // valid captures, but do not build their replacements underneath this UI.
+        preparationObservers.append(Publishers.MergeMany([
+            store.$creatingSpace.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$libraryOpen.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.libraryGesture.objectWillChange.eraseToAnyPublisher()
+        ]).sink { [weak self, weak store] _ in
+            self?.extendPreparationQuietInterval()
+            DispatchQueue.main.async { [weak self, weak store] in
+                guard let self, let store else { return }
+                self.schedulePreparation(in: store)
+            }
         })
         // Store collections and neighbouring Space metadata can change without updating
         // the geometry anchor. Read their completed state on the next main-loop turn.
-        for publisher in [store.objectWillChange, store.spaceGesture.objectWillChange,
-                          ProfileManager.shared.objectWillChange] {
-            let invalidates = publisher !== store.spaceGesture.objectWillChange
+        for (publisher, invalidates) in [
+            (store.sidebarSnapshotChanges, true),
+            (store.spaceGesture.objectWillChange.eraseToAnyPublisher(), false),
+            (ProfileManager.shared.objectWillChange.eraseToAnyPublisher(), true)
+        ] {
             preparationObservers.append(publisher.sink { [weak self, weak store] _ in
-                if invalidates { self?.invalidatePreparation() }
+                if invalidates {
+                    self?.extendPreparationQuietInterval()
+                    self?.invalidatePreparation()
+                }
                 DispatchQueue.main.async { [weak self, weak store] in
                     guard let self, let store else { return }
                     self.schedulePreparation(in: store)
                 }
             })
         }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak store] event in
-            guard let store else { return event }
+    }
+
+    private func installInput(in store: TabStore) {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseDown,
+            .leftMouseUp, .leftMouseDragged, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self, weak store] event in
+            guard let self, let store else { return event }
+            // This runs before actions and Library routing. Extend the deadline on
+            // every input packet without discarding valid first-swipe surfaces.
+            if event.window === store.window {
+                self.postponePreparation(in: store, by: Self.preparationQuietInterval,
+                                         preservingSurfaces: true)
+            }
+            guard event.type == .scrollWheel else { return event }
             if event.hasPreciseScrollingDeltas, let window = event.window, window === store.window {
                 if event.phase.contains(.began) {
                     Self.committedSwipes.remove(window)
@@ -1338,7 +1550,7 @@ private struct SpaceSwipe: ViewModifier {
                 if event.scrollingDeltaY != 0,
                    (self.claim == .theirs || !event.hasPreciseScrollingDeltas),
                    self.isOverSidebar(event, store) {
-                    self.postponePreparation(in: store, by: 0.18)
+                    self.postponePreparation(in: store, by: 0.18, preservingSurfaces: true)
                 }
                 return event
             }
@@ -1397,11 +1609,37 @@ private struct SpaceSwipe: ViewModifier {
         // `spaceSwiping` stuck true, and nothing short of another swipe would put it back.
         for name in [NSApplication.didResignActiveNotification, NSWindow.didResignKeyNotification] {
             watchers.append(NotificationCenter.default.addObserver(
-                forName: name, object: nil, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.abort() }
+                forName: name, object: nil, queue: .main) { [weak self] notification in
+                    let notifyingWindow = notification.object as? NSWindow
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        if name == NSWindow.didResignKeyNotification {
+                            guard let window = notifyingWindow,
+                                  window === self.store?.window else { return }
+                        }
+                        self.abort()
+                    }
                 })
         }
-        schedulePreparation(in: store)
+    }
+
+    /// Hiding chrome ends its input lifetime, but not the content of its idle captures.
+    /// Structural and protection observers remain live while the sidebar is hidden.
+    func suspend() {
+        preparation?.cancel()
+        preparation = nil
+        removeInput()
+        if let store, !store.sidebarShown, !store.sidebarPeeking {
+            (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidDisappear(store)
+        }
+        abort()
+    }
+
+    private func removeInput() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        watchers.forEach(NotificationCenter.default.removeObserver)
+        watchers = []
     }
 
     func remove() {
@@ -1413,14 +1651,7 @@ private struct SpaceSwipe: ViewModifier {
         preparationNotBefore = 0
         discardPreparation()
         discardStalePreparation()
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
-        watchers.forEach(NotificationCenter.default.removeObserver)
-        watchers = []
-        if let store, !store.sidebarShown, !store.sidebarPeeking {
-            (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidDisappear(store)
-        }
-        abort()
+        suspend()
         store = nil
     }
 

@@ -175,6 +175,75 @@ import XCTest
 }
 
 @MainActor final class Feel02PressTests: XCTestCase {
+    func testNativeHoverExitPreservesPressUntilMouseUp() async throws {
+        TestEnvironment.prepare()
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 200, height: 200),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        let anchor = Feel02PressAnchorView(frame: NSRect(x: 0, y: 0, width: 100, height: 30))
+        window.contentView?.addSubview(anchor)
+        let monitor = Feel02PressMonitor()
+        var pressed = false, hovered = false
+        anchor.changed = { pressed = $0 }
+        anchor.hoverChanged = { hovered = $0 }
+        monitor.register(anchor)
+        defer { monitor.remove(anchor); window.close() }
+        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: NSPoint(x: 10, y: 10),
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        _ = monitor.handle(try event(.mouseMoved))
+        XCTAssertTrue(hovered)
+        _ = monitor.handle(try event(.leftMouseDown))
+        XCTAssertTrue(pressed)
+        anchor.updateTrackingAreas()
+        let area = try XCTUnwrap(anchor.trackingAreas.first { $0.owner === anchor })
+        XCTAssertFalse(window.isKeyWindow, "The fixture exercises admitted hover in a non-key window")
+        XCTAssertTrue(area.options.contains(.activeAlways),
+                      "Exit observation must remain active in non-key windows that admit pointer motion")
+        let exit = try XCTUnwrap(NSEvent.enterExitEvent(with: .mouseExited,
+            location: NSPoint(x: -20, y: -20), modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
+        let exitOwner = try XCTUnwrap(area.owner as? NSResponder)
+        exitOwner.mouseExited(with: exit)
+        try await compatibilityWait { !hovered }
+        XCTAssertTrue(pressed, "Hover exit must leave mouse-up and drag ownership unchanged")
+        _ = monitor.handle(try event(.leftMouseUp))
+        XCTAssertFalse(pressed)
+        anchor.hoverChanged = nil
+        XCTAssertTrue(anchor.trackingAreas.isEmpty, "Press-only controls do not need hover tracking")
+    }
+
+    func testDisclosureOrDisableCancelsAnOutstandingPress() throws {
+        TestEnvironment.prepare()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSView(frame: window.frame)
+        let anchor = Feel02PressAnchorView(frame: NSRect(x: 0, y: 0, width: 100, height: 30))
+        window.contentView?.addSubview(anchor)
+        let monitor = Feel02PressMonitor()
+        var pressed = false
+        anchor.changed = { pressed = $0 }
+        monitor.register(anchor)
+        defer { monitor.remove(anchor); window.close() }
+        let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown,
+            location: NSPoint(x: 10, y: 10), modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        _ = monitor.handle(down)
+        XCTAssertTrue(pressed)
+        anchor.enabled = false
+        XCTAssertFalse(pressed, "A folded row must not keep a held decoration")
+        anchor.enabled = true
+        _ = monitor.handle(down)
+        XCTAssertTrue(pressed)
+        anchor.setFrameOrigin(NSPoint(x: 0, y: 70))
+        XCTAssertFalse(pressed, "Moving rows underneath the pointer must cancel the old press")
+    }
+
     func testPassivePressReturnsEventsAndCancelsOnDragReleaseAndDetach() throws {
         TestEnvironment.prepare()
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 200),
@@ -266,6 +335,7 @@ import XCTest
 @MainActor final class Feel02NativeRowTests: XCTestCase {
     func testPointerClicksAndTrailingButtonKeepTheirExistingActivation() async throws {
         TestEnvironment.prepare()
+        _ = NSApplication.shared
         let previousPolicy = NSApp.activationPolicy()
         NSApp.setActivationPolicy(.accessory)
         defer { NSApp.setActivationPolicy(previousPolicy) }

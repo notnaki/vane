@@ -24,6 +24,15 @@ import XCTest
 }
 
 @MainActor final class LiveCredentialTests: XCTestCase {
+    func testProfilesWithoutLiveFoldersNeverReadCredentialsOnRefresh() {
+        TestEnvironment.prepare()
+        var reads = 0
+        let live = LiveFolders(profileID: UUID(), readCredential: { reads += 1; return .missing })
+        live.refreshAll()
+        live.refreshAll()
+        XCTAssertEqual(reads, 0, "Window activation without GitHub folders must not enter the Keychain lane")
+    }
+
     func testGitHubRejectionRetainsCredentialAndOffersReconnect() {
         TestEnvironment.prepare()
         let fixture = CredentialFixture()

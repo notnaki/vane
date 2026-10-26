@@ -1,6 +1,13 @@
 import AppKit
+import Combine
 import ImageIO
 import WebKit
+
+/// Owned by mounted leaves, weakly indexed by one profile cache. No artwork or
+/// view is retained here; a host arrival invalidates only its matching consumers.
+@MainActor final class FaviconHostArrival: @MainActor ObservableObject {
+    let objectWillChange = ObservableObjectPublisher()
+}
 
 /// A bounded per-profile LRU. Every stored image is decoded to at most 64×64 pixels,
 /// so 300 hosts retain at most about 5 MiB of bitmap storage rather than site-sized art.
@@ -75,6 +82,26 @@ import WebKit
     /// Bumped when a fetch lands, so views that asked for a nil icon redraw.
     @Published private(set) var generation = 0
 
+    private let hostObservers = NSMapTable<NSString, FaviconHostArrival>.strongToWeakObjects()
+
+    func observation(for key: String) -> FaviconHostArrival {
+        let key = key as NSString
+        if let observer = hostObservers.object(forKey: key) { return observer }
+        // Weak values do not promise immediate removal of their strong keys.
+        // Prune before insertion so visits cannot accumulate dead host entries.
+        for case let stale as NSString in hostObservers.keyEnumerator().allObjects {
+            if hostObservers.object(forKey: stale) == nil { hostObservers.removeObject(forKey: stale) }
+        }
+        let observer = FaviconHostArrival()
+        hostObservers.setObject(observer, forKey: key)
+        return observer
+    }
+
+    private func publishArrival(for key: String) {
+        hostObservers.object(forKey: key as NSString)?.objectWillChange.send()
+        generation += 1
+    }
+
     private var memory = FaviconMemoryCache()
     private var inflight: [String: Task<Void, Never>] = [:]
     private var diskInflight: [String: Task<Void, Never>] = [:]
@@ -86,11 +113,24 @@ import WebKit
         var seen: Set<URL> = []
         var persistentURLs: Set<URL> = []
         var fallbackURLs: Set<URL> = []
+        var revision = 0
+        var requestedRevision: [URL: Int] = [:]
 
         mutating func append(_ candidates: [URL], persist: Bool, fallback: URL?) {
-            for url in candidates where seen.insert(url).inserted { urls.append(url) }
+            revision += 1
+            for url in candidates {
+                requestedRevision[url] = revision
+                if seen.insert(url).inserted { urls.append(url) }
+            }
             if persist { persistentURLs.formUnion(candidates) }
             if let fallback { fallbackURLs.insert(fallback) }
+        }
+
+        mutating func discardAlternatives(through revision: Int) {
+            let obsolete = Set(urls.filter { requestedRevision[$0, default: 0] <= revision })
+            urls.removeAll { obsolete.contains($0) }
+            seen.subtract(obsolete)
+            for url in obsolete { requestedRevision[url] = nil }
         }
     }
     private var pending: [String: Pending] = [:]
@@ -115,7 +155,7 @@ import WebKit
     }
 
     nonisolated static let maxBytes = 512_000     // an icon that big is a mistake, not an icon
-    private static let maxFiles = 300
+    nonisolated private static let maxFiles = 300
     nonisolated static let maxPixelDimension = 64
 
     // MARK: Public
@@ -125,9 +165,13 @@ import WebKit
     func icon(for url: URL) -> NSImage? {
         guard let key = Favicons.key(for: url) else { return nil }
         if let img = memory[key] { return img }
-        if let img = readDisk(key, fallback: Favicons.fallback(for: url)) { memory[key] = img; return img }
-        guard diskInflight[key] == nil, !missed(key), let fallback = Favicons.fallback(for: url) else { return nil }
-        warm(key: key, urls: [fallback], persist: profileID != Profile.incognito.id, fallback: fallback)
+        guard !missed(key), diskInflight[key] == nil, inflight[key] == nil,
+              let fallback = Favicons.fallback(for: url) else { return nil }
+        if profileID == Profile.incognito.id {
+            warm(key: key, urls: [fallback], persist: false, fallback: fallback)
+        } else {
+            readDisk(key, fallback: fallback)
+        }
         return nil
     }
 
@@ -151,9 +195,14 @@ import WebKit
             // Neither the page's script reply nor an icon download belongs to the tab's
             // lifetime. Keep it weak across both awaits so Close can release it at once.
             guard let self, tab?.existingWeb === web, tab?.currentURL == url else { return }
-            if let img = self.memory[key] ?? diskImage {
-                self.memory[key] = img
+            if let img = self.memory[key] {
                 tab?.favicon = img
+            } else if let diskImage {
+                self.memory[key] = diskImage
+                tab?.favicon = diskImage
+                // Cache-only leaves may be waiting on the same host. Publish even
+                // when restoration's worker beats their own pending disk read.
+                self.publishArrival(for: key)
             }
             if tab?.suspended == true {
                 tab?.favicon = self.memory[key]
@@ -210,6 +259,7 @@ import WebKit
             // A page may finish while a cache-only /favicon.ico probe is awaiting its
             // response. Keep its declarations in the same queue instead of losing them.
             while let url = self.pending[key]?.urls.first {
+                let acceptedRevision = self.pending[key]?.revision ?? 0
                 self.pending[key]?.urls.removeFirst()
                 let data = await self.fetchImageData(url)
                 if self.pending[key]?.fallbackURLs.contains(url) == true { attemptedFallback = true }
@@ -218,16 +268,26 @@ import WebKit
                 self.memory[key] = img
                 received = url
                 self.misses.removeValue(forKey: key)
-                // A public fallback does not authorize storing another tab's private-only
-                // declaration. Eligibility follows the successful URL, not the batch.
-                if self.pending[key]?.persistentURLs.contains(url) == true { self.writeDisk(key, data) }
+                // Eligibility belongs to the successful URL, before publication can
+                // synchronously notify observers that enqueue another request.
+                let shouldPersist = self.pending[key]?.persistentURLs.contains(url) == true
+                let isFallback = self.pending[key]?.fallbackURLs.contains(url) == true
+                if !isFallback {
+                    // Success supersedes its old lower-priority alternatives,
+                    // while another page's newer declaration remains queued.
+                    self.pending[key]?.discardAlternatives(through: acceptedRevision)
+                }
                 for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
                     tab.favicon = img
                 }
-                self.generation += 1
+                self.publishArrival(for: key)
+                // Show decoded artwork before utility-priority persistence and pruning.
+                // A public fallback does not authorize storing another tab's private-only
+                // declaration. Eligibility follows the successful URL, not the batch.
+                if shouldPersist { await self.writeDisk(key, data) }
                 // A restored row may already be fetching /favicon.ico when its page
                 // supplies better artwork. Let that queued declaration upgrade it.
-                if self.pending[key]?.fallbackURLs.contains(url) != true { return }
+                if !isFallback, self.pending[key]?.urls.isEmpty != false { return }
             }
             if self.memory[key] == nil { self.recordMiss(key, attemptedFallback: attemptedFallback) }
         }
@@ -479,38 +539,28 @@ import WebKit
         return visible >= 32 && transparent >= 32 && solid >= 32
     }
 
-    /// ponytail: synchronous file IO on the main thread. These are sub-10KB reads on a
-    /// local SSD, once per host per launch; if it ever shows up in a trace, move it behind
-    /// the same Task the network fetch already uses.
-    private var dir: URL {
-        let d = ProfileManager.faviconDir(for: profileID, in: Store.directory)
-        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
-        return d
-    }
+    /// Resolve once per profile, never recreate directories from a row's body.
+    private lazy var dir = ProfileManager.faviconDir(for: profileID, in: Store.directory)
 
-    private func readDisk(_ key: String, fallback: URL?) -> NSImage? {
-        guard profileID != Profile.incognito.id,
-              let data = Self.readData(dir.appendingPathComponent(key)) else { return nil }
-        if let bitmap = Self.thumbnail(from: data) { return Self.displayImage(bitmap) }
-        // Legacy SVG cache files must also rasterize off the UI actor. Keep this
-        // separate from the network queue so a newly declared icon can still upgrade it.
-        guard diskInflight[key] == nil else { return nil }
+    private func readDisk(_ key: String, fallback: URL) {
+        let file = dir.appendingPathComponent(key)
         diskInflight[key] = Task { @MainActor [weak self] in
-            let image = await Self.decoded(data)
+            // PNG/ICO reads and decode are just as capable of blocking a frame as
+            // SVG rasterization. One pending read per host also coalesces row redraws.
+            let image = await Self.decoded(file)
             guard let self else { return }
-            self.diskInflight[key] = nil
+            defer { self.diskInflight[key] = nil }
             guard self.memory[key] == nil else { return }
             if let image {
                 self.memory[key] = image
                 for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
                     tab.favicon = image
                 }
-                self.generation += 1
-            } else if let fallback, !self.missed(key) {
+                self.publishArrival(for: key)
+            } else if !self.missed(key) {
                 self.warm(key: key, urls: [fallback], persist: true, fallback: fallback)
             }
         }
-        return nil
     }
 
     /// Freshly made here and handed over untouched, which is the whole of what the box
@@ -538,17 +588,21 @@ import WebKit
         await Task.detached(priority: .userInitiated) { Icon(image: image(from: data)) }.value.image
     }
 
-    private func writeDisk(_ key: String, _ data: Data) {
+    private func writeDisk(_ key: String, _ data: Data) async {
         guard profileID != Profile.incognito.id else { return }
-        try? data.write(to: dir.appendingPathComponent(key))
-        prune()
+        let directory = dir
+        await Task.detached(priority: .utility) {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try? data.write(to: directory.appendingPathComponent(key))
+            Self.prune(in: directory)
+        }.value
     }
 
     /// Oldest-first eviction once the directory gets silly. Modification date is the only
     /// access record kept, which makes this LRU-by-write rather than true LRU.
-    private func prune() {
+    private nonisolated static func prune(in directory: URL) {
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: dir,
+        guard let files = try? fm.contentsOfDirectory(at: directory,
                                                       includingPropertiesForKeys: [.contentModificationDateKey]),
               files.count > Favicons.maxFiles else { return }
         let byAge = files.sorted {

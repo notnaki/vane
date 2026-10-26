@@ -5,6 +5,25 @@ import XCTest
 
 /// Opt-in diagnostics include deferred layout and animation work, not just the toggle.
 @MainActor final class FolderOpeningPerformanceTests: XCTestCase {
+    func testOffscreenMediaFilteringScalesWithInactiveTabs() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1")
+        TestEnvironment.prepare()
+        let store = TabStore(isPrivate: true)
+        store.sharingReady = false
+        store.tabs = (0..<3_000).map { _ in Tab(isPrivate: true, profileID: store.profileID) }
+        store.syncShapes()
+        defer { SharedTabs.release(store.tabs); TabStore.all.removeAll { $0 === store } }
+        let host = NSHostingView(rootView: OffscreenPages().environmentObject(store))
+        host.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
+        let start = ContinuousClock.now
+        host.layoutSubtreeIfNeeded()
+        let elapsed = start.duration(to: .now)
+        print("OFFSCREEN_MEDIA tabs=3000 layout=\(elapsed)")
+        XCTAssertLessThan(elapsed, .milliseconds(100),
+                          "Inactive pages must be rejected before per-tab folder ancestry scans")
+        XCTAssertTrue(store.tabs.allSatisfy { $0.existingWeb == nil })
+    }
+
     func testUnprotectedFolderAccessibilityScalesWithTheStrip() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1")
         TestEnvironment.prepare()

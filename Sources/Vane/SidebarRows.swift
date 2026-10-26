@@ -15,13 +15,7 @@ import Foundation
     init(tabs: [Tab], splits: [Split], shape: Pins, unlocked: Set<UUID> = []) {
         let tabsByID = Dictionary(tabs.map { ($0.id.uuidString, $0) },
                                   uniquingKeysWith: { first, _ in first })
-        let strip = tabs.map { ($0.id, $0.kind) }
-        var leadsByPane: [UUID: UUID] = [:]
-        for split in splits {
-            guard let lead = Split.lead(of: split.tabs, strip: strip) else { continue }
-            // Match the store's first containing split, even for overlapping restore data.
-            for pane in split.tabs where leadsByPane[pane] == nil { leadsByPane[pane] = lead }
-        }
+        let leadsByPane = Self.splitLeads(tabs: tabs, splits: splits)
         rows = shape.visible(unlocked: unlocked).compactMap { visible in
             if visible.entry.folder != nil { return Row(visible: visible, tab: nil) }
             guard let id = visible.entry.tab, let tab = tabsByID[id],
@@ -29,4 +23,17 @@ import Foundation
             return Row(visible: visible, tab: tab)
         }
     }
+    /// Shared by row filtering and pending-editor ownership. Preserve the first
+    /// containing split even when restored split membership overlaps.
+    static func splitLeads(tabs: [Tab], splits: [Split]) -> [UUID: UUID] {
+        let strip = tabs.map { ($0.id, $0.kind) }
+        var leadsByPane: [UUID: UUID] = [:]
+        for split in splits {
+            guard let lead = Split.lead(of: split.tabs, strip: strip) else { continue }
+            // Match the store's first containing split, even for overlapping restore data.
+            for pane in split.tabs where leadsByPane[pane] == nil { leadsByPane[pane] = lead }
+        }
+        return leadsByPane
+    }
+
 }

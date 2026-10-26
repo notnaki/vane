@@ -688,6 +688,12 @@ extension VaneWindow {
         arriving.switchTo(space: space)         // a no-op for a store built into it just now
         arriving.applySpaceAppearance()
         delegate.shown.store = arriving         // expose only the finalized destination
+        // A cached host can take another display turn to acknowledge visibility.
+        // The next gesture already belongs to this profile when hop returns.
+        arriving.librarySwipeMonitor.install(arriving)
+        if arriving.sidebarShown || arriving.sidebarPeeking {
+            arriving.spaceGesture.monitor.install(arriving)
+        }
         SharedTabs.refreshPresentation()
         store.extensions.sync()
         arriving.extensions.sync()
@@ -970,29 +976,45 @@ extension VaneWindow {
     private var completion: (() -> Void)?
     private var lastTracking: (offset: CGFloat, time: TimeInterval)?
     private var trackingVelocity: CGFloat = 0
+    private var lastPublishedDrag: CGFloat
     private var progressLink: CADisplayLink?
     private weak var retirementStore: TabStore?
     private var retirementSpaceID: UUID?
     private var retirementScheduled = false
     private var retirementTimeout: DispatchWorkItem?
+    private var retirementReadinessObservation: UUID?
+    private var retired = false
+    private var wasAttachedToWindow = false
+    private let requiresNativePopulation: Bool
+    private let outgoingReadinessScope: SidebarNativeReadinessScope
+    private let incomingReadinessScope: SidebarNativeReadinessScope
     private var sidebarAcknowledgements: [ObjectIdentifier: (spaceID: UUID?, atRest: Bool)] = [:]
     var offset: CGFloat { (outgoing.layer?.presentation()?.frame.minX ?? outgoing.frame.minX) - contentInset }
     private var motionObserver: NSObjectProtocol?
 
     init(frame: NSRect, outgoing: SpacePreviewList, incoming: SpacePreviewList,
          drag: CGFloat, direction: Int, source: TabStore, includesFavorites: Bool, travelWidth: CGFloat) {
+        requiresNativePopulation = NativeCachedSidebarBatchesExperiment.enabled
+        let outgoingScope = SidebarNativeReadinessScope(store: source, spaceID: outgoing.space.id, surfaceID: UUID())
+        let incomingScope = SidebarNativeReadinessScope(store: source, spaceID: incoming.space.id, surfaceID: UUID())
+        outgoingReadinessScope = outgoingScope
+        incomingReadinessScope = incomingScope
         let outgoingTheme = SpaceChromeTheme(space: outgoing.space, fallback: source.profile.colorHex)
         let incomingFallback = ProfileManager.shared.profiles.first { $0.id == incoming.space.profileID }?.colorHex
             ?? source.profile.colorHex
         let incomingTheme = SpaceChromeTheme(space: incoming.space, fallback: incomingFallback)
-        self.outgoing = NSHostingView(rootView: outgoing
+        let outgoingHost = NSHostingView(rootView: outgoing
+            .environment(\.sidebarNativeReadinessScope, outgoingScope)
             .environment(\.spaceChromeTheme, outgoingTheme)
             .environment(\.colorScheme, outgoing.colorScheme)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
-        self.incoming = NSHostingView(rootView: incoming
+        let incomingHost = NSHostingView(rootView: incoming
+            .environment(\.sidebarNativeReadinessScope, incomingScope)
             .environment(\.spaceChromeTheme, incomingTheme)
             .environment(\.colorScheme, incoming.colorScheme)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
+        self.outgoing = outgoingHost
+        self.incoming = incomingHost
         self.direction = direction
         targetID = incoming.space.id
         originPreview = outgoing
@@ -1001,6 +1023,7 @@ extension VaneWindow {
         preparedFrame = frame
         self.includesFavorites = includesFavorites
         self.travelWidth = travelWidth
+        lastPublishedDrag = drag
         contentInset = max(0, (travelWidth - frame.width) / 2)
         self.source = source
         super.init(frame: frame.insetBy(dx: -contentInset, dy: 0))
@@ -1023,6 +1046,11 @@ extension VaneWindow {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { wasAttachedToWindow = true }
+        else if wasAttachedToWindow, !retired { cancel() }
+    }
 
     /// A completed cover can remain mounted for presentation handoff. Its identity is
     /// still useful for cleanup, but it must never reacquire input or animation ownership.
@@ -1041,9 +1069,14 @@ extension VaneWindow {
         store.spaceGesture.outgoing = originPreview
         store.spaceGesture.neighbour = preparedTarget
         store.spaceGesture.previewDirection = direction
-        store.spaceGesture.nativeDrag = offset
+        store.spaceGesture.nativeDrag = lastPublishedDrag
         store.spaceGesture.profileSlidesFavorites = includesFavorites
         store.spaceGesture.profileSliding = true
+        // Paint before BrowserWindowHost exposes a cached root. Its old settled
+        // wash must not appear for a frame before the progress display link runs.
+        // Until CA commits a new animation, offset can still report its old/model
+        // endpoint; retain the progress actually published for this landing.
+        store.spaceGesture.trackGround?(Double(min(1, abs(lastPublishedDrag / travelWidth))))
     }
 
     func follows(_ target: Space, direction: Int) -> Bool {
@@ -1055,9 +1088,21 @@ extension VaneWindow {
             && preparedFrame == frame && travelWidth == width
     }
 
+    var preparedPopulationReady: Bool {
+        guard requiresNativePopulation else { return true }
+        // Frozen previews currently use eager/lazy rows; their native markers
+        // provide readiness. Honor coordinator requirements if a native section
+        // is introduced, without requiring registrations from the existing path.
+        return SidebarNativeReadinessCoordinator.shared.isReady(outgoingReadinessScope, allowingUnregistered: true)
+            && SidebarNativeReadinessCoordinator.shared.isReady(incomingReadinessScope, allowingUnregistered: true)
+            && SidebarPreviewPopulation.isReady(in: outgoing)
+            && SidebarPreviewPopulation.isReady(in: incoming)
+    }
+
     /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
     func track(drag: CGFloat) {
         guard isActive else { return }
+        lastPublishedDrag = drag
         let now = ProcessInfo.processInfo.systemUptime
         if let previous = lastTracking {
             let dt = now - previous.time
@@ -1079,6 +1124,17 @@ extension VaneWindow {
     func prepare() {
         outgoing.layoutSubtreeIfNeeded()
         incoming.layoutSubtreeIfNeeded()
+    }
+
+    /// Scrolling changes the viewport, not the captured row structure. Bring the
+    /// existing outgoing clip view to the live offset when the gesture claims it.
+    func updatePreparedScrollOffset(_ offset: CGFloat) -> Bool {
+        guard let scroll = SidebarSectionsViewport.scrollView(in: outgoing) else { return false }
+        if abs(scroll.documentVisibleRect.minY - offset) > 0.5 {
+            scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.minX, y: offset))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        return preparedPopulationReady
     }
 
     fileprivate var groundStart: ThemeWashPresentation?
@@ -1178,6 +1234,7 @@ extension VaneWindow {
     }
 
     private func publishProgress(_ drag: CGFloat) {
+        lastPublishedDrag = drag
         guard let window else { return }
         for store in [source, destination].compactMap({ $0 }) {
             // A parked source no longer presents this gesture. Publishing into its
@@ -1252,14 +1309,24 @@ extension VaneWindow {
                 retire()
                 return
             }
-            if let arriving, arriving.currentSpaceID != preparedOrigin.id
+            if let arriving, requiresNativePopulation || arriving.currentSpaceID != preparedOrigin.id
                 || arriving.spaceGesture.sectionsView != nil
                 || sidebarAcknowledgements[ObjectIdentifier(arriving)] != nil {
                 retirementStore = arriving
                 retirementSpaceID = arriving.currentSpaceID
+                let readinessScope = SidebarNativeReadinessScope(store: arriving, spaceID: arriving.currentSpaceID)
+                retirementReadinessObservation = SidebarNativeReadinessCoordinator.shared.observe(readinessScope) { [weak self] in
+                    self?.retireIfAcknowledged()
+                }
                 // A disconnected window may never update its anchor. Bound that
                 // exceptional wait; visible sidebar retirement is acknowledged.
-                let timeout = DispatchWorkItem { [weak self] in self?.retire() }
+                let timeout = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    // A timer cannot prove delayed native population is ready. Detached
+                    // windows cancel unconditionally in viewDidMoveToWindow instead.
+                    if self.requiresNativePopulation { self.retireIfAcknowledged() }
+                    else { self.retire() }
+                }
                 retirementTimeout = timeout
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: timeout)
                 retireIfAcknowledged()
@@ -1284,7 +1351,10 @@ extension VaneWindow {
         guard finished, let store = retirementStore,
               let rendered = sidebarAcknowledgements[ObjectIdentifier(store)], rendered.atRest,
               rendered.spaceID == retirementSpaceID, store.currentSpaceID == retirementSpaceID,
-              !store.spaceSwiping, !store.spaceGesture.profileSliding else { return }
+              !store.spaceSwiping, !store.spaceGesture.profileSliding,
+              SidebarNativeReadinessCoordinator.shared.isReady(
+                SidebarNativeReadinessScope(store: store, spaceID: retirementSpaceID),
+                allowingUnregistered: !requiresNativePopulation) else { return }
         // This acknowledgement is issued by SwiftUI while committing the live opacity
         // and identity. Remove the native list in that same transaction, not two frames
         // later when both lists would already have painted their translucent text.
@@ -1303,6 +1373,10 @@ extension VaneWindow {
     }
 
     private func retire() {
+        guard !retired else { return }
+        retired = true
+        SidebarNativeReadinessCoordinator.shared.removeObservation(retirementReadinessObservation)
+        retirementReadinessObservation = nil
         retirementTimeout?.cancel()
         retirementTimeout = nil
         retirementStore = nil
