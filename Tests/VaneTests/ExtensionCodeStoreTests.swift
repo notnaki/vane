@@ -123,6 +123,13 @@ extension ExtensionCodeStoreTests {
 }
 
 extension ExtensionCodeStoreTests {
+    private struct LeaseHolderFailure: LocalizedError {
+        enum Phase: String, Sendable { case bootstrap; case leaseReadiness = "lease-readiness" }
+        let phase: Phase
+        let phaseElapsed: Duration
+        let errorDescription: String?
+    }
+
     private func leaseDiagnosticTail(_ url: URL) -> String {
         let limit = 4096
         do {
@@ -137,11 +144,15 @@ extension ExtensionCodeStoreTests {
         }
     }
 
-    private func leaseHolder(_ revision: String, committedIndex: URL? = nil) throws -> (Process, Pipe) {
+    private func leaseHolder(_ revision: String, committedIndex: URL? = nil,
+                             bootstrapDelay: TimeInterval = 0, startupTimeout: Duration = .seconds(10)) throws -> (Process, Pipe) {
+        // RED-stage control: the old combined three-second readiness wait remains below.
+        _ = startupTimeout
         let diagnosticID = UUID().uuidString
         let ready = directory.appendingPathComponent("lease-ready-" + diagnosticID)
         let stderrURL = directory.appendingPathComponent("lease-stderr-" + diagnosticID)
         let milestonesURL = directory.appendingPathComponent("lease-milestones-" + diagnosticID)
+        let startupReady = directory.appendingPathComponent("lease-bootstrap-ready-" + diagnosticID)
         try Data().write(to: stderrURL, options: .withoutOverwriting)
         let stderr = try FileHandle(forWritingTo: stderrURL)
         defer { try? stderr.close() }
@@ -149,6 +160,8 @@ extension ExtensionCodeStoreTests {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         process.arguments = ["-c", """
             import sys, time
+            delay = float(sys.argv[7])
+            if delay > 0: time.sleep(delay)
             started = time.monotonic()
             markers = open(sys.argv[5], 'x', buffering=1)
             def milestone(name):
@@ -158,6 +171,7 @@ extension ExtensionCodeStoreTests {
             milestone('imports-complete')
             with open(sys.argv[1], 'r+') as lease:
                 milestone('lease-opened')
+                open(sys.argv[6], 'x').close()
                 fcntl.flock(lease, fcntl.LOCK_EX)
                 milestone('lease-acquired')
                 open(sys.argv[2], 'w').close()
@@ -167,7 +181,7 @@ extension ExtensionCodeStoreTests {
                 if command == b'C': os.replace(sys.argv[3], sys.argv[4])
             """, store.root.appendingPathComponent(".revision-" + revision.lowercased() + ".lease").path,
             ready.path, committedIndex?.path ?? "", store.root.appendingPathComponent("installations.json").path,
-            milestonesURL.path]
+            milestonesURL.path, startupReady.path, String(bootstrapDelay)]
         let input = Pipe()
         process.standardInput = input
         process.standardOutput = FileHandle.nullDevice
@@ -186,7 +200,8 @@ extension ExtensionCodeStoreTests {
             process.waitUntilExit()
             // Read regular files only after reaping; no diagnostic pipe or reader lifetime.
             try? stderr.close()
-            throw ExtensionCodeStore.Problem("Child process did not acquire its revision lease"
+            throw LeaseHolderFailure(phase: .leaseReadiness, phaseElapsed: readinessElapsed,
+                errorDescription: "Child process did not acquire its revision lease"
                 + "; pid=\(process.processIdentifier)"
                 + "; launchElapsed=\(launchStarted.duration(to: readinessStarted))"
                 + "; readinessElapsed=\(readinessElapsed)"
@@ -201,6 +216,63 @@ extension ExtensionCodeStoreTests {
             + "; readinessElapsed=\(readinessStarted.duration(to: .now))"
             + "; milestones: " + leaseDiagnosticTail(milestonesURL))
         return (process, input)
+    }
+
+    func testLeaseHolderBootstrapDelayDoesNotConsumeAcquisitionBudget() throws {
+        var revision: String!
+        var code: URL!
+        do { let stage = try store.stage(source); revision = stage.revision; code = stage.url }
+        let began = ContinuousClock.now
+        let (child, input) = try leaseHolder(revision, bootstrapDelay: 4)
+        defer { if child.isRunning { child.terminate() }; child.waitUntilExit() }
+        XCTAssertGreaterThanOrEqual(began.duration(to: .now), .seconds(4))
+        try store.sweepUnreferencedRevisions()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: code.path))
+        try input.fileHandleForWriting.write(contentsOf: Data("R".utf8))
+        child.waitUntilExit()
+        XCTAssertEqual(child.terminationStatus, 0)
+        try store.sweepUnreferencedRevisions()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: code.path))
+    }
+
+    func testLeaseHolderHeldParentLeaseStillExhaustsAcquisitionBudget() throws {
+        let stage = try store.stage(source)
+        withExtendedLifetime(stage) {
+            do {
+                let (child, _) = try leaseHolder(stage.revision)
+                defer { if child.isRunning { child.terminate() }; child.waitUntilExit() }
+                XCTFail("The child must not acquire the parent's still-live revision lease")
+            } catch {
+                guard let failure = error as? LeaseHolderFailure else {
+                    return XCTFail("Expected phase failure, received \(error)")
+                }
+                let detail = failure.localizedDescription
+                XCTAssertEqual(failure.phase, .leaseReadiness, detail)
+                XCTAssertGreaterThanOrEqual(failure.phaseElapsed, .seconds(3))
+                // Allow scheduler overshoot, while rejecting use of the 10s startup budget here.
+                XCTAssertLessThan(failure.phaseElapsed, .seconds(6))
+                XCTAssertTrue(detail.contains("lease-opened"), detail)
+                XCTAssertFalse(detail.contains("lease-acquired"), detail)
+            }
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stage.url.path))
+    }
+
+    func testLeaseHolderReportsBootstrapBudgetExceeded() throws {
+        var revision: String!
+        do { revision = try store.stage(source).revision }
+        do {
+            let (child, _) = try leaseHolder(revision, bootstrapDelay: 60, startupTimeout: .milliseconds(100))
+            defer { if child.isRunning { child.terminate() }; child.waitUntilExit() }
+            XCTFail("A child still bootstrapping must exhaust the explicitly shortened startup budget")
+        } catch {
+            let failure = try XCTUnwrap(error as? LeaseHolderFailure)
+            let detail = failure.localizedDescription
+            XCTAssertEqual(failure.phase, .bootstrap, detail)
+            XCTAssertGreaterThanOrEqual(failure.phaseElapsed, .milliseconds(100))
+            XCTAssertLessThan(failure.phaseElapsed, .seconds(3))
+            XCTAssertFalse(detail.contains("lease-opened"), detail)
+        }
     }
 
     func testSweepPreservesRevisionLeasedByAnotherProcessThenCollectsAfterExit() throws {
