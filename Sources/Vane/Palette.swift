@@ -194,6 +194,13 @@ enum Palette {
         return out
     }
 
+    /// Split already-ranked actions into the leading answer and the remaining tail.
+    /// Keeping this decision separate from row closures makes the capped layout testable.
+    static func commandSections<T>(_ query: String, commands: [T],
+                                   title: (T) -> String) -> (leading: [T], trailing: [T]) {
+        (leading: [], trailing: commands)
+    }
+
     /// How much of the actions catalogue this keystroke asks for.
     enum ActionScope: Equatable {
         /// No actions at all — an empty bar is its tabs, and the tab search is tabs only.
@@ -1398,8 +1405,9 @@ struct CommandField: NSViewRepresentable {
                 let weak = tabs.filter { !strongIDs.contains($0.id) }
                 let ordered = strong + weak
                 let lead = min(strong.count, 1)
-                fresh.leading = Array(ordered.prefix(lead)) + [typedRow]
-                fresh.trailing = Array((Array(ordered.dropFirst(lead)) + places + commandRows()).prefix(24))
+                let commands = Palette.commandSections(typed, commands: commandRows(), title: \.title)
+                fresh.leading = Array(ordered.prefix(lead)) + [typedRow] + commands.leading
+                fresh.trailing = Array((Array(ordered.dropFirst(lead)) + places + commands.trailing).prefix(24))
                 fresh.assistant = aiRow()
                 fresh.acceptsSuggestions = true
             } else {
