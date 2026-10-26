@@ -74,7 +74,18 @@ def main():
     assert "run: ./make-app.sh debug" in packaging
     assert "run: ./scripts/test-build-dmg.sh" in packaging
     assert "scripts/run-native-tests.py" not in packaging
-    assert "python3 scripts/run-native-tests.py 2>&1" in native, "Keep the complete unfiltered suite"
+    assert "fail-fast: false" in native, "A failed shard must not cancel the remaining coverage"
+    matrix = re.search(r"^        shard: \[([^\]]+)\]$", native, re.MULTILINE)
+    assert matrix and [int(value) for value in matrix[1].split(",")] == [1, 2, 3, 4]
+    assert "--index \"$NATIVE_SHARD\" --count 4" in native
+    assert "NATIVE_SHARD: ${{ matrix.shard }}" in native
+    assert "swift test list --skip-build" in native, "Discover coverage from the built bundle"
+    assert "scripts/native-test-shards.py plan" in native
+    assert 'scripts/run-native-tests.py --skip-build --jobs 1' in native
+    assert '--filter "$(cat "$RUNNER_TEMP/vane-native-shard.filter")"' in native
+    assert "scripts/native-test-shards.py verify" in native, "Zero or incomplete execution must fail"
+    assert "name: native-loop-logs-${{ matrix.shard }}" in native, "Matrix artifact names must be unique"
+    assert "if: matrix.shard == 1 && github.event_name == 'push'" in native, "Keep a single cache writer"
     smoke = ROOT / "Tests/VaneTests/NativeApplicationLoopSmokeTests.swift"
     if smoke.exists() or "Owned AppKit loop preflight" in native:
         assert "VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'" in native
@@ -83,6 +94,7 @@ def main():
         assert "Preserve native loop failure evidence\n        if: ${{ always() }}" in native
         assert native.index("Owned AppKit loop preflight") < native.index("Native regression tests")
     assert "test-checks-workflow.py" in sections["source"]
+    assert "test-native-test-shards.py" in sections["source"]
     print(f"PASS: {trials} aggregate outcomes; independent jobs preserve native coverage and cache boundaries")
 
 
