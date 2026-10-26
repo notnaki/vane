@@ -168,7 +168,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
                                    TabStore.all.contains { $0.window === k }
                                } ?? false,
                                keyIsAttached: key?.parent != nil || key?.sheetParent != nil,
-                               libraryOpen: store?.libraryOpen == true) {
+                               libraryOpen: store.map { $0.librarySwipeMonitor.intendsOpen(in: $0) } == true) {
     case .tab:     store?.closeOrArchive()
     case .window:  key?.performClose(nil)
     case .library: store.map(Library.close)

@@ -2811,7 +2811,9 @@ struct Stash {
     /// The command bar. Set to open it in a mode, nil to close. Per window: two windows can
     /// each have their own open. `.address` is what ⌘L, ⌘T and clicking the address pill
     /// open — the place to type a url or a search.
-    @Published var palette: PaletteMode?
+    @Published var palette: PaletteMode? {
+        didSet { if palette != nil { librarySwipeMonitor.cancelPendingActivation() } }
+    }
     /// “Open “Zoom”?” — a link in this window that leads out of the browser, waiting for
     /// an answer. Per window, like the command bar: the card is anchored to the page that
     /// asked, so a background window’s `zoommtg:` link cannot put a sheet over whatever is
@@ -4696,7 +4698,9 @@ struct Stash {
     }
 
     /// The Library panel in this window, opened from the footer, ⇧⌘L, or an edge swipe.
-    @Published var libraryOpen = false
+    @Published var libraryOpen = false {
+        didSet { librarySwipeMonitor.cancelPendingActivation(toward: libraryOpen) }
+    }
     /// Only the navigation layout observes per-sample gesture updates.
     let libraryGesture = LibraryGesture()
     var librarySwipeProgress: CGFloat? {

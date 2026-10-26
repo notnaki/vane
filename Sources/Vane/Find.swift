@@ -426,7 +426,8 @@ extension TabStore {
     /// already in the panel and that section has a field: on Spaces there is nothing to type
     /// into, and sending ⌘F there would be a dead key.
     func openFind() {
-        if libraryOpen, !keyboardOnPage, Library.shared.section.searchable {
+        if librarySwipeMonitor.intendsOpen(in: self),
+           (!libraryOpen || !keyboardOnPage), Library.shared.section.searchable {
             Library.focusSearch()
             return
         }
