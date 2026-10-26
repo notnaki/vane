@@ -17,6 +17,17 @@ struct SidebarSectionRows<Content: View>: View {
     let transition: AnyTransition
     @ViewBuilder let content: (SidebarRows.Row, Int, Int) -> Content
 
+    init(store: TabStore, snapshot: Feel02SidebarRowsCache.Snapshot,
+         readinessSection: String? = nil, collapsed: Bool = false, transition: AnyTransition,
+         @ViewBuilder content: @escaping (SidebarRows.Row, Int, Int) -> Content) {
+        _store = SidebarObserved(wrappedValue: store, scope: .interactionLifetime)
+        self.snapshot = snapshot
+        self.readinessSection = readinessSection
+        self.collapsed = collapsed
+        self.transition = transition
+        self.content = content
+    }
+
     private var editingRows: Set<String> {
         var result = Set([store.renamingFolder?.uuidString].compactMap { $0 })
         if let pane = store.renamingTab {

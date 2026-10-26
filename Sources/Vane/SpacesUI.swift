@@ -311,7 +311,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
     @State private var readinessOwnerID = UUID()
 
     init(store: TabStore, favorites: Favorites, sections: Sections) {
-        _store = SidebarObserved(wrappedValue: store)
+        _store = SidebarObserved(wrappedValue: store, scope: .structure)
         self.favorites = favorites
         self.sections = sections
         favoriteCount = store.tabs.filter { $0.kind == .favourite }.count

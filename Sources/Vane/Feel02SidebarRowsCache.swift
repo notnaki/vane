@@ -37,6 +37,32 @@ import Foundation
         let today: Pins
         let stashedShapes: [UUID: [Pins]]
         let unlocked: Set<UUID>
+
+        // Compare live identity/order directly on cache hits. Do not allocate
+        // arrays/dictionaries merely to discover that topology is unchanged.
+        @MainActor func matches(store: TabStore, shape: Pins, unlocked: Set<UUID>) -> Bool {
+            // Array/dictionary values share their existing storage. Capture each
+            // observable collection once, rather than invoking its Published
+            // getter for every index in the comparison loop.
+            let liveTabs = store.tabs, liveSplits = store.splits, liveStashes = store.stashes
+            guard owner == ObjectIdentifier(store), self.shape == shape,
+                  pins == store.pins, today == store.todayShape, self.unlocked == unlocked,
+                  tabs.count == liveTabs.count, panes.count == liveSplits.count,
+                  stashedShapes.count == liveStashes.count else { return false }
+            for index in liveTabs.indices {
+                if tabs[index] != ObjectIdentifier(liveTabs[index]) || kinds[index] != liveTabs[index].kind { return false }
+            }
+            for index in liveSplits.indices where panes[index] != liveSplits[index].tabs { return false }
+            for (id, stash) in liveStashes {
+                guard let saved = stashedShapes[id], saved[0] == stash.pins, saved[1] == stash.todayShape else { return false }
+            }
+            return true
+        }
+    }
+
+    private let reuseKeyWithoutAllocations: Bool
+    init(reuseKeyWithoutAllocations: Bool = RenderPerformanceExperiment.cachedTopology) {
+        self.reuseKeyWithoutAllocations = reuseKeyWithoutAllocations
     }
 
     private var key: Key?
@@ -58,6 +84,8 @@ import Foundation
 
     func resolve(in store: TabStore, shape: Pins) -> Snapshot {
         let unlocked = store.unlockedFolders
+        if reuseKeyWithoutAllocations, let key, let snapshot,
+           key.matches(store: store, shape: shape, unlocked: unlocked) { return snapshot }
         let next = Key(owner: ObjectIdentifier(store), tabs: store.tabs.map(ObjectIdentifier.init),
             kinds: store.tabs.map(\.kind), panes: store.splits.map(\.tabs), shape: shape,
             pins: store.pins, today: store.todayShape,

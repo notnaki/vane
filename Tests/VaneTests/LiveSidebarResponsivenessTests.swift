@@ -91,6 +91,18 @@ import XCTest
             XCTAssertFalse(web.isHiddenOrHasHiddenAncestor)
             let title = try await web.evaluateJavaScript("document.title") as? String
             XCTAssertFalse(try XCTUnwrap(title).isEmpty)
+            if let remote {
+                let location = try await web.evaluateJavaScript("location.href") as? String
+                XCTAssertEqual(location.flatMap(URL.init(string:))?.host, remote.host,
+                               "Remote timing must keep the requested real website on screen")
+                if let expected = ProcessInfo.processInfo.environment["VANE_LIVE_SITE_EXPECTED_TITLE"] {
+                    XCTAssertTrue(title?.localizedCaseInsensitiveContains(expected) == true,
+                                  "Do not count a network error or challenge page as the requested website")
+                }
+                let characters = try await web.evaluateJavaScript("document.body.innerText.length") as? Int
+                XCTAssertGreaterThan(characters ?? 0, 100)
+                print("LIVE_WEBSITE requested=\(remote.absoluteString) actual=\(location ?? "") title=\(title ?? "") body_characters=\(characters ?? 0)")
+            }
             if remote == nil {
                 let cards = try await web.evaluateJavaScript("document.querySelectorAll('section').length") as? Int
                 XCTAssertEqual(cards, 150, "The content must be a rendered document, not a blank parked page")

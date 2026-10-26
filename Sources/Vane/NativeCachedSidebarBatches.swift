@@ -275,6 +275,7 @@ private final class NativeBatchMouseObservation {
         init(_ value: NativeSidebarRowLayoutView) { self.value = value }
     }
     private var cache: [UUID: Entry] = [:]
+    private let defersDetachedRootUpdates: Bool
     private var mounted = Set<UUID>()
     private var ownership: [String: UUID] = [:]
     private var groups: [UUID: [NativeSidebarOwnedSlot]] = [:]
@@ -389,7 +390,11 @@ private final class NativeBatchMouseObservation {
         return view.subviews.contains { containsResponder($0, responder: responder) }
     }
 
-    override init(frame frameRect: NSRect) {
+    override convenience init(frame frameRect: NSRect) {
+        self.init(frame: frameRect, defersDetachedRootUpdates: RenderPerformanceExperiment.hostReuse)
+    }
+    init(frame frameRect: NSRect, defersDetachedRootUpdates: Bool) {
+        self.defersDetachedRootUpdates = defersDetachedRootUpdates
         super.init(frame: frameRect)
         setAccessibilityElement(false)
         focusObservation = viewport.$focusedRows.sink { [weak self] value in
@@ -462,9 +467,16 @@ private final class NativeBatchMouseObservation {
         navigation.configure(rows: rows.map(\.id), container: self,
             prepareRow: { [weak self] row in self?.prepareNavigation(row) },
             nativeRows: { [weak self] in self?.nativeRowsInAuthoritativeOrder() ?? [] })
-        // Submit all authoritative membership/content updates now, including
-        // detached cached roots, so no cached root retains a removed control.
-        for (key, entry) in cache { update(entry, slots: groups[key, default: []], animate: mounted.contains(key)) }
+        // A mounted root always receives the latest caller closure/environment.
+        // Detached roots may defer content-only changes, but membership, model
+        // object replacement, permissions and placement must sanitize immediately.
+        // Their older generation then forces the latest root before reattachment.
+        for (key, entry) in cache {
+            let slots = groups[key, default: []]
+            if !defersDetachedRootUpdates || mounted.contains(key) || !hasSameStructure(entry, slots: slots) {
+                update(entry, slots: slots, animate: mounted.contains(key))
+            }
+        }
         if oldHeight != sectionHeight { invalidateIntrinsicContentSize() }
         if rows.isEmpty { SidebarNativeReadinessCoordinator.shared.complete(readiness) }
         reconcileLastGeometry()
@@ -594,7 +606,7 @@ private final class NativeBatchMouseObservation {
             let entry: Entry
             if let existing = cache[key] {
                 entry = existing
-                if entry.generation != generation { update(entry, slots: slots) }
+                if entry.generation != generation { update(entry, slots: slots, animate: oldMounted.contains(key)) }
                 if !oldMounted.contains(key) { batchCounts.warmGraphReattachments += 1 }
             } else {
                 let host = NativeSidebarBatchHostingView(rootView: makeRoot(slots: slots))
@@ -638,6 +650,17 @@ private final class NativeBatchMouseObservation {
         entry.host.rootView = makeRoot(slots: slots, animate: animate)
         entry.generation = generation
         batchCounts.rootUpdates += 1
+    }
+    private func hasSameStructure(_ entry: Entry, slots: [NativeSidebarOwnedSlot]) -> Bool {
+        let applied = entry.host.rootView
+        guard applied.total == rows.count, applied.slots.count == slots.count else { return false }
+        for (previous, current) in zip(applied.slots, slots) {
+            guard previous.index == current.index,
+                  previous.row.visible.entry == current.row.visible.entry,
+                  previous.row.visible.depth == current.row.visible.depth,
+                  previous.row.tab === current.row.tab else { return false }
+        }
+        return true
     }
     private func rowDidLayout(_ anchor: NativeSidebarRowLayoutView) {
         guard !disposed, anchor.generation == generation, anchor.committedGeneration == generation,

@@ -71,6 +71,77 @@ final class Feel05ThumbnailTests: XCTestCase {
         try await waitForWidth(40)
     }
 
+    @MainActor func testHiddenDownloadMountAndCompletionWaitForLatestExposureAndCancelQueuedDecode() async throws {
+        try XCTSkipUnless(RenderPerformanceExperiment.hiddenSurfaces,
+                          "Run with VANE_RENDER_EXPERIMENT=1 to exercise hidden thumbnail admission")
+        TestEnvironment.prepare()
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        func image(_ name: String, width: Int) throws -> URL {
+            let file = dir.appendingPathComponent(name)
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: 10,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: file)
+            return file
+        }
+        let first = try image("mounted.png", width: 20)
+        let completed = try image("completed.png", width: 40)
+        let latest = try image("latest.png", width: 60)
+        let downloads = Downloads(directory: dir, sandboxed: true)
+        let done = downloads.add(.init(name: "mounted.png", destination: first, state: "done"))
+        let finishing = downloads.add(.init(name: "completed.png", destination: completed, state: "running"))
+        let loader = Feel05ThumbnailLoader()
+        var requests: [URL] = []
+        let thumbnails = Thumbnails(loader: loader, didRequestVisible: { requests.append($0) })
+        let gate = Feel05DecodeGate()
+        let blocking = Task.detached { await loader.hold(gate) }
+        let entered = await Task.detached { gate.waitForEntry() }.value
+        XCTAssertEqual(entered, .success)
+        defer { gate.release.signal() }
+        let activity = Feel05ThumbnailActivity()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 80, height: 120),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        window.contentView = NSHostingView(rootView: Feel05HiddenThumbnailFixture(
+            activity: activity, mounted: done, finishing: finishing, thumbnails: thumbnails))
+        window.orderFront(nil)
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(requests.isEmpty, "A completed image mounted in the hidden retained list must not request a decode")
+        finishing.status = .done
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(requests.isEmpty, "Completing while hidden must not admit the newly mounted image branch")
+        activity.active = true
+        let admittedDeadline = ContinuousClock.now + .seconds(2)
+        while requests.count < 2, ContinuousClock.now < admittedDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(Set(requests), Set([first, completed]))
+        activity.active = false
+        try await Task.sleep(for: .milliseconds(100))
+        gate.release.signal()
+        await blocking.value
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(thumbnails.image(for: first))
+        XCTAssertNil(thumbnails.image(for: completed))
+        XCTAssertEqual(thumbnails.revision, 0, "Hiding must cancel queued decodes and revoke late publication")
+        finishing.url = latest
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(requests.count, 2, "A hidden file replacement must not schedule work")
+        activity.active = true
+        let visibleDeadline = ContinuousClock.now + .seconds(3)
+        while thumbnails.image(for: latest) == nil, ContinuousClock.now < visibleDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(thumbnails.image(for: latest)?.size.width, 60)
+        XCTAssertEqual(requests.filter { $0 == completed }.count, 1,
+                       "Re-exposure must request the current file, not replay the cancelled old destination")
+        XCTAssertEqual(requests.filter { $0 == latest }.count, 1)
+    }
+
     @MainActor func testVisibleRequestOwnsQueuedWorkAndDropsCancelledResults() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -173,5 +244,24 @@ private extension Feel05ThumbnailLoader {
     func hold(_ gate: Feel05DecodeGate) {
         gate.entered.signal()
         _ = gate.release.wait(timeout: .now() + 10)
+    }
+}
+
+
+@MainActor private final class Feel05ThumbnailActivity: ObservableObject {
+    @Published var active = false
+}
+
+private struct Feel05HiddenThumbnailFixture: View {
+    @ObservedObject var activity: Feel05ThumbnailActivity
+    let mounted: Downloads.Item
+    let finishing: Downloads.Item
+    let thumbnails: Thumbnails
+    var body: some View {
+        VStack {
+            Feel05DownloadThumbnail(item: mounted, thumbnails: thumbnails)
+            Feel05DownloadThumbnail(item: finishing, thumbnails: thumbnails)
+        }
+        .environment(\.renderSurfaceActive, activity.active)
     }
 }
