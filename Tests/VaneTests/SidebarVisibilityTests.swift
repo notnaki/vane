@@ -4,6 +4,82 @@ import SwiftUI
 @testable import vane
 
 @MainActor final class SidebarVisibilityTests: XCTestCase {
+
+    private func profileRoot(containing view: NSView, in host: NSView) -> NSView? {
+        var root = view
+        while let parent = root.superview, parent !== host { root = parent }
+        return root.superview === host ? root : nil
+    }
+
+    private func sidebarDockingAnchor(for store: TabStore, in host: NSView) throws -> NSView {
+        // This store's native sections background shares the sidebar's outer docking transform.
+        let sections = try XCTUnwrap(store.spaceGesture.sectionsView)
+        XCTAssertTrue(store.profileVisible)
+        XCTAssertTrue(store.window === host.window)
+        XCTAssertTrue(store.window?.contentView === host)
+        XCTAssertTrue(sections.window === host.window)
+        XCTAssertTrue(sections.isDescendant(of: host))
+        XCTAssertFalse(sections.isHiddenOrHasHiddenAncestor)
+        return sections
+    }
+
+    func testDockingSampleExcludesParkedProfileAndTracksLiveSidebarMovement() async throws {
+        TestEnvironment.prepare()
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let firstProfile = manager.create(name: "Dock sample parked owner")
+        let secondProfile = manager.create(name: "Dock sample live owner")
+        let first = manager.createSpace(name: "First", in: firstProfile.id)
+        let second = manager.createSpace(name: "Second", in: secondProfile.id)
+        let source = Windows.open(profile: firstProfile, space: first, focus: false)
+        let window = try XCTUnwrap(source.window)
+        defer {
+            window.close()
+            _ = manager.delete(firstProfile.id)
+            _ = manager.delete(secondProfile.id)
+            manager.active = previous
+        }
+        let host = try XCTUnwrap(window.contentView)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(350))
+        let parkedSections = try XCTUnwrap(source.spaceGesture.sectionsView)
+        let arriving = try XCTUnwrap(Windows.hop(source, to: second))
+        try await Task.sleep(for: .milliseconds(350))
+        host.layoutSubtreeIfNeeded()
+        let liveSections = try XCTUnwrap(arriving.spaceGesture.sectionsView)
+        let parkedRoot = try XCTUnwrap(profileRoot(containing: parkedSections, in: host))
+        let liveRoot = try XCTUnwrap(profileRoot(containing: liveSections, in: host))
+        XCTAssertFalse(parkedRoot === liveRoot)
+        XCTAssertTrue(parkedRoot.isHidden)
+        XCTAssertFalse(liveRoot.isHidden)
+        // Cached roots are retained siblings. Their order cannot identify the active owner.
+        host.addSubview(parkedRoot, positioned: .below, relativeTo: nil)
+        XCTAssertTrue(host.subviews.first === parkedRoot)
+        let selected = try sidebarDockingAnchor(for: arriving, in: host)
+        XCTAssertTrue(selected.isDescendant(of: liveRoot),
+                      "Docking samples must belong to the actual arriving profile host")
+        XCTAssertFalse(selected.isDescendant(of: parkedRoot),
+                       "A retained hidden profile must not supply the docking sample")
+        XCTAssertFalse(selected.isHiddenOrHasHiddenAncestor)
+        func presentedOrigin() throws -> CGPoint {
+            let layer = try XCTUnwrap(selected.layer?.presentation())
+            return layer.convert(.zero, to: host.layer?.presentation())
+        }
+        let docked = try presentedOrigin()
+        arriving.sidebarShown = false
+        arriving.sidebarPeeking = true
+        try await Task.sleep(for: .milliseconds(350))
+        let floating = try presentedOrigin()
+        // Keep the real sidebar visible: docking versus a floating peek changes its inset.
+        XCTAssertGreaterThan(abs(floating.x - docked.x), 1,
+                             "An owner-bound sample must observe the arriving sidebar's real transform")
+        XCTAssertTrue(arriving.spaceGesture.sectionsView === liveSections)
+        print("SIDEBAR_OWNER_CONTROL parkedHidden=\(parkedRoot.isHidden)"
+            + " selectedInParked=\(selected.isDescendant(of: parkedRoot))"
+            + " selectedInArriving=\(selected.isDescendant(of: liveRoot))"
+            + " docked=\(docked) floating=\(floating)")
+    }
+
     func testFloatingRevealRetainsTheLaidOutSidebar() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -227,22 +303,37 @@ import SwiftUI
         returning.sidebarShown = true
         // Switch before the outgoing dock animation has finished.
         try await Task.sleep(for: .milliseconds(20))
-        _ = try XCTUnwrap(Windows.hop(returning, to: second))
+        let arriving = try XCTUnwrap(Windows.hop(returning, to: second))
         try await Task.sleep(for: .milliseconds(30))
         let host = try XCTUnwrap(window.contentView)
         host.layoutSubtreeIfNeeded()
-        func scroll(in view: NSView) -> NSScrollView? {
-            if let scroll = view as? NSScrollView { return scroll }
-            return view.subviews.lazy.compactMap { scroll(in: $0) }.first
-        }
-        let viewport = try XCTUnwrap(scroll(in: host))
+        let viewport = try sidebarDockingAnchor(for: arriving, in: host)
         func presentedOrigin() throws -> CGPoint {
+            XCTAssertTrue(arriving === target, "The final hop must reuse the cached target")
+            XCTAssertEqual(arriving.profileID, secondProfile.id)
+            XCTAssertTrue(arriving.profileVisible)
+            XCTAssertTrue(arriving.window === window)
+            XCTAssertTrue(window.contentView === host)
+            XCTAssertTrue(arriving.spaceGesture.sectionsView === viewport,
+                          "Both samples must observe the same live sections anchor")
+            XCTAssertTrue(viewport.window === window)
+            XCTAssertTrue(viewport.isDescendant(of: host))
+            XCTAssertFalse(viewport.isHiddenOrHasHiddenAncestor)
             let layer = try XCTUnwrap(viewport.layer?.presentation())
             return layer.convert(.zero, to: host.layer?.presentation())
         }
         let early = try presentedOrigin()
         try await Task.sleep(for: .milliseconds(350))
         let settled = try presentedOrigin()
+        let selectedRoot = profileRoot(containing: viewport, in: host)
+        let owner = selectedRoot.flatMap { selected in
+            [source, target].first { candidate in
+                candidate.spaceGesture.sectionsView.flatMap { profileRoot(containing: $0, in: host) } === selected
+            }
+        }
+        print("SIDEBAR_DOCKING_SAMPLE selectedOwner=\(owner?.profileID.uuidString ?? "unknown")"
+            + " expectedOwner=\(arriving.profileID)"
+            + " nativeHidden=\(viewport.isHiddenOrHasHiddenAncestor) early=\(early) settled=\(settled)")
         XCTAssertEqual(early.x, settled.x, accuracy: 0.5,
                        "The arriving profile must already use docked geometry")
         XCTAssertEqual(early.y, settled.y, accuracy: 0.5,

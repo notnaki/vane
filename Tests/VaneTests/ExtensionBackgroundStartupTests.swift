@@ -77,6 +77,61 @@ import XCTest
         XCTAssertNil(again.entries.first?.failure)
     }
 
+    func testPageScriptErrorDoesNotRejectWorkingBackgroundAndPopup() async throws {
+        let nonce = UUID().uuidString
+        let manifest: [String: Any] = ["manifest_version": 2, "name": "Page with optional feature error",
+            "description": "Runtime diagnostics are distinct from a failed background load", "version": "1.0",
+            "background": ["page": "background.html", "persistent": true],
+            "browser_action": ["default_popup": "popup.html"]]
+        try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
+        try Data("<script src='background.js'></script>".utf8).write(to: folder.appendingPathComponent("background.html"))
+        try Data("""
+            browser.runtime.onMessage.addListener(() => Promise.resolve('\(nonce)'));
+            throw new Error('Optional notification feature is unsupported');
+            """.utf8).write(to: folder.appendingPathComponent("background.js"))
+        try Data("<script src='popup.js'></script>".utf8).write(to: folder.appendingPathComponent("popup.html"))
+        try Data("browser.runtime.sendMessage({}).then(value => window.reply = value);".utf8)
+            .write(to: folder.appendingPathComponent("popup.js"))
+        let host = ExtensionHost.host(for: profile)
+        _ = try await host.load(folder, installing: true) { _ in true }
+        let context = try XCTUnwrap(host.installed.first)
+        let action = try XCTUnwrap(context.action(for: nil))
+        defer { action.closePopup() }
+        let web = try XCTUnwrap(action.popupWebView)
+        let deadline = ContinuousClock.now + .seconds(5)
+        var reply: String?
+        while ContinuousClock.now < deadline {
+            reply = try? await web.evaluateJavaScript("window.reply") as? String
+            if reply == nonce { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(reply, nonce, "The background must actually service the new popup's message")
+        XCTAssertTrue(context.isLoaded)
+        // Older supported engines do not report page script errors in this array.
+        // Every diagnostic they do report must remain visible after activation.
+        for error in context.errors {
+            XCTAssertTrue(host.entries.first?.failure?.contains(error.localizedDescription) == true,
+                          "Keep the extension's runtime error visible in the manager")
+        }
+    }
+
+    func testOnlyReportedRuntimeScriptErrorsAreNonblocking() {
+        let script = NSError(domain: WKWebExtensionContext.errorDomain, code: 7,
+                             userInfo: [NSLocalizedDescriptionKey: "Optional feature threw"])
+        let failedLoad = NSError(domain: WKWebExtensionContext.errorDomain,
+                                 code: WKWebExtensionContext.Error.backgroundContentFailedToLoad.rawValue)
+        let unknownContext = NSError(domain: WKWebExtensionContext.errorDomain, code: 8)
+        let differentDomain = NSError(domain: WKWebExtension.errorDomain, code: 7)
+        let blocking = ExtensionDiagnostics.blockingErrors([script, failedLoad, unknownContext, differentDomain],
+                                                          manifest: ["description": "Error classification fixture"])
+        XCTAssertEqual(blocking.map { ($0 as NSError).code }, [failedLoad.code, unknownContext.code, differentDomain.code])
+        XCTAssertEqual(blocking.map { ($0 as NSError).domain }, [failedLoad.domain, unknownContext.domain, differentDomain.domain])
+        let displayed = ExtensionDiagnostics.displayErrors([script, failedLoad, unknownContext, differentDomain],
+                                                          manifest: ["description": "Error classification fixture"])
+        XCTAssertEqual(displayed.count, 4, "Activation policy must not hide runtime or unknown diagnostics")
+        XCTAssertEqual(displayed.first?.localizedDescription, script.localizedDescription)
+    }
+
     func testThrowingAcceptedWorkerRestoreLeavesVisibleFailureAndRetainsAcceptedCode() async throws {
         try writeWorker("chrome.runtime.onInstalled.addListener(() => {});")
         let host = ExtensionHost.host(for: profile)

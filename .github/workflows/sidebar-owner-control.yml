@@ -1,0 +1,38 @@
+name: sidebar-owner-control
+on:
+  pull_request:
+    paths:
+      - Tests/VaneTests/SidebarVisibilityTests.swift
+      - .github/workflows/sidebar-owner-control.yml
+permissions:
+  contents: read
+jobs:
+  control:
+    name: Real cached-profile owner control
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Bind controlled test source
+        run: test "$(git hash-object Tests/VaneTests/SidebarVisibilityTests.swift)" = 7cd62ceeac720b7eefda32a893a37fb5b334dbbc
+      - name: Existing owned-runner safety guards
+        run: python3 -B scripts/test-native-fixture-runner.py
+      - name: Build controlled native test
+        run: swift build -c debug --build-tests --jobs 1
+      - name: Verify owner control and cached-profile docking geometry
+        timeout-minutes: 5
+        env:
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '120'
+        run: |
+          set -euo pipefail
+          python3 -B scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests[.]SidebarVisibilityTests/(testDockingSampleExcludesParkedProfileAndTracksLiveSidebarMovement|testReturningToCachedProfileDoesNotReplaySidebarDocking)$' 2>&1 | tee "$RUNNER_TEMP/sidebar-owner-control.log"
+      - name: Preserve control evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: sidebar-owner-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sidebar-owner-control.log
+          if-no-files-found: warn
+          retention-days: 14

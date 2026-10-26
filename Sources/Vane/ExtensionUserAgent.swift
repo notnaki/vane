@@ -1,9 +1,10 @@
 import Foundation
 import WebKit
 
-/// Identity for WebKit-owned extension pages, including pages created after a Develop
+/// Configures WebKit-owned extension views, including views created after a Develop
 /// change. A controller copies its configuration; its web-view configuration copies
 /// retain these preferences until WebKit snapshots them for an individual page.
+/// MV3 workers have separate WebKit initialization and can start with a different UA.
 @MainActor final class ExtensionUserAgent {
     private let preferences = WKWebpagePreferences()
     private let views = NSHashTable<WKWebView>.weakObjects()
@@ -13,11 +14,12 @@ import WebKit
 
     /// Public WebKit only exposes an appended application-name token on configurations.
     /// Full Firefox/iPhone/custom identities require this guarded WebKit preference.
-    /// If it disappears, default Safari identity still works through the public suffix;
-    /// the extension manager explicitly discloses the loss of custom identity support.
+    /// If it disappears, retain the public Safari suffix for extension views and
+    /// disclose the unavailable custom-view configuration. Selector availability
+    /// does not establish successful propagation into a separately created worker.
     var limitation: String? {
         preferences.responds(to: Self.setter) ? nil
-            : "This WebKit version does not support custom user agents for extension pages. Extension pages use the default Safari identity."
+            : "This WebKit version does not support custom user agents for extension web views. Vane uses its default Safari configuration for those views."
     }
 
     func configure(_ configuration: WKWebViewConfiguration) {

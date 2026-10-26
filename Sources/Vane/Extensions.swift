@@ -167,7 +167,7 @@ import WebKit
             let record = records[path]
             let source = sourceFolder(for: path)
             let busy = operations[path] != nil || restoring[path] != nil
-            let runtimeErrors = context.map { ExtensionDiagnostics.blockingErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
+            let runtimeErrors = context.map { ExtensionDiagnostics.displayErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
             let failure = failures[path] ?? (runtimeErrors.isEmpty ? nil : ExtensionDiagnostics.describe(runtimeErrors))
             return Entry(path: path, name: record?.name ?? folders[path] ?? URL(fileURLWithPath: path).lastPathComponent,
                          context: context, status: busy ? "Checking…" : failure != nil ? (context != nil ? "Update needs attention" : "Needs attention")
@@ -1585,8 +1585,9 @@ import WebKit
         ask(context, patterns.map(\.string)) ? (patterns, nil) : ([], nil)
     }
 
-    /// WebKit invokes this optional SPI before loading background content, including a
-    /// recreated service worker. Public customUserAgent then applies before startup.
+    /// WebKit invokes this optional SPI before loading background content. Configure
+    /// the actual view here; this does not acknowledge the UA used when WebKit
+    /// initializes a separate MV3 worker.
     @objc(_webExtensionController:didCreateBackgroundWebView:forExtensionContext:)
     func extensionController(_ controller: WKWebExtensionController, didCreateBackgroundWebView web: WKWebView,
                              for context: WKWebExtensionContext) {

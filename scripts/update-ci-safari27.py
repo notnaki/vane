@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Install only Apple's stable Safari 27 update on a disposable macOS 26 runner.
+
+This does not bundle WebKit, change Vane's deployment floor, install macOS upgrades,
+or reboot a runner. Fresh probe launches must still attest their loaded engine.
+"""
+import json
+import os
+from pathlib import Path
+import platform
+import plistlib
+import re
+import subprocess
+import sys
+
+STAGED_ROOT = "/System/Cryptexes/App/System/Library/StagedFrameworks/Safari"
+
+def require_hosted_macos26(environment, version):
+    expected = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "macOS"}
+    if any(environment.get(key) != value for key, value in expected.items()) or not re.fullmatch(r"26(?:\.\d+)*", version):
+        raise ValueError("Safari installation is restricted to disposable GitHub-hosted macOS 26 runners")
+
+
+def select_safari_update(catalog):
+    candidates = []
+    for label in re.findall(r"^\s*\*\s+Label:\s*([^\r\n]+)$", catalog, re.MULTILINE):
+        match = re.fullmatch(r"Safari(27(?:\.\d+)*)TahoeAuto-(27(?:\.\d+)*)", label)
+        if match and match[1] == match[2]:
+            candidates.append((tuple(map(int, match[1].split("."))), label))
+    if not candidates or len({label for _, label in candidates}) != len(candidates):
+        raise ValueError("No unambiguous stable Safari 27 update for macOS Tahoe was listed; no update installed")
+    return max(candidates)[1]
+
+
+def require_updated_engine(safari, webkit):
+    if not re.fullmatch(r"27(?:\.\d+)*", safari) or not re.fullmatch(r"21625(?:\.\d+)+", webkit):
+        raise ValueError(f"Safari 27 and its macOS 26 system WebKit were not activated: Safari={safari}, WebKit={webkit}; a newer runner image or restart may be required")
+
+
+def available_engine_location(safari, system_webkit, staged_webkit, staged_is_apple_signed):
+    try:
+        require_updated_engine(safari, system_webkit)
+        return "/System/Library/Frameworks"
+    except ValueError:
+        require_updated_engine(safari, staged_webkit)
+        if staged_is_apple_signed is not True:
+            raise ValueError("Staged WebKit must have an Apple-anchored valid signature")
+        return STAGED_ROOT
+
+
+def require_available_engine(safari, system_webkit):
+    framework = Path(STAGED_ROOT) / "WebKit.framework"
+    info = framework / "Resources/Info.plist"
+    staged_version = ""
+    signed = False
+    if info.is_file():
+        with info.open("rb") as handle:
+            staged_version = plistlib.load(handle).get("CFBundleVersion", "")
+        result = subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "-R=anchor apple", str(framework)],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+        print(result.stdout, flush=True)
+        signed = result.returncode == 0
+    location = available_engine_location(safari, system_webkit, staged_version, signed)
+    print(json.dumps({"phase": "available-engine", "path": location, "stagedVersion": staged_version,
+                      "stagedAppleSignatureVerified": signed}), flush=True)
+
+
+def installed_versions():
+    with Path("/Applications/Safari.app/Contents/Info.plist").open("rb") as handle:
+        safari = plistlib.load(handle)["CFBundleShortVersionString"]
+    with Path("/System/Library/Frameworks/WebKit.framework/Resources/Info.plist").open("rb") as handle:
+        webkit = plistlib.load(handle)["CFBundleVersion"]
+    return safari, webkit
+
+
+def report_staged_frameworks():
+    # Apple can ship a downlevel Safari engine outside the OS framework location.
+    # Inventory only fixed system paths; this neither selects nor loads them.
+    roots = ("/System/Library/StagedFrameworks/Safari",
+             "/Library/Apple/System/Library/StagedFrameworks/Safari",
+             "/System/Cryptexes/App/System/Library/StagedFrameworks/Safari")
+    for root in roots:
+        info = Path(root) / "WebKit.framework/Resources/Info.plist"
+        record = {"phase": "staged-inventory", "path": root, "exists": info.is_file()}
+        if info.is_file():
+            with info.open("rb") as handle:
+                record["WebKit"] = plistlib.load(handle).get("CFBundleVersion")
+            record["resolvedPath"] = str(Path(root).resolve())
+        print(json.dumps(record), flush=True)
+    # The application load commands show whether Safari opts into that location.
+    binary = "/Applications/Safari.app/Contents/MacOS/Safari"
+    commands = subprocess.run(["/usr/bin/otool", "-l", binary], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, timeout=15)
+    print("Safari embedded loader paths: " + "\n".join(
+        line.strip() for line in commands.stdout.splitlines() if "DYLD_" in line)[:4096], flush=True)
+
+
+def main():
+    require_hosted_macos26(os.environ, platform.mac_ver()[0])
+    before = installed_versions()
+    print(json.dumps({"phase": "before", "OS": platform.mac_ver()[0], "Safari": before[0], "WebKit": before[1]}), flush=True)
+    try:
+        require_available_engine(*before)
+        print("Safari 27 engine already available; no mutation needed", flush=True)
+        return 0
+    except ValueError:
+        pass
+    scan = subprocess.run(["/usr/sbin/softwareupdate", "--list"], stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True, timeout=180)
+    print(scan.stdout, flush=True)
+    scan.check_returncode()
+    label = select_safari_update(scan.stdout)
+    print(f"Installing exactly one Apple update: {label}", flush=True)
+    subprocess.run(["sudo", "/usr/sbin/softwareupdate", "--install", label, "--verbose"], check=True, timeout=600)
+    after = installed_versions()
+    print(json.dumps({"phase": "after", "OS": platform.mac_ver()[0], "Safari": after[0], "WebKit": after[1]}), flush=True)
+    report_staged_frameworks()
+    require_available_engine(*after)
+    print("Safari 27/macOS 26 engine available; actual loaded-image and UA checks still required", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, KeyError, ValueError, subprocess.SubprocessError) as error:
+        print(f"FAIL Safari 27 CI setup: {error}", file=sys.stderr, flush=True)
+        sys.exit(1)

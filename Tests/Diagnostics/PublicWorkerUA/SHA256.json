@@ -1,0 +1,16 @@
+{
+  "main.m": "0afc647e878f8421b0f43531ae86f94f853536c7f1e3c1b899b1473809a4f522",
+  "build.sh": "50030ebb99e1bdfa37130c8e1f0217f078cd77d67ca39248bbf93c8d064ced7a",
+  "Info.plist": "9e3749506295875d99345d002cb49bef67c180717d6890045cd23bbf0737caa9",
+  "Entitlements.plist": "80e0c6c1d70b219ec106bb30f9970fe957e645c9246c12173d89e07587fe0d4c",
+  "Extensions/mv2/background.js": "08887196754fbadd8c53a2f19edba65a678035f056884d7fd65a39369001e3d1",
+  "Extensions/mv2/identity.js": "6db54f01e0ca4b6dab9396b4a415cb70af7f34f697ce5261ad992aad38160191",
+  "Extensions/mv2/manifest.json": "25e43048639c38cdd5574a4de73141a96233cc632d60ab628b0b71b1788f41ca",
+  "Extensions/mv2/popup.html": "28c0defb6d488224da281d924e5533b581481d4983ff5574c9cef7d6a893c247",
+  "Extensions/mv2/popup.js": "fb1912239c30c3df965f3747ed1913addf7b8226f0a5777cb3d69e647d705d88",
+  "Extensions/mv3/background.js": "08887196754fbadd8c53a2f19edba65a678035f056884d7fd65a39369001e3d1",
+  "Extensions/mv3/identity.js": "6db54f01e0ca4b6dab9396b4a415cb70af7f34f697ce5261ad992aad38160191",
+  "Extensions/mv3/manifest.json": "c7c871d0f227a30d2fd81af8120a710925e18e5648d677582aa098e8c4288cba",
+  "Extensions/mv3/popup.html": "28c0defb6d488224da281d924e5533b581481d4983ff5574c9cef7d6a893c247",
+  "Extensions/mv3/popup.js": "fb1912239c30c3df965f3747ed1913addf7b8226f0a5777cb3d69e647d705d88"
+}

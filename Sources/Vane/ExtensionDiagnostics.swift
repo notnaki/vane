@@ -35,9 +35,24 @@ import WebKit
         return issues
     }
 
-    /// WebKit records absent optional display metadata as errors too. Keep these
-    /// visible, but do not reject previously working folders without a description.
+    /// Activation failures exclude reported script diagnostics. A successful load
+    /// is still required, and the manager retains diagnostics from running code.
     static func blockingErrors(_ errors: [any Error], manifest: [String: Any]) -> [any Error] {
+        displayErrors(errors, manifest: manifest).filter { error in
+            let value = error as NSError
+            // WebKit reports ScriptExecutionError as context code 7, separately
+            // from BackgroundContentFailedToLoad (6). The public SDK enum does
+            // not name it yet. Recording it does not unload the context; a page
+            // can still finish loading and service messages after an optional
+            // feature throws. Require the successful load callback as before,
+            // and keep this diagnostic visible in the extension manager.
+            // WebKit ad3ad2c6: WebExtensionContext::{APIError,didEncounterScriptError}.
+            return !(value.domain == WKWebExtensionContext.errorDomain && value.code == 7)
+        }
+    }
+
+    /// Missing optional description metadata alone does not need attention.
+    static func displayErrors(_ errors: [any Error], manifest: [String: Any]) -> [any Error] {
         errors.filter { error in
             let value = error as NSError
             return !(manifest["description"] == nil && value.domain == WKWebExtension.errorDomain

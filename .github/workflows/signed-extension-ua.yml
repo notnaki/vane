@@ -1,0 +1,150 @@
+name: signed-extension-ua-diagnostic
+
+on:
+  pull_request:
+    paths:
+      - Sources/Vane/ExtensionUserAgent.swift
+      - Sources/Vane/ExtensionAppChecks.swift
+      - Package.swift
+      - scripts/check-extension-ua.py
+      - scripts/test-extension-ua-runner.py
+      - scripts/update-ci-safari27.py
+      - scripts/test-update-ci-safari27.py
+      - scripts/check-staged-webkit-evidence.py
+      - scripts/test-staged-webkit-evidence.py
+      - scripts/worker-engine-evidence.py
+      - scripts/test-worker-engine-evidence.py
+      - Tests/Diagnostics/PageBackedWorkerUA/main.m
+      - scripts/check-page-backed-worker-ua.py
+      - scripts/test-page-backed-worker-ua.py
+      - .github/workflows/page-backed-worker-ua.yml
+      - .github/workflows/signed-extension-ua.yml
+  workflow_dispatch:
+    inputs:
+      runtime:
+        description: System WebKit runtime for this comparison
+        type: choice
+        default: macos-26
+        options: [macos-26, macos-26-safari27, xcode-27]
+      observer_mode:
+        description: Select one observer arm or the ordinary two-arm comparison
+        type: choice
+        default: both
+        options: [both, unregistered, registered]
+      worker_engine:
+        description: Sample a unique app-owned service-worker candidate after UA comparison
+        type: boolean
+        default: false
+      framework_only:
+        description: Run the SPI-assisted page-backed reduction instead of the Vane comparison
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-extension-ua-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  signed-normal-app:
+    if: ${{ !inputs.framework_only }}
+    name: Signed Vane UA observer arm (${{ matrix.observer_mode }}, ${{ inputs.runtime || 'macos-26' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        observer_mode: ${{ fromJSON(inputs.observer_mode == 'unregistered' && '["unregistered"]' || inputs.observer_mode == 'registered' && '["registered"]' || '["unregistered","registered"]') }}
+    runs-on: ${{ inputs.runtime == 'xcode-27' && 'xcode-27' || 'macos-26' }}
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install only Apple's Safari 27 update on disposable macOS 26
+        if: ${{ inputs.runtime == 'macos-26-safari27' }}
+        timeout-minutes: 14
+        run: |
+          set -euo pipefail
+          python3 -B scripts/test-update-ci-safari27.py
+          python3 -B scripts/test-staged-webkit-evidence.py
+          python3 -B scripts/update-ci-safari27.py 2>&1 | tee "$RUNNER_TEMP/safari27-update.log"
+
+      - name: Bind exact candidate product and existing cleanup inputs
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Sources/Vane/ExtensionUserAgent.swift)" = 10c9586708742fcc56f9ca29beb806796c6faefe
+          test "$(git hash-object Tests/VaneTests/ExtensionUserAgentTests.swift)" = 57b82e8f0f0031c892d75e0b3a854520331bcd53
+          test "$(git hash-object Sources/Vane/Extensions.swift)" = 9642f7bdf05965ee0dc745a1e4b9fe470b64b253
+          test "$(git hash-object Sources/Vane/ExtensionDiagnostics.swift)" = 0d0df0262ef4590ccf72440558f9e44170d1ba52
+          test "$(git hash-object Sources/Vane/BrowserChecks.swift)" = 076bee479e904056e567216e40555e21f4f3f133
+          test "$(git hash-object Sources/Vane/main.swift)" = 4b2a280a8540dda130b403129de7d7f7d14a50cf
+          test "$(git hash-object Vane.entitlements)" = abf2127ad3263a848d63b59d720f9b468f7611da
+          test "$(git hash-object scripts/run-native-tests.py)" = d9129128574ec0bedaeb1094d20addae1ed85c57
+          test "$(git hash-object Package.swift)" = 8a7d38c860554e0fdb161e7050ae3d3d2068aa63
+          test "$(git hash-object Sources/Vane/ExtensionAppChecks.swift)" = 041cc2c1a7e1380c1ab8d21769555ffccedc68ec
+          git rev-parse HEAD
+          swift --version
+          xcodebuild -version
+          sw_vers
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' /System/Library/Frameworks/WebKit.framework/Resources/Info.plist
+
+      - name: Signed-runner pure safety guards
+        run: |
+          python3 -B scripts/test-extension-ua-runner.py
+          python3 -B scripts/test-worker-engine-evidence.py
+
+      - name: Build actual Vane debug executable
+        env:
+          VANE_TEST_STAGED_WEBKIT: ${{ inputs.runtime == 'macos-26-safari27' && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          if [[ "$VANE_TEST_STAGED_WEBKIT" == 1 ]]; then
+            swift build -c debug \
+              -Xlinker -dyld_env -Xlinker DYLD_FRAMEWORK_PATH=/System/Cryptexes/App/System/Library/StagedFrameworks/Safari \
+              -Xlinker -dyld_env -Xlinker DYLD_LIBRARY_PATH=/System/Cryptexes/App/System/Library/StagedFrameworks/Safari
+          else
+            swift build -c debug
+          fi
+
+      - name: Eight fresh signed normal-app comparisons, stop at first failure
+        timeout-minutes: 22
+        env:
+          CAPTURE_WORKER_ENGINE: ${{ inputs.worker_engine && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/Downloads"
+          probe_args=(--binary .build/debug/vane --observer-mode "${{ matrix.observer_mode }}" --evidence-dir "$RUNNER_TEMP/vane-signed-extension-ua-logs")
+          if [[ "$CAPTURE_WORKER_ENGINE" == 1 ]]; then probe_args+=(--worker-engine); fi
+          python3 -B scripts/check-extension-ua.py "${probe_args[@]}" 2>&1 | tee "$RUNNER_TEMP/vane-signed-extension-ua.log"
+
+      - name: Inspect post-comparison background-owner images with conditional worker attribution
+        if: ${{ always() && inputs.worker_engine }}
+        run: |
+          set -euo pipefail
+          evidence_args=("$RUNNER_TEMP/vane-signed-extension-ua-logs")
+          if [[ '${{ inputs.runtime }}' == macos-26-safari27 ]]; then evidence_args+=(--expect-staged); fi
+          python3 -B scripts/worker-engine-evidence.py "${evidence_args[@]}"
+
+      - name: Attest app-process runtime and staged image UUIDs (worker images unverified)
+        if: ${{ inputs.runtime == 'macos-26-safari27' }}
+        run: python3 -B scripts/check-staged-webkit-evidence.py "$RUNNER_TEMP/vane-signed-extension-ua-logs"
+
+      - name: Preserve signed comparison log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: signed-vane-ua-${{ matrix.observer_mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/safari27-update.log
+            ${{ runner.temp }}/vane-signed-extension-ua.log
+            ${{ runner.temp }}/vane-signed-extension-ua-logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  framework-only-reduction:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.framework_only }}
+    uses: ./.github/workflows/page-backed-worker-ua.yml
+    with:
+      runtime: ${{ inputs.runtime || 'macos-26' }}
