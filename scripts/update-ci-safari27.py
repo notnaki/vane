@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 
+STAGED_ROOT = "/System/Cryptexes/App/System/Library/StagedFrameworks/Safari"
 
 def require_hosted_macos26(environment, version):
     expected = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "macOS"}
@@ -34,6 +35,34 @@ def select_safari_update(catalog):
 def require_updated_engine(safari, webkit):
     if not re.fullmatch(r"27(?:\.\d+)*", safari) or not re.fullmatch(r"21625(?:\.\d+)+", webkit):
         raise ValueError(f"Safari 27 and its macOS 26 system WebKit were not activated: Safari={safari}, WebKit={webkit}; a newer runner image or restart may be required")
+
+
+def available_engine_location(safari, system_webkit, staged_webkit, staged_is_apple_signed):
+    try:
+        require_updated_engine(safari, system_webkit)
+        return "/System/Library/Frameworks"
+    except ValueError:
+        require_updated_engine(safari, staged_webkit)
+        if staged_is_apple_signed is not True:
+            raise ValueError("Staged WebKit must have an Apple-anchored valid signature")
+        return STAGED_ROOT
+
+
+def require_available_engine(safari, system_webkit):
+    framework = Path(STAGED_ROOT) / "WebKit.framework"
+    info = framework / "Resources/Info.plist"
+    staged_version = ""
+    signed = False
+    if info.is_file():
+        with info.open("rb") as handle:
+            staged_version = plistlib.load(handle).get("CFBundleVersion", "")
+        result = subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "-R=anchor apple", str(framework)],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+        print(result.stdout, flush=True)
+        signed = result.returncode == 0
+    location = available_engine_location(safari, system_webkit, staged_version, signed)
+    print(json.dumps({"phase": "available-engine", "path": location, "stagedVersion": staged_version,
+                      "stagedAppleSignatureVerified": signed}), flush=True)
 
 
 def installed_versions():
@@ -71,8 +100,8 @@ def main():
     before = installed_versions()
     print(json.dumps({"phase": "before", "OS": platform.mac_ver()[0], "Safari": before[0], "WebKit": before[1]}), flush=True)
     try:
-        require_updated_engine(*before)
-        print("Safari 27 system engine already installed; no mutation needed", flush=True)
+        require_available_engine(*before)
+        print("Safari 27 engine already available; no mutation needed", flush=True)
         return 0
     except ValueError:
         pass
@@ -86,8 +115,8 @@ def main():
     after = installed_versions()
     print(json.dumps({"phase": "after", "OS": platform.mac_ver()[0], "Safari": after[0], "WebKit": after[1]}), flush=True)
     report_staged_frameworks()
-    require_updated_engine(*after)
-    print("Safari 27/macOS 26 disk postcondition satisfied; actual loaded-engine and UA checks still required", flush=True)
+    require_available_engine(*after)
+    print("Safari 27/macOS 26 engine available; actual loaded-image and UA checks still required", flush=True)
     return 0
 
 

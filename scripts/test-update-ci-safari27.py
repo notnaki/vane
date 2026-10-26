@@ -53,5 +53,12 @@ Software Update found the following new or updated software:
             with self.subTest(safari=safari, webkit=webkit), self.assertRaises(ValueError):
                 update.require_updated_engine(safari, webkit)
 
+    def test_staged_engine_requires_expected_version_and_apple_signature(self):
+        root = "/System/Cryptexes/App/System/Library/StagedFrameworks/Safari"
+        self.assertEqual(update.available_engine_location("27.0", "21624.5.1.11.3", "21625.1.29.18.28", True), root)
+        for version, signature in (("21624.5.1.11.3", True), ("21625.1.29.18.28", False), ("", True)):
+            with self.subTest(version=version, signature=signature), self.assertRaises(ValueError):
+                update.available_engine_location("27.0", "21624.5.1.11.3", version, signature)
+
 
 if __name__ == "__main__": unittest.main()

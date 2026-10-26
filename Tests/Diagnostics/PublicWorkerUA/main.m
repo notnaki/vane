@@ -1,6 +1,8 @@
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
 #import <string.h>
+#import <mach-o/dyld.h>
+#import <Security/Security.h>
 
 // Standalone reduction using only the public suffix API.
 // The existing Vane failure additionally uses SPI; see REPORT.md for that limit.
@@ -8,6 +10,48 @@ static NSString * const SafariSuffix = @"Version/26.6.2 Safari/605.1.15";
 static void Emit(NSDictionary *record) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:record options:NSJSONWritingSortedKeys error:nil];
     if (data) { [NSFileHandle.fileHandleWithStandardOutput writeData:data]; [NSFileHandle.fileHandleWithStandardOutput writeData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]]; }
+}
+
+static void ReportEngineImages(void) {
+    NSMutableArray *images = [NSMutableArray array];
+    for (uint32_t index = 0; index < _dyld_image_count(); index++) {
+        const struct mach_header *header = _dyld_get_image_header(index);
+        const char *name = _dyld_get_image_name(index);
+        if (!header || !name || header->magic != MH_MAGIC_64) continue;
+        NSString *path = [NSString stringWithUTF8String:name];
+        if (![path hasPrefix:@"/System/"] ||
+            (![@[@"WebKit", @"WebCore", @"JavaScriptCore"] containsObject:path.lastPathComponent] &&
+             ![path containsString:@"/StagedFrameworks/Safari/"])) continue;
+        NSMutableDictionary *record = [@{ @"path": path } mutableCopy];
+        const uint8_t *raw = (const uint8_t *)header;
+        size_t offset = sizeof(struct mach_header_64), end = offset + header->sizeofcmds;
+        for (uint32_t commandIndex = 0; commandIndex < header->ncmds; commandIndex++) {
+            if (offset + sizeof(struct load_command) > end) break;
+            const struct load_command *command = (const struct load_command *)(raw + offset);
+            if (command->cmdsize < sizeof(struct load_command) || offset + command->cmdsize > end) break;
+            if (command->cmd == LC_UUID && command->cmdsize >= sizeof(struct uuid_command))
+                record[@"uuid"] = [[NSUUID alloc] initWithUUIDBytes:((const struct uuid_command *)command)->uuid].UUIDString;
+            else if (command->cmd == LC_ID_DYLIB && command->cmdsize >= sizeof(struct dylib_command)) {
+                uint32_t version = ((const struct dylib_command *)command)->dylib.current_version;
+                record[@"version"] = [NSString stringWithFormat:@"%u.%u.%u", version >> 16, (version >> 8) & 255, version & 255];
+            }
+            offset += command->cmdsize;
+        }
+        [images addObject:record];
+    }
+    SecCodeRef code = NULL;
+    SecStaticCodeRef staticCode = NULL;
+    CFDictionaryRef signingInfo = NULL;
+    BOOL hardened = NO;
+    if (SecCodeCopySelf(kSecCSDefaultFlags, &code) == errSecSuccess &&
+        SecCodeCopyStaticCode(code, kSecCSDefaultFlags, &staticCode) == errSecSuccess &&
+        SecCodeCopySigningInformation(staticCode, kSecCSSigningInformation, &signingInfo) == errSecSuccess)
+        hardened = ([((__bridge NSDictionary *)signingInfo)[(__bridge id)kSecCodeInfoFlags] unsignedIntValue] & kSecCodeSignatureRuntime) != 0;
+    if (signingInfo) CFRelease(signingInfo);
+    if (code) CFRelease(code);
+    if (staticCode) CFRelease(staticCode);
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@{ @"hardenedRuntime": @(hardened), @"images": images } options:NSJSONWritingSortedKeys error:nil];
+    if (data) printf("UA ENGINE IMAGES %s\n", [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
 }
 
 @interface Probe : NSObject <NSApplicationDelegate, WKWebExtensionControllerDelegate>
@@ -43,6 +87,7 @@ static void Emit(NSDictionary *record) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ [self admitLaunch]; });
 }
 - (void)startProbe {
+    ReportEngineImages();
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(100, 100, 520, 320)
         styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
     self.window.title = @"WKWebExtension worker UA probe";

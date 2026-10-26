@@ -210,6 +210,15 @@ class SequencingTests(unittest.TestCase):
 
 
 class EvidenceLogTests(unittest.TestCase):
+    def test_actual_app_signer_enables_hardened_runtime_with_existing_entitlements(self):
+        self.fake_mode(failure="signing")
+        command = self.observer_commands[0][0]
+        self.assertEqual(command[0], "/usr/bin/codesign")
+        self.assertIn("--options", command)
+        self.assertEqual(command[command.index("--options") + 1], "runtime")
+        self.assertIn("--entitlements", command)
+        self.assertTrue(command[command.index("--entitlements") + 1].endswith("Vane.entitlements"))
+
     def fake_mode(self, failure=None, observer_mode="registered", child_mode=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

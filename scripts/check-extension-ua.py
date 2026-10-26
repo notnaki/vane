@@ -271,7 +271,7 @@ def run_ua_mode(binary, root, downloads, evidence_dir, observer_mode):
         environment["VANE_DATA_DIR"] = str(data)
         print(f"UA normal-loop trial {number}/8 bundle={app} data={data} binarySHA256={hashlib.sha256(executable.read_bytes()).hexdigest()}", flush=True)
         signed, signer_exited, _ = run_ua_process(
-            ["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements", str(root / "Vane.entitlements"), str(app)],
+            ["/usr/bin/codesign", "--force", "--sign", "-", "--options", "runtime", "--entitlements", str(root / "Vane.entitlements"), str(app)],
             environment, 30, trial_logs / "signing.log", interrupted)
         if signed or not signer_exited:
             print(f"FAIL UA signing; artifacts retained at {bundle_root} and {data}", flush=True)

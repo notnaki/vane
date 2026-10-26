@@ -8,6 +8,8 @@ on:
       - scripts/test-public-extension-ua.py
       - scripts/update-ci-safari27.py
       - scripts/test-update-ci-safari27.py
+      - scripts/check-staged-webkit-evidence.py
+      - scripts/test-staged-webkit-evidence.py
       - .github/workflows/public-extension-ua.yml
   workflow_dispatch:
     inputs:
@@ -40,19 +42,20 @@ jobs:
         run: |
           set -euo pipefail
           python3 -B scripts/test-update-ci-safari27.py
+          python3 -B scripts/test-staged-webkit-evidence.py
           python3 -B scripts/update-ci-safari27.py 2>&1 | tee "$RUNNER_TEMP/safari27-update.log"
 
       - name: Verify immutable reduction inputs and reused process-control source
         run: |
           set -euo pipefail
-          test "$(git hash-object scripts/check-extension-ua.py)" = 3314b847f36a99fedeac324ae495ec3fca4bfdc2
+          test "$(git hash-object scripts/check-extension-ua.py)" = f83e267a36c9016e3bc8aeed5797bbf044e07ed1
           test "$(git hash-object scripts/run-native-tests.py)" = d9129128574ec0bedaeb1094d20addae1ed85c57
           python3 - <<'PY'
           import hashlib, json
           from pathlib import Path
           root = Path('Tests/Diagnostics/PublicWorkerUA')
           manifest = root / 'SHA256.json'
-          assert hashlib.sha256(manifest.read_bytes()).hexdigest() == '3e4510efec1e3522b7aa9ecafa9857cb115c1e40e6fbad2309982e7634e27fc1'
+          assert hashlib.sha256(manifest.read_bytes()).hexdigest() == '9545867e3c282fb3dc03ec7d016f7de644fad5c2a97a06290471031d33cd4ecf'
           inputs = json.loads(manifest.read_text())
           assert len(inputs) == 14 and not manifest.is_symlink()
           actual = {str(path.relative_to(root)) for path in root.rglob('*') if path.is_file() or path.is_symlink()}
@@ -95,6 +98,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 -B scripts/check-public-extension-ua.py --bundle "$PUBLIC_PROBE_BUNDLE" --evidence-dir "$RUNNER_TEMP/public-probe-logs" 2>&1 | tee "$RUNNER_TEMP/public-probe-run.log"
+
+      - name: Attest Hardened Runtime and actual Apple staged engine image UUIDs
+        if: ${{ inputs.runtime == 'macos-26-safari27' }}
+        run: python3 -B scripts/check-staged-webkit-evidence.py "$RUNNER_TEMP/public-probe-logs"
 
       - name: Preserve complete capped logs and scoped public evidence
         if: ${{ always() }}

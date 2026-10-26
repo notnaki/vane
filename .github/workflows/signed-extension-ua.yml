@@ -5,10 +5,13 @@ on:
     paths:
       - Sources/Vane/ExtensionUserAgent.swift
       - Sources/Vane/ExtensionAppChecks.swift
+      - Package.swift
       - scripts/check-extension-ua.py
       - scripts/test-extension-ua-runner.py
       - scripts/update-ci-safari27.py
       - scripts/test-update-ci-safari27.py
+      - scripts/check-staged-webkit-evidence.py
+      - scripts/test-staged-webkit-evidence.py
       - .github/workflows/signed-extension-ua.yml
   workflow_dispatch:
     inputs:
@@ -45,6 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -B scripts/test-update-ci-safari27.py
+          python3 -B scripts/test-staged-webkit-evidence.py
           python3 -B scripts/update-ci-safari27.py 2>&1 | tee "$RUNNER_TEMP/safari27-update.log"
 
       - name: Bind exact candidate product and existing cleanup inputs
@@ -57,6 +61,7 @@ jobs:
           test "$(git hash-object Sources/Vane/main.swift)" = 4b2a280a8540dda130b403129de7d7f7d14a50cf
           test "$(git hash-object Vane.entitlements)" = abf2127ad3263a848d63b59d720f9b468f7611da
           test "$(git hash-object scripts/run-native-tests.py)" = d9129128574ec0bedaeb1094d20addae1ed85c57
+          test "$(git hash-object Package.swift)" = 65950bd4c665bf5bb123fba8a8949924934abfa4
           git rev-parse HEAD
           swift --version
           xcodebuild -version
@@ -75,6 +80,10 @@ jobs:
           set -euo pipefail
           mkdir -p "$HOME/Downloads"
           python3 -B scripts/check-extension-ua.py --binary .build/debug/vane --observer-mode "${{ matrix.observer_mode }}" --evidence-dir "$RUNNER_TEMP/vane-signed-extension-ua-logs" 2>&1 | tee "$RUNNER_TEMP/vane-signed-extension-ua.log"
+
+      - name: Attest Hardened Runtime and actual Apple staged engine image UUIDs
+        if: ${{ inputs.runtime == 'macos-26-safari27' }}
+        run: python3 -B scripts/check-staged-webkit-evidence.py "$RUNNER_TEMP/vane-signed-extension-ua-logs"
 
       - name: Preserve signed comparison log
         if: ${{ always() }}

@@ -2,6 +2,9 @@ import AppKit
 import Network
 import Security
 import WebKit
+#if DEBUG
+import MachO
+#endif
 
 /// Opt-in checks against unmodified upstream packages in an isolated signed app.
 /// Run: VANE_DATA_DIR=~/Downloads/<isolated-folder> Vane.app/Contents/MacOS/vane extensioncheck
@@ -9,6 +12,50 @@ import WebKit
 /// DEBUG builds also accept --user-agent-only for a fresh synthetic application-loop comparison.
 @MainActor enum ExtensionAppChecks {
     private static var runner: Runner?
+
+    #if DEBUG
+    private static func reportEngineImages() {
+        var images: [[String: String]] = []
+        for index in 0..<_dyld_image_count() {
+            guard let name = _dyld_get_image_name(index), let header = _dyld_get_image_header(index) else { continue }
+            let path = String(cString: name)
+            let leaf = URL(fileURLWithPath: path).lastPathComponent
+            guard path.hasPrefix("/System/"),
+                  ["WebKit", "WebCore", "JavaScriptCore"].contains(leaf) || path.contains("/StagedFrameworks/Safari/"),
+                  header.pointee.magic == MH_MAGIC_64 else { continue }
+            let raw = UnsafeRawPointer(header)
+            let end = MemoryLayout<mach_header_64>.size + Int(header.pointee.sizeofcmds)
+            var offset = MemoryLayout<mach_header_64>.size
+            var record = ["path": path]
+            for _ in 0..<header.pointee.ncmds {
+                guard offset + MemoryLayout<load_command>.size <= end else { break }
+                let command = raw.advanced(by: offset).load(as: load_command.self)
+                guard command.cmdsize >= MemoryLayout<load_command>.size,
+                      offset + Int(command.cmdsize) <= end else { break }
+                if command.cmd == LC_UUID, command.cmdsize >= MemoryLayout<uuid_command>.size {
+                    record["uuid"] = UUID(uuid: raw.advanced(by: offset).load(as: uuid_command.self).uuid).uuidString
+                } else if command.cmd == LC_ID_DYLIB, command.cmdsize >= MemoryLayout<dylib_command>.size {
+                    let version = raw.advanced(by: offset).load(as: dylib_command.self).dylib.current_version
+                    record["version"] = "\(version >> 16).\((version >> 8) & 255).\(version & 255)"
+                }
+                offset += Int(command.cmdsize)
+            }
+            images.append(record)
+        }
+        var code: SecCode?
+        var staticCode: SecStaticCode?
+        var signingInfo: CFDictionary?
+        var hardened = false
+        if SecCodeCopySelf([], &code) == errSecSuccess, let code,
+           SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
+           SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInfo) == errSecSuccess,
+           let info = signingInfo as? [String: Any], let flags = info[kSecCodeInfoFlags as String] as? UInt32 {
+            hardened = flags & SecCodeSignatureFlags.runtime.rawValue != 0
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: ["hardenedRuntime": hardened, "images": images], options: [.sortedKeys]),
+           let json = String(data: data, encoding: .utf8) { print("UA ENGINE IMAGES " + json) }
+    }
+    #endif
 
     static func run() -> Never {
         let userAgentOnly = CommandLine.arguments.contains("--user-agent-only")
@@ -260,6 +307,7 @@ import WebKit
                 NSRunningApplication.current.isFinishedLaunching && NSApp.isRunning
             }
             userAgentLaunchVerified = true
+            ExtensionAppChecks.reportEngineImages()
             func bounded(_ value: String) -> String {
                 String(value.components(separatedBy: .controlCharacters).joined().prefix(160))
             }
