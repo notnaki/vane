@@ -530,13 +530,9 @@ struct BrowserWindow: View {
             .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
             .background {
                 RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
-                    .fill(Look.floatingSidebarFill)
-                    .background(Look.floatingSidebarMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
-                            .strokeBorder(Look.floatingSidebarStroke,
-                                          lineWidth: Look.floatingSidebarStrokeWidth)
-                    }
+                    .fill(.clear)
+                    .glassEffect(.regular.tint(Look.floatingSidebarTint),
+                                 in: .rect(cornerRadius: Look.floatingSidebarRadius))
                     .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
                     .opacity(floating ? 1 : 0)
                     .allowsHitTesting(false)

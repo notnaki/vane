@@ -17,12 +17,8 @@ enum Look {
     static let floatingSidebarRadius: CGFloat = pageRadius
     /// Equal clearance from the window edges, independent of the page card spacing.
     static let floatingSidebarGap: CGFloat = 5
-    /// Let the page show through the floating sidebar while its controls stay opaque.
-    static let floatingSidebarFill = Color(white: 0.08).opacity(0.55)
-    static let floatingSidebarMaterial = AnyShapeStyle(Material.thin)
-    /// A one-pixel rim on Retina displays, visible over the translucent material.
-    static let floatingSidebarStroke = Color.white.opacity(0.25)
-    static let floatingSidebarStrokeWidth: CGFloat = 0.5
+    /// The floating sidebar is Liquid Glass; its tint defaults to white.
+    static let floatingSidebarTint = Color.white.opacity(0.3)
     /// The page card — the sheet a page is drawn on, and the outline standing where one will
     /// go. Its own number, and a generous one: it is the only corner in the window that is
     /// read *against* the window's own, which macOS 26 rounds hard, and a settings card's
