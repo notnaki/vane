@@ -130,7 +130,6 @@ def join(ca,d0,d1,tb,pid):
         key=(seed,display)
         need(key not in presentations,'Duplicate frame-seed/display presentation')
         earliest,requested=map(doubles_seconds,e.args[:2])
-        pres_abs=mat*tb.num/tb.den/1e9
         # These END seconds are auxiliary eligibility/request timestamps, not
         # the actual presentation clock used for joins or cadence. A captured
         # valid frame can retain an earliest value from before recording began.
