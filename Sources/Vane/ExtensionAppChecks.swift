@@ -59,11 +59,14 @@ import MachO
 
     static func run() -> Never {
         let userAgentOnly = CommandLine.arguments.contains("--user-agent-only")
+        let bitwardenSafariOnly = CommandLine.arguments.contains("--bitwarden-safari-only")
+        if userAgentOnly && bitwardenSafariOnly { refuse("Select exactly one focused extension diagnostic.") }
         let observerMode: LoaderObserverMode?
         do { observerMode = try parseLoaderObserverMode(CommandLine.arguments, userAgentOnly: userAgentOnly) }
         catch { refuse(error.localizedDescription) }
         #if !DEBUG
         if userAgentOnly { refuse("The user-agent-only diagnostic requires a DEBUG build.") }
+        if bitwardenSafariOnly { refuse("The Bitwarden Safari diagnostic requires a DEBUG build.") }
         #endif
         let manager = FileManager.default
         guard let override = Store.overrideDirectory,
@@ -79,7 +82,8 @@ import MachO
             refuse("Requires a signed sandboxed .app and an existing isolated VANE_DATA_DIR under Downloads.")
         }
         if !userAgentOnly {
-            for name in ["darkreader-mv3", "ubolite-safari", "bitwarden-firefox"] {
+            let fixtures = bitwardenSafariOnly ? ["bitwarden-safari"] : ["darkreader-mv3", "ubolite-safari", "bitwarden-firefox"]
+            for name in fixtures {
                 let fixture = directory.appendingPathComponent("fixtures/" + name)
                 guard fixture.resolvingSymlinksInPath().path.hasPrefix(directory.path + "/"),
                       manager.fileExists(atPath: fixture.appendingPathComponent("manifest.json").path) else {
@@ -91,8 +95,8 @@ import MachO
         // Mint a marker only before Vane has written any library or preferences here;
         // reruns require that marker to identify this exact canonical directory.
         let marker = directory.appendingPathComponent("extensioncheck-fixture.json")
-        if userAgentOnly, manager.fileExists(atPath: marker.path) {
-            refuse("The user-agent-only comparison requires a fresh isolated directory.")
+        if userAgentOnly || bitwardenSafariOnly, manager.fileExists(atPath: marker.path) {
+            refuse("The focused extension diagnostic requires a fresh isolated directory.")
         }
         if manager.fileExists(atPath: marker.path) {
             guard (try? marker.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == false,
@@ -112,7 +116,8 @@ import MachO
                 try JSONEncoder().encode(identity).write(to: marker, options: .withoutOverwriting)
             } catch { refuse("Could not mint the isolated fixture-directory marker.") }
         }
-        let check = Runner(directory: directory, userAgentOnly: userAgentOnly, observerMode: observerMode)
+        let check = Runner(directory: directory, userAgentOnly: userAgentOnly,
+                           bitwardenSafariOnly: bitwardenSafariOnly, observerMode: observerMode)
         runner = check
         DispatchQueue.main.asyncAfter(deadline: .now() + 240) {
             check.record("overall deadline", .failed, "Exceeded 240 seconds; a platform callback did not finish.")
@@ -169,6 +174,7 @@ import MachO
     @MainActor private final class Runner {
         let directory: URL
         let userAgentOnly: Bool
+        let bitwardenSafariOnly: Bool
         private let observerMode: LoaderObserverMode?
         var profileID: UUID?
         var store: TabStore?
@@ -234,9 +240,10 @@ import MachO
         }
         #endif
 
-        init(directory: URL, userAgentOnly: Bool, observerMode: LoaderObserverMode?) {
+        init(directory: URL, userAgentOnly: Bool, bitwardenSafariOnly: Bool, observerMode: LoaderObserverMode?) {
             self.directory = directory
             self.userAgentOnly = userAgentOnly
+            self.bitwardenSafariOnly = bitwardenSafariOnly
             self.observerMode = observerMode
         }
 
@@ -247,6 +254,13 @@ import MachO
         }
 
         func run() async {
+            if bitwardenSafariOnly {
+                #if DEBUG
+                do { try await bitwardenSafariPopup() }
+                catch { record("Bitwarden Safari acceptance", .failed, error.localizedDescription) }
+                #endif
+                finish()
+            }
             if userAgentOnly {
                 #if DEBUG
                 do { try await userAgentIdentity() }
@@ -298,6 +312,111 @@ import MachO
             }
             finish()
         }
+
+        #if DEBUG
+        /// Exercises only unmodified local Safari resources through the production
+        /// installer and popup action. Package provenance is verified by the caller;
+        /// a version match does not attest Mac App Store distribution equivalence.
+        private func bitwardenSafariPopup() async throws {
+            try await wait("normal application launch") {
+                NSApp.isRunning && NSRunningApplication.current.isFinishedLaunching
+            }
+            guard Settings.userAgent == safariUA else { throw Failure("Requires fresh default Safari settings.") }
+            let profile = ProfileManager.shared.active
+            profileID = profile.id
+            record("Bitwarden Safari normal-loop host", .verified,
+                   "finishedLaunching=true; appRunning=true; OS=\(ProcessInfo.processInfo.operatingSystemVersionString)")
+            let resources = directory.appendingPathComponent("fixtures/bitwarden-safari")
+            let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: resources.appendingPathComponent("manifest.json"))) as? [String: Any]
+            let background = manifest?["background"] as? [String: Any]
+            guard manifest?["manifest_version"] as? Int == 2, manifest?["version"] as? String == "2026.10.0",
+                  background?["persistent"] as? Bool == true, background?["page"] as? String == "background.html",
+                  (manifest?["browser_action"] as? [String: Any])?["default_popup"] as? String == "popup/index.html" else {
+                throw Failure("Requires the unmodified Bitwarden Safari2026.10.0 persistent MV2 package.")
+            }
+            let store = Windows.open(profile: profile, session: [])
+            self.store = store
+            let tab = store.newBlankTab()
+            let context = try await install("bitwarden-safari")
+            let expected = """
+                (() => { const controls = [...document.querySelectorAll('button,a')]
+                  .filter(e => e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden')
+                  .map(e => e.innerText.trim());
+                  return controls.some(s => /create.*account/i.test(s)) && controls.some(s => /log.?in/i.test(s)); })()
+                """
+            guard let web = await popup(context, tab: tab, label: "Bitwarden Safari welcome popup", expected: expected) else {
+                throw Failure("The actual Bitwarden popup did not present both visible welcome controls.")
+            }
+            guard let action = ExtensionHost.host(for: profile.id).action(context, for: tab),
+                  action.popupWebView === web, action.popupPopover?.isShown == true else {
+                throw Failure("The welcome popup closed or changed before identity inspection.")
+            }
+            let identity = try await web.evaluateJavaScript("({userAgent:navigator.userAgent, runtime:browser.runtime.id, origin:location.origin})") as? [String: String]
+            guard identity?["userAgent"] == safariUA, identity?["runtime"] == context.uniqueIdentifier,
+                  identity?["origin"] == context.baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+                  context.isLoaded, action.popupWebView === web, action.popupPopover?.isShown == true else {
+                throw Failure("The rendered popup has the wrong identity, unloaded context, or is no longer presented.")
+            }
+            let image = try await web.takeSnapshot(configuration: nil)
+            guard context.isLoaded, action.popupWebView === web, action.popupPopover?.isShown == true else {
+                throw Failure("The welcome popup closed or changed during evidence capture.")
+            }
+            guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
+                  let png = bitmap.representation(using: .png, properties: [:]) else { throw Failure("Could not encode popup evidence.") }
+            try png.write(to: directory.appendingPathComponent("bitwarden-safari-popup.png"), options: .withoutOverwriting)
+            record("Bitwarden Safari popup identity", .verified,
+                   "UA=\(safariUA); runtime=\(context.uniqueIdentifier); context loaded; both Create account and Log in controls rendered in the presented popup. No credentials used.")
+        }
+
+        private func waitForBitwardenWelcome(in web: WKWebView, script: String) async throws {
+            let deadline = ContinuousClock.now + .seconds(20)
+            while ContinuousClock.now < deadline {
+                if !web.isLoading {
+                    let reply = UserAgentEvaluation()
+                    web.evaluateJavaScript(script) { value, error in
+                        if let error { reply.result = .failure(error) }
+                        else { reply.result = .success(value) }
+                    }
+                    while reply.result == nil && ContinuousClock.now < deadline {
+                        try await Task.sleep(for: .milliseconds(20))
+                    }
+                    guard ContinuousClock.now < deadline, let result = reply.result else {
+                        throw Failure("Bitwarden welcome DOM JavaScript did not reply within the existing twenty-second deadline.")
+                    }
+                    if try result.get() as? Bool == true { return }
+                }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            throw Failure("Bitwarden welcome controls did not render within twenty seconds.")
+        }
+
+        private func observeFailedBitwardenPopup(_ web: WKWebView, context: WKWebExtensionContext, tab: Tab) async {
+            guard ProcessInfo.processInfo.environment["VANE_BITWARDEN_FAILURE_SAMPLE"] == "1",
+                  context.isLoaded, let profileID,
+                  let action = ExtensionHost.host(for: profileID).action(context, for: tab),
+                  action.popupWebView === web, action.popupPopover?.isShown == true,
+                  web.responds(to: NSSelectorFromString("_webProcessIdentifier")),
+                  let number = web.value(forKey: "_webProcessIdentifier") as? NSNumber,
+                  number.int64Value > 1, number.int64Value <= Int64(Int32.max),
+                  let start = processStart(number.int32Value) else { return }
+            let pid = number.int32Value, nonce = UUID().uuidString.lowercased()
+            let request: [String: Any] = ["hostPID": ProcessInfo.processInfo.processIdentifier,
+                "pid": pid, "pidStart": start, "nonce": nonce, "context": context.uniqueIdentifier]
+            guard let data = try? JSONSerialization.data(withJSONObject: request, options: [.sortedKeys]) else { return }
+            // The original popup verdict has already been emitted. This bounded
+            // opt-in hold only permits inspection; it never resumes acceptance.
+            print("BITWARDEN POPUP FAILURE REQUEST " + String(decoding: data, as: UTF8.self)); fflush(stdout)
+            let acknowledgement = directory.appendingPathComponent("bitwarden-failure-" + nonce + ".done")
+            let deadline = ContinuousClock.now + .seconds(12)
+            while ContinuousClock.now < deadline && !FileManager.default.fileExists(atPath: acknowledgement.path) {
+                do { try await Task.sleep(for: .milliseconds(20)) } catch { break }
+            }
+            let continuous = context.isLoaded && action.popupWebView === web
+                && web.value(forKey: "_webProcessIdentifier") as? NSNumber == number && processStart(pid) == start
+            print("BITWARDEN POPUP FAILURE CONTINUITY context=\(context.uniqueIdentifier) nonce=\(nonce) same=\(continuous)")
+            fflush(stdout)
+        }
+        #endif
 
         #if DEBUG
         private func userAgentIdentity() async throws {
@@ -879,21 +998,43 @@ import MachO
         }
 
         private func popup(_ context: WKWebExtensionContext, tab: Tab, label: String, expected: String) async -> WKWebView? {
+            var inspectedWeb: WKWebView?
             do {
+                if bitwardenSafariOnly { print("BITWARDEN SAFARI PHASE popup action lookup"); fflush(stdout) }
                 guard let profileID, let window = store?.window, let content = window.contentView else { throw Failure("No browser anchor window.") }
                 let host = ExtensionHost.host(for: profileID)
-                guard let action = host.action(context, for: tab), action.presentsPopup,
-                      let web = action.popupWebView else { throw Failure("WebKit exposes no action popup for this context.") }
+                guard let action = host.action(context, for: tab), action.presentsPopup else {
+                    throw Failure("WebKit exposes no action popup for this context.")
+                }
                 window.makeKeyAndOrderFront(nil)
                 let anchor = NSView(frame: NSRect(x: content.bounds.maxX - 48, y: content.bounds.maxY - 44, width: 28, height: 28))
                 content.addSubview(anchor)
                 popupAnchors.append(anchor)
+                if bitwardenSafariOnly { print("BITWARDEN SAFARI PHASE request presentation"); fflush(stdout) }
                 host.run(context, for: tab, from: anchor)
+                if bitwardenSafariOnly { print("BITWARDEN SAFARI PHASE acquire presented view"); fflush(stdout) }
+                guard let web = action.popupWebView else { throw Failure("WebKit exposes no popup view for this context.") }
+                inspectedWeb = web
                 try await wait(label + " presents", seconds: 15) { action.popupPopover?.isShown == true }
+                if bitwardenSafariOnly { print("BITWARDEN SAFARI PHASE inspect welcome DOM"); fflush(stdout) }
+                #if DEBUG
+                if bitwardenSafariOnly {
+                    try await waitForBitwardenWelcome(in: web, script: expected)
+                } else {
+                    try await waitJavaScript(label + " usable DOM", in: web, script: expected, seconds: 20)
+                }
+                #else
                 try await waitJavaScript(label + " usable DOM", in: web, script: expected, seconds: 20)
+                #endif
                 record(label, .verified, "Production action path displayed a real anchored NSPopover and its expected usable DOM.")
                 return web
-            } catch { record(label, .unavailable, error.localizedDescription); return nil }
+            } catch {
+                record(label, .unavailable, error.localizedDescription)
+                #if DEBUG
+                if bitwardenSafariOnly, let web = inspectedWeb { await observeFailedBitwardenPopup(web, context: context, tab: tab) }
+                #endif
+                return nil
+            }
         }
 
         private func options(_ context: WKWebExtensionContext, label: String,

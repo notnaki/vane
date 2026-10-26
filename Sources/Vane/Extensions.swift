@@ -167,7 +167,7 @@ import WebKit
             let record = records[path]
             let source = sourceFolder(for: path)
             let busy = operations[path] != nil || restoring[path] != nil
-            let runtimeErrors = context.map { ExtensionDiagnostics.blockingErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
+            let runtimeErrors = context.map { ExtensionDiagnostics.displayErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
             let failure = failures[path] ?? (runtimeErrors.isEmpty ? nil : ExtensionDiagnostics.describe(runtimeErrors))
             return Entry(path: path, name: record?.name ?? folders[path] ?? URL(fileURLWithPath: path).lastPathComponent,
                          context: context, status: busy ? "Checking…" : failure != nil ? (context != nil ? "Update needs attention" : "Needs attention")
