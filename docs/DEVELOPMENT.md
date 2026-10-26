@@ -68,28 +68,62 @@ the service, account, license exchange, and playback still need a real-site test
 ## Testing
 
 The project has one Swift executable target, an XCTest target, and inline checks run
-through `selfcheck`. Routine CI builds the debug configuration, runs the pure checks and
-XCTest regressions, checks icon selections and cloud AI behavior, tests CLI import
-errors and workflow fixtures, assembles the debug app, and exercises the DMG packager
-and update installer. Debug builds avoid whole-module release optimization on every
-change. CI caches `.build` by macOS architecture, Swift/Xcode/SDK versions, and
-package/source hashes, and cancels superseded runs for the same branch or PR. SwiftPM
-still validates the build on every cache hit. A timestamp snapshot in the cache restores
-the previous modification time only when an input's SHA-256 still matches, letting
-unchanged files stay incremental across fresh checkouts. Pull requests only restore
-caches; successful `main` native jobs save debug outputs, and successful aggregate checks
-retain the two newest Swift debug caches. Packaging jobs only restore caches.
-The release workflow builds and smoke-tests the optimized app; its build products are
-never cached because they can contain the OAuth secret.
+through `selfcheck`. Use the [contributor guide](../CONTRIBUTING.md) to choose focused
+local validation. Required PR CI still applies before merging.
 
-Routine CI runs source-only fixtures, the complete native suite, and packaging/integration
-checks as independent jobs. Native and packaging jobs use separate macOS runners so
-Finder, signing and updater work cannot compete with native windows on one desktop.
-The required `checks` job succeeds only when every job succeeds; failures, cancellations
-and skipped jobs cannot pass the gate. The native suite remains unfiltered and unsharded,
-preserving existing native preflight steps, test order, deadlines and store retirement.
-No compiled build or app bundle is transferred between jobs. Restored debug outputs are
-always checked by SwiftPM; release builds and secrets remain outside these caches.
+### CI overview
+
+CI first checks the diff. Root Markdown files, Markdown under `docs/`, and Markdown
+issue/PR templates take the documentation-only path: diff checks and the final
+`checks` gate, without macOS builds or native tests. Other configuration files
+take the full path, as do mixed changes and missing comparison history. The classifier is [`scripts/ci-change-scope.py`](../scripts/ci-change-scope.py).
+
+For app changes, one debug build compiles the app and test bundle and assembles
+`Vane.app`. Four native runners and a separate packaging runner reuse a runtime-only
+artifact, verifying its revision, checkout path, and Swift toolchain before execution.
+Object files and compiler caches are excluded from that transfer. Source fixtures
+and shared runtime checks each run once; separate desktops keep packaging work away
+from native UI tests. The required `checks` gate requires every applicable job to
+succeed; jobs intentionally skipped for documentation-only changes are handled by
+the gate's documentation path.
+
+Only the build job restores the Swift debug cache; successful `main` builds save it.
+The cache is keyed by macOS architecture, Swift/Xcode/SDK versions, and package/source
+hashes. Content-matching timestamps allow unchanged files to stay incremental, while
+SwiftPM still validates the build. Successful aggregate checks retain the two newest
+Swift debug caches. Superseded runs on the same branch or PR are cancelled. The release
+workflow builds and smoke-tests the optimized app separately; its products are never
+cached because they can contain the OAuth secret.
+
+### Native fixture execution
+
+Use the wrapper for full native validation on a logged-in macOS desktop:
+
+```sh
+python3 scripts/run-native-tests.py --jobs 1
+```
+
+CI runs four groups on separate macOS runners, keeping each test class together
+and each runner's UI tests sequential. `swift test list --skip-build` supplies the
+complete inventory; `scripts/native-test-shards.py` balances classes using advisory
+durations in `scripts/native-test-durations.json`, assigns new classes automatically,
+and verifies every selected test completed. Each group runs its own startup
+preflight and cleanup, and all four must pass the required `checks` gate.
+Same-desktop `--parallel` execution remains unsupported because UI fixtures share
+focus and application state. Duration estimates affect balancing only, never coverage.
+
+The wrapper passes its arguments to the complete `swift test` command; focused runs
+can add `--filter 'PasswordAutofillTests|SavedReaderTests'`. After the test host exits,
+it starts the same test bundle in a fresh process to delete only the exact owned
+WebKit stores recorded by those fixtures and verifies their absence. Cleanup runs
+even when the primary tests fail, and a cleanup failure fails an otherwise passing
+run. An unverified cleanup keeps its private manifest and reports its path.
+The post-exit retirement phase has a 60-second budget for all owned IDs; its fresh
+driver has a 90-second ceiling. These bounds do not alter primary fixture deadlines.
+
+Direct `swift test` remains supported and performs the existing immediate cleanup.
+The wrapper defers destructive WebKit cleanup for shared-helper-owned normal profiles;
+it does not change test assertions, original fixture deadlines, or product behavior.
 
 ### Client certificate fixture
 
@@ -106,13 +140,14 @@ injected provider of generated in-memory identities.
 
 ### Routine CI commands
 
-To run the same checks configuration locally:
+These commands cover the app checks used in CI. For routine changes, select only
+the checks relevant to the affected behavior:
 
 ```sh
 swift build -c debug
 ./.build/debug/vane selfcheck --pure
 scripts/check-webkit-startup.sh
-swift test
+python3 scripts/run-native-tests.py --jobs 1
 scripts/check-app-icons.sh
 scripts/check-cloud-ai.sh
 bash scripts/test-cli-import.sh .build/debug/vane
@@ -433,6 +468,9 @@ swift scripts/check-site-rendering.swift
 ```
 
 ## Contributing and review
+
+Start with the [contributor guide](../CONTRIBUTING.md) for a first change, issue
+reporting, and PR expectations.
 
 Follow [AGENTS.md](../AGENTS.md): work on an isolated `codex/` branch, preserve
 unrelated changes, run relevant checks, open a PR, obtain an independent review of its
