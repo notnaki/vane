@@ -463,6 +463,8 @@ import MachO
                         observations.merge(await loaderStartObservation(background, context: context,
                             manifestVersion: manifestVersion)) { _, value in value }
                     }
+                    observations.merge(await loaderClientObservation(background, context: context,
+                        manifestVersion: manifestVersion)) { _, value in value }
                     await observeBackgroundEngine(background, context: context, stage: stage, manifestVersion: manifestVersion)
                     let data = try JSONSerialization.data(withJSONObject: observations, options: [.sortedKeys])
                     let detail = String(decoding: data, as: UTF8.self)
@@ -552,6 +554,50 @@ import MachO
                 "acknowledged": FileManager.default.fileExists(atPath: acknowledgement.path)]
             if let data = try? JSONSerialization.data(withJSONObject: continuity, options: [.sortedKeys]) {
                 print("UA BACKGROUND OWNER CONTINUITY " + String(decoding: data, as: UTF8.self)); fflush(stdout)
+            }
+        }
+
+        // Read only after the original UA comparison has already failed. This is
+        // the registering document's live identity, not its startup identity or
+        // the Network process's origin-UA map. Never inject a startup script.
+        private func loaderClientObservation(_ background: UserAgentBackground,
+                                             context: WKWebExtensionContext,
+                                             manifestVersion: Int) async -> [String: String] {
+            func unavailable(_ reason: String) -> [String: String] {
+                ["loaderClientStatus": "UNAVAILABLE", "loaderClientReason": reason]
+            }
+            guard manifestVersion == 3 else { return unavailable("not an MV3 stage") }
+            guard background.context === context, context.isLoaded, let web = background.web else {
+                return unavailable("current background binding missing")
+            }
+            let nonce = UUID().uuidString.lowercased()
+            let expectedHost = context.baseURL.host?.lowercased() ?? ""
+            let expectedOrigin = "webkit-extension://" + expectedHost
+            return await withCheckedContinuation { continuation in
+                let read = LoaderStartRead()
+                read.continuation = continuation
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    read.finish(unavailable("post-failure live page read exceeded one second"))
+                }
+                web.evaluateJavaScript("""
+                    ({readNonce:'\(nonce)', userAgent:navigator.userAgent, href:location.href,
+                      origin:location.origin, readyState:typeof document === 'undefined' ? 'no-document' : document.readyState})
+                    """) { value, error in
+                    guard error == nil, background.context === context, background.web === web, context.isLoaded,
+                          let snapshot = value as? [String: String], snapshot["readNonce"] == nonce,
+                          let ua = snapshot["userAgent"], !ua.isEmpty, ua.count <= 2048,
+                          let href = snapshot["href"], let url = URL(string: href),
+                          url.scheme == "webkit-extension", url.host?.lowercased() == expectedHost,
+                          url.path.isEmpty || url.path == "/", url.query == nil, url.fragment == nil,
+                          snapshot["origin"] == expectedOrigin,
+                          let readyState = snapshot["readyState"], ["loading", "interactive", "complete"].contains(readyState) else {
+                        read.finish(unavailable("live document absent, unreadable, stale, or wrong origin"))
+                        return
+                    }
+                    read.finish(["loaderClientStatus": "OBSERVED", "loaderClientReadNonce": nonce,
+                        "loaderClientUserAgent": ua, "loaderClientHref": href,
+                        "loaderClientOrigin": expectedOrigin, "loaderClientReadyState": readyState])
+                }
             }
         }
 

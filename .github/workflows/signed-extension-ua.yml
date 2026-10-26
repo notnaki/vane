@@ -82,7 +82,7 @@ jobs:
           test "$(git hash-object Vane.entitlements)" = abf2127ad3263a848d63b59d720f9b468f7611da
           test "$(git hash-object scripts/run-native-tests.py)" = d9129128574ec0bedaeb1094d20addae1ed85c57
           test "$(git hash-object Package.swift)" = 8a7d38c860554e0fdb161e7050ae3d3d2068aa63
-          test "$(git hash-object Sources/Vane/ExtensionAppChecks.swift)" = 8eaa385abb574b8edeceec4a3307259eb0da5302
+          test "$(git hash-object Sources/Vane/ExtensionAppChecks.swift)" = da2247dd28c7b8821786abf7991e70a9d12abc74
           git rev-parse HEAD
           swift --version
           xcodebuild -version
