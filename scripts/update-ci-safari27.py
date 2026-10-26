@@ -44,6 +44,28 @@ def installed_versions():
     return safari, webkit
 
 
+def report_staged_frameworks():
+    # Apple can ship a downlevel Safari engine outside the OS framework location.
+    # Inventory only fixed system paths; this neither selects nor loads them.
+    roots = ("/System/Library/StagedFrameworks/Safari",
+             "/Library/Apple/System/Library/StagedFrameworks/Safari",
+             "/System/Cryptexes/App/System/Library/StagedFrameworks/Safari")
+    for root in roots:
+        info = Path(root) / "WebKit.framework/Resources/Info.plist"
+        record = {"phase": "staged-inventory", "path": root, "exists": info.is_file()}
+        if info.is_file():
+            with info.open("rb") as handle:
+                record["WebKit"] = plistlib.load(handle).get("CFBundleVersion")
+            record["resolvedPath"] = str(Path(root).resolve())
+        print(json.dumps(record), flush=True)
+    # The application load commands show whether Safari opts into that location.
+    binary = "/Applications/Safari.app/Contents/MacOS/Safari"
+    commands = subprocess.run(["/usr/bin/otool", "-l", binary], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, timeout=15)
+    print("Safari embedded loader paths: " + "\n".join(
+        line.strip() for line in commands.stdout.splitlines() if "DYLD_" in line)[:4096], flush=True)
+
+
 def main():
     require_hosted_macos26(os.environ, platform.mac_ver()[0])
     before = installed_versions()
@@ -63,6 +85,7 @@ def main():
     subprocess.run(["sudo", "/usr/sbin/softwareupdate", "--install", label, "--verbose"], check=True, timeout=600)
     after = installed_versions()
     print(json.dumps({"phase": "after", "OS": platform.mac_ver()[0], "Safari": after[0], "WebKit": after[1]}), flush=True)
+    report_staged_frameworks()
     require_updated_engine(*after)
     print("Safari 27/macOS 26 disk postcondition satisfied; actual loaded-engine and UA checks still required", flush=True)
     return 0
