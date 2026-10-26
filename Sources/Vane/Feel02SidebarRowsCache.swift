@@ -13,13 +13,17 @@ import Foundation
         let retainedRows: [SidebarRows.Row]?
         /// Captured from the complete outline, before collapse or authentication filtering.
         let eagerlyMountsVisibleRows: Bool
+        /// Membership outlives disclosure, while `rows` remains visibility- and
+        /// authentication-filtered. Cached owners must forget actual deletions.
+        let structuralRowIDs: Set<String>
 
         init(rows: [SidebarRows.Row], todayCount: Int, retainedRows: [SidebarRows.Row]?,
-             eagerlyMountsVisibleRows: Bool = false) {
+             eagerlyMountsVisibleRows: Bool = false, structuralRowIDs: Set<String>? = nil) {
             self.rows = rows
             self.todayCount = todayCount
             self.retainedRows = retainedRows
             self.eagerlyMountsVisibleRows = eagerlyMountsVisibleRows
+            self.structuralRowIDs = structuralRowIDs ?? Set(rows.map(\.id))
         }
     }
 
@@ -85,7 +89,8 @@ import Foundation
             + store.todayShape.entries.filter { $0.folder != nil }.count
         let result = Snapshot(rows: rows, todayCount: accessible.filter { $0.kind == .today }.count,
             retainedRows: retainedRows,
-            eagerlyMountsVisibleRows: Self.usesBoundedEagerRows(tabCount: store.tabs.count, folderCount: folders))
+            eagerlyMountsVisibleRows: Self.usesBoundedEagerRows(tabCount: store.tabs.count, folderCount: folders),
+            structuralRowIDs: Set(shape.entries.map(\.id)))
         key = next
         snapshot = result
         return result

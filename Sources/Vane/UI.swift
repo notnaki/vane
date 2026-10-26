@@ -3235,6 +3235,9 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     var reportOffset: (CGFloat) -> Void = { _ in }
     @ViewBuilder let header: () -> Header
     @ViewBuilder let rows: () -> Rows
+    // Native row owners already provide the section's complete fixed extent.
+    // Measure the few surrounding siblings eagerly instead of estimating them.
+    @Environment(\.nativeCachedSidebarBatches) private var cachesNativeGroupedSectionRows
     @State private var scrollHeight: CGFloat = 0
     @State private var cutoffs = SidebarScrollCutoffs()
     @State private var measuredCutoffs = false
@@ -3272,7 +3275,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     }
 
     @ViewBuilder private var rowStack: some View {
-        if retainsRows {
+        if retainsRows || cachesNativeGroupedSectionRows || NativeCachedSidebarBatchesExperiment.enabled {
             VStack(spacing: Look.rowGap) { rows() }
         } else {
             LazyVStack(spacing: Look.rowGap) { rows() }
@@ -3299,8 +3302,8 @@ struct SidebarSpaceContent: View {
 
 private struct SidebarSpacePresentation: View {
     @SidebarObserved var store: TabStore
-    /// The namespace owner and both ends of a row/tile morph stay in this graph,
-    /// including when the complete strip is mounted in a native boundary.
+    /// The complete-strip boundary preserves this namespace. Grouped native row
+    /// roots must also pass cross-root row/tile morph parity before production.
     @Namespace private var strip
 
     var body: some View {
@@ -3318,14 +3321,28 @@ struct SidebarSpaceSections: View {
 
 private struct SidebarSpaceSectionContent: View {
     @SidebarObserved var store: TabStore
+    @State private var pinnedRowsCache = Feel02SidebarRowsCache()
+    @Environment(\.nativeCachedSidebarBatches) private var groupedNativeRows
 
     var body: some View {
+        let pinned = pinnedRowsCache.resolve(in: store, shape: store.pins)
         SpaceSectionsLayout(retainsRows: Feel02SidebarRowsCache.retainsRows(in: store),
                             tracesLiveInput: true,
                             reportOffset: { store.spaceGesture.sidebarOffset = $0 }) { SpaceRow() } rows: {
-            PinnedTabs(store: store)
+            PinnedTabs(store: store, snapshot: pinned)
             TidyRow()
             NewTabRow()
+                .background(alignment: .topLeading) {
+                    // An empty native owner still acknowledges its section, but
+                    // must not become an extra child in the spaced row stack.
+                    if pinned.rows.isEmpty && (groupedNativeRows || NativeCachedSidebarBatchesExperiment.enabled) {
+                        SidebarSectionRows(store: store, snapshot: pinned, readinessSection: "pinned",
+                                           transition: .rowCollapse) { _, _, _ in EmptyView() }
+                            .frame(height: 0)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
             OpenTabs(store: store)
             TodayEndDropArea()
         }
@@ -3339,20 +3356,21 @@ private struct SidebarSpaceSectionContent: View {
 /// exactly where it is.
 private struct PinnedTabs: View {
     @SidebarObserved var store: TabStore
+    let snapshot: Feel02SidebarRowsCache.Snapshot
 
     /// One observer of `LiveFolders` for the whole section, rather than one per row: the
     /// glyphs all come out of the same object, and a hundred pinned rows each watching it
     /// is a hundred redraws for one refresh.
     var body: some View {
-        PinnedSection(store: store, live: LiveFolders.shared(for: store.profileID))
+        PinnedSection(store: store, live: LiveFolders.shared(for: store.profileID), snapshot: snapshot)
     }
 }
 
 private struct PinnedSection: View {
     @SidebarObserved var store: TabStore
     @ObservedObject var live: LiveFolders
+    let snapshot: Feel02SidebarRowsCache.Snapshot
     @State private var sheet = false
-    @State private var rowsCache = Feel02SidebarRowsCache()
 
     var body: some View {
         // Drawn from `store.pins`, not from the strip: a folder is not a tab, and the order
@@ -3360,7 +3378,6 @@ private struct PinnedSection: View {
         // actually draw a row are counted — a pinned pane that is not its split's lead, and
         // an entry whose tab has gone, draw nothing, and a place in the list counted in
         // entries rather than rows lands beside the wrong one. See `OpenTabs`.
-        let snapshot = rowsCache.resolve(in: store, shape: store.pins)
         let available = snapshot.rows
         // Empty is nothing, as in Arc: the divider follows the space’s name, and this
         // section draws no row at all — not even an empty one while a drag is in flight,
@@ -3368,7 +3385,7 @@ private struct PinnedSection: View {
         // `Landing`'s arithmetic with it. The way in is the divider below, which is the end
         // of this list and takes a drop as one; the space row above; ⌘⇧D; or New Folder.
         if !available.isEmpty {
-            SidebarSectionRows(store: store, snapshot: snapshot, collapsed: store.pinnedSectionCollapsed,
+            SidebarSectionRows(store: store, snapshot: snapshot, readinessSection: "pinned", collapsed: store.pinnedSectionCollapsed,
                                transition: .rowCollapse) { row, index, count in
                 ShapeRow(store: store, row: row.visible, tab: row.tab, index: index, rows: count,
                          shape: \.pins, pr: presentation(of: row.visible))
@@ -3466,10 +3483,16 @@ private struct FolderRow: View {
             FolderMenu(store: store, folder: folder, shape: shape,
                        icons: $icons, editing: $editing)
         }
-        .popover(isPresented: $icons.presented(when: store.profileVisible)) { FolderIcons(store: store, folder: folder, shape: shape) }
+        .popover(isPresented: $icons.presented(when: store.profileVisible)) {
+            FolderIcons(store: store, folder: folder, shape: shape)
+                .environment(\.nativeSidebarNavigationRow, nil)
+                .environment(\.bufferedSidebarFocus, nil)
+        }
         .sheet(isPresented: $editing.presented(when: store.profileVisible)) {
             LiveFolderSheet(store: store, editing: folder,
                             live: LiveFolders.shared(for: store.profileID))
+                .environment(\.nativeSidebarNavigationRow, nil)
+                .environment(\.bufferedSidebarFocus, nil)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(folder.name)
@@ -3492,6 +3515,7 @@ private struct FolderRow: View {
         // "Live Folder Created", hanging off the folder the click just made. Also out of the
         // chain above, and for the same reason.
         .modifier(LiveFolderCallout(store: store, folder: folder))
+        .nativeSidebarPresented(icons || editing)
     }
 
     private var dropRow: some View {
@@ -3913,9 +3937,48 @@ extension EnvironmentValues {
 }
 
 extension View {
+    /// A native row host owns its focus, presentation and window lifecycle.
+    /// Copy only the public appearance and Vane row context across that boundary;
+    /// replacing EnvironmentValues wholesale also replaces SwiftUI's FocusStore.
+    func nativeSidebarPublicEnvironment(_ inherited: EnvironmentValues) -> some View {
+        modifier(NativeSidebarPublicEnvironment(inherited: inherited))
+    }
+
     /// A tab's place in the strip's geometry group, when it is in one.
     @ViewBuilder fileprivate func inStrip(_ id: Tab.ID, _ ns: Namespace.ID?) -> some View {
         if let ns { matchedGeometryEffect(id: id, in: ns) } else { self }
+    }
+}
+
+private struct NativeSidebarPublicEnvironment: ViewModifier {
+    let inherited: EnvironmentValues
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.spaceChromeTheme, inherited.spaceChromeTheme)
+            .tint(inherited.spaceChromeTheme.accent)
+            .accentColor(inherited.spaceChromeTheme.accent)
+            .environment(\.sidebarDropMarker, inherited.sidebarDropMarker)
+            .environment(\.feedbackOcclusionScope, inherited.feedbackOcclusionScope)
+            .environment(\.feel02PressFeedbackEnabled, inherited.feel02PressFeedbackEnabled)
+            .environment(\.sidebarRetainsControls, inherited.sidebarRetainsControls)
+            .environment(\.strip, inherited.strip)
+            .environment(\.ghostTileMorph, inherited.ghostTileMorph)
+            .environment(\.sidebarDragPreview, inherited.sidebarDragPreview)
+            .environment(\.colorScheme, inherited.colorScheme)
+            .environment(\.displayScale, inherited.displayScale)
+            .environment(\.layoutDirection, inherited.layoutDirection)
+            .environment(\.locale, inherited.locale)
+            .environment(\.font, inherited.font)
+            .environment(\.dynamicTypeSize, inherited.dynamicTypeSize)
+            .environment(\.legibilityWeight, inherited.legibilityWeight)
+            .environment(\.controlSize, inherited.controlSize)
+            .environment(\.isEnabled, inherited.isEnabled)
+            .environment(\.multilineTextAlignment, inherited.multilineTextAlignment)
+            .environment(\.lineSpacing, inherited.lineSpacing)
+            .environment(\.lineLimit, inherited.lineLimit)
+            .environment(\.truncationMode, inherited.truncationMode)
+            .environment(\.minimumScaleFactor, inherited.minimumScaleFactor)
     }
 }
 
@@ -3983,6 +4046,7 @@ private struct TidyRow: View {
                 // The menu item owns the tidy's cancellation and its "undo" bookkeeping —
                 // this is the same closure, not a second copy of it.
                 Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
+                    .nativeSidebarKeyboardControl()
                     .vaneTooltip("Tidy Tabs", hint: "Group tabs into folders", shortcut: Keybindings.binding(for: .tidyTabs).display)
                     .accessibilityLabel("Tidy Tabs")
             case .tidying:
@@ -4001,6 +4065,7 @@ private struct TidyRow: View {
             if offering {
                 if tidy != .hidden { Text("|").foregroundStyle(Look.inkQuiet) }
                 Button("Clear") { clear() }
+                    .nativeSidebarKeyboardControl()
                     .vaneTooltip("Clear Today", hint: "Move today’s tabs to the Archive", shortcut: Keybindings.binding(for: .clearTabs).display)
                     .accessibilityLabel("Clear Tabs")
             }
@@ -4081,7 +4146,7 @@ private struct OpenTabs: View {
         // tidy's folders live here now, and a folder is not a tab. Only the entries that
         // actually draw a row are counted — a pane that is not its split's lead, and an
         // entry whose tab has gone, draw nothing. See `PinnedSection`.
-        SidebarSectionRows(store: store, snapshot: snapshot, transition: .todayRow) { row, index, count in
+        SidebarSectionRows(store: store, snapshot: snapshot, readinessSection: "today", transition: .todayRow) { row, index, count in
             ShapeRow(store: store, row: row.visible, tab: row.tab, index: index, rows: count, shape: \.todayShape)
         }
         // A container of rows, so VoiceOver reads this as a tab list and steps through the
@@ -5104,6 +5169,7 @@ private struct TabRowTrailing: View {
                         .font(Look.rowGlyph)
                         .rowTarget()
                 }
+                .nativeSidebarKeyboardControl()
                 .vaneTooltip(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
                 .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
             }
@@ -5125,6 +5191,7 @@ private struct TabRowTrailing: View {
             }
             .onHover { closeHovering = $0 }
             .onDisappear { closeHovering = false }
+            .nativeSidebarKeyboardControl()
             .vaneTooltip(pane ? "Close Pane" : glyph.verb, shortcut: "⌘W")
             .accessibilityLabel((pane ? "Close pane " : glyph.spoken)
                                 + TidyTitles.title(for: closing))
@@ -5228,6 +5295,7 @@ private struct GoHomeGlyph: View {
                     .rowTarget()
             }
         }
+        .nativeSidebarKeyboardControl()
         .buttonStyle(TactileButtonStyle())
         .vaneTooltip(tiled ? "Return to Pinned Tab" : "Go back to pinned page")
         .accessibilityLabel(tiled ? "Return to Pinned Tab" : "Go back to pinned page")

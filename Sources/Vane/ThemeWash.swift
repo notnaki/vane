@@ -107,10 +107,20 @@ struct NativeThemeWash: NSViewRepresentable {
     func makeNSView(context: Context) -> ThemeWashSurface { ThemeWashSurface() }
     func updateNSView(_ view: ThemeWashSurface, context: Context) {
         let from = origin, to = destination
-        gesture.trackGround = { [weak view] fraction in
-            view?.apply(from.mixed(towards: to, fraction: fraction), duration: 0)
-        }
         let fallback = fallback, profiles = profiles, systemDark = systemDark
+        let gesture = gesture
+        gesture.trackGround = { [weak view, weak gesture] fraction in
+            // A cached profile can arrive before SwiftUI updates this representable.
+            // Its settled endpoints belong to the previous render; the new gesture
+            // already carries the captured Spaces that must be painted on exposure.
+            let origin = gesture?.outgoing.map {
+                ThemeWash.space($0.space, fallback: fallback, profiles: profiles, systemDark: systemDark)
+            } ?? from
+            let destination = gesture?.neighbour.map {
+                ThemeWash.space($0, fallback: fallback, profiles: profiles, systemDark: systemDark)
+            } ?? to
+            view?.apply(origin.mixed(towards: destination, fraction: fraction), duration: 0)
+        }
         gesture.captureGround = { [weak view] in view?.capturePresentation() }
         gesture.animateGround = { [weak view] origin, destination, start, end, animation, presentedStart in
             let from = ThemeWash.space(origin, fallback: fallback, profiles: profiles, systemDark: systemDark)

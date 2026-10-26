@@ -113,11 +113,24 @@ import WebKit
         var seen: Set<URL> = []
         var persistentURLs: Set<URL> = []
         var fallbackURLs: Set<URL> = []
+        var revision = 0
+        var requestedRevision: [URL: Int] = [:]
 
         mutating func append(_ candidates: [URL], persist: Bool, fallback: URL?) {
-            for url in candidates where seen.insert(url).inserted { urls.append(url) }
+            revision += 1
+            for url in candidates {
+                requestedRevision[url] = revision
+                if seen.insert(url).inserted { urls.append(url) }
+            }
             if persist { persistentURLs.formUnion(candidates) }
             if let fallback { fallbackURLs.insert(fallback) }
+        }
+
+        mutating func discardAlternatives(through revision: Int) {
+            let obsolete = Set(urls.filter { requestedRevision[$0, default: 0] <= revision })
+            urls.removeAll { obsolete.contains($0) }
+            seen.subtract(obsolete)
+            for url in obsolete { requestedRevision[url] = nil }
         }
     }
     private var pending: [String: Pending] = [:]
@@ -246,6 +259,7 @@ import WebKit
             // A page may finish while a cache-only /favicon.ico probe is awaiting its
             // response. Keep its declarations in the same queue instead of losing them.
             while let url = self.pending[key]?.urls.first {
+                let acceptedRevision = self.pending[key]?.revision ?? 0
                 self.pending[key]?.urls.removeFirst()
                 let data = await self.fetchImageData(url)
                 if self.pending[key]?.fallbackURLs.contains(url) == true { attemptedFallback = true }
@@ -257,6 +271,12 @@ import WebKit
                 // Eligibility belongs to the successful URL, before publication can
                 // synchronously notify observers that enqueue another request.
                 let shouldPersist = self.pending[key]?.persistentURLs.contains(url) == true
+                let isFallback = self.pending[key]?.fallbackURLs.contains(url) == true
+                if !isFallback {
+                    // Success supersedes its old lower-priority alternatives,
+                    // while another page's newer declaration remains queued.
+                    self.pending[key]?.discardAlternatives(through: acceptedRevision)
+                }
                 for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
                     tab.favicon = img
                 }
@@ -267,7 +287,7 @@ import WebKit
                 if shouldPersist { await self.writeDisk(key, data) }
                 // A restored row may already be fetching /favicon.ico when its page
                 // supplies better artwork. Let that queued declaration upgrade it.
-                if self.pending[key]?.fallbackURLs.contains(url) != true { return }
+                if !isFallback, self.pending[key]?.urls.isEmpty != false { return }
             }
             if self.memory[key] == nil { self.recordMiss(key, attemptedFallback: attemptedFallback) }
         }

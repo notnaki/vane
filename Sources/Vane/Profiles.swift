@@ -640,6 +640,7 @@ struct Space: Identifiable, Codable, Equatable {
     }
 
     private func clearSaveFailure(_ target: SaveFailure.Target) {
+        guard saveFailures.contains(where: { $0.id == target }) else { return }
         saveFailures.removeAll { $0.id == target }
     }
 
@@ -992,11 +993,17 @@ struct Space: Identifiable, Codable, Equatable {
             }
             return space
         }
+        let destination = Self.spacesURL(for: profileID, in: directory)
+        // Compare the actual committed metadata with the normalized owned snapshot.
+        // Missing/unreadable data and repaired layouts/foreign records are changes.
+        let previous = (try? Data(contentsOf: destination)).flatMap {
+            try? JSONDecoder().decode([Space].self, from: $0)
+        }
         let target = SaveFailure.Target.spaces(profileID)
         let message = "The last saved version is safe. Check storage and folder access, then make the change again."
         do {
             let data = try JSONEncoder().encode(owned)
-            guard SnapshotPersistence.write(data, to: Self.spacesURL(for: profileID, in: directory),
+            guard SnapshotPersistence.write(data, to: destination,
                                             onFailure: { error in
                 self.reportSaveFailure(target, message: message, error: error)
             }) else { return false }
@@ -1005,7 +1012,7 @@ struct Space: Identifiable, Codable, Equatable {
             return false
         }
         clearSaveFailure(target)
-        spacesRevision += 1
+        if previous != owned { spacesRevision += 1 }
         return true
     }
 

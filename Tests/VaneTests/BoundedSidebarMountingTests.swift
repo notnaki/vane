@@ -84,6 +84,7 @@ import XCTest
     }
 
     func testMediumSidebarMountsVisibleControlsAndPreservesNativeOffset() async throws {
+        useLegacySidebarMountingPolicy()
         let store = fixture(count: 100), controls = Controls(), offset = Offset()
         let (window, host) = mount(Outline(store: store, controls: controls, offset: offset))
         try await compatibilityWait { !controls.byID.isEmpty }
@@ -114,6 +115,7 @@ import XCTest
     /// Causal experiment: remove offscreen responders without changing the scroll
     /// owner, row controls, hosting root or native Space transition machinery.
     func testBufferedSidebarBoundsControlsWithoutChangingExtentOrRowIdentity() async throws {
+        useLegacySidebarMountingPolicy()
         let flag = "VANE_EXPERIMENT_BUFFERED_SIDEBAR"
         let previous = ProcessInfo.processInfo.environment[flag]
         setenv(flag, "1", 1)
@@ -131,7 +133,7 @@ import XCTest
             let originalFirst = try XCTUnwrap(controls.byID[store.tabs[0].id.uuidString]?.view)
             XCTAssertLessThan(controls.byID.values.compactMap(\.view).count, 40,
                               "Only the viewport and its buffer may contribute responder nodes")
-            XCTAssertNil(controls.byID[store.tabs[count - 1].id.uuidString]?.view)
+            XCTAssertNil(controls.byID[store.tabs[count - 2].id.uuidString]?.view)
 
             // Small movement must reuse the existing controls, rather than remounting
             // a new range for every pixel of a native gesture.
@@ -146,7 +148,7 @@ import XCTest
             scroll.contentView.scroll(to: NSPoint(x: 0,
                 y: originalHeight - scroll.contentView.bounds.height))
             scroll.reflectScrolledClipView(scroll.contentView)
-            try await compatibilityWait { controls.byID[store.tabs[count - 1].id.uuidString]?.view?.window != nil }
+            try await compatibilityWait { controls.byID[store.tabs[count - 2].id.uuidString]?.view?.window != nil }
             host.layoutSubtreeIfNeeded()
             let last = try XCTUnwrap(controls.byID[store.tabs[count - 1].id.uuidString]?.view)
             let penultimate = try XCTUnwrap(controls.byID[store.tabs[count - 2].id.uuidString]?.view)
@@ -177,7 +179,130 @@ import XCTest
         XCTAssertTrue(window.range.contains(Int(699 / pitch)))
     }
 
+    func testBufferedSidebarKeepsDraggedSourceWithoutMountingInterveningRows() async throws {
+        useLegacySidebarMountingPolicy()
+        let flag = "VANE_EXPERIMENT_BUFFERED_SIDEBAR"
+        let previous = ProcessInfo.processInfo.environment[flag]
+        setenv(flag, "1", 1)
+        defer {
+            Dragging.shared.cancel()
+            if let previous { setenv(flag, previous, 1) } else { unsetenv(flag) }
+        }
+        let store = fixture(count: 100), controls = Controls(), offset = Offset()
+        let (_, host) = mount(Outline(store: store, controls: controls, offset: offset))
+        let sourceID = store.tabs[2].id
+        try await compatibilityWait { controls.byID[sourceID.uuidString]?.view?.window != nil }
+        let original = try XCTUnwrap(controls.byID[sourceID.uuidString]?.view)
+        let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
+        let document = try XCTUnwrap(scroll.documentView)
+        let extent = document.frame.height
+        Dragging.shared.tab = sourceID
+        try await Task.sleep(for: .milliseconds(80))
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: extent - scroll.contentView.bounds.height))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        try await compatibilityWait { controls.byID[store.tabs[98].id.uuidString]?.view?.window != nil }
+        XCTAssertTrue(original.window === host.window, "An active drag must retain its original source control")
+        XCTAssertTrue(controls.byID[sourceID.uuidString]?.view === original)
+        XCTAssertLessThan(controls.byID.values.compactMap(\.view).filter { $0.window != nil }.count, 40,
+                          "Keeping a distant source must not realize every intervening row")
+        XCTAssertEqual(document.frame.height, extent, accuracy: 1)
+        Dragging.shared.cancel()
+        try await compatibilityWait { original.window == nil }
+        XCTAssertNil(store.current)
+        XCTAssertFalse(store.spaceSwiping)
+    }
+
+    func testBufferedSidebarKeepsRequestedNonLeadEditorBeforeFocusArrives() async throws {
+        useLegacySidebarMountingPolicy()
+        let flag = "VANE_EXPERIMENT_BUFFERED_SIDEBAR"
+        let previous = ProcessInfo.processInfo.environment[flag]
+        setenv(flag, "1", 1)
+        defer { if let previous { setenv(flag, previous, 1) } else { unsetenv(flag) } }
+        let store = fixture(count: 100), controls = Controls()
+        let lead = store.tabs[8].id, pane = store.tabs[9].id
+        store.splits = [try XCTUnwrap(Split(tabs: [lead, pane]))]
+        // Actual section policy, with native controls that deliberately do not
+        // install an editor: pending editing ownership must not depend on focus.
+        let (window, host) = mount(Outline(store: store, controls: controls, offset: Offset()))
+        try await compatibilityWait { controls.byID[lead.uuidString]?.view?.window === window }
+        let original = try XCTUnwrap(controls.byID[lead.uuidString]?.view)
+        XCTAssertNil(controls.byID[pane.uuidString]?.view)
+        window.makeFirstResponder(nil)
+        store.renamingTab = pane
+        try await Task.sleep(for: .milliseconds(80))
+        let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
+        let document = try XCTUnwrap(scroll.documentView)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: document.frame.height - scroll.contentView.bounds.height))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        try await compatibilityWait { controls.byID[store.tabs[98].id.uuidString]?.view?.window === window }
+        XCTAssertEqual(store.renamingTab, pane)
+        XCTAssertTrue(original.window === window, "Pending nonlead editing must retain its owning split row before focus arrives")
+        XCTAssertTrue(controls.byID[lead.uuidString]?.view === original)
+        XCTAssertLessThan(controls.byID.values.compactMap(\.view).filter { $0.window != nil }.count, 40)
+        store.renamingTab = nil
+        try await compatibilityWait { original.window == nil }
+    }
+
+    func testBufferedSidebarKeepsActualRenameEditorAcrossViewportEviction() async throws {
+        useLegacySidebarMountingPolicy()
+        try await assertBufferedEditorSurvivesEviction(nonLeadPane: false)
+    }
+
+    func testBufferedSidebarKeepsNonLeadPaneRenameAcrossViewportEviction() async throws {
+        useLegacySidebarMountingPolicy()
+        try await assertBufferedEditorSurvivesEviction(nonLeadPane: true)
+    }
+
+    private func assertBufferedEditorSurvivesEviction(nonLeadPane: Bool) async throws {
+        let flag = "VANE_EXPERIMENT_BUFFERED_SIDEBAR"
+        let previous = ProcessInfo.processInfo.environment[flag]
+        setenv(flag, "1", 1)
+        defer { if let previous { setenv(flag, previous, 1) } else { unsetenv(flag) } }
+        let store = fixture(count: 100)
+        let tab = store.tabs[nonLeadPane ? 9 : 8]
+        if nonLeadPane {
+            store.splits = [try XCTUnwrap(Split(tabs: [store.tabs[8].id, tab.id])).focusing(tab.id)]
+            XCTAssertNotEqual(store.leadPane(store.splits[0]), tab.id)
+        }
+        let (window, host) = mount(SidebarSpaceSections().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        store.renamingTab = tab.id
+        func field() -> NSTextField? {
+            descendants(host, NSTextField.self).first { $0.isEditable && $0.isEnabled }
+        }
+        try await compatibilityWait { field()?.currentEditor() != nil }
+        let input = try XCTUnwrap(field())
+        try await compatibilityWait {
+            input.stringValue == TidyTitles.title(for: tab) && window.firstResponder === input.currentEditor()
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let editor = try XCTUnwrap(input.currentEditor() as? NSTextView)
+        let draft = "Buffered draft must remain editable"
+        editor.insertText(draft, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        try await compatibilityWait { input.stringValue == draft }
+        let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
+        let point = scroll.convert(NSPoint(x: 100, y: 100), to: nil)
+        for packet in 0..<80 {
+            NSApp.sendEvent(ScrollEvent(window: window, dy: -24,
+                phase: packet == 0 ? .began : .changed, x: point.x, y: point.y))
+            try await Task.sleep(for: .milliseconds(8))
+        }
+        NSApp.sendEvent(ScrollEvent(window: window, phase: .ended, x: point.x, y: point.y))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertGreaterThan(scroll.documentVisibleRect.minY, 1300)
+        XCTAssertEqual(store.renamingTab, tab.id, "Scrolling must not commit or dismiss the active editor")
+        XCTAssertTrue(input.window === window)
+        XCTAssertTrue(input.currentEditor() === editor)
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertEqual(editor.string, draft)
+        XCTAssertNil(TabActions.rename(tab), "The draft remains uncommitted until the user ends editing")
+        window.makeFirstResponder(nil)
+        try await compatibilityWait { store.renamingTab == nil }
+        XCTAssertEqual(TabActions.rename(tab), draft)
+    }
+
     func testStructuralBoundaryMounts127AndKeeps129Virtualized() async throws {
+        useLegacySidebarMountingPolicy()
         for count in [127, 129] {
             let store = fixture(count: count), controls = Controls()
             let (_, host) = mount(Outline(store: store, controls: controls, offset: Offset()))
@@ -191,6 +316,7 @@ import XCTest
     }
 
     func testCollapsedAndLockedLargeOutlineKeepsItsLazyFolderIdentity() async throws {
+        useLegacySidebarMountingPolicy()
         let store = fixture(count: 128), controls = Controls(), offset = Offset()
         let auth = FolderAuthentication { _, reply in reply(true); return nil }
         store.folderAuthentication = auth
@@ -219,6 +345,7 @@ import XCTest
     }
 
     func testMediumDisclosureRemovesExactChildExtentWithoutChangingSurvivingIDs() async throws {
+        useLegacySidebarMountingPolicy()
         let store = fixture(count: 100), controls = Controls(), offset = Offset()
         let folder = Folder(name: "Medium group")
         store.todayShape = Pins(entries: [.init(row: .folder(folder))]
@@ -252,6 +379,13 @@ import XCTest
         let tab = store.tabs[0]
         let (window, host) = mount(SidebarSpaceSections().environmentObject(store)
             .environmentObject(ProfileManager.shared))
+        // Real rename input follows a committed visible row, rather than racing
+        // the initial native hosting/focus graph immediately after mount.
+        try await compatibilityWait {
+            descendants(host, NativeSidebarRowLayoutView.self).contains {
+                $0.rowID == tab.id.uuidString && $0.hasCommittedCurrentBounds
+            }
+        }
         store.renamingTab = tab.id
         func field() -> NSTextField? { descendants(host, NSTextField.self).first { $0.isEditable && $0.isEnabled } }
         try await compatibilityWait { field()?.currentEditor() != nil }
@@ -290,6 +424,7 @@ import XCTest
     }
 
     func testSameHost127To129To127PreservesActiveRenameDraft() async throws {
+        useLegacySidebarMountingPolicy()
         let store = fixture(count: 127)
         let tab = store.tabs[0]
         let originalIDs = store.tabs.map(\.id)
@@ -440,6 +575,7 @@ import XCTest
     }
 
     func testMalformedSmallShapeKeepsLegacyLazyFallback() async throws {
+        useLegacySidebarMountingPolicy()
         let store = fixture(count: 40), controls = Controls()
         store.todayShape.entries.append(.init(row: .tab(UUID().uuidString)))
         let snapshot = Feel02SidebarRowsCache().resolve(in: store, shape: store.todayShape)
@@ -451,6 +587,23 @@ import XCTest
         try await compatibilityWait { !controls.byID.isEmpty }
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertLessThan(controls.byID.values.compactMap(\.view).count, 40)
+    }
+
+    func testNativeOwnershipMembershipSurvivesProtectedCollapseButForgetsDeletion() {
+        let store = fixture(count: 100)
+        let folder = Folder(name: "Protected", collapsed: true, requiresAuthentication: true)
+        store.todayShape = Pins(entries: [.init(row: .folder(folder))]
+            + store.tabs.map { .init(row: .tab($0.id.uuidString), parent: folder.id) })
+        let cache = Feel02SidebarRowsCache()
+        let collapsed = cache.resolve(in: store, shape: store.todayShape)
+        XCTAssertEqual(collapsed.rows.map(\.id), [folder.id.uuidString])
+        XCTAssertEqual(collapsed.structuralRowIDs.count, 101)
+        let removed = store.todayShape.entries.removeLast().id
+        let updated = cache.resolve(in: store, shape: store.todayShape)
+        XCTAssertFalse(updated.structuralRowIDs.contains(removed))
+        XCTAssertEqual(updated.structuralRowIDs.count, 100)
+        XCTAssertEqual(updated.rows.map(\.id), [folder.id.uuidString],
+                       "Structural ownership cannot expose protected descendants")
     }
 
     func testColdSavedEmptyTodayFolderMatchesRestored128RowBoundary() throws {

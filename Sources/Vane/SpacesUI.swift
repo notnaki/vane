@@ -297,15 +297,21 @@ extension View {
 /// Profile favourites travel with the incoming Space only at a profile boundary.
 /// Observing the gesture here keeps the rest of the browser out of per-frame updates.
 struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
-    let store: TabStore
+    // Section membership changes must refresh the shell's readiness declaration
+    // even when the gesture, store identity and generic section view stay equal.
+    @SidebarObserved var store: TabStore
     let favorites: Favorites
     let sections: Sections
     private let favoriteCount: Int
     @ObservedObject private var gesture: SpaceGesture
     @ObservedObject private var sidebar = SidebarWidth.shared
+    @Environment(\.nativeCachedSidebarBatches) private var nativeCachedBatches
+    @State private var readinessPinnedRows = Feel02SidebarRowsCache()
+    @State private var readinessTodayRows = Feel02SidebarRowsCache()
+    @State private var readinessOwnerID = UUID()
 
     init(store: TabStore, favorites: Favorites, sections: Sections) {
-        self.store = store
+        _store = SidebarObserved(wrappedValue: store)
         self.favorites = favorites
         self.sections = sections
         favoriteCount = store.tabs.filter { $0.kind == .favourite }.count
@@ -318,13 +324,28 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
         gesture.swiping && gesture.neighbour != nil && gesture.outgoing != nil
     }
 
+    private func declareNativePopulation(_ scope: SidebarNativeReadinessScope) -> [String: [String]]? {
+        guard nativeCachedBatches || NativeCachedSidebarBatchesExperiment.enabled else { return nil }
+        let pinned = readinessPinnedRows.resolve(in: store, shape: store.pins).rows
+        let today = readinessTodayRows.resolve(in: store, shape: store.todayShape).rows
+        let sections = ["today": today.map(\.id),
+                        "pinned": store.pinnedSectionCollapsed ? [] : pinned.map(\.id)]
+        SidebarNativeReadinessCoordinator.shared.expectPopulation(scope, sections: sections, populationOwnerID: readinessOwnerID)
+        return sections
+    }
+
     var body: some View {
+        let readinessScope = SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID)
+        let readinessSections = declareNativePopulation(readinessScope)
+
         // Keep both sections in one tree when a gesture starts, reverses or springs back.
         // Only profile boundaries move the grid; ordinary Space switches leave it fixed.
         VStack(spacing: Look.rowGap) {
             favorites.offset(x: gesture.travelsFavorites ? gesture.drag : 0)
             ZStack(alignment: .topLeading) {
                 sections.spaceSlide(store)
+                    .environment(\.sidebarNativeReadinessScope, readinessScope)
+                    .environment(\.sidebarNativeReadinessOwnerID, readinessOwnerID)
                     .transaction(value: store.currentSpaceID) {
                         if gesture.swiping {
                             $0.animation = nil
@@ -345,7 +366,8 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
             }
             .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false, sectionsOnly: true,
                                          renderedSpaceID: store.currentSpaceID,
-                                         renderedAtRest: !gesture.swiping && !gesture.profileSliding && gesture.drag == 0))
+                                         renderedAtRest: !gesture.swiping && !gesture.profileSliding && gesture.drag == 0,
+                                         readinessSections: readinessSections, readinessOwnerID: readinessOwnerID))
             .opacity(gesture.profileSliding ? 0 : 1)
         }
         .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false))
@@ -389,26 +411,58 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
 
 /// Native geometry keeps a profile boundary on the same sidebar track.
 private struct SpaceStripAnchor: NSViewRepresentable {
+    @Environment(\.nativeCachedSidebarBatches) private var nativeCachedBatches
+    final class Anchor: NSView {
+        var readinessScope: SidebarNativeReadinessScope?
+        var readinessOwnerID: UUID?
+        func setReadinessScope(_ next: SidebarNativeReadinessScope?, sections: [String: [String]]? = nil,
+                               populationOwnerID: UUID? = nil) {
+            if readinessScope == next, readinessOwnerID == populationOwnerID {
+                if let next, let sections {
+                    SidebarNativeReadinessCoordinator.shared.retainPopulationExpectation(next,
+                        owner: ObjectIdentifier(self), sections: sections, populationOwnerID: populationOwnerID)
+                }
+                return
+            }
+            if let readinessScope {
+                SidebarNativeReadinessCoordinator.shared.releasePopulationExpectation(readinessScope, owner: ObjectIdentifier(self))
+            }
+            readinessScope = next
+            readinessOwnerID = populationOwnerID
+            if let next {
+                SidebarNativeReadinessCoordinator.shared.retainPopulationExpectation(next, owner: ObjectIdentifier(self),
+                    sections: sections, populationOwnerID: populationOwnerID)
+            }
+        }
+    }
     let store: TabStore
     let gesture: SpaceGesture
     let moving: Bool
     var sectionsOnly = false
     var renderedSpaceID: UUID?
     var renderedAtRest = false
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
+    var readinessSections: [String: [String]]? = nil
+    var readinessOwnerID: UUID? = nil
+    func makeNSView(context: Context) -> Anchor {
+        let view = Anchor()
         view.wantsLayer = true
         if moving { gesture.outgoingView = view }
         else if sectionsOnly { gesture.sectionsView = view }
         else { gesture.stripView = view }
         return view
     }
-    func updateNSView(_ view: NSView, context: Context) {
+    func updateNSView(_ view: Anchor, context: Context) {
         if sectionsOnly {
+            view.setReadinessScope(nativeCachedBatches || NativeCachedSidebarBatchesExperiment.enabled
+                ? SidebarNativeReadinessScope(store: store, spaceID: renderedSpaceID) : nil,
+                sections: readinessSections, populationOwnerID: readinessOwnerID)
             gesture.monitor.schedulePreparation(in: store)
             (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidUpdate(
                 store, renderedSpaceID: renderedSpaceID, atRest: renderedAtRest)
         }
+    }
+    static func dismantleNSView(_ view: Anchor, coordinator: ()) {
+        view.setReadinessScope(nil)
     }
 }
 
@@ -476,6 +530,7 @@ struct SpacePreviewList: View, Equatable {
     let includingFavorites: Bool
     let pinnedCollapsed: Bool
     let eagerlyMountsVisibleRows: Bool
+    private let tracksNativePopulation: Bool
 
     /// Capture once, before the preview moves. Decoding interaction states and rebuilding
     /// folders in body would repeat disk work on every frame of a populated Space swipe.
@@ -484,6 +539,7 @@ struct SpacePreviewList: View, Equatable {
          live: LiveFolders? = nil, renderStore: TabStore? = nil,
          favoriteTabs: [Tab] = [], unlocked: Set<UUID> = [], newProfile: Bool = false,
          selection: Set<UUID> = [], scrollOffset: CGFloat = 0) {
+        tracksNativePopulation = NativeCachedSidebarBatchesExperiment.enabled
         var space = requested
         if newProfile && state == nil && liveTabs == nil {
             // A newly mounted profile uses TabStore.init's restoration path, which removes
@@ -605,32 +661,44 @@ struct SpacePreviewList: View, Equatable {
                 .padding(.bottom, pinnedCollapsed || !pinnedAvailable ? 0 : Look.sectionGap / 2 - Look.rowGap)
             } rows: {
                 if pinnedAvailable {
-                    sectionRows(rows.pinned)
+                    sectionRows(rows.pinned, section: "pinned")
                     .padding(.bottom, pinnedCollapsed ? -Look.rowGap : 0)
                 }
                 tidy
                 newTab
-                sectionRows(rows.today)
+                sectionRows(rows.today, section: "today")
                 Color.clear.frame(maxWidth: .infinity, minHeight: Look.rowHeight)
             }
         }
         .environment(\.feel02PressFeedbackEnabled, false)
     }
 
-    @ViewBuilder private func sectionRows(_ rows: [Row]) -> some View {
-        if eagerlyMountsVisibleRows {
-            VStack(spacing: Look.rowGap) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, entry in
-                    row(entry, selected: isSelected(entry))
+    private func sectionRows(_ rows: [Row], section: String) -> some View {
+        Group {
+            if eagerlyMountsVisibleRows {
+                VStack(spacing: Look.rowGap) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { index, entry in
+                        previewRow(entry, index: index, section: section)
+                    }
                 }
-            }
-        } else {
-            LazyVStack(spacing: Look.rowGap) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, entry in
-                    row(entry, selected: isSelected(entry))
+            } else {
+                LazyVStack(spacing: Look.rowGap) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { index, entry in
+                        previewRow(entry, index: index, section: section)
+                    }
                 }
             }
         }
+        .background {
+            if tracksNativePopulation { SidebarPreviewPopulationAnchor(section: section, count: rows.count) }
+        }
+    }
+
+    private func previewRow(_ entry: Row, index: Int, section: String) -> some View {
+        row(entry, selected: isSelected(entry))
+            .background {
+                if tracksNativePopulation { SidebarPreviewPopulationAnchor(section: section, row: index) }
+            }
     }
 
     private func isSelected(_ row: Row) -> Bool {
@@ -1069,7 +1137,9 @@ private struct SpaceSwipe: ViewModifier {
         }
         guard slide.follows(target, direction: direction),
               slide.preparedFor(origin: origin, target: target, frame: frame, width: width) else { return nil }
-        guard slide.updatePreparedScrollOffset(store.spaceGesture.sidebarOffset) else {
+        guard slide.preparedPopulationReady,
+              slide.updatePreparedScrollOffset(store.spaceGesture.sidebarOffset),
+              slide.preparedPopulationReady else {
             invalidatePreparation()
             return nil
         }

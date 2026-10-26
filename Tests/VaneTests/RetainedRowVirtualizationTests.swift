@@ -81,6 +81,7 @@ import XCTest
     }
 
     func testVisibleFolderKeepsIdentityAndCollapsedChildrenCannotReceiveInput() async throws {
+        useLegacySidebarMountingPolicy()
         let store = fixture(count: 3), controls = Controls()
         let folder = Folder(name: "Folder")
         let child = store.tabs[0].id.uuidString
@@ -120,6 +121,7 @@ import XCTest
     }
 
     func testRetainedTopologyStillExcludesLockedChildren() async throws {
+        useLegacySidebarMountingPolicy()
         let store = fixture(count: 3), controls = Controls()
         var folder = Folder(name: "Locked", collapsed: true)
         folder.requiresAuthentication = true
@@ -133,6 +135,7 @@ import XCTest
     }
 
     func testSmallOutlineDoesNotMountEveryOffscreenNativeControl() async throws {
+        useLegacySidebarMountingPolicy()
         let store = fixture(count: 28), controls = Controls()
         let host = mount(store, controls: controls, height: 120)
         try await compatibilityWait { !controls.byID.isEmpty }
@@ -228,7 +231,12 @@ import XCTest
         XCTAssertGreaterThan(scroll.contentView.bounds.minY, 200, "The edited row must actually leave the viewport")
         if collapse {
             Motion.instant { store.todayShape.edit(folder: parent.id) { $0.collapsed = true } }
-            try await compatibilityWait { folder ? store.renamingFolder == nil : store.renamingTab == nil }
+            // Semantic disappearance can precede AppKit's field-editor teardown.
+            // Wait for both acknowledgements before reopening the parent.
+            try await compatibilityWait {
+                (folder ? store.renamingFolder == nil : store.renamingTab == nil)
+                    && window.firstResponder !== editor
+            }
             XCTAssertFalse(window.firstResponder === editor,
                            "Collapsing an offscreen editor must release its field editor")
             Motion.instant { store.todayShape.edit(folder: parent.id) { $0.collapsed = false } }
@@ -375,7 +383,13 @@ import XCTest
         try await move(live, to: 180, in: host)
         XCTAssertEqual(live.documentVisibleRect.minY, 180, accuracy: 1)
         try await compatibilityWait { abs(store.spaceGesture.sidebarOffset - 180) < 1 }
-        try await compatibilityWait { monitor.preparedSlides[spaces[1].id] != nil }
+        try await compatibilityWait {
+            guard let candidate = monitor.preparedSlides[spaces[1].id],
+                  candidate.updatePreparedScrollOffset(store.spaceGesture.sidebarOffset),
+                  candidate.preparedPopulationReady,
+                  let outgoing = descendants(candidate.outgoing, NSScrollView.self).first else { return false }
+            return abs(outgoing.documentVisibleRect.minY - 180) < 1
+        }
         let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
         monitor.track(-30, width: SidebarWidth.shared.width, in: store)
         XCTAssertTrue(host.spaceSlide === prepared)

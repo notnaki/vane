@@ -285,6 +285,38 @@ Run timing diagnostics on an unlocked, otherwise idle desktop and keep the fixtu
 visible. The fixture skips detected occlusion; also discard a run if the desktop locks
 or another workload interferes, even if AppKit still reports the window as visible.
 
+The native sidebar keeps each row in a stable hosting owner and attaches owners around
+the visible viewport. The normal resident range is 24 rows; canonical owner boundaries
+can require up to 40 controls. Active editors, menus, reordered owners and larger
+viewports can retain more. Scrolling does not walk detached cached control trees.
+Accessibility queries preserve the real controls and editor instead of expanding the
+entire outline. Set `VANE_EXPERIMENT_NATIVE_ROW_BATCH_CACHE=0` or
+`VANE_EXPERIMENT_THREE_RESIDENT_BATCHES=0` only for legacy comparisons.
+
+For presentation timing, launch the exact Release test app with
+`VANE_DIAG_SCROLL_TRACE=1`, confirm its real website tabs and selected content, then run:
+
+```sh
+python3 scripts/record-ui-frames.py --pid PID --executable /absolute/path/to/vane --output /absolute/new/capture --seconds 60
+python3 scripts/analyze-ui-frames.py --run /absolute/new/capture --output /absolute/new/analysis --scroll-trace /absolute/path/to/vane-scroll-PID-UUID.json --expected-sidebar-rows 100
+```
+
+Start physical sidebar scrolling only after `RECORDING_STARTED`. The recorder saves the
+full raw trace, including after an early stop. Analysis requires exact process identity,
+input-clock alignment, foreground input, populated rows and movement. It reports every
+joined target context separately, including p50, average, p95, p99, maximum and censored
+tails. Compositor transactions alone do not prove changing pixels or a window's FPS.
+The trace arms on the first physical sidebar scroll; relaunch the same signed app after
+functional checks so those checks do not consume the measurement interval.
+
+The offline recorder and analysis checks are:
+
+```sh
+python3 scripts/test-ui-frame-recording.py
+python3 scripts/test-ui-frame-analysis.py
+python3 scripts/test-ui-scroll-trace-analysis.py
+```
+
 Folder-opening diagnostics report toggle time, opening/closing layout, run-loop gaps, and
 mounted native tab controls for 20/300-tab folders. They also guard against repeated
 lock scans in an unprotected 3,000-tab strip and inactive-tab scans in the offscreen

@@ -1,7 +1,29 @@
 import AppKit
 import Darwin
+import WebKit
 import XCTest
 @testable import vane
+
+private actor QueuedFaviconPublicationRequests {
+    private var urls: [URL] = []
+    func record(_ url: URL) { urls.append(url) }
+    func snapshot() -> [URL] { urls }
+}
+
+@MainActor private final class FaviconPublicationNavigation: NSObject, WKNavigationDelegate {
+    var expected: WKNavigation?
+    var finished = false
+    var failure: Error?
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if navigation === expected { finished = true }
+    }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        if navigation === expected { failure = error }
+    }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if navigation === expected { failure = error }
+    }
+}
 
 @MainActor final class FaviconPublicationTests: XCTestCase {
     private static let artwork = Data("<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='red'/></svg>".utf8)
@@ -96,6 +118,124 @@ import XCTest
         try await waitUntil { completing == nil }
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent(url.host!).path),
                        "A fetched private-only URL must not gain persistence authorization")
+    }
+
+    func testNewDeclaredIconQueuedDuringPersistenceIsNotDiscarded() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let profile = ProfileManager.shared.create(name: "Queued favicon declaration").id
+        let first = Tab(profileID: profile), second = Tab(profileID: profile)
+        defer {
+            first.tearDown(); second.tearDown()
+            _ = ProfileManager.shared.delete(profile)
+        }
+        let pageA = URL(string: "http://127.0.0.1:1/first-icon-page")!
+        let pageB = URL(string: "http://127.0.0.1:1/second-icon-page")!
+        let iconA = URL(string: "http://127.0.0.1:1/first-declared.svg")!
+        let iconB = URL(string: "http://127.0.0.1:1/second-declared.svg")!
+        func loadPage(_ page: URL, icon: URL, in tab: vane.Tab) async throws {
+            let web = tab.web
+            // Keep Tab.didFinish from starting the unrelated profile cache.
+            let navigation = FaviconPublicationNavigation()
+            web.navigationDelegate = navigation
+            defer {
+                web.navigationDelegate = nil
+                withExtendedLifetime(navigation) {}
+            }
+            var stage = "start document navigation"
+            do {
+                navigation.expected = try XCTUnwrap(web.loadHTMLString(
+                    "<html><head><link rel='icon' href='\(icon.absoluteString)'></head><body><p>Actual icon document</p></body></html>",
+                    baseURL: page))
+                stage = "wait for the actual navigation's didFinish"
+                try await compatibilityWait { navigation.finished || navigation.failure != nil }
+                if let failure = navigation.failure { throw failure }
+                stage = "verify finished document URL and loading state"
+                try await compatibilityWait { tab.currentURL == page && !web.isLoading }
+                XCTAssertEqual(web.url, page)
+                stage = "evaluate the finished document's icon declaration"
+                let declared = Favicons.declared(try await web.evaluateJavaScript(Favicons.linkJS))
+                XCTAssertEqual(declared, [icon], "The actual loaded document must supply its icon")
+            } catch {
+                throw NSError(domain: "FaviconPublicationDocumentFixture", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "\(page.absoluteString): \(stage): \(error)",
+                    NSUnderlyingErrorKey: error
+                ])
+            }
+        }
+        try await loadPage(pageA, icon: iconA, in: first)
+        try await loadPage(pageB, icon: iconB, in: second)
+        // Observe the cache's real declaration query without inspecting private
+        // queue state or replacing the document's links/results.
+        _ = try await second.web.evaluateJavaScript("""
+        window.faviconDeclarationQueries = 0;
+        const originalQuery = document.querySelectorAll.bind(document);
+        document.querySelectorAll = function(selector) {
+            if (selector.startsWith("link[rel")) window.faviconDeclarationQueries++;
+            return originalQuery(selector);
+        };
+        true;
+        """)
+        let directory = ProfileManager.faviconDir(for: profile, in: Store.directory)
+        let file = directory.appendingPathComponent(try XCTUnwrap(pageA.host))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let requests = QueuedFaviconPublicationRequests()
+        let red = Self.artwork
+        let blue = Data("<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='blue'/></svg>".utf8)
+        var cache: Favicons? = Favicons(profileID: profile, fetch: { url in
+            await requests.record(url)
+            if url == iconA {
+                // The disk read already missed. Block only this authorized write.
+                guard file.path.withCString({ mkfifo($0, S_IRUSR | S_IWUSR) }) == 0 else { return nil }
+                return red
+            }
+            if url == iconB {
+                // A's writer has completed before this serialized next fetch;
+                // replace its drained FIFO so B can persist as a normal file.
+                try? FileManager.default.removeItem(at: file)
+                return blue
+            }
+            return nil
+        })
+        var drained = false
+        var stage = "first publication"
+        do {
+            cache?.load(for: first)
+            try await waitUntil { cache?.generation == 1 && first.favicon != nil }
+            let firstImage = try XCTUnwrap(first.favicon)
+            stage = "second declaration query"
+            cache?.load(for: second)
+            try await compatibilityWait {
+                (try await second.web.evaluateJavaScript("window.faviconDeclarationQueries") as? NSNumber)?.intValue == 1
+            }
+            // WebKit's queued query completed; let its main-actor continuation
+            // enqueue the declared URL before releasing A's persistence worker.
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+            XCTAssertEqual(cache?.generation, 1)
+            let whileBlocked = await requests.snapshot()
+            XCTAssertEqual(whileBlocked, [iconA], "One host must serialize fetch and persistence")
+            let persistedA = await Self.drain(file)
+            drained = true
+            XCTAssertEqual(persistedA, red)
+            stage = "queued second publication"
+            try await waitUntil { cache?.generation == 2 }
+            let completedRequests = await requests.snapshot()
+            XCTAssertEqual(completedRequests, [iconA, iconB],
+                           "New declarations must survive the write await; old fallback alternatives must not fetch")
+            XCTAssertFalse(first.favicon === firstImage)
+            XCTAssertTrue(first.favicon === second.favicon)
+            weak var completing = cache
+            cache = nil
+            stage = "serialized writer completion"
+            try await waitUntil { completing == nil }
+            XCTAssertEqual(try Data(contentsOf: file), blue, "The latest authorized artwork must persist last")
+        } catch {
+            print("FAVICON_QUEUE_FAILURE stage=\(stage) generation=\(cache?.generation ?? 0) requests=\(await requests.snapshot()) drained=\(drained)")
+            if !drained { _ = await Self.drain(file) }
+            throw error
+        }
     }
 
     func testIncognitoCacheNeverWritesFetchedArtwork() async throws {

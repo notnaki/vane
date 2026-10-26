@@ -7,6 +7,7 @@ import XCTest
     /// The small real-world outline (a seven-tab folder above Today) should not
     /// rebuild native controls when it folds or when those rows cross the viewport.
     func testSmallSidebarKeepsControlsThroughFolderToggleAndScroll() async throws {
+        useLegacySidebarMountingPolicy()
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let store = TabStore(isPrivate: true)

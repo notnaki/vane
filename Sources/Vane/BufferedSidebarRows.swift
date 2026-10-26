@@ -42,9 +42,60 @@ struct SidebarRowWindow {
 
 @MainActor final class SidebarRowsViewport: ObservableObject {
     @Published private(set) var window = SidebarRowWindow()
+    @Published private(set) var focusedRows: Set<String> = []
+    private var focusOwners: [UUID: String] = [:]
+    private var focusUpdateScheduled = false
+    private weak var anchor: NSView?
+    private var rowIDs: [String] = []
+    private var pendingFocusReveal: (UUID, String)?
+
+    func configure(rows: [String], anchor: NSView) {
+        rowIDs = rows
+        self.anchor = anchor
+    }
     private var pending: (Int, CGRect)?
     private weak var clip: NSClipView?
     private var scheduled = false
+
+    func setFocus(_ active: Bool, row: String, owner: UUID) {
+        if active {
+            if focusOwners[owner] != row { pendingFocusReveal = (owner, row) }
+            focusOwners[owner] = row
+        } else { focusOwners.removeValue(forKey: owner) }
+        guard !focusUpdateScheduled else { return }
+        focusUpdateScheduled = true
+        // SwiftUI may deliver focus changes during layout. Independent owner tokens
+        // prevent a departing pane from clearing its newly focused sibling.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.focusUpdateScheduled = false
+            let next = Set(self.focusOwners.values)
+            if self.focusedRows != next { self.focusedRows = next }
+            // Reveal only newly entered focus. Bounds notifications must never
+            // pull a wheel gesture back to an unchanged, retained focused row.
+            if let (owner, row) = self.pendingFocusReveal,
+               self.focusOwners[owner] == row,
+               let index = self.rowIDs.firstIndex(of: row),
+               let anchor = self.anchor, anchor.window != nil {
+                let rect = NSRect(x: 0, y: CGFloat(index) * (Look.rowHeight + Look.rowGap),
+                                  width: anchor.bounds.width, height: Look.rowHeight)
+                // Only this vertical clip owns sidebar offsets. NSView's
+                // scrollToVisible may propagate into an enclosing scroll view.
+                if let clip = self.clip, anchor.enclosingScrollView?.contentView === clip {
+                    let target = anchor.convert(rect, to: clip)
+                    var bounds = clip.bounds
+                    if target.minY < bounds.minY { bounds.origin.y = target.minY }
+                    else if target.maxY > bounds.maxY { bounds.origin.y += target.maxY - bounds.maxY }
+                    let constrained = clip.constrainBoundsRect(bounds)
+                    if constrained.minY != clip.bounds.minY {
+                        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: constrained.minY))
+                        anchor.enclosingScrollView?.reflectScrolledClipView(clip)
+                    }
+                }
+            }
+            self.pendingFocusReveal = nil
+        }
+    }
 
     func receive(count: Int, visible: CGRect, clip: NSClipView) {
         pending = (count, visible)
@@ -70,7 +121,7 @@ struct SidebarRowWindow {
 }
 
 private struct SidebarRowsViewportAnchor: NSViewRepresentable {
-    let count: Int
+    let rows: [String]
     let viewport: SidebarRowsViewport
 
     final class Anchor: NSView {
@@ -122,17 +173,27 @@ private struct SidebarRowsViewportAnchor: NSViewRepresentable {
     }
     func makeNSView(context: Context) -> Anchor { Anchor(frame: .zero) }
     func updateNSView(_ view: Anchor, context: Context) {
-        view.count = count
+        view.count = rows.count
         view.viewport = viewport
+        viewport.configure(rows: rows, anchor: view)
         view.refresh()
     }
     static func dismantleNSView(_ view: Anchor, coordinator: ()) { view.detach() }
 }
 
+private struct MountedSidebarRow: Identifiable {
+    let row: SidebarRows.Row
+    let index: Int
+    let skipped: Int
+    var id: String { row.id }
+}
+
 struct BufferedSidebarSectionRows<Content: View>: View {
     let rows: [SidebarRows.Row]
+    var editingRows: Set<String> = []
     @ViewBuilder let content: (SidebarRows.Row, Int, Int) -> Content
     @StateObject private var viewport = SidebarRowsViewport()
+    @ObservedObject private var dragging = Dragging.shared
 
     private var range: Range<Int> {
         let start = min(rows.count, viewport.window.range.lowerBound)
@@ -141,26 +202,69 @@ struct BufferedSidebarSectionRows<Content: View>: View {
     private var pitch: CGFloat { Look.rowHeight + Look.rowGap }
     private var height: CGFloat { max(0, CGFloat(rows.count) * pitch - Look.rowGap) }
 
+    private var mountedIndices: [Int] {
+        // Retain only the actual drag source. Multi-selection can contain thousands
+        // of tabs, but AppKit's drag session has one source view and preview owner.
+        let dragIDs = Set([dragging.tab?.uuidString, dragging.folder?.uuidString].compactMap { $0 })
+        let retained = editingRows.union(dragIDs).union(viewport.focusedRows)
+        var neighbors: Set<Int> = []
+        if !rows.isEmpty { neighbors.formUnion([0, rows.count - 1]) }
+        for index in rows.indices where viewport.focusedRows.contains(rows[index].id) {
+            if index > 0 { neighbors.insert(index - 1) }
+            if index + 1 < rows.count { neighbors.insert(index + 1) }
+        }
+        return rows.indices.filter {
+            range.contains($0) || neighbors.contains($0) || retained.contains(rows[$0].id)
+        }
+    }
+
     var body: some View {
-        let visible = range
+        let mounted = mountedIndices
+        let entries = mounted.enumerated().map { slot, index in
+            MountedSidebarRow(row: rows[index], index: index,
+                skipped: index - (slot == 0 ? -1 : mounted[slot - 1]) - 1)
+        }
         VStack(spacing: 0) {
-            if visible.isEmpty {
+            if mounted.isEmpty {
                 blank(height)
             } else {
-                blank(CGFloat(visible.lowerBound) * pitch)
-                VStack(spacing: Look.rowGap) {
-                    ForEach(Array(rows[visible].enumerated()), id: \.element.id) { index, row in
-                        content(row, visible.lowerBound + index, rows.count)
-                            .frame(height: Look.rowHeight)
-                    }
+                // One ForEach keeps an interacting row's identity when it moves
+                // between the viewport and a sparse keepalive slot. A separate
+                // keepalive subtree would destroy the native field editor.
+                ForEach(entries) { entry in
+                    content(entry.row, entry.index, rows.count)
+                        .environment(\.bufferedSidebarFocus, BufferedSidebarFocus(row: entry.id, viewport: viewport))
+                        .frame(height: Look.rowHeight)
+                        .padding(.top, CGFloat(entry.skipped) * pitch)
+                        .padding(.bottom, entry.index == rows.count - 1 ? 0 : Look.rowGap)
                 }
-                blank(CGFloat(rows.count - visible.upperBound) * pitch)
+                let remaining = rows.count - (mounted.last! + 1)
+                if remaining > 0 { blank(CGFloat(remaining) * pitch - Look.rowGap) }
             }
         }
-        .background(SidebarRowsViewportAnchor(count: rows.count, viewport: viewport))
+        .background(SidebarRowsViewportAnchor(rows: rows.map(\.id), viewport: viewport))
     }
 
     private func blank(_ height: CGFloat) -> some View {
         Color.clear.frame(height: height).allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+
+struct BufferedSidebarFocus: Sendable {
+    let row: String
+    weak var viewport: SidebarRowsViewport?
+    @MainActor func set(_ active: Bool, owner: UUID) {
+        viewport?.setFocus(active, row: row, owner: owner)
+    }
+}
+
+private struct BufferedSidebarFocusKey: EnvironmentKey {
+    static let defaultValue: BufferedSidebarFocus? = nil
+}
+
+extension EnvironmentValues {
+    var bufferedSidebarFocus: BufferedSidebarFocus? {
+        get { self[BufferedSidebarFocusKey.self] }
+        set { self[BufferedSidebarFocusKey.self] = newValue }
     }
 }

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package>
+  <id>io.vane.ui-frame-events</id><version>1.0</version>
+  <title>Vane UI Frame Events</title>
+  <owner><name>Vane</name></owner>
+  <import-schema>kdebug</import-schema><import-schema>time-info</import-schema>
+  <instrument>
+    <id>io.vane.ui-frame-events.raw</id><title>Vane UI Frame Events</title>
+    <category>System</category>
+    <purpose>Preserve original commit and presentation events without derived frame modelers.</purpose>
+    <icon>Generic</icon>
+    <create-table><id>client</id><schema-ref>kdebug</schema-ref>
+      <attribute><name>codes</name><array><string>0x31,0xca</string></array></attribute>
+    </create-table>
+    <create-table><id>render</id><schema-ref>kdebug</schema-ref>
+      <attribute><name>codes</name><array><string>0x31,0xd0</string></array></attribute>
+    </create-table>
+    <create-table><id>display</id><schema-ref>kdebug</schema-ref>
+      <attribute><name>codes</name><array><string>0x31,0xd1</string></array></attribute>
+    </create-table>
+    <create-table><id>clock</id><schema-ref>time-info</schema-ref></create-table>
+    <list><title>Client events</title><table-ref>client</table-ref><add-all-columns/></list>
+  </instrument>
+</package>

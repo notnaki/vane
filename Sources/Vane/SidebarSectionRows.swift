@@ -7,16 +7,42 @@ import SwiftUI
 struct SidebarSectionRows<Content: View>: View {
     @State private var buffersRows = BufferedSidebarRowsExperiment.enabled
     @State private var virtualizesRetainedRows = RetainedRowVirtualizationExperiment.enabled
+    @Environment(\.nativeCachedSidebarBatches) private var groupedNativeRows
+    @Environment(\.sidebarNativeReadinessScope) private var nativeReadinessScope
+    @ObservedObject private var dragging = Dragging.shared
     @SidebarObserved var store: TabStore
     let snapshot: Feel02SidebarRowsCache.Snapshot
+    var readinessSection: String? = nil
     var collapsed = false
     let transition: AnyTransition
     @ViewBuilder let content: (SidebarRows.Row, Int, Int) -> Content
 
+    private var editingRows: Set<String> {
+        var result = Set([store.renamingFolder?.uuidString].compactMap { $0 })
+        if let pane = store.renamingTab {
+            let leads = SidebarRows.splitLeads(tabs: store.accessibleTabs, splits: store.splits)
+            result.insert((leads[pane] ?? pane).uuidString)
+        }
+        return result
+    }
+
     var body: some View {
         let rows = collapsed ? [] : snapshot.rows
-        if buffersRows && snapshot.retainedRows == nil {
-            BufferedSidebarSectionRows(rows: rows, content: content)
+        if groupedNativeRows || NativeCachedSidebarBatchesExperiment.enabled {
+            NativeCachedSidebarBatchSectionRows(rows: rows, modelIDs: snapshot.structuralRowIDs,
+                protectedRows: editingRows.union(Set([dragging.tab?.uuidString, dragging.folder?.uuidString].compactMap { $0 })),
+                readinessSection: readinessSection) { row, index, total in
+                    // Each native owner is a separate hosting root. Row menus
+                    // need the real store explicitly, without transplanting the
+                    // outer host's private focus or presentation environment.
+                    content(row, index, total).environmentObject(store)
+                }
+                .environment(\.sidebarNativeReadinessScope, nativeReadinessScope
+                    ?? SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID))
+        } else if buffersRows && snapshot.retainedRows == nil {
+            BufferedSidebarSectionRows(rows: rows,
+                editingRows: editingRows,
+                content: content)
         } else if let retained = snapshot.retainedRows, !virtualizesRetainedRows {
             let indices = Dictionary(rows.enumerated().map { ($0.element.id, $0.offset) },
                 uniquingKeysWith: { first, _ in first })
