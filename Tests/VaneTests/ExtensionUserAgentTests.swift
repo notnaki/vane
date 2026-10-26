@@ -8,6 +8,9 @@ import XCTest
     private var ownedProfiles: Set<UUID> = []
     private var folder: URL!
     private var previousUserAgent: Any?
+    private var launchAdmitted = false
+    // Runtime identity survives host restoration; the accepted script generation does too.
+    private var generations: [String: String] = [:]
     #if DEBUG
     private var backgroundObservations: [ObjectIdentifier: BackgroundObservation] = [:]
     private var backgroundObservers: [BackgroundObserver] = []
@@ -42,17 +45,23 @@ import XCTest
     // Inspect only the real callback view. The snapshot retains no WebKit object.
     @MainActor private final class BackgroundObservation {
         weak var context: WKWebExtensionContext?
+        weak var web: WKWebView?
         let poolMatchesApplication: Bool
         let identifiersMatch: Bool
         let persistenceMatches: Bool
+        let selectedIdentity: String
+        let appliedIdentity: String?
 
         init(_ web: WKWebView, context: WKWebExtensionContext, expectedStore: WKWebsiteDataStore) {
             self.context = context
+            self.web = web
             let configuration = web.configuration
             poolMatchesApplication = configuration.processPool === WebKitStartup.extensionProcessPool
             let actualStore = configuration.websiteDataStore
             identifiersMatch = actualStore.identifier == expectedStore.identifier
             persistenceMatches = actualStore.isPersistent == expectedStore.isPersistent
+            selectedIdentity = Settings.userAgent
+            appliedIdentity = web.customUserAgent
         }
     }
 
@@ -65,10 +74,13 @@ import XCTest
         XCTAssertTrue(observation.poolMatchesApplication, "Background must use the application's extension pool", file: file, line: line)
         XCTAssertTrue(observation.identifiersMatch, "Background must use the selected profile's store identifier", file: file, line: line)
         XCTAssertTrue(observation.persistenceMatches, "Background must retain the selected profile's persistence", file: file, line: line)
+        XCTAssertEqual(observation.appliedIdentity, observation.selectedIdentity,
+                       "The actual background callback must apply the identity selected when it ran", file: file, line: line)
     }
     #endif
 
     override func setUp() async throws {
+        launchAdmitted = false
         TestEnvironment.prepare()
         _ = NSApplication.shared
         previousUserAgent = UserDefaults.vane.object(forKey: "userAgent")
@@ -77,6 +89,8 @@ import XCTest
         ownedProfiles.insert(profile)
         folder = Store.directory.appendingPathComponent("user-agent-extension-\(UUID())")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try await NativeFixtureApplication.admitCompletedLaunch()
+        launchAdmitted = true
     }
 
     override func tearDown() async throws {
@@ -89,7 +103,9 @@ import XCTest
             for context in host.installed { host.remove(context) }
             ExtensionHost.forget(profile)
         }
-        removeInstallations()
+        if launchAdmitted { removeInstallations() }
+        launchAdmitted = false
+        generations.removeAll()
         #if DEBUG
         backgroundObservations.removeAll()
         #endif
@@ -101,7 +117,25 @@ import XCTest
         try await NativeFixtureProfileCleanup.release(released)
     }
 
+    func testExtensionFixtureCompletesAppKitLaunchAcrossIdle() async throws {
+        func assertLaunched(file: StaticString = #filePath, line: UInt = #line) {
+            let app = NSApplication.shared
+            let running = NSRunningApplication.current
+            // Background extensions do not require activation or a visible window.
+            // Report those states only to distinguish launch from presentation.
+            XCTAssertTrue(running.isFinishedLaunching,
+                          "The extension fixture must complete AppKit launch before creating controllers; " +
+                          "appActive=\(app.isActive), runningActive=\(running.isActive), appRunning=\(app.isRunning), " +
+                          "visibleWindow=\(app.windows.contains { $0.isVisible }), keyWindow=\(app.keyWindow != nil)",
+                          file: file, line: line)
+        }
+        assertLaunched()
+        try await Task.sleep(for: .milliseconds(100))
+        assertLaunched()
+    }
+
     private func install(version: Int, in targetProfile: UUID? = nil) async throws -> WKWebExtensionContext {
+        let generation = UUID().uuidString
         #if DEBUG
         backgroundObservations.removeAll()
         #endif
@@ -114,12 +148,17 @@ import XCTest
         try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
         try Data("""
             const startupUserAgent = navigator.userAgent;
-            browser.runtime.onMessage.addListener(async () => ({startup: startupUserAgent, current: navigator.userAgent}));
+            const generation = '\(generation)';
+            browser.runtime.onMessage.addListener(async () => ({startup: startupUserAgent, current: navigator.userAgent,
+                generation, runtime: browser.runtime.id, host: location.host}));
             """.utf8).write(to: folder.appendingPathComponent("background.js"))
         try Data("<title>UA fixture</title><script src='popup.js'></script>".utf8)
             .write(to: folder.appendingPathComponent("popup.html"))
         try Data("""
             window.startupUserAgent = navigator.userAgent;
+            window.generation = '\(generation)';
+            window.startupRuntime = browser.runtime.id;
+            window.startupHost = location.host;
             browser.runtime.sendMessage('identity').then(reply => { window.backgroundIdentity = reply; });
             """.utf8).write(to: folder.appendingPathComponent("popup.js"))
         let host = ExtensionHost.host(for: targetProfile ?? profile)
@@ -129,6 +168,7 @@ import XCTest
         let accepted = try await host.load(folder, installing: true) { _ in true }
         XCTAssertTrue(accepted)
         let context = try XCTUnwrap(host.installed.first)
+        generations[context.uniqueIdentifier] = generation
         #if DEBUG
         assertBackgroundOwnership(for: context)
         #endif
@@ -158,13 +198,38 @@ import XCTest
         assertStore(configuration.websiteDataStore,
                     matches: expectedStore ?? ExtensionHost.host(for: profile).controller.configuration.defaultWebsiteDataStore,
                     scenario: "\(scenario) popup", file: file, line: line)
-        let identity = try await web.evaluateJavaScript("({popup:window.startupUserAgent, background:window.backgroundIdentity.startup, current:window.backgroundIdentity.current})") as? [String: String]
+        let generation = try XCTUnwrap(generations[context.uniqueIdentifier],
+                                       "\(scenario): the accepted script generation must be known", file: file, line: line)
+        let identity = try await web.evaluateJavaScript("""
+            ({popup:window.startupUserAgent, background:window.backgroundIdentity.startup, current:window.backgroundIdentity.current,
+              popupGeneration:window.generation, backgroundGeneration:window.backgroundIdentity.generation,
+              popupRuntime:window.startupRuntime, backgroundRuntime:window.backgroundIdentity.runtime,
+              popupHost:window.startupHost, backgroundHost:window.backgroundIdentity.host})
+            """) as? [String: String]
         #if DEBUG
         assertBackgroundOwnership(for: context, file: file, line: line)
         #endif
+        XCTAssertEqual(identity?["popupGeneration"], generation, "\(scenario): actual popup generation", file: file, line: line)
+        XCTAssertEqual(identity?["backgroundGeneration"], generation, "\(scenario): actual background generation", file: file, line: line)
+        XCTAssertEqual(identity?["popupRuntime"], context.uniqueIdentifier, "\(scenario): actual popup runtime", file: file, line: line)
+        XCTAssertEqual(identity?["backgroundRuntime"], context.uniqueIdentifier, "\(scenario): actual background runtime", file: file, line: line)
+        XCTAssertEqual(identity?["popupHost"], context.baseURL.host, "\(scenario): actual popup origin", file: file, line: line)
+        XCTAssertEqual(identity?["backgroundHost"], context.baseURL.host, "\(scenario): actual background origin", file: file, line: line)
         XCTAssertEqual(identity?["popup"], expected, "\(scenario): Popup startup", file: file, line: line)
         XCTAssertEqual(identity?["background"], startup ?? expected, "\(scenario): Background startup", file: file, line: line)
         XCTAssertEqual(identity?["current"], expected, "\(scenario): Background current", file: file, line: line)
+        if WebKitComparatorAttestation.isRequested {
+            #if DEBUG
+            guard let observation = backgroundObservations[ObjectIdentifier(context)],
+                  observation.context === context, let background = observation.web else {
+                throw WebKitComparatorAttestation.unavailable("current user-agent fixture background is unavailable")
+            }
+            try WebKitComparatorAttestation.attestFixture(self, scope: .userAgentIdentity,
+                views: [web, background], store: configuration.websiteDataStore)
+            #else
+            throw WebKitComparatorAttestation.unavailable("user-agent fixture background observation is unavailable")
+            #endif
+        }
     }
 
     private func assertStore(_ actual: WKWebsiteDataStore, matches expected: WKWebsiteDataStore,

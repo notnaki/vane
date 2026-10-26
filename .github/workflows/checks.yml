@@ -55,6 +55,7 @@ jobs:
       # to build, even on an exact cache hit, so it validates the restored outputs.
       # The release workflow still builds and smoke-tests the optimized, signed app.
       - name: Build
+        id: build
         run: swift build -c debug
 
       # --pure stops before the keychain and WebKit assertions, which need a real signed
@@ -72,6 +73,7 @@ jobs:
         run: python3 scripts/test-native-fixture-runner.py
 
       - name: Native regression tests
+        id: native_tests
         env:
           # Capture the original process/order, even when no ReportCrash file appears.
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
@@ -84,6 +86,124 @@ jobs:
             echo '::error::Swift runtime captured a fatal signal during tests.'
             exit 1
           fi
+
+      # Diagnostic-only normal AppKit loop; the original native result remains
+      # authoritative. No packaged Bundle step is needed when native tests fail.
+      - name: UA fixture launch contract
+        if: ${{ always() && !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 3
+        env:
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          set +e
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests.ExtensionUserAgentTests/testExtensionFixtureCompletesAppKitLaunchAcrossIdle$' 2>&1 | tee "$RUNNER_TEMP/vane-ua-launch-contract.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if (( statuses[0] != 0 || statuses[1] != 0 )); then exit 1; fi
+          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-ua-launch-contract.log"; then exit 1; fi
+          grep -Fq "Test Case '-[VaneTests.ExtensionUserAgentTests testExtensionFixtureCompletesAppKitLaunchAcrossIdle]' passed" "$RUNNER_TEMP/vane-ua-launch-contract.log" || { echo '::error::Expected launch-contract case did not pass.'; exit 1; }
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-ua-launch-contract.log" || { echo '::error::Launch-contract retirement was not verified.'; exit 1; }
+
+      - name: Signed normal-loop worker UA comparison
+        if: ${{ always() && !cancelled() && steps.build.outcome == 'success' }}
+        # Eight bounded signing/app/retirement launches plus owned-process cleanup.
+        timeout-minutes: 22
+        run: |
+          python3 -B scripts/test-extension-ua-runner.py
+          python3 -B scripts/check-browser-smoke.py --binary .build/debug/vane --extension-user-agent-only
+
+      # Diagnostic-only follow-up: the unchanged full suite runs first. A failed
+      # primary step stays failed; each fresh host also verifies its real case,
+      # fatal-signal guard and post-exit retirement rather than accepting zero tests.
+      - name: Fresh worker UA public-callback control
+        if: ${{ always() && !cancelled() && (steps.native_tests.outcome == 'success' || steps.native_tests.outcome == 'failure') }}
+        timeout-minutes: 4
+        env:
+          VANE_WEBKIT_UA_POLICY_PROBE_ARM: control
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          set +e
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests.WebKitExtensionUserAgentPolicyProbeTests/testFullUserAgentPolicyAgainstPublicBackgroundCallbackControl$' 2>&1 | tee "$RUNNER_TEMP/vane-ua-policy-control.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if (( statuses[0] != 0 || statuses[1] != 0 )); then exit 1; fi
+          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-ua-policy-control.log"; then exit 1; fi
+          grep -Fq "Test Case '-[VaneTests.WebKitExtensionUserAgentPolicyProbeTests testFullUserAgentPolicyAgainstPublicBackgroundCallbackControl]' passed" "$RUNNER_TEMP/vane-ua-policy-control.log" || { echo '::error::Expected worker control case did not pass.'; exit 1; }
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-ua-policy-control.log" || { echo '::error::Worker control cleanup was not verified.'; exit 1; }
+
+      - name: Fresh worker UA full-page-policy comparison
+        if: ${{ always() && !cancelled() && (steps.native_tests.outcome == 'success' || steps.native_tests.outcome == 'failure') }}
+        timeout-minutes: 4
+        env:
+          VANE_WEBKIT_UA_POLICY_PROBE_ARM: policy
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          set +e
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests.WebKitExtensionUserAgentPolicyProbeTests/testFullUserAgentPolicyAgainstPublicBackgroundCallbackControl$' 2>&1 | tee "$RUNNER_TEMP/vane-ua-policy-policy.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if (( statuses[0] != 0 || statuses[1] != 0 )); then exit 1; fi
+          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-ua-policy-policy.log"; then exit 1; fi
+          grep -Fq "Test Case '-[VaneTests.WebKitExtensionUserAgentPolicyProbeTests testFullUserAgentPolicyAgainstPublicBackgroundCallbackControl]' passed" "$RUNNER_TEMP/vane-ua-policy-policy.log" || { echo '::error::Expected worker policy case did not pass.'; exit 1; }
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-ua-policy-policy.log" || { echo '::error::Worker policy cleanup was not verified.'; exit 1; }
+
+      # Stop on the first failure; later successes never replace it. Each trial
+      # has a fresh test host and verified backend retirement, not an in-place retry.
+      - name: Bounded reproduction of original worker and continuation cases
+        if: ${{ always() && !cancelled() && (steps.native_tests.outcome == 'success' || steps.native_tests.outcome == 'failure') }}
+        timeout-minutes: 8
+        env:
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          cases=(
+            'ExtensionUserAgentTests testBrowserAndExtensionPoolsShareOwnershipWithoutSharingProfileStorage'
+            'ExtensionUserAgentTests testDefaultSafariIdentityReachesBackgroundAndPopupBeforeTheirScriptsRun'
+            'ExtensionUserAgentTests testDevelopChangeUpdatesLiveBackgroundAndRecreatedPopupWithoutChangingAccess'
+            'ExtensionUserAgentTests testExplicitCustomIdentitySurvivesHostRestoration'
+            'ExtensionUserAgentTests testRepeatedBackgroundTeardownReleasesRetiredHostsControllersAndContexts'
+            'ExtensionUserAgentTests testServiceWorkerIdentityFollowsSelectionWhenSharedPoolIsReused'
+            'PasswordAutofillTests testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep'
+            'PasswordAutofillTests testReplacementUsernameFormCannotReuseExplicitSelection'
+          )
+          for trial in {1..8}; do
+            echo "Original-case reproduction trial $trial/8"
+            trial_log="$RUNNER_TEMP/vane-original-case-trial-$trial.log"
+            set +e
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests\.(ExtensionUserAgentTests/(testBrowserAndExtensionPoolsShareOwnershipWithoutSharingProfileStorage|testDefaultSafariIdentityReachesBackgroundAndPopupBeforeTheirScriptsRun|testDevelopChangeUpdatesLiveBackgroundAndRecreatedPopupWithoutChangingAccess|testExplicitCustomIdentitySurvivesHostRestoration|testRepeatedBackgroundTeardownReleasesRetiredHostsControllersAndContexts|testServiceWorkerIdentityFollowsSelectionWhenSharedPoolIsReused)|PasswordAutofillTests/(testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep|testReplacementUsernameFormCannotReuseExplicitSelection))$' 2>&1 | tee "$trial_log"
+            statuses=("${PIPESTATUS[@]}")
+            set -e
+            if (( statuses[0] != 0 || statuses[1] != 0 )); then exit 1; fi
+            if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$trial_log"; then exit 1; fi
+            for test_case in "${cases[@]}"; do
+              grep -Fq "Test Case '-[VaneTests.$test_case]' passed" "$trial_log" || { echo '::error::An original reproduction case did not pass.'; exit 1; }
+            done
+            grep -Fq 'Native suite primary status=0; cleanup status=0' "$trial_log" || { echo '::error::Original-case retirement was not verified.'; exit 1; }
+          done
+          echo 'All eight reproduction trials passed; no intermittent failure was captured.'
+
+      # An independent password cohort still runs when the combined cohort stops
+      # on a worker failure, so the two investigations cannot block one another.
+      - name: Bounded continuation-only reproduction
+        if: ${{ always() && !cancelled() && (steps.native_tests.outcome == 'success' || steps.native_tests.outcome == 'failure') }}
+        timeout-minutes: 6
+        env:
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          for trial in {1..8}; do
+            echo "Continuation-only reproduction trial $trial/8"
+            trial_log="$RUNNER_TEMP/vane-continuation-trial-$trial.log"
+            set +e
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests\.PasswordAutofillTests/(testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep|testReplacementUsernameFormCannotReuseExplicitSelection)$' 2>&1 | tee "$trial_log"
+            statuses=("${PIPESTATUS[@]}")
+            set -e
+            if (( statuses[0] != 0 || statuses[1] != 0 )); then exit 1; fi
+            if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$trial_log"; then exit 1; fi
+            for test_case in testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep testReplacementUsernameFormCannotReuseExplicitSelection; do
+              grep -Fq "Test Case '-[VaneTests.PasswordAutofillTests $test_case]' passed" "$trial_log" || { echo '::error::An original continuation case did not pass.'; exit 1; }
+            done
+            grep -Fq 'Native suite primary status=0; cleanup status=0' "$trial_log" || { echo '::error::Continuation retirement was not verified.'; exit 1; }
+          done
+          echo 'All eight continuation trials passed; no intermittent failure was captured.'
 
       - name: CLI password import errors
         run: bash scripts/test-cli-import.sh .build/debug/vane
@@ -123,6 +243,90 @@ jobs:
         with:
           path: .build
           key: ${{ steps.swift-cache.outputs.cache-primary-key }}
+
+  appkit-loop-smoke:
+    # Diagnostic preflight: one fresh process, no WebKit or following test cases.
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Identify Swift toolchain
+        id: toolchain
+        run: |
+          set -euo pipefail
+          KEY=$({ swift --version; xcodebuild -version; xcrun --show-sdk-path; xcrun --show-sdk-build-version; } | shasum -a 256 | cut -d ' ' -f 1)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Swift debug build
+        uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
+          restore-keys: |
+            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+
+      - name: Restore unchanged source timestamps
+        run: python3 scripts/ci-source-state.py restore
+
+      - name: Native runner timeout guards
+        run: python3 -B scripts/test-native-fixture-runner.py
+
+      - name: Build native tests
+        run: swift build -c debug --build-tests
+
+      - name: Isolated AppKit loop ownership contract
+        timeout-minutes: 3
+        env:
+          VANE_APPKIT_LOOP_SMOKE: '1'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '20'
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests.NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/vane-appkit-loop-smoke.log"
+          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-appkit-loop-smoke.log"; then exit 1; fi
+          grep -Fq "Test Case '-[VaneTests.NativeApplicationLoopSmokeTests testOwnedLoopAdmitsAsyncWorkAndStops]' passed" "$RUNNER_TEMP/vane-appkit-loop-smoke.log" || { echo '::error::Expected AppKit loop contract did not pass.'; exit 1; }
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-appkit-loop-smoke.log" || { echo '::error::AppKit loop test process retirement was not verified.'; exit 1; }
+
+      - name: Preserve loop preflight evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: appkit-loop-smoke-log
+          path: ${{ runner.temp }}/vane-appkit-loop-smoke.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  webkit-comparator:
+    # Separate diagnostic engine: never substitutes for the system-WebKit suite.
+    # Official archive 324648@main descends from the custom-scheme SW client fix
+    # 319898@main (86ddc7a7); loading and same-host fixture attestation are mandatory.
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Comparator guard fixtures
+        run: python3 scripts/run-webkit-comparator.py --self-test
+
+      - name: Build native tests against the normal SDK
+        run: swift build -c debug --build-tests
+
+      # The immediate teardown ownership case stays in the ordinary UA6 suite:
+      # it has no live script observation to attest without changing its timing.
+      - name: Attested official WebKit probe and bounded UA5/PW2 cases
+        env:
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: python3 scripts/run-webkit-comparator.py
+
+      - name: Preserve comparator failure evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: webkit-comparator-logs
+          path: ${{ runner.temp }}/vane-webkit-comparator-*/*.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   prune-caches:
     # Keep deletion credentials away from the build and from pull request runs.

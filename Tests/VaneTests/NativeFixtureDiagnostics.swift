@@ -197,6 +197,140 @@ import WebKit
         return Data(bytes.prefix(count))
     }
 
+    enum SamplePhase: String, CaseIterable, Sendable {
+        case collectionStarted, symbolProcessingStarted, taskReadFailed, threadReadFailed, samplerCreationFailed
+    }
+
+    /// Keep only fixed classifications, never subprocess text, paths or arguments.
+    struct SamplePhases: Sendable {
+        let ownedPID: Int32
+        private(set) var observed: Set<SamplePhase> = []
+        private(set) var truncated = false
+        private(set) var readError: Int32?
+        private var partial: [UInt8] = []
+        private var discardingLine = false
+        init(ownedPID: Int32) { self.ownedPID = ownedPID }
+        var pendingByteCount: Int { partial.count }
+        var summary: String {
+            let tokens = SamplePhase.allCases.filter { observed.contains($0) }.map(\.rawValue).joined(separator: ",")
+            return "samplePhases=[\(tokens)], streamTruncated=\(truncated), streamReadError=\(readError.map(String.init) ?? "none"), missingTokens=inconclusive"
+        }
+
+        mutating func ingest(_ bytes: Data) {
+            for byte in bytes {
+                if byte == 10 {
+                    if !discardingLine {
+                        if partial.last == 13 { partial.removeLast() }
+                        classifyLine()
+                    }
+                    partial.removeAll(keepingCapacity: true)
+                    discardingLine = false
+                } else if !discardingLine {
+                    guard partial.count < 512 else {
+                        partial.removeAll(keepingCapacity: true)
+                        discardingLine = true
+                        truncated = true
+                        continue
+                    }
+                    partial.append(byte)
+                }
+            }
+        }
+
+        private mutating func classifyLine() {
+            // Exact ASCII records prevent accepting a private-line suffix, a
+            // different process, a changed invocation, or malformed UTF-8.
+            let records: [(SamplePhase, String)] = [
+                (.collectionStarted, "Sampling process \(ownedPID) for 1 second with 10 milliseconds of run time between samples"),
+                (.symbolProcessingStarted, "Sampling completed, processing symbols..."),
+                (.taskReadFailed, "task_read_for_pid(\(ownedPID)) failed"),
+                (.threadReadFailed, "task_threads() for \(ownedPID) failed"),
+                (.samplerCreationFailed, "Unable to create VMUSampler for \(ownedPID)")
+            ]
+            for (phase, line) in records where partial.elementsEqual(line.utf8) { observed.insert(phase) }
+        }
+
+        /// One bounded nonblocking poll, including when the writer is still open.
+        /// Reaching the budget leaves unread bytes for the next poll.
+        @discardableResult mutating func drain(descriptor: Int32) -> Int {
+            let flags = fcntl(descriptor, F_GETFL)
+            guard flags >= 0 else { readError = readError ?? errno; return 0 }
+            if flags & O_NONBLOCK == 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) < 0 {
+                readError = readError ?? errno
+                return 0
+            }
+            var consumed = 0, interruptions = 0
+            var bytes = [UInt8](repeating: 0, count: 4_096)
+            while consumed < 16_384 {
+                let count = bytes.withUnsafeMutableBytes {
+                    Darwin.read(descriptor, $0.baseAddress, min($0.count, 16_384 - consumed))
+                }
+                if count > 0 {
+                    consumed += count
+                    ingest(Data(bytes.prefix(count)))
+                } else if count == 0 { break }
+                else {
+                    let code = errno
+                    if code == EINTR, interruptions < 8 { interruptions += 1; continue }
+                    if code != EAGAIN && code != EWOULDBLOCK { readError = readError ?? code }
+                    break
+                }
+            }
+            if consumed == 16_384 { truncated = true }
+            return consumed
+        }
+    }
+
+    nonisolated static func cachedNativeState(owned: Bool, read: (String) -> Bool?) -> String {
+        guard owned else { return "nativeCachedState=unavailable (fixture ownership unverified)" }
+        let closed = read("_isClosed")
+        // The remaining getters dereference the existing process. Never call
+        // them if the page is closed or its closed-state getter is unavailable.
+        let suspended = closed == false ? read("_isSuspended") : nil
+        let responsive = closed == false ? read("_webProcessIsResponsive") : nil
+        func value(_ flag: Bool?) -> String { flag.map(String.init) ?? "unavailable" }
+        return "nativeClosed=\(value(closed)), nativeSuspended=\(value(suspended)), nativeResponsiveCached=\(value(responsive))"
+    }
+
+    private final class ScriptProbeReply {
+        var report: String?
+        var finished = false
+    }
+
+    /// A public callback proves more than WebKit's cached responsiveness flag.
+    /// The callback retains only sanitized state and the committed URL, never the view.
+    static func scriptResponsiveness(committedURL: URL?, stillOwned: () -> Bool, isClosed: () -> Bool?,
+                                     timeout: Duration = .seconds(1),
+                                     evaluate: (@escaping @MainActor @Sendable (Any?, Error?) -> Void) -> Void) async -> String {
+        guard stillOwned() else { return "jsProbe=ownership-unverified, inconclusive=true" }
+        guard isClosed() == false else { return "jsProbe=page-unavailable, inconclusive=true" }
+        let deadline = ContinuousClock.now + max(.zero, min(timeout, .seconds(1)))
+        let reply = ScriptProbeReply()
+        defer { reply.finished = true; reply.report = nil }
+        evaluate { value, error in
+            guard !reply.finished, reply.report == nil, ContinuousClock.now < deadline else { return }
+            guard error == nil else { reply.report = "jsProbe=error, inconclusive=true"; return }
+            guard let values = value as? [Any], values.count == 2,
+                  let ready = values[0] as? String, ["loading", "interactive", "complete"].contains(ready),
+                  let raw = values[1] as? String, !raw.isEmpty, raw.utf8.count <= 16_384,
+                  let actual = URL(string: raw), actual.scheme != nil else {
+                reply.report = "jsProbe=malformed-reply, inconclusive=true"
+                return
+            }
+            let oldDocument = committedURL.map { String(actual == $0) } ?? "unavailable"
+            reply.report = "jsProbe=reply, readyState=\(ready), oldCommittedDocument=\(oldDocument), inconclusive=\(committedURL == nil)"
+        }
+        while reply.report == nil, ContinuousClock.now < deadline {
+            guard stillOwned() else { return "jsProbe=process-changed, inconclusive=true" }
+            guard isClosed() == false else { return "jsProbe=page-unavailable, inconclusive=true" }
+            do { try await Task.sleep(until: min(deadline, ContinuousClock.now + .milliseconds(20)), clock: .continuous) }
+            catch { return "jsProbe=cancelled, inconclusive=true" }
+        }
+        guard stillOwned() else { return "jsProbe=process-changed, inconclusive=true" }
+        guard isClosed() == false else { return "jsProbe=page-unavailable, inconclusive=true" }
+        return reply.report ?? "jsProbe=no-response, inconclusive=true"
+    }
+
     static func failureReport(for web: WKWebView) async -> String {
         let window = web.window
         let windowState = "uiPID=\(getpid()), appActive=\(NSApplication.shared.isActive), " +
@@ -207,16 +341,44 @@ import WebKit
         emit("native resources before sampling: " + resources)
         let ui = windowState + ", contentPID=\(pid.map(String.init) ?? "unavailable"); " + resources
         emit("native snapshot before sampling: " + ui)
-        guard let pid, let captured = identity(pid) else { return ui + "; native process identity unavailable" }
-        let metadata = ui + ", contentStart=\(captured.start), contentPath=\(captured.path), contentState=\(captured.state)"
-        emit("native identity before sampling: " + metadata)
-        guard maySample(captured, observed: identity(pid), ownedPID: contentPID(web)) else {
-            return metadata + "; sample unavailable: live fixture process ownership could not be verified"
+        guard let pid, let captured = identity(pid) else {
+            emit(cachedNativeState(owned: false) { _ in nil })
+            return ui + "; native process identity unavailable"
         }
-        return metadata + "; " + (await sample(captured, stillOwned: { contentPID(web) == pid }))
+        let owned = maySample(captured, observed: identity(pid), ownedPID: contentPID(web))
+        let readNative: (String) -> Bool? = { name in
+            let selector = NSSelectorFromString(name)
+            guard web.responds(to: selector) else { return nil }
+            typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
+            return unsafeBitCast(web.method(for: selector), to: Getter.self)(web, selector)
+        }
+        let cached = cachedNativeState(owned: owned, read: readNative)
+        emit("native cached state before sampling: " + cached)
+        let metadata = ui + ", contentStart=\(captured.start), contentPath=\(captured.path), contentState=\(captured.state); " + cached
+        emit("native identity before sampling: " + metadata)
+        let committed = owned && readNative("_isClosed") == false ? web.backForwardList.currentItem?.url : nil
+        let probe = await scriptResponsiveness(committedURL: committed,
+            stillOwned: { maySample(captured, observed: identity(pid), ownedPID: contentPID(web)) },
+            isClosed: { readNative("_isClosed") }) { reply in
+                web.evaluateJavaScript("[document.readyState, location.href]", completionHandler: reply)
+            }
+        emit("native document responsiveness before sampling: " + probe)
+        let probedMetadata = metadata + "; " + probe
+        guard maySample(captured, observed: identity(pid), ownedPID: contentPID(web)) else {
+            return probedMetadata + "; sample unavailable: live fixture process ownership could not be verified"
+        }
+        return probedMetadata + "; " + (await sample(captured, stillOwned: { contentPID(web) == pid }))
     }
 
     private static func sample(_ captured: Identity, stillOwned: () -> Bool) async -> String {
+        var phases = SamplePhases(ownedPID: captured.pid)
+        var phasePipe: Pipe?
+        defer {
+            if let phasePipe { phases.drain(descriptor: phasePipe.fileHandleForReading.fileDescriptor) }
+            emit("sampler stream progress: " + phases.summary)
+            try? phasePipe?.fileHandleForReading.close()
+            try? phasePipe?.fileHandleForWriting.close()
+        }
         guard stillOwned(), maySample(captured, observed: identity(captured.pid), ownedPID: captured.pid) else {
             return "sample unavailable: fixture process changed"
         }
@@ -225,17 +387,23 @@ import WebKit
         let sampler = Process()
         sampler.executableURL = URL(fileURLWithPath: "/usr/bin/sample")
         sampler.arguments = [String(captured.pid), "1", "10", "-mayDie", "-file", output.path]
-        sampler.standardOutput = FileHandle.nullDevice
-        sampler.standardError = FileHandle.nullDevice
+        let stream = Pipe()
+        phasePipe = stream
+        // Phase messages can be emitted on either stream. Their raw bytes never
+        // leave the bounded classifier, and no drain waits for EOF.
+        sampler.standardOutput = stream.fileHandleForWriting
+        sampler.standardError = stream.fileHandleForWriting
         let deadline = ContinuousClock.now + .seconds(6)
         emit("launching owned sampler for contentPID=\(captured.pid), contentStart=\(captured.start)")
         do { try sampler.run() } catch { return "sample unavailable: \(error.localizedDescription)" }
+        try? stream.fileHandleForWriting.close()
         let samplerIdentity = identity(sampler.processIdentifier)
         let samplerMetadata = "samplerPID=\(sampler.processIdentifier), samplerStart=\(samplerIdentity?.start ?? 0), samplerPath=\(samplerIdentity?.path ?? "unavailable")"
         emit("owned sampler launched: " + samplerMetadata)
         // Sampling starts only after the fixture's existing deadline has failed.
         // Allow six seconds for collection and symbolication before child cleanup.
         while sampler.isRunning, ContinuousClock.now < deadline {
+            phases.drain(descriptor: stream.fileHandleForReading.fileDescriptor)
             do { try await Task.sleep(for: .milliseconds(20)) } catch { break }
         }
         if sampler.isRunning {

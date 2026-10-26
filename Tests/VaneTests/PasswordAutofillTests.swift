@@ -6,12 +6,6 @@ import XCTest
 
 @MainActor final class PasswordAutofillTests: XCTestCase {
     private var nativeFixtureProfiles: Set<UUID> = []
-    private static var requestedNativeFixtureLaunch = false
-
-    private struct UnsafeFixtureLaunch: Error, CustomStringConvertible {
-        var description: String { "Cannot finish an unlaunched fixture host with a delegate or launch-open request" }
-    }
-
     override func tearDown() async throws {
         try await releaseNativeFixtureProfiles()
     }
@@ -314,18 +308,7 @@ import XCTest
         let policyRequestAccepted: Bool?
         if previousPolicy == .prohibited { policyRequestAccepted = app.setActivationPolicy(.accessory) }
         else { policyRequestAccepted = nil }
-        if !NSRunningApplication.current.isFinishedLaunching, !Self.requestedNativeFixtureLaunch {
-            let openValue = UserDefaults.standard.object(forKey: "NSOpen")
-            let openAbsentOrEmpty = openValue == nil || (openValue as? String)?.isEmpty == true ||
-                (openValue as? [Any])?.isEmpty == true
-            guard app.delegate == nil, openAbsentOrEmpty else { throw UnsafeFixtureLaunch() }
-            // SwiftPM drives XCTest's loop rather than NSApplication.run(), which
-            // normally completes this launch phase before a window receives input.
-            // Mark the request before posting launch notifications; Launch Services
-            // can publish isFinishedLaunching on a later turn of the run loop.
-            Self.requestedNativeFixtureLaunch = true
-            app.finishLaunching()
-        }
+        try NativeFixtureApplication.requestLaunchIfNeeded()
         let tab = Tab(profileID: profile)
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -344,6 +327,7 @@ import XCTest
         // These fixtures choose native account rows. Establish that user-facing
         // context once, before loading; individual navigations must stand alone.
         let web = tab.web
+        var firstDisplayRequested = false
         try await wait(for: "native continuation fixture to receive user interaction", diagnostics: {
             let running = NSRunningApplication.current
             let openValue = UserDefaults.standard.object(forKey: "NSOpen")
@@ -354,15 +338,19 @@ import XCTest
                 "priorPolicy=\(previousPolicy.rawValue), policyRequestAccepted=\(policyRequestAccepted.map(String.init) ?? "not-requested"), " +
                 "appPolicy=\(app.activationPolicy().rawValue), runningPolicy=\(running.activationPolicy.rawValue), " +
                 "runningActive=\(running.isActive), finishedLaunching=\(running.isFinishedLaunching), appRunning=\(app.isRunning), " +
-                "appDelegateNil=\(app.delegate == nil), NSOpenAbsentOrEmpty=\(openAbsentOrEmpty)"
+                "appDelegateNil=\(app.delegate == nil), NSOpenAbsentOrEmpty=\(openAbsentOrEmpty), " +
+                "isOnActiveSpace=\(window.isOnActiveSpace), isMiniaturized=\(window.isMiniaturized), " +
+                "viewsNeedDisplay=\(window.viewsNeedDisplay), contentNeedsLayout=\(web.needsLayout), " +
+                "contentNeedsDisplay=\(web.needsDisplay), alphaPositive=\(window.alphaValue > 0), " +
+                "firstDisplayRequested=\(firstDisplayRequested)"
         }) {
-            // NSApplication.run normally fetches and dispatches activation events.
-            // XCTest drives its own loop; process existing AppKit state events only
-            // while establishing this fixture, without consuming user input.
-            for _ in 0..<32 {
-                guard let event = app.nextEvent(matching: .appKitDefined, until: Date.distantPast,
-                                                inMode: .default, dequeue: true) else { break }
-                app.sendEvent(event)
+            NativeFixtureApplication.dispatchQueuedAppKitEvents()
+            if !firstDisplayRequested, app.isActive, window.isKeyWindow {
+                firstDisplayRequested = true
+                // AppKit normally completes layout and deferred drawing during
+                // its event loop. Request that phase once for this owned window.
+                window.layoutIfNeeded()
+                window.displayIfNeeded()
             }
             return NSRunningApplication.current.isFinishedLaunching && app.isActive &&
                 window.isKeyWindow && window.isVisible && window.occlusionState.contains(.visible) &&
@@ -439,9 +427,19 @@ import XCTest
             let state = "before={\(before)}; returnedNavigation=\(navigationID); after={\(after)}; " +
                 "timeout={\(continuationLoadState(tab, web: web, requestedURL: url))}"
             NativeFixtureDiagnostics.emit("continuation document \(path) cached state before sampling: " + state)
-            return state + "; " + (await NativeFixtureDiagnostics.failureReport(for: web))
+            let report = await NativeFixtureDiagnostics.failureReport(for: web)
+            let afterDiagnostics = continuationLoadState(tab, web: web, requestedURL: url)
+            NativeFixtureDiagnostics.emit("continuation document \(path) cached state after diagnostics: " + afterDiagnostics)
+            #if DEBUG
+            NativeFixtureDiagnostics.emit("continuation callback stages after diagnostics: " + stages.snapshot(expected: navigationID))
+            #endif
+            return state + "; " + report + "; afterDiagnostics={\(afterDiagnostics)}"
         }) {
             return !web.isLoading
+        }
+        if WebKitComparatorAttestation.isRequested {
+            try WebKitComparatorAttestation.attestFixture(self, scope: .passwordContinuation,
+                views: [web], store: web.configuration.websiteDataStore)
         }
         if Date.now.timeIntervalSince(started) >= 0.5 {
             print("Continuation fixture \(path) loaded in \(Date.now.timeIntervalSince(started))s")
