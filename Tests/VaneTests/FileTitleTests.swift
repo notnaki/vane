@@ -3,6 +3,24 @@ import XCTest
 @testable import vane
 
 final class FileTitleTests: XCTestCase {
+    func testPDFResponseFilenameWinsOverTheURLFilename() {
+        XCTAssertEqual(Files.title(page: "", url: URL(string: "https://example.com/download.pdf"),
+                                   suggestedFilename: "Research paper.pdf"), "Research paper.pdf")
+    }
+
+    func testMeaningfulTitleWinsOverThePDFResponseFilename() {
+        XCTAssertEqual(Files.title(page: "Document title", url: URL(string: "https://example.com/download"),
+                                   suggestedFilename: "Research paper.pdf"), "Document title")
+    }
+
+    func testCommittedPDFResponseResolvesAnEarlierRestoredTitle() {
+        let url = URL(string: "https://example.com/download")!
+        let update = Files.restoredTitle(cached: "earlier.pdf", placeholderURL: url,
+                                         page: "", url: url, suggestedFilename: "replacement.pdf")
+        XCTAssertEqual(update.title, "replacement.pdf")
+        XCTAssertNil(update.placeholderURL)
+    }
+
     func testUntitledRemoteDocumentUsesItsURLFilename() {
         XCTAssertEqual(Files.title(page: nil, url: URL(string: "https://example.com/report.pdf?token=private")), "report.pdf")
     }

@@ -101,4 +101,58 @@ import XCTest
         try await compatibilityWait { server.requests.contains { $0.hasPrefix("GET /child ") } }
         XCTAssertEqual(tab?.title, "127.0.0.1")
     }
+
+    func testFailedProvisionalNavigationKeepsTheCommittedPDFFilename() async throws {
+        let server = try XCTUnwrap(server), tab = try XCTUnwrap(tab)
+        try pdf(at: "/download", name: "committed.pdf")
+        try await load("/download")
+        let committed = try server.url("/download")
+        server.heldPaths.insert("/pending")
+        _ = try XCTUnwrap(tab.web.load(URLRequest(url: server.url("/pending"))))
+        try await compatibilityWait { server.requests.contains { $0.hasPrefix("GET /pending ") } }
+        XCTAssertEqual(tab.title, "committed.pdf")
+        tab.stop()
+        try await compatibilityWait { !tab.web.isLoading && !tab.loading }
+        XCTAssertEqual(tab.currentURL, committed)
+        XCTAssertEqual(tab.title, "committed.pdf")
+    }
+
+    func testRedirectUsesTheFinalPDFResponseFilename() async throws {
+        let server = try XCTUnwrap(server), tab = try XCTUnwrap(tab)
+        try pdf(at: "/download", name: "final-response.pdf")
+        let final = try server.url("/download")
+        server.redirects["/redirect"] = final
+        _ = try XCTUnwrap(tab.web.load(URLRequest(url: server.url("/redirect"))))
+        try await compatibilityWait { tab.currentURL == final && !tab.web.isLoading && !tab.loading }
+        XCTAssertEqual(tab.title, "final-response.pdf")
+    }
+
+    func testSameURLPDFReloadUsesTheReplacementResponseFilename() async throws {
+        let server = try XCTUnwrap(server), tab = try XCTUnwrap(tab)
+        try pdf(at: "/download", name: "first.pdf")
+        try await load("/download")
+        try pdf(at: "/download", name: "replacement.pdf")
+        let earlierRequests = server.requests.filter { $0.hasPrefix("GET /download ") }.count
+        _ = try XCTUnwrap(tab.web.reload())
+        try await compatibilityWait {
+            server.requests.filter { $0.hasPrefix("GET /download ") }.count > earlierRequests
+                && !tab.web.isLoading && !tab.loading
+        }
+        XCTAssertEqual(tab.title, "replacement.pdf")
+    }
+
+    func testPDFCommitReplacesThePreviousHTMLTitle() async throws {
+        let server = try XCTUnwrap(server), tab = try XCTUnwrap(tab)
+        server.pages["/previous"] = "<title>Previous document</title>"
+        try await load("/previous")
+        try pdf(at: "/download", name: "incoming.pdf")
+        try await load("/download")
+        XCTAssertEqual(tab.title, "incoming.pdf")
+    }
+
+    func testPDFFragmentStillUsesItsResponseFilename() async throws {
+        try pdf(at: "/download", name: "fragment.pdf")
+        try await load("/download#page=1")
+        XCTAssertEqual(tab?.title, "fragment.pdf")
+    }
 }

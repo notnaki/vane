@@ -96,13 +96,17 @@ import WebKit
         FileIcons.icon(path: url.path, name: url.lastPathComponent)
     }
 
-    /// What the strip calls a page. A PDF has no `<title>` for WebKit to report, so a file
-    /// opened from Finder would sit there as "New Tab": the name Finder gave it is the one
-    /// the user went looking for.
-    nonisolated static func title(page: String?, url: URL?) -> String {
-        if let page, !page.isEmpty { return page }
+    /// A titleless document keeps a useful name without displaying query parameters.
+    /// The committed PDF response can supply a filename for extensionless download URLs.
+    nonisolated static func title(page: String?, url: URL?, suggestedFilename: String? = nil) -> String {
+        if let page, !page.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return page }
         if let url, url.isFileURL { return url.lastPathComponent }
-        return "New Tab"
+        guard let url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return "New Tab" }
+        if let suggestedFilename, !suggestedFilename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return suggestedFilename
+        }
+        if !url.pathExtension.isEmpty { return url.lastPathComponent }
+        return url.host() ?? "New Tab"
     }
 
     /// The title transition while a parked tab reconstructs its WebKit page. Kept pure so
@@ -110,16 +114,16 @@ import WebKit
     /// WebKit may publish the host as a provisional title before the document title arrives;
     /// that loading label is no more final than an empty title.
     nonisolated static func restoredTitle(cached: String, placeholderURL: URL?,
-                                          page: String?, url: URL?)
+                                          page: String?, url: URL?, suggestedFilename: String? = nil)
         -> (title: String, placeholderURL: URL?) {
-        if let placeholderURL,
+        if suggestedFilename == nil, let placeholderURL,
            (url == nil || url == placeholderURL),
            (page?.isEmpty != false
             || page == placeholderURL.host()
             || page == pillLabel(placeholderURL)) {
             return (cached, placeholderURL)
         }
-        return (title(page: page, url: url), nil)
+        return (title(page: page, url: url, suggestedFilename: suggestedFilename), nil)
     }
 
     /// Starts the title placeholder lifecycle shared by restored and live-suspended tabs.
@@ -128,12 +132,12 @@ import WebKit
     /// Resolve a retained restoration placeholder once WebKit says the reconstructed page
     /// is no longer loading and has had a short turn to publish its final title.
     nonisolated static func settledRestoredTitle(cached: String, placeholderURL: URL?,
-                                                 page: String?, url: URL?)
+                                                 page: String?, url: URL?, suggestedFilename: String? = nil)
         -> (title: String, placeholderURL: URL?) {
         let update = restoredTitle(cached: cached, placeholderURL: placeholderURL,
-                                   page: page, url: url)
+                                   page: page, url: url, suggestedFilename: suggestedFilename)
         guard update.placeholderURL != nil else { return update }
-        return (page?.isEmpty != false ? cached : title(page: page, url: url), nil)
+        return (page?.isEmpty != false ? cached : title(page: page, url: url, suggestedFilename: suggestedFilename), nil)
     }
 
     /// What the address pill says: a local file's own name, or the host with `www.` dropped
@@ -173,8 +177,8 @@ import WebKit
             ("a page's own title wins", title(page: "Hello", url: pdf) == "Hello"),
             ("a file with no page title falls back to its name",
              title(page: "", url: pdf) == "report.pdf"),
-            ("a titleless remote page is still New Tab",
-             title(page: nil, url: remote) == "New Tab"),
+            ("a titleless remote document falls back to its URL filename",
+             title(page: nil, url: remote) == "a.pdf"),
             ("no page at all is New Tab", title(page: nil, url: nil) == "New Tab"),
             ("a waking pinned tab keeps its cached title before WebKit reloads",
              restoredTitle(cached: "Readable title", placeholderURL: remote,
@@ -209,7 +213,7 @@ import WebKit
             ("navigation drops a pinned title placeholder",
              restoredTitle(cached: "Readable title", placeholderURL: remote,
                            page: nil, url: URL(string: "https://example.org")!)
-                == (title: "New Tab", placeholderURL: nil)),
+                == (title: "example.org", placeholderURL: nil)),
 
             ("the pill shows a file by name", pillLabel(pdf) == "report.pdf"),
             ("the pill shows a site by host", pillLabel(remote) == "example.com"),
