@@ -252,6 +252,13 @@ import XCTest
         guard !sorted.isEmpty else { print("CHROME_CADENCE \(phase) callbacks=0 hz=\(rate)"); return }
         let budget = 1000 / Double(rate)
         print("CHROME_CADENCE \(phase) callbacks=\(sorted.count) hz=\(rate) p50_ms=\(sorted[sorted.count / 2]) p95_ms=\(sorted[min(sorted.count - 1, sorted.count * 95 / 100)]) max_ms=\(sorted.last!) over_1_5_frames=\(sorted.filter { $0 > budget * 1.5 }.count)")
+        // Opt-in local gate: CI and occluded/competing workloads cannot establish
+        // a frame budget. Keep input correctness independent from this measurement.
+        if ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE_BUDGET"] == "1",
+           phase.hasPrefix("cmdt_scroll") {
+            XCTAssertLessThanOrEqual(sorted[min(sorted.count - 1, sorted.count * 95 / 100)], budget * 1.5,
+                                     "Command-bar scrolling must leave the display callback within its frame budget")
+        }
     }
     func stop() { link?.invalidate(); link = nil }
 }

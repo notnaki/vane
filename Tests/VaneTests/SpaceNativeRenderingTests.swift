@@ -208,7 +208,7 @@ import XCTest
         NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -8))
         XCTAssertNotNil(host.spaceSlide, "The real monitor must mount its native finger track")
         var queuedRepeat = false
-        let observer = store.spaceGesture.$profileSliding.sink { hidden in
+        let observer = store.spaceGesture.$presentation.map(\.profileSliding).removeDuplicates().sink { hidden in
             guard !hidden, !queuedRepeat, host.spaceSlide != nil else { return }
             queuedRepeat = true
             DispatchQueue.main.async {
@@ -632,6 +632,117 @@ import XCTest
             XCTAssertEqual(store.currentSpaceID, spaces[direction < 0 ? 2 : 1].id,
                            "Two distinct quick gestures must each change Space, in either direction")
         }
+    }
+
+    /// Diagnose the populated path separately from the empty-Space correctness fixture.
+    func testPopulatedRapidSwipeInputTiming() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1")
+        let (store, spaces, window, _) = try fixture()
+        for space in spaces {
+            store.switchTo(space: space)
+            store.tabs = (0..<32).map { index in
+                let tab = Tab(profileID: store.profileID)
+                tab.park(url: URL(string: "about:blank#\(space.name)-\(index)")!,
+                         Parked(title: "\(space.name) document \(index)"))
+                return tab
+            }
+            store.syncShapes()
+        }
+        store.switchTo(space: spaces[0])
+        store.palette = nil
+        try await Task.sleep(for: .milliseconds(700))
+        print("POPULATED_SWIPE_READY pid=\(ProcessInfo.processInfo.processIdentifier)")
+        for leg in 0..<12 {
+            let direction: CGFloat = leg % 6 < 3 ? -1 : 1
+            let start = ProcessInfo.processInfo.systemUptime
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
+            NSApp.sendEvent(ScrollEvent(window: window, dx: direction * 100))
+            let claimed = ProcessInfo.processInfo.systemUptime
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
+            print("POPULATED_SWIPE leg=\(leg) claim_ms=\((claimed - start) * 1000) release_ms=\((ProcessInfo.processInfo.systemUptime - claimed) * 1000)")
+            try await Task.sleep(for: .milliseconds(70))
+        }
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+    }
+
+    func testNativeSwipePreparationKeepsOneLiveSidebarUntilItsOverlayIsMounted() async throws {
+        let (store, _, window, _) = try fixture()
+        try await Task.sleep(for: .milliseconds(120))
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let live = try XCTUnwrap(host.subviews.first { !($0 is ProfileSpaceSlide) })
+        XCTAssertNotNil(SidebarSectionsViewport.scrollView(in: live))
+        // Native claim publishes its direction before inserting the compositor overlay.
+        // That interval must not build additional fallback SwiftUI sidebar trees.
+        store.spaceSwiping = true
+        store.spaceDrag = -60
+        live.layoutSubtreeIfNeeded()
+        XCTAssertNotNil(SidebarSectionsViewport.scrollView(in: live),
+                        "Native preparation must retain one live viewport, without mounting duplicate ghost lists")
+    }
+
+    func testNativeFingerSamplePublishesOneCoherentGestureChange() async throws {
+        let (store, _, window, monitor) = try fixture()
+        try await Task.sleep(for: .milliseconds(150))
+        var changes = 0
+        let observation = store.spaceGesture.objectWillChange.sink { changes += 1 }
+        defer { observation.cancel() }
+        monitor.track(-50, width: SidebarWidth.shared.width, in: store)
+        XCTAssertNotNil((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        XCTAssertTrue(store.spaceSwiping)
+        XCTAssertTrue(store.spaceGesture.profileSliding)
+        XCTAssertEqual(changes, 1,
+                       "One native input must not flush several intermediate browser presentation states")
+    }
+
+    func testNativeLandingRetainsTheLiveScrollShellAndResetsItsOffset() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        for space in spaces.prefix(2) {
+            store.switchTo(space: space)
+            store.tabs = (0..<32).map { index in
+                let tab = Tab(profileID: store.profileID)
+                tab.park(url: URL(string: "about:blank#shell-\(space.id)-\(index)")!, Parked(title: "Row \(index)"))
+                return tab
+            }
+            store.syncShapes()
+        }
+        store.switchTo(space: spaces[0])
+        store.palette = nil
+        try await Task.sleep(for: .milliseconds(200))
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let live = try XCTUnwrap(host.subviews.first { !($0 is ProfileSpaceSlide) })
+        let viewport = try XCTUnwrap(SidebarSectionsViewport.scrollView(in: live))
+        viewport.contentView.scroll(to: CGPoint(x: 0, y: 100))
+        viewport.reflectScrolledClipView(viewport.contentView)
+        try await Task.sleep(for: .milliseconds(80))
+        monitor.track(-80, width: SidebarWidth.shared.width, in: store)
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 0.8)
+        try await compatibilityWait { store.currentSpaceID == spaces[1].id }
+        live.layoutSubtreeIfNeeded()
+        XCTAssertTrue(SidebarSectionsViewport.scrollView(in: live) === viewport,
+                      "A covering native slide must not rebuild the live scroll/layout/focus shell")
+        try await compatibilityWait { abs(viewport.documentVisibleRect.minY) < 1 }
+        try await Task.sleep(for: .milliseconds(900))
+        XCTAssertNil(host.spaceSlide)
+        store.switchTo(space: spaces[0])
+        try await compatibilityWait {
+            guard let next = SidebarSectionsViewport.scrollView(in: live) else { return false }
+            return next !== viewport
+        }
+    }
+
+    func testLandingDoesNotRebuildTheMenuAfterSelectionHasUpdatedIt() async throws {
+        let (store, spaces, _, monitor) = try fixture()
+        let previous = NSApp.mainMenu
+        defer { NSApp.mainMenu = previous }
+        try await Task.sleep(for: .milliseconds(150))
+        monitor.track(-80, width: SidebarWidth.shared.width, in: store)
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 0.8)
+        try await compatibilityWait { store.currentSpaceID == spaces[1].id }
+        let menu = try XCTUnwrap(NSApp.mainMenu)
+        try await compatibilityWait { !store.spaceSwiping }
+        XCTAssertTrue(NSApp.mainMenu === menu,
+                      "Finishing a covered animation must not synchronously rebuild the already updated menu")
     }
 
     func testCachedProfileColourStaysContinuousAcrossRepeatedSwipes() async throws {

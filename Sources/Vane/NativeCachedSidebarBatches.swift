@@ -183,7 +183,6 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .nativeSidebarDropMarkerRelay()
         .nativeSidebarPublicEnvironment(inherited)
         // Apply the incoming structural transaction only when placement changes.
         // Replaying it on every later descendant update would impose stale motion

@@ -417,8 +417,7 @@ struct BrowserWindow: View {
                 floating: !store.sidebarShown, sidebarWidth: sidebar.width,
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
-                page: WebCard().anchorPreference(key: DownloadFeedbackBounds.self,
-                                                value: .bounds) { [.page: $0] }
+                page: WebCard().modifier(DownloadFeedbackAnchor(target: .page))
                     .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
                 sidebar: sidebarSurface, panel: LibraryPanel())
             edgeStrip
@@ -891,9 +890,7 @@ private struct Sidebar: View {
     private var spaceContent: some View {
         SidebarSpaceContent()
             .environment(\.feedbackOcclusionScope, feedbackScope)
-            .overlayPreferenceValue(SidebarDropLineBounds.self) { bounds in
-                SidebarDropLineOverlay(marker: dropMarker, bounds: bounds)
-            }
+            .overlay { SidebarDropLineOverlay(marker: dropMarker) }
             .overlay(alignment: .trailing) { PullPlus(store: store) }
     }
 
@@ -2123,7 +2120,7 @@ private struct FavoriteTile: View {
 
 /// The 2pt line a drop will land on, at one edge of its target. `on` is the target's own
 /// hover state; the line also needs a live drag, so a stale state cannot leave it behind.
-private struct DropLine: View {
+struct DropLine: View {
     let on: Bool
     let axis: Axis
     var target: String? = nil
@@ -2137,9 +2134,17 @@ private struct DropLine: View {
             // Vertical rows contribute their geometry to one persistent sidebar marker.
             .opacity(marker != nil && target != nil ? 0 : (on && dragging.active ? 1 : 0))
             .animation(Motion.reduced ? nil : Look.quick, value: on && dragging.active)
-            .anchorPreference(key: SidebarDropLineBounds.self, value: .bounds) { bounds in
-                guard on && dragging.active, let target else { return [:] }
-                return [target: bounds]
+            .background {
+                // Report just the active gap directly across hosting roots. A shared
+                // preference reader otherwise walks every row during window layout,
+                // even when every conditional writer is empty.
+                if on && dragging.active, let target, let marker {
+                    GeometryReader { geometry in
+                        NativeSidebarMarkerRelay(marker: marker,
+                            rect: CGRect(origin: .zero, size: geometry.size),
+                            target: target, session: dragging.session)
+                    }
+                }
             }
             .allowsHitTesting(false)
     }
@@ -3004,7 +3009,7 @@ private struct SpaceIcons: View {
 private struct SpaceDots: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let layout: SpaceStripLayout
-    @ObservedObject var footer: SpaceFooterProgress
+    let footer: SpaceFooterProgress
     @EnvironmentObject var store: TabStore
     @EnvironmentObject private var gesture: SpaceGesture
     /// *Which* dot's panel is open, not merely whether one is. Every dot draws its own
@@ -3026,9 +3031,10 @@ private struct SpaceDots: View {
         // Share the gesture's captured strip with the tint and preview. Reading the
         // profile files here would decode them again on every icon-blend frame.
         let list = store.swipeStrip
-        let lit = weights(list)
+        let origin = gesture.outgoing?.space.id ?? store.currentSpaceID
+        let current = list.contains(where: { $0.id == origin }) ? origin : nil
         HStack(spacing: 0) {
-            ForEach(list) { dot($0, lit: lit[$0.id] ?? 0).id($0.id) }
+            ForEach(list) { dot($0, origin: current).id($0.id) }
             // The Space a pull is making gets a dot of its own before it exists: it fills
             // with the pull, and on the form it is simply the one you are on.
             if store.creatingSpace || gesture.pull > 0 {
@@ -3057,7 +3063,7 @@ private struct SpaceDots: View {
 
     /// Both shapes stay in the tree. A live swipe hands emphasis between visible icons,
     /// or cross-fades dot and icon when the strip needs compact markers.
-    @ViewBuilder private func dot(_ space: Space, lit: Double) -> some View {
+    @ViewBuilder private func dot(_ space: Space, origin: UUID?) -> some View {
         let here = store.currentSpaceID == space.id
         let icon = space.icon ?? "cloud"
         let over = Binding(get: { dropTarget == space.id },
@@ -3068,14 +3074,12 @@ private struct SpaceDots: View {
                                 set: { theme = $0 ? space.id : nil })
         let showLive = Binding(get: { live == space.id },
                                set: { live = $0 ? space.id : nil })
-        SpaceFooterMarker(icon: icon, layout: layout, hovered: hovered == space.id,
-                          emphasis: reduceMotion || batterySaver.isActive ? (here ? 1 : 0) : lit,
-                          selected: here, reducedMotion: reduceMotion || batterySaver.isActive)
-        // Finger/native progress already supplies intermediate frames. Idle selection
-        // animates the actual emphasis, rather than a separate selection identity.
-        .transaction(value: lit) { transaction in
-            if !gesture.swiping && !transaction.disablesAnimations { transaction.animation = animation }
-        }
+        SpaceFooterEmphasis(footer: footer, icon: icon, layout: layout,
+            hovered: hovered == space.id, selected: here,
+            reducedMotion: reduceMotion || batterySaver.isActive, spaceID: space.id,
+            currentID: origin,
+            targetID: gesture.neighbour?.id, fallbackDrag: gesture.drag,
+            width: sidebarWidth, swiping: gesture.swiping, animation: animation)
         .frame(width: layout.buttonSize, height: layout.buttonSize)
         .background(!layout.showsButtonBackground ? .clear : dropTarget == space.id ? chromeTheme.selected : hovered == space.id ? chromeTheme.hovered : .clear,
                     in: .rect(cornerRadius: Look.chipRadius))
@@ -3117,19 +3121,7 @@ private struct SpaceDots: View {
         .accessibilityAction { gesture.monitor.select(space, in: store) }
     }
 
-    /// How lit each dot is, 0…1. Idle that is 1 for the current Space and 0 for the rest;
-    /// while a swipe is live the current icon hands emphasis to the neighbour the fingers are
-    /// heading for, in step with them, so the footer says where the gesture will land before
-    /// it lands. At the ends nothing is handed over — the strip is only rubber-banding.
-    private func weights(_ list: [Space]) -> [UUID: Double] {
-        guard let current = gesture.outgoing?.space.id ?? store.currentSpaceID,
-              list.contains(where: { $0.id == current }) else { return [:] }
-        let width = SidebarWidth.shared.width
-        let drag = footer.drag ?? gesture.drag
-        guard drag != 0, width > 0, let target = gesture.neighbour else { return [current: 1] }
-        let f = Double(min(1, abs(drag / width)))
-        return SpaceDotBlend.weights(current: current, target: target.id, fraction: f)
-    }
+    private var sidebarWidth: CGFloat { SidebarWidth.shared.width }
 }
 
 enum SpaceDotBlend {
@@ -3226,6 +3218,7 @@ struct SidebarScrollCutoffs: Equatable {
 /// The settled sidebar and its swipe preview share the fixed heading and scroll viewport.
 struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     var initialOffset: CGFloat = 0
+    var resetIdentity: UUID?
     var animatesCutoffs = true
     var retainsRows = false
     var tracesLiveInput = false
@@ -3250,7 +3243,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
                     .background(SidebarSectionsViewport(tracesLiveInput: tracesLiveInput))
             }
             .scrollIndicators(.never)
-            .modifier(ScrollViewportPosition(initialOffset: initialOffset))
+            .modifier(ScrollViewportPosition(initialOffset: initialOffset, resetIdentity: resetIdentity))
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
                 reportOffset(offset)
             }
@@ -3323,12 +3316,16 @@ private struct SidebarSpaceSectionContent: View {
 
     var body: some View {
         let pinned = pinnedRowsCache.resolve(in: store, shape: store.pins)
-        SpaceSectionsLayout(retainsRows: Feel02SidebarRowsCache.retainsRows(in: store),
+        SpaceSectionsLayout(resetIdentity: store.currentSpaceID,
+                            retainsRows: Feel02SidebarRowsCache.retainsRows(in: store),
                             tracesLiveInput: true,
-                            reportOffset: { store.spaceGesture.sidebarOffset = $0 }) { SpaceRow() } rows: {
+                            reportOffset: { store.spaceGesture.sidebarOffset = $0 }) {
+            SpaceRow().id(store.currentSpaceID)
+        } rows: {
             PinnedTabs(store: store, snapshot: pinned)
-            TidyRow()
+            TidyRow().id(store.currentSpaceID)
             NewTabRow()
+                .id(store.currentSpaceID)
                 .background(alignment: .topLeading) {
                     // An empty native owner still acknowledges its section, but
                     // must not become an extra child in the spaced row stack.
@@ -3341,7 +3338,7 @@ private struct SidebarSpaceSectionContent: View {
                     }
                 }
             OpenTabs(store: store)
-            TodayEndDropArea()
+            TodayEndDropArea().id(store.currentSpaceID)
         }
     }
 }
@@ -3381,25 +3378,28 @@ private struct PinnedSection: View {
         // which would push the whole strip down a pitch under the pointer and take
         // `Landing`'s arithmetic with it. The way in is the divider below, which is the end
         // of this list and takes a drop as one; the space row above; ⌘⇧D; or New Folder.
-        if !available.isEmpty {
-            SidebarSectionRows(store: store, snapshot: snapshot, readinessSection: "pinned", collapsed: store.pinnedSectionCollapsed,
-                               transition: .rowCollapse) { row, index, count in
-                ShapeRow(store: store, row: row.visible, tab: row.tab, index: index, rows: count,
-                         shape: \.pins, pr: presentation(of: row.visible))
+        Group {
+            if !available.isEmpty {
+                SidebarSectionRows(store: store, snapshot: snapshot, readinessSection: "pinned", collapsed: store.pinnedSectionCollapsed,
+                                   transition: .rowCollapse) { row, index, count in
+                    ShapeRow(store: store, row: row.visible, tab: row.tab, index: index, rows: count,
+                             shape: \.pins, pr: presentation(of: row.visible))
+                }
+                .padding(.bottom, store.pinnedSectionCollapsed ? -Look.rowGap : 0)
+                .contextMenu {
+                    Button("New Folder") { store.newFolder() }
+                    Button("New Live Folder…") { store.askForLiveFolder { open($sheet) } }
+                }
+                .sheet(isPresented: $sheet.presented(when: store.profileVisible)) {
+                    LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
+                }
+                .accessibilityHidden(store.pinnedSectionCollapsed)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Pinned Tabs")
+                .accessibilityValue("\(store.pins.tabs.count) pinned")
             }
-            .padding(.bottom, store.pinnedSectionCollapsed ? -Look.rowGap : 0)
-            .contextMenu {
-                Button("New Folder") { store.newFolder() }
-                Button("New Live Folder…") { store.askForLiveFolder { open($sheet) } }
-            }
-            .sheet(isPresented: $sheet.presented(when: store.profileVisible)) {
-                LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
-            }
-            .accessibilityHidden(store.pinnedSectionCollapsed)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Pinned Tabs")
-            .accessibilityValue("\(store.pins.tabs.count) pinned")
         }
+        .onChange(of: store.currentSpaceID) { sheet = false }
     }
 
     /// The pull request a row stands for — only for a row a live folder actually owns, so a
@@ -4394,7 +4394,9 @@ struct SidebarTabSurface: View {
     }
 }
 
-private struct SidebarTabPresentation: View {
+/// Shared ink for live rows and captured rows. Captures supply their selection
+/// directly instead of subscribing every hidden preview row to window mutations.
+struct SidebarTabPresentation: View {
     let store: TabStore
     @ObservedObject var tab: Tab
     var held = false
@@ -5136,6 +5138,7 @@ enum TabRowGlyph: Equatable, Sendable, CaseIterable {
 /// of one. Nothing here reads the store except the click.
 private struct TabRowTrailing: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
+    @Environment(\.feel02PressFeedbackEnabled) private var interactiveSurface
     let store: TabStore
     @ObservedObject var tab: Tab
     /// On a split's row the × closes the pane the row is showing, not a whole tab's worth of
@@ -5151,7 +5154,27 @@ private struct TabRowTrailing: View {
     @ObservedObject private var batterySaver = BatterySaver.shared
     private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
-    var body: some View {
+    @ViewBuilder var body: some View {
+        if interactiveSurface { controls }
+        else {
+            // Captured rows never hover: their zero-width close button has no ink.
+            // Do not construct that button's focus/tooltip graph in every preview.
+            HStack(spacing: 0) {
+                if tab.audible || TabAudio.isMuted(tab) { audioGlyph }
+            }
+            .foregroundStyle(Look.inkSecondary)
+        }
+    }
+
+    private var audioGlyph: some View {
+        Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")
+            .contentTransition(reduced ? .identity : .symbolEffect(.replace))
+            .animation(reduced ? nil : Look.quick, value: TabAudio.isMuted(tab))
+            .font(Look.rowGlyph)
+            .rowTarget()
+    }
+
+    @ViewBuilder private var controls: some View {
         let closing = closes ?? tab
         // No gap: each glyph now carries its own `Look.rowTarget` square, and two squares
         // side by side already leave the glyphs inside them a control's worth of air apart.
@@ -5160,11 +5183,7 @@ private struct TabRowTrailing: View {
         HStack(spacing: 0) {
             if tab.audible || TabAudio.isMuted(tab) {
                 Button { TabAudio.toggleMute(tab) } label: {
-                    Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .contentTransition(reduced ? .identity : .symbolEffect(.replace))
-                        .animation(reduced ? nil : Look.quick, value: TabAudio.isMuted(tab))
-                        .font(Look.rowGlyph)
-                        .rowTarget()
+                    audioGlyph
                 }
                 .nativeSidebarKeyboardControl()
                 .vaneTooltip(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
@@ -5531,7 +5550,7 @@ private struct LibraryButton: View {
             // A ring around the glyph while anything is downloading, so progress is visible
             // without opening the Library to look for it.
             .overlay { DownloadRing(downloads: downloads) }
-            .anchorPreference(key: DownloadFeedbackBounds.self, value: .bounds) { [.bucket: $0] }
+            .modifier(DownloadFeedbackAnchor(target: .bucket))
             .buttonStyle(TactileButtonStyle())
     }
 

@@ -45,6 +45,24 @@ import SwiftUI
     func cancel() { start = nil; landed = false }
 }
 
+/// Measure only while a download needs its flight or landing control. An empty
+/// animation still made window layout reduce anchor preferences through every row.
+/// Keep the content outside the conditional so activating feedback preserves it.
+struct DownloadFeedbackAnchor: ViewModifier {
+    let target: DownloadFeedbackBounds.Target
+    @EnvironmentObject private var feedback: DownloadFeedback
+
+    func body(content: Content) -> some View {
+        content.background {
+            if feedback.start != nil {
+                Color.clear
+                    .anchorPreference(key: DownloadFeedbackBounds.self, value: .bounds) { [target: $0] }
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
 
 struct DownloadFeedbackPresentation: ViewModifier {
     @ObservedObject var store: TabStore

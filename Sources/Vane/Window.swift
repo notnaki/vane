@@ -1025,6 +1025,10 @@ extension VaneWindow {
             .environment(\.spaceChromeTheme, incomingTheme)
             .environment(\.colorScheme, incoming.colorScheme)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
+        // Both captures have an explicit native frame. Intrinsic/min/max fitting
+        // probes otherwise lay out the frozen rows again during window layout.
+        outgoingHost.sizingOptions = []
+        incomingHost.sizingOptions = []
         self.outgoing = outgoingHost
         self.incoming = incomingHost
         self.direction = direction

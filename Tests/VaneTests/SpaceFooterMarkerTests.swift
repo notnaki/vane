@@ -4,6 +4,31 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceFooterMarkerTests: XCTestCase {
+    func testNativeProgressChangesInkWithoutRebuildingItsInteractiveContainer() async throws {
+        TestEnvironment.prepare()
+        let footer = SpaceFooterProgress()
+        let draws = FooterContainerDraws()
+        let host = NSHostingView(rootView: CountedFooter(footer: footer, draws: draws))
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 64, height: 64),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil; window.close() }
+        try await Task.sleep(for: .milliseconds(80))
+        let before = try SidebarSnapshot.pixels(in: host)
+        let initialDraws = draws.count
+        footer.drag = -50
+        try await Task.sleep(for: .milliseconds(40))
+        let halfway = try SidebarSnapshot.pixels(in: host)
+        footer.drag = -100
+        try await Task.sleep(for: .milliseconds(40))
+        let arrived = try SidebarSnapshot.pixels(in: host)
+        XCTAssertNotEqual(before, halfway)
+        XCTAssertNotEqual(halfway, arrived)
+        XCTAssertEqual(draws.count, initialDraws,
+                       "Display-link samples must stop at marker ink, before menus and input handlers")
+    }
+
     private func render(emphasis: Double, showIcons: Bool, icon: String = "square.fill", selected: Bool = false) throws -> NSBitmapImageRep {
         TestEnvironment.prepare()
         let layout = SpaceStripLayout(count: 3, availableWidth: 132, showIcons: showIcons)
@@ -144,6 +169,24 @@ import XCTest
         XCTAssertLessThan(moving, settled, "The fixture must interrupt a growth animation")
         XCTAssertEqual(reduced, settled, accuracy: 1,
                        "Reduced motion must draw the selected size immediately, not finish the remaining animation")
+    }
+}
+
+@MainActor private final class FooterContainerDraws { var count = 0 }
+
+private struct CountedFooter: View {
+    let footer: SpaceFooterProgress
+    let draws: FooterContainerDraws
+    private let origin = UUID()
+    private let destination = UUID()
+
+    var body: some View {
+        draws.count += 1
+        return SpaceFooterEmphasis(footer: footer, icon: "square.fill",
+            layout: SpaceStripLayout(count: 3, availableWidth: 132), hovered: false,
+            selected: false, reducedMotion: false, spaceID: destination, currentID: origin,
+            targetID: destination, fallbackDrag: 0, width: 100, swiping: true, animation: nil)
+            .frame(width: 32, height: 32).background(.black).environment(\.colorScheme, .dark)
     }
 }
 

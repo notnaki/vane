@@ -1,5 +1,41 @@
 import SwiftUI
 
+/// Only the marker ink observes display-link progress. Rebuilding SpaceDots for
+/// each sample also rebuilds every dot's menus, popovers and keyboard handlers.
+struct SpaceFooterEmphasis: View {
+    @ObservedObject var footer: SpaceFooterProgress
+    let icon: String
+    let layout: SpaceStripLayout
+    let hovered: Bool
+    let selected: Bool
+    let reducedMotion: Bool
+    let spaceID: UUID
+    let currentID: UUID?
+    let targetID: UUID?
+    let fallbackDrag: CGFloat
+    let width: CGFloat
+    let swiping: Bool
+    let animation: Animation?
+
+    private var emphasis: Double {
+        if reducedMotion { return selected ? 1 : 0 }
+        guard let currentID else { return 0 }
+        let drag = footer.drag ?? fallbackDrag
+        guard drag != 0, width > 0, let targetID else { return spaceID == currentID ? 1 : 0 }
+        return SpaceDotBlend.weights(current: currentID, target: targetID,
+            fraction: Double(min(1, abs(drag / width))))[spaceID] ?? 0
+    }
+
+    var body: some View {
+        let lit = emphasis
+        SpaceFooterMarker(icon: icon, layout: layout, hovered: hovered,
+                          emphasis: lit, selected: selected, reducedMotion: reducedMotion)
+            .transaction(value: lit) { transaction in
+                if !swiping && !transaction.disablesAnimations { transaction.animation = animation }
+            }
+    }
+}
+
 /// Swipe progress blends brightness; selection owns a separate, quick size animation.
 struct SpaceFooterMarker: View {
     let icon: String
