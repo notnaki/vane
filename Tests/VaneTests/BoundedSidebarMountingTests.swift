@@ -434,18 +434,71 @@ import XCTest
         func field() -> NSTextField? {
             descendants(host, NSTextField.self).first { $0.isEditable && $0.isEnabled }
         }
-        func beginDraft(_ draft: String) async throws -> NSTextView {
-            if store.renamingTab != tab.id { store.renamingTab = tab.id }
-            host.layoutSubtreeIfNeeded()
-            try await compatibilityWait {
-                guard let input = field(), let editor = input.currentEditor() else { return false }
-                return window.firstResponder === editor && !input.stringValue.isEmpty
+        func beginDraft(_ draft: String, phase: String) async throws -> NSTextView {
+            let continuing = store.renamingTab == tab.id
+            let initialTitle = continuing ? try XCTUnwrap(store.tabRenameSession).draft : TidyTitles.title(for: tab)
+            var stage = "target-row-readiness"
+            do {
+                if !continuing {
+                    // A representable count can be satisfied during insertion,
+                    // before the target row has visible native geometry.
+                    try await compatibilityWait {
+                        host.layoutSubtreeIfNeeded()
+                        return descendants(host, TabTooltipAnchorView.self).contains {
+                            $0.title == initialTitle && $0.window === window
+                                && !$0.isHiddenOrHasHiddenAncestor && $0.bounds.width > 0
+                                && $0.visibleRect.intersection($0.bounds).height > Look.rowHeight / 2
+                        }
+                    }
+                    store.renamingTab = tab.id
+                    stage = "field-readiness"
+                    try await compatibilityWait {
+                        guard let input = field(), let session = store.tabRenameSession else { return false }
+                        return input.window === window && input.stringValue == initialTitle
+                            && session.initialized && !session.done && session.draft == initialTitle
+                    }
+                    // Draft preservation needs a real native editor, regardless
+                    // of which desktop app currently owns foreground activation.
+                    // Establish it once when beginning an edit; continuing edits
+                    // must retain their responder without any focus repair.
+                    XCTAssertTrue(window.makeFirstResponder(try XCTUnwrap(field())), phase)
+                }
+                stage = "field-focus"
+                host.layoutSubtreeIfNeeded()
+                try await compatibilityWait {
+                    guard let session = store.tabRenameSession, session.tabID == tab.id,
+                          store.renamingTab == tab.id, session.initialized, !session.done,
+                          let input = field(), let editor = input.currentEditor() else { return false }
+                    return input.window === window && window.firstResponder === editor
+                        && input.stringValue == initialTitle && editor.string == initialTitle
+                        && session.draft == initialTitle
+                }
+            } catch {
+                let input = field()
+                let editor = input?.currentEditor()
+                let anchors = descendants(host, TabTooltipAnchorView.self).filter {
+                    $0.title == TidyTitles.title(for: tab)
+                }
+                let rowState = anchors.map {
+                    "window=\($0.window === window), bounds=\($0.bounds), visible=\($0.visibleRect), hidden=\($0.isHiddenOrHasHiddenAncestor)"
+                }.joined(separator: "; ")
+                let session = store.tabRenameSession
+                print("THRESHOLD_RENAME phase=\(phase) stage=\(stage) count=\(store.tabs.count) key=\(window.isKeyWindow) active=\(NSApp.isActive)")
+                print("THRESHOLD_RENAME renaming=\(String(describing: store.renamingTab)) field=\(String(describing: input)) fieldWindow=\(input?.window === window) fieldTitle=\(String(describing: input?.stringValue)) editor=\(String(describing: editor)) responder=\(String(describing: window.firstResponder))")
+                print("THRESHOLD_RENAME sessionInitialized=\(session?.initialized == true) sessionDone=\(session?.done == true) sessionDraft=\(String(describing: session?.draft)) expectedTitle=\(initialTitle) targetRows=[\(rowState)]")
+                throw error
             }
             let input = try XCTUnwrap(field())
             let editor = try XCTUnwrap(input.currentEditor() as? NSTextView)
+            let session = try XCTUnwrap(store.tabRenameSession)
             editor.insertText(draft, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
             host.layoutSubtreeIfNeeded()
-            try await compatibilityWait { input.stringValue == draft && editor.string == draft }
+            try await compatibilityWait {
+                input.stringValue == draft && editor.string == draft && session.draft == draft
+            }
+            XCTAssertTrue(store.tabRenameSession === session)
+            XCTAssertFalse(session.done)
+            XCTAssertEqual(store.renamingTab, tab.id)
             return editor
         }
         func assertDraftPreserved(_ draft: String, previousEditor: NSTextView) async throws {
@@ -479,7 +532,7 @@ import XCTest
 
         try await waitForMounting(eager: true)
         let firstDraft = "Threshold 127 draft"
-        let firstEditor = try await beginDraft(firstDraft)
+        let firstEditor = try await beginDraft(firstDraft, phase: "127-before-growth")
         let added = (0..<2).map { index -> vane.Tab in
             let extra = Tab(isPrivate: true, profileID: store.profileID)
             extra.park(url: URL(string: "about:blank#threshold-\(UUID().uuidString)-\(index)")!,
@@ -496,7 +549,7 @@ import XCTest
         // Re-arm a real editor if the first crossing committed. The return leg
         // must also carry an actively typed draft, rather than only a saved name.
         let secondDraft = "Threshold 129 draft"
-        let secondEditor = try await beginDraft(secondDraft)
+        let secondEditor = try await beginDraft(secondDraft, phase: "129-before-shrink")
         let addedIDs = Set(added.map(\.id))
         Motion.instant { store.tabs.removeAll { addedIDs.contains($0.id) }; store.syncShapes() }
         XCTAssertEqual(store.tabs.count, 127)

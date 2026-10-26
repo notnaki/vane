@@ -52,6 +52,7 @@ struct SidebarRowWindow {
     func configure(rows: [String], anchor: NSView) {
         rowIDs = rows
         self.anchor = anchor
+        if pendingFocusReveal != nil { scheduleFocusUpdate() }
     }
     private var pending: (Int, CGRect)?
     private weak var clip: NSClipView?
@@ -62,6 +63,10 @@ struct SidebarRowWindow {
             if focusOwners[owner] != row { pendingFocusReveal = (owner, row) }
             focusOwners[owner] = row
         } else { focusOwners.removeValue(forKey: owner) }
+        scheduleFocusUpdate()
+    }
+
+    private func scheduleFocusUpdate() {
         guard !focusUpdateScheduled else { return }
         focusUpdateScheduled = true
         // SwiftUI may deliver focus changes during layout. Independent owner tokens
@@ -73,24 +78,30 @@ struct SidebarRowWindow {
             if self.focusedRows != next { self.focusedRows = next }
             // Reveal only newly entered focus. Bounds notifications must never
             // pull a wheel gesture back to an unchanged, retained focused row.
-            if let (owner, row) = self.pendingFocusReveal,
-               self.focusOwners[owner] == row,
-               let index = self.rowIDs.firstIndex(of: row),
-               let anchor = self.anchor, anchor.window != nil {
+            if let (owner, row) = self.pendingFocusReveal {
+                guard self.focusOwners[owner] == row else {
+                    self.pendingFocusReveal = nil
+                    return
+                }
+                // A focus callback may precede native attachment or the first clip
+                // report. Keep its reveal until configure/receive supplies geometry.
+                guard let index = self.rowIDs.firstIndex(of: row),
+                      let anchor = self.anchor, anchor.window != nil,
+                      anchor.bounds.width > 0, anchor.bounds.height > 0,
+                      let clip = self.clip, clip.bounds.height > 0,
+                      anchor.enclosingScrollView?.contentView === clip else { return }
                 let rect = NSRect(x: 0, y: CGFloat(index) * (Look.rowHeight + Look.rowGap),
                                   width: anchor.bounds.width, height: Look.rowHeight)
                 // Only this vertical clip owns sidebar offsets. NSView's
                 // scrollToVisible may propagate into an enclosing scroll view.
-                if let clip = self.clip, anchor.enclosingScrollView?.contentView === clip {
-                    let target = anchor.convert(rect, to: clip)
-                    var bounds = clip.bounds
-                    if target.minY < bounds.minY { bounds.origin.y = target.minY }
-                    else if target.maxY > bounds.maxY { bounds.origin.y += target.maxY - bounds.maxY }
-                    let constrained = clip.constrainBoundsRect(bounds)
-                    if constrained.minY != clip.bounds.minY {
-                        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: constrained.minY))
-                        anchor.enclosingScrollView?.reflectScrolledClipView(clip)
-                    }
+                let target = anchor.convert(rect, to: clip)
+                var bounds = clip.bounds
+                if target.minY < bounds.minY { bounds.origin.y = target.minY }
+                else if target.maxY > bounds.maxY { bounds.origin.y += target.maxY - bounds.maxY }
+                let constrained = clip.constrainBoundsRect(bounds)
+                if constrained.minY != clip.bounds.minY {
+                    clip.scroll(to: NSPoint(x: clip.bounds.minX, y: constrained.minY))
+                    anchor.enclosingScrollView?.reflectScrolledClipView(clip)
                 }
             }
             self.pendingFocusReveal = nil
@@ -100,6 +111,7 @@ struct SidebarRowWindow {
     func receive(count: Int, visible: CGRect, clip: NSClipView) {
         pending = (count, visible)
         self.clip = clip
+        if pendingFocusReveal != nil { scheduleFocusUpdate() }
         guard !scheduled else { return }
         scheduled = true
         // Native geometry callbacks may run inside SwiftUI layout. Coalesce their

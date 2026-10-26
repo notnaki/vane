@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 import XCTest
 @testable import vane
@@ -156,17 +157,55 @@ import XCTest
     }
 
     func testRepeatedOriginClickKeepsTheReturnMounted() async throws {
-        let (store, spaces, _, monitor) = try fixture()
+        let (store, spaces, window, monitor) = try fixture()
+        enum AdmissionError: Error { case noPresentation(String) }
+        func position(_ stage: String, moving: Bool = true,
+                      matching predicate: (CGFloat) -> Bool) async throws -> CGFloat {
+            let deadline = ProcessInfo.processInfo.systemUptime + 1
+            var lastPosition: CGFloat?
+            repeat {
+                if moving, !store.spaceSwiping { break }
+                let anchor = moving ? store.spaceGesture.outgoingView : store.spaceGesture.sectionsView
+                if let source = anchor?.layer?.presentation(),
+                   let root = window.contentView?.layer?.presentation() {
+                    let x = source.convert(.zero, to: root).x
+                    lastPosition = x
+                    if predicate(x) { return x }
+                }
+                try await Task.sleep(for: .milliseconds(5))
+            } while ProcessInfo.processInfo.systemUptime < deadline
+            XCTFail("\(stage) must have an admitted presentation; last=\(String(describing: lastPosition)), swiping=\(store.spaceSwiping)")
+            throw AdmissionError.noPresentation(stage)
+        }
+
+        // Admit the initial tree before starting its click animation. A newly ordered
+        // NSHostingView can otherwise coalesce the outbound and return endpoints.
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        CATransaction.flush()
+        let origin = try await position("Resting sidebar", moving: false) { _ in true }
+        let width = SidebarWidth.shared.width
         monitor.select(spaces[1], in: store)
-        try await Task.sleep(for: .milliseconds(100))
+        let outbound = try await position("Outbound travel") {
+            $0 < origin - width * 0.25 && $0 > origin - width * 0.9
+        }
         monitor.select(spaces[0], in: store)
-        try await Task.sleep(for: .milliseconds(20))
+        let returning = try await position("Return travel") {
+            $0 > outbound + 2 && $0 < origin - 2
+        }
         monitor.select(spaces[0], in: store)
-        try await Task.sleep(for: .milliseconds(20))
         XCTAssertTrue(store.spaceSwiping, "A repeated origin click must preserve the moving return")
-        try await Task.sleep(for: .milliseconds(450))
+        _ = try await position("Return after the repeated click") {
+            $0 > returning + 2 && $0 < origin - 1
+        }
+        XCTAssertTrue(store.spaceSwiping, "The preview must stay mounted while it visibly returns")
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while store.spaceSwiping, ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         XCTAssertFalse(store.spaceSwiping)
         XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+        XCTAssertEqual(store.spaceDrag, 0)
     }
 
 }
