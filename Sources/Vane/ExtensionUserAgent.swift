@@ -8,6 +8,7 @@ import WebKit
     private let preferences = WKWebpagePreferences()
     private let views = NSHashTable<WKWebView>.weakObjects()
     private var current = Settings.userAgent
+    private var hasCustomPreference = false
     private static let setter = NSSelectorFromString("_setCustomUserAgent:")
 
     /// Public WebKit only exposes an appended application-name token on configurations.
@@ -40,10 +41,12 @@ import WebKit
     }
 
     private func updatePreferences() {
-        // ponytail: no public configuration-level full-UA override. Calling the guarded
-        // selector preserves the chosen HTTP and navigator UA without rewriting scripts
-        // or replacing controllers, contexts, permissions, storage or extension code.
-        guard preferences.responds(to: Self.setter) else { return }
-        _ = preferences.perform(Self.setter, with: current)
+        // Default Safari uses the public configuration suffix and native view setter.
+        // A full-UA policy is needed only for explicit Develop identities. When returning
+        // to Safari, clear the same policy object retained by the controller's seed copies.
+        let custom = current != safariUA
+        guard custom || hasCustomPreference, preferences.responds(to: Self.setter) else { return }
+        _ = preferences.perform(Self.setter, with: custom ? current : "")
+        hasCustomPreference = custom
     }
 }
