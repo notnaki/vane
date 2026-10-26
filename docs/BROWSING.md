@@ -165,6 +165,12 @@ Typing the start of a site you have visited or have open completes its address i
 field, with the added part selected, and **Return** opens it. Keep typing to narrow it,
 press **Delete** to remove the completion, or press **→** to accept it and keep editing.
 
+A strong action match, such as **Pin Tab** for `pin`, appears just after the typed
+search row. Queries of at least three characters can match the start of an action title
+or one of its words; weaker matches stay below browsing results. Press **Tab** or click
+**⇥ Actions** to search only actions when no site shortcut is offered. The typed search
+or navigation row stays ahead of the promoted action.
+
 ### Tab and history results
 
 Search ranks exact page titles and addresses before prefixes, partial words, and fuzzy
