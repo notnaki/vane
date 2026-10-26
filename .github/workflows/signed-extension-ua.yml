@@ -61,7 +61,7 @@ jobs:
           test "$(git hash-object Sources/Vane/main.swift)" = 4b2a280a8540dda130b403129de7d7f7d14a50cf
           test "$(git hash-object Vane.entitlements)" = abf2127ad3263a848d63b59d720f9b468f7611da
           test "$(git hash-object scripts/run-native-tests.py)" = d9129128574ec0bedaeb1094d20addae1ed85c57
-          test "$(git hash-object Package.swift)" = 65950bd4c665bf5bb123fba8a8949924934abfa4
+          test "$(git hash-object Package.swift)" = 8a7d38c860554e0fdb161e7050ae3d3d2068aa63
           git rev-parse HEAD
           swift --version
           xcodebuild -version
@@ -72,7 +72,17 @@ jobs:
         run: python3 -B scripts/test-extension-ua-runner.py
 
       - name: Build actual Vane debug executable
-        run: swift build -c debug
+        env:
+          VANE_TEST_STAGED_WEBKIT: ${{ inputs.runtime == 'macos-26-safari27' && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          if [[ "$VANE_TEST_STAGED_WEBKIT" == 1 ]]; then
+            swift build -c debug \
+              -Xlinker -dyld_env -Xlinker DYLD_FRAMEWORK_PATH=/System/Cryptexes/App/System/Library/StagedFrameworks/Safari \
+              -Xlinker -dyld_env -Xlinker DYLD_LIBRARY_PATH=/System/Cryptexes/App/System/Library/StagedFrameworks/Safari
+          else
+            swift build -c debug
+          fi
 
       - name: Eight fresh signed normal-app comparisons, stop at first failure
         timeout-minutes: 22

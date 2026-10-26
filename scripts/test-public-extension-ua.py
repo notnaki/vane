@@ -244,7 +244,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_workflow_binds_original_input_manifest_and_archives_logs_without_app_or_profile(self):
         source = (Path(__file__).resolve().parent.parent / ".github/workflows/public-extension-ua.yml").read_text()
-        self.assertIn("6763e5522494e913c06d2bc7f4b0d8a8167063974b49407858f3d8eb199835e7", source)
+        self.assertIn("2b1419fc9b86f9d3b6c22e96dcb9dfcfc34323e4adfe88019c028b2a33bea9ae", source)
         self.assertIn("ref: ${{ github.event.pull_request.head.sha || github.sha }}", source)
         self.assertIn("if: ${{ always() }}", source)
         self.assertIn("${{ runner.temp }}/public-probe-logs/", source)

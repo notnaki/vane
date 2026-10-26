@@ -60,7 +60,7 @@ jobs:
           from pathlib import Path
           root = Path('Tests/Diagnostics/PublicWorkerUA')
           manifest = root / 'SHA256.json'
-          assert hashlib.sha256(manifest.read_bytes()).hexdigest() == '6763e5522494e913c06d2bc7f4b0d8a8167063974b49407858f3d8eb199835e7'
+          assert hashlib.sha256(manifest.read_bytes()).hexdigest() == '2b1419fc9b86f9d3b6c22e96dcb9dfcfc34323e4adfe88019c028b2a33bea9ae'
           inputs = json.loads(manifest.read_text())
           assert len(inputs) == 14 and not manifest.is_symlink()
           actual = {str(path.relative_to(root)) for path in root.rglob('*') if path.is_file() or path.is_symlink()}
@@ -86,6 +86,8 @@ jobs:
       - name: Compile and ad-hoc sandbox-sign original public probe
         id: probe
         timeout-minutes: 4
+        env:
+          VANE_TEST_STAGED_WEBKIT: ${{ inputs.runtime == 'macos-26-safari27' && '1' || '0' }}
         run: |
           set -euo pipefail
           SIGNING_IDENTITY=- bash Tests/Diagnostics/PublicWorkerUA/build.sh > "$RUNNER_TEMP/public-probe-build.stdout" 2> "$RUNNER_TEMP/public-probe-build.stderr"

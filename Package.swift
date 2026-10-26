@@ -14,12 +14,6 @@ let package = Package(
                 .linkedFramework("WebKit"),
                 .linkedLibrary("sqlite3"),
                 .linkedLibrary("z"),
-                // Downlevel Safari updates install an Apple-managed WebKit stack here.
-                // Match Safari's embedded loader paths; absent staging uses the OS stack.
-                .unsafeFlags(["-Xlinker", "-dyld_env", "-Xlinker",
-                              "DYLD_FRAMEWORK_PATH=/System/Cryptexes/App/System/Library/StagedFrameworks/Safari",
-                              "-Xlinker", "-dyld_env", "-Xlinker",
-                              "DYLD_LIBRARY_PATH=/System/Cryptexes/App/System/Library/StagedFrameworks/Safari"]),
             ]
         ),
         // Only the XCTest bundle links this early, process-local AppKit setup.
