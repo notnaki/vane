@@ -194,6 +194,20 @@ enum Palette {
         return out
     }
 
+    /// Split already-ranked actions into the leading answer and the remaining tail.
+    /// Keeping this decision separate from row closures makes the capped layout testable.
+    static func commandSections<T>(_ query: String, commands: [T],
+                                   title: (T) -> String) -> (leading: [T], trailing: [T]) {
+        let match = SearchMatch(query)
+        guard match.query.count >= 3,
+              let index = commands.firstIndex(where: {
+                  (match.score(title($0), fuzzy: false) ?? 0) >= SearchMatch.wordFloor
+              }) else { return (leading: [], trailing: commands) }
+        var trailing = commands
+        let leading = trailing.remove(at: index)
+        return (leading: [leading], trailing: trailing)
+    }
+
     /// How much of the actions catalogue this keystroke asks for.
     enum ActionScope: Equatable {
         /// No actions at all — an empty bar is its tabs, and the tab search is tabs only.
@@ -867,7 +881,7 @@ private struct PaletteResultHover: ViewModifier {
 /// It is a *search* bar, not a command palette, and the row order is the whole design:
 /// what you typed first, so Return always does the obvious thing; then what the engine and
 /// your own history complete it to; then the assistant; then the tabs you already have
-/// open. Commands are a tail that only shows up once the query is long enough to mean one.
+/// open. A strong action match follows what you typed; weaker actions stay in the tail.
 /// Every entry point — ⌘L, ⌘T, the address pill, ⌘⇧P, ⌘⇧A — lands here, looking the same.
 @MainActor struct PaletteView: View {
     private let profileManager = ProfileManager.shared
@@ -1196,12 +1210,25 @@ private struct PaletteResultHover: ViewModifier {
                         .background(chromeTheme.barSelected, in: .rect(cornerRadius: Look.chipRadius))
                         .fixedSize()
                         .accessibilityLabel("Searching actions")
+                        .transition(.opacity)
+                } else if activeBang == nil, bangCandidate == nil {
+                    Button {
+                        _ = key(.tab)
+                        fieldFocusRequest += 1
+                    } label: {
+                        Text("⇥ Actions").font(Look.rowText)
+                            .foregroundStyle(Look.barTrailing)
+                    }
+                    .buttonStyle(.plain).fixedSize()
+                    .accessibilityLabel("Search actions, press Tab to activate")
+                    .transition(.opacity)
                 }
             }
             // The same two insets a row has, so the field's icon sits over the rows' icons.
             .padding(.horizontal, Look.barInset + Look.barRowInset)
             .frame(height: fieldHeight)
             .animation(motion(Look.quick), value: activeBang)
+            .animation(motion(Look.quick), value: actionsOnly)
 
             if mode == .tabs, !store.isPrivate, !store.isLittle, !actionsOnly {
                 Picker("Space", selection: $tabSpaceID) {
@@ -1476,8 +1503,9 @@ private struct PaletteResultHover: ViewModifier {
                 let weak = tabs.filter { !strongIDs.contains($0.id) }
                 let ordered = strong + weak
                 let lead = min(strong.count, 1)
-                fresh.leading = Array(ordered.prefix(lead)) + [typedRow]
-                fresh.trailing = Array((Array(ordered.dropFirst(lead)) + places + commandRows()).prefix(24))
+                let commands = Palette.commandSections(typed, commands: commandRows(), title: \.title)
+                fresh.leading = Array(ordered.prefix(lead)) + [typedRow] + commands.leading
+                fresh.trailing = Array((Array(ordered.dropFirst(lead)) + places + commands.trailing).prefix(24))
                 fresh.assistant = aiRow()
                 fresh.acceptsSuggestions = true
             } else {

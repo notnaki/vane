@@ -213,6 +213,28 @@ import XCTest
         XCTAssertNil(result)
     }
 
+    func testSlowUploadServerStopClosesConnectionWithoutRequestData() async throws {
+        let server = try SlowUploadServer()
+        defer { server.stop() }
+        try await wait { server.port != nil }
+        let port = try XCTUnwrap(NWEndpoint.Port(rawValue: try XCTUnwrap(server.port)))
+        let client = NWConnection(host: "127.0.0.1", port: port, using: .tcp)
+        defer { client.cancel() }
+        let probe = UploadPeerCloseProbe()
+        client.start(queue: .main)
+        client.receive(minimumIncompleteLength: 1, maximumLength: 1) { _, _, complete, error in
+            Task { @MainActor in probe.closed = complete || error != nil }
+        }
+        try await wait {
+            if case .ready = client.state { return server.acceptedConnections == 1 }
+            return false
+        }
+        XCTAssertNil(server.request, "Connecting without sending must not fabricate a request")
+        server.stop()
+        try await wait { probe.closed }
+        XCTAssertNil(server.request, "A late cancellation callback must not record a request")
+    }
+
     func testTabTeardownDismissesPicker() async throws {
         let recorder = UploadRecorder(tab: tab)
         tab.web.uiDelegate = recorder
@@ -262,42 +284,87 @@ import XCTest
     }
 }
 
+@MainActor private final class UploadPeerCloseProbe {
+    var closed = false
+}
+
 /// Hold the next page until the old document has opened its upload sheet.
 @MainActor private final class SlowUploadServer {
     private let listener: NWListener
+    private let queueProgress: DispatchSourceTimer
+    private var connections: [NWConnection] = []
+    private var stopped = false
     var port: UInt16?
     var request: NWConnection?
     private var listenerState = "setup"
-    private var acceptedConnections = 0
+    private(set) var acceptedConnections = 0
+    private var connectionStateCallbacks = 0
+    private var readyConnections = 0
+    private var cancelledConnections = 0
+    private var queueProgressTicks = 0
+    private var lastQueueProgress = ProcessInfo.processInfo.systemUptime
     private var receiveCallbacks = 0
     private var receivedBytes = 0
     private var receiveCompleted = false
     private var receiveError = "none"
 
     var diagnosticSummary: String {
-        "listener=\(listenerState), accepted=\(acceptedConnections), receiveCallbacks=\(receiveCallbacks), receivedBytes=\(receivedBytes), receiveCompleted=\(receiveCompleted), receiveError=\(receiveError), requestRecorded=\(request != nil)"
+        let states = connections.prefix(16).map { String(describing: $0.state).prefix(160).description }
+        let progressAge = Int(max(0, ProcessInfo.processInfo.systemUptime - lastQueueProgress) * 1_000)
+        return "listener=\(listenerState), stopped=\(stopped), accepted=\(acceptedConnections), tracked=\(connections.count), connectionStates=\(states), stateCallbacks=\(connectionStateCallbacks), ready=\(readyConnections), cancelled=\(cancelledConnections), mainQueueTicks=\(queueProgressTicks), mainQueueProgressAgeMS=\(progressAge), receiveCallbacks=\(receiveCallbacks), receivedBytes=\(receivedBytes), receiveCompleted=\(receiveCompleted), receiveError=\(receiveError), requestRecorded=\(request != nil)"
     }
 
     init() throws {
         listener = try NWListener(using: .tcp, on: .any)
+        queueProgress = DispatchSource.makeTimerSource(queue: .main)
+        // Network callbacks use this same queue. A recent tick distinguishes a
+        // ready socket with no delivered bytes from a queue that stopped progressing.
+        queueProgress.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, !self.stopped else { return }
+                self.queueProgressTicks += 1
+                self.lastQueueProgress = ProcessInfo.processInfo.systemUptime
+            }
+        }
+        queueProgress.schedule(deadline: .now(), repeating: .milliseconds(100))
+        queueProgress.resume()
         listener.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
-                self?.listenerState = String(describing: state).prefix(160).description
-                if case .ready = state { self?.port = self?.listener.port?.rawValue }
+                guard let self, !self.stopped else { return }
+                self.listenerState = String(describing: state).prefix(160).description
+                if case .ready = state { self.port = self.listener.port?.rawValue }
             }
         }
         listener.newConnectionHandler = { [weak self] connection in
-            Task { @MainActor in self?.acceptedConnections += 1 }
-            connection.start(queue: .main)
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, complete, error in
-                let byteCount = data?.count ?? 0
-                let failure = error.map { String(describing: $0).prefix(160).description } ?? "none"
-                Task { @MainActor in
-                    self?.receiveCallbacks += 1
-                    self?.receivedBytes += byteCount
-                    self?.receiveCompleted = complete
-                    self?.receiveError = failure
-                    self?.request = connection
+            Task { @MainActor in
+                guard let self, !self.stopped else {
+                    connection.cancel()
+                    return
+                }
+                // WebKit can preconnect without sending a request. Own the socket
+                // before starting it, even if its receive callback never arrives.
+                self.connections.append(connection)
+                self.acceptedConnections += 1
+                connection.stateUpdateHandler = { [weak self] state in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        self.connectionStateCallbacks += 1
+                        if case .ready = state { self.readyConnections += 1 }
+                        if case .cancelled = state { self.cancelledConnections += 1 }
+                    }
+                }
+                connection.start(queue: .main)
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, complete, error in
+                    let byteCount = data?.count ?? 0
+                    let failure = error.map { String(describing: $0).prefix(160).description } ?? "none"
+                    Task { @MainActor in
+                        guard let self, !self.stopped else { return }
+                        self.receiveCallbacks += 1
+                        self.receivedBytes += byteCount
+                        self.receiveCompleted = complete
+                        self.receiveError = failure
+                        self.request = connection
+                    }
                 }
             }
         }
@@ -305,12 +372,21 @@ import XCTest
     }
 
     func respond() {
+        guard !stopped else { return }
         let body = "<title>Next document</title><p>Navigation committed</p>"
         let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n" + body
         request?.send(content: Data(response.utf8), completion: .contentProcessed { _ in })
     }
 
-    func stop() { listener.cancel(); request?.cancel() }
+    func stop() {
+        guard !stopped else { return }
+        stopped = true
+        queueProgress.cancel()
+        listener.cancel()
+        connections.forEach { $0.cancel() }
+        connections.removeAll()
+        request = nil
+    }
 }
 
 /// Record actual WebKit answers while forwarding its real parameters and frame to Tab.
