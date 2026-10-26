@@ -40,7 +40,7 @@ import XCTest
         try await withNativeContinuationFixture { tab, _ in
             let web = tab.web
             let window = try XCTUnwrap(web.window)
-            func assertReady(file: StaticString = #filePath, line: UInt = #line) {
+            @MainActor func assertReady(file: StaticString = #filePath, line: UInt = #line) {
                 XCTAssertTrue(NSRunningApplication.current.isFinishedLaunching, "The native fixture host must complete AppKit launch", file: file, line: line)
                 XCTAssertTrue(NSApplication.shared.isRunning, "The native fixture must retain its real AppKit loop", file: file, line: line)
                 XCTAssertTrue(NSApplication.shared.isActive, "The native account-selection fixture needs an active test host", file: file, line: line)
