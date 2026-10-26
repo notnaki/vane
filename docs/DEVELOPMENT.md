@@ -77,9 +77,19 @@ package/source hashes, and cancels superseded runs for the same branch or PR. Sw
 still validates the build on every cache hit. A timestamp snapshot in the cache restores
 the previous modification time only when an input's SHA-256 still matches, letting
 unchanged files stay incremental across fresh checkouts. Pull requests only restore
-caches; successful `main` checks save them and retain the two newest Swift debug caches.
+caches; successful `main` native jobs save debug outputs, and successful aggregate checks
+retain the two newest Swift debug caches. Packaging jobs only restore caches.
 The release workflow builds and smoke-tests the optimized app; its build products are
 never cached because they can contain the OAuth secret.
+
+Routine CI runs source-only fixtures, the complete native suite, and packaging/integration
+checks as independent jobs. Native and packaging jobs use separate macOS runners so
+Finder, signing and updater work cannot compete with native windows on one desktop.
+The required `checks` job succeeds only when every job succeeds; failures, cancellations
+and skipped jobs cannot pass the gate. The native suite remains unfiltered and unsharded,
+preserving existing native preflight steps, test order, deadlines and store retirement.
+No compiled build or app bundle is transferred between jobs. Restored debug outputs are
+always checked by SwiftPM; release builds and secrets remain outside these caches.
 
 ### Client certificate fixture
 
