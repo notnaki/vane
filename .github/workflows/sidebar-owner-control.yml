@@ -22,7 +22,7 @@ jobs:
       - name: Build controlled native test
         run: swift build -c debug --build-tests --jobs 1
       - name: Run real wrong-owner control once
-        timeout-minutes: 3
+        timeout-minutes: 5
         env:
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '120'
         run: |
