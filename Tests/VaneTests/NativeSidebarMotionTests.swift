@@ -157,6 +157,8 @@ import XCTest
         let oldMode = BatterySaver.shared.mode
         BatterySaver.shared.setMode(.off)
         defer { BatterySaver.shared.setMode(oldMode) }
+        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+                      "Normal-motion interpolation is unavailable while system Reduce Motion is enabled")
         XCTAssertFalse(Motion.reduced, "Normal-motion presentation gate requires system Reduce Motion off")
         let fixture = Fixture(rows: rows(100))
         defer { fixture.close() }
