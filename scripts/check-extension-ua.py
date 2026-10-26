@@ -64,6 +64,7 @@ def ua_argument_parser():
     parser.add_argument('--evidence-dir', type=Path, required=True, help='fresh log-only directory outside disposable app/profile paths')
     parser.add_argument('--observer-mode', choices=UA_OBSERVER_MODES, action=ObserverModeArgument, required=True,
                         help='explicit registered/unregistered loader-script comparison arm; both-success is inconclusive')
+    parser.add_argument('--worker-engine', action='store_true', help='read-only post-comparison background-owner image capture')
     return parser
 
 
@@ -174,7 +175,7 @@ def drain_ua_output(descriptor, output, limit=UA_OUTPUT_LIMIT):
     return consumed, overflow
 
 
-def run_ua_process(command, environment, timeout, log, interrupted):
+def run_ua_process(command, environment, timeout, log, interrupted, on_output=None):
     # Reuse the existing kernel identity reader without running its test driver.
     spec = importlib.util.spec_from_file_location("ua_native_identity", Path(__file__).with_name("run-native-tests.py"))
     native = importlib.util.module_from_spec(spec)
@@ -203,6 +204,7 @@ def run_ua_process(command, environment, timeout, log, interrupted):
         while process.poll() is None:
             _, dropped = drain_ua_output(process.stdout.fileno(), output)
             overflow |= dropped
+            if on_output is not None: on_output(bytes(output), host, native.process_identity)
             requested = interrupted[0]
             if requested or time.monotonic() >= deadline:
                 interrupted[0] = None
@@ -231,6 +233,11 @@ def run_ua_process(command, environment, timeout, log, interrupted):
         status = 1
     finally:
         if process is not None and process.stdout is not None: process.stdout.close()
+        if on_output is not None:
+            try: on_output.close()
+            except (OSError, ValueError) as error:
+                print(f"FAIL background-owner capture completion: {error}", file=sys.stderr, flush=True)
+                status = status or 1
         try: log.write_bytes(output)
         except OSError as error:
             print(f"FAIL UA output could not be preserved: {error}", file=sys.stderr, flush=True)
@@ -241,7 +248,7 @@ def run_ua_process(command, environment, timeout, log, interrupted):
     return status, exited, bytes(output)
 
 
-def run_ua_mode(binary, root, downloads, evidence_dir, observer_mode):
+def run_ua_mode(binary, root, downloads, evidence_dir, observer_mode, worker_engine=False):
     validate_observer_mode(observer_mode)
     if not binary.is_file(): raise ValueError("requires a built debug Vane executable")
     # This fresh, log-only directory is outside disposable bundles/profiles and
@@ -285,8 +292,15 @@ def run_ua_mode(binary, root, downloads, evidence_dir, observer_mode):
             pending_signal = interrupted[0] if phase == "cleanup" else None
             if phase == "cleanup": interrupted[0] = None
             command = [str(executable), "extensioncheck", "--user-agent-only", "--ua-loader-start-observer-mode", observer_mode] if phase == "primary" else [str(executable), "browsercheck-cleanup"]
-            status, exited, output = run_ua_process(command, environment, 90 if phase == "primary" else 25,
-                                                    trial_logs / (phase + ".log"), interrupted)
+            arguments = (command, environment, 90 if phase == "primary" else 25, trial_logs / (phase + ".log"), interrupted)
+            if worker_engine and phase == "primary":
+                capture_spec = importlib.util.spec_from_file_location("worker_engine", Path(__file__).with_name("worker-engine-evidence.py"))
+                capture_module = importlib.util.module_from_spec(capture_spec); capture_spec.loader.exec_module(capture_module)
+                environment["VANE_UA_CAPTURE_WORKER_ENGINE"] = "1"
+                status, exited, output = run_ua_process(*arguments, on_output=capture_module.WorkerEngineCapture(data, trial_logs))
+                environment.pop("VANE_UA_CAPTURE_WORKER_ENGINE", None)
+            else:
+                status, exited, output = run_ua_process(*arguments)
             if status == 0 and exited:
                 try:
                     if phase == "primary":
@@ -320,7 +334,7 @@ def main():
     binary = (options.binary or root / '.build/debug/vane').resolve()
     downloads = Path.home() / 'Downloads'
     if not downloads.is_dir(): parser.error('~/Downloads must exist for isolated sandbox profiles')
-    try: return run_ua_mode(binary, root, downloads, options.evidence_dir, options.observer_mode)
+    try: return run_ua_mode(binary, root, downloads, options.evidence_dir, options.observer_mode, options.worker_engine)
     except (OSError, ValueError) as error:
         print(f'FAIL signed extension UA comparison: {error}', file=sys.stderr, flush=True)
         return 1

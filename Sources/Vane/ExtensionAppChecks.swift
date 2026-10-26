@@ -463,6 +463,7 @@ import MachO
                         observations.merge(await loaderStartObservation(background, context: context,
                             manifestVersion: manifestVersion)) { _, value in value }
                     }
+                    await observeBackgroundEngine(background, context: context, stage: stage, manifestVersion: manifestVersion)
                     let data = try JSONSerialization.data(withJSONObject: observations, options: [.sortedKeys])
                     let detail = String(decoding: data, as: UTF8.self)
                     throw Failure("UA \(stage): \(key) expected \(selected); observed \(bounded(identity[key] ?? "missing")). Post-reply observations: \(detail)")
@@ -470,7 +471,87 @@ import MachO
                 userAgentStagesVerified += 1
                 record("UA normal-loop \(stage)", .verified,
                        "startup/current UA, nonce/runtime/origin/version, callback identity/launch and popup/background pool/store verified.")
+                if stage == "safari-after-custom-mv3" {
+                    await observeBackgroundEngine(background, context: context, stage: stage, manifestVersion: manifestVersion)
+                }
                 try closeUserAgentStage()
+            }
+        }
+
+        // This registry contains only this UI process's WebKit children. A sole
+        // service-worker connection is a candidate, not proof of context identity.
+        private func serviceWorkerProcess(for web: WKWebView, emitInventory: Bool = false) -> Int32? {
+            let selector = NSSelectorFromString("_webContentProcessInfo")
+            guard WKProcessPool.responds(to: selector),
+                  let records = WKProcessPool.perform(selector)?.takeUnretainedValue() as? [NSObject],
+                  records.count <= 64 else { return nil }
+            var candidates: [Int32] = []
+            var matched: [Int32] = []
+            var inventory: [[String: Any]] = []
+            for record in records {
+                guard record.responds(to: NSSelectorFromString("pid")),
+                      record.responds(to: NSSelectorFromString("runningServiceWorkers")),
+                      record.responds(to: NSSelectorFromString("webViews")),
+                      let pid = record.value(forKey: "pid") as? NSNumber,
+                      let running = record.value(forKey: "runningServiceWorkers") as? NSNumber,
+                      pid.int64Value > 1, pid.int64Value <= Int64(Int32.max) else { return nil }
+                // webViews can be nil when the process has no page proxies.
+                let views = record.value(forKey: "webViews") as? [WKWebView] ?? []
+                inventory.append(["pid": pid.int32Value, "runningServiceWorkers": running.boolValue,
+                                  "matchesBackground": views.contains { $0 === web }, "webViewCount": views.count])
+                if running.boolValue {
+                    candidates.append(pid.int32Value)
+                    if views.contains(where: { $0 === web }) { matched.append(pid.int32Value) }
+                }
+            }
+            if emitInventory, let data = try? JSONSerialization.data(withJSONObject: inventory, options: [.sortedKeys]) {
+                print("UA APP PROCESS REGISTRY " + String(decoding: data, as: UTF8.self)); fflush(stdout)
+            }
+            // A legacy background view is not evidence that its process runs the
+            // replying worker. Refuse every ambiguous app-owned candidate set.
+            guard candidates.count == 1, matched == candidates,
+                  web.responds(to: NSSelectorFromString("_webProcessIdentifier")),
+                  let viewPID = web.value(forKey: "_webProcessIdentifier") as? NSNumber,
+                  viewPID.int64Value == Int64(candidates[0]) else { return nil }
+            return candidates[0]
+        }
+
+        // Opt-in, strictly after original comparison. Retain conditional worker
+        // attribution even when a service-worker thread is observed externally.
+        private func processStart(_ pid: Int32) -> UInt64? {
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+            return UInt64(info.pbi_start_tvsec) * 1_000_000 + UInt64(info.pbi_start_tvusec)
+        }
+
+        private func observeBackgroundEngine(_ background: UserAgentBackground, context: WKWebExtensionContext,
+                                             stage: String, manifestVersion: Int) async {
+            guard ProcessInfo.processInfo.environment["VANE_UA_CAPTURE_WORKER_ENGINE"] == "1", manifestVersion == 3,
+                  background.context === context, context.isLoaded, let web = background.web else { return }
+            guard let pid = serviceWorkerProcess(for: web, emitInventory: true) else {
+                print("UA BACKGROUND OWNER CAPTURE unavailable: no unique app-owned service-worker process"); fflush(stdout); return
+            }
+            guard let start = processStart(pid), start > 0, serviceWorkerProcess(for: web) == pid else {
+                print("UA BACKGROUND OWNER CAPTURE unavailable: native kernel identity"); fflush(stdout); return
+            }
+            let nonce = UUID().uuidString.lowercased()
+            let request: [String: Any] = ["hostPID": ProcessInfo.processInfo.processIdentifier, "pid": pid, "pidStart": start,
+                "nonce": nonce, "context": context.uniqueIdentifier, "stage": stage, "manifestVersion": manifestVersion]
+            guard let data = try? JSONSerialization.data(withJSONObject: request, options: [.sortedKeys]) else { return }
+            print("UA WORKER ENGINE REQUEST " + String(decoding: data, as: UTF8.self)); fflush(stdout)
+            let acknowledgement = directory.appendingPathComponent("ua-worker-engine-" + nonce + ".done")
+            let deadline = ContinuousClock.now + .seconds(10)
+            while ContinuousClock.now < deadline && !FileManager.default.fileExists(atPath: acknowledgement.path) {
+                do { try await Task.sleep(for: .milliseconds(20)) } catch { break }
+            }
+            let after = serviceWorkerProcess(for: web) == pid && processStart(pid) == start ? pid : 0
+            let continuity: [String: Any] = ["nonce": nonce, "context": context.uniqueIdentifier,
+                "pidBefore": pid, "pidAfter": after, "contextStillLoaded": context.isLoaded,
+                "sameBackgroundView": background.web === web,
+                "acknowledged": FileManager.default.fileExists(atPath: acknowledgement.path)]
+            if let data = try? JSONSerialization.data(withJSONObject: continuity, options: [.sortedKeys]) {
+                print("UA BACKGROUND OWNER CONTINUITY " + String(decoding: data, as: UTF8.self)); fflush(stdout)
             }
         }
 

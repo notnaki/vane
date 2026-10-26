@@ -348,7 +348,10 @@ class EvidenceLogTests(unittest.TestCase):
     def test_workflow_keeps_independent_fixed_size_arms_and_distinct_artifacts(self):
         workflow = Path(__file__).resolve().parent.parent / ".github/workflows/signed-extension-ua.yml"
         source = workflow.read_text()
-        self.assertRegex(source, r"strategy:\n\s+fail-fast: false\n\s+matrix:\n\s+observer_mode: \[unregistered, registered\]")
+        self.assertRegex(source, r"strategy:\n\s+fail-fast: false\n\s+matrix:\n\s+observer_mode: \$\{\{ fromJSON\(")
+        self.assertIn("default: both", source)
+        self.assertIn("options: [both, unregistered, registered]", source)
+        self.assertIn("inputs.observer_mode == 'unregistered' && '[\"unregistered\"]' || inputs.observer_mode == 'registered' && '[\"registered\"]' || '[\"unregistered\",\"registered\"]'", source)
         self.assertIn('--observer-mode "${{ matrix.observer_mode }}"', source)
         self.assertIn('name: signed-vane-ua-${{ matrix.observer_mode }}-', source)
         self.assertNotIn('continue-on-error:', source)
@@ -376,6 +379,11 @@ class ObserverArmTests(unittest.TestCase):
                      ["--observer-mode", "registered", "--observer-mode", "unregistered"],
                      ["--observer-mode", "registered", "--observer-mode", "registered"]):
             with self.subTest(args=args), self.assertRaises(SystemExit): self.parse(*common, *args)
+
+    def test_worker_engine_capture_is_an_explicit_opt_in(self):
+        common = ["--evidence-dir", "/tmp/log-only", "--observer-mode", "unregistered"]
+        self.assertFalse(self.parse(*common).worker_engine)
+        self.assertTrue(self.parse(*common, "--worker-engine").worker_engine)
 
     def test_direct_call_rejects_unknown_mode_before_filesystem_or_process_mutation(self):
         with patch.object(runner, "run_ua_process") as process, patch.object(Path, "mkdir") as mkdir:

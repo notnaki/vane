@@ -12,6 +12,8 @@ on:
       - scripts/test-update-ci-safari27.py
       - scripts/check-staged-webkit-evidence.py
       - scripts/test-staged-webkit-evidence.py
+      - scripts/worker-engine-evidence.py
+      - scripts/test-worker-engine-evidence.py
       - .github/workflows/signed-extension-ua.yml
   workflow_dispatch:
     inputs:
@@ -20,6 +22,15 @@ on:
         type: choice
         default: macos-26
         options: [macos-26, macos-26-safari27, xcode-27]
+      observer_mode:
+        description: Select one observer arm or the ordinary two-arm comparison
+        type: choice
+        default: both
+        options: [both, unregistered, registered]
+      worker_engine:
+        description: Sample a unique app-owned service-worker candidate after UA comparison
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -34,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        observer_mode: [unregistered, registered]
+        observer_mode: ${{ fromJSON(inputs.observer_mode == 'unregistered' && '["unregistered"]' || inputs.observer_mode == 'registered' && '["registered"]' || '["unregistered","registered"]') }}
     runs-on: ${{ inputs.runtime == 'xcode-27' && 'xcode-27' || 'macos-26' }}
     timeout-minutes: 50
     steps:
@@ -62,6 +73,7 @@ jobs:
           test "$(git hash-object Vane.entitlements)" = abf2127ad3263a848d63b59d720f9b468f7611da
           test "$(git hash-object scripts/run-native-tests.py)" = d9129128574ec0bedaeb1094d20addae1ed85c57
           test "$(git hash-object Package.swift)" = 8a7d38c860554e0fdb161e7050ae3d3d2068aa63
+          test "$(git hash-object Sources/Vane/ExtensionAppChecks.swift)" = c4c4d6d42ecc47573c258019004a07ba5ee0e24b
           git rev-parse HEAD
           swift --version
           xcodebuild -version
@@ -69,7 +81,9 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' /System/Library/Frameworks/WebKit.framework/Resources/Info.plist
 
       - name: Signed-runner pure safety guards
-        run: python3 -B scripts/test-extension-ua-runner.py
+        run: |
+          python3 -B scripts/test-extension-ua-runner.py
+          python3 -B scripts/test-worker-engine-evidence.py
 
       - name: Build actual Vane debug executable
         env:
@@ -86,10 +100,22 @@ jobs:
 
       - name: Eight fresh signed normal-app comparisons, stop at first failure
         timeout-minutes: 22
+        env:
+          CAPTURE_WORKER_ENGINE: ${{ inputs.worker_engine && '1' || '0' }}
         run: |
           set -euo pipefail
           mkdir -p "$HOME/Downloads"
-          python3 -B scripts/check-extension-ua.py --binary .build/debug/vane --observer-mode "${{ matrix.observer_mode }}" --evidence-dir "$RUNNER_TEMP/vane-signed-extension-ua-logs" 2>&1 | tee "$RUNNER_TEMP/vane-signed-extension-ua.log"
+          probe_args=(--binary .build/debug/vane --observer-mode "${{ matrix.observer_mode }}" --evidence-dir "$RUNNER_TEMP/vane-signed-extension-ua-logs")
+          if [[ "$CAPTURE_WORKER_ENGINE" == 1 ]]; then probe_args+=(--worker-engine); fi
+          python3 -B scripts/check-extension-ua.py "${probe_args[@]}" 2>&1 | tee "$RUNNER_TEMP/vane-signed-extension-ua.log"
+
+      - name: Inspect post-comparison background-owner images with conditional worker attribution
+        if: ${{ always() && inputs.worker_engine }}
+        run: |
+          set -euo pipefail
+          evidence_args=("$RUNNER_TEMP/vane-signed-extension-ua-logs")
+          if [[ '${{ inputs.runtime }}' == macos-26-safari27 ]]; then evidence_args+=(--expect-staged); fi
+          python3 -B scripts/worker-engine-evidence.py "${evidence_args[@]}"
 
       - name: Attest app-process runtime and staged image UUIDs (worker images unverified)
         if: ${{ inputs.runtime == 'macos-26-safari27' }}

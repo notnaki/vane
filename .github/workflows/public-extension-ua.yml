@@ -53,7 +53,7 @@ jobs:
       - name: Verify immutable reduction inputs and reused process-control source
         run: |
           set -euo pipefail
-          test "$(git hash-object scripts/check-extension-ua.py)" = f83e267a36c9016e3bc8aeed5797bbf044e07ed1
+          test "$(git hash-object scripts/check-extension-ua.py)" = b150ff992cdcb5951dead92efaa0d4ea19912c8a
           test "$(git hash-object scripts/run-native-tests.py)" = d9129128574ec0bedaeb1094d20addae1ed85c57
           python3 - <<'PY'
           import hashlib, json
