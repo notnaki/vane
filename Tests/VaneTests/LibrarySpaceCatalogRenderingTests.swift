@@ -142,19 +142,11 @@ private final class LibraryRenderingReadGate: @unchecked Sendable {
         }
     }
 
-    /// Short letters-only markers fit the 180pt card and avoid OCR digit ambiguity.
-    private func marker() -> String {
-        let alphabet = Array("abcdefghjkmnpqrs")
-        return String(UUID().uuidString.lowercased().prefix(4).map {
-            alphabet[Int(String($0), radix: 16)!]
-        })
-    }
-
     // Fails if the standalone fallback reads .shared instead of the manager that
     // actually supplies SpacesPane, or if the async result never reaches the host.
     func testStandalonePanelRendersItsCustomEnvironmentManagersSpaces() async throws {
         let manager = try manager()
-        let name = "Oak" + marker()
+        let name = "Oak"
         let space = manager.createSpace(name: name, in: manager.active.id)
         let fixture = mount(manager: manager)
         XCTAssertFalse(ProfileManager.shared.spaces(for: space.profileID).contains { $0.id == space.id })
@@ -172,12 +164,14 @@ private final class LibraryRenderingReadGate: @unchecked Sendable {
     func testSavedTodayWaitsForCurrentProtectionWhileLiveOwnerRowsRemainAuthoritative() async throws {
         let manager = try manager()
         let profile = manager.create(name: "R")
-        let nonce = marker()
-        let savedTitle = "saved" + nonce
-        let liveTitle = "Live" + nonce
+        // The manager directory and profile already isolate this fixture. Use
+        // short words for the pixel oracle: random glyphs such as "crqb" can
+        // be recognized as "crab" even when the correct row is painted.
+        let savedTitle = "cedar"
+        let liveTitle = "Live Maple"
         let savedURL = URL(string: "https://\(savedTitle).invalid/")!
-        let liveURL = URL(string: "https://live\(nonce).invalid/")!
-        let space = Space(name: "Elm" + nonce, profileID: profile.id, tabURLs: [savedURL])
+        let liveURL = URL(string: "https://maple.invalid/")!
+        let space = Space(name: "Elm", profileID: profile.id, tabURLs: [savedURL])
         XCTAssertTrue(manager.updateSpace(space))
         let key = TabStore.shapeKey(.today, space: space.id, profileID: profile.id)
         let prior = UserDefaults.vane.data(forKey: key)
