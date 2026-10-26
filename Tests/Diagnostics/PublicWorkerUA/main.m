@@ -196,7 +196,9 @@ static void Emit(NSDictionary *record) {
 
 @implementation Retirement
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
-    // Do not construct a data-store wrapper, controller, pool or web view here.
+    // Initialize WebKit's run loop before a cold registry class-method call,
+    // without opening the named store being removed (as in WebKitStartup).
+    @autoreleasepool { (void)[WKWebsiteDataStore nonPersistentDataStore]; }
     [WKWebsiteDataStore removeDataStoreForIdentifier:self.storeID completionHandler:^(NSError *error) {
         NSString *detail = error.localizedDescription ?: @"";
         Emit(@{ @"event": @"retirement", @"ownedDataStoreID": self.storeID.UUIDString,
