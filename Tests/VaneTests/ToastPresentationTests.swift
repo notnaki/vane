@@ -81,22 +81,36 @@ private final class ToastPresentationHostingView: NSHostingView<AnyView> {
                        "Another private window must not display this window's notice")
     }
 
-    func testNormalWindowRetainsHiddenToastAcrossTabChangesAndResizing() async throws {
+    func testNormalWindowRetainsHoveredToastAcrossTabChangesAndResizing() async throws {
         let (store, window, host) = fixture(isPrivate: false)
         store.sidebarShown = false
-        var actions = 0
-        Toasts.show("Normal window regression fixture with a long title", action: ("Open", { actions += 1 }), in: store)
-        let id = try XCTUnwrap(Toasts.shared.current?.id)
         let first = store.newBlankTab(focus: false)
         let second = store.newBlankTab(focus: false)
+        store.current = second.id
+        try await settle(host)
+        var actions = 0
+        Toasts.show("Normal window regression fixture with a long title", action: ("Open", { actions += 1 }), in: store)
+        let toast = try XCTUnwrap(Toasts.shared.current)
+        // Exercise retention while the action is held, independently of the ordinary
+        // expiry clock and how long native tab materialization takes on this machine.
+        Toasts.shared.hover(toast, true)
         store.current = first.id
         try await settle(host)
+        XCTAssertEqual(store.current, first.id)
+        XCTAssertEqual(Toasts.shared.current?.id, toast.id)
+        XCTAssertEqual(Toasts.shared.current?.actionGeneration, toast.actionGeneration)
+        XCTAssertTrue(Toasts.shared.hovering.contains(toast.id))
         store.current = second.id
         window.setContentSize(CGSize(width: 1100, height: 750))
         try await settle(host)
-        XCTAssertEqual(Toasts.shared.current?.id, id)
+        XCTAssertEqual(store.current, second.id)
+        XCTAssertEqual(Toasts.shared.current?.id, toast.id)
+        XCTAssertEqual(Toasts.shared.current?.actionGeneration, toast.actionGeneration)
+        XCTAssertTrue(Toasts.shared.hovering.contains(toast.id))
+        try await clickAction("Open", in: window)
         try await clickAction("Open", in: window)
         XCTAssertEqual(actions, 1)
+        XCTAssertNil(Toasts.shared.current)
     }
 
     func testHiddenToastLeavesRoomForDownloadFeedback() async throws {

@@ -85,6 +85,16 @@ import WebKit
 
     let profileID: UUID
     let controller: WKWebExtensionController
+    private let userAgent = ExtensionUserAgent()
+
+    #if DEBUG
+    // DEBUG assertions inspect only an already-created background page.
+    var backgroundCreationObserver: ((WKWebView, WKWebExtensionContext) -> Void)?
+    #endif
+
+    static func applyUserAgent() {
+        for host in hosts.values { host.userAgent.apply() }
+    }
 
     /// Folder path alongside the context, because WKWebExtension does not report the
     /// resource base URL it was built from and uninstall has to erase the stored path.
@@ -171,7 +181,8 @@ import WebKit
                          sourcePath: source.path, safariApp: record?.safari != nil || path.hasPrefix("/safari-extension/"),
                          requiredAccess: record?.required ?? ExtensionConsent.saved(for: URL(fileURLWithPath: path), profileID: profileID),
                          optionalAccess: record?.optional ?? legacyMetadata[path]?.optional,
-                         compatibility: record?.compatibility ?? limitations[path] ?? [])
+                         compatibility: (record?.compatibility ?? limitations[path] ?? [])
+                            + (userAgent.limitation.map { [$0] } ?? []))
         }
     }
 
@@ -185,6 +196,12 @@ import WebKit
                 .map(WKWebExtensionController.Configuration.init(identifier:))
                 ?? WKWebExtensionController.Configuration.default()
         configuration.defaultWebsiteDataStore = ProfileManager.dataStore(for: profileID)
+        let webConfiguration: WKWebViewConfiguration = configuration.webViewConfiguration
+        // Older WebKit keeps the page seed separate from the controller's cookie/API
+        // store. Bind both to this profile before WebKit copies the configuration.
+        webConfiguration.websiteDataStore = configuration.defaultWebsiteDataStore
+        webConfiguration.processPool = WebKitStartup.extensionProcessPool
+        userAgent.configure(webConfiguration)
         controller = WKWebExtensionController(configuration: configuration)
         super.init()
         controller.delegate = self
@@ -1044,6 +1061,9 @@ import WebKit
             anchors[ActionKey(context, tab)] = WeakView(view: view)
         }
         context.performAction(for: shim)
+        if let action = context.action(for: shim), action.isEnabled, action.presentsPopup, let web = action.popupWebView {
+            userAgent.track(web)
+        }
     }
 
     /// The button each pending popup was run from, keyed by extension *and* tab.
@@ -1485,6 +1505,7 @@ import WebKit
         guard let popover = action.popupPopover else {
             throw Failure("“\(name)” has no popup to show.")
         }
+        if let web = action.popupWebView { userAgent.track(web) }
         let id = ObjectIdentifier(context)
         popovers[id] = (popovers[id] ?? []).filter(\.isShown) + [popover]
         // The button that ran the action: the pill's pinned glyph, or the extension's row in
@@ -1562,6 +1583,18 @@ import WebKit
                                 in tab: (any WKWebExtensionTab)?,
                                 for context: WKWebExtensionContext) async -> (Set<WKWebExtension.MatchPattern>, Date?) {
         ask(context, patterns.map(\.string)) ? (patterns, nil) : ([], nil)
+    }
+
+    /// WebKit invokes this optional SPI before loading background content, including a
+    /// recreated service worker. Public customUserAgent then applies before startup.
+    @objc(_webExtensionController:didCreateBackgroundWebView:forExtensionContext:)
+    func extensionController(_ controller: WKWebExtensionController, didCreateBackgroundWebView web: WKWebView,
+                             for context: WKWebExtensionContext) {
+        guard controller === self.controller else { return }
+        userAgent.track(web)
+        #if DEBUG
+        backgroundCreationObserver?(web, context)
+        #endif
     }
 
     // MARK: Helpers
@@ -1643,6 +1676,7 @@ import WebKit
 
     private func present(_ url: URL, _ cfg: WKWebViewConfiguration, context: WKWebExtensionContext, title: String) {
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 780, height: 620), configuration: cfg)
+        userAgent.track(web)
         web.isInspectable = Settings.inspectorEnabled
         let window = NSWindow(contentRect: web.frame,
                               styleMask: [.titled, .closable, .resizable],
