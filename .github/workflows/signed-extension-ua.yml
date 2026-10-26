@@ -7,8 +7,16 @@ on:
       - Sources/Vane/ExtensionAppChecks.swift
       - scripts/check-extension-ua.py
       - scripts/test-extension-ua-runner.py
+      - scripts/update-ci-safari27.py
+      - scripts/test-update-ci-safari27.py
       - .github/workflows/signed-extension-ua.yml
   workflow_dispatch:
+    inputs:
+      runtime:
+        description: System WebKit runtime for this comparison
+        type: choice
+        default: macos-26
+        options: [macos-26, macos-26-safari27, xcode-27]
 
 permissions:
   contents: read
@@ -19,17 +27,25 @@ concurrency:
 
 jobs:
   signed-normal-app:
-    name: Signed Vane UA observer arm (${{ matrix.observer_mode }})
+    name: Signed Vane UA observer arm (${{ matrix.observer_mode }}, ${{ inputs.runtime || 'macos-26' }})
     strategy:
       fail-fast: false
       matrix:
         observer_mode: [unregistered, registered]
-    runs-on: macos-26
-    timeout-minutes: 35
+    runs-on: ${{ inputs.runtime == 'xcode-27' && 'xcode-27' || 'macos-26' }}
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install only Apple's Safari 27 update on disposable macOS 26
+        if: ${{ inputs.runtime == 'macos-26-safari27' }}
+        timeout-minutes: 14
+        run: |
+          set -euo pipefail
+          python3 -B scripts/test-update-ci-safari27.py
+          python3 -B scripts/update-ci-safari27.py 2>&1 | tee "$RUNNER_TEMP/safari27-update.log"
 
       - name: Bind exact candidate product and existing cleanup inputs
         run: |
@@ -45,6 +61,7 @@ jobs:
           swift --version
           xcodebuild -version
           sw_vers
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' /System/Library/Frameworks/WebKit.framework/Resources/Info.plist
 
       - name: Signed-runner pure safety guards
         run: python3 -B scripts/test-extension-ua-runner.py
@@ -65,6 +82,7 @@ jobs:
         with:
           name: signed-vane-ua-${{ matrix.observer_mode }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            ${{ runner.temp }}/safari27-update.log
             ${{ runner.temp }}/vane-signed-extension-ua.log
             ${{ runner.temp }}/vane-signed-extension-ua-logs/
           if-no-files-found: warn

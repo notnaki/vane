@@ -6,8 +6,16 @@ on:
       - Tests/Diagnostics/PublicWorkerUA/**
       - scripts/check-public-extension-ua.py
       - scripts/test-public-extension-ua.py
+      - scripts/update-ci-safari27.py
+      - scripts/test-update-ci-safari27.py
       - .github/workflows/public-extension-ua.yml
   workflow_dispatch:
+    inputs:
+      runtime:
+        description: System WebKit runtime for this comparison
+        type: choice
+        default: macos-26
+        options: [macos-26, macos-26-safari27, xcode-27]
 
 permissions:
   contents: read
@@ -18,13 +26,21 @@ concurrency:
 
 jobs:
   public-reduction:
-    name: Public-only signed worker UA reduction
-    runs-on: macos-26
-    timeout-minutes: 22
+    name: Public-only signed worker UA reduction (${{ inputs.runtime || 'macos-26' }})
+    runs-on: ${{ inputs.runtime == 'xcode-27' && 'xcode-27' || 'macos-26' }}
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install only Apple's Safari 27 update on disposable macOS 26
+        if: ${{ inputs.runtime == 'macos-26-safari27' }}
+        timeout-minutes: 14
+        run: |
+          set -euo pipefail
+          python3 -B scripts/test-update-ci-safari27.py
+          python3 -B scripts/update-ci-safari27.py 2>&1 | tee "$RUNNER_TEMP/safari27-update.log"
 
       - name: Verify immutable reduction inputs and reused process-control source
         run: |
@@ -54,6 +70,7 @@ jobs:
           case "$probe_sdk" in 26|26.*|27|27.*) ;; *) echo "Unsupported SDK for this reduction: $probe_sdk"; exit 1 ;; esac
           printf 'Public reduction SDK=%s; deployment floor=26.0\n' "$probe_sdk"
           sw_vers
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' /System/Library/Frameworks/WebKit.framework/Resources/Info.plist
 
       - name: Public evidence protocol pure guards
         run: python3 -B scripts/test-public-extension-ua.py
@@ -85,6 +102,7 @@ jobs:
         with:
           name: public-worker-ua-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            ${{ runner.temp }}/safari27-update.log
             ${{ runner.temp }}/public-probe-build.stdout
             ${{ runner.temp }}/public-probe-build.stderr
             ${{ runner.temp }}/public-probe-entitlements.log
