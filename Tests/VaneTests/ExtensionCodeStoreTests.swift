@@ -146,8 +146,6 @@ extension ExtensionCodeStoreTests {
 
     private func leaseHolder(_ revision: String, committedIndex: URL? = nil,
                              bootstrapDelay: TimeInterval = 0, startupTimeout: Duration = .seconds(10)) throws -> (Process, Pipe) {
-        // RED-stage control: the old combined three-second readiness wait remains below.
-        _ = startupTimeout
         let diagnosticID = UUID().uuidString
         let ready = directory.appendingPathComponent("lease-ready-" + diagnosticID)
         let stderrURL = directory.appendingPathComponent("lease-stderr-" + diagnosticID)
@@ -188,22 +186,37 @@ extension ExtensionCodeStoreTests {
         process.standardError = stderr
         let launchStarted = ContinuousClock.now
         try process.run()
-        let readinessStarted = ContinuousClock.now
-        let deadline = readinessStarted + .seconds(3)
-        while !FileManager.default.fileExists(atPath: ready.path), process.isRunning, ContinuousClock.now < deadline {
+        let startupStarted = ContinuousClock.now
+        let startupDeadline = startupStarted + startupTimeout
+        while !FileManager.default.fileExists(atPath: startupReady.path), process.isRunning,
+              ContinuousClock.now < startupDeadline {
             Thread.sleep(forTimeInterval: 0.001)
         }
-        guard FileManager.default.fileExists(atPath: ready.path) else {
+        let startupCompleted = FileManager.default.fileExists(atPath: startupReady.path)
+        let startupElapsed = startupStarted.duration(to: .now)
+        let readinessStarted = ContinuousClock.now
+        let deadline = readinessStarted + .seconds(3)
+        while startupCompleted, !FileManager.default.fileExists(atPath: ready.path), process.isRunning,
+              ContinuousClock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        guard startupCompleted, FileManager.default.fileExists(atPath: ready.path) else {
             let runningBeforeCleanup = process.isRunning
             let readinessElapsed = readinessStarted.duration(to: .now)
             if runningBeforeCleanup { process.terminate() }
             process.waitUntilExit()
             // Read regular files only after reaping; no diagnostic pipe or reader lifetime.
             try? stderr.close()
-            throw LeaseHolderFailure(phase: .leaseReadiness, phaseElapsed: readinessElapsed,
-                errorDescription: "Child process did not acquire its revision lease"
+            let phase: LeaseHolderFailure.Phase = startupCompleted ? .leaseReadiness : .bootstrap
+            let message = startupCompleted ? "Child process did not acquire its revision lease"
+                : "Child process did not complete its interpreter/bootstrap phase"
+            throw LeaseHolderFailure(phase: phase,
+                phaseElapsed: startupCompleted ? readinessElapsed : startupElapsed,
+                errorDescription: message
+                + "; phase=" + phase.rawValue
                 + "; pid=\(process.processIdentifier)"
-                + "; launchElapsed=\(launchStarted.duration(to: readinessStarted))"
+                + "; launchElapsed=\(launchStarted.duration(to: startupStarted))"
+                + "; startupElapsed=\(startupElapsed)"
                 + "; readinessElapsed=\(readinessElapsed)"
                 + "; runningBeforeCleanup=\(runningBeforeCleanup)"
                 + "; terminationReason=\(process.terminationReason.rawValue)"
@@ -212,7 +225,8 @@ extension ExtensionCodeStoreTests {
                 + "; stderr: " + leaseDiagnosticTail(stderrURL))
         }
         print("Lease child ready; pid=\(process.processIdentifier)"
-            + "; launchElapsed=\(launchStarted.duration(to: readinessStarted))"
+            + "; launchElapsed=\(launchStarted.duration(to: startupStarted))"
+            + "; startupElapsed=\(startupElapsed)"
             + "; readinessElapsed=\(readinessStarted.duration(to: .now))"
             + "; milestones: " + leaseDiagnosticTail(milestonesURL))
         return (process, input)
