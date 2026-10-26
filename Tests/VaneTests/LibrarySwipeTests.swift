@@ -348,6 +348,50 @@ import XCTest
         XCTAssertEqual(try x(), 0, accuracy: 1)
     }
 
+    func testQuickOpeningReleaseContinuesFromTheLastFingerPosition() async throws {
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, monitor) = fixture(withSpaces: true)
+        Library.open(.downloads, in: store)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(150))
+        let marker = try XCTUnwrap(monitor.presentationView)
+        func x() throws -> CGFloat {
+            try XCTUnwrap(marker.layer?.presentation()).convert(.zero,
+                to: host.layer?.presentation()).x
+        }
+        send(window, phase: .began, time: 1)
+        for step in 1...5 {
+            send(window, dx: 20, time: 1 + Double(step) * 0.008)
+            try await Task.sleep(for: .milliseconds(8))
+        }
+        let releasedAt = try x()
+        var targetAtActivation: CGFloat?
+        let activation = store.$libraryOpen.dropFirst().sink { open in
+            if open { targetAtActivation = store.librarySwipeProgress }
+        }
+        defer { activation.cancel() }
+        send(window, phase: .ended, time: 1.041)
+        XCTAssertEqual(targetAtActivation, 1,
+                      "Prepare the remaining slide before Library activation invalidates the browser")
+        try await Task.sleep(for: .milliseconds(60))
+        let moving = try x()
+        XCTAssertGreaterThan(moving, releasedAt + 5)
+        XCTAssertLessThan(moving, -5, "A quick release still has visible travel to finish")
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertGreaterThan(try x(), moving + 5)
+        XCTAssertTrue(store.libraryOpen)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(store.librarySwipeProgress)
+        XCTAssertEqual(try x(), 0, accuracy: 1)
+    }
+
     func testFingerUpdatesDoNotInvalidateBrowserState() throws {
         try XCTSkipIf(Motion.reduced, "Requires interactive presentation")
         let (store, window, _) = fixture(withSpaces: true)
@@ -360,6 +404,27 @@ import XCTest
         XCTAssertNotNil(store.librarySwipeProgress)
         XCTAssertEqual(publications, 0,
                        "Finger samples should update presentation without invalidating the browser and every tab row")
+    }
+
+    func testFullyDraggedLibraryActivatesBeforeClearingPreview() throws {
+        try XCTSkipIf(Motion.reduced, "Requires interactive presentation")
+        let (store, window, _) = fixture(withSpaces: true)
+        for opening in [true, false] {
+            store.libraryOpen = !opening
+            send(window, phase: .began)
+            send(window, dx: opening ? 1000 : -1000)
+            XCTAssertEqual(store.librarySwipeProgress, opening ? 1 : 0)
+            var clearedAtDestination = false
+            let observation = store.libraryGesture.$progress.dropFirst().sink { progress in
+                if progress == nil { clearedAtDestination = store.libraryOpen == opening }
+            }
+            send(window, phase: .ended)
+            observation.cancel()
+            XCTAssertTrue(clearedAtDestination,
+                          "A completed drag must not briefly lay out the previous destination")
+            XCTAssertEqual(store.libraryOpen, opening)
+            XCTAssertNil(store.librarySwipeProgress)
+        }
     }
 
     /// Run separately with VANE_UI_PERFORMANCE=1. Timings are diagnostic rather than
