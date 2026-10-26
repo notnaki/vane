@@ -154,9 +154,30 @@ private struct LibrarySwipe: ViewModifier {
     private var lastWasConsumed = false
     private var travel = (x: CGFloat(0), horizontal: CGFloat(0), vertical: CGFloat(0))
     private var finished = false
+    @MainActor private struct KeyboardOwner {
+        weak var responder: NSResponder?
+        weak var editorDelegate: AnyObject?
+        let fieldEditor: Bool
+
+        init(window: NSWindow?) {
+            responder = window?.firstResponder
+            let editor = responder as? NSTextView
+            fieldEditor = editor?.isFieldEditor == true
+            editorDelegate = fieldEditor ? editor?.delegate : nil
+        }
+
+        func stillOwnsKeyboard(in window: NSWindow?) -> Bool {
+            guard window?.firstResponder === responder else { return false }
+            // AppKit reuses one field editor across the Library and page Find.
+            // Its delegate identifies the field that currently owns that editor.
+            guard fieldEditor else { return true }
+            return (window?.firstResponder as? NSTextView)?.delegate === editorDelegate
+        }
+    }
     private struct Destination {
         let open: Bool
         let space: UUID?
+        let keyboard: KeyboardOwner
     }
     private var destination: Destination?
 
@@ -199,7 +220,13 @@ private struct LibrarySwipe: ViewModifier {
             store.palette = nil
             Library.open(Library.shared.section, in: store)
         } else if store.libraryOpen {
-            Library.close(store)
+            if destination.keyboard.stillOwnsKeyboard(in: store.window) {
+                Library.close(store)
+            } else {
+                // A newer focus request (for example page Find) owns the keyboard.
+                // Retire Library without releasing that new responder.
+                store.libraryOpen = false
+            }
         }
     }
 
@@ -268,7 +295,10 @@ private struct LibrarySwipe: ViewModifier {
             open = switch action { case .open: true; case .close: false }
         }
         let target: CGFloat = open ? 1 : 0
-        destination = Destination(open: open, space: store.currentSpaceID)
+        let keyboard = !open && destination?.open == false
+            ? destination!.keyboard : KeyboardOwner(window: store.window)
+        let space = open && destination?.open == true ? destination?.space : store.currentSpaceID
+        destination = Destination(open: open, space: space, keyboard: keyboard)
         let finish = { [weak self, weak store] in
             guard let self, self.settlement == token, let store else { return }
             Motion.instant {

@@ -521,6 +521,40 @@ import XCTest
         XCTAssertTrue(store.tabs.contains { $0 === tab })
     }
 
+    func testFindFocusAcquiredDuringClosingSurvivesLanding() async throws {
+        let (store, window, monitor, host) = try await releasedOpening(nativeWindow: true)
+        try await Task.sleep(for: .milliseconds(400))
+        let tab = store.newBlankTab(focus: false, loading: URL(string: "about:blank"))
+        store.current = tab.id
+        try await Task.sleep(for: .milliseconds(100))
+        Library.open(.downloads, in: store)
+        try await Task.sleep(for: .milliseconds(100))
+        send(window, phase: .began)
+        for _ in 0..<5 {
+            send(window, dx: -20)
+            try await Task.sleep(for: .milliseconds(8))
+        }
+        send(window, phase: .ended)
+        XCTAssertFalse(monitor.intendsOpen(in: store))
+        store.openFind()
+        XCTAssertTrue(store.findOpen)
+        func findField(in view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, field.placeholderString == "Find on page" { return field }
+            return view.subviews.lazy.compactMap { findField(in: $0) }.first
+        }
+        let deadline = ContinuousClock.now + .seconds(1)
+        while findField(in: host)?.currentEditor() == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        let field = try XCTUnwrap(findField(in: host))
+        XCTAssertNotNil(field.currentEditor(), "The page Find field must acquire focus")
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertNil(store.librarySwipeProgress)
+        XCTAssertTrue(field.currentEditor() === window.firstResponder,
+                      "Completing the close must preserve Find focus acquired during landing")
+    }
+
     func testEscapeDuringOpeningLandingClosesLibrary() async throws {
         let (store, window, monitor, _) = try await releasedOpening(nativeWindow: true)
         XCTAssertTrue(monitor.intendsOpen(in: store))
