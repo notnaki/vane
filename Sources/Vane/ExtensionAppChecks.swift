@@ -541,7 +541,7 @@ import MachO
             guard let data = try? JSONSerialization.data(withJSONObject: request, options: [.sortedKeys]) else { return }
             print("UA WORKER ENGINE REQUEST " + String(decoding: data, as: UTF8.self)); fflush(stdout)
             let acknowledgement = directory.appendingPathComponent("ua-worker-engine-" + nonce + ".done")
-            let deadline = ContinuousClock.now + .seconds(10)
+            let deadline = ContinuousClock.now + .seconds(30)
             while ContinuousClock.now < deadline && !FileManager.default.fileExists(atPath: acknowledgement.path) {
                 do { try await Task.sleep(for: .milliseconds(20)) } catch { break }
             }

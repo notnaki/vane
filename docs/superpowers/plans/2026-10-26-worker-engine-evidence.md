@@ -21,8 +21,8 @@
 
 - PID reuse: revalidate app and backend executable/PID/kernel start before and after sampling; never signal a backend.
 - Untrusted request: reject malformed/oversized/mismatched host, nonce, context, stage, or non-WebKit executable.
-- Lifetime: hold the matched view/context at most ten seconds after comparison; acknowledge even unavailable sampling so cleanup proceeds.
-- Capture budget: sampling uses one six-second monotonic budget on a background thread; keep owner cancellation/timeout responsive. Verify installed image signatures and UUIDs offline after exit. Preserve system/older-engine observations before rejecting the staged expectation.
+- Lifetime: hold the matched view/context at most thirty seconds after comparison; acknowledge even unavailable sampling so cleanup proceeds.
+- Capture budget: sampling uses one26-second monotonic budget on a background thread; keep owner cancellation/timeout responsive. Verify installed image signatures and UUIDs offline after exit. Preserve system/older-engine observations before rejecting the staged expectation.
 - Image attribution: require actual Binary Images entries and matched native page/process ownership; distinguish system/staged, verify staged UUIDs and Apple signatures.
 - Timing: intermediate passing stages do not sample or add a roundtrip; the final passing stage is eligible only after every original assertion.
 
@@ -34,7 +34,7 @@
 
 - [x] Write failing pure tests for request validation, PID replacement, unsupported targets, sample parsing, and missing/mixed image rejection.
 - [x] Run `python3 -B scripts/test-worker-engine-evidence.py`; confirm failures before implementation.
-- [x] Implement bounded sample capture, ten-second acknowledgement protocol and staged-image verification. Use fixed system executables and bounded subprocess timeouts/output files.
+- [x] Implement bounded sample capture, thirty-second acknowledgement protocol and staged-image verification. Use fixed system executables and bounded subprocess timeouts/output files.
 - [x] Run the new pure tests; confirm all pass.
 
 ### Task 2: Native request and focused workflow
@@ -47,7 +47,7 @@
 - [x] Add explicit workflow observer selection so only the failing unregistered arm runs; retain both as the ordinary default.
 - [x] Build Vane; run focused new guard tests, workflow lint and diff checks.
 - [x] Validate the capture on local task-owned signed Vane, verify exact process cleanup, and obtain independent review.
-- [ ] Push a `[skip ci]` commit; dispatch only the unregistered Safari 27 diagnostic once. Preserve the first failure and actual worker image evidence, or report unavailable evidence without a fix claim.
+- [x] Push a `[skip ci]` commit; dispatch only the unregistered Safari 27 diagnostic once. Preserve the first failure and actual worker image evidence, or report unavailable evidence without a fix claim.
 
 ## Investigation result
 
@@ -62,3 +62,7 @@ The idle-thread interpretation above was incorrect. An ordinary page repeatedly 
 ## Corrected local validation
 
 `signed-local-27-main-thread-owner`: eight original four-stage UA comparisons passed and eight matched background-owner captures passed offline verification. All 32 tracked signing/app/cleanup/backend identities exited. All captures show system WebKit/WebCore/JSC22625.1.29.11.28. This is a finite local macOS27 result, not repair of the intermittent macOS26 failure. Swift build,32runner guards,6capture guards,actionlint and diff checks passed.
+
+## First hosted capture result and bounded cold-tool repair
+
+Run40349741697:8originalUAcomparisons pass; cleanup succeeds. First3captures time out after5seconds and therefore fail inspection. Trials4–8 record all3actual background-owner core images from stagedSafari21625.1.29.18.28 with identity/nativecontinuity records. This establishes observed worker-engine selection in those five passing trials, not the engine in a UA-failing trial or a UAfix. Symbolication is a plausible cold-tool bottleneck, not proven because old timeout handling dropped partial stdout/stderr. Capture timeout now preserves partial tool output, allows25seconds in a single26-second budget, and acknowledges within a30-second native hold. Original90-second primary bound and originalUAassertions remain unchanged. A new negative guard failed before partial-output preservation and passes afterward.

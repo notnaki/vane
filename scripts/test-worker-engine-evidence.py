@@ -63,7 +63,7 @@ class WorkerEngineTests(unittest.TestCase):
                     return WORKER
                 def invoke(command,**kwargs):
                     calls.append(command)
-                    if problem=='sample-timeout':raise subprocess.TimeoutExpired(command,kwargs['timeout'])
+                    if problem=='sample-timeout':raise subprocess.TimeoutExpired(command,kwargs['timeout'],output=b'Sampling completed, processing symbols...',stderr=b'cold symbols')
                     Path(command[-1]).write_text(sample())
                     return subprocess.CompletedProcess(command,1 if problem=='sample-failed' else 0,'','failure' if problem=='sample-failed' else '')
                 capture=engine.WorkerEngineCapture(data,logs,invoke=invoke,threads=lambda pid: [])
@@ -72,6 +72,8 @@ class WorkerEngineTests(unittest.TestCase):
                 self.assertEqual(result['status'],'unavailable')
                 self.assertTrue((data/('ua-worker-engine-'+record['nonce']+'.done')).is_file())
                 self.assertEqual(len(calls),0 if problem in {'host-reused','foreign-worker','wrong-pid','worker-replaced-before-delivery','worker-reused'} else 1)
+                if problem=='sample-timeout':
+                    self.assertIn('processing symbols',(logs/'worker-engine-tool.log').read_text())
 
     def test_sampling_does_not_block_the_owners_timeout_or_cancellation_loop(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -116,7 +116,9 @@ class WorkerEngineCapture:
     def capture(self, request, host, identity):
         result = {"status": "unavailable", "request": request, "app": host,
                   "attribution": "app-owned-service-worker-candidate; context attribution conditional"}
-        deadline = time.monotonic() + 6
+        # Cold staged frameworks can take >5 seconds to symbolicate on hosted
+        # macOS. This budget applies only after the original UA comparison.
+        deadline = time.monotonic() + 26
         try:
             if identity(host["pid"]) != host: raise ValueError("App process identity changed")
             worker = identity(request["pid"])
@@ -132,7 +134,7 @@ class WorkerEngineCapture:
                 raise ValueError("App or background-owner identity changed during thread inventory")
             path = self.evidence / "worker-engine.sample.txt"
             command = ["/usr/bin/sample", str(worker["pid"]), "1", "1", "-mayDie", "-file", str(path)]
-            sampled = self.invoke(command, capture_output=True, text=True, timeout=min(5, max(.01, deadline - time.monotonic())))
+            sampled = self.invoke(command, capture_output=True, text=True, timeout=min(25, max(.01, deadline - time.monotonic())))
             (self.evidence / "worker-engine-tool.log").write_text((sampled.stdout + sampled.stderr)[-65536:])
             if identity(host["pid"]) != host or identity(worker["pid"]) != worker:
                 raise ValueError("App or background-owner identity changed during sampling")
@@ -144,6 +146,11 @@ class WorkerEngineCapture:
             if time.monotonic() >= deadline: raise ValueError("Total capture budget exceeded")
             result["identityVerifiedBeforeAndAfter"] = True
             result["status"] = "captured"
+        except subprocess.TimeoutExpired as error:
+            def decoded(value):
+                return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+            (self.evidence / "worker-engine-tool.log").write_text((decoded(error.stdout) + decoded(error.stderr))[-65536:])
+            result["reason"] = str(error)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             result["reason"] = str(error)
         finally:
@@ -157,7 +164,7 @@ class WorkerEngineCapture:
 
     def close(self):
         if self.thread:
-            self.thread.join(timeout=7)
+            self.thread.join(timeout=27)
             if self.thread.is_alive(): raise ValueError("Bounded capture thread did not finish")
 
 def check_captures(directory, expect_staged=False):
