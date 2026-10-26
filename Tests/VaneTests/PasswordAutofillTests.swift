@@ -344,6 +344,7 @@ import XCTest
         // These fixtures choose native account rows. Establish that user-facing
         // context once, before loading; individual navigations must stand alone.
         let web = tab.web
+        var firstDisplayRequested = false
         try await wait(for: "native continuation fixture to receive user interaction", diagnostics: {
             let running = NSRunningApplication.current
             let openValue = UserDefaults.standard.object(forKey: "NSOpen")
@@ -354,7 +355,11 @@ import XCTest
                 "priorPolicy=\(previousPolicy.rawValue), policyRequestAccepted=\(policyRequestAccepted.map(String.init) ?? "not-requested"), " +
                 "appPolicy=\(app.activationPolicy().rawValue), runningPolicy=\(running.activationPolicy.rawValue), " +
                 "runningActive=\(running.isActive), finishedLaunching=\(running.isFinishedLaunching), appRunning=\(app.isRunning), " +
-                "appDelegateNil=\(app.delegate == nil), NSOpenAbsentOrEmpty=\(openAbsentOrEmpty)"
+                "appDelegateNil=\(app.delegate == nil), NSOpenAbsentOrEmpty=\(openAbsentOrEmpty), " +
+                "isOnActiveSpace=\(window.isOnActiveSpace), isMiniaturized=\(window.isMiniaturized), " +
+                "viewsNeedDisplay=\(window.viewsNeedDisplay), contentNeedsLayout=\(web.needsLayout), " +
+                "contentNeedsDisplay=\(web.needsDisplay), alphaPositive=\(window.alphaValue > 0), " +
+                "firstDisplayRequested=\(firstDisplayRequested)"
         }) {
             // NSApplication.run normally fetches and dispatches activation events.
             // XCTest drives its own loop; process existing AppKit state events only
@@ -363,6 +368,13 @@ import XCTest
                 guard let event = app.nextEvent(matching: .appKitDefined, until: Date.distantPast,
                                                 inMode: .default, dequeue: true) else { break }
                 app.sendEvent(event)
+            }
+            if !firstDisplayRequested, app.isActive, window.isKeyWindow {
+                firstDisplayRequested = true
+                // AppKit normally completes layout and deferred drawing during
+                // its event loop. Request that phase once for this owned window.
+                window.layoutIfNeeded()
+                window.displayIfNeeded()
             }
             return NSRunningApplication.current.isFinishedLaunching && app.isActive &&
                 window.isKeyWindow && window.isVisible && window.occlusionState.contains(.visible) &&
