@@ -134,7 +134,7 @@ static void Emit(NSDictionary *record) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ [self poll:epoch]; });
             return;
         }
-        [self inspect:result];
+        @autoreleasepool { [self inspect:result]; }
     }];
 }
 - (void)inspect:(NSDictionary *)result {
@@ -180,11 +180,17 @@ static void Emit(NSDictionary *record) {
     self.context = nil; self.controller.delegate = nil; self.controller = nil; self.store = nil; self.pool = nil;
     if (self.folder && ![NSFileManager.defaultManager removeItemAtURL:self.folder error:nil]) self.mismatch = YES;
     [self.window close]; self.window = nil;
-    [WKWebsiteDataStore removeDataStoreForIdentifier:self.storeID completionHandler:^(NSError *error) {
-        Emit(@{ @"event": @"summary", @"completedStages": @(self.stage), @"mismatchOrHarnessFailure": @(self.mismatch),
-            @"ownedStoreRemovalCallbackSucceeded": error == nil ? @YES : @NO, @"backendRetirementVerified": @NO });
-        exit(self.mismatch || error ? 1 : 0);
-    }];
+    // inspect: still owns the popup configuration on this callback's stack. Let
+    // that callback return before asking WebKit to retire the named store.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [WKWebsiteDataStore removeDataStoreForIdentifier:self.storeID completionHandler:^(NSError *error) {
+            NSString *cleanupError = error.localizedDescription ?: @"";
+            Emit(@{ @"event": @"summary", @"completedStages": @(self.stage), @"mismatchOrHarnessFailure": @(self.mismatch),
+                @"ownedStoreRemovalCallbackSucceeded": error == nil ? @YES : @NO, @"backendRetirementVerified": @NO,
+                @"storeRemovalError": [cleanupError substringToIndex:MIN(cleanupError.length, 2048)] });
+            exit(self.mismatch || error ? 1 : 0);
+        }];
+    });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         Emit(@{ @"event": @"cleanup-timeout", @"backendRetirementVerified": @NO }); exit(2);
     });
