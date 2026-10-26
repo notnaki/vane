@@ -1,0 +1,67 @@
+name: signed-extension-ua-diagnostic
+
+on:
+  pull_request:
+    paths:
+      - Sources/Vane/ExtensionUserAgent.swift
+      - Sources/Vane/ExtensionAppChecks.swift
+      - scripts/check-extension-ua.py
+      - scripts/test-extension-ua-runner.py
+      - .github/workflows/signed-extension-ua.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-extension-ua-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  signed-normal-app:
+    name: Signed Vane normal-app UA comparison
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Bind exact candidate product and existing cleanup inputs
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Sources/Vane/ExtensionUserAgent.swift)" = e44a762987848113cac89c66a9450174b2d12771
+          test "$(git hash-object Tests/VaneTests/ExtensionUserAgentTests.swift)" = 8f7f420c88fef8d5b063f3c90acafff7f6fa86c2
+          test "$(git hash-object Sources/Vane/Extensions.swift)" = a60171d74f95eed21126dd8005caf548bab7f33f
+          test "$(git hash-object Sources/Vane/BrowserChecks.swift)" = 076bee479e904056e567216e40555e21f4f3f133
+          test "$(git hash-object Sources/Vane/main.swift)" = 4b2a280a8540dda130b403129de7d7f7d14a50cf
+          test "$(git hash-object Vane.entitlements)" = abf2127ad3263a848d63b59d720f9b468f7611da
+          test "$(git hash-object scripts/run-native-tests.py)" = d9129128574ec0bedaeb1094d20addae1ed85c57
+          git rev-parse HEAD
+          swift --version
+          xcodebuild -version
+          sw_vers
+
+      - name: Signed-runner pure safety guards
+        run: python3 -B scripts/test-extension-ua-runner.py
+
+      - name: Build actual Vane debug executable
+        run: swift build -c debug
+
+      - name: Eight fresh signed normal-app comparisons, stop at first failure
+        timeout-minutes: 22
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/Downloads"
+          python3 -B scripts/check-extension-ua.py --binary .build/debug/vane --evidence-dir "$RUNNER_TEMP/vane-signed-extension-ua-logs" 2>&1 | tee "$RUNNER_TEMP/vane-signed-extension-ua.log"
+
+      - name: Preserve signed comparison log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: signed-vane-ua-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/vane-signed-extension-ua.log
+            ${{ runner.temp }}/vane-signed-extension-ua-logs/
+          if-no-files-found: warn
+          retention-days: 14
