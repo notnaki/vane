@@ -102,7 +102,7 @@ jobs:
         run: swift build --build-system native -c debug --build-tests
 
       - name: Bundle
-        run: ./make-app.sh debug
+        run: ./make-app.sh debug --skip-app-build
 
       - name: Package shared debug runtime
         run: |

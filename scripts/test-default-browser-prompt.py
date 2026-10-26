@@ -34,7 +34,8 @@ with tempfile.TemporaryDirectory(prefix="vane-default-browser-") as directory:
     # Replace only toolchain/signing boundaries; the real shell script emits the plist.
     commands = fixture / "commands"
     commands.mkdir()
-    executable(commands / "swift", "exit 0\n")
+    build_log = fixture / "swift-build.log"
+    executable(commands / "swift", 'printf "%s\\n" "$*" >> "$VANE_SWIFT_BUILD_LOG"\n')
     executable(commands / "xcrun", """
 while [ "$#" -gt 0 ]; do
   if [ "$1" = -o ]; then
@@ -61,7 +62,7 @@ fi
     for configuration, identity, version, expected in cases:
         environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
                        "TMPDIR": str(fixture), "SIGN_ID": identity,
-                       "VANE_VERSION": version, "VANE_BUILD": "1"}
+                       "VANE_VERSION": version, "VANE_BUILD": "1", "VANE_SWIFT_BUILD_LOG": str(build_log)}
         subprocess.run(["bash", str(fixture / "make-app.sh"), configuration],
                        env=environment, check=True, capture_output=True, text=True)
         with (fixture / "Vane.app/Contents/Info.plist").open("rb") as file:
@@ -72,4 +73,20 @@ fi
         for font in ("Excalifont-Regular.ttf", "Nunito-Regular.ttf", "ComicShanns-Regular.ttf"):
             assert (bundled / font).read_bytes() == (ROOT / "Sources/Vane/EaselFonts" / font).read_bytes()
 
-print("PASS: local, debug, ad-hoc, and prerelease bundles suppress the default-browser prompt")
+    assert len(build_log.read_text().splitlines()) == len(cases), "Default packaging still compiles the app"
+    build_log.unlink()
+    environment.update(SIGN_ID="", VANE_VERSION="1.2.3")
+    subprocess.run(["bash", str(fixture / "make-app.sh"), "debug", "--skip-app-build"],
+                   env=environment, check=True, capture_output=True, text=True)
+    assert not build_log.exists(), "Prebuilt CI packaging must not invoke a second SwiftPM engine"
+    assert (fixture / "Vane.app/Contents/MacOS/Vane").read_bytes() == (fixture / ".build/debug/vane").read_bytes()
+    result = subprocess.run(["bash", str(fixture / "make-app.sh"), "release", "--skip-app-build"],
+                            env=environment, capture_output=True)
+    assert result.returncode != 0, "Release packaging must retain its build validation"
+    (fixture / ".build/debug/vane").unlink()
+    result = subprocess.run(["bash", str(fixture / "make-app.sh"), "debug", "--skip-app-build"],
+                            env=environment, capture_output=True)
+    assert result.returncode != 0, "Prebuilt packaging requires an existing executable"
+    assert not build_log.exists()
+
+print("PASS: prompt policy, default build, and debug-only prebuilt packaging")

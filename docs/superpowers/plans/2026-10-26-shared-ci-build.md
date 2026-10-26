@@ -23,3 +23,9 @@
 - [x] Update workflow DAG and executable aggregate-gate tests: one debug compilation/bundle, immutable runtime upload, no shard rebuilds, common fixtures once, docs-only skips, and full failure propagation.
 - [ ] Update contributor documentation; run focused fixtures and diff checks; push and create PR. Independently review the current head, validate a live shared-build matrix and a genuine docs-only PR run, fix infrastructure findings, and squash merge.
 - [ ] Verify merge and archive only this task's worktree after verifying no task-owned app remains.
+
+## Execution evidence
+
+- Local scope, archive, and aggregate fixtures passed; 2,078 aggregate state combinations reject unexpected skips and failures. A real resource-aware SwiftPM package passed discovery and execution after restoration through the runtime archive helper.
+- Temporary documentation-only PR #526 passed GitHub Actions run 40330997642: diff/scope and final gate succeeded, all macOS workers skipped. Closed without merging its temporary documentation.
+- Independent review of `8988dc4` identified the packager's plain SwiftPM call as a second compilation on Swift 6.4's different default engine. Added a failing real-packager fixture, then a debug-only `--skip-app-build` option for CI assembly; normal and release packaging retain their build checks.

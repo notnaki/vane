@@ -7,6 +7,14 @@ cd "$(dirname "$0")"
 CONF="${1:-release}"
 APP="Vane.app"
 BIN=".build/$CONF/vane"
+SKIP_APP_BUILD=false
+case "${2:-}" in
+  "") ;;
+  --skip-app-build)
+    [ "$CONF" = debug ] || { echo '--skip-app-build is only supported for debug CI assembly' >&2; exit 1; }
+    SKIP_APP_BUILD=true ;;
+  *) echo "Unknown packaging option: $2" >&2; exit 1 ;;
+esac
 
 VERSION="${VANE_VERSION:-}"
 [ -z "$VERSION" ] && VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
@@ -21,7 +29,9 @@ if [ "$CONF" = release ] && [ -n "${SIGN_ID:-}" ] && [ "${SIGN_ID:-}" != - ] \
 fi
 
 echo ">> building ($CONF)..."
-swift build -c "$CONF" >/dev/null
+# CI already built with its chosen SwiftPM engine. Re-entering the default
+# engine here can compile again and replace .build/debug with different products.
+if [ "$SKIP_APP_BUILD" = false ]; then swift build -c "$CONF" >/dev/null; fi
 [ -x "$BIN" ] || { echo "no binary at $BIN"; exit 1; }
 
 echo ">> building update installer..."

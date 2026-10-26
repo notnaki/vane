@@ -71,7 +71,7 @@ def main():
         assert dependencies(section) == ({'changes', 'build'} if name in ('native', 'packaging') else {'changes'})
     build, native, packaging = (sections[name] for name in ('build', 'native', 'packaging'))
     assert 'swift build --build-system native -c debug --build-tests' in build
-    assert 'run: ./make-app.sh debug' in build
+    assert 'run: ./make-app.sh debug --skip-app-build\n' in build
     assert 'uses: actions/cache/restore@v6' in build and 'uses: actions/cache/save@v6' in build
     assert "github.event_name == 'push' && github.ref == 'refs/heads/main'" in build
     assert 'scripts/ci-build-artifact.py pack' in build
