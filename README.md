@@ -209,9 +209,11 @@ Follow [AGENTS.md](AGENTS.md) for isolated branches, relevant validation,
 independent PR review, required CI, and squash-merging. Use focused local checks
 for the affected behavior; documentation changes do not need the full app suite.
 
-Report issues with the macOS version, Vane version, steps, and expected behavior
+Report ordinary bugs with the macOS version, Vane version, steps, and expected behavior
 in the [issue tracker](https://github.com/notnaki/vane/issues). Avoid including
 passwords, tokens, personal browsing data, or private documents in reports.
+For security vulnerabilities, follow the [security policy](SECURITY.md) and
+[report privately](https://github.com/notnaki/vane/security/advisories/new).
 
 ## License
 
