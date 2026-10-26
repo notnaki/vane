@@ -36,7 +36,7 @@ jobs:
           from pathlib import Path
           root = Path('Tests/Diagnostics/PublicWorkerUA')
           manifest = root / 'SHA256.json'
-          assert hashlib.sha256(manifest.read_bytes()).hexdigest() == 'd9eb2f435688c544ad52f774ec7a1d3e0ddd52efb404053ada5c07f9b3f48c75'
+          assert hashlib.sha256(manifest.read_bytes()).hexdigest() == 'c5cf33ec39cce0125b18f04bde01107c7876be3528586a6e0e09f37772c392e2'
           inputs = json.loads(manifest.read_text())
           assert len(inputs) == 14 and not manifest.is_symlink()
           actual = {str(path.relative_to(root)) for path in root.rglob('*') if path.is_file() or path.is_symlink()}

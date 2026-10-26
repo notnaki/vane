@@ -101,7 +101,11 @@ static void Emit(NSDictionary *record) {
     // from Vane requires SPI and is intentionally not claimed by this candidate.
     [WKWebExtension extensionWithResourceBaseURL:self.folder completionHandler:^(WKWebExtension *extension, NSError *error) {
         if (self.finishing || self.epoch != epoch) return;
-        if (!extension || error || extension.errors.count) { [self fail:@"Synthetic extension could not be parsed"]; return; }
+        if (!extension || error || extension.errors.count) {
+            NSString *detail = [NSString stringWithFormat:@"Synthetic extension could not be parsed: %@; %@",
+                error.localizedDescription ?: @"no callback error", extension.errors ?: @[]];
+            [self fail:[detail substringToIndex:MIN(detail.length, 2048)]]; return;
+        }
         self.context = [[WKWebExtensionContext alloc] initForExtension:extension];
         self.context.uniqueIdentifier = self.nonce;
         self.context.baseURL = [NSURL URLWithString:[NSString stringWithFormat:@"webkit-extension://%@/", self.nonce]];
@@ -178,7 +182,7 @@ static void Emit(NSDictionary *record) {
     [self.window close]; self.window = nil;
     [WKWebsiteDataStore removeDataStoreForIdentifier:self.storeID completionHandler:^(NSError *error) {
         Emit(@{ @"event": @"summary", @"completedStages": @(self.stage), @"mismatchOrHarnessFailure": @(self.mismatch),
-            @"ownedStoreRemovalCallbackSucceeded": @(error == nil), @"backendRetirementVerified": @NO });
+            @"ownedStoreRemovalCallbackSucceeded": error == nil ? @YES : @NO, @"backendRetirementVerified": @NO });
         exit(self.mismatch || error ? 1 : 0);
     }];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
