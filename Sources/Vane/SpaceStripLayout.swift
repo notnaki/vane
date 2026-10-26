@@ -9,6 +9,7 @@ struct SpaceStripLayout: Equatable {
     let iconSize: CGFloat
     let showsButtonBackground: Bool
     let scrolls: Bool
+    let showsAllIcons: Bool
 
     init(count: Int, availableWidth: CGFloat) {
         let count = max(0, count)
@@ -25,6 +26,9 @@ struct SpaceStripLayout: Equatable {
         // At the minimum sidebar width, preserve distinct targets even if that means
         // scrolling sooner. At the standard width, all ten Spaces fit without scrolling.
         scrolls = count > 10 || itemWidth * CGFloat(count) > width + 0.5
+        // Every fitted slot has room for its icon. Only overflow needs the quieter,
+        // compact markers; the selected Space still keeps its icon in that mode.
+        showsAllIcons = itemWidth * CGFloat(count) <= width + 0.5
     }
 }
 

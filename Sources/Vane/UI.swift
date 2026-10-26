@@ -2966,9 +2966,9 @@ private struct SpaceIcons: View {
     }
 }
 
-/// One dot per space, the current one wearing the space's own icon. There is no "no spaces"
-/// case any more: an ordinary window is always in a Space, so exactly one dot is always the
-/// current one. Only a private window has none, and it does not draw this at all.
+/// Each Space keeps its own icon when the footer can fit the strip. Selection brightens
+/// the current icon; overflowing strips use dots around the selected icon instead.
+/// Only a private window has no Spaces, and it does not draw this at all.
 private struct SpaceDots: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let layout: SpaceStripLayout
@@ -3023,9 +3023,8 @@ private struct SpaceDots: View {
         .accessibilityHidden(!store.creatingSpace)
     }
 
-    /// Both shapes are always in the tree, cross-fading on one number, so a live swipe can
-    /// hand the icon over a fraction at a time. A transition can only be all or nothing, and
-    /// mid-swipe the answer to "which Space are you in" genuinely is "between two".
+    /// Both shapes stay in the tree. A live swipe hands emphasis between visible icons,
+    /// or cross-fades dot and icon when the strip needs compact markers.
     @ViewBuilder private func dot(_ space: Space, lit: Double) -> some View {
         let here = store.currentSpaceID == space.id
         let icon = space.icon ?? "cloud"
@@ -3040,12 +3039,12 @@ private struct SpaceDots: View {
         ZStack {
             Circle().fill(hovered == space.id && !layout.showsButtonBackground ? Look.inkSecondary : Look.dotFill)
                 .frame(width: layout.dotSize, height: layout.dotSize)
-                .opacity(1 - lit)
+                .opacity(layout.showsAllIcons ? 0 : 1 - lit)
                 .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * (1 - lit))
             Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
                 .font(.system(size: layout.iconSize))
                 .foregroundStyle(Look.inkPrimary)
-                .opacity(lit)
+                .opacity(layout.showsAllIcons ? (hovered == space.id ? 1 : 0.6 + 0.4 * lit) : lit)
                 .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * lit)
         }
         .animation(gesture.swiping ? nil : animation, value: here)
@@ -3090,7 +3089,7 @@ private struct SpaceDots: View {
     }
 
     /// How lit each dot is, 0…1. Idle that is 1 for the current Space and 0 for the rest;
-    /// while a swipe is live the current dot hands its icon to the neighbour the fingers are
+    /// while a swipe is live the current icon hands emphasis to the neighbour the fingers are
     /// heading for, in step with them, so the footer says where the gesture will land before
     /// it lands. At the ends nothing is handed over — the strip is only rubber-banding.
     private func weights(_ list: [Space]) -> [UUID: Double] {

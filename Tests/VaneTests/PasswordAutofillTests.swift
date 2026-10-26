@@ -370,21 +370,20 @@ import XCTest
         let app = NSApplication.shared, running = NSRunningApplication.current
         let owned = app.orderedWindows
         let ownedRows = owned.prefix(16).map { candidate in
-            "id=\(candidate.windowNumber), level=\(candidate.level.rawValue), " +
+            "appKitNumber=\(candidate.windowNumber), level=\(candidate.level.rawValue), " +
                 "visible=\(candidate.isVisible), key=\(candidate.isKeyWindow), " +
                 "occlusion=\(candidate.occlusionState.rawValue), alpha=\(candidate.alphaValue)"
         }.joined(separator: "; ")
         let application = "appHidden=\(app.isHidden), runningHidden=\(running.isHidden), " +
             "appOcclusion=\(app.occlusionState.rawValue), " +
             "frontmostPID=\(NSWorkspace.shared.frontmostApplication?.processIdentifier.description ?? "unavailable"), " +
-            "ownWindowID=\(window.windowNumber), ownWindowLevel=\(window.level.rawValue), " +
-            "ownWindowOrderedIndex=\(window.orderedIndex), parentWindowID=\(window.parent?.windowNumber.description ?? "none"), " +
+            "ownAppKitWindowNumber=\(window.windowNumber), ownWindowLevel=\(window.level.rawValue), " +
+            "ownWindowOrderedIndex=\(window.orderedIndex), parentAppKitWindowNumber=\(window.parent?.windowNumber.description ?? "none"), " +
             "tabbedWindowCount=\(window.tabbedWindows?.count ?? 0), " +
             "orderedAppWindowCount=\(owned.count), orderedAppWindows=[\(ownedRows)]"
-        guard let ownID = CGWindowID(exactly: window.windowNumber), ownID != kCGNullWindowID,
-              let rows = CGWindowListCopyWindowInfo([.optionOnScreenAboveWindow, .optionIncludingWindow], ownID)
+        guard let rows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID)
                 as? [[String: Any]] else {
-            return application + ", windowServerRows=unavailable"
+            return application + ", processOwnedWindowServerRows=unavailable, particularWindowCorrelation=UNKNOWN"
         }
         func number(_ row: [String: Any], _ key: CFString) -> NSNumber? { row[key as String] as? NSNumber }
         func bounds(_ row: [String: Any]) -> CGRect? {
@@ -399,25 +398,11 @@ import XCTest
                 "alpha=\(number(row, kCGWindowAlpha)?.description ?? "unavailable"), " +
                 "onscreen=\(number(row, kCGWindowIsOnscreen)?.description ?? "unavailable")"
         }
-        let ownRow = rows.first { number($0, kCGWindowNumber)?.uint32Value == ownID }
-        let ownBounds = ownRow.flatMap(bounds)
-        let intersecting = rows.filter { row in
-            guard number(row, kCGWindowNumber)?.uint32Value != ownID,
-                  number(row, kCGWindowIsOnscreen)?.boolValue == true,
-                  let alpha = number(row, kCGWindowAlpha)?.doubleValue, alpha > 0,
-                  let frame = bounds(row), let ownBounds else { return false }
-            return frame.intersects(ownBounds)
-        }
-        let higher = intersecting.filter {
-            guard let level = number($0, kCGWindowLayer)?.intValue else { return false }
-            return level > window.level.rawValue
-        }.count
-        // Bounds intersection identifies potential coverage, not opaque pixel coverage.
-        let serverRows = rows.prefix(16).map(state).joined(separator: "; ")
-        return application + ", ownWindowServerRowPresent=\(ownRow != nil), " +
-            "ownWindowServerRow={\(ownRow.map(state) ?? "unavailable")}, " +
-            "aboveIntersectingBounds=\(intersecting.count), higherLayerIntersectingBounds=\(higher), " +
-            "windowServerRowCount=\(rows.count), windowServerRows=[\(serverRows)]"
+        let processID = ProcessInfo.processInfo.processIdentifier
+        let processRows = rows.filter { number($0, kCGWindowOwnerPID)?.int32Value == processID }
+        let serverRows = processRows.prefix(16).map(state).joined(separator: "; ")
+        return application + ", processOwnedWindowServerRowCount=\(processRows.count), " +
+            "particularWindowCorrelation=UNKNOWN, processOwnedWindowServerRows=[\(serverRows)]"
     }
 
     private func continuationLoadState(_ tab: Tab, web: WKWebView, requestedURL: URL) -> String {
