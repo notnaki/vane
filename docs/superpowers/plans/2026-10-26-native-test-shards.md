@@ -30,9 +30,15 @@
 
 **Interfaces:** `plan --inventory PATH --index N --count N --manifest PATH --filter-output PATH` writes the selected exact class regex and a JSON coverage manifest; `verify --manifest PATH --log PATH` rejects missing/incomplete test execution. Duration weights are advisory, never coverage selectors.
 
-- [ ] Write executable fixture tests for full/disjoint coverage, deterministic balance, new classes, invalid discovery/indices/weights, and missing/skipped/failed log cases; observe failure before implementation.
-- [ ] Implement the planner/verifier and duration estimates derived from Actions run 40315504860, then run fixture tests.
-- [ ] Convert native job to a four-member matrix with `fail-fast: false`; discover after test build, execute selected tests via the existing wrapper, verify completion, preserve per-shard artifacts, restrict cache writes to shard 1.
-- [ ] Update workflow regression fixtures and contributor instructions; run focused Python fixtures and diff checks. Replay the planner/verifier against a real native log to characterize identifiers.
+- [x] Write executable fixture tests for full/disjoint coverage, deterministic balance, new classes, invalid discovery/indices/weights, and missing/skipped/failed log cases; observe failure before implementation.
+- [x] Implement the planner/verifier and duration estimates derived from Actions run 40315504860, then run fixture tests.
+- [x] Convert native job to a four-member matrix with `fail-fast: false`; discover after test build, execute selected tests via the existing wrapper, verify completion, preserve per-shard artifacts, restrict cache writes to shard 1.
+- [x] Update workflow regression fixtures and contributor instructions; run focused Python fixtures and diff checks. Replay the planner/verifier against a real native log to characterize identifiers.
 - [ ] Commit, push, open PR, obtain independent review, fix actionable findings, and repeat relevant checks/review. Wait for current required CI and mergeability before squash merge.
 - [ ] Verify merged SHA; inspect and archive only this task's worktree after verifying no owned app remains.
+
+## Execution evidence
+
+- Initial fixtures failed before implementation; six planner/verifier fixtures and 79 aggregate gate cases then passed, along with 37 retirement-driver fixtures and source/cache/release-policy fixtures.
+- Replayed 2,126 historical native test identifiers with complete, disjoint assignment. Independent review of `3837953` found no actionable issues and a real SwiftPM probe verified discovery/filter/log identifier agreement.
+- CI exposed the real bundle's early constructor diagnostic in SwiftPM discovery output. Added a failing regression before accepting only the exact successful bootstrap line; malformed identifiers, unsuccessful bootstrap diagnostics, and unknown output still fail closed. The actual preserved CI inventory contains 1,930 tests.

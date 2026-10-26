@@ -62,6 +62,22 @@ class NativeTestShardsTests(unittest.TestCase):
         self.assertEqual([len(group) for group in groups], [2, 2, 2, 2])
         self.assertEqual(sorted(test for group in groups for test in group), tests)
 
+    def test_accepts_successful_bootstrap_diagnostic_merged_into_swift_discovery(self):
+        manifest, pattern = self.plan([
+            "VaneTests.A/testOne", "VaneTests.A/testTwo",
+            "Native test host bootstrap: beforeAppKit=true, configured=true",
+        ], count=1)
+        self.assertEqual(manifest["tests"], ["VaneTests.A/testOne", "VaneTests.A/testTwo"])
+        self.assertIsNotNone(re.search(pattern, "VaneTests.A/testOne"))
+        for diagnostic in (
+            "Native test host bootstrap: beforeAppKit=false, configured=true",
+            "Native test host bootstrap: beforeAppKit=true, configured=false",
+            "Unexpected discovery diagnostic",
+        ):
+            with self.subTest(diagnostic=diagnostic):
+                (self.root / "shard-1.json").unlink(missing_ok=True)
+                self.plan(["VaneTests.A/testOne", diagnostic], count=1, success=False)
+
     def test_rejects_invalid_discovery_and_shard_parameters(self):
         for tests, index, count in [([], 1, 2), (["warning: no tests"], 1, 2),
                                     (["VaneTests.A/test", "VaneTests.A/test"], 1, 1),

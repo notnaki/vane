@@ -12,6 +12,7 @@ import sys
 
 IDENTIFIER = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/[^\s/]+")
 COMPLETED = re.compile(r"Test Case '-\[([^ ]+) ([^ ]+)\]' (passed|skipped|failed) \(")
+BOOTSTRAP_DIAGNOSTIC = "Native test host bootstrap: beforeAppKit=true, configured=true"
 
 
 def validate_tests(tests):
@@ -24,7 +25,10 @@ def validate_tests(tests):
 
 
 def plan(arguments):
-    tests = [line.strip() for line in arguments.inventory.read_text().splitlines() if line.strip()]
+    # SwiftPM merges the test bundle's stderr into list output. The test-only
+    # constructor emits this success diagnostic even when no tests execute.
+    tests = [line.strip() for line in arguments.inventory.read_text().splitlines()
+             if line.strip() and line.strip() != BOOTSTRAP_DIAGNOSTIC]
     validate_tests(tests)
     if not 1 <= arguments.index <= arguments.count:
         raise ValueError("shard index must be between 1 and count")
