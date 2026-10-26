@@ -12,13 +12,15 @@ import SwiftUI
     }
 
     private func sidebarDockingAnchor(for store: TabStore, in host: NSView) throws -> NSView {
-        // RED control: retain the existing unscoped selector until the fix delta.
-        _ = store
-        func scroll(in view: NSView) -> NSScrollView? {
-            if let scroll = view as? NSScrollView { return scroll }
-            return view.subviews.lazy.compactMap { scroll(in: $0) }.first
-        }
-        return try XCTUnwrap(scroll(in: host))
+        // This store's native sections background shares the sidebar's outer docking transform.
+        let sections = try XCTUnwrap(store.spaceGesture.sectionsView)
+        XCTAssertTrue(store.profileVisible)
+        XCTAssertTrue(store.window === host.window)
+        XCTAssertTrue(store.window?.contentView === host)
+        XCTAssertTrue(sections.window === host.window)
+        XCTAssertTrue(sections.isDescendant(of: host))
+        XCTAssertFalse(sections.isHiddenOrHasHiddenAncestor)
+        return sections
     }
 
     func testDockingSampleExcludesParkedProfileAndTracksLiveSidebarMovement() async throws {
@@ -307,6 +309,16 @@ import SwiftUI
         host.layoutSubtreeIfNeeded()
         let viewport = try sidebarDockingAnchor(for: arriving, in: host)
         func presentedOrigin() throws -> CGPoint {
+            XCTAssertTrue(arriving === target, "The final hop must reuse the cached target")
+            XCTAssertEqual(arriving.profileID, secondProfile.id)
+            XCTAssertTrue(arriving.profileVisible)
+            XCTAssertTrue(arriving.window === window)
+            XCTAssertTrue(window.contentView === host)
+            XCTAssertTrue(arriving.spaceGesture.sectionsView === viewport,
+                          "Both samples must observe the same live sections anchor")
+            XCTAssertTrue(viewport.window === window)
+            XCTAssertTrue(viewport.isDescendant(of: host))
+            XCTAssertFalse(viewport.isHiddenOrHasHiddenAncestor)
             let layer = try XCTUnwrap(viewport.layer?.presentation())
             return layer.convert(.zero, to: host.layer?.presentation())
         }

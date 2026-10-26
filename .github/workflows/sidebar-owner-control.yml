@@ -16,7 +16,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Bind controlled test source
-        run: test "$(git hash-object Tests/VaneTests/SidebarVisibilityTests.swift)" = c3addb4dc4270b5dde5350d493118a9e77aedb45
+        run: test "$(git hash-object Tests/VaneTests/SidebarVisibilityTests.swift)" = 7cd62ceeac720b7eefda32a893a37fb5b334dbbc
       - name: Existing owned-runner safety guards
         run: python3 -B scripts/test-native-fixture-runner.py
       - name: Build controlled native test
