@@ -185,8 +185,23 @@ import XCTest
         try await loadInput()
         let port = try XCTUnwrap(server.port)
         let url = URL(string: "http://127.0.0.1:\(port)/next")!
-        tab.web.load(URLRequest(url: url))
-        try await wait { self.tab.loading && server.request != nil }
+        var navigationStages: [String] = []
+        #if DEBUG
+        let previousNavigationObserver = tab.navigationStageObserver
+        tab.navigationStageObserver = { event in
+            previousNavigationObserver?(event)
+            guard navigationStages.count < 32 else { return }
+            navigationStages.append("\(event.stage){\(event.detail.prefix(256))}")
+        }
+        defer { tab.navigationStageObserver = previousNavigationObserver }
+        #endif
+        let navigationReturned = tab.web.load(URLRequest(url: url)) != nil
+        do {
+            try await wait { self.tab.loading && server.request != nil }
+        } catch {
+            NativeFixtureDiagnostics.emit("upload held-navigation readiness failed: navigationReturned=\(navigationReturned), tabLoading=\(tab.loading), webLoading=\(tab.web.isLoading), oldDocumentTitleMatches=\(tab.web.title == "Upload fixture"), destinationURLMatches=\(tab.web.url == url), server={\(server.diagnosticSummary)}, navigationStages=\(navigationStages)")
+            throw error
+        }
         // The old document is still interactive while the HTTP response is held.
         let panel = try await openPicker()
         server.respond()
@@ -252,18 +267,38 @@ import XCTest
     private let listener: NWListener
     var port: UInt16?
     var request: NWConnection?
+    private var listenerState = "setup"
+    private var acceptedConnections = 0
+    private var receiveCallbacks = 0
+    private var receivedBytes = 0
+    private var receiveCompleted = false
+    private var receiveError = "none"
+
+    var diagnosticSummary: String {
+        "listener=\(listenerState), accepted=\(acceptedConnections), receiveCallbacks=\(receiveCallbacks), receivedBytes=\(receivedBytes), receiveCompleted=\(receiveCompleted), receiveError=\(receiveError), requestRecorded=\(request != nil)"
+    }
 
     init() throws {
         listener = try NWListener(using: .tcp, on: .any)
         listener.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
+                self?.listenerState = String(describing: state).prefix(160).description
                 if case .ready = state { self?.port = self?.listener.port?.rawValue }
             }
         }
         listener.newConnectionHandler = { [weak self] connection in
+            Task { @MainActor in self?.acceptedConnections += 1 }
             connection.start(queue: .main)
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { _, _, _, _ in
-                Task { @MainActor in self?.request = connection }
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, complete, error in
+                let byteCount = data?.count ?? 0
+                let failure = error.map { String(describing: $0).prefix(160).description } ?? "none"
+                Task { @MainActor in
+                    self?.receiveCallbacks += 1
+                    self?.receivedBytes += byteCount
+                    self?.receiveCompleted = complete
+                    self?.receiveError = failure
+                    self?.request = connection
+                }
             }
         }
         listener.start(queue: .main)

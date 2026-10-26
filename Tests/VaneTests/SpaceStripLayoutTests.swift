@@ -4,6 +4,38 @@ import XCTest
 @testable import vane
 
 final class SpaceStripLayoutTests: XCTestCase {
+    func testEverySpaceKeepsItsIconWhenTenTargetsFit() {
+        for count in 1...10 {
+            let layout = SpaceStripLayout(count: count, availableWidth: 132)
+            XCTAssertTrue(layout.showsAllIcons, "Space count: \(count)")
+            XCTAssertGreaterThanOrEqual(layout.itemWidth, layout.iconSize + 2)
+            XCTAssertLessThanOrEqual(layout.itemWidth * CGFloat(count), 132)
+        }
+    }
+
+    func testOverflowUsesCompactMarkersWithoutChangingTargetSizes() {
+        let ten = SpaceStripLayout(count: 10, availableWidth: 132)
+        let eleven = SpaceStripLayout(count: 11, availableWidth: 132)
+        XCTAssertTrue(ten.showsAllIcons)
+        XCTAssertFalse(eleven.showsAllIcons)
+        XCTAssertEqual(eleven.itemWidth, ten.itemWidth)
+        XCTAssertEqual(eleven.iconSize, ten.iconSize)
+    }
+
+    func testNarrowViewportFallsBackOnlyUntilTheIconsFit() {
+        let narrow = SpaceStripLayout(count: 5, availableWidth: 68)
+        let fitting = SpaceStripLayout(count: 5, availableWidth: 80)
+        XCTAssertFalse(narrow.showsAllIcons)
+        XCTAssertTrue(fitting.showsAllIcons)
+        XCTAssertGreaterThanOrEqual(fitting.itemWidth, fitting.iconSize + 2)
+    }
+
+    func testWideFooterKeepsEveryIconBeyondTenSpaces() {
+        let layout = SpaceStripLayout(count: 12, availableWidth: 400)
+        XCTAssertTrue(layout.showsAllIcons)
+        XCTAssertLessThanOrEqual(layout.itemWidth * 12, 400)
+    }
+
     func testThreeSpacesUseArcSpacingAndSizes() {
         let layout = SpaceStripLayout(count: 3, availableWidth: 154)
         XCTAssertEqual(layout.itemWidth, 34)
