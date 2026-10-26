@@ -43,6 +43,19 @@ import XCTest
         return last - first + 1
     }
 
+    private func sample(_ host: NSView) throws -> Double {
+        host.layoutSubtreeIfNeeded()
+        let image = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: image)
+        var total = 0.0
+        for y in 0..<image.pixelsHigh {
+            for x in 0..<image.pixelsWide {
+                total += Double(image.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB)?.redComponent ?? 0)
+            }
+        }
+        return total
+    }
+
     func testSwipeProgressDoesNotResizeTheIcon() throws {
         let widths = try [0.0, 0.25, 0.5, 0.75, 1.0].map {
             glyphWidth(try render(emphasis: $0, showIcons: true))
@@ -93,44 +106,58 @@ import XCTest
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil; window.close() }
         try await Task.sleep(for: .milliseconds(60))
-        func sample() throws -> Double {
-            host.layoutSubtreeIfNeeded()
-            let image = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-            host.cacheDisplay(in: host.bounds, to: image)
-            var total = 0.0
-            for y in 0..<image.pixelsHigh {
-                for x in 0..<image.pixelsWide {
-                    total += Double(image.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB)?.redComponent ?? 0)
-                }
-            }
-            return total
-        }
-        var samples = [try sample()]
+        var samples = [try sample(host)]
         Motion.spaceHandoff { state.selected = true }
         for frame in 0..<18 {
             // Native swipe samples arrive without an implicit animation. They must
             // neither drive nor cancel the independent selection animation.
             Motion.instant { state.emphasis = 0.5 + Double(frame % 2) * 0.05 }
             try await Task.sleep(for: .milliseconds(10))
-            samples.append(try sample())
+            samples.append(try sample(host))
         }
         let start = try XCTUnwrap(samples.first), end = try XCTUnwrap(samples.last)
         XCTAssertGreaterThan(end, start)
         XCTAssertTrue(samples.contains { $0 > start + (end - start) * 0.1 && $0 < start + (end - start) * 0.9 },
                       "Selection must draw intermediate symbol sizes, not snap between its endpoints")
     }
+
+    func testReducedMotionStopsAnInFlightGrowthImmediately() async throws {
+        TestEnvironment.prepare()
+        try XCTSkipIf(Motion.reduced, "This fixture begins with animated icon growth")
+        let state = MarkerState()
+        let host = NSHostingView(rootView: AnimatedMarker(state: state))
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 32, height: 32),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        try await Task.sleep(for: .milliseconds(60))
+        Motion.spaceHandoff { state.selected = true }
+        try await Task.sleep(for: .milliseconds(20))
+        let moving = try sample(host)
+        Motion.instant { state.reducedMotion = true }
+        try await Task.sleep(for: .milliseconds(20))
+        let reduced = try sample(host)
+        try await Task.sleep(for: .milliseconds(200))
+        let settled = try sample(host)
+        XCTAssertLessThan(moving, settled, "The fixture must interrupt a growth animation")
+        XCTAssertEqual(reduced, settled, accuracy: 1,
+                       "Reduced motion must draw the selected size immediately, not finish the remaining animation")
+    }
 }
 
 @MainActor private final class MarkerState: ObservableObject {
     @Published var emphasis = 0.5
     @Published var selected = false
+    @Published var reducedMotion = false
 }
 
 private struct AnimatedMarker: View {
     @ObservedObject var state: MarkerState
     var body: some View {
         SpaceFooterMarker(icon: "square.fill", layout: SpaceStripLayout(count: 3, availableWidth: 132),
-                          emphasis: state.emphasis, selected: state.selected)
+                          emphasis: state.emphasis, selected: state.selected, reducedMotion: state.reducedMotion)
             .frame(width: 32, height: 32)
             .background(.black)
             .environment(\.colorScheme, .dark)

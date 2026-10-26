@@ -47,6 +47,9 @@ private struct SpaceFooterIcon: View {
         Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
             .font(.system(size: size))
             .scaleEffect((reducedMotion ? selected : enlarged) ? 1 : minimumScale)
+            // Replacing only the glyph cancels an in-flight presentation animation
+            // even when its selected endpoint is already the current state value.
+            .id(reducedMotion)
             .onChange(of: selected) { updateSize() }
             .onChange(of: reducedMotion) { if reducedMotion { updateSize() } }
     }
