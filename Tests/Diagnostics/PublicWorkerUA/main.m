@@ -72,6 +72,7 @@ static void ReportEngineImages(void) {
 @property (nonatomic) NSTimeInterval deadline;
 @property (nonatomic) BOOL finishing;
 @property (nonatomic) BOOL mismatch;
+@property (nonatomic) BOOL freshMV3;
 @end
 
 @implementation Probe
@@ -106,6 +107,8 @@ static void ReportEngineImages(void) {
         @{ @"version": @3, @"label": @"second Safari MV3", @"suffix": SafariSuffix },
         @{ @"version": @3, @"label": @"third Safari MV3", @"suffix": SafariSuffix }
     ];
+    if (self.freshMV3)
+        self.stages = @[ @{ @"version": @3, @"label": @"fresh Safari MV3", @"suffix": SafariSuffix } ];
     WKWebExtensionControllerConfiguration *configuration = [WKWebExtensionControllerConfiguration nonPersistentConfiguration];
     configuration.defaultWebsiteDataStore = self.store;
     WKWebViewConfiguration *seed = configuration.webViewConfiguration;
@@ -118,7 +121,8 @@ static void ReportEngineImages(void) {
     Emit(@{ @"event": @"launch", @"finishedLaunching": @(NSRunningApplication.currentApplication.finishedLaunching),
         @"appRunning": @(NSApp.running), @"OS": NSProcessInfo.processInfo.operatingSystemVersionString,
         @"WebKit": [[NSBundle bundleForClass:WKWebView.class] objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"unknown",
-        @"ownedDataStoreID": self.storeID.UUIDString, @"arm": @"public-suffix-only" });
+        @"ownedDataStoreID": self.storeID.UUIDString, @"arm": @"public-suffix-only",
+        @"scenario": self.freshMV3 ? @"fresh-mv3" : @"ordered" });
     // Schedule after applicationDidFinishLaunching returns to NSApplication.run.
     dispatch_async(dispatch_get_main_queue(), ^{ [self beginStage]; });
 }
@@ -270,9 +274,11 @@ int main(int argc, const char *argv[]) {
             [app run];
             return 2;
         }
-        if (argc != 1) return 2;
+        BOOL freshMV3 = argc == 2 && strcmp(argv[1], "--fresh-mv3") == 0;
+        if (argc != 1 && !freshMV3) return 2;
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
-        __attribute__((objc_precise_lifetime)) Probe *probe = [Probe new]; app.delegate = probe;
+        __attribute__((objc_precise_lifetime)) Probe *probe = [Probe new];
+        probe.freshMV3 = freshMV3; app.delegate = probe;
         [app run]; // A normal application loop, not XCTest/run-loop pumping.
         return 2;
     }

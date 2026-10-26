@@ -20,6 +20,7 @@ spec.loader.exec_module(owned)
 ARM = "public-suffix-only"
 SUFFIX = "Version/26.6.2 Safari/605.1.15"
 STAGES = ("Safari MV2", "Safari MV3 after MV2", "second Safari MV3", "third Safari MV3")
+SCENARIOS = {"ordered": STAGES, "fresh-mv3": ("fresh Safari MV3",)}
 
 
 def records_from_output(output):
@@ -46,16 +47,19 @@ def validate_launch_record(launch):
     return launch
 
 
-def validate_probe_output(output, status):
+def validate_probe_output(output, status, scenario="ordered"):
+    stages = SCENARIOS[scenario]
     records = records_from_output(output)
     launch = validate_launch_record(records[0] if records else None)
+    if launch.get("scenario", "ordered") != scenario:
+        raise ValueError("Launch scenario did not match the requested control")
     observations = []
     nonces = set()
     mismatch = False
     for record in records[1:]:
         if record["event"] != "observation": break
         index = len(observations)
-        if index >= len(STAGES) or record.get("stage") != STAGES[index] or record.get("arm") != ARM:
+        if index >= len(stages) or record.get("stage") != stages[index] or record.get("arm") != ARM:
             raise ValueError("Missing, duplicated, reordered or unknown stage")
         if record.get("boundToCurrentContext") is not True or record.get("popupPoolStoreAndControllerMatch") is not True:
             raise ValueError("Current-context or pool/store/controller binding failed")
@@ -69,7 +73,7 @@ def validate_probe_output(output, status):
         nonces.add(nonce)
         if any(payload.get(key) != nonce for payload in (identity, worker) for key in ("nonce", "runtime", "host")):
             raise ValueError("Reply does not belong to current nonce/runtime/origin")
-        if worker.get("scheme") != "webkit-extension:" or worker.get("version") != ("2" if index == 0 else "3"):
+        if worker.get("scheme") != "webkit-extension:" or worker.get("version") != ("2" if scenario == "ordered" and index == 0 else "3"):
             raise ValueError("Background scheme/manifest version did not match")
         if any(not isinstance(payload.get(key), str) for payload in (identity, worker) for key in ("startup", "current")):
             raise ValueError("Missing startup/current UA")
@@ -89,9 +93,9 @@ def validate_probe_output(output, status):
         if status == 0: raise ValueError("Mismatch with zero process exit")
         completed = len(observations) - 1
     else:
-        if len(observations) != len(STAGES) or len(tail) != 1:
-            raise ValueError("Missing original four-stage coverage or final summary")
-        completed = len(STAGES)
+        if len(observations) != len(stages) or len(tail) != 1:
+            raise ValueError("Missing requested stage coverage or final summary")
+        completed = len(stages)
     summary = tail[-1]
     if summary.get("event") != "summary" or summary.get("completedStages") != completed:
         raise ValueError("Missing or inconsistent final stage count")
@@ -119,7 +123,8 @@ def validate_retirement_output(output, status, store_id):
         raise ValueError("Post-exit retirement cannot attest backend-process exit")
 
 
-def run_public_mode(bundle, evidence_dir):
+def run_public_mode(bundle, evidence_dir, scenario="ordered"):
+    if scenario not in SCENARIOS: raise ValueError("Unknown public probe scenario")
     bundle = bundle.resolve()
     executable = bundle / "Contents/MacOS/WorkerUAProbe"
     if not executable.is_file(): raise ValueError("Built signed public probe executable is required")
@@ -134,9 +139,10 @@ def run_public_mode(bundle, evidence_dir):
         if interrupted[0]: return 128 + interrupted[0]
         trial_logs = evidence_dir / f"trial-{number:02d}"
         trial_logs.mkdir(mode=0o700)
-        status, exited, output = owned.run_ua_process([str(executable)], environment, 90, trial_logs / "primary.log", interrupted)
+        command = [str(executable)] + (["--fresh-mv3"] if scenario == "fresh-mv3" else [])
+        status, exited, output = owned.run_ua_process(command, environment, 90, trial_logs / "primary.log", interrupted)
         result = {"trial": number, "processStatus": status, "ownedAppExitVerified": exited,
-                  "result": "HARNESS_FAILED_OR_UNAVAILABLE", "backendRetirementVerified": False}
+                  "scenario": scenario, "result": "HARNESS_FAILED_OR_UNAVAILABLE", "backendRetirementVerified": False}
         retirement_store = None
         try:
             if not exited: raise ValueError("Exact owned app exit could not be verified; cleanup is unverified")
@@ -144,7 +150,7 @@ def run_public_mode(bundle, evidence_dir):
             launch = validate_launch_record(records[0] if records else None)
             if any(record.get("event") == "summary" and record.get("storeRemovalDeferredToPostExit") is True for record in records):
                 retirement_store = launch["ownedDataStoreID"]
-            result.update(validate_probe_output(output, status))
+            result.update(validate_probe_output(output, status, scenario=scenario))
         except ValueError as error:
             result["reason"] = str(error)
             status = status or 1
@@ -176,8 +182,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--evidence-dir", type=Path, required=True)
+    parser.add_argument("--scenario", choices=SCENARIOS, default="ordered")
     options = parser.parse_args()
-    try: return run_public_mode(options.bundle, options.evidence_dir)
+    try: return run_public_mode(options.bundle, options.evidence_dir, scenario=options.scenario)
     except (OSError, ValueError) as error:
         print(f"FAIL public reduction: {error}", file=sys.stderr, flush=True)
         return 1

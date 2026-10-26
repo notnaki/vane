@@ -95,6 +95,48 @@ class ProtocolTests(unittest.TestCase):
             with self.subTest(payload=payload, key=key), self.assertRaises(ValueError): probe.validate_probe_output(encoded(records), 0)
 
 
+class FreshMV3ControlTests(unittest.TestCase):
+    def records(self, mismatch=False):
+        records = fixture(mismatch=1 if mismatch else None)
+        records = [records[0], records[2]] + records[-2:] if mismatch else [records[0], records[2], records[-1]]
+        records[0]["scenario"] = "fresh-mv3"
+        records[1]["stage"] = "fresh Safari MV3"
+        records[-1]["completedStages"] = 0 if mismatch else 1
+        if mismatch: records[-2]["stage"] = 0
+        return records
+
+    def test_fresh_mv3_requires_its_own_launch_attestation_and_exact_single_stage(self):
+        result = probe.validate_probe_output(encoded(self.records()), 0, scenario="fresh-mv3")
+        self.assertEqual(result["result"], "PUBLIC_ARM_SAMPLE_PASSED")
+        self.assertEqual(result["completedStages"], 1)
+        for records in [fixture(), self.records() + [self.records()[1]]]:
+            with self.subTest(records=records), self.assertRaises(ValueError):
+                probe.validate_probe_output(encoded(records), 0, scenario="fresh-mv3")
+        with self.assertRaises(ValueError): probe.validate_probe_output(encoded(self.records()), 0)
+
+    def test_fresh_mv3_does_not_soften_ua_or_manifest_assertions(self):
+        result = probe.validate_probe_output(encoded(self.records(mismatch=True)), 1, scenario="fresh-mv3")
+        self.assertEqual(result["result"], "PUBLIC_UA_MISMATCH_OBSERVED")
+        self.assertEqual(result["completedStages"], 0)
+        records = self.records(); records[1]["identity"]["worker"]["version"] = "2"
+        with self.assertRaises(ValueError): probe.validate_probe_output(encoded(records), 0, scenario="fresh-mv3")
+
+    def test_runner_passes_control_argument_and_records_scenario_without_changing_default(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bundle = Path(folder) / "Probe.app"
+            executable = bundle / "Contents/MacOS/WorkerUAProbe"
+            executable.parent.mkdir(parents=True); executable.write_bytes(b"fake")
+            def fake_process(command, environment, timeout, log, interrupted):
+                self.assertEqual(command, [str(executable.resolve()), "--fresh-mv3"])
+                output = encoded(self.records(mismatch=True)); log.write_bytes(output)
+                return 1, True, output
+            evidence = Path(folder) / "logs"
+            with patch.object(probe.owned, "run_ua_process", side_effect=fake_process) as process, redirect_stdout(io.StringIO()):
+                self.assertNotEqual(probe.run_public_mode(bundle, evidence, scenario="fresh-mv3"), 0)
+                self.assertEqual(process.call_count, 1)
+            self.assertEqual(json.loads((evidence / "trial-01/result.json").read_text())["scenario"], "fresh-mv3")
+
+
 class AdapterTests(unittest.TestCase):
     def fake_run(self, mismatch=None, exited=True, deferred=False, cleanup=True, cleanup_exited=True):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
@@ -181,7 +223,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_workflow_binds_original_input_manifest_and_archives_logs_without_app_or_profile(self):
         source = (Path(__file__).resolve().parent.parent / ".github/workflows/public-extension-ua.yml").read_text()
-        self.assertIn("9545867e3c282fb3dc03ec7d016f7de644fad5c2a97a06290471031d33cd4ecf", source)
+        self.assertIn("5cd1d2bf98a441d373f560cdc4801f6b0cfb9ef5e26b5253c971c998fb5cf1d0", source)
         self.assertIn("ref: ${{ github.event.pull_request.head.sha || github.sha }}", source)
         self.assertIn("if: ${{ always() }}", source)
         self.assertIn("${{ runner.temp }}/public-probe-logs/", source)
