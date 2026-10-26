@@ -213,7 +213,7 @@ class EvidenceLogTests(unittest.TestCase):
     def fake_mode(self, failure=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name)
+        root = Path(temporary.name).resolve()
         downloads = root / "Downloads"; downloads.mkdir()
         binary = root / "vane-fixture"; binary.write_bytes(b"not an executable")
         evidence = root / "evidence"
