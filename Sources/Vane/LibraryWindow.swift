@@ -986,8 +986,12 @@ struct LibraryHead<Filter: View, Actions: View>: View {
     /// the window is dropped, and the keyboard stays where it was — which, the first time the
     /// Library opens over a page, is the web view: every keystroke would go to the page.
     private func takeKeyboard() {
+        let request = library.focusToken
         DispatchQueue.main.async {
-            guard store.libraryOpen else { return }
+            // An outgoing section can remain mounted during its transition.
+            // Only the current section's latest request owns the field editor.
+            guard store.libraryOpen, library.section == section,
+                  library.focusToken == request else { return }
             focused = true
         }
     }

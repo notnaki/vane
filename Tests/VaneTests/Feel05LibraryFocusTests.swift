@@ -6,7 +6,22 @@ import XCTest
 @MainActor final class Feel05LibraryFocusTests: XCTestCase {
     func testSectionChangesReachCurrentSearchWithAndWithoutBatterySaver() async throws {
         TestEnvironment.prepare()
-        _ = NSApplication.shared
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        app.setActivationPolicy(.accessory)
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do { try await exerciseSectionChanges() } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func exerciseSectionChanges() async throws {
         let previous = BatterySaver.shared.mode
         BatterySaver.shared.setMode(.alwaysOn)
         defer { BatterySaver.shared.setMode(previous) }
@@ -29,8 +44,11 @@ import XCTest
         }
         Library.open(.archived, in: store)
         window.contentView = NSHostingView(rootView: LibraryPanel().environmentObject(store))
+        NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         window.contentView?.layoutSubtreeIfNeeded()
+        try await compatibilityWait { window.isKeyWindow && NSApp.isActive
+            && self.currentPrompt(in: window) == LibrarySection.archived.searchPrompt }
         for mode in [BatterySaver.Mode.off, .alwaysOn] {
             BatterySaver.shared.setMode(mode)
             for section in [LibrarySection.downloads, .media, .archived] {
