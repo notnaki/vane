@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// Only the marker ink observes display-link progress. Rebuilding SpaceDots for
-/// each sample also rebuilds every dot's menus, popovers and keyboard handlers.
+/// Native windows animate marker ink independently of their profile hosting roots.
+/// The fallback observes only this leaf, keeping menus and input handlers stable.
 struct SpaceFooterEmphasis: View {
-    @ObservedObject var footer: SpaceFooterProgress
+    let footer: SpaceFooterProgress
+    @Environment(\.spaceFooterPresentation) private var presentation
     let icon: String
     let layout: SpaceStripLayout
     let hovered: Bool
@@ -16,24 +17,41 @@ struct SpaceFooterEmphasis: View {
     let width: CGFloat
     let swiping: Bool
     let animation: Animation?
+    var owner: TabStore? = nil
 
-    private var emphasis: Double {
+    @ViewBuilder var body: some View {
+        if let presentation, let owner {
+            NativeSpaceFooterMarker(presentation: presentation, owner: owner, id: spaceID,
+                icon: icon, layout: layout, hovered: hovered, reduced: reducedMotion)
+                .frame(width: layout.iconSize, height: layout.iconSize)
+        } else {
+            ObservedSpaceFooterEmphasis(marker: self, footer: footer)
+        }
+    }
+
+    private func emphasis(drag: CGFloat?) -> Double {
         if reducedMotion { return selected ? 1 : 0 }
         guard let currentID else { return 0 }
-        let drag = footer.drag ?? fallbackDrag
+        let drag = drag ?? fallbackDrag
         guard drag != 0, width > 0, let targetID else { return spaceID == currentID ? 1 : 0 }
         return SpaceDotBlend.weights(current: currentID, target: targetID,
             fraction: Double(min(1, abs(drag / width))))[spaceID] ?? 0
     }
 
-    var body: some View {
-        let lit = emphasis
-        SpaceFooterMarker(icon: icon, layout: layout, hovered: hovered,
+    fileprivate func legacy(drag: CGFloat?) -> some View {
+        let lit = emphasis(drag: drag)
+        return SpaceFooterMarker(icon: icon, layout: layout, hovered: hovered,
                           emphasis: lit, selected: selected, reducedMotion: reducedMotion)
             .transaction(value: lit) { transaction in
                 if !swiping && !transaction.disablesAnimations { transaction.animation = animation }
             }
     }
+}
+
+private struct ObservedSpaceFooterEmphasis: View {
+    let marker: SpaceFooterEmphasis
+    @ObservedObject var footer: SpaceFooterProgress
+    var body: some View { marker.legacy(drag: footer.drag) }
 }
 
 /// Swipe progress blends brightness; selection owns a separate, quick size animation.
