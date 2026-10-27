@@ -1398,6 +1398,16 @@ private struct SpaceSwipe: ViewModifier {
         guard !store.isPrivate, !store.isLittle, !store.isParked else { return }
         let host = store.window?.contentView as? BrowserWindowHost
         host?.clearQueuedSpaceSelection()
+        if let slide = host?.spaceSlide, slide.isActive, !Motion.spaceReduced,
+           (slide.isDestination(store) && space.id == store.spaceGesture.outgoing?.space.id && space.id != store.currentSpaceID
+            || returning && space.id == store.spaceGesture.neighbour?.id),
+           slide.resumeTracking(in: store, dx: CGFloat(store.spaceGesture.previewDirection)) != nil {
+            // Both endpoints already have captured pixels. Rebase that same pair
+            // at its presented position before any cross-profile queueing below.
+            land(store.spaceGesture.previewDirection, to: space, width: SidebarWidth.shared.width,
+                 store: store, animation: Look.spaceSlide, duration: Look.spaceSlideDuration)
+            return
+        }
         if let host,
            let slide = host.spaceSlide, slide.isDestination(store) {
             // A profile can already own the page while its captured sidebar is landing.

@@ -575,6 +575,94 @@ import XCTest
                                       window: window, monitor: store.spaceGesture.monitor, direction: 1)
     }
 
+    func testTargetClickInterruptsTheSameProfileReturnSpring() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        store.palette = nil
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNotNil(store.beginSpaceSelection(spaces[1]))
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 0.8)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let slide = try XCTUnwrap(host.spaceSlide)
+        try await compatibilityWait {
+            slide.isActive && abs(slide.offset) > SidebarWidth.shared.width * 0.4
+                && abs(slide.offset) < SidebarWidth.shared.width * 0.65
+        }
+        monitor.select(spaces[0], in: store)
+        XCTAssertTrue(slide.outgoing.layer?.animation(forKey: "space-position") is CASpringAnimation)
+        monitor.select(spaces[1], in: store)
+        XCTAssertTrue(host.spaceSlide === slide && slide.follows(spaces[1], direction: 1),
+                      "The exposed target must interrupt the return spring immediately")
+        try await compatibilityWait { store.currentSpaceID == spaces[1].id }
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        XCTAssertNil(host.spaceSlide)
+    }
+
+    func testProfileOriginClickReversesBeforeTheCurrentLandingFinishes() async throws {
+        TestEnvironment.prepare()
+        try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let profiles = [manager.create(name: "Click origin"), manager.create(name: "Click arrival")]
+        let spaces = profiles.map { manager.createSpace(name: "Click", in: $0.id) }
+        let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
+        let window = try XCTUnwrap(source.window)
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            window.close()
+            profiles.forEach { _ = manager.delete($0.id) }
+            manager.active = previous
+        }
+        source.palette = nil
+        try await Task.sleep(for: .milliseconds(150))
+        func markers(in view: NSView) -> [NativeSpaceFooterMarkerView] {
+            (view as? NativeSpaceFooterMarkerView).map { [$0] }
+                ?? view.subviews.flatMap { markers(in: $0) }
+        }
+        let originalGlyph = try XCTUnwrap(markers(in: try XCTUnwrap(window.contentView))
+            .first { $0.owner === source && $0.configuration?.id == spaces[1].id }?.marker?.symbol)
+        let width = SidebarWidth.shared.width
+        source.spaceGesture.monitor.track(-60, width: width, in: source)
+        source.spaceGesture.monitor.land(1, to: spaces[1], width: width, store: source, duration: 0.8)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let slide = try XCTUnwrap(host.spaceSlide)
+        try await compatibilityWait {
+            slide.isActive && abs(slide.offset) > width * 0.4 && abs(slide.offset) < width * 0.65
+        }
+        let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
+        XCTAssertEqual(arriving.currentSpaceID, spaces[1].id)
+        let activeMarker = try XCTUnwrap(markers(in: host).first {
+            $0.owner === arriving && $0.configuration?.id == spaces[1].id && $0.marker?.view === $0
+        })
+        XCTAssertTrue(activeMarker.marker?.symbol === originalGlyph,
+                      "The actual footer must carry its glyph across profile hosting roots")
+        let originalRows = slide.outgoing
+        let before = try XCTUnwrap(originalRows.layer?.presentation()).frame.minX
+        arriving.spaceGesture.monitor.select(spaces[0], in: arriving)
+        XCTAssertTrue(host.spaceSlide === slide, "Reverse the existing presented rows rather than replace them")
+        XCTAssertTrue(slide.follows(spaces[0], direction: -1), "Retarget before returning from the click")
+        let from = (originalRows.layer?.animation(forKey: "space-position") as? CABasicAnimation)?.fromValue as? NSValue
+        let anchor = try XCTUnwrap(originalRows.layer).anchorPoint.x
+        XCTAssertEqual(try XCTUnwrap(from).pointValue.x - originalRows.bounds.width * anchor, before, accuracy: 5)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, spaces[0].id,
+                       "The origin click must take effect before the old landing finishes")
+        for (index, direction) in [(1, 1), (0, -1)] {
+            let showing = try XCTUnwrap(TabStore.all.first { $0.window === window })
+            showing.spaceGesture.monitor.select(spaces[index], in: showing)
+            XCTAssertTrue(host.spaceSlide === slide && slide.follows(spaces[index], direction: direction),
+                          "Another reversal must interrupt the return instead of queueing")
+            try await compatibilityWait {
+                TabStore.all.first { $0.window === window }?.currentSpaceID == spaces[index].id
+            }
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, spaces[0].id)
+        XCTAssertNil(host.spaceSlide)
+    }
+
     private func checkReverseLanding(store: TabStore, origin: Space, target: Space,
                                      window: NSWindow, monitor: SwipeMonitor, direction: Int) async throws {
         store.palette = nil

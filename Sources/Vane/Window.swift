@@ -857,6 +857,7 @@ extension VaneWindow {
 /// stays bound to its own store, so gestures and shortcuts cannot leak into
 /// another profile. Parked stores have no window, and their event monitors ignore input.
 @MainActor final class BrowserWindowHost: NSView {
+    let footerPresentation = SpaceFooterPresentation()
     private var hosts: [ObjectIdentifier: NSView] = [:]
     private var current: ObjectIdentifier?
     private var subscription: AnyCancellable?
@@ -932,6 +933,7 @@ extension VaneWindow {
 
     private func show(_ store: TabStore) {
         let id = ObjectIdentifier(store)
+        footerPresentation.activate(store)
         guard current != id else { return }
         // Profile deletion can release a parked store. Do not keep its interface alive.
         let kept = Set(TabStore.all.map(ObjectIdentifier.init)).union([id])
@@ -944,6 +946,7 @@ extension VaneWindow {
             host = NSHostingView(rootView: BrowserWindow()
                 .environmentObject(store)
                 .environmentObject(ProfileManager.shared)
+                .environment(\.spaceFooterPresentation, footerPresentation)
                 .font(Look.text))
             hosts[id] = host
         }
@@ -1187,6 +1190,9 @@ extension VaneWindow {
         outgoing.setFrameOrigin(NSPoint(x: drag + contentInset, y: 0))
         incoming.setFrameOrigin(NSPoint(x: drag + CGFloat(direction) * travelWidth + contentInset, y: 0))
         CATransaction.commit()
+        (superview as? BrowserWindowHost)?.footerPresentation.track(
+            origin: preparedOrigin.id, target: preparedTarget.id,
+            fraction: Double(min(1, abs(drag / travelWidth))))
     }
 
     func prepare() {
@@ -1283,6 +1289,9 @@ extension VaneWindow {
                 let start = Double(min(1, abs((from.x - outgoingLayer.bounds.width * outgoingLayer.anchorPoint.x - contentInset) / travelWidth)))
                 finishGround = source?.spaceGesture.animateGround?(preparedOrigin, preparedTarget,
                     start, returning ? 0 : 1, animation, presentedGround)
+                (superview as? BrowserWindowHost)?.footerPresentation.animate(
+                    origin: preparedOrigin.id, target: preparedTarget.id,
+                    from: start, to: returning ? 0 : 1, timing: animation)
             }
         }
         CATransaction.commit()
@@ -1367,6 +1376,9 @@ extension VaneWindow {
             destination?.spaceDrag = 0
             destination?.spaceSwiping = false
             destination?.spaceGesture.profileSliding = false
+        }
+        if let host = superview as? BrowserWindowHost, host.spaceSlide === self {
+            host.footerPresentation.finishProgress()
         }
         // Keep the native rows until the live tree acknowledges its resting identity.
         // The two surfaces contain translucent ink: leaving both visible for extra

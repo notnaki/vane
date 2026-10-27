@@ -3008,6 +3008,7 @@ private struct SpaceIcons: View {
 /// Only a private window has no Spaces, and it does not draw this at all.
 private struct SpaceDots: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
+    @Environment(\.spaceFooterPresentation) private var presentation
     let layout: SpaceStripLayout
     let footer: SpaceFooterProgress
     @EnvironmentObject var store: TabStore
@@ -3043,6 +3044,9 @@ private struct SpaceDots: View {
         }
         .animation(animation, value: store.creatingSpace)
         .animation(animation, value: layout)
+        .onChange(of: list.map(\.id), initial: true) {
+            presentation?.retain(Set(list.map(\.id)), owner: store)
+        }
         .vaneMotionPolicy()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
@@ -3079,7 +3083,7 @@ private struct SpaceDots: View {
             reducedMotion: reduceMotion || batterySaver.isActive, spaceID: space.id,
             currentID: origin,
             targetID: gesture.neighbour?.id, fallbackDrag: gesture.drag,
-            width: sidebarWidth, swiping: gesture.swiping, animation: animation)
+            width: sidebarWidth, swiping: gesture.swiping, animation: animation, owner: store)
         .frame(width: layout.buttonSize, height: layout.buttonSize)
         .background(!layout.showsButtonBackground ? .clear : dropTarget == space.id ? chromeTheme.selected : hovered == space.id ? chromeTheme.hovered : .clear,
                     in: .rect(cornerRadius: Look.chipRadius))
