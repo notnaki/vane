@@ -55,18 +55,20 @@ extension EnvironmentValues {
     func activate(_ store: TabStore) {
         guard owner !== store else { return }
         owner = store
-        // A parked root may still remember a previous Battery Saver policy.
-        // Refresh before selection so that stale policy cannot suppress its motion.
-        reduced = Motion.reduced
+        // A cached root may not update its representables when it returns. Honor
+        // its explicit environment reduction before selecting or transferring ink.
+        let cachedViews = anchors[ObjectIdentifier(store), default: [:]].values.compactMap(\.view)
+            .filter { $0.owner === store }
+        reduced = Motion.spaceReduced || cachedViews.contains { $0.configuration?.reduced == true }
         for marker in markers.values { marker.reduced = reduced }
         retain(Set(store.swipeStrip.map(\.id)), owner: store)
         selection = store.$currentSpaceID.sink { [weak self] id in self?.select(id) }
         // Unhiding a cached hosting root need not update its representables.
         // Transfer its registered ink before BrowserWindowHost exposes that root.
-        for view in anchors[ObjectIdentifier(store), default: [:]].values.compactMap(\.view) {
+        for view in cachedViews {
             guard view.owner === store, let config = view.configuration else { continue }
             mount(view, owner: store, id: config.id, icon: config.icon, layout: config.layout,
-                  hovered: config.hovered, scheme: config.scheme, reduced: Motion.reduced)
+                  hovered: config.hovered, scheme: config.scheme, reduced: config.reduced || Motion.spaceReduced)
         }
     }
 
@@ -76,7 +78,7 @@ extension EnvironmentValues {
         selectedID = id
         if progress == nil {
             for (key, marker) in markers { resize(marker, selected: key == id) }
-        } else if reduced || Motion.reduced { applyProgress() }
+        } else if reduced || Motion.spaceReduced { applyProgress() }
         if progress == nil {
             if let previous, id != nil {
                 let timing = CABasicAnimation(keyPath: "opacity")
@@ -104,8 +106,8 @@ extension EnvironmentValues {
         marker.layout = layout
         marker.hovered = hovered
         marker.reduced = reduced
-        if self.reduced != reduced || Motion.reduced {
-            self.reduced = reduced || Motion.reduced
+        if self.reduced != reduced || Motion.spaceReduced {
+            self.reduced = reduced || Motion.spaceReduced
             if self.reduced {
                 progressTiming = nil
                 progressClock = nil
@@ -242,7 +244,7 @@ extension EnvironmentValues {
         // Like the sidebar position animation, start when CA commits the tree.
         // An absolute wall-clock start can expire during expensive host layout.
         clock.beginTime = 0
-        progressTiming = reduced || Motion.reduced ? nil : clock
+        progressTiming = reduced || Motion.spaceReduced ? nil : clock
         progressClock = progressTiming == nil ? nil : SpaceFooterAnimationClock()
         for (id, marker) in markers {
             animateProgress(marker, id: id, from: weight(id, fraction: from), timing: clock)
@@ -285,7 +287,10 @@ extension EnvironmentValues {
         } else { removeProgressAnimations(marker) }
         if progress != nil { marker.symbol.removeAnimation(forKey: "space-selection") }
         applyProgress(to: marker, id: id)
-        guard !reduced, !marker.reduced, !Motion.reduced, timing.duration > 0 else { return }
+        // Space navigation stays continuous in Battery Saver. Its synchronized
+        // marker travel follows that policy; uncovered selection pulses do not.
+        let motionReduced = progress == nil ? Motion.reduced : Motion.spaceReduced
+        guard !reduced, !marker.reduced, !motionReduced, timing.duration > 0 else { return }
         func add(_ layer: CALayer, path: String, key: String, from: Double, to: Double) {
             guard abs(from - to) > 0.0001 else { return }
             let animation = timing.copy() as! CABasicAnimation
@@ -318,7 +323,7 @@ extension EnvironmentValues {
     }
 
     private func applyProgress(to marker: Marker, id: UUID) {
-        let lit = reduced || marker.reduced || Motion.reduced ? (selectedID == id ? 1.0 : 0.0) : weight(id)
+        let lit = reduced || marker.reduced || Motion.spaceReduced ? (selectedID == id ? 1.0 : 0.0) : weight(id)
         let icons = marker.layout.showsAllIcons
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -330,7 +335,9 @@ extension EnvironmentValues {
         let scale = Look.tileAppearScale + (1 - Look.tileAppearScale) * (1 - lit)
         marker.dot.transform = CATransform3DMakeScale(scale, scale, 1)
         CATransaction.commit()
-        if marker.reduced || Motion.reduced { removeProgressAnimations(marker) }
+        if marker.reduced || Motion.spaceReduced || (progress == nil && Motion.reduced) {
+            removeProgressAnimations(marker)
+        }
     }
 
     private func removeProgressAnimations(_ marker: Marker) {

@@ -89,6 +89,7 @@ private struct SpaceFooterIcon: View {
     let selected: Bool
     let reducedMotion: Bool
     let sizeEmphasis: Double?
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var enlarged: Bool
 
     init(icon: String, size: CGFloat, minimumScale: CGFloat, selected: Bool, reducedMotion: Bool,
@@ -108,9 +109,10 @@ private struct SpaceFooterIcon: View {
             .scaleEffect(scale)
             // Replacing only the glyph cancels an in-flight presentation animation
             // even when its selected endpoint is already the current state value.
-            .id(reducedMotion)
+            .id(reducedMotion || (sizeEmphasis == nil && batterySaver.isActive))
             .onChange(of: selected) { updateSize() }
             .onChange(of: reducedMotion) { if reducedMotion { updateSize() } }
+            .onChange(of: batterySaver.isActive) { if batterySaver.isActive { updateSize() } }
     }
 
     private var scale: CGFloat {
@@ -125,8 +127,9 @@ private struct SpaceFooterIcon: View {
         // Page selection and native progress arrive in instant handoff transactions.
         // Only this local size change gets its own 150 ms animation; finger samples
         // never retarget it or stretch its duration to match the sidebar's travel.
-        var transaction = Transaction(animation: reducedMotion ? nil : Look.quick)
-        transaction.disablesAnimations = reducedMotion
+        let reduced = reducedMotion || Motion.reduced
+        var transaction = Transaction(animation: reduced ? nil : Look.quick)
+        transaction.disablesAnimations = reduced
         withTransaction(transaction) { enlarged = selected }
     }
 }

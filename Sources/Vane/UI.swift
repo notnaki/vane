@@ -3082,7 +3082,7 @@ private struct SpaceDots: View {
                                set: { live = $0 ? space.id : nil })
         SpaceFooterEmphasis(footer: footer, icon: icon, layout: layout,
             hovered: hovered == space.id, selected: here,
-            reducedMotion: reduceMotion || batterySaver.isActive, spaceID: space.id,
+            reducedMotion: reduceMotion, spaceID: space.id,
             currentID: origin,
             targetID: gesture.neighbour?.id, fallbackDrag: gesture.drag,
             width: sidebarWidth, swiping: gesture.swiping, animation: animation, owner: store)
