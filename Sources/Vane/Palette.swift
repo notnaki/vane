@@ -162,14 +162,14 @@ enum Palette {
 
     /// The bar before a character is typed (ref 2). Arc's ⌘T opens on this window's own
     /// tabs, most recently used first — `TabSwitcher.recent`'s order, the one ⌃⇥ walks —
-    /// capped so the bar stays a glance, with one row under them to report a problem.
+    /// capped so the bar stays a glance.
     ///
     /// Nothing else: no commands, no assistant, no completions, no Spaces. Those are all
     /// answers to a query, and there is no query yet; a bar that opens on a wall of verbs
     /// is a bar you have to read before you can type. Everything comes back with the first
     /// character, where `arrange` below takes over.
-    static func empty<T>(tabs: [T], report: T, cap: Int = Look.barEmptyTabs) -> [T] {
-        Array(tabs.prefix(cap)) + [report]
+    static func empty<T>(tabs: [T], cap: Int = Look.barEmptyTabs) -> [T] {
+        Array(tabs.prefix(cap))
     }
 
     /// The bar's row order once something is typed, in one place so it can be proved without
@@ -267,20 +267,18 @@ enum Palette {
         let stamped = zip(ids, clocks).map { ($0, Date(timeIntervalSince1970: $1)) }
         let recent = TabSwitcher.recent(stamped, current: ids[2], limit: .max)
             .compactMap { id in ids.firstIndex(of: id) }.map { named[$0] }
-        let atRest = empty(tabs: recent, report: "report")
+        let atRest = empty(tabs: recent)
         return [
             ("with nothing typed the bar is this window's tabs, the one in front first",
              atRest.first == "three"),
             ("…then the rest of them by when they were last looked at",
-             Array(atRest.dropLast()) == ["three", "two", "six", "four", "one"]),
+             atRest == ["three", "two", "six", "four", "one"]),
             ("…capped, so the bar opens as a glance rather than as the whole strip",
-             atRest.count == Look.barEmptyTabs + 1 && !atRest.contains("five")),
-            ("…and one row to report a problem, always last", atRest.last == "report"),
-            ("a shorter list is not padded", empty(tabs: ["t1"], report: "r") == ["t1", "r"]),
-            ("…and a window with no tabs is that one row alone",
-             empty(tabs: none, report: "r") == ["r"]),
+             atRest.count == Look.barEmptyTabs && !atRest.contains("five")),
+            ("a shorter list is not padded", empty(tabs: ["t1"]) == ["t1"]),
+            ("…and a window with no tabs is an empty list", empty(tabs: none).isEmpty),
             ("the cap is a cap, whatever it is set to",
-             empty(tabs: ["t1", "t2", "t3"], report: "r", cap: 2) == ["t1", "t2", "r"]),
+             empty(tabs: ["t1", "t2", "t3"], cap: 2) == ["t1", "t2"]),
             // Where Return loads (§4 of the Arc spec): ⌘T makes a tab, ⌘L replaces the page.
             ("⌘T's bar always opens in a new tab",
              opensInNewTab(mode: .newTab, commandHeld: false, hasActiveTab: true)),
@@ -1249,16 +1247,12 @@ private struct PaletteResultHover: ViewModifier {
                 list
             }
         }
-        // Arc's bar is one flat surface, not glass: a blur of whatever is behind it,
-        // darkened almost to opaque, and a single hairline. No specular edge, no
-        // refraction — the shadow is what lifts it off the page.
-        .background(chromeTheme.barFill, in: .rect(cornerRadius: Look.barRadius))
-        .background(Look.barMaterial, in: .rect(cornerRadius: Look.barRadius))
-        .hairline(radius: Look.barRadius, Look.barStroke)
+        // Liquid Glass tinted white. The bar is light over anything, so the semantic
+        // colours inside it have to resolve light too — otherwise dark mode paints white
+        // on white.
+        .glassEffect(.regular.tint(Look.omniboxTint), in: .rect(cornerRadius: Look.barRadius))
         .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
-        // The bar is dark over anything, including a white page, so the semantic colours
-        // inside it have to resolve dark too — otherwise light mode paints black on black.
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, .light)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(mode.title)
         // The bar owns the window while it is up, so everything behind it is noise.
@@ -1510,10 +1504,9 @@ private struct PaletteResultHover: ViewModifier {
                 fresh.acceptsSuggestions = true
             } else {
                 // Nothing typed (ref 2): Arc's bar at rest is the handful of tabs you are most
-                // likely to want back — this window's, most recently used first — with one row
-                // under them to report a problem. Not the other windows' tabs, not the archive,
+                // likely to want back — this window's, most recently used first. Not the other windows' tabs, not the archive,
                 // not the catalogue: all of that answers a query, and one letter brings it.
-                fresh.leading = Palette.empty(tabs: recentTabRows(), report: reportRow())
+                fresh.leading = Palette.empty(tabs: recentTabRows())
             }
             layout = fresh
         }
@@ -1682,21 +1675,6 @@ private struct PaletteResultHover: ViewModifier {
         let order = TabSwitcher.recent(store.accessibleTabs.map { ($0.id, $0.lastActive) },
                                        current: store.current, limit: Look.barEmptyTabs)
         return order.compactMap { byID[$0] }.map { tabRow($0, in: store, place: "") }
-    }
-
-    /// The one row in the bar at rest that is not a page you have open. Arc's is "Contact the
-    /// Team"; Vane has an issue tracker instead, and Return opens a fresh issue in a new tab
-    /// rather than handing the window's page over to it.
-    private func reportRow() -> PaletteRow {
-        let issues = "https://github.com/notnaki/vane/issues/new"
-        return PaletteRow(id: "report", icon: "bubble.left", title: "Report a Problem",
-                          detail: issues, chip: true, kind: "Feedback") { [weak store] _ in
-            guard let url = URL(string: issues) else { return }
-            // This bar's own window, not whichever one is key: the palette can be up in a
-            // window that is not `Windows.current`, and the issue belongs beside the tabs
-            // the user was looking at when they pressed it.
-            store?.newTab(url)
-        }
     }
 
     /// Tabs that have left the sidebar but not the browser. Return puts one back where it
