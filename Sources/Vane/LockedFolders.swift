@@ -94,6 +94,7 @@ import LocalAuthentication
 
     private func changed(_ profile: UUID, unlocking: Bool = false) {
         let stores = TabStore.all.filter { $0.profileID == profile && $0.folderAuthentication === self }
+        for store in stores { store.sidebarRowsProtectionRevoked.send() }
         // A grant publishes before its disclosure callback. Defer preview teardown
         // before that publication; revocation still invalidates protected surfaces now.
         if unlocking { stores.forEach { $0.postponeFolderPreparation() } }
@@ -242,6 +243,11 @@ extension TabStore {
 
     func lockFolder(_ id: UUID) {
         guard let shape = holder(of: id) else { return }
+        // Revoke every window's retained rows before publishing the protected
+        // definition. Shared-shape flushing precedes the authentication callback.
+        for store in TabStore.all where store.profileID == profileID {
+            store.sidebarRowsProtectionRevoked.send()
+        }
         Motion.list {
             self[keyPath: shape].edit(folder: id) {
                 $0.requiresAuthentication = true

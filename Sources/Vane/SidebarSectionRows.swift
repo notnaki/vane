@@ -31,7 +31,7 @@ struct SidebarSectionRows<Content: View>: View {
         if groupedNativeRows || NativeCachedSidebarBatchesExperiment.enabled {
             NativeCachedSidebarBatchSectionRows(rows: rows, modelIDs: snapshot.structuralRowIDs,
                 protectedRows: editingRows.union(Set([dragging.tab?.uuidString, dragging.folder?.uuidString].compactMap { $0 })),
-                readinessSection: readinessSection) { row, index, total in
+                readinessSection: readinessSection, owner: store) { row, index, total in
                     // Each native owner is a separate hosting root. Row menus
                     // need the real store explicitly, without transplanting the
                     // outer host's private focus or presentation environment.

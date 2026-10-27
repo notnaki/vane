@@ -186,6 +186,7 @@ extension Prefs {
             timer = nil
             pressure?.cancel()
             pressure = nil
+            SidebarWarmOwnerBudget.setUnderPressure(false)
         } else { begin() }
     }
 
@@ -199,12 +200,15 @@ extension Prefs {
             MainActor.assumeIsolated { BatterySaver.shared.refresh(); sweep(); Archive.sweep() }
         }
         timer?.tolerance = 10
-        let src = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        let src = DispatchSource.makeMemoryPressureSource(eventMask: [.normal, .warning, .critical], queue: .main)
         // The source is read back off the stored property rather than captured, so nothing
         // non-Sendable crosses into the handler.
         src.setEventHandler {
             MainActor.assumeIsolated {
-                relieve(critical: pressure?.data.contains(.critical) ?? false)
+                let event = pressure?.data ?? []
+                let normal = event.contains(.normal) && !event.contains(.warning) && !event.contains(.critical)
+                SidebarWarmOwnerBudget.setUnderPressure(!normal)
+                if !normal { relieve(critical: event.contains(.critical)) }
             }
         }
         src.resume()
@@ -319,6 +323,7 @@ extension Prefs {
 
     /// Pressure changes the idle threshold, never the media or draft protections.
     static func relieve(critical: Bool) {
+        SidebarWarmOwnerBudget.purge()
         guard Prefs.suspendTabs else { return }
         let now = Date.now
         let eligible = allTabs.filter { shouldSuspend(facts($0, now: now), after: 0) }
