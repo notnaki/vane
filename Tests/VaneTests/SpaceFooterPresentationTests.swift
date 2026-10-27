@@ -66,6 +66,56 @@ import XCTest
         XCTAssertEqual(try XCTUnwrap(reverse.fromValue as? Double), try XCTUnwrap(scale), accuracy: 0.03)
     }
 
+    func testFingerProgressContinuouslySizesBothIconsBeforeSelectionChanges() throws {
+        let (presentation, stores, ids, _, views) = try fixture()
+        let first = try XCTUnwrap(views[0].marker?.symbol)
+        let second = try XCTUnwrap(views[1].marker?.symbol)
+        presentation.track(origin: ids[0], target: ids[1], fraction: 0.25)
+        XCTAssertEqual(first.transform.m11, 0.95, accuracy: 0.001)
+        XCTAssertEqual(second.transform.m11, 0.85, accuracy: 0.001)
+        presentation.track(origin: ids[0], target: ids[1], fraction: 0.5)
+        XCTAssertEqual(first.transform.m11, 0.9, accuracy: 0.001)
+        XCTAssertEqual(second.transform.m11, 0.9, accuracy: 0.001)
+        XCTAssertEqual(stores[0].currentSpaceID, ids[0],
+                       "Icon size must follow the fingers before the page selection commits")
+    }
+
+    func testDelayedCommitDoesNotExpireFooterEmphasisBeforeSidebarTravelStarts() async throws {
+        let (presentation, _, ids, window, views) = try fixture()
+        let root = try XCTUnwrap(window.contentView)
+        root.wantsLayer = true
+        let sidebar = CALayer()
+        sidebar.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        root.layer?.addSublayer(sidebar)
+        presentation.track(origin: ids[0], target: ids[1], fraction: 0)
+        CATransaction.flush()
+        try await Task.sleep(for: .milliseconds(40))
+        let from = sidebar.position
+        let to = CGPoint(x: from.x + 100, y: from.y)
+        let timing = CABasicAnimation(keyPath: "position")
+        timing.duration = 0.8
+        timing.fromValue = NSValue(point: from)
+        timing.toValue = NSValue(point: to)
+        timing.timingFunction = CAMediaTimingFunction(name: .linear)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        sidebar.position = to
+        sidebar.add(timing, forKey: "test-sidebar")
+        presentation.animate(origin: ids[0], target: ids[1], from: 0, to: 1, timing: timing)
+        // Model expensive pre-commit layout without letting CA submit this transaction.
+        usleep(1_000_000)
+        CATransaction.commit()
+        CATransaction.flush()
+        try await Task.sleep(for: .milliseconds(35))
+        let travel = (try XCTUnwrap(sidebar.presentation()).position.x - from.x) / 100
+        let opacity = try XCTUnwrap(views[1].marker?.symbol.presentation()).opacity
+        let emphasis = (Double(opacity) - 0.6) / 0.4
+        XCTAssertGreaterThan(travel, 0.01)
+        XCTAssertLessThan(travel, 0.7, "Sample the actual first part of sidebar travel")
+        XCTAssertEqual(emphasis, travel, accuracy: 0.12,
+                       "Footer emphasis and sidebar travel must start on the same committed clock")
+    }
+
     func testCachedProfileActivationMovesRegisteredLayersWithoutAViewUpdate() throws {
         let (presentation, stores, ids, window, views) = try fixture()
         let cached = NativeSpaceFooterMarkerView(frame: views[1].frame)
@@ -118,7 +168,8 @@ import XCTest
                         layer.render(in: context)
                         let actual = NSBitmapImageRep(cgImage: try XCTUnwrap(context.makeImage()))
                         let renderer = ImageRenderer(content:
-                            SpaceFooterMarker(icon: icon, layout: layout, emphasis: emphasis, selected: true)
+                            SpaceFooterMarker(icon: icon, layout: layout, emphasis: emphasis, selected: true,
+                                              sizeEmphasis: emphasis)
                                 .frame(width: 32, height: 32).environment(\.colorScheme, scheme))
                         renderer.scale = 2
                         var expected: CGImage?
@@ -170,6 +221,11 @@ import XCTest
         XCTAssertEqual(try XCTUnwrap(hover.fromValue as? NSNumber).floatValue, visible, accuracy: 0.04)
         XCTAssertEqual(try XCTUnwrap(hover.toValue as? NSNumber).doubleValue, 1, accuracy: 0.001)
         XCTAssertLessThanOrEqual(hover.duration, 0.15)
+        try await Task.sleep(for: .milliseconds(200))
+        let sizeDuringHover = try XCTUnwrap(
+            symbol.presentation()?.value(forKeyPath: "transform.scale.x") as? NSNumber).doubleValue
+        XCTAssertGreaterThan(sizeDuringHover, 0.85,
+                             "Quick hover feedback must not finish icon sizing ahead of the sidebar")
         try await Task.sleep(for: .milliseconds(30))
         mount(hovered: false, icons: true)
         let unhover = try XCTUnwrap(symbol.animation(forKey: "space-emphasis") as? CABasicAnimation)

@@ -13,6 +13,15 @@ extension EnvironmentValues {
     }
 }
 
+/// CA resolves a zero beginTime at commit. Its start callback provides a remaining-
+/// duration estimate for hover retargets without counting pre-commit layout time.
+@MainActor private final class SpaceFooterAnimationClock: NSObject, @preconcurrency CAAnimationDelegate {
+    private(set) var beganAt: CFTimeInterval?
+    func animationDidStart(_ anim: CAAnimation) {
+        if beganAt == nil { beganAt = CACurrentMediaTime() }
+    }
+}
+
 /// The window owns marker ink across profile hosting roots. Controls, menus and
 /// accessibility remain in SwiftUI; a parked root cannot reclaim these layers.
 @MainActor final class SpaceFooterPresentation {
@@ -39,6 +48,7 @@ extension EnvironmentValues {
     private var markers: [UUID: Marker] = [:]
     private var progress: (origin: UUID, target: UUID, fraction: Double)?
     private var progressTiming: CABasicAnimation?
+    private var progressClock: SpaceFooterAnimationClock?
     private var progressStart = 0.0
     private var reduced = false
 
@@ -64,12 +74,13 @@ extension EnvironmentValues {
         guard selectedID != id else { return }
         let previous = selectedID
         selectedID = id
-        for (key, marker) in markers { resize(marker, selected: key == id) }
+        if progress == nil {
+            for (key, marker) in markers { resize(marker, selected: key == id) }
+        } else if reduced || Motion.reduced { applyProgress() }
         if progress == nil {
             if let previous, id != nil {
                 let timing = CABasicAnimation(keyPath: "opacity")
                 timing.duration = 0.15
-                timing.beginTime = CACurrentMediaTime()
                 timing.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 for (key, marker) in markers {
                     animateProgress(marker, id: key, from: key == previous ? 1 : 0, timing: timing)
@@ -88,8 +99,8 @@ extension EnvironmentValues {
         let fresh = markers[id] == nil
         let marker = markers[id] ?? Marker()
         markers[id] = marker
-        let changedEmphasis = !fresh && (marker.hovered != hovered
-            || marker.layout.showsAllIcons != layout.showsAllIcons)
+        let changedMode = marker.layout.showsAllIcons != layout.showsAllIcons
+        let changedEmphasis = !fresh && (marker.hovered != hovered || changedMode)
         marker.layout = layout
         marker.hovered = hovered
         marker.reduced = reduced
@@ -97,6 +108,7 @@ extension EnvironmentValues {
             self.reduced = reduced || Motion.reduced
             if self.reduced {
                 progressTiming = nil
+                progressClock = nil
                 for (key, existing) in markers {
                     resize(existing, selected: selectedID == key, animated: false)
                     removeProgressAnimations(existing)
@@ -132,26 +144,26 @@ extension EnvironmentValues {
         }
         CATransaction.commit()
         place(marker, in: view.bounds)
-        resize(marker, selected: selectedID == id, animated: !fresh)
-        applyProgress(to: marker, id: id)
+        if progress == nil { resize(marker, selected: selectedID == id, animated: !fresh) }
         if fresh, let timing = progressTiming {
             animateProgress(marker, id: id, from: weight(id, fraction: progressStart), timing: timing)
         } else if changedEmphasis {
             // Hover and compact/icon mode change the endpoints. Do not leave a
             // previous landing animation covering the updated ink until it jumps.
             let timing = CABasicAnimation(keyPath: "opacity")
-            timing.beginTime = CACurrentMediaTime()
             timing.duration = 0.15
             if let progressTiming {
-                let remaining = max(0, progressTiming.beginTime + progressTiming.duration - timing.beginTime)
+                let remaining = progressClock?.beganAt.map {
+                    max(0, $0 + progressTiming.duration - CACurrentMediaTime())
+                } ?? progressTiming.duration
                 // Hover-on responds promptly; leaving hover or changing marker
                 // mode continues from visible ink until the sidebar lands.
-                timing.duration = hovered && layout.showsAllIcons ? min(0.15, remaining) : remaining
+                timing.duration = !changedMode && hovered && layout.showsAllIcons ? min(0.15, remaining) : remaining
                 timing.timingFunction = progressTiming.timingFunction
             }
             if timing.timingFunction == nil { timing.timingFunction = CAMediaTimingFunction(name: .easeOut) }
-            animateProgress(marker, id: id, from: weight(id), timing: timing)
-        }
+            animateProgress(marker, id: id, from: weight(id), timing: timing, preservingGeometry: !changedMode)
+        } else { applyProgress(to: marker, id: id) }
     }
 
     func detach(_ view: NativeSpaceFooterMarkerView) {
@@ -207,7 +219,6 @@ extension EnvironmentValues {
             animation.toValue = target
             animation.duration = 0.15
             animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            animation.beginTime = CACurrentMediaTime()
             setFrameRate(animation, for: marker)
             marker.symbol.add(animation, forKey: "space-selection")
         }
@@ -215,8 +226,12 @@ extension EnvironmentValues {
 
     func track(origin: UUID, target: UUID, fraction: Double) {
         progressTiming = nil
+        progressClock = nil
         progress = (origin, target, min(1, max(0, fraction)))
-        for marker in markers.values { removeProgressAnimations(marker) }
+        for marker in markers.values {
+            removeProgressAnimations(marker)
+            marker.symbol.removeAnimation(forKey: "space-selection")
+        }
         applyProgress()
     }
 
@@ -224,8 +239,11 @@ extension EnvironmentValues {
         progress = (origin, target, to)
         progressStart = from
         let clock = timing.copy() as! CABasicAnimation
-        clock.beginTime = CACurrentMediaTime()
+        // Like the sidebar position animation, start when CA commits the tree.
+        // An absolute wall-clock start can expire during expensive host layout.
+        clock.beginTime = 0
         progressTiming = reduced || Motion.reduced ? nil : clock
+        progressClock = progressTiming == nil ? nil : SpaceFooterAnimationClock()
         for (id, marker) in markers {
             animateProgress(marker, id: id, from: weight(id, fraction: from), timing: clock)
         }
@@ -234,6 +252,7 @@ extension EnvironmentValues {
     func finishProgress() {
         progress = nil
         progressTiming = nil
+        progressClock = nil
         for marker in markers.values { removeProgressAnimations(marker) }
         applyProgress()
     }
@@ -249,14 +268,22 @@ extension EnvironmentValues {
         return SpaceDotBlend.weights(current: progress.origin, target: progress.target, fraction: fraction)[id] ?? 0
     }
 
-    private func animateProgress(_ marker: Marker, id: UUID, from: Double, timing: CABasicAnimation) {
+    private func animateProgress(_ marker: Marker, id: UUID, from: Double, timing: CABasicAnimation,
+                                 preservingGeometry: Bool = false) {
         let icons = marker.layout.showsAllIcons
         let symbolFrom = marker.symbol.presentation()?.opacity
             ?? Float(icons ? (marker.hovered ? 1 : 0.6 + 0.4 * from) : from)
         let dotFrom = marker.dot.presentation()?.opacity ?? Float(icons ? 0 : 1 - from)
         let scaleFrom = (marker.dot.presentation()?.value(forKeyPath: "transform.scale.x") as? NSNumber)?.doubleValue
             ?? (Look.tileAppearScale + (1 - Look.tileAppearScale) * (1 - from))
-        removeProgressAnimations(marker)
+        let minimum = marker.layout.showsAllIcons ? 0.8 : Double(Look.tileAppearScale)
+        let symbolScaleFrom = (marker.symbol.presentation()?.value(forKeyPath: "transform.scale.x") as? NSNumber)?.doubleValue
+            ?? (minimum + (1 - minimum) * from)
+        if preservingGeometry {
+            marker.symbol.removeAnimation(forKey: "space-emphasis")
+            marker.dot.removeAnimation(forKey: "space-emphasis")
+        } else { removeProgressAnimations(marker) }
+        if progress != nil { marker.symbol.removeAnimation(forKey: "space-selection") }
         applyProgress(to: marker, id: id)
         guard !reduced, !marker.reduced, !Motion.reduced, timing.duration > 0 else { return }
         func add(_ layer: CALayer, path: String, key: String, from: Double, to: Double) {
@@ -265,12 +292,20 @@ extension EnvironmentValues {
             animation.keyPath = path
             animation.fromValue = from
             animation.toValue = to
+            animation.beginTime = 0
+            if timing === progressTiming { animation.delegate = progressClock }
             setFrameRate(animation, for: marker)
             layer.add(animation, forKey: key)
         }
         add(marker.symbol, path: "opacity", key: "space-emphasis", from: Double(symbolFrom), to: Double(marker.symbol.opacity))
         add(marker.dot, path: "opacity", key: "space-emphasis", from: Double(dotFrom), to: Double(marker.dot.opacity))
-        add(marker.dot, path: "transform.scale", key: "space-dot-scale", from: scaleFrom, to: marker.dot.transform.m11)
+        if !preservingGeometry {
+            add(marker.dot, path: "transform.scale", key: "space-dot-scale", from: scaleFrom, to: marker.dot.transform.m11)
+        }
+        if progress != nil && !preservingGeometry {
+            add(marker.symbol, path: "transform.scale", key: "space-progress-scale", from: symbolScaleFrom,
+                to: marker.symbol.transform.m11)
+        }
     }
 
     private func setFrameRate(_ animation: CAPropertyAnimation, for marker: Marker) {
@@ -288,6 +323,9 @@ extension EnvironmentValues {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         marker.symbol.opacity = Float(icons ? (marker.hovered ? 1 : 0.6 + 0.4 * lit) : lit)
+        let minimum = icons ? 0.8 : Double(Look.tileAppearScale)
+        let symbolScale = minimum + (1 - minimum) * lit
+        marker.symbol.transform = CATransform3DMakeScale(symbolScale, symbolScale, 1)
         marker.dot.opacity = Float(icons ? 0 : 1 - lit)
         let scale = Look.tileAppearScale + (1 - Look.tileAppearScale) * (1 - lit)
         marker.dot.transform = CATransform3DMakeScale(scale, scale, 1)
@@ -297,6 +335,7 @@ extension EnvironmentValues {
 
     private func removeProgressAnimations(_ marker: Marker) {
         marker.symbol.removeAnimation(forKey: "space-emphasis")
+        marker.symbol.removeAnimation(forKey: "space-progress-scale")
         marker.dot.removeAnimation(forKey: "space-emphasis")
         marker.dot.removeAnimation(forKey: "space-dot-scale")
     }

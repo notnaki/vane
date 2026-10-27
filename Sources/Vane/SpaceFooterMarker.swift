@@ -41,7 +41,8 @@ struct SpaceFooterEmphasis: View {
     fileprivate func legacy(drag: CGFloat?) -> some View {
         let lit = emphasis(drag: drag)
         return SpaceFooterMarker(icon: icon, layout: layout, hovered: hovered,
-                          emphasis: lit, selected: selected, reducedMotion: reducedMotion)
+                          emphasis: lit, selected: selected, reducedMotion: reducedMotion,
+                          sizeEmphasis: swiping ? lit : nil)
             .transaction(value: lit) { transaction in
                 if !swiping && !transaction.disablesAnimations { transaction.animation = animation }
             }
@@ -54,7 +55,7 @@ private struct ObservedSpaceFooterEmphasis: View {
     var body: some View { marker.legacy(drag: footer.drag) }
 }
 
-/// Swipe progress blends brightness; selection owns a separate, quick size animation.
+/// Finger progress blends brightness and size; uncovered selections keep a quick pulse.
 struct SpaceFooterMarker: View {
     let icon: String
     let layout: SpaceStripLayout
@@ -62,6 +63,7 @@ struct SpaceFooterMarker: View {
     var emphasis: Double
     var selected = false
     var reducedMotion = false
+    var sizeEmphasis: Double? = nil
 
     var body: some View {
         let lit = min(1, max(0, emphasis))
@@ -72,7 +74,7 @@ struct SpaceFooterMarker: View {
                 .opacity(layout.showsAllIcons ? 0 : 1 - lit)
                 .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * (1 - lit))
             SpaceFooterIcon(icon: icon, size: layout.iconSize, minimumScale: minimumScale,
-                            selected: selected, reducedMotion: reducedMotion)
+                            selected: selected, reducedMotion: reducedMotion, sizeEmphasis: sizeEmphasis)
                 .foregroundStyle(Look.inkPrimary)
                 .opacity(layout.showsAllIcons ? (hovered ? 1 : 0.6 + 0.4 * lit) : lit)
         }
@@ -86,26 +88,37 @@ private struct SpaceFooterIcon: View {
     let minimumScale: CGFloat
     let selected: Bool
     let reducedMotion: Bool
+    let sizeEmphasis: Double?
     @State private var enlarged: Bool
 
-    init(icon: String, size: CGFloat, minimumScale: CGFloat, selected: Bool, reducedMotion: Bool) {
+    init(icon: String, size: CGFloat, minimumScale: CGFloat, selected: Bool, reducedMotion: Bool,
+         sizeEmphasis: Double?) {
         self.icon = icon
         self.size = size
         self.minimumScale = minimumScale
         self.selected = selected
         self.reducedMotion = reducedMotion
+        self.sizeEmphasis = sizeEmphasis
         _enlarged = State(initialValue: selected)
     }
 
     var body: some View {
         Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
             .font(.system(size: size))
-            .scaleEffect((reducedMotion ? selected : enlarged) ? 1 : minimumScale)
+            .scaleEffect(scale)
             // Replacing only the glyph cancels an in-flight presentation animation
             // even when its selected endpoint is already the current state value.
             .id(reducedMotion)
             .onChange(of: selected) { updateSize() }
             .onChange(of: reducedMotion) { if reducedMotion { updateSize() } }
+    }
+
+    private var scale: CGFloat {
+        if reducedMotion { return selected ? 1 : minimumScale }
+        if let sizeEmphasis {
+            return minimumScale + (1 - minimumScale) * CGFloat(min(1, max(0, sizeEmphasis)))
+        }
+        return enlarged ? 1 : minimumScale
     }
 
     private func updateSize() {
