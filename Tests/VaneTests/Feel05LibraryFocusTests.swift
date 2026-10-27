@@ -6,7 +6,22 @@ import XCTest
 @MainActor final class Feel05LibraryFocusTests: XCTestCase {
     func testSectionChangesReachCurrentSearchWithAndWithoutBatterySaver() async throws {
         TestEnvironment.prepare()
-        _ = NSApplication.shared
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        app.setActivationPolicy(.accessory)
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do { try await exerciseSectionChanges() } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func exerciseSectionChanges() async throws {
         let previous = BatterySaver.shared.mode
         BatterySaver.shared.setMode(.alwaysOn)
         defer { BatterySaver.shared.setMode(previous) }
@@ -27,10 +42,13 @@ import XCTest
             window.contentView = nil
             window.close()
         }
+        try await LibraryFocusFixture.admitForeground(window)
         Library.open(.archived, in: store)
         window.contentView = NSHostingView(rootView: LibraryPanel().environmentObject(store))
-        window.makeKeyAndOrderFront(nil)
         window.contentView?.layoutSubtreeIfNeeded()
+        try await LibraryFocusFixture.wait("initial Archive editor", in: window) {
+            self.currentPrompt(in: window) == LibrarySection.archived.searchPrompt
+        }
         for mode in [BatterySaver.Mode.off, .alwaysOn] {
             BatterySaver.shared.setMode(mode)
             for section in [LibrarySection.downloads, .media, .archived] {
@@ -40,6 +58,9 @@ import XCTest
                 let deadline = Date.now.addingTimeInterval(3)
                 while currentPrompt(in: window) != section.searchPrompt, Date.now < deadline {
                     try await Task.sleep(for: .milliseconds(20))
+                }
+                if currentPrompt(in: window) != section.searchPrompt {
+                    LibraryFocusFixture.report("section=\(section) mode=\(mode)", in: window)
                 }
                 XCTAssertTrue(window.firstResponder is NSTextView, "Section activation must reach its search field")
                 let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
