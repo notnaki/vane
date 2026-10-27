@@ -65,6 +65,31 @@ import XCTest
         return try XCTUnwrap(NSColor(cgColor: XCTUnwrap(colours.first))?.usingColorSpace(.deviceRGB))
     }
 
+    func testBatterySaverFooterFollowsFractionalNativeSpaceTravel() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        let previous = BatterySaver.shared.mode
+        defer { BatterySaver.shared.setMode(previous) }
+        BatterySaver.shared.setMode(.alwaysOn)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        try await Task.sleep(for: .milliseconds(60))
+        host.layoutSubtreeIfNeeded()
+        func markers(in view: NSView) -> [NativeSpaceFooterMarkerView] {
+            (view as? NativeSpaceFooterMarkerView).map { [$0] } ?? view.subviews.flatMap { markers(in: $0) }
+        }
+        let target = try XCTUnwrap(markers(in: host).first { $0.configuration?.id == spaces[1].id }?.marker)
+        XCTAssertTrue(target.layout.showsAllIcons)
+        XCTAssertTrue(BatterySaver.shared.isActive)
+        monitor.track(-SidebarWidth.shared.width * 0.25, width: SidebarWidth.shared.width, in: store)
+        XCTAssertNotNil(host.spaceSlide, "Battery Saver keeps Space travel continuous")
+        XCTAssertEqual(target.symbol.transform.m11, 0.85, accuracy: 0.001,
+                       "The footer must follow the same fractional travel in Battery Saver")
+        XCTAssertEqual(target.symbol.opacity, 0.7, accuracy: 0.001)
+        monitor.track(-SidebarWidth.shared.width * 0.75, width: SidebarWidth.shared.width, in: store)
+        XCTAssertEqual(target.symbol.transform.m11, 0.95, accuracy: 0.001)
+        XCTAssertEqual(target.symbol.opacity, 0.9, accuracy: 0.001)
+    }
+
+
     func testZeroOffsetKeepsTheIncomingBackgroundColourPrepared() async throws {
         let (store, spaces, window, _) = try fixture(coloured: true)
         _ = store.beginSpaceSelection(spaces[1])
