@@ -628,7 +628,7 @@ struct SpacePreviewList: View, Equatable {
          favorites: [URL] = [], includingFavorites: Bool = false, pinnedCollapsed: Bool = false,
          live: LiveFolders? = nil, renderStore: TabStore? = nil,
          favoriteTabs: [Tab] = [], unlocked: Set<UUID> = [], newProfile: Bool = false,
-         selection: Set<UUID> = [], scrollOffset: CGFloat = 0) {
+         selection: Set<UUID> = [], scrollOffset: CGFloat = 0, preservesSelection: Bool = false) {
         tracksNativePopulation = NativeCachedSidebarBatchesExperiment.enabled
         var space = requested
         if newProfile && state == nil && liveTabs == nil {
@@ -652,7 +652,10 @@ struct SpacePreviewList: View, Equatable {
         self.splits = state?.splits ?? []
         let last = Spaces.lastTab(in: space.id)
         let tabs = state?.tabs ?? liveTabs
-        self.selectedID = state?.current ?? tabs.flatMap { tabs in
+        // A cached profile already showing this Space keeps its selection on hop,
+        // including an explicitly empty one. Other Spaces use switchTo's landing
+        // rules when their stash is restored.
+        self.selectedID = preservesSelection ? state?.current : state?.current ?? tabs.flatMap { tabs in
             if newProfile { return tabs.first { $0.kind == .today }?.id }
             return Spaces.landing(on: tabs.map { ($0.pinnedURL?.absoluteString, $0.kind) }, last: last)
                 .map { tabs[$0].id }
@@ -1054,7 +1057,8 @@ extension TabStore {
                                        selection: presentationOwner?.currentSpaceID == space.id
                                            ? presentationOwner?.selection.ids ?? [] : [],
                                        scrollOffset: presentationOwner?.currentSpaceID == space.id
-                                           ? presentationOwner?.spaceGesture.sidebarOffset ?? 0 : 0)
+                                           ? presentationOwner?.spaceGesture.sidebarOffset ?? 0 : 0,
+                                       preservesSelection: presentationOwner?.currentSpaceID == space.id)
         if spaceSwiping && !includingFavorites { spaceGesture.previews[space.id] = preview }
         return preview
     }

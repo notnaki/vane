@@ -257,6 +257,45 @@ import XCTest
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
     }
 
+    func testParkedProfileWithNoSelectedPageDoesNotFlashItsFirstPinnedTab() throws {
+        TestEnvironment.prepare()
+        let incoming = Space(name: "Incoming", profileID: UUID())
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([incoming], for: incoming.profileID))
+        let owner = TabStore(profileID: incoming.profileID, space: incoming, session: [])
+        let pin = owner.newBlankTab(focus: false, as: .pinned)
+        pin.restore(url: URL(string: "https://invalid.test/pin")!, home: nil,
+                    parked: Parked(title: "Pinned page"))
+        owner.current = nil
+        let source = TabStore(profileID: UUID(), session: [])
+        let window = NSWindow()
+        window.isReleasedWhenClosed = false
+        source.window = window
+        owner.parkedIn = window
+        defer {
+            owner.parkedIn = nil
+            source.window = nil
+            window.close()
+            for store in [source, owner] {
+                store.dropStashes()
+                let tabs = store.tabs
+                TabStore.all.removeAll { $0 === store }
+                SharedTabs.release(tabs)
+                Store.forget(store.profileID)
+            }
+            try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: incoming.profileID, in: Store.directory))
+        }
+        let before = try pixels(source.swipePreview(in: incoming))
+        // Windows.hop calls switchTo on the cached store. Its current Space is
+        // unchanged, so the explicitly empty selection stays empty.
+        owner.switchTo(space: incoming)
+        XCTAssertNil(owner.current)
+        let after = try pixels(SidebarSpaceContent().environmentObject(owner)
+            .environmentObject(SidebarDragPreview()))
+        XCTAssertEqual(before.count, after.count)
+        XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10,
+                                "The arriving preview must keep every pinned row unselected")
+    }
+
     func testParkedProfileGhostKeepsItsNativeSidebarScrollOffset() throws {
         TestEnvironment.prepare()
         let incoming = Space(name: "Incoming", profileID: UUID())
