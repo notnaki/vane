@@ -143,10 +143,13 @@ extension EnvironmentValues {
             timing.beginTime = CACurrentMediaTime()
             timing.duration = 0.15
             if let progressTiming {
-                timing.duration = min(timing.duration,
-                    max(0, progressTiming.beginTime + progressTiming.duration - timing.beginTime))
+                let remaining = max(0, progressTiming.beginTime + progressTiming.duration - timing.beginTime)
+                // Hover-on responds promptly; leaving hover or changing marker
+                // mode continues from visible ink until the sidebar lands.
+                timing.duration = hovered && layout.showsAllIcons ? min(0.15, remaining) : remaining
+                timing.timingFunction = progressTiming.timingFunction
             }
-            timing.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            if timing.timingFunction == nil { timing.timingFunction = CAMediaTimingFunction(name: .easeOut) }
             animateProgress(marker, id: id, from: weight(id), timing: timing)
         }
     }

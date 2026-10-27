@@ -159,7 +159,7 @@ import XCTest
         mount(hovered: false, icons: true)
         presentation.track(origin: ids[0], target: ids[1], fraction: 0.25)
         let timing = CABasicAnimation(keyPath: "position")
-        timing.duration = 0.8
+        timing.duration = 3
         timing.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         presentation.animate(origin: ids[0], target: ids[1], from: 0.25, to: 1, timing: timing)
         try await Task.sleep(for: .milliseconds(60))
@@ -174,9 +174,14 @@ import XCTest
         mount(hovered: false, icons: true)
         let unhover = try XCTUnwrap(symbol.animation(forKey: "space-emphasis") as? CABasicAnimation)
         XCTAssertEqual(try XCTUnwrap(unhover.toValue as? NSNumber).doubleValue, 0.6, accuracy: 0.001)
+        XCTAssertGreaterThan(unhover.duration, 0.3, "Unhover must continue the unfinished landing")
         mount(hovered: false, icons: false)
         let compact = try XCTUnwrap(symbol.animation(forKey: "space-emphasis") as? CABasicAnimation)
         XCTAssertEqual(try XCTUnwrap(compact.toValue as? NSNumber).doubleValue, 0, accuracy: 0.001)
+        XCTAssertGreaterThan(compact.duration, 0.3)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertGreaterThan(try XCTUnwrap(symbol.presentation()).opacity, 0.03,
+                             "Changing marker mode must not finish its ink ahead of the sidebar")
     }
 
     func testEmphasisUsesTheSidebarTimingAndReducedMotionCancelsBothAnimations() async throws {
