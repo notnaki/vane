@@ -3004,7 +3004,7 @@ private struct SpaceIcons: View {
 }
 
 /// The footer preference chooses icons or dots, independently of strip overflow.
-/// Swipe progress blends emphasis while selection animates each icon's size separately.
+/// Swipe progress blends emphasis and size continuously between the visible icons.
 /// Only a private window has no Spaces, and it does not draw this at all.
 private struct SpaceDots: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
