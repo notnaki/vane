@@ -39,7 +39,6 @@ import XCTest
     }
 
     private func exerciseLateOutgoingHeader() async throws {
-        let app = NSApplication.shared
         let store = TabStore(profileID: UUID(), session: [])
         let state = State()
         let old = (Library.shared.section, Library.shared.query, Library.shared.littleArcOnly, Library.shared.completedOnly)
@@ -47,8 +46,6 @@ import XCTest
                               styleMask: .titled, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         store.window = window
-        let host = NSHostingView(rootView: Headers(state: state).environmentObject(store))
-        window.contentView = host
         defer {
             Library.open(old.0, in: store)
             Library.shared.query = old.1
@@ -58,13 +55,17 @@ import XCTest
             store.window = nil; store.dropStashes()
             TabStore.all.removeAll { $0 === store }
         }
+        try await LibraryFocusFixture.admitForeground(window)
         Library.open(.downloads, in: store)
-        app.activate(); window.makeKeyAndOrderFront(nil)
+        let host = NSHostingView(rootView: Headers(state: state).environmentObject(store))
+        window.contentView = host
         host.layoutSubtreeIfNeeded()
         func prompt() -> String? {
             ((window.firstResponder as? NSTextView)?.delegate as? NSTextField)?.placeholderString
         }
-        try await compatibilityWait { window.isKeyWindow && app.isActive && prompt() == LibrarySection.downloads.searchPrompt }
+        try await LibraryFocusFixture.wait("initial Downloads editor", in: window) {
+            prompt() == LibrarySection.downloads.searchPrompt
+        }
         // A departing head can remain mounted while a replacement appears. Its
         // delayed onAppear request has no authority over the selected section.
         state.mountsOutgoing = true
@@ -75,6 +76,33 @@ import XCTest
                 XCTFail("An outgoing Library header stole the current search field editor")
                 break
             }
+        }
+    }
+}
+
+/// Admission is separate from the focus request under test. Never manually focus
+/// a search field or retry the product request to manufacture fixture success.
+@MainActor enum LibraryFocusFixture {
+    static func admitForeground(_ window: NSWindow) async throws {
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        try await wait("empty window foreground", in: window) {
+            NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
+        }
+    }
+
+    static func wait(_ phase: String, in window: NSWindow, condition: () -> Bool) async throws {
+        do { try await compatibilityWait { condition() } }
+        catch {
+            let editor = window.firstResponder as? NSTextView
+            let field = editor?.delegate as? NSTextField
+            print("LIBRARY_FOCUS_ADMISSION phase=\(phase) policy=\(NSApp.activationPolicy().rawValue) " +
+                  "running=\(NSApp.isRunning) active=\(NSApp.isActive) hidden=\(NSApp.isHidden) " +
+                  "key=\(window.isKeyWindow) exactKey=\(NSApp.keyWindow === window) visible=\(window.isVisible) " +
+                  "occlusion=\(window.occlusionState.rawValue) responder=\(String(describing: window.firstResponder.map { type(of: $0) })) " +
+                  "delegate=\(String(describing: editor?.delegate.map { type(of: $0) })) prompt=\(field?.placeholderString ?? "nil") " +
+                  "section=\(Library.shared.section) focusToken=\(Library.shared.focusToken)")
+            throw error
         }
     }
 }

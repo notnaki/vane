@@ -42,13 +42,13 @@ import XCTest
             window.contentView = nil
             window.close()
         }
+        try await LibraryFocusFixture.admitForeground(window)
         Library.open(.archived, in: store)
         window.contentView = NSHostingView(rootView: LibraryPanel().environmentObject(store))
-        NSApp.activate()
-        window.makeKeyAndOrderFront(nil)
         window.contentView?.layoutSubtreeIfNeeded()
-        try await compatibilityWait { window.isKeyWindow && NSApp.isActive
-            && self.currentPrompt(in: window) == LibrarySection.archived.searchPrompt }
+        try await LibraryFocusFixture.wait("initial Archive editor", in: window) {
+            self.currentPrompt(in: window) == LibrarySection.archived.searchPrompt
+        }
         for mode in [BatterySaver.Mode.off, .alwaysOn] {
             BatterySaver.shared.setMode(mode)
             for section in [LibrarySection.downloads, .media, .archived] {
