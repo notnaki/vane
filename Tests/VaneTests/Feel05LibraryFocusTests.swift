@@ -59,6 +59,9 @@ import XCTest
                 while currentPrompt(in: window) != section.searchPrompt, Date.now < deadline {
                     try await Task.sleep(for: .milliseconds(20))
                 }
+                if currentPrompt(in: window) != section.searchPrompt {
+                    LibraryFocusFixture.report("section=\(section) mode=\(mode)", in: window)
+                }
                 XCTAssertTrue(window.firstResponder is NSTextView, "Section activation must reach its search field")
                 let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
                 let field = try XCTUnwrap(editor.delegate as? NSTextField)

@@ -94,15 +94,24 @@ import XCTest
     static func wait(_ phase: String, in window: NSWindow, condition: () -> Bool) async throws {
         do { try await compatibilityWait { condition() } }
         catch {
-            let editor = window.firstResponder as? NSTextView
-            let field = editor?.delegate as? NSTextField
-            print("LIBRARY_FOCUS_ADMISSION phase=\(phase) policy=\(NSApp.activationPolicy().rawValue) " +
-                  "running=\(NSApp.isRunning) active=\(NSApp.isActive) hidden=\(NSApp.isHidden) " +
-                  "key=\(window.isKeyWindow) exactKey=\(NSApp.keyWindow === window) visible=\(window.isVisible) " +
-                  "occlusion=\(window.occlusionState.rawValue) responder=\(String(describing: window.firstResponder.map { type(of: $0) })) " +
-                  "delegate=\(String(describing: editor?.delegate.map { type(of: $0) })) prompt=\(field?.placeholderString ?? "nil") " +
-                  "section=\(Library.shared.section) focusToken=\(Library.shared.focusToken)")
+            report(phase, in: window)
             throw error
         }
+    }
+
+    static func report(_ phase: String, in window: NSWindow) {
+        func fields(_ view: NSView) -> [String] {
+            let own = (view as? NSTextField).map { "\($0.placeholderString ?? "nil")@window=\($0.window === window)" }
+            return (own.map { [$0] } ?? []) + view.subviews.flatMap(fields)
+        }
+        let editor = window.firstResponder as? NSTextView
+        let field = editor?.delegate as? NSTextField
+        print("LIBRARY_FOCUS_ADMISSION phase=\(phase) policy=\(NSApp.activationPolicy().rawValue) " +
+              "running=\(NSApp.isRunning) active=\(NSApp.isActive) hidden=\(NSApp.isHidden) " +
+              "key=\(window.isKeyWindow) exactKey=\(NSApp.keyWindow === window) visible=\(window.isVisible) " +
+              "occlusion=\(window.occlusionState.rawValue) responder=\(String(describing: window.firstResponder.map { type(of: $0) })) " +
+              "delegate=\(String(describing: editor?.delegate.map { type(of: $0) })) prompt=\(field?.placeholderString ?? "nil") " +
+              "section=\(Library.shared.section) focusToken=\(Library.shared.focusToken)")
+        print("LIBRARY_FOCUS_FIELDS phase=\(phase) mounted=\(window.contentView.map(fields) ?? [])")
     }
 }
