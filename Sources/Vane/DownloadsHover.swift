@@ -25,7 +25,7 @@ import SwiftUI
         pending?.cancel()
         pending = nil
         regions.removeAll()
-        isVisible = false
+        if isVisible { isVisible = false }
     }
 }
 

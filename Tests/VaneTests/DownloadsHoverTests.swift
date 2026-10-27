@@ -88,6 +88,16 @@ import Combine
         XCTAssertFalse(hover.isVisible)
     }
 
+    func testDismissingHiddenPreviewDoesNotInvalidateItsObservers() {
+        let hover = DownloadsHover()
+        var invalidations = 0
+        let observation = hover.objectWillChange.sink { invalidations += 1 }
+        for _ in 0..<50 { hover.dismiss() }
+        XCTAssertEqual(invalidations, 0,
+                       "Space/sidebar updates must not redraw observers of an already hidden preview")
+        withExtendedLifetime(observation) {}
+    }
+
     func testDismissCancelsPendingOpenAndAllowsNextHover() async throws {
         let hover = DownloadsHover()
         hover.setHovered(true, over: .button)
