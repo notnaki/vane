@@ -38,6 +38,12 @@ private struct DisabledKeyboardSurface: View {
     }
 
     private func fixture(isPrivate: Bool = true) -> (TabStore, NSWindow, WKWebView) {
+        let (store, window, web, retire) = makeFixture(isPrivate: isPrivate)
+        addTeardownBlock { @MainActor in retire() }
+        return (store, window, web)
+    }
+
+    private func makeFixture(isPrivate: Bool) -> (TabStore, NSWindow, WKWebView, @MainActor () -> Void) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let store = TabStore(isPrivate: isPrivate, profileID: UUID())
@@ -52,7 +58,7 @@ private struct DisabledKeyboardSurface: View {
         store.window = window
         window.contentView = web
         window.makeKeyAndOrderFront(nil)
-        addTeardownBlock { @MainActor in
+        let retire: @MainActor () -> Void = {
             window.contentView = nil
             store.window = nil
             window.close()
@@ -60,7 +66,40 @@ private struct DisabledKeyboardSurface: View {
             TabStore.all.removeAll { $0 === store }
             SharedTabs.release(store.tabs)
         }
-        return (store, window, web)
+        return (store, window, web, retire)
+    }
+
+    /// Admit the native loop and exact mounted page owner before the handoff deadline,
+    /// keeping the target page cold. Retire the fixture before closing its owned loop.
+    private func withNativePageFixture(
+        _ body: @MainActor (TabStore, NSWindow, WKWebView) async throws -> Void
+    ) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        app.setActivationPolicy(.accessory)
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do {
+            let (store, window, web, retire) = makeFixture(isPrivate: true)
+            defer { retire() }
+            window.makeKeyAndOrderFront(nil)
+            app.activate(ignoringOtherApps: true)
+            try await compatibilityWait {
+                app.isRunning && app.isActive && window.isKeyWindow && app.keyWindow === window
+                    && window.isVisible && window.occlusionState.contains(.visible)
+                    && app.modalWindow == nil && window.attachedSheet == nil
+                    && web.window === window && store.activePageResponder === web
+            }
+            try await body(store, window, web)
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Keyboard fixture AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
     }
 
     private func key(_ text: String, code: UInt16, in window: NSWindow) -> NSEvent {
@@ -380,15 +419,30 @@ private struct DisabledKeyboardSurface: View {
 
 
     func testFirstSearchResultReceivesFocusWhenTabIsCreatedOnNextTurn() async throws {
-        let (store, window, web) = fixture()
-        let selected = store.current
-        store.current = nil
-        window.makeFirstResponder(nil)
-        store.focusPage()
-        DispatchQueue.main.async { store.current = selected }
-        try await Task.sleep(for: .milliseconds(350))
-        XCTAssertTrue(window.firstResponder === web,
-                      "Opening the first search result must leave the page ready for the keyboard")
+        try await withNativePageFixture { store, window, web in
+            @MainActor func identity(_ object: AnyObject?) -> String {
+                object.map { "\(type(of: $0))@\(ObjectIdentifier($0))" } ?? "nil"
+            }
+            @MainActor func diagnose(_ phase: String) {
+                let page = store.activePageResponder
+                print("FIRST_SEARCH_FOCUS \(phase) running=\(NSApp.isRunning) active=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) key=\(identity(NSApp.keyWindow)) window=\(identity(window)) isKey=\(window.isKeyWindow) visible=\(window.isVisible) modal=\(identity(NSApp.modalWindow)) sheet=\(identity(window.attachedSheet)) holder=\(identity(window.firstResponder)) page=\(identity(page)) web=\(identity(web)) pageWindow=\(identity(page?.window)) palette=\(String(describing: store.palette)) library=\(store.libraryOpen)")
+            }
+            diagnose("created")
+            XCTAssertTrue(NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window,
+                          "The focus fixture must own a running foreground AppKit window before the action")
+            XCTAssertNil(web.url, "The first-search handoff must still exercise a cold page")
+            let selected = store.current
+            store.current = nil
+            XCTAssertTrue(window.makeFirstResponder(nil))
+            XCTAssertTrue(window.firstResponder === window, "The handoff must start without a page holding focus")
+            diagnose("before-action")
+            store.focusPage()
+            DispatchQueue.main.async { store.current = selected; diagnose("selected") }
+            try await Task.sleep(for: .milliseconds(350))
+            diagnose("outcome")
+            XCTAssertTrue(window.firstResponder === web,
+                          "Opening the first search result must leave the page ready for the keyboard")
+        }
     }
 
 

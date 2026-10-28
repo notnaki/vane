@@ -4359,13 +4359,13 @@ struct LivePRTitle: View {
     var pr: GitHub.Row?
     var developerEndpoint: String? = nil
     var returnCaption = false
-    var returnCaptionSelected = true
+    var returnCaptionSeparating = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ShimmerTitle(title: title, reveal: reveal)
             if returnCaption {
-                Text(returnCaptionSelected ? "Back to Pinned URL" : "Separate From Pinned Tab")
+                Text(returnCaptionSeparating ? "Separate From Pinned Tab" : "Back to Pinned URL")
                     .font(Look.small)
                     .foregroundStyle(Look.inkTertiary)
                     .transition(.offset(y: 4).combined(with: .opacity))
@@ -4413,6 +4413,7 @@ struct SidebarTabPresentation: View {
     @ObservedObject var tab: Tab
     var held = false
     @Binding var returnHovering: Bool
+    @State private var separating = false
     var pr: GitHub.Row?
     var action: () -> Void
     let selected: Bool
@@ -4434,7 +4435,7 @@ struct SidebarTabPresentation: View {
                    trailingInset: Look.tabRowTrailingInset,
                    action: action) {
             TabHomeIcon(store: store, tab: tab, returnHovering: held ? .constant(returnHovering) : $returnHovering,
-                        rowSelected: selected)
+                        rowSelected: selected, separating: separating)
         } label: {
             HStack(spacing: 6) {
                 // Keep the away marker visible during rename and Return hover too.
@@ -4444,7 +4445,7 @@ struct SidebarTabPresentation: View {
                     LivePRTitle(title: title, reveal: tab.titleReveal, pr: pr,
                                 developerEndpoint: tab.developer ? DeveloperMode.endpoint(tab.currentURL) : nil,
                                 returnCaption: returning && returnHovering,
-                                returnCaptionSelected: selected)
+                                returnCaptionSeparating: separating)
                         // A stable title inside a fixed slot: the growing caption stack
                         // moves the title upward without jumping the label's layout box.
                         .frame(height: Look.rowHeight)
@@ -4462,6 +4463,18 @@ struct SidebarTabPresentation: View {
                 FavoriteTileBackground(selected: selected, hovering: true, icon: tab.favicon)
                     .opacity(morph.progress)
             }
+            // Only the hovered return control observes modifier changes. Holding Command
+            // before entering, or pressing/releasing it without moving, gives the same action.
+            if returnHovering && !previewing {
+                Color.clear
+                    .allowsHitTesting(false)
+                    .onModifierKeysChanged(mask: .command) { _, modifiers in
+                        separating = modifiers.contains(.command)
+                    }
+            }
+        }
+        .onChange(of: returnHovering) { _, hovering in
+            separating = hovering && NSEvent.modifierFlags.contains(.command)
         }
         .overlay(alignment: .topTrailing) {
             if let morph, tab.kind == .favourite,
@@ -4552,8 +4565,13 @@ private struct TabRow: View {
         // of them is worse than no action at all. Same words as the glyph's own label.
         .accessibilityActions {
             if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: true) {
-                Button(returning ? "Return to Pinned Tab" : "Go back to pinned page") {
+                Button(returning ? "Back to Pinned URL" : "Go back to pinned page") {
                     store.goHome(tab.id)
+                }
+                if returning {
+                    Button("Separate From Pinned Tab") {
+                        store.goHome(tab.id, separating: true)
+                    }
                 }
             }
         }
@@ -5254,6 +5272,7 @@ private struct TabHomeIcon: View {
     @ObservedObject var tab: Tab
     @Binding var returnHovering: Bool
     var rowSelected = false
+    var separating = false
     var size: CGFloat = Look.rowIcon
     @Environment(\.rowHovering) private var hovering
     @Environment(\.ghostTileMorph) private var morph
@@ -5265,7 +5284,7 @@ private struct TabHomeIcon: View {
             TabIcon(tab: tab, size: size)
         } else if tab.kind == .pinned && !tab.atHome {
             GoHomeGlyph(store: store, tab: tab, tiled: true, returnHovering: $returnHovering,
-                        rowSelected: rowSelected)
+                        rowSelected: rowSelected, separating: separating)
                 // Keep favicon and slash inside one return target. Hovering the
                 // marker must reveal the caption without shifting the title.
                 .frame(width: size, height: size)
@@ -5277,7 +5296,8 @@ private struct TabHomeIcon: View {
             // frame is a layout box, not a clip — which is what `rowTarget` is for.
             GoHomeGlyph(store: store, tab: tab).frame(width: size, height: size)
         } else {
-            TabIcon(tab: tab, size: size)
+            TabIcon(tab: tab, size: size,
+                    faviconScale: tab.kind == .pinned ? 1 : Look.sidebarFaviconScale)
         }
     }
 }
@@ -5293,12 +5313,14 @@ private struct GoHomeGlyph: View {
     var tiled = false
     var returnHovering: Binding<Bool> = .constant(false)
     var rowSelected = false
-    @Environment(\.rowHovering) private var rowHovering
+    var separating = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
-        Button { store.goHome(tab.id) } label: {
+        Button {
+            store.goHome(tab.id, separating: tiled && NSEvent.modifierFlags.contains(.command))
+        } label: {
             if tiled {
                 TabIcon(tab: tab, size: Look.rowIcon, faviconScale: 1)
                     .frame(width: Look.returnTileSize, height: Look.returnTileSize)
@@ -5310,7 +5332,7 @@ private struct GoHomeGlyph: View {
                         .frame(width: Look.returnMarkerWidth)
                         .padding(.trailing, 2)
                         .offset(y: -1)
-                        .opacity(returnHovering.wrappedValue || rowHovering ? 0 : 1)
+                        .opacity(returnHovering.wrappedValue ? 0 : 1)
                         .accessibilityHidden(true)
                     }
                 .background(returnHovering.wrappedValue ? chromeTheme.hovered : .clear,
@@ -5335,8 +5357,12 @@ private struct GoHomeGlyph: View {
         }
         .nativeSidebarKeyboardControl()
         .buttonStyle(TactileButtonStyle())
-        .vaneTooltip(tiled ? "Back to Pinned URL" : "Go back to pinned page")
-        .accessibilityLabel(tiled ? "Back to Pinned URL" : "Go back to pinned page")
+        .vaneTooltip(actionLabel)
+        .accessibilityLabel(actionLabel)
+    }
+
+    private var actionLabel: String {
+        tiled ? (separating ? "Separate From Pinned Tab" : "Back to Pinned URL") : "Go back to pinned page"
     }
 }
 
@@ -5472,9 +5498,9 @@ struct TabIcon: View {
             }
         }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: tab.needsRecovery)
-        // The swap, when it comes, is a fade rather than a cut — the same 0.15s the rest of
-        // the sidebar's hovers use.
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: tab.favicon)
+        // Background artwork refreshes must not crossfade every sibling on this host.
+        // Even identical images dip in opacity while SwiftUI blends their replacements.
+        .animation(nil, value: tab.favicon)
         .accessibilityHidden(true)          // the row's own label and value say all of this
     }
 }
