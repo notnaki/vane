@@ -1,15 +1,29 @@
 # Native CI boundary qualification
 
-Main40774338406 at2f517f9 failed `NavigationWebKitTests.testPageLeavingForAnotherOriginKeepsItsSilentPopupBlock`: the popup attempt happened while the native URL was still the outgoing page, rather than the intended held destination. The raw worker-UA probe passed separately; that does not repair issue513 or the navigation failure. Preserve the original failure; do not retry unchanged code to establish success.
+Main run 40774338406 at `2f517f9` failed `NavigationWebKitTests.testPageLeavingForAnotherOriginKeepsItsSilentPopupBlock`: after the popup attempt, the native URL still named the outgoing page rather than the intended held destination. The raw worker-UA probe passed separately; that does not repair issue 513 or the navigation failure. Preserve the original failure; do not retry unchanged code to establish success.
 
 ## Navigation scenario admission
 
-- [x] Controlled RED: a2second exact-destination policy hold lets both old300ms popup timers run before any held destination request. The silent-Block case reproduces the original URL assertion shape; the adjacent destination-Allow case exposes missing scenario coverage. Primary1/cleanup0. This proves an ordering gap, not the exact historical CI latency mechanism.
-- [x] Replace timer assumptions with exact held request/provisional URL/loading/outgoing-document admission. Page-load-owned interval callbacks consume native-written flags, so public JavaScript evaluation cannot donate a user gesture to the popup. Observe and forward one actual SDK callback with outgoing origin and gesture=false. Retain original popup/security assertions and single10second budget.
-- [x] Four original/adversarial controls passed. Three predetermined fresh AppKit smokes and184-test cohorts passed:182passes+the same2 opt-in diagnostic skips per cohort, primary0/cleanup0 throughout.
-- [x] Whole original shard4/current605-test cohort completed:583passes+22existing skips, all603 original methods plus2 controls verified, primary0/cleanup0. All recorded exact host identities exited. Independent source review found no actionable findings at navigation blob `e86d19d59c1617b6723aab9c98771577c6bd0397`.
+- [x] Controlled RED: a 2-second exact-destination policy hold lets both old 300 ms popup timers run before any held destination request. The silent-Block case reproduces the original URL assertion shape; the adjacent destination-Allow case exposes missing scenario coverage. Primary 1 / cleanup 0. This proves an ordering gap, not the exact historical CI latency mechanism.
+- [x] Replace timer assumptions with exact held-request, provisional-URL, loading and outgoing-document admission. Page-load-owned interval callbacks consume native-written flags, so public JavaScript evaluation cannot donate a user gesture to the popup. Observe and forward one actual SDK callback with outgoing origin and `gesture=false`. Retain the original popup/security assertions and single 10-second budget.
+- [x] Four original/adversarial controls passed. Three predetermined fresh AppKit smokes and 184-test cohorts passed: 182 passes plus the same 2 opt-in diagnostic skips per cohort, primary 0 / cleanup 0 throughout.
+- [x] Whole original shard 4 / current 605-test cohort completed: 583 passes plus 22 existing skips, all 603 original methods plus 2 controls verified, primary 0 / cleanup 0. All recorded exact host identities exited. Independent source review found no actionable findings at navigation blob `e86d19d59c1617b6723aab9c98771577c6bd0397`.
 
-Evidence is preserved under `ci-navigation-state-2f517f9` in the task artifact directory, including RED source/binary identity, source hashes, manifests, raw logs and final cleanup.
+Original causal evidence is preserved under `ci-navigation-state-2f517f9` in the task artifact directory, including RED source/binary identity, source hashes, manifests, raw logs and final cleanup.
+
+### Latest-main integration qualification
+
+PR 551's first full required CI run, `40781844507`, passed. Main then advanced to `b029274da5bfcf7d673f28421fee0adf81b5022b` through PR 550, so strict protection required qualifying the integrated tree. The clean merge is `9587ee8976e94b0d76188c5d98717609f289ca91`; its reviewed navigation blob remains unchanged.
+
+- [x] Predeclare three fresh AppKit launch smokes, each followed by the four original/delayed outgoing-page controls, then all tests in the changed target classes once. Preserve every attempt and stop on the first unexpected failure.
+- [x] Native source/test build passed. All three smoke/control pairs passed: 3 smokes and 12 Nav-control executions, no skips, strict manifest verification and primary 0 / cleanup 0 throughout.
+- [x] `FaviconPublicationTests`, `PinnedTabReturnTests` and `KeyboardAccessibilityTests` passed once: all 24 selected tests completed, no skips, primary 0 / cleanup 0.
+- [x] Frozen source hashes remained unchanged throughout qualification. All 14 exact primary/cleanup host identities were independently verified absent before returning UI ownership to the mount investigation. No separate Vane app was launched.
+- [ ] Independently review the latest integrated PR head and pass full required CI against the latest main before squash-merging. The earlier green run does not cover this integration.
+
+The predeclared plan, source hashes, build output, exact manifests/filters, all seven raw native-run logs, wrapper invocations, process start identities and final cleanup check are preserved under `ci-navigation-integration-b029274` in the same task artifact directory. This qualification covers the new main integration; it does not identify the precise latency mechanism in the original failed run or resolve the independent fixture gaps below.
+
+Actual-main run `40782819583` at `b029274` subsequently failed `PasswordAutofillTests.testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep` with a continuation/password-load timeout, primary 1 / cleanup 0. Its preserved log is `main-b029274-failure.log`. Passing navigation controls do not resolve that separate failure; its causal repair remains required before advancing full CI.
 
 ## Other concrete fixture gaps found by the shard audit
 
