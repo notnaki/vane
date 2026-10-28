@@ -59,6 +59,7 @@ import WebKit
     static func forget(_ profileID: UUID) {
         guard let host = hosts[profileID] else { return }
         host.invalidated = true
+        host.storeUpdateTimer?.invalidate()
         ExtensionManagement.close(for: profileID)
         for task in host.restoring.values { task.cancel() }
         host.restoring.removeAll()
@@ -117,6 +118,7 @@ import WebKit
         var sourceAvailable: Bool = false
         var sourcePath: String = ""
         var safariApp: Bool = false
+        var storeID: String? = nil
         var requiredAccess: ExtensionAccess? = nil
         var optionalAccess: ExtensionAccess? = nil
         var compatibility: [String] = []
@@ -165,6 +167,7 @@ import WebKit
         folders.keys.sorted { (folders[$0] ?? "").localizedStandardCompare(folders[$1] ?? "") == .orderedAscending }.map { path in
             let context = loaded.first { $0.path == path }?.context
             let record = records[path]
+            let storeSource = storeSource(for: path)
             let source = sourceFolder(for: path)
             let busy = operations[path] != nil || restoring[path] != nil
             let runtimeErrors = context.map { ExtensionDiagnostics.blockingErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
@@ -177,8 +180,9 @@ import WebKit
                          summary: record?.summary ?? context?.webExtension.displayDescription ?? legacyMetadata[path]?.summary ?? "",
                          icon: metadataIcons[path] ?? context?.webExtension.icon(for: CGSize(width: 40, height: 40)),
                          enabled: context != nil, managed: record != nil,
-                         sourceAvailable: FileManager.default.isReadableFile(atPath: record?.safari != nil ? source.path : source.appendingPathComponent("manifest.json").path),
-                         sourcePath: source.path, safariApp: record?.safari != nil || path.hasPrefix("/safari-extension/"),
+                         sourceAvailable: storeSource != nil || FileManager.default.isReadableFile(atPath: record?.safari != nil ? source.path : source.appendingPathComponent("manifest.json").path),
+                         sourcePath: storeSource?.listingURL.absoluteString ?? source.path, safariApp: record?.safari != nil || path.hasPrefix("/safari-extension/"),
+                         storeID: storeSource?.id,
                          requiredAccess: record?.required ?? ExtensionConsent.saved(for: URL(fileURLWithPath: path), profileID: profileID),
                          optionalAccess: record?.optional ?? legacyMetadata[path]?.optional,
                          compatibility: (record?.compatibility ?? limitations[path] ?? [])
@@ -226,7 +230,7 @@ import WebKit
             records = try codeStore.records()
             try? codeStore.sweepUnreferencedRevisions()
         }
-        catch { metadataFailure = "Saved extension metadata could not be read. Choose Update from Folder or Update from App to review and repair each installation. Existing code files and settings are retained. " + error.localizedDescription }
+        catch { metadataFailure = "Saved extension metadata could not be read. Choose Update from Store, Update from Folder or Update from App to review and repair each installation. Existing code files and settings are retained. " + error.localizedDescription }
         folders = UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(Self.namesKey, profileID)) as? [String: String] ?? [:]
         disabled = Set(UserDefaults.vane.stringArray(forKey: ProfileManager.defaultsKey(Self.disabledKey, profileID)) ?? [])
         for (path, record) in records { folders[path] = record.name }
@@ -267,6 +271,7 @@ import WebKit
             }
             if !disabled.contains(path), failures[path] == nil { begin(path) }
         }
+        scheduleStoreUpdates()
     }
 
     private func sourceFolder(for path: String) -> URL {
@@ -276,6 +281,17 @@ import WebKit
             return resolved.resolvingSymlinksInPath()
         }
         return URL(fileURLWithPath: records[path]?.sourcePath ?? path, isDirectory: true)
+    }
+
+    /// A retained reserved key can locate an authenticated replacement even when the
+    /// index is unreadable. It supplies no code or grants; the fresh download is verified
+    /// against this ID and the recovered installation goes through explicit review.
+    private func storeSource(for path: String) -> ChromeWebStore? {
+        if let source = records[path]?.store { return source }
+        let prefix = "/chrome-web-store/"
+        guard path.hasPrefix(prefix), let source = try? ChromeWebStore(input: String(path.dropFirst(prefix.count))),
+              source.key == path else { return nil }
+        return source
     }
 
     private func cacheIcon(for path: String, in folder: URL) {
@@ -305,6 +321,93 @@ import WebKit
     func install(folder: URL) async throws {
         let path = folder.resolvingSymlinksInPath().path
         _ = try await load(folder, installing: true, replacing: folders[path] != nil)
+    }
+
+    /// Store downloads reserve the same operation key as activation. Removing or
+    /// disabling during any await invalidates that reservation and cannot resurrect it.
+    @discardableResult
+    func installStore(_ source: ChromeWebStore, automatic: Bool = false,
+        fetch: @Sendable (ChromeWebStore, URL) async throws -> URL = { try await $0.prepare(in: $1) },
+        review: @MainActor (ExtensionConsent.Review) -> Bool = ExtensionConsent.ask) async throws -> Bool {
+        guard source.isValid, !invalidated, profileID != Profile.incognito.id else { throw CancellationError() }
+        let path = source.key
+        guard operations[path] == nil, restoring[path] == nil else { return false }
+        let token = UUID()
+        operations[path] = token
+        rebuild()
+        defer { if operations[path] == token { operations[path] = nil }; rebuild() }
+        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("vane-store-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let folder = try await fetch(source, workspace)
+        try Task.checkCancellation()
+        guard !invalidated, operations[path] == token else { throw CancellationError() }
+        var checkedSource = source
+        checkedSource.checkedAt = Date()
+        let manifest = try Self.validate(folder)
+        if let old = records[path], let version = manifest["version"] as? String,
+           !ChromeWebStore.isNewer(version, than: old.version) {
+            var repair = false
+            // Downgrades remain forbidden. An explicit equivalent-version repair is
+            // useful when startup could not load the accepted code or its files vanished.
+            if !automatic, !ChromeWebStore.isNewer(old.version, than: version) {
+                repair = !disabled.contains(path) && !loaded.contains(where: { $0.path == path })
+                do {
+                    let accepted = codeStore.code(for: old)
+                    let savedManifest = try Self.validate(accepted)
+                    try ExtensionDiagnostics.validateResources(savedManifest, in: accepted)
+                    repair = repair || savedManifest["version"] as? String != old.version
+                } catch { repair = true }
+            }
+            if !repair {
+                var next = records
+                next[path]?.store = checkedSource
+                try codeStore.save(next)
+                records = next
+                if disabled.contains(path) || loaded.contains(where: { $0.path == path }) { failures[path] = nil }
+                return false
+            }
+        }
+        return try await loadCandidate(folder, path: path, installing: folders[path] == nil,
+            replacing: folders[path] != nil, enable: !disabled.contains(path), storeSource: checkedSource,
+            operationToken: token, automatic: automatic, review: review)
+    }
+
+    private var storeUpdateTimer: Timer?
+    private var storeCheckDates: [String: Date] = [:]
+
+    private func scheduleStoreUpdates() {
+        guard !invalidated, profileID != Profile.incognito.id, records.values.contains(where: { $0.store != nil }),
+              storeUpdateTimer == nil else { return }
+        storeUpdateTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkStoreUpdates() }
+        }
+        Task { @MainActor [weak self] in
+            // Startup restoration owns its keys first; the hourly timer retries any busy installations.
+            await Task.yield()
+            self?.checkStoreUpdates()
+        }
+    }
+
+    private func checkStoreUpdates() {
+        guard !invalidated else { return }
+        let now = Date()
+        for (path, record) in records {
+            guard let source = record.store, operations[path] == nil, restoring[path] == nil,
+                  now.timeIntervalSince(storeCheckDates[path] ?? source.checkedAt ?? .distantPast) >= 86_400 else { continue }
+            storeCheckDates[path] = now
+            Task { [weak self] in
+                guard let self, !invalidated else { return }
+                do { _ = try await installStore(source, automatic: true, review: { _ in false }) }
+                catch is CancellationError { }
+                catch {
+                    if !invalidated, records[path]?.identity == record.identity {
+                        failures[path] = "The store update could not be checked. The accepted version is retained. " + error.localizedDescription
+                        rebuild()
+                    }
+                }
+            }
+        }
     }
 
     private var myKey: String { Self.key(for: profileID) }
@@ -384,6 +487,7 @@ import WebKit
     func refresh(_ path: String,
                  review: @MainActor (ExtensionConsent.Review) -> Bool = ExtensionConsent.ask) async throws -> Bool {
         guard folders[path] != nil else { throw Failure("This extension has been removed. Install it again.") }
+        if let source = storeSource(for: path) { return try await installStore(source, review: review) }
         if let source = records[path]?.safari {
             guard operations[path] == nil else { return false }
             let token = UUID()
@@ -416,6 +520,14 @@ import WebKit
 
     func chooseUpdate(for path: String) {
         guard folders[path] != nil, profileID != Profile.incognito.id else { return }
+        if storeSource(for: path) != nil {
+            Task {
+                do { _ = try await refresh(path) }
+                catch is CancellationError { }
+                catch { warn("Could not update that extension.", error.localizedDescription) }
+            }
+            return
+        }
         if records[path]?.safari != nil || path.hasPrefix("/safari-extension/") { chooseAndInstall(updating: path); return }
         let panel = NSOpenPanel()
         panel.title = "Update Extension from Folder"
@@ -467,14 +579,18 @@ import WebKit
 
     @discardableResult
     private func loadCandidate(_ source: URL, path: String, installing: Bool, replacing: Bool,
-                               enable: Bool, review: @MainActor (ExtensionConsent.Review) -> Bool = ExtensionConsent.ask) async throws -> Bool {
+                               enable: Bool, storeSource: ChromeWebStore? = nil, operationToken: UUID? = nil,
+                               automatic: Bool = false, review: @MainActor (ExtensionConsent.Review) -> Bool = ExtensionConsent.ask) async throws -> Bool {
         guard !invalidated, profileID != Profile.incognito.id else { throw CancellationError() }
         guard records[path]?.safari == nil, !path.hasPrefix("/safari-extension/") else { throw Failure("Use Update from App for this Safari extension.") }
+        guard storeSource.map({ $0.isValid && $0.key == path }) ?? (!path.hasPrefix("/chrome-web-store/") && records[path]?.store == nil) else {
+            throw Failure("Use Update from Store for this extension.")
+        }
         if let metadataFailure, !replacing || installing || folders[path] == nil { throw Failure(metadataFailure) }
         try Task.checkCancellation()
-        guard operations[path] == nil else { return false }
+        guard operations[path] == nil || operationToken != nil && operations[path] == operationToken else { return false }
         guard replacing || !loaded.contains(where: { $0.path == path }) else { return false }
-        let token = UUID()
+        let token = operationToken ?? UUID()
         operations[path] = token
         let oldRecord = records[path]
         let previous = ExtensionConsent.saved(for: URL(fileURLWithPath: path), profileID: profileID)
@@ -511,10 +627,10 @@ import WebKit
             let request = ExtensionConsent.Review(name: ext.displayName ?? source.lastPathComponent,
                 requested: requested, previous: previous, installing: installing, limitations: issues,
                 newlySupportedCapabilities: installing ? [] : requested.permissions.intersection(Self.integratedCapabilities).subtracting(oldRecord?.integratedCapabilities ?? []),
-                updating: !installing && (replacing || oldRecord == nil), currentVersion: oldRecord?.version, candidateVersion: ext.version)
+                updating: !automatic && !installing && (replacing || oldRecord == nil), currentVersion: oldRecord?.version, candidateVersion: ext.version)
             if request.needsApproval, !review(request) {
                 try checkLifetime()
-                if folders[path] != nil { failures[path] = "The update was not approved. The accepted version and its approval are kept. Choose Update from Folder when you are ready to review it again." }
+                if folders[path] != nil { failures[path] = "The update needs permission review. The accepted version and its approval are kept. Choose " + (storeSource == nil ? "Update from Folder" : "Update from Store") + " when you are ready to review it." }
                 return false
             }
             try checkLifetime()
@@ -525,16 +641,29 @@ import WebKit
             }
             let identity = oldRecord?.identity ?? contextIdentifiers[path].flatMap(UUID.init(uuidString:))?.uuidString ?? UUID().uuidString
             let record = ExtensionCodeStore.Record(identity: identity, revision: frozen.revision,
-                sourcePath: source.resolvingSymlinksInPath().path, name: ext.displayName ?? source.lastPathComponent,
+                sourcePath: storeSource?.listingURL.absoluteString ?? source.resolvingSymlinksInPath().path, name: ext.displayName ?? source.lastPathComponent,
                 version: ext.version ?? "Unknown", summary: ext.displayDescription ?? "",
                 required: requested,
                 optional: ExtensionAccess(permissions: Set(ext.optionalPermissions.map(\.rawValue)), sites: Set(ext.optionalPermissionMatchPatterns.map(\.string))),
-                compatibility: issues, integratedCapabilities: requested.permissions.intersection(Self.integratedCapabilities))
+                compatibility: issues, integratedCapabilities: requested.permissions.intersection(Self.integratedCapabilities), store: storeSource)
             if enable {
                 try deactivate(path)
                 replaced = true
-                let context = makeContext(ext, identity: identity)
+                let context = makeContext(ext, identity: identity, runtimeID: storeSource?.id)
                 candidates[path] = context
+                if let storeSource {
+                    try await waitForDataPurge(storeSource.id, checkLifetime: checkLifetime)
+                    if oldRecord == nil && folders[path] == nil {
+                        let data = await controller.dataRecord(ofTypes: Self.persistentExtensionDataTypes, for: context)
+                        try checkLifetime()
+                        if let data {
+                            await purgeData(data, runtimeID: storeSource.id)
+                            try checkLifetime()
+                            guard data.errors.isEmpty else { throw Failure("Data from a removed store extension could not be cleared. Retry before reinstalling it.\n" + ExtensionDiagnostics.describe(data.errors)) }
+                        }
+                    }
+                }
+                try checkLifetime()
                 try controller.load(context)
                 if ext.hasBackgroundContent { try await ExtensionBackgroundStartup.load(context, checkLifetime: checkLifetime) }
                 try checkLifetime()
@@ -542,9 +671,11 @@ import WebKit
                 guard errors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(errors)) }
             }
             try checkLifetime()
-            let alreadyBookmarked = ScopedPaths.savedChoices(myKey).contains { $0.url?.resolvingSymlinksInPath().path == record.sourcePath }
-            guard ScopedPaths.add(source, to: myKey) else { throw Failure("macOS would not let Vane keep access to the source folder. Choose it again; the accepted version is retained.") }
-            bookmarkAdded = !alreadyBookmarked
+            if storeSource == nil {
+                let alreadyBookmarked = ScopedPaths.savedChoices(myKey).contains { $0.url?.resolvingSymlinksInPath().path == record.sourcePath }
+                guard ScopedPaths.add(source, to: myKey) else { throw Failure("macOS would not let Vane keep access to the source folder. Choose it again; the accepted version is retained.") }
+                bookmarkAdded = !alreadyBookmarked
+            }
             try ExtensionConsent.save(requested, for: URL(fileURLWithPath: path), profileID: profileID)
             approvalChanged = true
             var next = records
@@ -573,6 +704,7 @@ import WebKit
             accepted = true
             if let oldRecord { codeStore.discard(oldRecord) }
             startPolling()
+            scheduleStoreUpdates()
             SiteChanges.shared.bump()
             return true
         } catch {
@@ -834,10 +966,10 @@ import WebKit
         // Record access is checked against the actual code before anything can execute.
         guard ExtensionAccess(ext) == record.required else { throw Failure("The accepted extension files changed. Choose " + (record.safari == nil ? "Update from Folder" : "Update from App") + " to validate and review a fresh copy.") }
         try checkLifetime()
-        let context = makeContext(ext, identity: record.identity, runtimeID: record.safari?.runtimeID)
+        let context = makeContext(ext, identity: record.identity, runtimeID: record.safari?.runtimeID ?? record.store?.id)
         candidates[path] = context
         do {
-            if let safari = record.safari { try await waitForDataPurge(safari.runtimeID, checkLifetime: checkLifetime) }
+            if let runtimeID = record.safari?.runtimeID ?? record.store?.id { try await waitForDataPurge(runtimeID, checkLifetime: checkLifetime) }
             try controller.load(context)
             if ext.hasBackgroundContent { try await ExtensionBackgroundStartup.load(context, checkLifetime: checkLifetime) }
             try checkLifetime()
@@ -1190,6 +1322,32 @@ import WebKit
     }
 
     // MARK: UI
+
+    func chooseStoreInstall() {
+        guard profileID != Profile.incognito.id, !invalidated else { return }
+        let alert = NSAlert()
+        alert.messageText = "Add a Chrome extension"
+        alert.informativeText = "Paste its Chrome Web Store link or extension ID. Vane verifies the download, then asks you to review its access. Compatibility depends on the APIs available in WebKit and Vane."
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 440, height: 28))
+        input.placeholderString = "Chrome Web Store link or extension ID"
+        input.setAccessibilityLabel("Chrome Web Store link or extension ID")
+        if let clipboard = NSPasteboard.general.string(forType: .string), (try? ChromeWebStore(input: clipboard)) != nil {
+            input.stringValue = clipboard.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Review Extension")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = input
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            let source = try ChromeWebStore(input: input.stringValue)
+            Task {
+                do { _ = try await installStore(source) }
+                catch is CancellationError { }
+                catch { warn("Could not install that extension.", error.localizedDescription) }
+            }
+        } catch { warn("Check the extension link", error.localizedDescription) }
+    }
 
     func chooseAndInstall(updating path: String? = nil) {
         guard profileID != Profile.incognito.id else { ExtensionManagement.show(for: self); return }

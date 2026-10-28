@@ -758,6 +758,10 @@ struct TitleReveal: Equatable, Sendable {
         let c = WKUserContentController()
         DraftProtection.install(on: c)
         SiteBoostScripts.install(on: c)
+        if profileID != Profile.incognito.id {
+            c.addUserScript(WKUserScript(source: ChromeWebStorePage.script, injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true, in: ChromeWebStorePage.world))
+        }
         c.addUserScript(WKUserScript(source: SitePermissionDocument.script, injectionTime: .atDocumentStart,
                                     forMainFrameOnly: true, in: SitePermissionDocument.world))
         c.addUserScript(
@@ -804,6 +808,7 @@ struct TitleReveal: Equatable, Sendable {
         draftProtection.bind(to: web)
         web.configuration.userContentController.add(draftProtection, contentWorld: DraftProtection.world, name: DraftProtection.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: SiteBoostScripts.world, name: SiteBoostScripts.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: ChromeWebStorePage.world, name: ChromeWebStorePage.messageName)
         NativePiPHostBridge.register(tab: self, web: web)
         if let linkView = web as? LinkContextWebView {
             linkView.navigationOwner = self
@@ -1195,6 +1200,7 @@ struct TitleReveal: Equatable, Sendable {
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: LinkContextWebView.messageName, contentWorld: LinkContextWebView.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: SiteBoostScripts.messageName, contentWorld: SiteBoostScripts.world)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: ChromeWebStorePage.messageName, contentWorld: ChromeWebStorePage.world)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: DraftProtection.messageName, contentWorld: DraftProtection.world)
         old.uiDelegate = nil
@@ -2213,6 +2219,7 @@ struct TitleReveal: Equatable, Sendable {
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         // A queued message from a released document must not recreate its page or media state.
         guard !tornDown, let currentWeb = existingWeb, m.webView === currentWeb else { return }
+        if m.name == ChromeWebStorePage.messageName { ChromeWebStorePage.receive(m, tab: self); return }
         if m.name == SiteBoostScripts.messageName { SiteBoosts.receive(m, tab: self); return }
         if m.name == LinkContextWebView.messageName {
             guard let linkView = existingWeb as? LinkContextWebView else { return }

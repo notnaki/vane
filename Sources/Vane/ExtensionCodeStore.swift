@@ -17,6 +17,7 @@ struct ExtensionCodeStore: Sendable {
         var compatibility: [String]
         var integratedCapabilities: Set<String>? = nil
         var safari: SafariExtensionSource? = nil
+        var store: ChromeWebStore? = nil
     }
 
     struct Stage: Sendable {
@@ -87,6 +88,7 @@ struct ExtensionCodeStore: Sendable {
               records.allSatisfy({ key, record in
                   UUID(uuidString: record.identity) != nil && UUID(uuidString: record.revision) != nil
                       && (record.safari.map { $0.isValid && $0.key == key } ?? !key.hasPrefix("/safari-extension/"))
+                      && (record.store.map { $0.isValid && $0.key == key && record.safari == nil } ?? !key.hasPrefix("/chrome-web-store/"))
               }),
               Set(records.values.compactMap { $0.safari?.runtimeID }).count == records.values.filter({ $0.safari != nil }).count else {
             throw Problem("Saved extension metadata is invalid or exceeds the 1,000 installation limit. Your extension files have been retained.")

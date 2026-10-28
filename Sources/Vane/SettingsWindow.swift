@@ -1365,6 +1365,7 @@ private struct AdvancedPane: View {
                     }
                     SettingsRow("Extensions") {
                         Button("Manage Extensions…") { ExtensionManagement.show() }
+                        Button("Install from Chrome Web Store…") { ExtensionHost.shared.chooseStoreInstall(); rebuild() }
                         Button("Install Extension…") {
                             ExtensionHost.shared.chooseAndInstall(); rebuild()
                         }

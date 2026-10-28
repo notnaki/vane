@@ -927,6 +927,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     let extensionHost = Windows.main?.extensions ?? ExtensionHost.shared
     root.addItem(menu("Extensions", [
         item("Manage Extensions…", "") { ExtensionManagement.show(for: extensionHost) },
+        validated(item("Install from Chrome Web Store…", "") { extensionHost.chooseStoreInstall(); rebuild() }) {
+            extensionHost.profileID != Profile.incognito.id
+        },
         validated(item(.installExtension) { extensionHost.chooseAndInstall(); rebuild() }) {
             extensionHost.profileID != Profile.incognito.id
         },

@@ -27,7 +27,35 @@ Choose **Install Extension…** in the manager or **Extensions → Install Exten
 Select an installed app containing Safari web extensions, or choose/drop an unpacked
 MV2/MV3 folder. For an unpacked extension, select the folder containing
 `manifest.json`, rather than its parent. Extract ZIP downloads in Finder first: the
-manager does not import ZIP or CRX files or install from the Chrome Web Store.
+manager does not import local ZIP or CRX files.
+
+For the Chrome Web Store, choose **Install Extension… → From Chrome Web Store…** in
+the manager, or **Extensions → Install from Chrome Web Store…**, and paste a store
+detail-page link or its 32-letter extension ID. A valid link already on the clipboard
+prefills the dialog. On a store detail page opened in Vane, **Add to Vane** replaces
+the store's install button. If the store changes its markup, Vane supplies its own
+button on the page; the manager's link/ID dialog remains available.
+
+Downloads go directly to Google's HTTPS delivery services without browser cookies.
+Before unpacking, Vane verifies the CRX3 developer signature against the requested
+extension ID and the production Chrome Web Store publisher signature. The bounded
+extractor rejects unsafe paths, links, special files, conflicting entries and corrupt
+archives. Downloads are capped at 128 MiB; expanded code has the same 256 MiB total,
+64 MiB per-file and 20,000-entry limits as folder imports. Vane then reviews access
+before activation and saves a private, profile-scoped managed copy.
+
+Store installations retain their Chrome runtime ID, Vane storage identity, pins and
+disabled state across updates. **Update from Store…** checks explicitly. Vane also
+checks daily while that profile's extension host is running, on an hourly timer.
+Same-access updates can activate automatically; updates requiring added access stay
+pending in **Needs Attention** until reviewed through **Update from Store…**.
+Unchanged versions and downgrades do not replace healthy accepted code. An explicit
+same-version update can repair missing or damaged accepted resources after review;
+retained store IDs can also recover an unreadable metadata index without removal.
+A failed or declined
+update keeps the accepted version. Store support uses Apple's WebKit runtime and
+does not add Chrome-only APIs or native messaging; the compatibility section below
+still applies. Private profiles cannot install or run store extensions.
 
 For Safari apps, Vane verifies Apple-issued signatures on both the containing app and
 its embedded `com.apple.Safari.web-extension` bundle, including sealed resources. The

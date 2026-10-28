@@ -203,10 +203,13 @@ private struct ExtensionManagementView: View {
             Spacer(minLength: 8)
             Feel06ActivityLine(busy: busy, text: "Checking…")
                 .frame(width: 100)
-            Button("Install Extension…", systemImage: "plus") { host.chooseAndInstall() }
+            Menu {
+                Button("From Chrome Web Store…", systemImage: "globe") { host.chooseStoreInstall() }
+                Button("From Folder or Safari App…", systemImage: "folder") { host.chooseAndInstall() }
+            } label: { Label("Install Extension…", systemImage: "plus") }
                 .disabled(isPrivate || busy)
                 .accessibilityIdentifier("extension-manager.install")
-                .help("Choose an unpacked extension folder or an app containing signed Safari web extensions, then review its access.")
+                .help("Install from the Chrome Web Store, an unpacked folder, or a signed Safari extension app.")
         }.padding(.horizontal, 22).padding(.vertical, 18)
     }
 
@@ -294,11 +297,12 @@ private struct ExtensionManagementView: View {
                 .foregroundStyle(.secondary).accessibilityHidden(true)
             Text("A little more browser, your way").font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
-            Text("Install local extensions to improve pages, block distractions, and add useful tools. Each profile keeps its own extensions and access.")
+            Text("Install extensions from the Chrome Web Store, a local folder, or a Safari app. Each profile keeps its own extensions and access.")
                 .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: 390)
-            Button("Choose Extension…") { host.chooseAndInstall() }
+            Button("From Chrome Web Store…") { host.chooseStoreInstall() }
                 .buttonStyle(.borderedProminent).disabled(busy)
+            Button("Choose Folder or Safari App…") { host.chooseAndInstall() }.disabled(busy)
             Text("Or drop a folder containing manifest.json here.\nMV2 and MV3 support depends on the APIs available in WebKit and Vane.")
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: 400)
@@ -523,7 +527,7 @@ private struct ExtensionDetailView: View {
                 }
             }
         }
-        Button(entry.safariApp ? "Update from App…" : "Update from Folder…", systemImage: "arrow.clockwise") { host.chooseUpdate(for: entry.path) }
+        Button(entry.storeID != nil ? "Update from Store…" : entry.safariApp ? "Update from App…" : "Update from Folder…", systemImage: "arrow.clockwise") { host.chooseUpdate(for: entry.path) }
         if entry.context == nil && entry.failure == nil {
             Button("Retry", systemImage: "arrow.trianglehead.clockwise") { retry() }
         }
@@ -532,7 +536,7 @@ private struct ExtensionDetailView: View {
     private var source: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text("Installation source").font(.headline)
-            Label(entry.safariApp ? "Signed Safari extension from app" : entry.managed ? "Managed local copy" : "Local folder", systemImage: entry.safariApp ? "app" : "folder")
+            Label(entry.storeID != nil ? "Chrome Web Store" : entry.safariApp ? "Signed Safari extension from app" : entry.managed ? "Managed local copy" : "Local folder", systemImage: entry.storeID != nil ? "globe" : entry.safariApp ? "app" : "folder")
                 .font(.callout)
             Text(entry.sourcePath).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -542,12 +546,16 @@ private struct ExtensionDetailView: View {
                       systemImage: "exclamationmark.folder")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Text(entry.safariApp ? "Vane verifies the app and Safari extension’s signatures and runs an accepted copy. App updates are checked at restart or with Update from App and require review before activation. Native messaging to the app is unavailable." : entry.managed ? "Source-folder edits apply only through Update from Folder. Vane validates and reviews the new copy before activating it."
+            Text(entry.storeID != nil ? "Vane verifies each store download’s signatures before unpacking it. Updates are checked daily while Vane is running. Added access requires review through Update from Store; the accepted version stays active until then." : entry.safariApp ? "Vane verifies the app and Safari extension’s signatures and runs an accepted copy. App updates are checked at restart or with Update from App and require review before activation. Native messaging to the app is unavailable." : entry.managed ? "Source-folder edits apply only through Update from Folder. Vane validates and reviews the new copy before activating it."
                  : "Vane will keep a validated managed copy when this installation is next loaded or updated. Its identity and existing settings are preserved.")
                 .font(.caption).foregroundStyle(.secondary)
-            Button(entry.safariApp ? "Reveal Source App" : "Reveal Source Folder", systemImage: "folder") {
-                NSWorkspace.shared.selectFile(entry.sourcePath, inFileViewerRootedAtPath: URL(fileURLWithPath: entry.sourcePath).deletingLastPathComponent().path)
-            }.controlSize(.small).disabled(!entry.sourceAvailable)
+            if let id = entry.storeID, let store = try? ChromeWebStore(input: id) {
+                Link("View in Chrome Web Store", destination: store.listingURL).controlSize(.small)
+            } else {
+                Button(entry.safariApp ? "Reveal Source App" : "Reveal Source Folder", systemImage: "folder") {
+                    NSWorkspace.shared.selectFile(entry.sourcePath, inFileViewerRootedAtPath: URL(fileURLWithPath: entry.sourcePath).deletingLastPathComponent().path)
+                }.controlSize(.small).disabled(!entry.sourceAvailable)
+            }
         }
     }
 
@@ -648,7 +656,7 @@ private struct ExtensionDetailView: View {
     private var compatibility: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text("Compatibility").font(.headline)
-            Text("Vane runs local MV2/MV3 WebExtensions through macOS WebKit. Available APIs depend on both WebKit and Vane’s browser integration.")
+            Text("Vane runs MV2/MV3 WebExtensions through macOS WebKit. Installing from the store does not guarantee compatibility; available APIs depend on both WebKit and Vane’s browser integration.")
                 .font(.callout).foregroundStyle(.secondary)
             ForEach(entry.compatibility, id: \.self) { limitation in
                 Label(limitation, systemImage: "info.circle").font(.callout)
