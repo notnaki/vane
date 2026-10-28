@@ -83,8 +83,8 @@ For app changes, one debug build compiles the app and test bundle and assembles
 artifact, verifying its revision, checkout path, and Swift toolchain before execution.
 Object files and compiler caches are excluded from that transfer. Source fixtures
 and shared runtime checks each run once; separate desktops keep packaging work away
-from native UI tests. The required `checks` gate requires every applicable job to
-succeed; jobs intentionally skipped for documentation-only changes are handled by
+from native UI tests. The required `checks` gate requires every applicable required
+job to succeed; the named worker-UA advisory job is excluded. Jobs intentionally skipped for documentation-only changes are handled by
 the gate's documentation path.
 
 Only the build job restores the Swift debug cache; successful `main` builds save it.
@@ -107,8 +107,12 @@ CI runs four groups on separate macOS runners, keeping each test class together
 and each runner's UI tests sequential. `swift test list --skip-build` supplies the
 complete inventory; `scripts/native-test-shards.py` balances classes using advisory
 durations in `scripts/native-test-durations.json`, assigns new classes automatically,
-and verifies every selected test completed. Each group runs its own startup
+and verifies every selected required test completed. The single known worker-UA
+probe runs on a separate advisory runner. Each required group runs its own startup
 preflight and cleanup, and all four must pass the required `checks` gate.
+The preflight's outer 90-second process limit includes SwiftPM planning before
+XCTest starts; the owned AppKit loop retains its separate 12-second lifecycle
+watchdogs. A slow CLI launch must not be mistaken for a failed native loop.
 Same-desktop `--parallel` execution remains unsupported because UI fixtures share
 focus and application state. Duration estimates affect balancing only, never coverage.
 
@@ -139,6 +143,16 @@ and checks the native chooser, cancellation, navigation, and tab closure using a
 injected provider of generated in-memory identities.
 
 ### Routine CI commands
+
+The `Known limitation — extension worker UA (advisory)` job separately runs
+`ExtensionUserAgentTests.testKnownServiceWorkerUserAgentLimitation`. Manifest-v3
+workers can expose WebKit's engine UA instead of the selected page UA; this known
+fault currently does not block merges. The probe keeps its desired-behavior
+assertions and uploads the result and cleanup log. Required shards still cover
+popup UA, manifest-v2 background UA, profile storage isolation, and controller
+ownership. The planner checks that the exact advisory probe exists and that the
+required/advisory test sets partition the discovered inventory without overlap.
+An unfiltered local native run includes the probe and can fail on this known fault.
 
 These commands cover the app checks used in CI. For routine changes, select only
 the checks relevant to the affected behavior:

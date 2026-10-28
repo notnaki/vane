@@ -114,16 +114,27 @@ private final class ToastPresentationHostingView: NSHostingView<AnyView> {
     }
 
     func testHiddenToastLeavesRoomForDownloadFeedback() async throws {
-        let (store, window, host) = fixture()
+        // Exercise placement independently of the 1.2s feedback expiry clock.
+        // DownloadFeedbackTests covers notification admission and timed dismissal.
+        let feedback = DownloadFeedback()
+        let (store, window, host) = fixture(feedback: feedback)
         store.sidebarShown = false
         try await settle(host)
         var actions = 0
         Toasts.show("Download collision regression fixture with a long title", action: ("Open", { actions += 1 }), in: store)
-        NotificationCenter.default.post(name: DownloadFeedback.started,
-            object: DownloadFeedback.Start(name: "report.pdf", profileID: Profile.incognito.id, window: window))
+        let toast = try XCTUnwrap(Toasts.shared.current)
+        Toasts.shared.hover(toast, true)
         try await settle(host)
-        // A 40pt download control occupies the usual 16pt corner inset. Its toast
-        // must move above that control with an 8pt gap, leaving both targets usable.
+        try await clickAction("Open", in: window, bottom: 64)
+        XCTAssertEqual(actions, 0, "The raised target must not hit the ordinary page-corner toast")
+        XCTAssertEqual(Toasts.shared.current?.id, toast.id)
+        let start = DownloadFeedback.Start(name: "report.pdf", profileID: Profile.incognito.id, window: window)
+        feedback.receive(start, in: window, isPrivate: true, reduced: true)
+        try await settle(host)
+        XCTAssertTrue(feedback.start === start)
+        XCTAssertEqual(Toasts.shared.current?.id, toast.id)
+        // Reserve the 40pt download footprint and its 8pt gap above the usual
+        // 16pt corner inset; the raised toast's real native action must work.
         try await clickAction("Open", in: window, bottom: 64)
         XCTAssertEqual(actions, 1, "The live action must sit above the download landing control")
     }
@@ -148,7 +159,7 @@ private final class ToastPresentationHostingView: NSHostingView<AnyView> {
         }
     }
 
-    private func fixture(savingBattery: Bool = true, isPrivate: Bool = true)
+    private func fixture(savingBattery: Bool = true, isPrivate: Bool = true, feedback: DownloadFeedback? = nil)
         -> (TabStore, NSWindow, NSHostingView<AnyView>) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -166,7 +177,14 @@ private final class ToastPresentationHostingView: NSHostingView<AnyView> {
                               styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         store.window = window
-        let host = ToastPresentationHostingView(rootView: AnyView(BrowserWindow().environmentObject(store)
+        let content: AnyView
+        if let feedback {
+            content = AnyView(Color.clear
+                .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] }
+                .modifier(ToastPresentation(store: store, sidebarWidth: SidebarWidth.shared.width))
+                .environmentObject(feedback))
+        } else { content = AnyView(BrowserWindow()) }
+        let host = ToastPresentationHostingView(rootView: AnyView(content.environmentObject(store)
             .environmentObject(ProfileManager.shared)))
         window.contentView = host
         window.orderFront(nil)

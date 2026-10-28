@@ -151,6 +151,7 @@ import XCTest
 
     private func assertIdentity(in web: WKWebView, context: WKWebExtensionContext, expected: String, startup: String? = nil,
                                 scenario: String = "Extension", expectedStore: WKWebsiteDataStore? = nil,
+                                checkingBackgroundIdentity: Bool = true,
                                 file: StaticString = #filePath, line: UInt = #line) async throws {
         let configuration = web.configuration
         XCTAssertTrue(configuration.processPool === WebKitStartup.extensionProcessPool,
@@ -163,8 +164,10 @@ import XCTest
         assertBackgroundOwnership(for: context, file: file, line: line)
         #endif
         XCTAssertEqual(identity?["popup"], expected, "\(scenario): Popup startup", file: file, line: line)
-        XCTAssertEqual(identity?["background"], startup ?? expected, "\(scenario): Background startup", file: file, line: line)
-        XCTAssertEqual(identity?["current"], expected, "\(scenario): Background current", file: file, line: line)
+        if checkingBackgroundIdentity {
+            XCTAssertEqual(identity?["background"], startup ?? expected, "\(scenario): Background startup", file: file, line: line)
+            XCTAssertEqual(identity?["current"], expected, "\(scenario): Background current", file: file, line: line)
+        }
     }
 
     private func assertStore(_ actual: WKWebsiteDataStore, matches expected: WKWebsiteDataStore,
@@ -284,11 +287,12 @@ import XCTest
         }
     }
 
-    func testDefaultSafariIdentityReachesBackgroundAndPopupBeforeTheirScriptsRun() async throws {
+    func testDefaultSafariIdentityReachesPopupAndManifestTwoBackgroundBeforeScriptsRun() async throws {
         for version in [2, 3] {
             let context = try await install(version: version)
             let (action, web) = try await popup(context)
-            try await assertIdentity(in: web, context: context, expected: safariUA, scenario: "Manifest v\(version)")
+            try await assertIdentity(in: web, context: context, expected: safariUA, scenario: "Manifest v\(version)",
+                                     checkingBackgroundIdentity: version == 2)
             let ua = try await web.evaluateJavaScript("navigator.userAgent") as? String
             XCTAssertEqual(ua?.components(separatedBy: " Safari/").count, 2, "Safari must appear once")
             XCTAssertEqual(ua?.components(separatedBy: " Version/").count, 2, "Version must appear once")
@@ -297,7 +301,7 @@ import XCTest
         }
     }
 
-    func testServiceWorkerIdentityFollowsSelectionWhenSharedPoolIsReused() async throws {
+    func testServiceWorkerPopupIdentityAndOwnershipFollowSelectionWhenSharedPoolIsReused() async throws {
         let host = ExtensionHost.host(for: profile)
         let controller = host.controller
         let custom = "Vane Prior Worker Identity/1.0 (no Safari token)"
@@ -306,10 +310,29 @@ import XCTest
             Settings.userAgent = identity
             let context = try await install(version: 3)
             let (action, web) = try await popup(context)
-            try await assertIdentity(in: web, context: context, expected: identity, scenario: stage)
+            try await assertIdentity(in: web, context: context, expected: identity, scenario: stage,
+                                     checkingBackgroundIdentity: false)
             XCTAssertTrue(host.controller === controller, "Changing UA must retain the profile's controller")
             action.closePopup()
             host.remove(context)
+        }
+    }
+
+    /// WebKit can give manifest-v3 workers its engine UA instead of the selected
+    /// page UA. Keep the desired worker behavior visible in the advisory job;
+    /// popup identity, storage ownership and manifest-v2 identity remain required.
+    func testKnownServiceWorkerUserAgentLimitation() async throws {
+        for (identity, stage) in [(safariUA, "default Safari worker"),
+                                  ("Vane Prior Worker Identity/1.0 (no Safari token)", "custom worker"),
+                                  (safariUA, "Safari worker after custom worker")] {
+            Settings.userAgent = identity
+            let context = try await install(version: 3)
+            let (action, web) = try await popup(context)
+            let result = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+            XCTAssertEqual(result?["startup"], identity, "Known WebKit worker UA limitation: \(stage) startup")
+            XCTAssertEqual(result?["current"], identity, "Known WebKit worker UA limitation: \(stage) current")
+            action.closePopup()
+            ExtensionHost.host(for: profile).remove(context)
         }
     }
 

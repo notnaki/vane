@@ -35,10 +35,23 @@ def main():
     sections = jobs(text)
     gate = sections['checks']
     assert re.search(r'^    if: \$\{\{ always\(\) \}\}$', gate, re.MULTILINE)
-    assert dependencies(gate) == set(sections) - {'checks', 'prune-caches'}
+    assert dependencies(gate) == set(sections) - {'checks', 'prune-caches', 'known-limitations'}
     bindings = dict(re.findall(r'^          ([A-Z_]+): \$\{\{ needs\.([a-z]+)\.result \}\}$', gate, re.MULTILINE))
     assert set(bindings.values()) == dependencies(gate)
-    assert 'continue-on-error:' not in text
+    assert 'continue-on-error:' not in ''.join(value for name, value in sections.items() if name != 'known-limitations')
+    advisory = sections['known-limitations']
+    assert dependencies(advisory) == {'changes', 'build'}
+    assert 'continue-on-error: true' in advisory
+    assert '--suite known-limitations' in advisory
+    assert '--suite required' in sections['native']
+    assert '--count 1' in advisory
+    assert 'scripts/run-native-tests.py' in advisory
+    assert 'if: ${{ always() }}' in advisory
+    assert 'actions/upload-artifact@v6' in advisory
+    assert 'GITHUB_STEP_SUMMARY' in advisory
+    assert "VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'" in sections['native']
+    preflight = sections['native'].split('- name: Owned AppKit loop preflight', 1)[1].split('- name: Native regression tests', 1)[0]
+    assert 'timeout-minutes: 4' in preflight
     assert 'APP_REQUIRED: ${{ needs.changes.outputs.app_required }}' in gate
     script = block(gate)
     trials = 0
