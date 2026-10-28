@@ -79,12 +79,15 @@ func webExtensionController(_ controller: WKWebExtensionController,
     completionHandler: @escaping (Error?) -> Void)
 ```
 
-- [ ] Write controlled-sleeper policy tests: no completion before release, completion after the100ms policy, cancellation removes pending work, context A cancellation leaves B independent, no payload reaches logging/storage, and no request data remains retained after completion/cancellation. Avoid elapsed-time equality tests.
-- [ ] Write real SDK tests using an isolated synthetic declared-native extension/context. Verify both Objective-C selectors respond before load; callback calls observe `runtime.lastError`, Promise calls reject, ports receive `onDisconnect` with an error and no messages. An app identifier that would otherwise select Safari fallback still must reach these denial methods.
-- [ ] Run `python3 scripts/run-native-tests.py --build-system native --jobs 1 --filter 'ExtensionNativeMessagingErrorTests'`; retain RED for absent delegates/policy.
-- [ ] Implement the policy/delegates. Always provide both selectors, including for unapproved contexts, to prevent automatic `NSExtension` fallback. Forward neither method and create no native transport/provider. Public selector names: `webExtensionController:sendMessage:toApplicationWithIdentifier:forExtensionContext:replyHandler:` and `webExtensionController:connectUsingMessagePort:forExtensionContext:completionHandler:`.
-- [ ] Cancel scoped work in existing `deactivate(_:)`, removal and host invalidation/profile-forget paths, including candidate-context cleanup. Keep the SDK error completion bounded and exactly once.
-- [ ] Run the focused tests; expect all pass, primary0/cleanup0, owned backends absent. Commit the independently closed denial boundary.
+- [x] Write controlled-sleeper policy tests: no completion before release, completion after the100ms policy, cancellation removes pending work, context A cancellation leaves B independent, no payload reaches logging/storage, and no request data remains retained after completion/cancellation. Avoid elapsed-time equality tests.
+- [x] Write real SDK tests using an isolated synthetic declared-native extension/context. Verify both Objective-C selectors respond before load; callback calls observe `runtime.lastError`, Promise calls reject, ports receive `onDisconnect` with an error and no messages. An app identifier that would otherwise select Safari fallback still must reach these denial methods.
+- [x] Run `python3 scripts/run-native-tests.py --build-system native --jobs 1 --filter 'ExtensionNativeMessagingErrorTests'`; retain RED for absent delegates/policy.
+- [x] Implement the policy/delegates. Always provide both selectors, including for unapproved contexts, to prevent automatic `NSExtension` fallback. Forward neither method and create no native transport/provider. Public selector names: `webExtensionController:sendMessage:toApplicationWithIdentifier:forExtensionContext:replyHandler:` and `webExtensionController:connectUsingMessagePort:forExtensionContext:completionHandler:`.
+- [x] Cancel scoped work in existing `deactivate(_:)`, removal and host invalidation/profile-forget paths, including candidate-context cleanup. Keep the SDK error completion bounded and exactly once.
+- [x] Run the focused tests; expect all pass, primary0/cleanup0, owned backends absent. Commit the independently closed denial boundary.
+
+
+Task2 evidence: six native policy/SDK tests passed, primary0/cleanup0, in `vane-native-error-denial-green3.log`. Public selectors, callback error/no reply, Promise rejection, port disconnect/no messages, exact request routing, cancellation and32-per-context/128-total bounds are covered. Prior SDK assertions and diagnostic logs are preserved: absent `runtime.lastError` is actual Safari null (typeobject/nulltrue/messagenone), so the corrected empty-error assertion accepts null/undefined after callback dispatch; no native policy was relaxed. Signed-app acceptance remains Task5.
 
 ### Task3: Atomic explicit opt-in, revocation, restore and update
 

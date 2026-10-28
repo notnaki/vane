@@ -59,6 +59,7 @@ import WebKit
     static func forget(_ profileID: UUID) {
         guard let host = hosts[profileID] else { return }
         host.invalidated = true
+        host.nativeMessagingDenial.cancelAll()
         host.storeUpdateTimer?.invalidate()
         ExtensionManagement.close(for: profileID)
         for task in host.restoring.values { task.cancel() }
@@ -66,7 +67,7 @@ import WebKit
         host.operations.removeAll()
         for context in host.installed + Array(host.candidates.values) {
             host.closePages(for: context)
-            try? host.controller.unload(context)
+            try? host.unloadContext(context)
         }
         host.candidates.removeAll()
         host.icons.removeAll()
@@ -132,6 +133,7 @@ import WebKit
     private var candidates: [String: WKWebExtensionContext] = [:]
     private var limitations: [String: [String]] = [:]
     private let codeStore: ExtensionCodeStore
+    private let nativeMessagingDenial = ExtensionNativeMessagingDenial()
     private var records: [String: ExtensionCodeStore.Record] = [:]
     private var metadataFailure: String?
     private static let integratedCapabilities: Set<String> = ["contextMenus", "menus"]
@@ -464,14 +466,19 @@ import WebKit
         restoring[path] = nil
     }
 
+    private func unloadContext(_ context: WKWebExtensionContext) throws {
+        nativeMessagingDenial.cancel(contextID: ObjectIdentifier(context))
+        try controller.unload(context)
+    }
+
     private func deactivate(_ path: String) throws {
         if let context = candidates[path] {
-            if context.isLoaded { try controller.unload(context) }
+            if context.isLoaded { try unloadContext(context) }
             closePages(for: context)
             candidates[path] = nil
         }
         guard let context = loaded.first(where: { $0.path == path })?.context else { return }
-        try controller.unload(context)
+        try unloadContext(context)
         closePages(for: context)
         forget(context, tab: nil)
         loaded.removeAll { $0.path == path }
@@ -727,7 +734,7 @@ import WebKit
                             }
                             let restored = try await recovery.value
                             guard !invalidated, operations[path] == token else {
-                                try? controller.unload(restored); closePages(for: restored); throw CancellationError()
+                                try? unloadContext(restored); closePages(for: restored); throw CancellationError()
                             }
                             loaded.append((path, restored))
                         }
@@ -916,7 +923,7 @@ import WebKit
                                     guard !self.invalidated, self.operations[path] == token else { throw CancellationError() }
                                 }
                             }.value
-                            guard !invalidated, operations[path] == token else { try? controller.unload(restored); throw CancellationError() }
+                            guard !invalidated, operations[path] == token else { try? unloadContext(restored); throw CancellationError() }
                             loaded.append((path, restored))
                         } catch { failures[path] = "The app update failed and the accepted extension could not restart. Choose Retry. Your settings are retained. " + error.localizedDescription }
                     }
@@ -979,7 +986,7 @@ import WebKit
             return context
         } catch {
             if candidates[path] === context { candidates[path] = nil }
-            try? controller.unload(context); closePages(for: context); throw error
+            try? unloadContext(context); closePages(for: context); throw error
         }
     }
 
@@ -1020,7 +1027,7 @@ import WebKit
                     guard !self.invalidated, self.operations[path] == token else { throw CancellationError() }
                 }
                 guard !invalidated, operations[path] == token, !Task.isCancelled else {
-                    try? controller.unload(restored); closePages(for: restored); throw CancellationError()
+                    try? unloadContext(restored); closePages(for: restored); throw CancellationError()
                 }
                 // Refresh cached platform limitations on adoption of new Vane support.
                 // Persist before exposing the active context; failed writes unload it.
@@ -1030,7 +1037,7 @@ import WebKit
                 var next = records
                 next[path] = revised
                 do { try codeStore.save(next) }
-                catch { try? controller.unload(restored); closePages(for: restored); throw error }
+                catch { try? unloadContext(restored); closePages(for: restored); throw error }
                 records = next
                 loaded.append((path, restored))
                 disabled.remove(path)
@@ -1791,6 +1798,33 @@ import WebKit
         guard let tab else { return true }
         return myStores.contains { $0.current == tab.id }
     }
+
+    // Both methods are permanent: absence lets WebKit forward signed Safari
+    // app sources through NSExtension. No native host is ever looked up here.
+    func webExtensionController(_ controller: WKWebExtensionController,
+                                sendMessage _: Any, toApplicationWithIdentifier _: String?,
+                                for context: WKWebExtensionContext) async throws -> Any? {
+        if !invalidated, context.isLoaded {
+            try? await nativeMessagingDenial.wait(contextID: ObjectIdentifier(context))
+        }
+        throw ExtensionNativeMessagingErrors.unavailable()
+    }
+
+    func webExtensionController(_ controller: WKWebExtensionController,
+                                connectUsing _: WKWebExtension.MessagePort,
+                                for context: WKWebExtensionContext,
+                                completionHandler: @escaping (Error?) -> Void) {
+        Task { @MainActor [weak self, weak context] in
+            if let self, let context, !self.invalidated, context.isLoaded {
+                try? await self.nativeMessagingDenial.wait(contextID: ObjectIdentifier(context))
+            }
+            completionHandler(ExtensionNativeMessagingErrors.unavailable())
+        }
+    }
+
+    #if DEBUG
+    var nativeMessagingDeniedRequestCount: Int { nativeMessagingDenial.requestCount }
+    #endif
 
     func webExtensionController(_ controller: WKWebExtensionController,
                                 promptForPermissions permissions: Set<WKWebExtension.Permission>,
