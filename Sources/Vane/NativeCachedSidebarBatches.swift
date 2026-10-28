@@ -55,7 +55,100 @@ struct NativeCachedSidebarBatchCounts: Sendable {
 private struct NativeSidebarOwnedSlot: Identifiable {
     let row: SidebarRows.Row
     let index: Int
+    var rollout: SidebarFolderRolloutGeometry?
     var id: String { row.id }
+}
+
+private struct SidebarFolderRolloutGeometry {
+    let id = UUID()
+    let distance: CGFloat
+    let headerID: String
+    let animation: Animation
+    let clipTop: CGFloat
+}
+
+/// Folder contents roll as one strip beneath their header, keeping row spacing.
+/// Translation and clipping leave row height, controls and native owners intact.
+private struct SidebarFolderRollout: AnimatableModifier {
+    var progress: CGFloat
+    let geometry: SidebarFolderRolloutGeometry?
+    let reduced: Bool
+    nonisolated var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+    func body(content: Content) -> some View {
+        if let geometry {
+            content
+                .offset(y: reduced ? 0 : -geometry.distance * (1 - min(1, max(0, progress))))
+                .clipShape(SidebarFolderRolloutClip(top: geometry.clipTop))
+        } else { content }
+    }
+}
+
+private struct SidebarFolderRolloutClip: Shape {
+    let top: CGFloat
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX, y: top, width: rect.width, height: max(0, rect.maxY - top)))
+    }
+}
+
+private struct SidebarFolderRolloutRow<Content: View>: View {
+    @State private var geometry: SidebarFolderRolloutGeometry?
+    @State private var progress: CGFloat = 1
+    @State private var attached = false
+    @State private var requestID: UUID?
+    @State private var suppressed = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var saver = BatterySaver.shared
+    let requested: SidebarFolderRolloutGeometry?
+    let content: Content
+    init(geometry: SidebarFolderRolloutGeometry?, @ViewBuilder content: () -> Content) {
+        _geometry = State(initialValue: geometry)
+        requested = geometry
+        self.content = content()
+    }
+    var body: some View {
+        content.modifier(SidebarFolderRollout(progress: progress,
+            geometry: geometry, reduced: suppressed || reduceMotion || saver.isActive))
+            .onAppear {
+                guard requested != nil else { return }
+                attached = true; begin()
+            }
+            .onDisappear {
+                guard geometry != nil else { return }
+                attached = false
+                // A cancelled yielded start must not leave a cached row folded
+                // forever, or replay that old disclosure when it returns.
+                Motion.instant { suppressed = true; progress = 1 }
+            }
+            .onChange(of: requested?.id) {
+                guard requested != nil else { return }
+                attached = true; begin()
+            }
+            .onChange(of: reduceMotion || saver.isActive) { _, reduced in
+                if reduced { suppressed = true }
+            }
+    }
+    private func begin() {
+        guard attached, let requested, requested.id != requestID else { return }
+        let reduced = reduceMotion || saver.isActive
+        Motion.instant {
+            geometry = requested
+            requestID = requested.id
+            suppressed = reduced
+            progress = reduced ? 1 : 0
+        }
+        // A detached root may have retained its old displayed membership. Let
+        // this update install the new folded pose before starting its rollout.
+        Task { @MainActor in
+            await Task.yield()
+            guard attached, requestID == requested.id else { return }
+            withAnimation(suppressed || reduceMotion || saver.isActive ? nil : requested.animation) {
+                progress = 1
+            }
+        }
+    }
 }
 
 @MainActor protocol NativeSidebarInteractionRetaining: AnyObject, Sendable {
@@ -176,13 +269,15 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             ForEach(slots) { slot in
-                content(slot.row, slot.index, total)
+                SidebarFolderRolloutRow(geometry: slot.rollout) {
+                    content(slot.row, slot.index, total)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: Look.rowHeight)
+                        .background(NativeSidebarRowLayoutAnchor(row: slot.id, generation: generation, committed: committed))
+                }
                     .environment(\.bufferedSidebarFocus, BufferedSidebarFocus(row: slot.id, viewport: viewport))
                     .environment(\.nativeSidebarNavigationRow, NativeSidebarNavigationRow(row: slot.id, navigation: navigation))
                     .environment(\.nativeSidebarInteraction, NativeSidebarInteraction(row: slot.id, owner: interactionOwner))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: Look.rowHeight)
-                    .background(NativeSidebarRowLayoutAnchor(row: slot.id, generation: generation, committed: committed))
                     .offset(y: CGFloat(slot.index) * (Look.rowHeight + Look.rowGap))
             }
         }
@@ -203,10 +298,48 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
 /// Immutable ownership can produce interleaved roots after a reorder. Empty
 /// slots are not controls and must pass pointer/drop hits to the actual row root.
 @MainActor private final class NativeSidebarBatchHostingView<Content: View>: NSHostingView<NativeSidebarBatchRoot<Content>> {
-    var occupiedRows: [NSRect] = []
+    private final class WeakRow {
+        weak var view: NativeSidebarRowLayoutView?
+        init(_ view: NativeSidebarRowLayoutView) { self.view = view }
+    }
+    private var rowAnchors: [String: WeakRow] = [:]
+    private var rollingHeaders: [String: String] = [:]
+    private var occupiedRows: [String: NSRect] = [:]
+    var revealEdge: ((String) -> CGFloat?)?
+    func record(_ anchor: NativeSidebarRowLayoutView) {
+        guard occupiedRows[anchor.rowID] != nil else { return }
+        rowAnchors[anchor.rowID] = WeakRow(anchor)
+    }
+    func occupy(_ slots: [NativeSidebarOwnedSlot], width: CGFloat) {
+        occupiedRows = Dictionary(uniqueKeysWithValues: slots.map {
+            ($0.id, NSRect(x: 0, y: CGFloat($0.index) * (Look.rowHeight + Look.rowGap),
+                          width: width, height: Look.rowHeight))
+        })
+        rowAnchors = rowAnchors.filter { occupiedRows[$0.key] != nil }
+        rollingHeaders = rollingHeaders.filter { occupiedRows[$0.key] != nil }
+        for slot in slots {
+            if let rollout = slot.rollout { rollingHeaders[slot.id] = rollout.headerID }
+        }
+    }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
-        guard occupiedRows.contains(where: { $0.contains(local) }) else { return nil }
+        // A rollout can carry a child across another eight-row owner's slots.
+        // Read the cached native anchors, without scanning the hosting tree.
+        let accepts = occupiedRows.contains { id, destination in
+            guard let anchor = rowAnchors[id]?.view, anchor.window === window else {
+                return rollingHeaders[id] == nil && destination.contains(local)
+            }
+            let actual = convert(anchor.bounds.intersection(anchor.visibleRect), from: anchor)
+            if let header = rollingHeaders[id] {
+                if abs(actual.minY - destination.minY) < 0.5 {
+                    rollingHeaders.removeValue(forKey: id)
+                } else {
+                    guard let edge = revealEdge?(header), local.y >= edge else { return false }
+                }
+            }
+            return actual.contains(local)
+        }
+        guard accepts else { return nil }
         return super.hitTest(point)
     }
 }
@@ -552,6 +685,8 @@ private final class NativeBatchMouseObservation {
                    content: @escaping (SidebarRows.Row, Int, Int) -> Content) {
         guard !disposed else { return }
         let oldHeight = sectionHeight
+        let sameScope = activeScope == environment.sidebarNativeReadinessScope
+        let previousRows = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         if retainsInactiveOwners { observeOwner(owner) }
         changeScope(environment.sidebarNativeReadinessScope)
         rows = supplied.filter { modelIDs.contains($0.id) }
@@ -580,8 +715,31 @@ private final class NativeBatchMouseObservation {
             sizes[owner, default: 0] += 1
         }
         groups.removeAll(keepingCapacity: true)
+        var folderAncestors: [(depth: Int, index: Int, id: String, distance: CGFloat)] = []
+        let disclosureViewport = clip.map { convert($0.bounds, from: $0) } ?? previousVisible ?? bounds
+        let animatesDisclosure = sameScope && transaction.animation != nil && !transaction.disablesAnimations
+            && !environment.accessibilityReduceMotion && !Motion.reduced
         for (index, row) in rows.enumerated() {
-            if let owner = ownership[row.id] { groups[owner, default: []].append(NativeSidebarOwnedSlot(row: row, index: index)) }
+            folderAncestors.removeAll { $0.depth >= row.visible.depth }
+            let ancestor = folderAncestors.last { $0.distance > 0 }
+            let visible = disclosureViewport.intersects(CGRect(x: 0, y: CGFloat(index) * pitch,
+                                                               width: bounds.width, height: Look.rowHeight))
+            let rollout = animatesDisclosure && visible && previousRows[row.id] == nil
+                ? ancestor.map { SidebarFolderRolloutGeometry(distance: $0.distance,
+                    headerID: $0.id, animation: transaction.animation!,
+                    clipTop: CGFloat($0.index + 1 - index) * pitch) } : nil
+            if let owner = ownership[row.id] {
+                groups[owner, default: []].append(NativeSidebarOwnedSlot(row: row, index: index, rollout: rollout))
+            }
+            if let folder = row.visible.entry.folder {
+                let opening = animatesDisclosure && !folder.collapsed
+                    && previousRows[row.id]?.visible.entry.folder?.collapsed == true
+                let end = opening ? rows[(index + 1)...].firstIndex {
+                    $0.visible.depth <= row.visible.depth
+                } ?? rows.endIndex : index + 1
+                let revealedCount = rows[(index + 1)..<end].filter { previousRows[$0.id] == nil }.count
+                folderAncestors.append((row.visible.depth, index, row.id, CGFloat(revealedCount) * pitch))
+            }
         }
         let currentOwners = Set(ownership.values)
         for key in Array(cache.keys) where !currentOwners.contains(key) {
@@ -743,8 +901,12 @@ private final class NativeBatchMouseObservation {
             // movement is wholly inside SwiftUI; an immediate native-parent jump
             // must never cancel or double a child's animated absolute offset.
             let target = NSRect(x: 0, y: 0, width: bounds.width, height: sectionHeight)
-            entry.host.occupiedRows = slots.map { NSRect(x: 0, y: CGFloat($0.index) * pitch,
-                                                         width: bounds.width, height: Look.rowHeight) }
+            entry.host.occupy(slots, width: bounds.width)
+            entry.host.revealEdge = { [weak self] header in
+                guard let self, self.authorizedRowIDs.contains(header),
+                      let anchor = self.anchors[header]?.value, anchor.window === self.window else { return nil }
+                return self.convert(anchor.bounds, from: anchor).maxY + Look.rowGap
+            }
             if entry.host.frame != target { entry.host.frame = target }
             if entry.host.superview !== self || needsReconcile {
                 addSubview(entry.host, positioned: previousHost == nil ? .below : .above, relativeTo: previousHost)
@@ -780,6 +942,7 @@ private final class NativeBatchMouseObservation {
         guard !disposed, anchor.generation == generation, anchor.committedGeneration == generation,
               authorizedRowIDs.contains(anchor.rowID) else { return }
         anchors[anchor.rowID] = WeakAnchor(anchor)
+        if let owner = ownership[anchor.rowID] { cache[owner]?.host.record(anchor) }
         navigation.layoutDidCommit()
         checkReadiness()
     }

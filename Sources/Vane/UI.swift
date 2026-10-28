@@ -3812,6 +3812,7 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     /// sets it a step quieter than the tabs around it.
     var dimmed = false
     var keyboardEnabled = true
+    var labelSpacing: CGFloat = Look.rowSpacing
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let label: () -> Label
@@ -3861,7 +3862,7 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
             label().font(Look.rowTitle).lineLimit(1)
                 .foregroundStyle(dimmed ? Look.inkTertiary : Look.inkPrimary)
                 .opacity(1 - (morph?.progress ?? 0))
-                .padding(.leading, Look.rowSpacing)
+                .padding(.leading, labelSpacing)
             Spacer(minLength: 0)
             trailing().opacity(1 - (morph?.progress ?? 0))
                 .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovering)
@@ -4359,7 +4360,7 @@ struct LivePRTitle: View {
         VStack(alignment: .leading, spacing: 0) {
             ShimmerTitle(title: title, reveal: reveal)
             if returnCaption {
-                Text("Return to Pinned Tab")
+                Text("Back to Pinned URL")
                     .font(Look.small)
                     .foregroundStyle(Look.inkTertiary)
                     .transition(.offset(y: 4).combined(with: .opacity))
@@ -4422,17 +4423,11 @@ struct SidebarTabPresentation: View {
         let title = TidyTitles.title(for: tab)
         SidebarRow(selected: selected, ticked: ticked, held: held,
                    keyboardEnabled: !previewing && !renaming,
+                   labelSpacing: returning ? 6 : Look.rowSpacing,
                    action: action) {
             TabHomeIcon(store: store, tab: tab, returnHovering: held ? .constant(returnHovering) : $returnHovering)
         } label: {
             HStack(spacing: 6) {
-                if returning {
-                    Text("/")
-                        .fontWeight(.bold)
-                        .foregroundStyle(Look.inkTertiary)
-                        .fixedSize()
-                        .accessibilityHidden(true)
-                }
                 // Keep the away marker visible during rename and Return hover too.
                 if !previewing && !held && renaming {
                     RenameField(store: store, tab: tab, initialTitle: title)
@@ -5258,9 +5253,9 @@ private struct TabHomeIcon: View {
             TabIcon(tab: tab, size: size)
         } else if tab.kind == .pinned && !tab.atHome {
             GoHomeGlyph(store: store, tab: tab, tiled: true, returnHovering: $returnHovering)
-                // The tile can draw past the favicon's box, but must not move the icon
-                // or title when this pin leaves or returns to its saved page.
-                .frame(width: size, height: size)
+                // Keep favicon and slash inside one return target. Hovering the
+                // marker must reveal the caption without shifting the title.
+                .frame(width: size + 10, height: size)
         } else if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: hovering) {
             // The favicon's box, so the row's text starts exactly where it always did. The
             // glyph's hit target is bigger than this and is allowed to spill past it — a
@@ -5288,22 +5283,20 @@ private struct GoHomeGlyph: View {
     var body: some View {
         Button { store.goHome(tab.id) } label: {
             if tiled {
-                Group {
-                    if returnHovering.wrappedValue {
-                        Image(systemName: "arrow.uturn.backward")
-                            .font(Look.rowGlyph)
-                            .foregroundStyle(Look.inkSecondary)
-                            .transition(.opacity)
-                    } else {
-                        TabIcon(tab: tab)
-                            .transition(.opacity)
-                    }
+                HStack(spacing: 4) {
+                    TabIcon(tab: tab).frame(width: Look.rowIcon, height: Look.rowIcon)
+                    Text("/")
+                        .font(Look.rowTitle.weight(.bold))
+                        .foregroundStyle(Look.inkTertiary)
+                        .frame(width: 6)
+                        .accessibilityHidden(true)
                 }
-                .frame(width: Look.returnTileSize, height: Look.returnTileSize)
-                .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
-                           value: returnHovering.wrappedValue)
+                .padding(.horizontal, 6)
+                .frame(height: Look.returnTileSize)
                 .background(returnHovering.wrappedValue ? chromeTheme.hovered : .clear,
                             in: .rect(cornerRadius: Look.pillRadius))
+                .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
+                           value: returnHovering.wrappedValue)
                 .contentShape(.rect(cornerRadius: Look.pillRadius))
                 .onHover { returnHovering.wrappedValue = $0 && isEnabled }
                 .onChange(of: isEnabled) { _, enabled in
@@ -5319,8 +5312,8 @@ private struct GoHomeGlyph: View {
         }
         .nativeSidebarKeyboardControl()
         .buttonStyle(TactileButtonStyle())
-        .vaneTooltip(tiled ? "Return to Pinned Tab" : "Go back to pinned page")
-        .accessibilityLabel(tiled ? "Return to Pinned Tab" : "Go back to pinned page")
+        .vaneTooltip(tiled ? "Back to Pinned URL" : "Go back to pinned page")
+        .accessibilityLabel(tiled ? "Back to Pinned URL" : "Go back to pinned page")
     }
 }
 
