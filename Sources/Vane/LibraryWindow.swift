@@ -987,13 +987,29 @@ struct LibraryHead<Filter: View, Actions: View>: View {
     /// Library opens over a page, is the web view: every keystroke would go to the page.
     private func takeKeyboard() {
         let request = library.focusToken
+        recordFocusRequest("queued", request: request)
         DispatchQueue.main.async {
             // An outgoing section can remain mounted during its transition.
             // Only the current section's latest request owns the field editor.
             guard store.libraryOpen, library.section == section,
-                  library.focusToken == request else { return }
+                  library.focusToken == request else {
+                recordFocusRequest("rejected", request: request)
+                return
+            }
+            recordFocusRequest("accepted", request: request)
             focused = true
+            recordFocusRequest("assigned", request: request)
         }
+    }
+
+    // Temporary diagnostic branch only: buffer request timing in the fixture's
+    // native history without printing or changing the focus decision.
+    private func recordFocusRequest(_ phase: String, request: Int) {
+        guard ProcessInfo.processInfo.environment["VANE_LIBRARY_FOCUS_DIAGNOSTIC"] == "1" else { return }
+        NotificationCenter.default.post(name: .init("Vane.LibraryHeadFocusDiagnostic"), object: store.window,
+            userInfo: ["phase": phase, "section": section.rawValue, "currentSection": library.section.rawValue,
+                       "request": request, "currentRequest": library.focusToken, "focused": focused,
+                       "open": store.libraryOpen])
     }
 
     private func pill<Label: View>(filling: Bool, @ViewBuilder _ label: () -> Label) -> some View {

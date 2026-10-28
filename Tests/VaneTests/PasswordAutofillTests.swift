@@ -882,7 +882,15 @@ import XCTest
         expectTrue(try await fill(web))
         let before = capture.messages.filter { $0["ready"] as? Bool == true }.count
         _ = try await js(web, "field.value=''; field.type='password'; field.autocomplete='current-password'")
-        try await wait { capture.messages.filter { $0["ready"] as? Bool == true }.count > before }
+        try await wait(for: "reused username node to report its password step", diagnostics: {
+            let ready = capture.messages.filter { $0["ready"] as? Bool == true }.count
+            let onScreen = web.window.map { window in
+                NSScreen.screens.contains { $0.visibleFrame.intersects(window.frame) }
+            } ?? false
+            return "readyBefore=\(before) readyNow=\(ready) appRunning=\(NSApp.isRunning) " +
+                "windowVisible=\(web.window?.isVisible ?? false) occlusion=\(web.window?.occlusionState.rawValue ?? 0) " +
+                "onScreen=\(onScreen) webHidden=\(web.isHiddenOrHasHiddenAncestor) loading=\(web.isLoading)"
+        }) { capture.messages.filter { $0["ready"] as? Bool == true }.count > before }
         XCTAssertGreaterThan(capture.messages.filter { $0["ready"] as? Bool == true }.count, before)
         expectEqual(capture.messages.last { $0["ready"] as? Bool == true }?["accountHint"] as? String, "ada")
         expectFalse(try await fill(web, account: "bob", automatic: true))

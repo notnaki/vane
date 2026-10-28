@@ -17,19 +17,28 @@ with tempfile.TemporaryDirectory() as directory:
     source = root / "Sources/Vane/main.swift"
     source.parent.mkdir(parents=True)
     manifest = root / "Package.swift"
+    test = root / "Tests/VaneTests/Fixture.swift"
+    test.parent.mkdir(parents=True)
+    test.write_text("func fixture() {}\n")
     source.write_text("let value = 1\n")
     manifest.write_text("// package\n")
     old = 1_700_000_000_000_000_000
     fresh = old + 10_000_000_000
-    for path in (source, manifest):
+    for path in (source, manifest, test):
         os.utime(path, ns=(old, old))
     state.save(root)
 
-    for path in (source, manifest):
+    for path in (source, manifest, test):
         os.utime(path, ns=(fresh, fresh))
     state.restore(root)
     assert source.stat().st_mtime_ns == old
     assert manifest.stat().st_mtime_ns == old
+    assert test.stat().st_mtime_ns == old
+
+    test.write_text("func changedFixture() {}\n")
+    os.utime(test, ns=(fresh, fresh))
+    state.restore(root)
+    assert test.stat().st_mtime_ns == fresh, "changed test was hidden"
 
     source.write_text("let value = 2\n")
     os.utime(source, ns=(fresh, fresh))

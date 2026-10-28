@@ -12,6 +12,7 @@ def inputs(root):
     return [path for path in (
         root / "Package.swift", root / "Package.resolved",
         *sorted((root / "Sources").rglob("*.swift")),
+        *sorted((root / "Tests").rglob("*.swift")),
     ) if path.is_file()]
 
 

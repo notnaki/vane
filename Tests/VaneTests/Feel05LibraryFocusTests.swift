@@ -6,6 +6,12 @@ import XCTest
 @MainActor final class Feel05LibraryFocusTests: XCTestCase {
     func testSectionChangesReachCurrentSearchWithAndWithoutBatterySaver() async throws {
         TestEnvironment.prepare()
+        let previousDiagnostic = ProcessInfo.processInfo.environment["VANE_LIBRARY_FOCUS_DIAGNOSTIC"]
+        setenv("VANE_LIBRARY_FOCUS_DIAGNOSTIC", "1", 1)
+        defer {
+            if let previousDiagnostic { setenv("VANE_LIBRARY_FOCUS_DIAGNOSTIC", previousDiagnostic, 1) }
+            else { unsetenv("VANE_LIBRARY_FOCUS_DIAGNOSTIC") }
+        }
         let app = NSApplication.shared
         let policy = app.activationPolicy()
         app.setActivationPolicy(.accessory)
@@ -111,6 +117,11 @@ import XCTest
         append("editing event=\(note.name.rawValue) field=\(identity(note.object as? NSResponder)) actual=\(identity(firstResponder))")
     }
 
+    func recordHeadRequest(_ note: Notification) {
+        guard note.object as? NSWindow === self else { return }
+        append("head-request \(note.userInfo ?? [:])")
+    }
+
     func record(_ phase: String) {
         func fields(_ view: NSView) -> [String] {
             let own = (view as? NSTextField).flatMap { field -> String? in
@@ -152,8 +163,11 @@ import XCTest
         for name in [NSControl.textDidBeginEditingNotification, NSControl.textDidEndEditingNotification] {
             NotificationCenter.default.addObserver(self, selector: #selector(editing(_:)), name: name, object: nil)
         }
+        NotificationCenter.default.addObserver(self, selector: #selector(headRequest(_:)),
+            name: .init("Vane.LibraryHeadFocusDiagnostic"), object: window)
     }
 
     @objc private func editing(_ note: Notification) { window?.recordEditing(note) }
+    @objc private func headRequest(_ note: Notification) { window?.recordHeadRequest(note) }
     func stop() { NotificationCenter.default.removeObserver(self) }
 }

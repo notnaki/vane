@@ -1,6 +1,6 @@
 # Temporary diagnostic branch only. Do not merge this workflow replacement.
 name: Focused native diagnostics
-run-name: Library focus ${{ inputs.scenario }} — ${{ github.ref_name }}
+run-name: Native diagnostic ${{ inputs.scenario }} — ${{ github.ref_name }}
 on:
   workflow_dispatch:
     inputs:
@@ -8,7 +8,7 @@ on:
         type: choice
         description: Isolated focus or the short preceding CI context
         default: context
-        options: [context, isolated]
+        options: [context, isolated, password, both]
 permissions:
   contents: read
 concurrency:
@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   library-focus:
-    name: Focused Library tests (${{ inputs.scenario }})
+    name: Focused native tests (${{ inputs.scenario }})
     runs-on: macos-26
     timeout-minutes: 25
     steps:
@@ -25,16 +25,28 @@ jobs:
         id: toolchain
         run: echo "key=$(python3 scripts/ci-build-artifact.py toolchain)" >> "$GITHUB_OUTPUT"
       - name: Restore debug cache
+        id: swift-cache
         uses: actions/cache/restore@v6
         with:
           path: .build
-          key: swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
+          key: focused-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ github.ref_name }}-${{ hashFiles('Sources/**/*.swift', 'Tests/**/*.swift') }}
           restore-keys: |
+            focused-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ github.ref_name }}-
             swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
       - name: Restore unchanged timestamps
         run: python3 scripts/ci-source-state.py restore
       - name: Build test bundle once
         run: swift build --build-system native -c debug --build-tests
+      # This branch builds debug tests only, without signing or release secrets.
+      # Save before testing so a diagnostic failure still leaves reusable objects.
+      - name: Record matching source timestamps
+        run: python3 scripts/ci-source-state.py save
+      - name: Save focused debug cache
+        if: steps.swift-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .build
+          key: ${{ steps.swift-cache.outputs.cache-primary-key }}
       - name: Repeat Library focus tests
         timeout-minutes: 10
         env:
@@ -44,14 +56,29 @@ jobs:
           set -euo pipefail
           case "$SCENARIO" in
             isolated)
+              primary_class=Feel05LibraryFocusTests
+              primary_method=testSectionChangesReachCurrentSearchWithAndWithoutBatterySaver
               repetitions=10
               classes='Feel05LibraryFocusTests'
               filter='^VaneTests[.]Feel05LibraryFocusTests/'
               ;;
-            context)
+            context|both)
+              primary_class=Feel05LibraryFocusTests
+              primary_method=testSectionChangesReachCurrentSearchWithAndWithoutBatterySaver
               repetitions=3
               classes='Feel02PressTests Feel02SidebarTests Feel03RemoteTests Feel03SearchTests Feel04PreviewTests Feel04SkippedLoadTests Feel05LibraryFocusTests'
               filter='^VaneTests[.](Feel02PressTests|Feel02SidebarTests|Feel03RemoteTests|Feel03SearchTests|Feel04PreviewTests|Feel04SkippedLoadTests|Feel05LibraryFocusTests)/'
+              if [[ "$SCENARIO" == both ]]; then
+                classes="$classes PasswordAutofillTests"
+                filter='^VaneTests[.](Feel02PressTests|Feel02SidebarTests|Feel03RemoteTests|Feel03SearchTests|Feel04PreviewTests|Feel04SkippedLoadTests|Feel05LibraryFocusTests|PasswordAutofillTests)/'
+              fi
+              ;;
+            password)
+              primary_class=PasswordAutofillTests
+              primary_method=testReusedUsernameNodeBecomesANewPasswordStep
+              repetitions=3
+              classes='PasswordAutofillTests'
+              filter='^VaneTests[.]PasswordAutofillTests/'
               ;;
             *) exit 64 ;;
           esac
@@ -73,7 +100,10 @@ jobs:
             for test_class in $classes; do
               grep -Fq "Test Suite '$test_class' passed" "$log"
             done
-            grep -Fq "Test Case '-[VaneTests.Feel05LibraryFocusTests testSectionChangesReachCurrentSearchWithAndWithoutBatterySaver]' passed" "$log"
+            grep -Fq "Test Case '-[VaneTests.$primary_class $primary_method]' passed" "$log"
+            if [[ "$SCENARIO" == both ]]; then
+              grep -Fq "Test Case '-[VaneTests.PasswordAutofillTests testReusedUsernameNodeBecomesANewPasswordStep]' passed" "$log"
+            fi
             if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$log"; then exit 1; fi
           done
       - name: Preserve focused evidence
