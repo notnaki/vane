@@ -39,5 +39,27 @@ import NativeTestHostBootstrap
             XCTAssertFalse(NSApplication.shared.isRunning)
             print("AppKit loop smoke: cycle=\(cycle), completed=true")
         }
+        try await exerciseDelayedHeartbeat()
+    }
+
+    private func exerciseDelayedHeartbeat() async throws {
+        let warmup = try await NativeFixtureApplicationLoop.acquire()
+        try await warmup.close()
+        XCTAssertTrue(NSRunningApplication.current.isFinishedLaunching)
+        let loop = try await NativeFixtureApplicationLoop.acquire(beforeHeartbeat: {
+            // Controlled executor admission delay, inside the unchanged 12s
+            // startup watchdog. The application has already finished launching.
+            try? await Task.sleep(for: .seconds(6))
+        })
+        var failure: (any Error)?
+        do { try loop.verifyRunning() } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Delayed heartbeat loop also failed while joining: \(error)") }
+        }
+        if let failure { throw failure }
+        XCTAssertFalse(NSApplication.shared.isRunning)
+        print("AppKit loop smoke: delayedHeartbeat=true, completed=true")
     }
 }

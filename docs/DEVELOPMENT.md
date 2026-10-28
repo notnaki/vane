@@ -84,7 +84,8 @@ artifact, verifying its revision, checkout path, and Swift toolchain before exec
 Object files and compiler caches are excluded from that transfer. Source fixtures
 and shared runtime checks each run once; separate desktops keep packaging work away
 from native UI tests. The required `checks` gate requires every applicable required
-job to succeed; the named worker-UA advisory job is excluded. Jobs intentionally skipped for documentation-only changes are handled by
+job to succeed, including strict classification of the named worker-UA advisory
+probe. Jobs intentionally skipped for documentation-only changes are handled by
 the gate's documentation path.
 
 Main requires GitHub Actions' `checks` status with strict current-base validation,
@@ -169,8 +170,12 @@ injected provider of generated in-memory identities.
 The `Known limitation — extension worker UA (advisory)` job separately runs
 `ExtensionUserAgentTests.testKnownServiceWorkerUserAgentLimitation`. Manifest-v3
 workers can expose WebKit's engine UA instead of the selected page UA; this known
-fault currently does not block merges. The probe keeps its desired-behavior
-assertions and uploads the result and cleanup log. Required shards still cover
+fault currently does not block merges when the classifier verifies only the named
+probe's nonnil bare-engine startup/current comparisons failed. The job itself is
+required: unrelated assertions, crashes, timeouts, skipped/incomplete execution,
+fixture/cleanup failures, missing evidence, and upload failures block merges.
+The probe keeps its desired-behavior assertions and uploads its exact selection,
+result, and cleanup log together in one validated evidence archive. Required shards still cover
 popup UA, manifest-v2 background UA, profile storage isolation, and controller
 ownership. The planner checks that the exact advisory probe exists and that the
 required/advisory test sets partition the discovered inventory without overlap.

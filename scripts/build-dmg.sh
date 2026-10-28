@@ -1,20 +1,37 @@
 #!/bin/bash
 
-set -euo pipefail
+set -Eeuo pipefail
 trap 'printf "error: DMG build failed (status=%s, line=%s): %s\n" "$?" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+source "$ROOT/scripts/dmg-image.sh"
 APP=${1:-"$ROOT/Vane.app"}
 OUTPUT=${2:-"$ROOT/Vane.dmg"}
 BACKGROUND="$ROOT/installer/dmg-background.svg"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/vane-dmg.XXXXXX")
 MOUNT_POINT=""
 DEVICE=""
+RW_IMAGE="$WORK/Vane-rw.dmg"
+ATTACH_STARTED=false
 
 cleanup() {
-  status=$?
-  if [ -n "$DEVICE" ] && hdiutil info | grep -Fq "$DEVICE"; then
-    hdiutil detach "$DEVICE" -quiet || hdiutil detach "$DEVICE" -force -quiet || true
+  local status=$?
+  trap - EXIT ERR
+  if [ "$ATTACH_STARTED" = true ] && [ -z "$DEVICE" ]; then
+    if DEVICE=$(dmg_image_state "$RW_IMAGE" ""); then :; else
+      if [ "$?" -ne 1 ]; then
+        echo "error: cannot establish DMG cleanup ownership; retaining $WORK" >&2
+        if [ "$status" -eq 0 ]; then status=1; fi
+        exit "$status"
+      fi
+    fi
+  fi
+  if [ -n "$DEVICE" ]; then
+    if ! dmg_detach_owned "$RW_IMAGE" "$DEVICE" true; then
+      echo "error: retaining DMG work directory for cleanup: $WORK" >&2
+      if [ "$status" -eq 0 ]; then status=1; fi
+      exit "$status"
+    fi
   fi
   rm -rf "$WORK"
   exit "$status"
@@ -35,7 +52,6 @@ if ! codesign --verify --deep --strict "$APP"; then
 fi
 
 STAGE="$WORK/stage"
-RW_IMAGE="$WORK/Vane-rw.dmg"
 BUILD_VOLUME="Vane DMG $$"
 mkdir -p "$STAGE/.background"
 ditto "$APP" "$STAGE/Vane.app"
@@ -52,9 +68,12 @@ tiffutil -cathidpicheck "$STAGE/.background/background.png" \
   "$STAGE/.background/background@2x.png" \
   -out "$STAGE/.background/background.tiff" >/dev/null
 
+echo "DMG: create writable image $RW_IMAGE" >&2
 hdiutil create -srcfolder "$STAGE" -volname "$BUILD_VOLUME" -fs HFS+ -format UDRW \
   -ov "$RW_IMAGE" >/dev/null
 ATTACH_PLIST="$WORK/attach.plist"
+echo "DMG: attach writable image $RW_IMAGE" >&2
+ATTACH_STARTED=true
 hdiutil attach "$RW_IMAGE" -readwrite -noverify -noautoopen -plist > "$ATTACH_PLIST"
 MOUNT_POINT=$(plutil -p "$ATTACH_PLIST" \
   | sed -n 's/.*"mount-point" => "\(.*\)"/\1/p' \
@@ -63,11 +82,12 @@ DEVICE=$(plutil -p "$ATTACH_PLIST" \
   | sed -n 's/.*"dev-entry" => "\(.*\)"/\1/p' \
   | head -1)
 
-if [ -z "$MOUNT_POINT" ]; then
+if [ -z "$MOUNT_POINT" ] || [ -z "$DEVICE" ]; then
   echo "error: could not mount writable DMG" >&2
   exit 1
 fi
 
+echo "DMG: rename mounted volume $MOUNT_POINT ($DEVICE)" >&2
 diskutil rename "$MOUNT_POINT" Vane >/dev/null
 BUILD_VOLUME=Vane
 FINDER_VOLUME=false
@@ -83,6 +103,7 @@ if [ "$FINDER_VOLUME" != true ]; then
   exit 1
 fi
 
+echo "DMG: apply Finder layout" >&2
 osascript - "$BUILD_VOLUME" <<'APPLESCRIPT'
 on run arguments
 set volumeName to item 1 of arguments
@@ -115,26 +136,14 @@ end run
 APPLESCRIPT
 
 sync
-# Finder and indexing can briefly retain the background file after close.
-# Retry only EBUSY on this build's device; other detach errors remain fatal.
-for attempt in {1..5}; do
-  if hdiutil detach "$DEVICE"; then
-    break
-  else
-    detach_status=$?
-  fi
-  if [ "$detach_status" -ne 16 ] || [ "$attempt" -eq 5 ]; then
-    echo "error: owned DMG detach failed (status=$detach_status, attempt=$attempt, device=$DEVICE)" >&2
-    exit "$detach_status"
-  fi
-  echo "DMG detach busy; waiting before attempt $((attempt + 1))/5" >&2
-  sleep 0.5
-done
+dmg_detach_owned "$RW_IMAGE" "$DEVICE"
+ATTACH_STARTED=false
 MOUNT_POINT=""
 DEVICE=""
 
 mkdir -p "$(dirname "$OUTPUT")"
 rm -f "$OUTPUT"
+echo "DMG: convert compressed image $OUTPUT" >&2
 hdiutil convert "$RW_IMAGE" -format UDZO -imagekey zlib-level=9 \
   -ov -o "$OUTPUT" >/dev/null
 

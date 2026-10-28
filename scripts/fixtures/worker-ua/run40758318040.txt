@@ -1,0 +1,47 @@
+NATIVE TEST DRIVER pid=1537 phase=primary
+[0/1] Planning build
+Native test host bootstrap: beforeAppKit=true, configured=true
+Test Suite 'Selected tests' started at 2026-10-28 20:01:13.439.
+Test Suite 'VanePackageTests.xctest' started at 2026-10-28 20:01:13.444.
+Test Suite 'ExtensionUserAgentTests' started at 2026-10-28 20:01:13.444.
+Test Case '-[VaneTests.ExtensionUserAgentTests testKnownServiceWorkerUserAgentLimitation]' started.
+Vane fixture diagnostic: resource baseline: uiResources={fdCount=3, fdCapacity=4096, fdAtCapacity=false, fdError=none, fdSoftLimit=10240, fdHardLimit=9223372036854775807, sqliteDB=0, sqliteWAL=0, sqliteSHM=0, sqliteFDsExamined=3, sqliteReadErrors=0, sqlitePartial=false}
+2026-10-28 20:01:13.527 xctest[1621:8769] NSEventConcurrentProcessingEnabled=NO
+/Users/runner/work/vane/vane/Tests/VaneTests/ExtensionUserAgentTests.swift:332: error: -[VaneTests.ExtensionUserAgentTests testKnownServiceWorkerUserAgentLimitation] : XCTAssertEqual failed: ("Optional("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)")") is not equal to ("Optional("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.2 Safari/605.1.15")") - Known WebKit worker UA limitation: default Safari worker startup
+/Users/runner/work/vane/vane/Tests/VaneTests/ExtensionUserAgentTests.swift:333: error: -[VaneTests.ExtensionUserAgentTests testKnownServiceWorkerUserAgentLimitation] : XCTAssertEqual failed: ("Optional("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)")") is not equal to ("Optional("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.2 Safari/605.1.15")") - Known WebKit worker UA limitation: default Safari worker current
+/Users/runner/work/vane/vane/Tests/VaneTests/ExtensionUserAgentTests.swift:332: error: -[VaneTests.ExtensionUserAgentTests testKnownServiceWorkerUserAgentLimitation] : XCTAssertEqual failed: ("Optional("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)")") is not equal to ("Optional("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.2 Safari/605.1.15")") - Known WebKit worker UA limitation: Safari worker after custom worker startup
+/Users/runner/work/vane/vane/Tests/VaneTests/ExtensionUserAgentTests.swift:333: error: -[VaneTests.ExtensionUserAgentTests testKnownServiceWorkerUserAgentLimitation] : XCTAssertEqual failed: ("Optional("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)")") is not equal to ("Optional("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.2 Safari/605.1.15")") - Known WebKit worker UA limitation: Safari worker after custom worker current
+Test Case '-[VaneTests.ExtensionUserAgentTests testKnownServiceWorkerUserAgentLimitation]' failed (6.414 seconds).
+Test Suite 'ExtensionUserAgentTests' failed at 2026-10-28 20:01:19.858.
+	 Executed 1 test, with 4 failures (0 unexpected) in 6.414 (6.414) seconds
+Test Suite 'VanePackageTests.xctest' failed at 2026-10-28 20:01:19.858.
+	 Executed 1 test, with 4 failures (0 unexpected) in 6.414 (6.414) seconds
+Test Suite 'Selected tests' failed at 2026-10-28 20:01:19.858.
+	 Executed 1 test, with 4 failures (0 unexpected) in 6.414 (6.419) seconds
+Native test host bootstrap: beforeAppKit=true, configured=true
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
+NATIVE TEST DRIVER pid=1653 phase=cleanup
+[0/1] Planning build
+Native test host bootstrap: beforeAppKit=true, configured=true
+Test Suite 'Selected tests' started at 2026-10-28 20:01:23.474.
+Test Suite 'VanePackageTests.xctest' started at 2026-10-28 20:01:23.476.
+Test Suite 'NativeFixtureRetirementTests' started at 2026-10-28 20:01:23.476.
+Test Case '-[VaneTests.NativeFixtureRetirementTests testRetireManifest]' started.
+2026-10-28 20:01:23.530 xctest[1724:9475] NSEventConcurrentProcessingEnabled=NO
+Vane fixture diagnostic: retirement complete: 1 exact owned backends absent
+Test Case '-[VaneTests.NativeFixtureRetirementTests testRetireManifest]' passed (0.327 seconds).
+Test Suite 'NativeFixtureRetirementTests' passed at 2026-10-28 20:01:23.803.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.327 (0.327) seconds
+Test Suite 'VanePackageTests.xctest' passed at 2026-10-28 20:01:23.803.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.327 (0.327) seconds
+Test Suite 'Selected tests' passed at 2026-10-28 20:01:23.803.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.327 (0.329) seconds
+Native test host bootstrap: beforeAppKit=true, configured=true
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
+Native suite primary status=1; cleanup status=0
