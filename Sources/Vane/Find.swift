@@ -34,6 +34,12 @@ import WebKit
     /// takes a ticket, and a run whose ticket has been superseded writes nothing.
     private var generation = 0
 
+    #if DEBUG
+    // A scoped fixture can hold a real native result before the session consumes it.
+    // The default path still calls Tab.find directly.
+    var nativeSearchBoundary: (@MainActor (Tab, String, Bool) async -> Bool)?
+    #endif
+
     // MARK: Sessions
 
     /// One session per window: two windows each searching for something different is the
@@ -157,7 +163,13 @@ import WebKit
                 && tab.readingDocumentGeneration == document
         }
         guard current() else { return }
-        let hit = await tab.find(text, forward: forward)
+        let hit: Bool
+        #if DEBUG
+        if let nativeSearchBoundary { hit = await nativeSearchBoundary(tab, text, forward) }
+        else { hit = await tab.find(text, forward: forward) }
+        #else
+        hit = await tab.find(text, forward: forward)
+        #endif
         guard current() else { return }
         guard hit else {
             // WebKit found nothing, so whatever the counter said, there is nothing to be on.
