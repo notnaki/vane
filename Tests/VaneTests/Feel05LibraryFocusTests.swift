@@ -6,6 +6,12 @@ import XCTest
 @MainActor final class Feel05LibraryFocusTests: XCTestCase {
     func testSectionChangesReachCurrentSearchWithAndWithoutBatterySaver() async throws {
         TestEnvironment.prepare()
+        let previousTrace = ProcessInfo.processInfo.environment["VANE_LIBRARY_FOCUS_TRACE"]
+        setenv("VANE_LIBRARY_FOCUS_TRACE", "1", 1)
+        defer {
+            if let previousTrace { setenv("VANE_LIBRARY_FOCUS_TRACE", previousTrace, 1) }
+            else { unsetenv("VANE_LIBRARY_FOCUS_TRACE") }
+        }
         let app = NSApplication.shared
         let policy = app.activationPolicy()
         app.setActivationPolicy(.accessory)

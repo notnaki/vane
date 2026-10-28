@@ -975,7 +975,7 @@ struct LibraryHead<Filter: View, Actions: View>: View {
         .padding(.top, Look.libraryHead)
         .padding(.bottom, Look.inset)
         .animation(Motion.reduced ? nil : Look.quick, value: filtering)
-        .onAppear { takeKeyboard() }
+        .onAppear { traceFocus("appear"); takeKeyboard() }
         .onChange(of: library.focusToken) { takeKeyboard() }
         .onChange(of: store.libraryOpen) {
             if !store.libraryOpen { focused = false }
@@ -987,13 +987,35 @@ struct LibraryHead<Filter: View, Actions: View>: View {
     /// Library opens over a page, is the web view: every keystroke would go to the page.
     private func takeKeyboard() {
         let request = library.focusToken
+        traceFocus("request=\(request)")
         DispatchQueue.main.async {
-            // An outgoing section can remain mounted during its transition.
-            // Only the current section's latest request owns the field editor.
             guard store.libraryOpen, library.section == section,
-                  library.focusToken == request else { return }
+                  library.focusToken == request else { traceFocus("rejected=\(request)"); return }
+            traceFocus("accepted=\(request)")
             focused = true
+            if ProcessInfo.processInfo.environment["VANE_LIBRARY_FOCUS_TRACE"] == "1" {
+                for delay in [0.05, 0.25] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { traceFocus("sample=\(delay)") }
+                }
+            }
         }
+    }
+
+    private func traceFocus(_ phase: String) {
+        guard ProcessInfo.processInfo.environment["VANE_LIBRARY_FOCUS_TRACE"] == "1" else { return }
+        let window = store.window
+        func fields(_ view: NSView) -> [String] {
+            let own = (view as? NSTextField).flatMap { field -> String? in
+                guard let prompt = field.placeholderString, prompt.hasPrefix("Search ") else { return nil }
+                return "\(prompt)@window=\(field.window === window),hidden=\(field.isHiddenOrHasHiddenAncestor),size=\(field.bounds.size)"
+            }
+            return (own.map { [$0] } ?? []) + view.subviews.flatMap(fields)
+        }
+        let editor = window?.firstResponder as? NSTextView
+        let field = editor?.delegate as? NSTextField
+        print("LIBRARY_HEAD_TRACE t=\(ProcessInfo.processInfo.systemUptime) section=\(section) current=\(library.section) " +
+              "token=\(library.focusToken) focused=\(focused) phase=\(phase) prompt=\(field?.placeholderString ?? "nil") " +
+              "mounted=\(window?.contentView.map(fields) ?? [])")
     }
 
     private func pill<Label: View>(filling: Bool, @ViewBuilder _ label: () -> Label) -> some View {
