@@ -4455,6 +4455,7 @@ struct SidebarTabPresentation: View {
             }
         } trailing: {
             TabRowTrailing(store: store, tab: tab)
+                .transformEnvironment(\.rowHovering) { if returning && returnHovering { $0 = false } }
         }
         .background {
             if let morph {

@@ -22,6 +22,7 @@ jobs:
           path: .build
           key: focused-folder-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved', 'Sources/**/*.swift', 'Tests/**/*.swift') }}
           restore-keys: |
+            focused-folder-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-
             swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
       - run: python3 scripts/ci-source-state.py restore
       - run: swift build --build-system native -c debug --build-tests
@@ -59,7 +60,7 @@ jobs:
             fi
             cat "$log"
             grep -q 'Native suite primary status=0; cleanup status=0' "$log"
-            grep -q "FolderRolloutTests.*testNewFolderChildrenRollDownFromTheirHeaderAcrossNativeOwners.*passed" "$log"
+            grep -q "FolderRolloutTests.*testFolderChildrenFollowMotionPolicyAcrossNativeOwners.*passed" "$log"
             grep -q "BufferedSidebarInteractionTests.*testFocusedRowRemainsMountedAcrossScrollAndStillReceivesSpace.*passed" "$log"
           done
       - uses: actions/upload-artifact@v4

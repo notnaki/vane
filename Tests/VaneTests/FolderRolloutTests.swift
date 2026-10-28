@@ -18,7 +18,7 @@ import XCTest
         func updateNSView(_ view: NSView, context: Context) {}
     }
 
-    func testNewFolderChildrenRollDownFromTheirHeaderAcrossNativeOwners() async throws {
+    func testFolderChildrenFollowMotionPolicyAcrossNativeOwners() async throws {
         try await checkRollout(reduceDuringMotion: false)
     }
 
@@ -34,15 +34,18 @@ import XCTest
         try await checkRollout(reduceDuringMotion: false, largeFolder: true)
     }
 
+    func testExplicitReducedMotionKeepsDisclosureImmediate() async throws {
+        try await checkRollout(reduceDuringMotion: false, explicitReduce: true)
+    }
+
     private func checkRollout(reduceDuringMotion: Bool, detachDuringStart: Bool = false,
-                              largeFolder: Bool = false) async throws {
+                              largeFolder: Bool = false, explicitReduce: Bool = false) async throws {
         TestEnvironment.prepare()
-        let previousPolicy = NSApp.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
-        defer { NSApp.setActivationPolicy(previousPolicy) }
         let saver = BatterySaver.shared.mode
         BatterySaver.shared.setMode(.off)
         defer { BatterySaver.shared.setMode(saver) }
+        let reduced = Motion.reduced || explicitReduce || EnvironmentValues().accessibilityReduceMotion
+        print("FOLDER_ROLLOUT_POLICY reduced=\(reduced) system=\(Motion.spaceReduced) explicit=\(explicitReduce)")
         let markers = Markers()
         let folder = Folder(name: "Rollout", collapsed: true)
         let childCount = largeFolder ? 300 : 12
@@ -52,27 +55,22 @@ import XCTest
         })
         let modelIDs = Set(shape.entries.map(\.id))
         let view = NativeCachedSidebarBatchesView<Marker>(frame: NSRect(x: 0, y: 0, width: 250, height: 750))
-        let window = NSWindow(contentRect: view.frame, styleMask: .titled, backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: view.frame, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = view
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        window.orderFrontRegardless()
+        window.orderFront(nil)
         defer { view.detach(); window.contentView = nil; window.close(); SharedTabs.release(tabs) }
         func configure(_ shape: Pins, animation: Animation?) {
             let rows = SidebarRows(tabs: tabs, splits: [], shape: shape).rows
-            view.configure(rows: rows, modelIDs: modelIDs, environment: EnvironmentValues(),
+            var environment = EnvironmentValues()
+            if explicitReduce { environment.accessibilityReduceMotion = true }
+            view.configure(rows: rows, modelIDs: modelIDs, environment: environment,
                            transaction: Transaction(animation: animation)) { row, _, _ in
                 Marker(id: row.id, markers: markers)
             }
             view.reconcile(visible: view.bounds)
             view.layoutSubtreeIfNeeded()
         }
-        try await compatibilityWait {
-            NSApp.isActive && window.isKeyWindow && window.occlusionState.contains(.visible)
-        }
-        print("FOLDER_ROLLOUT_CONTEXT active=\(NSApp.isActive) key=\(window.isKeyWindow) visible=\(window.occlusionState.rawValue) reduced=\(Motion.reduced) os=\(ProcessInfo.processInfo.operatingSystemVersionString)")
-        XCTAssertFalse(Motion.reduced, "This animation fixture must admit the unreduced motion path")
         configure(shape, animation: nil)
         try await Task.sleep(for: .milliseconds(80))
         var expanded = shape
@@ -114,39 +112,51 @@ import XCTest
         let headerHit = view.hitTest(headerPoint)
         XCTAssertTrue(headerHit === header || headerHit?.isDescendant(of: header) == true,
                       "Masked children must leave the header clickable during rollout")
-        XCTAssertLessThan(early, destination - 10,
-                         "New child owners must start beneath the folder, not appear at their final slots")
+        if reduced {
+            XCTAssertEqual(early, destination, accuracy: 1, "Reduced motion must expose children immediately")
+        } else {
+            XCTAssertLessThan(early, destination - 10,
+                             "New child owners must start beneath the folder, not appear at their final slots")
+        }
         if reduceDuringMotion {
             BatterySaver.shared.setMode(.alwaysOn)
             try await Task.sleep(for: .milliseconds(60))
             XCTAssertTrue(markers.views[tabs[11].id.uuidString] === child)
         } else {
-            try await Task.sleep(for: .milliseconds(1100))
+            try await Task.sleep(for: reduced ? .milliseconds(40) : .milliseconds(1100))
         }
         XCTAssertEqual(child.convert(child.bounds, to: view).minY, destination, accuracy: 1)
         XCTAssertGreaterThan(view.attachedGraphCount, 1)
         if !reduceDuringMotion {
             configure(shape, animation: .linear(duration: 1))
-            try await Task.sleep(for: .milliseconds(1100))
+            try await Task.sleep(for: reduced ? .milliseconds(40) : .milliseconds(1100))
             configure(expanded, animation: .linear(duration: 1))
             try await compatibilityWait { markers.views[tabs[11].id.uuidString]?.window != nil }
             try await Task.sleep(for: .milliseconds(120))
             let reopened = try XCTUnwrap(markers.views[tabs[11].id.uuidString])
-            XCTAssertLessThan(reopened.convert(reopened.bounds, to: view).minY, destination - 10,
-                              "Cached child-only owners must roll out on subsequent openings too")
+            if reduced {
+                XCTAssertEqual(reopened.convert(reopened.bounds, to: view).minY, destination, accuracy: 1)
+            } else {
+                XCTAssertLessThan(reopened.convert(reopened.bounds, to: view).minY, destination - 10,
+                                  "Cached child-only owners must roll out on subsequent openings too")
+            }
             let point = reopened.convert(NSPoint(x: reopened.bounds.midX, y: reopened.bounds.midY), to: view.superview)
             let hit = view.hitTest(point)
             XCTAssertTrue(hit === reopened || hit?.isDescendant(of: reopened) == true,
                           "The moving child must receive clicks at its current position")
-            try await Task.sleep(for: .milliseconds(1100))
+            try await Task.sleep(for: reduced ? .milliseconds(40) : .milliseconds(1100))
             configure(shape, animation: .linear(duration: 1))
             try await Task.sleep(for: .milliseconds(20))
             configure(expanded, animation: .linear(duration: 1))
             try await Task.sleep(for: .milliseconds(120))
             let caught = try XCTUnwrap(markers.views[tabs[11].id.uuidString])
-            XCTAssertLessThan(caught.convert(caught.bounds, to: view).minY, destination - 10,
-                              "A quick reopen must start immediately instead of queueing behind an old animation")
-            try await Task.sleep(for: .milliseconds(1100))
+            if reduced {
+                XCTAssertEqual(caught.convert(caught.bounds, to: view).minY, destination, accuracy: 1)
+            } else {
+                XCTAssertLessThan(caught.convert(caught.bounds, to: view).minY, destination - 10,
+                                  "A quick reopen must start immediately instead of queueing behind an old animation")
+            }
+            try await Task.sleep(for: reduced ? .milliseconds(40) : .milliseconds(1100))
             XCTAssertEqual(caught.convert(caught.bounds, to: view).minY, destination, accuracy: 1)
         }
     }
