@@ -49,6 +49,7 @@ def main():
     assert 'if: ${{ always() }}' in advisory
     assert 'actions/upload-artifact@v6' in advisory
     assert 'GITHUB_STEP_SUMMARY' in advisory
+    assert "VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'" in sections['native']
     assert 'APP_REQUIRED: ${{ needs.changes.outputs.app_required }}' in gate
     script = block(gate)
     trials = 0

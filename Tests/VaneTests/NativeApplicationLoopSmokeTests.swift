@@ -20,7 +20,7 @@ import NativeTestHostBootstrap
         try assertNativeHostBootstrap()
         TestEnvironment.prepare()
         guard ProcessInfo.processInfo.environment["VANE_APPKIT_LOOP_SMOKE"] == "1" else {
-            throw XCTSkip("Requires a fresh selected process and the owned 20-second driver bound")
+            throw XCTSkip("Requires a fresh selected process and the bounded owned driver")
         }
         for cycle in 1...2 {
             let loop = try await NativeFixtureApplicationLoop.acquire()

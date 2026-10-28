@@ -110,6 +110,9 @@ durations in `scripts/native-test-durations.json`, assigns new classes automatic
 and verifies every selected required test completed. The single known worker-UA
 probe runs on a separate advisory runner. Each required group runs its own startup
 preflight and cleanup, and all four must pass the required `checks` gate.
+The preflight's outer 90-second process limit includes SwiftPM planning before
+XCTest starts; the owned AppKit loop retains its separate 12-second lifecycle
+watchdogs. A slow CLI launch must not be mistaken for a failed native loop.
 Same-desktop `--parallel` execution remains unsupported because UI fixtures share
 focus and application state. Duration estimates affect balancing only, never coverage.
 
