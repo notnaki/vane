@@ -100,8 +100,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     @Published var naming: UUID?
     /// Bumped to put the keyboard in the pane's search field — on opening, and on ⌘F, which
     /// while the Library is up means this box rather than the find bar over a hidden page.
-    /// A counter rather than a Bool: `@FocusState` is the field's, and asking twice in a row
-    /// has to be heard twice.
+    /// Each explicit request is heard once, including consecutive requests in one section.
     @Published private(set) var focusToken = 0
 
     func focusSearch() { focusToken &+= 1 }
@@ -924,8 +923,6 @@ struct LibraryHead<Filter: View, Actions: View>: View {
     @Binding var query: String
     @ViewBuilder let filter: () -> Filter
     @ViewBuilder let actions: () -> Actions
-    /// The keyboard lands here when the Library opens and when ⌘F is pressed over it.
-    @FocusState private var focused: Bool
     @ObservedObject private var library = Library.shared
 
     var body: some View {
@@ -933,10 +930,16 @@ struct LibraryHead<Filter: View, Actions: View>: View {
             HStack(spacing: Look.inset - 3) {
                 Image(systemName: "magnifyingglass").font(Look.caption)
                     .foregroundStyle(Look.inkTertiary)
-                TextField(section.searchPrompt, text: $query)
-                    .textFieldStyle(.plain).font(Look.small)
+                // Keep the request pending until AppKit attaches the native field.
+                // Retiring sections have no authority over the arriving editor.
+                CommandField(text: $query, prompt: section.searchPrompt,
+                             selectAll: false, label: section.searchPrompt, hint: "",
+                             font: Look.Typography.secondary.native,
+                             textColor: Look.nsInk(0.80),
+                             focusRequest: library.focusToken,
+                             canFocus: { store.libraryOpen && library.section == section },
+                             onKey: { _ in false })
                     .foregroundStyle(Look.inkPrimary)
-                    .focused($focused)
             }
             .padding(.horizontal, Look.captionGap * 3)
             .frame(height: Look.libraryField)
@@ -975,41 +978,6 @@ struct LibraryHead<Filter: View, Actions: View>: View {
         .padding(.top, Look.libraryHead)
         .padding(.bottom, Look.inset)
         .animation(Motion.reduced ? nil : Look.quick, value: filtering)
-        .onAppear { takeKeyboard() }
-        .onChange(of: library.focusToken) { takeKeyboard() }
-        .onChange(of: store.libraryOpen) {
-            if !store.libraryOpen { focused = false }
-        }
-    }
-
-    /// A turn later, not now. `@FocusState` set while the field is still being installed in
-    /// the window is dropped, and the keyboard stays where it was — which, the first time the
-    /// Library opens over a page, is the web view: every keystroke would go to the page.
-    private func takeKeyboard() {
-        let request = library.focusToken
-        recordFocusRequest("queued", request: request)
-        DispatchQueue.main.async {
-            // An outgoing section can remain mounted during its transition.
-            // Only the current section's latest request owns the field editor.
-            guard store.libraryOpen, library.section == section,
-                  library.focusToken == request else {
-                recordFocusRequest("rejected", request: request)
-                return
-            }
-            recordFocusRequest("accepted", request: request)
-            focused = true
-            recordFocusRequest("assigned", request: request)
-        }
-    }
-
-    // Temporary diagnostic branch only: buffer request timing in the fixture's
-    // native history without printing or changing the focus decision.
-    private func recordFocusRequest(_ phase: String, request: Int) {
-        guard ProcessInfo.processInfo.environment["VANE_LIBRARY_FOCUS_DIAGNOSTIC"] == "1" else { return }
-        NotificationCenter.default.post(name: .init("Vane.LibraryHeadFocusDiagnostic"), object: store.window,
-            userInfo: ["phase": phase, "section": section.rawValue, "currentSection": library.section.rawValue,
-                       "request": request, "currentRequest": library.focusToken, "focused": focused,
-                       "open": store.libraryOpen])
     }
 
     private func pill<Label: View>(filling: Bool, @ViewBuilder _ label: () -> Label) -> some View {

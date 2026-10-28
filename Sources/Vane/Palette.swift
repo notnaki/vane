@@ -534,6 +534,8 @@ struct CommandField: NSViewRepresentable {
     let hint: String
     /// The bar's size by default; the find bar asks for its own, smaller one.
     var font: NSFont = Look.Typography.input.native
+    /// Native fields need explicit ink when a surface uses a custom text strength.
+    var textColor: NSColor? = nil
     /// A new request refocuses an already-mounted field without reselecting on every edit.
     var focusRequest = 0
     /// A retiring overlay can still be mounted during its dismissal transition.
@@ -578,6 +580,7 @@ struct CommandField: NSViewRepresentable {
         f.usesSingleLineMode = true
         f.lineBreakMode = .byTruncatingTail
         f.font = font
+        if let textColor { f.textColor = textColor }
         f.placeholderString = prompt
         f.setAccessibilityLabel(label)
         f.setAccessibilityHelp(hint)
@@ -603,6 +606,7 @@ struct CommandField: NSViewRepresentable {
         }
         context.coordinator.showsCompletion = shown != text
         if f.font != font { f.font = font }
+        if let textColor, f.textColor != textColor { f.textColor = textColor }
         // The prompt is not fixed for the life of the field: ⇥ turns the bar into an
         // actions search and says so here as well as in the scope chip.
         if f.placeholderString != prompt { f.placeholderString = prompt }

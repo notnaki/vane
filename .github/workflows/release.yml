@@ -50,7 +50,7 @@ jobs:
       - name: Repeat Library focus tests
         timeout-minutes: 10
         env:
-          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '120'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
           SCENARIO: ${{ inputs.scenario }}
         run: |
           set -euo pipefail
@@ -69,8 +69,8 @@ jobs:
               classes='Feel02PressTests Feel02SidebarTests Feel03RemoteTests Feel03SearchTests Feel04PreviewTests Feel04SkippedLoadTests Feel05LibraryFocusTests'
               filter='^VaneTests[.](Feel02PressTests|Feel02SidebarTests|Feel03RemoteTests|Feel03SearchTests|Feel04PreviewTests|Feel04SkippedLoadTests|Feel05LibraryFocusTests)/'
               if [[ "$SCENARIO" == both ]]; then
-                classes="$classes PasswordAutofillTests"
-                filter='^VaneTests[.](Feel02PressTests|Feel02SidebarTests|Feel03RemoteTests|Feel03SearchTests|Feel04PreviewTests|Feel04SkippedLoadTests|Feel05LibraryFocusTests|PasswordAutofillTests)/'
+                classes="$classes PasswordAutofillTests SitePermissionTests LibraryHeadFocusOwnershipTests"
+                filter='^VaneTests[.](Feel02PressTests|Feel02SidebarTests|Feel03RemoteTests|Feel03SearchTests|Feel04PreviewTests|Feel04SkippedLoadTests|Feel05LibraryFocusTests|PasswordAutofillTests|SitePermissionTests|LibraryHeadFocusOwnershipTests)/'
               fi
               ;;
             password)
@@ -103,6 +103,7 @@ jobs:
             grep -Fq "Test Case '-[VaneTests.$primary_class $primary_method]' passed" "$log"
             if [[ "$SCENARIO" == both ]]; then
               grep -Fq "Test Case '-[VaneTests.PasswordAutofillTests testReusedUsernameNodeBecomesANewPasswordStep]' passed" "$log"
+              grep -Fq "Test Case '-[VaneTests.SitePermissionTests testPermissionIsAnAnchoredPopoverAndDoesNotBlockItsWindow]' passed" "$log"
             fi
             if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$log"; then exit 1; fi
           done
