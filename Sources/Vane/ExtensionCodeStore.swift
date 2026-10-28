@@ -18,6 +18,8 @@ struct ExtensionCodeStore: Sendable {
         var integratedCapabilities: Set<String>? = nil
         var safari: SafariExtensionSource? = nil
         var store: ChromeWebStore? = nil
+        // Approval of error callbacks only; never native-host authorization.
+        var nativeMessagingErrorCompatibilityVersion: Int? = nil
     }
 
     struct Stage: Sendable {

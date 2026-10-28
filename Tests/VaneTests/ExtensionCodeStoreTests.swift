@@ -16,6 +16,52 @@ final class ExtensionCodeStoreTests: XCTestCase {
     }
     override func tearDownWithError() throws { try? FileManager.default.removeItem(at: directory) }
 
+    func testNativeErrorApprovalMetadataRoundTripsOnlyInItsProfile() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "identity": UUID().uuidString, "revision": UUID().uuidString,
+            "sourcePath": source.path, "name": "Native error fixture", "version": "1", "summary": "",
+            "required": ["permissions": ["nativeMessaging"], "sites": []],
+            "optional": ["permissions": [], "sites": []], "compatibility": [],
+            "nativeMessagingErrorCompatibilityVersion": 1
+        ])
+        let approved = try JSONDecoder().decode(ExtensionCodeStore.Record.self, from: data)
+        try store.save([source.path: approved])
+        let restored = try XCTUnwrap(store.records()[source.path])
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(restored)) as? [String: Any])
+        XCTAssertEqual(encoded["nativeMessagingErrorCompatibilityVersion"] as? Int, 1,
+                       "Separate error-only approval must survive the accepted-record commit point")
+        let other = ExtensionCodeStore(profileID: UUID(), directory: directory)
+        XCTAssertTrue(try other.records().isEmpty, "Another profile must not inherit this approval")
+    }
+
+    func testNativeErrorModeRequiresKnownApprovalAndDeclaredPermission() {
+        let native = ExtensionAccess(permissions: ["nativeMessaging"], sites: [])
+        let empty = ExtensionAccess(permissions: [], sites: [])
+        for version: Int? in [nil, -1, 0, 2] {
+            XCTAssertFalse(ExtensionNativeMessagingErrors.isApproved(version: version, required: native, optional: empty))
+        }
+        XCTAssertTrue(ExtensionNativeMessagingErrors.isApproved(version: 1, required: native, optional: empty))
+        XCTAssertTrue(ExtensionNativeMessagingErrors.isApproved(version: 1, required: empty, optional: native))
+        XCTAssertFalse(ExtensionNativeMessagingErrors.isApproved(version: 1, required: empty, optional: empty))
+    }
+
+    func testRemovingThenReaddingNativeDeclarationRequiresNewApproval() {
+        let native = ExtensionAccess(permissions: ["nativeMessaging"], sites: [])
+        let empty = ExtensionAccess(permissions: [], sites: [])
+        var old = ExtensionCodeStore.Record(identity: UUID().uuidString, revision: UUID().uuidString,
+            sourcePath: source.path, name: "Native fixture", version: "1", summary: "", required: native,
+            optional: empty, compatibility: [], nativeMessagingErrorCompatibilityVersion: 1)
+        XCTAssertEqual(ExtensionNativeMessagingErrors.retainedVersion(from: old, for: native, optional: empty), 1)
+        old.nativeMessagingErrorCompatibilityVersion = ExtensionNativeMessagingErrors.retainedVersion(from: old, for: empty, optional: empty)
+        old.required = empty
+        XCTAssertNil(old.nativeMessagingErrorCompatibilityVersion)
+        XCTAssertNil(ExtensionNativeMessagingErrors.retainedVersion(from: old, for: native, optional: empty))
+        old.required = native
+        old.nativeMessagingErrorCompatibilityVersion = 2
+        XCTAssertNil(ExtensionNativeMessagingErrors.retainedVersion(from: old, for: native, optional: empty))
+        XCTAssertNil(ExtensionNativeMessagingErrors.retainedVersion(from: nil, for: native, optional: empty))
+    }
+
     func testSnapshotContainsSeparateRegularFilesAndProfileStorage() throws {
         let file = source.appendingPathComponent("file.js")
         try Data("accepted".utf8).write(to: file)
