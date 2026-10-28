@@ -184,6 +184,7 @@ jobs:
           python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/vane-appkit-loop-preflight.log"
           if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-appkit-loop-preflight.log"; then exit 1; fi
           grep -Fq "Test Case '-[VaneTests.NativeApplicationLoopSmokeTests testOwnedLoopAdmitsAsyncWorkAndStops]' passed" "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Expected owned AppKit loop preflight did not pass.'; exit 1; }
+          grep -Fq 'AppKit loop smoke: delayedHeartbeat=true, completed=true' "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Delayed AppKit heartbeat regression did not complete.'; exit 1; }
           grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Owned AppKit loop preflight retirement was not verified.'; exit 1; }
 
       - name: Native regression tests

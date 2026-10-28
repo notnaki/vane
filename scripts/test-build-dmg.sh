@@ -1,16 +1,36 @@
 #!/bin/bash
 
-set -euo pipefail
+set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+source "$ROOT/scripts/dmg-image.sh"
+trap 'status=$?; echo "error: DMG test command failed (status $status, line $LINENO): $BASH_COMMAND" >&2' ERR
 BUILDER="$ROOT/scripts/build-dmg.sh"
+python3 "$ROOT/scripts/test-dmg-lifecycle.py"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/vane-dmg-test.XXXXXX")
 MOUNT_POINT=""
+DEVICE=""
+DMG="$WORK/Vane.dmg"
+ATTACH_STARTED=false
 
 cleanup() {
-  status=$?
-  if [ -n "$MOUNT_POINT" ] && mount | grep -Fq "on $MOUNT_POINT "; then
-    hdiutil detach "$MOUNT_POINT" -quiet || true
+  local status=$?
+  trap - EXIT ERR
+  if [ "$ATTACH_STARTED" = true ] && [ -z "$DEVICE" ]; then
+    if DEVICE=$(dmg_image_state "$DMG" ""); then :; else
+      if [ "$?" -ne 1 ]; then
+        echo "error: cannot establish DMG test cleanup ownership; retaining $WORK" >&2
+        if [ "$status" -eq 0 ]; then status=1; fi
+        exit "$status"
+      fi
+    fi
+  fi
+  if [ -n "$DEVICE" ]; then
+    if ! dmg_detach_owned "$DMG" "$DEVICE" true; then
+      echo "error: retaining DMG test work directory for cleanup: $WORK" >&2
+      if [ "$status" -eq 0 ]; then status=1; fi
+      exit "$status"
+    fi
   fi
   rm -rf "$WORK"
   exit "$status"
@@ -18,7 +38,6 @@ cleanup() {
 trap cleanup EXIT
 
 APP="$WORK/Vane.app"
-DMG="$WORK/Vane.dmg"
 mkdir -p "$APP/Contents/MacOS"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -46,10 +65,17 @@ fi
 
 test -f "$DMG"
 ATTACH_PLIST="$WORK/attach.plist"
+echo "DMG test: attach compressed image $DMG" >&2
+ATTACH_STARTED=true
 hdiutil attach "$DMG" -readonly -nobrowse -plist > "$ATTACH_PLIST"
 MOUNT_POINT=$(plutil -p "$ATTACH_PLIST" \
   | sed -n 's/.*"mount-point" => "\(.*\)"/\1/p' \
   | head -1)
+DEVICE=$(plutil -p "$ATTACH_PLIST" \
+  | sed -n 's/.*"dev-entry" => "\(.*\)"/\1/p' \
+  | head -1)
+test -n "$MOUNT_POINT"
+test -n "$DEVICE"
 
 test "$(diskutil info -plist "$MOUNT_POINT" \
   | plutil -extract VolumeName raw -o - -)" = "Vane"

@@ -15,7 +15,7 @@
 - System WebKit and macOS 26.0+; no bundled/forked engine, extension-resource rewriting, altered security boundaries, or weaker assertions.
 - Keep main's strict checks and current-base integration requirement. No issue-closing keywords until each issue's acceptance is actually satisfied.
 - Preserve prior failing evidence and other tasks' worktrees/data. Track and retire every task-owned native launch.
-- Vendor-signed Bitwarden 2026.10.0 is cached locally. The user authorized installing the Store copy, but the App Store download stalled on its account sheet. Exact Store-package acceptance remains pending; do not conflate the distributions.
+- Vendor-signed Bitwarden 2026.10.0 is cached locally. After an initial stalled download, the user installed the exact Store 2026.10.0 copy. Apple signature/team/receipt were verified and all 185 resource files match the vendor package. Its signed Safari-app installer path still fails the original welcome deadline; successful acceptance remains pending.
 
 ## Evidence already established
 
@@ -40,6 +40,8 @@ Local focused result: 34 passed, primary 0 / cleanup 0. Independent review and r
 
 Current result: actual anchored-popup welcome JavaScript still times out at 20 seconds after successful installation. Renderer sampling finds a microtask loop, but has not identified its JavaScript document/cause. Post-failure, preattached-clone, and background-inspector diagnostics are separate non-acceptance arms. Original failures and positive scoped-store retirement logs are preserved. No popup repair is established.
 
+The Store-bundle path reproduces that same deadline failure. The complete Vane executable restored the accepted extension as enabled with the runtime diagnostic visible; its bounded UI experiment produced no passing popup acceptance verdict. Early inspector experiments missed `developerExtrasEnabled`; their connection timeouts are not evidence about the extension's cause. A corrected clean-page inspector control subsequently passed.
+
 ## Task 3: Establish a safe MV3 identity repair
 
 - [x] Compare current upstream and pinned system source at initial origin/client-UA selection and worker installation; avoid repeating ruled-out API/casing/observer/engine experiments.
@@ -51,3 +53,14 @@ Current result: actual anchored-popup welcome JavaScript still times out at 20 s
 
 - [ ] Independently review the current shipping diff, pass required CI against latest main, squash-merge, verify main, and clean up task-owned launches/worktree when safe.
 - [ ] Update issue status only for demonstrated acceptance; keep unresolved items open and report precise remaining blockers.
+
+## Priority follow-up: main CI run 1608
+
+Activation repair PR548 merged as `a53f181` after exact-head review and green PR run40741107431 attempt1. Main run40745249461 then failed a native `launchTimedOut` assertion and silent DMG exit16. Preserve that original run; do not retry it to establish a repair.
+
+- [x] Reproduce a false native timeout with controlled six-second heartbeat scheduling delay: launch was finished at entry and at observation, but the previous policy still threw `launchTimedOut`.
+- [x] Separate already-finished launch admission from genuine launch waiting. Preserve the five-second unfinished-launch deadline and twelve-second lifecycle watchdog, including an explicit absolute guard when a timer callback is delayed.
+- [x] Require the controlled native regression in every existing owned-loop CI preflight. Add deadline/changed-readiness/overdue-watchdog controls without a new skipped test or exclusion.
+- [x] Add exact image/device ownership checks, bounded EBUSY-only detach handling, safe partial-attach cleanup, and command-stage diagnostics. The original DMG log does not identify which command returned16; treat detach as a demonstrated vulnerability rather than proven historical causality.
+- [x] Local verification:68 native tests passed, zero failures, primary0/cleanup0,28 exact owned backends absent; nine packaging mock regressions and one full live packaging run passed with owned images retired and pre-existing images preserved.
+- [ ] Independently review, pass latest-main required CI, squash-merge, and verify a fresh actual-main run. Both extension issues remain open.
