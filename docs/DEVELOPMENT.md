@@ -87,6 +87,17 @@ from native UI tests. The required `checks` gate requires every applicable requi
 job to succeed; the named worker-UA advisory job is excluded. Jobs intentionally skipped for documentation-only changes are handled by
 the gate's documentation path.
 
+Main requires GitHub Actions' `checks` status with strict current-base validation,
+including for administrators. Update a PR when main advances and validate the new
+integration before merging. A green feature branch against yesterday's base does
+not validate its combination with another feature merged today.
+
+Preserve failed attempts when assessing a change. An unchanged native assertion
+failure followed by a passing rerun is evidence of unresolved intermittency, not
+a repair. Separate pre-test runner outages from actual assertion failures. Compare
+the tested source tree, runner image, macOS/WebKit and toolchain when investigating
+branch/main differences; the branch name alone is not the cause.
+
 Only the build job restores the Swift debug cache; successful `main` builds save it.
 The cache is keyed by macOS architecture, Swift/Xcode/SDK versions, and package/source
 hashes. Content-matching timestamps allow unchanged files to stay incremental, while
@@ -153,6 +164,10 @@ popup UA, manifest-v2 background UA, profile storage isolation, and controller
 ownership. The planner checks that the exact advisory probe exists and that the
 required/advisory test sets partition the discovered inventory without overlap.
 An unfiltered local native run includes the probe and can fail on this known fault.
+A passing probe is one sample, not proof that worker identity is reliable or that
+the limitation is fixed. Its signed-app reproductions are tracked in [#513](https://github.com/notnaki/vane/issues/513).
+The advisory exception does not apply to other extension assertions or native
+fixture failures.
 
 These commands cover the app checks used in CI. For routine changes, select only
 the checks relevant to the affected behavior:

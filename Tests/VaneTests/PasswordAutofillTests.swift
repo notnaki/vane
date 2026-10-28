@@ -135,9 +135,10 @@ import XCTest
         XCTAssertEqual(value, expected, file: file, line: line)
     }
 
-    private func fixture(_ html: String, url: URL = URL(string: "https://login.example.test/signin")!) async throws -> (WKWebView, Capture) {
+    private func fixture(_ html: String, url: URL = URL(string: "https://login.example.test/signin")!,
+                         foreground: Bool = false) async throws -> (WKWebView, Capture) {
         TestEnvironment.prepare()
-        _ = NSApplication.shared
+        let app = NSApplication.shared
         WebKitStartup.prepare()
         let capture = Capture()
         let config = WKWebViewConfiguration()
@@ -149,17 +150,68 @@ import XCTest
         let window = NSWindow(contentRect: web.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = web
-        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
-        window.orderFront(nil)
-        addTeardownBlock { @MainActor in
+        let cleanup: @MainActor @Sendable () -> Void = {
             web.stopLoading()
             config.userContentController.removeScriptMessageHandler(forName: "vanepw", contentWorld: Autofill.world)
+            window.contentView = nil
             window.close()
+        }
+        var returned = false
+        defer { if !returned { cleanup() } }
+        if foreground {
+            let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first)
+            let available = screen.visibleFrame.insetBy(dx: 20, dy: 20)
+            let size = CGSize(width: min(window.frame.width, available.width),
+                              height: min(window.frame.height, available.height))
+            window.setFrame(CGRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
+                                   width: size.width, height: size.height), display: false)
+            window.makeKeyAndOrderFront(nil)
+            app.activate(ignoringOtherApps: true)
+            try await wait(for: "document fixture to receive user interaction", diagnostics: {
+                self.nativeWindowVisibilityState(window)
+            }) { self.nativeContinuationReady(window, document: web) }
+        } else {
+            window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+            window.orderFront(nil)
         }
         web.loadSimulatedRequest(URLRequest(url: url),
                                  responseHTML: "<!doctype html><body>" + html + "</body>")
         try await wait { !web.isLoading }
+        try await wait(for: "autofill bridge installation") {
+            try await self.js(web, "typeof window.__vaneFill === 'function'", world: Autofill.world) as? Bool == true
+        }
+        if !foreground { addTeardownBlock { @MainActor in cleanup() } }
+        returned = true
         return (web, capture)
+    }
+
+    /// Close the native loop inside the test body: XCTest cannot start teardown
+    /// while NSApplication.run is still nested inside its test invocation.
+    private func withDocumentFixture(_ html: String, _ body: (WKWebView, Capture) async throws -> Void) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        if policy == .prohibited { app.setActivationPolicy(.accessory) }
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do {
+            let (web, capture) = try await fixture(html, foreground: true)
+            let window = try XCTUnwrap(web.window)
+            defer {
+                web.stopLoading()
+                web.configuration.userContentController.removeScriptMessageHandler(forName: "vanepw", contentWorld: Autofill.world)
+                window.contentView = nil
+                window.close()
+            }
+            try await body(web, capture)
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Document fixture AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
     }
 
     private struct FixtureTimeout: Error, CustomStringConvertible {
@@ -233,6 +285,16 @@ import XCTest
                      world: Autofill.world) as? Bool == true
     }
 
+    func testDocumentNotificationFixtureOwnsAnActiveAppKitContext() async throws {
+        try await withDocumentFixture("<form><input autocomplete=username></form>") { web, _ in
+            let window = try XCTUnwrap(web.window)
+            XCTAssertTrue(NSApplication.shared.isRunning, "Live WebKit notifications require an owned AppKit loop")
+            XCTAssertTrue(nativeContinuationReady(window, document: web),
+                          "The document must be attached to its active, on-screen window before mutations")
+        }
+        XCTAssertFalse(NSApplication.shared.isRunning, "The document fixture must join its loop before returning")
+    }
+
     func testPasswordStepRejectsDifferentAccountAfterUsernameRemoval() async throws {
         let (web, _) = try await fixture("<form id=login><input id=user autocomplete=username></form>")
         let initial = try await fill(web)
@@ -246,15 +308,14 @@ import XCTest
     }
 
     func testExistingFieldBecomesLoginThroughAttributeAndVisibilityChanges() async throws {
-        let (web, capture) = try await fixture("<form id=login hidden><input id=password type=text disabled></form>")
-        try await Task.sleep(for: .milliseconds(150))
-        let before = capture.messages.filter { $0["ready"] as? Bool == true }.count
-        _ = try await js(web, "password.type='password'; password.disabled=false; login.hidden=false")
-        // Offscreen WebKit can defer its MutationObserver/message delivery under
-        // load. Wait for the tested notification, with the fixture's bounded timeout.
-        try await wait { capture.messages.filter { $0["ready"] as? Bool == true }.count > before }
-        XCTAssertGreaterThan(capture.messages.filter { $0["ready"] as? Bool == true }.count, before)
-        expectTrue(try await fill(web))
+        try await withDocumentFixture("<form id=login hidden><input id=password type=text disabled></form>") { web, capture in
+            let before = capture.messages.filter { $0["ready"] as? Bool == true }.count
+            _ = try await js(web, "password.type='password'; password.disabled=false; login.hidden=false")
+            // Observe the actual bridge notification in the admitted document context.
+            try await wait { capture.messages.filter { $0["ready"] as? Bool == true }.count > before }
+            XCTAssertGreaterThan(capture.messages.filter { $0["ready"] as? Bool == true }.count, before)
+            expectTrue(try await fill(web))
+        }
     }
 
     func testHiddenAndUnrelatedFieldsStayUntouched() async throws {
@@ -877,23 +938,26 @@ import XCTest
     }
 
     func testReusedUsernameNodeBecomesANewPasswordStep() async throws {
-        let (web, capture) = try await fixture("<form><input id=field autocomplete=username></form>")
-        try await Task.sleep(for: .milliseconds(150))
-        expectTrue(try await fill(web))
-        let before = capture.messages.filter { $0["ready"] as? Bool == true }.count
-        _ = try await js(web, "field.value=''; field.type='password'; field.autocomplete='current-password'")
-        try await wait(for: "reused username node to report its password step", diagnostics: {
-            let ready = capture.messages.filter { $0["ready"] as? Bool == true }.count
-            let onScreen = web.window.map { window in
-                NSScreen.screens.contains { $0.visibleFrame.intersects(window.frame) }
-            } ?? false
-            return "readyBefore=\(before) readyNow=\(ready) appRunning=\(NSApp.isRunning) " +
-                "windowVisible=\(web.window?.isVisible ?? false) occlusion=\(web.window?.occlusionState.rawValue ?? 0) " +
-                "onScreen=\(onScreen) webHidden=\(web.isHiddenOrHasHiddenAncestor) loading=\(web.isLoading)"
-        }) { capture.messages.filter { $0["ready"] as? Bool == true }.count > before }
-        XCTAssertGreaterThan(capture.messages.filter { $0["ready"] as? Bool == true }.count, before)
-        expectEqual(capture.messages.last { $0["ready"] as? Bool == true }?["accountHint"] as? String, "ada")
-        expectFalse(try await fill(web, account: "bob", automatic: true))
+        try await withDocumentFixture("<form><input id=field autocomplete=username></form>") { web, capture in
+            try await wait(for: "initial username ready notification") {
+                capture.messages.contains { $0["ready"] as? Bool == true }
+            }
+            expectTrue(try await fill(web))
+            let before = capture.messages.filter { $0["ready"] as? Bool == true }.count
+            _ = try await js(web, "field.value=''; field.type='password'; field.autocomplete='current-password'")
+            try await wait(for: "reused username node to report its password step", diagnostics: {
+                let ready = capture.messages.filter { $0["ready"] as? Bool == true }.count
+                let onScreen = web.window.map { window in
+                    NSScreen.screens.contains { $0.visibleFrame.intersects(window.frame) }
+                } ?? false
+                return "readyBefore=\(before) readyNow=\(ready) appRunning=\(NSApp.isRunning) " +
+                    "windowVisible=\(web.window?.isVisible ?? false) occlusion=\(web.window?.occlusionState.rawValue ?? 0) " +
+                    "onScreen=\(onScreen) webHidden=\(web.isHiddenOrHasHiddenAncestor) loading=\(web.isLoading)"
+            }) { capture.messages.filter { $0["ready"] as? Bool == true }.count > before }
+            XCTAssertGreaterThan(capture.messages.filter { $0["ready"] as? Bool == true }.count, before)
+            expectEqual(capture.messages.last { $0["ready"] as? Bool == true }?["accountHint"] as? String, "ada")
+            expectFalse(try await fill(web, account: "bob", automatic: true))
+        }
     }
 
     func testEditedAccountReplacesEarlierChoiceBeforeUsernameRemoval() async throws {
