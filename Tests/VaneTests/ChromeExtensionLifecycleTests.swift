@@ -168,4 +168,62 @@ import XCTest
         XCTAssertEqual(host.installed.first?.webExtension.displayName, "Dark Reader")
         XCTAssertNil(host.entries.first?.failure)
     }
+
+    func testExplicitStoreInstallRepairsUnreadableMetadataWithoutChangingOrigin() async throws {
+        let host = ExtensionHost.host(for: profile)
+        _ = try await install(host)
+        let origin = host.installed.first?.baseURL
+        ExtensionHost.forget(profile)
+        let store = ExtensionCodeStore(profileID: profile)
+        try Data("corrupt".utf8).write(to: store.root.appendingPathComponent("installations.json"))
+        let restored = ExtensionHost.host(for: profile)
+        XCTAssertEqual(restored.entries.first?.storeID, source.id)
+        XCTAssertTrue(restored.installed.isEmpty)
+        var reviewed = false
+        let accepted = try await install(restored, review: { review in
+            reviewed = true; XCTAssertTrue(review.needsApproval); return true
+        })
+        XCTAssertTrue(accepted)
+        XCTAssertTrue(reviewed)
+        XCTAssertEqual(restored.installed.first?.baseURL, origin)
+        XCTAssertNil(restored.entries.first?.failure)
+    }
+
+    func testExplicitSameVersionUpdateRepairsMissingCodeWithoutChangingOrigin() async throws {
+        let host = ExtensionHost.host(for: profile)
+        _ = try await install(host)
+        let origin = host.installed.first?.baseURL
+        ExtensionHost.forget(profile)
+        let store = ExtensionCodeStore(profileID: profile)
+        let record = try XCTUnwrap(store.records()[source.key])
+        try FileManager.default.removeItem(at: store.code(for: record).appendingPathComponent("manifest.json"))
+        let restored = ExtensionHost.host(for: profile)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while restored.entries.contains(where: \.busy), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(restored.installed.isEmpty)
+        var reviewed = false
+        let accepted = try await install(restored, review: { review in
+            reviewed = true; XCTAssertTrue(review.updating); return true
+        })
+        XCTAssertTrue(accepted)
+        XCTAssertTrue(reviewed)
+        XCTAssertEqual(restored.installed.first?.baseURL, origin)
+        XCTAssertNil(restored.entries.first?.failure)
+    }
+
+    func testSuccessfulUnchangedCheckClearsResolvedAttentionWithoutReplacingHealthyCode() async throws {
+        let host = ExtensionHost.host(for: profile)
+        _ = try await install(host)
+        let store = ExtensionCodeStore(profileID: profile)
+        let revision = try XCTUnwrap(store.records()[source.key]?.revision)
+        try write(version: "2.0", permissions: ["storage", "tabs"])
+        _ = try await install(host, automatic: true, review: { _ in false })
+        XCTAssertNotNil(host.entries.first?.failure)
+        // The store withdrew the permission-increasing release; the accepted version is current again.
+        try write(version: "1.0")
+        let changed = try await install(host)
+        XCTAssertFalse(changed)
+        XCTAssertNil(host.entries.first?.failure)
+        XCTAssertEqual(try store.records()[source.key]?.revision, revision)
+    }
 }

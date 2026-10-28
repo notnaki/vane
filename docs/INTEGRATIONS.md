@@ -49,7 +49,10 @@ disabled state across updates. **Update from Store…** checks explicitly. Vane 
 checks daily while that profile's extension host is running, on an hourly timer.
 Same-access updates can activate automatically; updates requiring added access stay
 pending in **Needs Attention** until reviewed through **Update from Store…**.
-Unchanged versions and downgrades do not replace accepted code. A failed or declined
+Unchanged versions and downgrades do not replace healthy accepted code. An explicit
+same-version update can repair missing or damaged accepted resources after review;
+retained store IDs can also recover an unreadable metadata index without removal.
+A failed or declined
 update keeps the accepted version. Store support uses Apple's WebKit runtime and
 does not add Chrome-only APIs or native messaging; the compatibility section below
 still applies. Private profiles cannot install or run store extensions.

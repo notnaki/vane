@@ -58,3 +58,8 @@ Files: ChromeWebStorePage.swift, Engine.swift, ExtensionManagement.swift, tests 
 - Package tests verified a freshly downloaded Dark Reader 4.9.134 CRX, including real RSA/Google publisher proofs. The live network/runtime fixture passed.
 - 178 extension-focused regressions passed (14 platform/opt-in skips); ZIP adversarial fixtures passed. The signed debug app installed Dark Reader through the live store button and showed its store source/update control.
 - Reinstall regression first exposed old storage under the stable Chrome ID; reusing the existing serialized purge fixed it.
+
+- Independent review of 97f125a found three P2 recovery issues. Regression tests reproduced each; fixes preserve store source/identity when metadata is unreadable, permit reviewed equivalent-version repairs of damaged accepted code, and clear resolved attention without replacing healthy code.
+- After fixes, 152 focused extension tests passed (14 platform/opt-in skips), including live store download and package verification; fixture retirement passed. The signed debug app rebuilt successfully.
+- A broader name-filter run also included unrelated media tests and had one PiP video pause assertion failure; its isolated rerun passed after the UI test app was closed. No media code changed.
+- Both tracked Vane UI test process IDs (90337, 91590) are confirmed exited; the second needed a specific TERM after computer-use quit was blocked by changing foreground state. The regular user app was not targeted.
