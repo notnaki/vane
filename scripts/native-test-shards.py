@@ -13,6 +13,9 @@ import sys
 IDENTIFIER = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/[^\s/]+")
 COMPLETED = re.compile(r"Test Case '-\[([^ ]+) ([^ ]+)\]' (passed|skipped|failed) \(")
 BOOTSTRAP_DIAGNOSTIC = "Native test host bootstrap: beforeAppKit=true, configured=true"
+# Explicit product limitation, kept executable in its own advisory CI job. A
+# renamed/missing probe fails planning instead of silently reducing coverage.
+KNOWN_LIMITATIONS = {"VaneTests.ExtensionUserAgentTests/testKnownServiceWorkerUserAgentLimitation"}
 
 
 def validate_tests(tests):
@@ -30,6 +33,12 @@ def plan(arguments):
     tests = [line.strip() for line in arguments.inventory.read_text().splitlines()
              if line.strip() and line.strip() != BOOTSTRAP_DIAGNOSTIC]
     validate_tests(tests)
+    inventory = tests
+    if arguments.suite != "all":
+        missing = KNOWN_LIMITATIONS - set(tests)
+        if missing:
+            raise ValueError("known limitation probe missing from inventory: " + ", ".join(sorted(missing)))
+        tests = [test for test in tests if (test in KNOWN_LIMITATIONS) == (arguments.suite == "known-limitations")]
     if not 1 <= arguments.index <= arguments.count:
         raise ValueError("shard index must be between 1 and count")
     classes = {}
@@ -59,11 +68,16 @@ def plan(arguments):
         raise ValueError("shards must cover the inventory exactly once and be nonempty")
     selected = shards[arguments.index - 1]
     pattern = "^(?:" + "|".join(re.escape(name) for name in sorted(selected["classes"])) + ")/"
-    if sorted(test for test in tests if re.search(pattern, test)) != sorted(selected["tests"]):
+    if arguments.suite == "required":
+        pattern = "^(?!(?:" + "|".join(re.escape(test) for test in sorted(KNOWN_LIMITATIONS)) + ")$)" + pattern[1:]
+    elif arguments.suite == "known-limitations":
+        pattern = "^(?:" + "|".join(re.escape(test) for test in sorted(selected["tests"])) + ")$"
+    if sorted(test for test in inventory if re.search(pattern, test)) != sorted(selected["tests"]):
         raise ValueError("filter does not match the selected tests exactly")
     manifest = {
         "schema": 1, "index": arguments.index, "count": arguments.count,
-        "inventory_sha256": hashlib.sha256("\n".join(sorted(tests)).encode()).hexdigest(),
+        "inventory_sha256": hashlib.sha256("\n".join(sorted(inventory)).encode()).hexdigest(),
+        "suite": arguments.suite,
         "tests": sorted(selected["tests"]),
         "shards": [{"index": index + 1, "tests": len(shard["tests"]),
                     "estimated_seconds": round(shard["estimated_seconds"], 3)}
@@ -109,6 +123,7 @@ def main():
     planner.add_argument("--durations", type=Path, default=Path(__file__).with_name("native-test-durations.json"))
     planner.add_argument("--manifest", type=Path, required=True)
     planner.add_argument("--filter-output", type=Path, required=True)
+    planner.add_argument("--suite", choices=("all", "required", "known-limitations"), default="all")
     checker = commands.add_parser("verify")
     checker.add_argument("--manifest", type=Path, required=True)
     checker.add_argument("--log", type=Path, required=True)

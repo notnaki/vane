@@ -23,7 +23,7 @@ class NativeTestShardsTests(unittest.TestCase):
         self.weights.write_text(json.dumps({"classes": {
             "VaneTests.Slow": 10, "VaneTests.Medium": 6, "VaneTests.Fast": 4}}))
 
-    def plan(self, tests, index=1, count=2, success=True):
+    def plan(self, tests, index=1, count=2, success=True, suite="all"):
         self.inventory.write_text("\n".join(tests) + "\n")
         manifest = self.root / f"shard-{index}.json"
         pattern = self.root / f"shard-{index}.filter"
@@ -31,11 +31,33 @@ class NativeTestShardsTests(unittest.TestCase):
             sys.executable, str(SCRIPT), "plan", "--inventory", str(self.inventory),
             "--index", str(index), "--count", str(count), "--durations", str(self.weights),
             "--manifest", str(manifest), "--filter-output", str(pattern),
+            "--suite", suite,
         ], capture_output=True, text=True)
         self.assertEqual(result.returncode == 0, success, result.stderr)
         if success:
             return json.loads(manifest.read_text()), pattern.read_text().strip()
         self.assertFalse(manifest.exists())
+
+    def test_known_worker_ua_probe_is_separate_without_losing_required_coverage(self):
+        known = "VaneTests.ExtensionUserAgentTests/testKnownServiceWorkerUserAgentLimitation"
+        required = ["VaneTests.ExtensionUserAgentTests/testServiceWorkerPopupIdentityAndOwnershipFollowSelectionWhenSharedPoolIsReused",
+                    "VaneTests.ExtensionUserAgentTests/testDefaultSafariIdentityReachesPopupAndManifestTwoBackgroundBeforeScriptsRun",
+                    "VaneTests.Other/testNewRegression"]
+        inventory = required + [known]
+        mandatory, mandatory_filter = self.plan(inventory, count=1, suite="required")
+        advisory, advisory_filter = self.plan(inventory, count=1, suite="known-limitations")
+        self.assertEqual(mandatory["tests"], sorted(required))
+        self.assertEqual(advisory["tests"], [known])
+        self.assertEqual(mandatory["inventory_sha256"], advisory["inventory_sha256"])
+        self.assertEqual(set(mandatory["tests"]) | set(advisory["tests"]), set(inventory))
+        for test in inventory:
+            self.assertEqual(bool(re.search(mandatory_filter, test)), test in required)
+            self.assertEqual(bool(re.search(advisory_filter, test)), test == known)
+
+    def test_missing_or_renamed_known_probe_fails_closed(self):
+        tests = ["VaneTests.ExtensionUserAgentTests/testRenamedProbe", "VaneTests.Other/testA"]
+        self.plan(tests, count=1, suite="required", success=False)
+        self.plan(tests, count=1, suite="known-limitations", success=False)
 
     def test_balances_duration_without_splitting_classes_or_losing_new_tests(self):
         tests = ["VaneTests.Slow/testA", "VaneTests.Slow/testB", "VaneTests.Medium/testA",
