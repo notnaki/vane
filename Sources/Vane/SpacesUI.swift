@@ -939,20 +939,25 @@ struct SpacePreviewList: View, Equatable {
             return tab.map { !$0.atHome } ?? (page != url)
         }()
         let fixedIcon = tab?.favicon ?? page.flatMap { $0.isFileURL ? Files.icon(for: $0) : nil }
-        return SidebarRow(selected: selected, action: {}) {
-            CachedFavicon(cache: Favicons.cache(for: space.profileID),
-                          url: fixedIcon == nil && page?.isFileURL != true ? page : nil) { cached in
-                SidebarPageIcon(icon: fixedIcon ?? cached, easel: page.flatMap(EaselAddress.boardID) != nil,
-                                pr: row.pr, rounded: page?.isFileURL != true)
+        return SidebarRow(selected: selected, labelSpacing: returning ? 5 : Look.rowSpacing,
+                          trailingInset: Look.tabRowTrailingInset, action: {}) {
+            HStack(spacing: Look.returnMarkerGap) {
+                CachedFavicon(cache: Favicons.cache(for: space.profileID),
+                              url: fixedIcon == nil && page?.isFileURL != true ? page : nil) { cached in
+                    SidebarPageIcon(icon: fixedIcon ?? cached, easel: page.flatMap(EaselAddress.boardID) != nil,
+                                    pr: row.pr, rounded: page?.isFileURL != true,
+                                    size: Look.rowIcon, faviconScale: returning ? 1 : Look.sidebarFaviconScale)
+                }
+                .frame(width: Look.rowIcon, height: Look.rowIcon)
+                if returning {
+                    Text("/").font(.system(size: Look.rowIcon)).foregroundStyle(Look.inkTertiary)
+                        .fixedSize()
+                        .frame(width: Look.returnMarkerWidth).offset(x: 1, y: -1).accessibilityHidden(true)
+                }
             }
         } label: {
-            HStack(spacing: 6) {
-                if returning {
-                    Text("/").fontWeight(.bold).foregroundStyle(Look.inkTertiary).fixedSize()
-                }
-                LivePRTitle(title: title(for: row), pr: row.pr,
-                            developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
-            }
+            LivePRTitle(title: title(for: row), pr: row.pr,
+                        developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
         } trailing: {
             if let tab, tab.audible || TabAudio.isMuted(tab) {
                 Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")

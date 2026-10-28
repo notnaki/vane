@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -euo pipefail
+trap 'printf "error: DMG build failed (status=%s, line=%s): %s\n" "$?" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 APP=${1:-"$ROOT/Vane.app"}
@@ -114,7 +115,21 @@ end run
 APPLESCRIPT
 
 sync
-hdiutil detach "$DEVICE" -quiet
+# Finder and indexing can briefly retain the background file after close.
+# Retry only EBUSY on this build's device; other detach errors remain fatal.
+for attempt in {1..5}; do
+  if hdiutil detach "$DEVICE"; then
+    break
+  else
+    detach_status=$?
+  fi
+  if [ "$detach_status" -ne 16 ] || [ "$attempt" -eq 5 ]; then
+    echo "error: owned DMG detach failed (status=$detach_status, attempt=$attempt, device=$DEVICE)" >&2
+    exit "$detach_status"
+  fi
+  echo "DMG detach busy; waiting before attempt $((attempt + 1))/5" >&2
+  sleep 0.5
+done
 MOUNT_POINT=""
 DEVICE=""
 

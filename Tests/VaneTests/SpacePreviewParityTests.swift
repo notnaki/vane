@@ -445,8 +445,77 @@ import XCTest
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
     }
 
+    func testColdWanderedPinMarkerMatchesTheRestoredRow() async throws {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        let home = URL(string: "https://invalid.test/pinned")!
+        let away = URL(string: "https://invalid.test/elsewhere")!
+        let outgoing = Space(name: "Outgoing", profileID: profile)
+        let incoming = Space(name: "Incoming", profileID: profile, pinnedTabURLs: [home])
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([outgoing, incoming], for: profile))
+        XCTAssertTrue(Suspension.SpaceState.save([home.absoluteString: Parked(title: "Pinned document", page: away)],
+            space: incoming.id, profileID: profile, in: Store.directory))
+        let store = TabStore(profileID: profile, space: outgoing, session: [])
+        defer {
+            store.dropStashes()
+            let tabs = store.tabs
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(tabs)
+            Store.forget(profile)
+            try? FileManager.default.removeItem(at: Suspension.SpaceState.url(for: profile, in: Store.directory))
+            try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: profile, in: Store.directory))
+        }
+        let beforeImage = try await SidebarSnapshot.imageWhenReady(store.swipePreview(in: incoming)) {
+            SidebarPreviewPopulation.isReady(in: $0)
+        }
+        XCTAssertTrue(store.tabs.isEmpty)
+        store.switchTo(space: incoming)
+        let tab = try XCTUnwrap(store.tabs.first)
+        XCTAssertFalse(tab.atHome)
+        func anchors(in root: NSView) -> [NativeSidebarRowLayoutView] {
+            ((root as? NativeSidebarRowLayoutView).map { [$0] } ?? []) + root.subviews.flatMap { anchors(in: $0) }
+        }
+        var committedFrame: CGRect?
+        let afterImage = try await SidebarSnapshot.imageWhenReady(SidebarSpaceSections().environmentObject(store)) { root in
+            let rows = anchors(in: root).filter { $0.rowID == tab.id.uuidString && $0.window === root.window }
+            guard rows.count == 1, let row = rows.first else { return false }
+            guard row.committedGeneration == row.generation && row.hasCommittedCurrentBounds,
+                  row.bounds.width > 0 && row.bounds.height > 0 && !row.visibleRect.isEmpty else { return false }
+            committedFrame = root.convert(row.bounds, from: row)
+            return true
+        }
+        let frame = try XCTUnwrap(committedFrame)
+        XCTAssertEqual(frame.minX, 0, accuracy: 0.5)
+        XCTAssertEqual(frame.width, 250, accuracy: 0.5)
+        XCTAssertEqual(frame.height, Look.rowHeight, accuracy: 0.5)
+        XCTAssertEqual(beforeImage.width, afterImage.width)
+        XCTAssertEqual(beforeImage.height, afterImage.height)
+        // Compare the pinned row at identical viewport coordinates. The live header
+        // can legitimately have a keyboard focus ring that the static preview lacks.
+        let region = CGRect(x: frame.minX * CGFloat(afterImage.width) / 250,
+                            y: frame.minY * CGFloat(afterImage.height) / 400,
+                            width: frame.width * CGFloat(afterImage.width) / 250,
+                            height: frame.height * CGFloat(afterImage.height) / 400)
+        let before = try pixels(beforeImage, in: region)
+        let after = try pixels(afterImage, in: region)
+        XCTAssertEqual(before.count, after.count)
+        XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10,
+                                "The saved preview must use the same close-to-favicon slash as the live return tile")
+    }
+
     private func pixels<V: View>(_ preview: V) throws -> Data {
         try SidebarSnapshot.pixels(preview)
+    }
+
+    private func pixels(_ image: CGImage, in region: CGRect) throws -> Data {
+        let cropped = try XCTUnwrap(image.cropping(to: region))
+        let context = try XCTUnwrap(CGContext(data: nil, width: cropped.width, height: cropped.height,
+            bitsPerComponent: 8, bytesPerRow: cropped.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let rect = CGRect(x: 0, y: 0, width: cropped.width, height: cropped.height)
+        context.clear(rect)
+        context.draw(cropped, in: rect)
+        return Data(bytes: try XCTUnwrap(context.data), count: context.bytesPerRow * context.height)
     }
 }
 

@@ -3812,6 +3812,10 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     /// sets it a step quieter than the tabs around it.
     var dimmed = false
     var keyboardEnabled = true
+    var labelSpacing: CGFloat = Look.rowSpacing
+    var hoverLeadingInset: CGFloat = 0
+    var hoverHighlight = true
+    var trailingInset: CGFloat = Look.rowTrailingInset
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let label: () -> Label
@@ -3861,19 +3865,20 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
             label().font(Look.rowTitle).lineLimit(1)
                 .foregroundStyle(dimmed ? Look.inkTertiary : Look.inkPrimary)
                 .opacity(1 - (morph?.progress ?? 0))
-                .padding(.leading, Look.rowSpacing)
+                .padding(.leading, labelSpacing)
             Spacer(minLength: 0)
             trailing().opacity(1 - (morph?.progress ?? 0))
                 .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovering)
                 .vaneMotionPolicy()
         }
         .padding(.leading, Look.rowInset)
-        .padding(.trailing, Look.rowTrailingInset)
+        .padding(.trailing, trailingInset)
         .frame(width: morph?.width, height: morph?.height ?? Look.rowHeight)
         .background {
             RoundedRectangle(cornerRadius: Look.pillRadius)
                 // Fade one ink colour rather than interpolating toward transparent black.
                 .fill(Look.ink(1))
+                .padding(.leading, selected || ticked ? 0 : hoverLeadingInset)
                 .opacity(highlightOpacity * (1 - (morph?.progress ?? 0)))
                 // Clear the old highlight promptly as the pointer moves to another row.
                 // Titles, inline editors and hit targets keep their final geometry.
@@ -3894,7 +3899,7 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     }
 
     private var highlightOpacity: Double {
-        selected || ticked ? Look.selectedAlpha : (held || hovering ? Look.hoveredAlpha : 0)
+        selected || ticked ? Look.selectedAlpha : ((held || hovering) && hoverHighlight ? Look.hoveredAlpha : 0)
     }
 }
 
@@ -4354,12 +4359,13 @@ struct LivePRTitle: View {
     var pr: GitHub.Row?
     var developerEndpoint: String? = nil
     var returnCaption = false
+    var returnCaptionSelected = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ShimmerTitle(title: title, reveal: reveal)
             if returnCaption {
-                Text("Return to Pinned Tab")
+                Text(returnCaptionSelected ? "Back to Pinned URL" : "Separate From Pinned Tab")
                     .font(Look.small)
                     .foregroundStyle(Look.inkTertiary)
                     .transition(.offset(y: 4).combined(with: .opacity))
@@ -4422,24 +4428,23 @@ struct SidebarTabPresentation: View {
         let title = TidyTitles.title(for: tab)
         SidebarRow(selected: selected, ticked: ticked, held: held,
                    keyboardEnabled: !previewing && !renaming,
+                   labelSpacing: returning ? 5 : Look.rowSpacing,
+                   hoverLeadingInset: returning ? Look.rowInset + Look.rowIcon + Look.returnMarkerWidth : 0,
+                   hoverHighlight: !returning || !returnHovering,
+                   trailingInset: Look.tabRowTrailingInset,
                    action: action) {
-            TabHomeIcon(store: store, tab: tab, returnHovering: held ? .constant(returnHovering) : $returnHovering)
+            TabHomeIcon(store: store, tab: tab, returnHovering: held ? .constant(returnHovering) : $returnHovering,
+                        rowSelected: selected)
         } label: {
             HStack(spacing: 6) {
-                if returning {
-                    Text("/")
-                        .fontWeight(.bold)
-                        .foregroundStyle(Look.inkTertiary)
-                        .fixedSize()
-                        .accessibilityHidden(true)
-                }
                 // Keep the away marker visible during rename and Return hover too.
                 if !previewing && !held && renaming {
                     RenameField(store: store, tab: tab, initialTitle: title)
                 } else {
                     LivePRTitle(title: title, reveal: tab.titleReveal, pr: pr,
                                 developerEndpoint: tab.developer ? DeveloperMode.endpoint(tab.currentURL) : nil,
-                                returnCaption: returning && returnHovering)
+                                returnCaption: returning && returnHovering,
+                                returnCaptionSelected: selected)
                         // A stable title inside a fixed slot: the growing caption stack
                         // moves the title upward without jumping the label's layout box.
                         .frame(height: Look.rowHeight)
@@ -4450,6 +4455,7 @@ struct SidebarTabPresentation: View {
             }
         } trailing: {
             TabRowTrailing(store: store, tab: tab)
+                .transformEnvironment(\.rowHovering) { if returning && returnHovering { $0 = false } }
         }
         .background {
             if let morph {
@@ -5247,6 +5253,7 @@ private struct TabHomeIcon: View {
     let store: TabStore
     @ObservedObject var tab: Tab
     @Binding var returnHovering: Bool
+    var rowSelected = false
     var size: CGFloat = Look.rowIcon
     @Environment(\.rowHovering) private var hovering
     @Environment(\.ghostTileMorph) private var morph
@@ -5257,10 +5264,13 @@ private struct TabHomeIcon: View {
             // its return control belongs in the tile corner, not in the icon's place.
             TabIcon(tab: tab, size: size)
         } else if tab.kind == .pinned && !tab.atHome {
-            GoHomeGlyph(store: store, tab: tab, tiled: true, returnHovering: $returnHovering)
-                // The tile can draw past the favicon's box, but must not move the icon
-                // or title when this pin leaves or returns to its saved page.
+            GoHomeGlyph(store: store, tab: tab, tiled: true, returnHovering: $returnHovering,
+                        rowSelected: rowSelected)
+                // Keep favicon and slash inside one return target. Hovering the
+                // marker must reveal the caption without shifting the title.
                 .frame(width: size, height: size)
+                .frame(width: size + Look.returnMarkerGap + Look.returnMarkerWidth, height: size,
+                       alignment: .leading)
         } else if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: hovering) {
             // The favicon's box, so the row's text starts exactly where it always did. The
             // glyph's hit target is bigger than this and is allowed to spill past it — a
@@ -5282,28 +5292,34 @@ private struct GoHomeGlyph: View {
     let tab: Tab
     var tiled = false
     var returnHovering: Binding<Bool> = .constant(false)
+    var rowSelected = false
+    @Environment(\.rowHovering) private var rowHovering
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         Button { store.goHome(tab.id) } label: {
             if tiled {
-                Group {
-                    if returnHovering.wrappedValue {
-                        Image(systemName: "arrow.uturn.backward")
-                            .font(Look.rowGlyph)
-                            .foregroundStyle(Look.inkSecondary)
-                            .transition(.opacity)
-                    } else {
-                        TabIcon(tab: tab)
-                            .transition(.opacity)
+                TabIcon(tab: tab, size: Look.rowIcon, faviconScale: 1)
+                    .frame(width: Look.returnTileSize, height: Look.returnTileSize)
+                    .overlay(alignment: .trailing) {
+                    Text("/")
+                        .font(.system(size: Look.rowIcon))
+                        .foregroundStyle(Look.inkTertiary)
+                        .fixedSize()
+                        .frame(width: Look.returnMarkerWidth)
+                        .padding(.trailing, 2)
+                        .offset(y: -1)
+                        .opacity(returnHovering.wrappedValue || rowHovering ? 0 : 1)
+                        .accessibilityHidden(true)
                     }
-                }
-                .frame(width: Look.returnTileSize, height: Look.returnTileSize)
+                .background(returnHovering.wrappedValue ? chromeTheme.hovered : .clear,
+                            in: UnevenRoundedRectangle(topLeadingRadius: Look.pillRadius,
+                                bottomLeadingRadius: Look.pillRadius,
+                                bottomTrailingRadius: rowSelected ? 0 : Look.pillRadius,
+                                topTrailingRadius: rowSelected ? 0 : Look.pillRadius))
                 .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
                            value: returnHovering.wrappedValue)
-                .background(returnHovering.wrappedValue ? chromeTheme.hovered : .clear,
-                            in: .rect(cornerRadius: Look.pillRadius))
                 .contentShape(.rect(cornerRadius: Look.pillRadius))
                 .onHover { returnHovering.wrappedValue = $0 && isEnabled }
                 .onChange(of: isEnabled) { _, enabled in
@@ -5319,8 +5335,8 @@ private struct GoHomeGlyph: View {
         }
         .nativeSidebarKeyboardControl()
         .buttonStyle(TactileButtonStyle())
-        .vaneTooltip(tiled ? "Return to Pinned Tab" : "Go back to pinned page")
-        .accessibilityLabel(tiled ? "Return to Pinned Tab" : "Go back to pinned page")
+        .vaneTooltip(tiled ? "Back to Pinned URL" : "Go back to pinned page")
+        .accessibilityLabel(tiled ? "Back to Pinned URL" : "Go back to pinned page")
     }
 }
 
@@ -5404,6 +5420,7 @@ struct SidebarPageIcon: View {
     var pr: GitHub.Row? = nil
     var rounded = true
     var size: CGFloat = Look.rowIcon
+    var faviconScale: CGFloat = Look.sidebarFaviconScale
 
     var body: some View {
         Group {
@@ -5411,7 +5428,7 @@ struct SidebarPageIcon: View {
             else if easel { EaselIcon().frame(width: 16, height: 16) }
             else if let icon {
                 SiteIcon(icon: icon,
-                         size: rounded ? size * Look.sidebarFaviconScale : size,
+                         size: rounded ? size * faviconScale : size,
                          rounded: rounded)
             }
             else { FaviconPlaceholder(size: size) }
@@ -5436,6 +5453,7 @@ struct SidebarPageIcon: View {
 struct TabIcon: View {
     @ObservedObject var tab: Tab
     var size: CGFloat = 16
+    var faviconScale: CGFloat = Look.sidebarFaviconScale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
     /// Set only on the rows a live folder owns — see `PinnedRow`. Every other row in the app
@@ -5444,7 +5462,7 @@ struct TabIcon: View {
 
     var body: some View {
         SidebarPageIcon(icon: tab.favicon, easel: tab.easelID != nil, pr: pr,
-                        rounded: tab.currentURL?.isFileURL != true, size: size)
+                        rounded: tab.currentURL?.isFileURL != true, size: size, faviconScale: faviconScale)
         .overlay(alignment: .bottomTrailing) {
             if tab.needsRecovery {
                 Image(systemName: "exclamationmark.circle.fill")
