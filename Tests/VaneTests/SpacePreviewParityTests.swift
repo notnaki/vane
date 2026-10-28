@@ -81,7 +81,7 @@ import XCTest
                 let ghost = store.swipePreview(in: space)
                 let preview = try pixels(ghost)
                 store.switchTo(space: space)
-                let settled = try pixels(SidebarSpaceSections().environmentObject(store))
+                let settled = try SidebarSnapshot.pixels(sectionsOf: store)
                 let changed = zip(preview, settled).filter { abs(Int($0) - Int($1)) > 2 }.count
                 XCTAssertEqual(preview.count, settled.count)
                 XCTAssertLessThanOrEqual(changed, 10,
@@ -146,7 +146,7 @@ import XCTest
         let before = try pixels(ghost)
         XCTAssertTrue(store.tabs.isEmpty, "Previewing a saved Space must not create tabs or pages")
         store.switchTo(space: incoming)
-        let after = try pixels(SidebarSpaceSections().environmentObject(store))
+        let after = try SidebarSnapshot.pixels(sectionsOf: store)
         XCTAssertEqual(before.count, after.count)
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
     }
@@ -186,7 +186,7 @@ import XCTest
         let restored = TabStore(profileID: profile, space: incoming)
         destination = restored
         XCTAssertNil(restored.current, "A freshly mounted profile with no Today tabs leaves its selection empty")
-        let after = try pixels(SidebarSpaceSections().environmentObject(restored))
+        let after = try SidebarSnapshot.pixels(sectionsOf: restored)
         XCTAssertEqual(before.count, after.count)
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
     }
@@ -216,8 +216,7 @@ import XCTest
         let restored = TabStore(profileID: profile, space: incoming)
         destination = restored
         XCTAssertEqual(restored.current, today.id)
-        let after = try pixels(SidebarSpaceContent().environmentObject(restored)
-            .environmentObject(SidebarDragPreview()))
+        let after = try SidebarSnapshot.pixels(contentOf: restored)
         XCTAssertEqual(before.count, after.count)
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
     }
@@ -251,8 +250,7 @@ import XCTest
             try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: incoming.profileID, in: Store.directory))
         }
         let before = try pixels(source.swipePreview(in: incoming))
-        let after = try pixels(SidebarSpaceContent().environmentObject(owner)
-            .environmentObject(SidebarDragPreview()))
+        let after = try SidebarSnapshot.pixels(contentOf: owner)
         XCTAssertEqual(before.count, after.count)
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
     }
@@ -289,8 +287,7 @@ import XCTest
         // unchanged, so the explicitly empty selection stays empty.
         owner.switchTo(space: incoming)
         XCTAssertNil(owner.current)
-        let after = try pixels(SidebarSpaceContent().environmentObject(owner)
-            .environmentObject(SidebarDragPreview()))
+        let after = try SidebarSnapshot.pixels(contentOf: owner)
         XCTAssertEqual(before.count, after.count)
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10,
                                 "The arriving preview must keep every pinned row unselected")
@@ -331,15 +328,12 @@ import XCTest
             try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: incoming.profileID, in: Store.directory))
         }
         host.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
-        func scrollView(in view: NSView) -> NSScrollView? {
-            if let scroll = view as? NSScrollView { return scroll }
-            return view.subviews.lazy.compactMap { scrollView(in: $0) }.first
-        }
-        let scroll = try XCTUnwrap(scrollView(in: host))
+        let scope = SidebarNativeReadinessScope(store: owner, spaceID: incoming.id)
+        try SidebarSnapshot.admitNativePopulation(in: host, scope: scope)
+        let scroll = try XCTUnwrap(SidebarSectionsViewport.scrollView(in: host))
         scroll.contentView.scroll(to: NSPoint(x: 0, y: 200))
         scroll.reflectScrolledClipView(scroll.contentView)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+        try SidebarSnapshot.admitNativePopulation(in: host, scope: scope)
         XCTAssertGreaterThan(scroll.contentView.bounds.minY, 150)
         let before = try pixels(source.swipePreview(in: incoming))
         let after = try SidebarSnapshot.pixels(in: host)
@@ -377,8 +371,7 @@ import XCTest
         let restored = TabStore(profileID: incoming.profileID, space: incoming)
         destination = restored
         XCTAssertEqual(restored.current, b.id)
-        let after = try pixels(SidebarSpaceContent().environmentObject(restored)
-            .environmentObject(SidebarDragPreview()))
+        let after = try SidebarSnapshot.pixels(contentOf: restored)
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
     }
 
@@ -409,8 +402,7 @@ import XCTest
         let restored = TabStore(profileID: incoming.profileID, space: incoming)
         destination = restored
         XCTAssertFalse(TidyProgress.shared.isRunning(restored))
-        let after = try pixels(SidebarSpaceContent().environmentObject(restored)
-            .environmentObject(SidebarDragPreview()))
+        let after = try SidebarSnapshot.pixels(contentOf: restored)
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
     }
 
@@ -439,8 +431,7 @@ import XCTest
         let restored = TabStore(profileID: profile, space: incoming)
         destination = restored
         XCTAssertEqual(restored.tabs.filter { $0.kind == .favourite }.count, 3)
-        let after = try pixels(SidebarSpaceContent().environmentObject(restored)
-            .environmentObject(SidebarDragPreview()))
+        let after = try SidebarSnapshot.pixels(contentOf: restored)
         XCTAssertEqual(before.count, after.count)
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
     }

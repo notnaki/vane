@@ -27,9 +27,9 @@
 - [x] Add a literal domain/code classification regression against current main; observe the script diagnostic incorrectly remain blocking.
 - [x] Add a real MV2 background that throws after registering its message listener; require a new popup to receive its nonce and require every reported diagnostic remain visible.
 - [x] Separate display errors from activation-blocking errors. Only context-domain code 7 is nonblocking after successful background completion; code 6, wrong domains, unknown codes, callback errors and the original 10-second deadline remain blocking.
-- [ ] Run the focused live background/restore/update controls and independent review before proposing this repair for integration.
+- [x] Run the focused live background/restore/update controls and independent review before proposing this repair for integration.
 
-Local focused result: 34 passed, primary 0 / cleanup 0. Independent review and required CI are the remaining integration gates.
+Local focused result: 34 passed, primary 0 / cleanup 0. Reviewed PR548 passed required CI and merged as `a53f181`; its actual-main CI failure is tracked below.
 
 ## Task 2: Identify and repair the remaining Bitwarden popup failure
 
@@ -38,7 +38,7 @@ Local focused result: 34 passed, primary 0 / cleanup 0. Independent review and r
 - [ ] Preserve the original 20-second welcome/control/identity verdict. If it fails, identify the executing document and API/JavaScript boundary before proposing a fix; post-failure inspection cannot change the verdict.
 - [ ] Add a deterministic regression for any demonstrated host defect, then run uninstrumented real-package acceptance. Exact Store provenance remains a distinct acceptance requirement.
 
-Current result: actual anchored-popup welcome JavaScript still times out at 20 seconds after successful installation. Renderer sampling finds a microtask loop, but has not identified its JavaScript document/cause. Post-failure, preattached-clone, and background-inspector diagnostics are separate non-acceptance arms. Original failures and positive scoped-store retirement logs are preserved. No popup repair is established.
+Current result: actual anchored-popup welcome JavaScript still times out at 20 seconds after successful installation. Bounded Promise-registration tracing now identifies `background.html` and Bitwarden's `checkSafari` loop: its `sendMessageToApp("sleep")` calls the unavailable native-messaging API, immediately rejects, catches, and repeats through microtasks. Registrations at counts256,4096,65536 retain the same source stack. The signed Store bundle reproduces this; a clean observer control passes. This diagnostic does not establish popup acceptance. Post-failure and inspector diagnostics remain separate non-acceptance arms, and original failures/scoped-store retirement logs are preserved.
 
 The Store-bundle path reproduces that same deadline failure. The complete Vane executable restored the accepted extension as enabled with the runtime diagnostic visible; its bounded UI experiment produced no passing popup acceptance verdict. Early inspector experiments missed `developerExtrasEnabled`; their connection timeouts are not evidence about the extension's cause. A corrected clean-page inspector control subsequently passed.
 
@@ -64,3 +64,9 @@ Activation repair PR548 merged as `a53f181` after exact-head review and green PR
 - [x] Add exact image/device ownership checks, bounded EBUSY-only detach handling, safe partial-attach cleanup, and command-stage diagnostics. The original DMG log does not identify which command returned16; treat detach as a demonstrated vulnerability rather than proven historical causality.
 - [x] Local verification:68 native tests passed, zero failures, primary0/cleanup0,28 exact owned backends absent; nine packaging mock regressions and one full live packaging run passed with owned images retired and pre-existing images preserved.
 - [ ] Independently review, pass latest-main required CI, squash-merge, and verify a fresh actual-main run. Both extension issues remain open.
+
+PR549 run40751415931 attempt1 passed packaging and the originally failing native shard, but failed `SpacePreviewParityTests.testNewProfileDoesNotBorrowAnotherWindowsFavouriteSelection` with26724 differing bitmap bytes (limit10). Preserve that run without retrying unchanged code. Its exact historical image was not retained, so the specific mismatch cannot be attributed conclusively.
+
+- [x] Demonstrate another fixture defect: holding actual native row geometry past the old20ms sleep lets the old snapshot helper capture zero rows. The repaired helper requires exact current viewport attachment and scoped committed population; another ready same-store/Space surface cannot satisfy admission. Keep the image threshold and immediate raw motion capture unchanged.
+- [x] Audit all10 native static parity capture sites. Full-content captures use the production root owner/epoch; standalone sections declare fixture-owned population with unique surface/owner IDs; scroll-offset capture admits current geometry before and after scrolling. Pure SwiftUI ghost captures remain unchanged.
+- [x] Focused final validation:19 parity/readiness tests passed, primary0/cleanup0, all tracked processes exited. Evidence: `space-parity-readiness-red.log`, `space-parity-all-native-scopes.log` under the task artifact directory. This proves the readiness defect and repair, without claiming exact reproduction of the historical26724-byte image.
