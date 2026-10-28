@@ -35,13 +35,15 @@ def main():
     sections = jobs(text)
     gate = sections['checks']
     assert re.search(r'^    if: \$\{\{ always\(\) \}\}$', gate, re.MULTILINE)
-    assert dependencies(gate) == set(sections) - {'checks', 'prune-caches', 'known-limitations'}
-    bindings = dict(re.findall(r'^          ([A-Z_]+): \$\{\{ needs\.([a-z]+)\.result \}\}$', gate, re.MULTILINE))
+    assert dependencies(gate) == set(sections) - {'checks', 'prune-caches'}
+    bindings = dict(re.findall(r'^          ([A-Z_]+): \$\{\{ needs\.([a-z-]+)\.result \}\}$', gate, re.MULTILINE))
     assert set(bindings.values()) == dependencies(gate)
-    assert 'continue-on-error:' not in ''.join(value for name, value in sections.items() if name != 'known-limitations')
+    assert 'continue-on-error:' not in text
     advisory = sections['known-limitations']
     assert dependencies(advisory) == {'changes', 'build'}
-    assert 'continue-on-error: true' in advisory
+    assert 'classify-worker-ua.py' in advisory
+    assert 'PIPESTATUS' in advisory
+    assert 'if-no-files-found: error' in advisory
     assert '--suite known-limitations' in advisory
     assert '--suite required' in sections['native']
     assert '--count 1' in advisory
@@ -116,7 +118,8 @@ def main():
                     'python3 scripts/test-native-fixture-runner.py', './.build/debug/vane selfcheck --pure',
                     'scripts/check-webkit-startup.sh', 'scripts/check-app-icons.sh'):
         assert text.count('run: ' + command) == 1, command + ' must run once'
-    for fixture in ('test-checks-workflow.py', 'test-native-test-shards.py', 'test-ci-build-artifact.py', 'test-ci-change-scope.py'):
+    for fixture in ('test-checks-workflow.py', 'test-native-test-shards.py', 'test-ci-build-artifact.py', 'test-ci-change-scope.py',
+                    'test-classify-worker-ua.py'):
         assert fixture in sections['source']
     assert dependencies(sections['prune-caches']) == {'changes', 'checks'}
     assert "needs.changes.outputs.app_required == 'true'" in sections['prune-caches']
