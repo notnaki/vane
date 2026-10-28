@@ -26,6 +26,9 @@ struct NativeCachedSidebarBatchCounts: Sendable {
     var rangeChanges = 0
     var protectionOwnerTreeScans = 0
     var detachedProtectionOwnerTreeScans = 0
+    var inactiveScopeHits = 0
+    var inactiveScopeMisses = 0
+    var inactiveScopeEvictions = 0
 }
 @MainActor protocol NativeCachedSidebarBatchesReporting: AnyObject {
     var usesThreeBatchBudget: Bool { get }
@@ -41,6 +44,7 @@ struct NativeCachedSidebarBatchCounts: Sendable {
     var nominalAttachedGraphBudget: Int { get }
     var attachedGraphBudgetExceeded: Bool { get }
     var cachedGraphCount: Int { get }
+    var inactiveGraphCount: Int { get }
     var batchCacheProvenance: String { get }
     var batchCounts: NativeCachedSidebarBatchCounts { get }
     var recordsProtectionTreeScans: Bool { get set }
@@ -260,7 +264,7 @@ private final class NativeBatchMouseObservation {
     deinit { NotificationCenter.default.removeObserver(self) }
 }
 
-@MainActor final class NativeCachedSidebarBatchesView<Content: View>: NSView, NativeCachedSidebarBatchesReporting, NativeSidebarInteractionRetaining {
+@MainActor final class NativeCachedSidebarBatchesView<Content: View>: NSView, NativeCachedSidebarBatchesReporting, NativeSidebarInteractionRetaining, SidebarWarmOwnerRetaining {
     private typealias Root = NativeSidebarBatchRoot<Content>
     private final class Entry {
         let host: NativeSidebarBatchHostingView<Content>
@@ -273,6 +277,32 @@ private final class NativeBatchMouseObservation {
         weak var value: NativeSidebarRowLayoutView?
         init(_ value: NativeSidebarRowLayoutView) { self.value = value }
     }
+    // Bound inactive native graphs across sections; keep a diagnostic opt-out.
+    private let retainsInactiveOwners = ProcessInfo.processInfo.environment["VANE_RETAIN_INACTIVE_SPACE_ROW_OWNERS"] != "0"
+    private struct InactiveOwners {
+        let entries: [UUID: Entry]
+        let ownership: [String: UUID]
+        let budget: UUID
+    }
+    private weak var supplyingStore: TabStore?
+    private var ownerObservations: [AnyCancellable] = []
+    private var visitMayBeArchived = true
+    private var ownerVisible = false
+    private var inactiveOwners: [SidebarNativeReadinessScope: InactiveOwners] = [:]
+    private var inactiveOrder: [SidebarNativeReadinessScope] = []
+    private var activeScope: SidebarNativeReadinessScope?
+    private var configuredScope = false
+    private final class InteractionLease: NativeSidebarInteractionRetaining {
+        weak var owner: NativeCachedSidebarBatchesView?
+        let visit: UUID
+        init(owner: NativeCachedSidebarBatchesView, visit: UUID) { self.owner = owner; self.visit = visit }
+        func setInteraction(_ active: Bool, row: String, token: UUID) {
+            guard let owner, owner.visit == visit else { return }
+            owner.setInteraction(active, row: row, token: token)
+        }
+    }
+    private var visit = UUID()
+    private var interactionLease: InteractionLease?
     private var cache: [UUID: Entry] = [:]
     private var mounted = Set<UUID>()
     private var ownership: [String: UUID] = [:]
@@ -299,8 +329,8 @@ private final class NativeBatchMouseObservation {
     private weak var clip: NSClipView?
     private var observation: NativeBatchClipObservation?
     private var focusObservation: AnyCancellable?
-    private let viewport = SidebarRowsViewport()
-    private let navigation = NativeSidebarNavigation()
+    private var viewport = SidebarRowsViewport()
+    private var navigation = NativeSidebarNavigation()
     private let pendingNavigationToken = UUID()
     private(set) var focusedRows: Set<String> = []
     private var requestedProtection: Set<String> = []
@@ -332,6 +362,7 @@ private final class NativeBatchMouseObservation {
         nominalAttachedGraphBudget > 0 && attachedGraphCount > nominalAttachedGraphBudget
     }
     var cachedGraphCount: Int { cache.count }
+    var inactiveGraphCount: Int { inactiveOwners.values.reduce(0) { $0 + $1.entries.count } }
     var batchCacheProvenance: String { NativeCachedSidebarBatchesExperiment.provenance }
     private var pitch: CGFloat { Look.rowHeight + Look.rowGap }
     private var sectionHeight: CGFloat { max(0, CGFloat(rows.count) * pitch - Look.rowGap) }
@@ -391,12 +422,7 @@ private final class NativeBatchMouseObservation {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setAccessibilityElement(false)
-        focusObservation = viewport.$focusedRows.sink { [weak self] value in
-            guard let self else { return }
-            self.focusedRows = value
-            self.needsReconcile = true
-            self.reconcileLastGeometry()
-        }
+        observeViewport()
         menuObservation = NativeBatchMenuObservation { [weak self] menu, active in
             guard let self else { return }
             let key = ObjectIdentifier(menu)
@@ -412,11 +438,122 @@ private final class NativeBatchMouseObservation {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    private func observeViewport() {
+        focusObservation = viewport.$focusedRows.sink { [weak self] value in
+            guard let self else { return }
+            self.focusedRows = value
+            self.needsReconcile = true
+            self.reconcileLastGeometry()
+        }
+    }
+
+    private func observeOwner(_ store: TabStore?) {
+        guard supplyingStore !== store else { return }
+        revokeInactiveOwners()
+        ownerObservations.removeAll()
+        supplyingStore = store
+        ownerVisible = store?.profileVisible == true
+        // A different owner cannot inherit any authority from the previous visit.
+        visitMayBeArchived = false
+        guard let store else { return }
+        ownerObservations = [
+            store.sidebarRowsProtectionRevoked.sink { [weak self] in self?.revokeInactiveOwners() },
+            store.$profileVisible.dropFirst().sink { [weak self] visible in
+                guard let self else { return }
+                self.ownerVisible = visible
+                if !visible { self.revokeInactiveOwners() }
+            }
+        ]
+    }
+
+    func discardInactiveOwners(in scope: SidebarNativeReadinessScope) {
+        if let retained = inactiveOwners.removeValue(forKey: scope) {
+            SidebarWarmOwnerBudget.release(retained.budget)
+            batchCounts.inactiveScopeEvictions += 1
+        }
+        inactiveOrder.removeAll { $0 == scope }
+    }
+
+    func revokeInactiveOwners() {
+        visitMayBeArchived = false
+        for retained in inactiveOwners.values { SidebarWarmOwnerBudget.release(retained.budget) }
+        inactiveOwners.removeAll()
+        inactiveOrder.removeAll()
+    }
+
+    private func mayRetain(_ scope: SidebarNativeReadinessScope?) -> Bool {
+        guard let store = supplyingStore, let scope else { return false }
+        return ownerVisible && store.profileVisible && scope.storeID == ObjectIdentifier(store)
+            && scope.surfaceID == nil && scope.spaceID != nil && !SidebarWarmOwnerBudget.underPressure
+    }
+
+    private func changeScope(_ next: SidebarNativeReadinessScope?) {
+        guard retainsInactiveOwners else { return }
+        if !configuredScope {
+            visitMayBeArchived = mayRetain(next)
+            interactionLease = InteractionLease(owner: self, visit: visit)
+        }
+        defer { activeScope = next; configuredScope = true }
+        guard configuredScope, activeScope != next else { return }
+        // Consume the destination before reserving outgoing capacity. Otherwise
+        // the outgoing visit can evict the graph this very configure will reuse.
+        let arriving: InactiveOwners?
+        if let next, mayRetain(next), let retained = inactiveOwners.removeValue(forKey: next) {
+            arriving = retained
+            SidebarWarmOwnerBudget.release(retained.budget)
+            inactiveOrder.removeAll { $0 == next }
+        } else { arriving = nil }
+        SidebarNativeReadinessCoordinator.shared.unregister(readiness)
+        readiness = nil
+        sampledGeometryRevision = nil
+        for entry in cache.values { entry.host.removeFromSuperview() }
+        if visitMayBeArchived, let previous = activeScope, mayRetain(previous) {
+            // Retain only mounted owners, never every graph visited while scrolling.
+            // Five eight-row roots per Space, three inactive Spaces per section.
+            let keep = Set(mounted.sorted {
+                (groups[$0]?.first?.index ?? .max) < (groups[$1]?.first?.index ?? .max)
+            }.prefix(5))
+            let entries = cache.filter { keep.contains($0.key) }
+            if let store = supplyingStore,
+               let budget = SidebarWarmOwnerBudget.retain(self, scope: previous, graphs: entries.count, store: store) {
+                inactiveOwners[previous] = InactiveOwners(entries: entries,
+                    ownership: ownership.filter { entries[$0.value] != nil }, budget: budget)
+                inactiveOrder.removeAll { $0 == previous }
+                inactiveOrder.append(previous)
+            }
+        }
+        cache.removeAll(); mounted.removeAll(); groups.removeAll(); ownership.removeAll(); anchors.removeAll()
+        interactions.removeAll(); pressedRows.removeAll(); menuRows.removeAll(); requestedProtection.removeAll()
+        visit = UUID()
+        interactionLease = InteractionLease(owner: self, visit: visit)
+        focusObservation = nil
+        navigation.detach()
+        navigation = NativeSidebarNavigation()
+        viewport = SidebarRowsViewport()
+        focusedRows.removeAll()
+        accessibilityRowsExpanded = false
+        observeViewport()
+        visitMayBeArchived = mayRetain(next)
+        if let next, mayRetain(next) {
+            if let retained = arriving {
+                cache = retained.entries
+                ownership = retained.ownership
+                batchCounts.inactiveScopeHits += 1
+            } else { batchCounts.inactiveScopeMisses += 1 }
+        }
+        while inactiveOrder.count > 3 {
+            discardInactiveOwners(in: inactiveOrder[0])
+        }
+    }
+
     func configure(rows supplied: [SidebarRows.Row], modelIDs: Set<String>, environment: EnvironmentValues,
                    protectedRows: Set<String> = [], readinessSection: String? = nil, transaction: Transaction = Transaction(),
+                   owner: TabStore? = nil,
                    content: @escaping (SidebarRows.Row, Int, Int) -> Content) {
         guard !disposed else { return }
         let oldHeight = sectionHeight
+        if retainsInactiveOwners { observeOwner(owner) }
+        changeScope(environment.sidebarNativeReadinessScope)
         rows = supplied.filter { modelIDs.contains($0.id) }
         authorizedRowIDs = Set(rows.map(\.id))
         rowIndexByID = Dictionary(rows.enumerated().map { ($0.element.id, $0.offset) },
@@ -629,7 +766,8 @@ private final class NativeBatchMouseObservation {
             placementTransaction.disablesAnimations = true
         }
         return Root(slots: slots, total: rows.count, generation: generation,
-             inherited: inherited, transaction: placementTransaction, viewport: viewport, navigation: navigation, interactionOwner: self,
+             inherited: inherited, transaction: placementTransaction, viewport: viewport, navigation: navigation,
+             interactionOwner: (interactionLease as (any NativeSidebarInteractionRetaining)?) ?? self,
              committed: { [weak self] anchor in self?.rowDidLayout(anchor) }, content: content!)
     }
     private func update(_ entry: Entry, slots: [NativeSidebarOwnedSlot], animate: Bool = true) {
@@ -765,6 +903,9 @@ private final class NativeBatchMouseObservation {
         mouseObservation = nil
         for entry in cache.values { entry.host.removeFromSuperview() }
         cache.removeAll(); mounted.removeAll(); groups.removeAll(); ownership.removeAll(); rows.removeAll(); anchors.removeAll()
+        revokeInactiveOwners(); activeScope = nil
+        ownerObservations.removeAll(); supplyingStore = nil
+        visit = UUID(); interactionLease = nil
         interactions.removeAll(); pressedRows.removeAll(); requestedProtection.removeAll()
         readinessRowIDs.removeAll(); authorizedRowIDs.removeAll(); rowIndexByID.removeAll()
         content = nil; inherited = EnvironmentValues()
@@ -776,11 +917,12 @@ private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresenta
     let modelIDs: Set<String>
     var protectedRows: Set<String> = []
     var readinessSection: String? = nil
+    var owner: TabStore? = nil
     let content: (SidebarRows.Row, Int, Int) -> Content
     func makeNSView(context: Context) -> NativeCachedSidebarBatchesView<Content> { NativeCachedSidebarBatchesView(frame: .zero) }
     func updateNSView(_ view: NativeCachedSidebarBatchesView<Content>, context: Context) {
         view.configure(rows: rows, modelIDs: modelIDs, environment: context.environment, protectedRows: protectedRows, readinessSection: readinessSection,
-                       transaction: context.transaction, content: content)
+                       transaction: context.transaction, owner: owner, content: content)
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeCachedSidebarBatchesView<Content>, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? 0, height: max(0, CGFloat(rows.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap))
@@ -792,10 +934,11 @@ struct NativeCachedSidebarBatchSectionRows<Content: View>: View {
     let modelIDs: Set<String>
     var protectedRows: Set<String> = []
     var readinessSection: String? = nil
+    var owner: TabStore? = nil
     let content: (SidebarRows.Row, Int, Int) -> Content
     var body: some View {
         NativeCachedSidebarBatchesBridge(rows: rows, modelIDs: modelIDs, protectedRows: protectedRows,
-                                        readinessSection: readinessSection, content: content)
+                                        readinessSection: readinessSection, owner: owner, content: content)
             .frame(height: max(0, CGFloat(rows.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap))
     }
 }

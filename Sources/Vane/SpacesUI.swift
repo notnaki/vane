@@ -64,6 +64,9 @@ import UniformTypeIdentifiers
         get { read(\.drag) }
         set { write(\.drag, newValue) }
     }
+    /// The native overlay owns travel. Keep its covered live layout at rest.
+    var liveContentDrag: CGFloat { profileSliding ? 0 : drag }
+
     /// While native surfaces follow the fingers, keep raw input out of SwiftUI publication.
     let footer = SpaceFooterProgress()
     var nativeDrag: CGFloat? {
@@ -414,7 +417,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
         // Keep both sections in one tree when a gesture starts, reverses or springs back.
         // Only profile boundaries move the grid; ordinary Space switches leave it fixed.
         VStack(spacing: Look.rowGap) {
-            favorites.offset(x: gesture.travelsFavorites ? gesture.drag : 0)
+            favorites.offset(x: gesture.travelsFavorites ? gesture.liveContentDrag : 0)
             ZStack(alignment: .topLeading) {
                 sections.spaceSlide(store)
                     .environment(\.sidebarNativeReadinessScope, readinessScope)
@@ -584,7 +587,7 @@ private struct SpaceSlide: ViewModifier {
                 transaction.disablesAnimations = false
                 transaction.animation = Look.spaceSlide
             }
-            .offset(x: gesture.drag)
+            .offset(x: gesture.liveContentDrag)
     }
 }
 

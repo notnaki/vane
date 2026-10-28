@@ -80,6 +80,39 @@ import XCTest
                        "Icon size must follow the fingers before the page selection commits")
     }
 
+    func testBatterySaverLandingKeepsSpaceProgressOnTheCompositorClock() throws {
+        let (presentation, _, ids, _, views) = try fixture()
+        let previous = BatterySaver.shared.mode
+        defer { BatterySaver.shared.setMode(previous) }
+        BatterySaver.shared.setMode(.alwaysOn)
+        presentation.track(origin: ids[0], target: ids[1], fraction: 0.25)
+        let timing = CABasicAnimation(keyPath: "position")
+        timing.duration = 0.8
+        timing.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        presentation.animate(origin: ids[0], target: ids[1], from: 0.25, to: 1, timing: timing)
+        let glyph = try XCTUnwrap(views[1].marker?.symbol)
+        let scale = try XCTUnwrap(glyph.animation(forKey: "space-progress-scale") as? CABasicAnimation)
+        let ink = try XCTUnwrap(glyph.animation(forKey: "space-emphasis") as? CABasicAnimation)
+        XCTAssertEqual(scale.duration, 0.8)
+        XCTAssertEqual(ink.timingFunction, timing.timingFunction)
+        XCTAssertEqual(scale.beginTime, 0)
+    }
+
+    func testBatterySaverCancelsAnUncoveredSelectionPulse() throws {
+        let (presentation, stores, ids, _, views) = try fixture()
+        presentation.activate(stores[1])
+        let glyph = try XCTUnwrap(views[1].marker?.symbol)
+        XCTAssertNotNil(glyph.animation(forKey: "space-emphasis"))
+        let previous = BatterySaver.shared.mode
+        defer { BatterySaver.shared.setMode(previous) }
+        BatterySaver.shared.setMode(.alwaysOn)
+        // The caller reports system Reduce Motion separately from Battery Saver.
+        presentation.mount(views[1], owner: stores[1], id: ids[1], icon: "square.fill",
+            layout: SpaceStripLayout(count: 2, availableWidth: 64), hovered: false, scheme: .dark, reduced: false)
+        XCTAssertNil(glyph.animation(forKey: "space-selection"))
+        XCTAssertNil(glyph.animation(forKey: "space-emphasis"))
+    }
+
     func testDelayedCommitDoesNotExpireFooterEmphasisBeforeSidebarTravelStarts() async throws {
         let (presentation, _, ids, window, views) = try fixture()
         let root = try XCTUnwrap(window.contentView)
@@ -141,12 +174,27 @@ import XCTest
         window.contentView?.addSubview(cached)
         BatterySaver.shared.setMode(.alwaysOn)
         presentation.mount(cached, owner: stores[1], id: ids[1], icon: "square.fill",
-            layout: SpaceStripLayout(count: 2, availableWidth: 64), hovered: false, scheme: .dark, reduced: true)
+            layout: SpaceStripLayout(count: 2, availableWidth: 64), hovered: false, scheme: .dark, reduced: false)
         BatterySaver.shared.setMode(.off)
         presentation.activate(stores[1])
         XCTAssertNotNil(cached.marker?.symbol.animation(forKey: "space-selection"),
                         "A parked profile's old saver state must not cancel the new selection")
         XCTAssertNotNil(cached.marker?.symbol.animation(forKey: "space-emphasis"))
+    }
+
+    func testCachedProfilePreservesExplicitEnvironmentReductionOnHandoff() throws {
+        let (presentation, stores, ids, window, _) = try fixture()
+        let cached = NativeSpaceFooterMarkerView(frame: CGRect(x: 32, y: 0, width: 32, height: 32))
+        cached.presentation = presentation
+        window.contentView?.addSubview(cached)
+        presentation.mount(cached, owner: stores[1], id: ids[1], icon: "square.fill",
+            layout: SpaceStripLayout(count: 2, availableWidth: 64), hovered: false, scheme: .dark, reduced: true)
+        presentation.activate(stores[1])
+        let symbol = try XCTUnwrap(cached.marker?.symbol)
+        XCTAssertNil(symbol.animation(forKey: "space-selection"))
+        XCTAssertNil(symbol.animation(forKey: "space-emphasis"))
+        XCTAssertEqual(symbol.transform.m11, 1, accuracy: 0.001)
+        XCTAssertEqual(symbol.opacity, 1, accuracy: 0.001)
     }
 
     func testNativeMarkerPreservesLegacyArtworkAndWideSymbolOverhang() throws {

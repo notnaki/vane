@@ -74,8 +74,12 @@ import XCTest
         defer { TabStore.all = original }
         let store = TabStore(isLittle: true, session: [])
         XCTAssertTrue(Suspension.isRunning)
+        SidebarWarmOwnerBudget.setUnderPressure(true)
+        defer { SidebarWarmOwnerBudget.setUnderPressure(false) }
         TabStore.all.removeAll { $0 === store }
         XCTAssertFalse(Suspension.isRunning, "An app with no tab owners needs no sweep timer or pressure source")
+        XCTAssertFalse(SidebarWarmOwnerBudget.underPressure,
+                       "A canceled pressure source must not leave admission disabled across reopening")
         let reopened = TabStore(isLittle: true, session: [])
         XCTAssertTrue(Suspension.isRunning)
         TabStore.all.removeAll { $0 === reopened }
