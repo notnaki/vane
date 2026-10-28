@@ -50,6 +50,8 @@ def main():
     assert 'actions/upload-artifact@v6' in advisory
     assert 'GITHUB_STEP_SUMMARY' in advisory
     assert "VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'" in sections['native']
+    preflight = sections['native'].split('- name: Owned AppKit loop preflight', 1)[1].split('- name: Native regression tests', 1)[0]
+    assert 'timeout-minutes: 4' in preflight
     assert 'APP_REQUIRED: ${{ needs.changes.outputs.app_required }}' in gate
     script = block(gate)
     trials = 0

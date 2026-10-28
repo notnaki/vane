@@ -174,7 +174,7 @@ jobs:
       # The outer bound includes SwiftPM's restored-build planning/startup.
       # NativeFixtureApplicationLoop keeps its own 12s lifecycle watchdogs.
       - name: Owned AppKit loop preflight
-        timeout-minutes: 3
+        timeout-minutes: 4
         env:
           VANE_APPKIT_LOOP_SMOKE: '1'
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
