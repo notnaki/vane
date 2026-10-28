@@ -79,7 +79,7 @@ prompt once. Local, debug, and prerelease builds skip it. The manual
 | Visual tools | Easels with notes, drawing, captures, live web views, and editable JSON or PNG export; per-site Boosts for styles, Zap, and opt-in scripts. |
 | Data | Separate profiles, local Keychain passwords and account chooser, browser imports, exports, complete library backups, and local recovery points. |
 | Controls | Custom search engines and site-search shortcuts, keyboard bindings, themes, app icons, Battery Saver, and site controls. |
-| Integrations | Unpacked WebExtensions and verified Safari extensions from apps, EasyList-subset blocking and HTTPS subscriptions, GitHub Live Folders, and optional AI providers using your own keys. |
+| Integrations | Chrome Web Store extensions, unpacked WebExtensions and verified Safari extensions from apps, EasyList-subset blocking and HTTPS subscriptions, GitHub Live Folders, and optional AI providers using your own keys. |
 
 “Implemented” describes available behavior. Verification is scoped to the
 revision, macOS version, signing, and fixture or service recorded in each audit.
@@ -172,7 +172,7 @@ WebKit version, the website, and sometimes signing or Apple-managed capabilities
   directory submission on other versions is unverified. See the matrix’s
   [directory investigation](docs/REAL-SITE-COMPATIBILITY.md#directory-form-root-cause-investigation--2026-10-08).
 - **Passwords and extensions have compatibility limits.** Autofill is heuristic;
-  unpacked MV2/MV3 support does not guarantee Chrome Web Store or arbitrary API support.
+  Chrome Web Store installation and MV2/MV3 support do not guarantee arbitrary extension API compatibility.
 - **Blocking supports part of EasyList.** Unsupported rules are reported; local
   disk lists do not update automatically. URL subscriptions do.
 - **Data does not sync between Macs.** Backups are unencrypted and exclude Keychain
