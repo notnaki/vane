@@ -100,6 +100,11 @@ import XCTest
         let anchor = NSHostingView(rootView: SitePermissionAnchor(tabID: id))
         anchor.frame = NSRect(x: 100, y: 240, width: 22, height: 22)
         host.contentView!.addSubview(anchor)
+        anchor.layoutSubtreeIfNeeded()
+        try await compatibilityWait {
+            guard let native = SitePermissionAnchor.find(tabID: id, in: host.contentView!) else { return false }
+            return native.window === host && native.bounds.size == CGSize(width: 22, height: 22)
+        }
         let task = Task { await SitePermissions.request(scope: scope(), type: .camera, tabID: id,
                                                        window: host, isCurrent: { true }) }
         let prompt = try await waitForPrompt(host)
