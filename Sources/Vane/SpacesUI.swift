@@ -939,17 +939,19 @@ struct SpacePreviewList: View, Equatable {
             return tab.map { !$0.atHome } ?? (page != url)
         }()
         let fixedIcon = tab?.favicon ?? page.flatMap { $0.isFileURL ? Files.icon(for: $0) : nil }
-        return SidebarRow(selected: selected, labelSpacing: returning ? 6 : Look.rowSpacing,
+        return SidebarRow(selected: selected, labelSpacing: returning ? 5 : Look.rowSpacing,
                           trailingInset: Look.tabRowTrailingInset, action: {}) {
             HStack(spacing: Look.returnMarkerGap) {
                 CachedFavicon(cache: Favicons.cache(for: space.profileID),
                               url: fixedIcon == nil && page?.isFileURL != true ? page : nil) { cached in
                     SidebarPageIcon(icon: fixedIcon ?? cached, easel: page.flatMap(EaselAddress.boardID) != nil,
-                                    pr: row.pr, rounded: page?.isFileURL != true)
+                                    pr: row.pr, rounded: page?.isFileURL != true,
+                                    size: returning ? Look.rowIcon / Look.sidebarFaviconScale : Look.rowIcon)
                 }
+                .frame(width: Look.rowIcon, height: Look.rowIcon)
                 if returning {
-                    Text("/").font(Look.rowTitle).foregroundStyle(Look.inkTertiary)
-                        .frame(width: Look.returnMarkerWidth).accessibilityHidden(true)
+                    Text("/").font(.system(size: Look.rowIcon)).foregroundStyle(Look.inkTertiary)
+                        .frame(width: Look.returnMarkerWidth).offset(x: 1, y: -0.5).accessibilityHidden(true)
                 }
             }
         } label: {

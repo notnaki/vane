@@ -4428,8 +4428,8 @@ struct SidebarTabPresentation: View {
         let title = TidyTitles.title(for: tab)
         SidebarRow(selected: selected, ticked: ticked, held: held,
                    keyboardEnabled: !previewing && !renaming,
-                   labelSpacing: returning ? 6 : Look.rowSpacing,
-                   hoverLeadingInset: returning ? Look.rowInset + Look.rowIcon + Look.returnMarkerGap : 0,
+                   labelSpacing: returning ? 5 : Look.rowSpacing,
+                   hoverLeadingInset: returning ? Look.rowInset + Look.rowIcon + Look.returnMarkerWidth : 0,
                    hoverHighlight: !returning || !returnHovering,
                    trailingInset: Look.tabRowTrailingInset,
                    action: action) {
@@ -5268,7 +5268,9 @@ private struct TabHomeIcon: View {
                         rowSelected: rowSelected)
                 // Keep favicon and slash inside one return target. Hovering the
                 // marker must reveal the caption without shifting the title.
-                .frame(width: size + Look.returnMarkerGap + Look.returnMarkerWidth, height: size)
+                .frame(width: size, height: size)
+                .frame(width: size + Look.returnMarkerGap + Look.returnMarkerWidth, height: size,
+                       alignment: .leading)
         } else if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: hovering) {
             // The favicon's box, so the row's text starts exactly where it always did. The
             // glyph's hit target is bigger than this and is allowed to spill past it — a
@@ -5298,17 +5300,18 @@ private struct GoHomeGlyph: View {
     var body: some View {
         Button { store.goHome(tab.id) } label: {
             if tiled {
-                HStack(spacing: Look.returnMarkerGap) {
-                    TabIcon(tab: tab).frame(width: Look.rowIcon, height: Look.rowIcon)
+                TabIcon(tab: tab, size: Look.rowIcon / Look.sidebarFaviconScale)
+                    .frame(width: Look.returnTileSize, height: Look.returnTileSize)
+                    .overlay(alignment: .trailing) {
                     Text("/")
-                        .font(Look.rowTitle)
+                        .font(.system(size: Look.rowIcon))
                         .foregroundStyle(Look.inkTertiary)
                         .frame(width: Look.returnMarkerWidth)
+                        .padding(.trailing, 2)
+                        .offset(y: -0.5)
                         .opacity(returnHovering.wrappedValue || rowHovering ? 0 : 1)
                         .accessibilityHidden(true)
-                }
-                .padding(.horizontal, 6)
-                .frame(height: Look.returnTileSize)
+                    }
                 .background(returnHovering.wrappedValue ? chromeTheme.hovered : .clear,
                             in: UnevenRoundedRectangle(topLeadingRadius: Look.pillRadius,
                                 bottomLeadingRadius: Look.pillRadius,

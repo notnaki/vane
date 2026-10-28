@@ -34,18 +34,18 @@ import XCTest
         try await checkRollout(reduceDuringMotion: false, largeFolder: true)
     }
 
-    func testExplicitReducedMotionKeepsDisclosureImmediate() async throws {
-        try await checkRollout(reduceDuringMotion: false, explicitReduce: true)
+    func testBatterySaverKeepsDisclosureImmediate() async throws {
+        try await checkRollout(reduceDuringMotion: false, startWithSaver: true)
     }
 
     private func checkRollout(reduceDuringMotion: Bool, detachDuringStart: Bool = false,
-                              largeFolder: Bool = false, explicitReduce: Bool = false) async throws {
+                              largeFolder: Bool = false, startWithSaver: Bool = false) async throws {
         TestEnvironment.prepare()
         let saver = BatterySaver.shared.mode
-        BatterySaver.shared.setMode(.off)
+        BatterySaver.shared.setMode(startWithSaver ? .alwaysOn : .off)
         defer { BatterySaver.shared.setMode(saver) }
-        let reduced = Motion.reduced || explicitReduce || EnvironmentValues().accessibilityReduceMotion
-        print("FOLDER_ROLLOUT_POLICY reduced=\(reduced) system=\(Motion.spaceReduced) explicit=\(explicitReduce)")
+        let reduced = Motion.reduced || EnvironmentValues().accessibilityReduceMotion
+        print("FOLDER_ROLLOUT_POLICY reduced=\(reduced) system=\(Motion.spaceReduced) saver=\(BatterySaver.shared.isActive)")
         let markers = Markers()
         let folder = Folder(name: "Rollout", collapsed: true)
         let childCount = largeFolder ? 300 : 12
@@ -62,9 +62,7 @@ import XCTest
         defer { view.detach(); window.contentView = nil; window.close(); SharedTabs.release(tabs) }
         func configure(_ shape: Pins, animation: Animation?) {
             let rows = SidebarRows(tabs: tabs, splits: [], shape: shape).rows
-            var environment = EnvironmentValues()
-            if explicitReduce { environment.accessibilityReduceMotion = true }
-            view.configure(rows: rows, modelIDs: modelIDs, environment: environment,
+            view.configure(rows: rows, modelIDs: modelIDs, environment: EnvironmentValues(),
                            transaction: Transaction(animation: animation)) { row, _, _ in
                 Marker(id: row.id, markers: markers)
             }
