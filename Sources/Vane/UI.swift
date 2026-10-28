@@ -1436,6 +1436,7 @@ private struct PillBody: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .actionAnchor(overflowAnchor)
+        .background { if let tab { SitePermissionAnchor(tabID: tab.id) } }
         .vaneTooltip("Page Actions", hint: "Copy, reader, site controls, and extensions")
         .accessibilityLabel("Page Actions")
         .popover(isPresented: $showingSiteControls.presented(when: store.profileVisible), arrowEdge: .bottom) {
@@ -1531,6 +1532,7 @@ private struct PillHoverGlyphs: View {
                 .contentShape(.rect)
         }
         .foregroundStyle(site.insecure ? Look.warning : Look.inkSecondary)
+        .background { SitePermissionAnchor(tabID: tab.id) }
         .vaneTooltip("Site Controls", hint: site.siteless ? nil : "\(site.title) — \(site.connection)", enabled: !showingSiteControls)
         .accessibilityLabel("Site Controls")
         .accessibilityValue([site.connection, site.badge].compactMap { $0 }.joined(separator: ", "))

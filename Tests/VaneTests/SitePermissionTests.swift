@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import WebKit
 import XCTest
 @testable import vane
@@ -53,12 +54,12 @@ import XCTest
         return window
     }
 
-    private func waitForSheet(_ window: NSWindow) async throws -> NSWindow {
+    private func waitForPrompt(_ window: NSWindow) async throws -> SitePermissionPrompt {
         let deadline = ContinuousClock.now + .seconds(5)
-        while window.attachedSheet == nil, ContinuousClock.now < deadline {
+        while SitePermissions.activePrompt(in: window) == nil, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        return try XCTUnwrap(window.attachedSheet)
+        return try XCTUnwrap(SitePermissions.activePrompt(in: window))
     }
 
     private func answer(_ scope: SitePermissions.Scope, type: SitePermissions.Kind,
@@ -66,25 +67,97 @@ import XCTest
         let host = window()
         let task = Task { await SitePermissions.request(scope: scope, type: type, tabID: tabID,
                                                        window: host, isCurrent: { true }) }
-        let sheet = try await waitForSheet(host)
-        host.endSheet(sheet, returnCode: response)
+        let prompt = try await waitForPrompt(host)
+        prompt.finish(response)
         return await task.value
     }
 
     func testWantsToUsePopupsNameExactOriginAndDevice() {
         for (type, phrase) in [(SitePermissions.Kind.camera, "camera"), (.microphone, "microphone"),
                                (.cameraAndMicrophone, "camera and microphone")] {
-            let alert = SitePermissions.makePrompt(scope: scope(), type: type)
-            XCTAssertEqual(alert.messageText, "“https://permission.example:8443” wants to use your \(phrase)")
-            XCTAssertEqual(alert.buttons.map(\.title), ["Allow Once", "Always Allow", "Don’t Allow"])
-            XCTAssertEqual(alert.buttons.last?.keyEquivalent, "\u{1b}")
+            let prompt = SitePermissions.makePrompt(scope: scope(), type: type)
+            XCTAssertEqual(prompt.messageText, "Allow permission.example:8443 to use your \(phrase)?")
+            XCTAssertEqual(prompt.persistentAllowTitle, "Always Allow")
         }
     }
 
+    func testPromptKeepsInsecureSchemeAndFullOriginInHelp() {
+        let insecure = scope(url: "http://permission.example:8080")
+        let prompt = SitePermissions.makePrompt(scope: insecure, type: .location)
+        XCTAssertEqual(prompt.messageText, "Allow http://permission.example:8080 to access your location?")
+        let secure = SitePermissions.makePrompt(scope: scope(), type: .location)
+        XCTAssertTrue(secure.informativeText.contains("https://permission.example:8443"))
+    }
+
     func testPrivatePopupMakesSessionLifetimeExplicit() {
-        let alert = SitePermissions.makePrompt(scope: scope(privateTab: tabID()), type: .camera)
-        XCTAssertEqual(alert.buttons[1].title, "Allow for This Private Tab")
-        XCTAssertTrue(alert.informativeText.contains("never saved"))
+        let prompt = SitePermissions.makePrompt(scope: scope(privateTab: tabID()), type: .camera)
+        XCTAssertEqual(prompt.persistentAllowTitle, "Allow for This Private Tab")
+        XCTAssertTrue(prompt.informativeText.contains("never saved"))
+    }
+
+    func testPermissionIsAnAnchoredPopoverAndDoesNotBlockItsWindow() async throws {
+        let host = window(), id = tabID()
+        let anchor = NSHostingView(rootView: SitePermissionAnchor(tabID: id))
+        anchor.frame = NSRect(x: 100, y: 240, width: 22, height: 22)
+        host.contentView!.addSubview(anchor)
+        let task = Task { await SitePermissions.request(scope: scope(), type: .camera, tabID: id,
+                                                       window: host, isCurrent: { true }) }
+        let prompt = try await waitForPrompt(host)
+        XCTAssertTrue(prompt.popover.isShown)
+        let nativeAnchor = try XCTUnwrap(SitePermissionAnchor.find(tabID: id, in: host.contentView!))
+        XCTAssertTrue(nativeAnchor.isDescendant(of: anchor))
+        XCTAssertEqual(prompt.popover.positioningRect.size, nativeAnchor.bounds.size)
+        XCTAssertNil(host.attachedSheet, "Permissions must leave browser navigation available")
+        XCTAssertEqual(prompt.popover.behavior, .semitransient)
+        prompt.popover.performClose(nil)
+        let result = await task.value
+        XCTAssertEqual(result, .deny)
+        XCTAssertNil(SitePermissions.remembered(scope: scope(), type: .camera))
+    }
+
+    func testHiddenAddressControlFallsBackToRequestingWindow() async throws {
+        let host = window(), id = tabID()
+        let anchor = NSHostingView(rootView: SitePermissionAnchor(tabID: id))
+        anchor.frame = NSRect(x: 100, y: 240, width: 22, height: 22)
+        anchor.isHidden = true
+        host.contentView!.addSubview(anchor)
+        let task = Task { await SitePermissions.request(scope: scope(), type: .location, tabID: id,
+                                                       window: host, isCurrent: { true }) }
+        let prompt = try await waitForPrompt(host)
+        XCTAssertTrue(prompt.popover.isShown)
+        XCTAssertNil(SitePermissionAnchor.find(tabID: id, in: host.contentView!))
+        XCTAssertEqual(prompt.popover.positioningRect.size, CGSize(width: 1, height: 1))
+        prompt.finish(.abort)
+        let result = await task.value
+        XCTAssertEqual(result, .deny)
+    }
+
+    func testPopoverKeyboardShortcutsResolveAllowAndDismissal() async throws {
+        for (key, code, expected) in [("\r", UInt16(36), WKPermissionDecision.grant),
+                                       ("\u{1b}", UInt16(53), WKPermissionDecision.deny)] {
+            let host = window(), id = tabID(), s = scope()
+            let task = Task { await SitePermissions.request(scope: s, type: .camera, tabID: id,
+                                                           window: host, isCurrent: { true }) }
+            let prompt = try await waitForPrompt(host)
+            let bubble = try XCTUnwrap(prompt.popover.contentViewController?.view.window)
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                modifierFlags: [], timestamp: 0, windowNumber: bubble.windowNumber, context: nil,
+                characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code))
+            XCTAssertTrue(bubble.performKeyEquivalent(with: event))
+            if prompt.popover.isShown { prompt.finish(.abort) }
+            let result = await task.value
+            XCTAssertEqual(result, expected)
+            XCTAssertNil(SitePermissions.remembered(scope: s, type: .camera))
+        }
+    }
+
+    func testNotNowDeniesWithoutRememberingAndCanAskAgain() async throws {
+        let id = tabID(), s = scope()
+        let result = try await answer(s, type: .camera, tabID: id, response: .abort)
+        XCTAssertEqual(result, .deny)
+        XCTAssertNil(SitePermissions.effective(scope: s, type: .camera, tabID: id))
+        let retry = try await answer(s, type: .camera, tabID: id, response: .alertFirstButtonReturn)
+        XCTAssertEqual(retry, .grant)
     }
 
     func testAllowOnceIsTabAndOriginScopedAndNeverSaved() async throws {
@@ -141,11 +214,11 @@ import XCTest
         let host = window(), id = tabID(), s = scope()
         let task = Task { await SitePermissions.request(scope: s, type: .camera, tabID: id,
                                                        window: host, isCurrent: { true }) }
-        _ = try await waitForSheet(host)
+        _ = try await waitForPrompt(host)
         SitePermissions.endDocument(tabID: id)
         let result = await task.value
         XCTAssertEqual(result, .deny)
-        XCTAssertNil(host.attachedSheet)
+        XCTAssertNil(SitePermissions.activePrompt(in: host))
         XCTAssertNil(SitePermissions.remembered(scope: s, type: .camera))
     }
 
@@ -154,9 +227,9 @@ import XCTest
         var current = true
         let task = Task { await SitePermissions.request(scope: s, type: .camera, tabID: id,
                                                        window: host, isCurrent: { current }) }
-        let sheet = try await waitForSheet(host)
+        let prompt = try await waitForPrompt(host)
         current = false
-        host.endSheet(sheet, returnCode: .alertSecondButtonReturn)
+        prompt.finish(.alertSecondButtonReturn)
         let result = await task.value
         XCTAssertEqual(result, .deny)
         XCTAssertNil(SitePermissions.remembered(scope: s, type: .camera))
@@ -180,16 +253,16 @@ import XCTest
         let host = window(), other = window(), id = tabID(), s = scope()
         let first = Task { await SitePermissions.request(scope: s, type: .camera, tabID: id,
                                                         window: host, isCurrent: { true }) }
-        let firstSheet = try await waitForSheet(host)
+        let firstSheet = try await waitForPrompt(host)
         let blocked = await SitePermissions.request(scope: s, type: .microphone, tabID: tabID(),
                                                     window: host, isCurrent: { true })
         XCTAssertEqual(blocked, .deny)
         let secondID = tabID()
         let second = Task { await SitePermissions.request(scope: s, type: .microphone, tabID: secondID,
                                                          window: other, isCurrent: { true }) }
-        let otherSheet = try await waitForSheet(other)
-        host.endSheet(firstSheet, returnCode: .alertFirstButtonReturn)
-        other.endSheet(otherSheet, returnCode: .alertFirstButtonReturn)
+        let otherSheet = try await waitForPrompt(other)
+        firstSheet.finish(.alertFirstButtonReturn)
+        otherSheet.finish(.alertFirstButtonReturn)
         let firstResult = await first.value, secondResult = await second.value
         XCTAssertEqual(firstResult, .grant); XCTAssertEqual(secondResult, .grant)
     }
@@ -199,7 +272,7 @@ import XCTest
         var result: WKPermissionDecision?
         let task = Task { result = await SitePermissions.request(scope: s, type: .camera, tabID: id,
                                                                  window: host, isCurrent: { true }) }
-        _ = try await waitForSheet(host)
+        _ = try await waitForPrompt(host)
         host.close()
         let deadline = ContinuousClock.now + .seconds(2)
         while result == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
@@ -213,11 +286,11 @@ import XCTest
         let host = window(), id = tabID(), s = scope()
         let task = Task { await SitePermissions.request(scope: s, type: .camera, tabID: id,
                                                        window: host, isCurrent: { true }) }
-        _ = try await waitForSheet(host)
+        _ = try await waitForPrompt(host)
         task.cancel()
         let result = await task.value
         XCTAssertEqual(result, .deny)
-        XCTAssertNil(host.attachedSheet)
+        XCTAssertNil(SitePermissions.activePrompt(in: host))
         XCTAssertNil(SitePermissions.remembered(scope: s, type: .camera))
     }
 
@@ -227,7 +300,7 @@ import XCTest
         let host = window(), otherID = tabID()
         let task = Task { await SitePermissions.request(scope: s, type: .microphone, tabID: otherID,
                                                        window: host, isCurrent: { true }) }
-        _ = try await waitForSheet(host)
+        _ = try await waitForPrompt(host)
         SitePermissions.resetAll(profileID: profile)
         let result = await task.value
         XCTAssertEqual(result, .deny)
@@ -239,14 +312,14 @@ import XCTest
         let firstID = tabID(), secondID = tabID()
         let first = Task { await SitePermissions.request(scope: s, type: .camera, tabID: firstID,
                                                         window: firstWindow, isCurrent: { true }) }
-        let firstSheet = try await waitForSheet(firstWindow)
+        let firstSheet = try await waitForPrompt(firstWindow)
         let second = Task { await SitePermissions.request(scope: s, type: .camera, tabID: secondID,
                                                          window: secondWindow, isCurrent: { true }) }
-        let secondSheet = try await waitForSheet(secondWindow)
-        secondWindow.endSheet(secondSheet, returnCode: .alertThirdButtonReturn)
+        let secondSheet = try await waitForPrompt(secondWindow)
+        secondSheet.finish(.alertThirdButtonReturn)
         let blocked = await second.value
         XCTAssertEqual(blocked, .deny)
-        if firstWindow.attachedSheet != nil { firstWindow.endSheet(firstSheet, returnCode: .alertSecondButtonReturn) }
+        firstSheet.finish(.alertSecondButtonReturn)
         let older = await first.value
         XCTAssertEqual(older, .deny)
         XCTAssertEqual(SitePermissions.remembered(scope: s, type: .camera), false)
@@ -312,11 +385,11 @@ import XCTest
         var result: WKPermissionDecision?
         let task = Task { result = await SitePermissions.request(scope: s, type: .camera, tabID: id,
                                                                  window: host, isCurrent: { current }) }
-        _ = try await waitForSheet(host)
+        _ = try await waitForPrompt(host)
         current = false
         let deadline = ContinuousClock.now + .seconds(2)
         while result == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(result, .deny, "An invalid owner must cancel without waiting for a sheet response")
+        XCTAssertEqual(result, .deny, "An invalid owner must cancel without waiting for a popover response")
         SitePermissions.endDocument(tabID: id)
         await task.value
         XCTAssertNil(SitePermissions.remembered(scope: s, type: .camera))
@@ -358,9 +431,9 @@ import XCTest
             while hold { try? await Task.sleep(for: .milliseconds(10)) }
             return true
         }) }
-        let sheet = try await waitForSheet(host)
+        let prompt = try await waitForPrompt(host)
         hold = true
-        host.endSheet(sheet, returnCode: .alertSecondButtonReturn)
+        prompt.finish(.alertSecondButtonReturn)
         let deadline = ContinuousClock.now + .seconds(2)
         while validations < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertGreaterThanOrEqual(validations, 2)

@@ -66,12 +66,12 @@ import WebKit
         let token = UUID()
         let scope: Scope
         let type: Kind
-        let alert: NSAlert
+        let presentation: SitePermissionPrompt
         var closeObserver: NSObjectProtocol?
         var monitor: Task<Void, Never>?
         weak var window: NSWindow?
-        init(scope: Scope, type: Kind, alert: NSAlert, window: NSWindow) {
-            self.scope = scope; self.type = type; self.alert = alert; self.window = window
+        init(scope: Scope, type: Kind, presentation: SitePermissionPrompt, window: NSWindow) {
+            self.scope = scope; self.type = type; self.presentation = presentation; self.window = window
         }
         func stopObserving() {
             monitor?.cancel(); monitor = nil
@@ -126,7 +126,7 @@ import WebKit
         case .camera: "use your camera"
         case .microphone: "use your microphone"
         case .cameraAndMicrophone: "use your camera and microphone"
-        case .location: "use your location"
+        case .location: "access your location"
         case .popups: "open pop-up windows"
         }
     }
@@ -211,17 +211,27 @@ import WebKit
         if answer == nil { revoke(scope: scope, type: type) }
     }
 
-    static func makePrompt(scope: Scope, type: Kind) -> NSAlert {
-        let alert = NSAlert()
-        alert.messageText = "“\(scope.origin)” wants to \(phrase(type))"
-        alert.informativeText = "Allow Once lasts until this tab navigates or closes. " +
-            (scope.privateTabID == nil ? "Always Allow remembers your choice for this site in this profile."
-             : "Private permissions are never saved and last only in this private tab.")
-            + " macOS authorization is separate and may still prevent access."
-        alert.addButton(withTitle: "Allow Once")
-        alert.addButton(withTitle: scope.privateTabID == nil ? "Always Allow" : "Allow for This Private Tab")
-        alert.addButton(withTitle: "Don’t Allow").keyEquivalent = "\u{1b}"
-        return alert
+    static func makePrompt(scope: Scope, type: Kind) -> SitePermissionPrompt {
+        let symbol: String = switch type {
+        case .camera: "video.fill"
+        case .microphone: "mic.fill"
+        case .cameraAndMicrophone: "video.badge.waveform.fill"
+        case .location: "location.fill"
+        case .popups: "macwindow.on.rectangle"
+        }
+        let site = scope.scheme == "https" ? String(scope.origin.dropFirst("https://".count)) : scope.origin
+        return SitePermissionPrompt(
+            message: "Allow \(site) to \(phrase(type))?",
+            information: "\(scope.origin) — Allow Once lasts until this tab navigates or closes. " +
+                (scope.privateTabID == nil ? "Always Allow remembers your choice for this site in this profile."
+                 : "Private permissions are never saved and last only in this private tab.")
+                + " macOS authorization is separate and may still prevent access.",
+            persistentAllowTitle: scope.privateTabID == nil ? "Always Allow" : "Allow for This Private Tab",
+            symbol: symbol)
+    }
+
+    static func activePrompt(in window: NSWindow) -> SitePermissionPrompt? {
+        pending.values.first { $0.window === window }?.presentation
     }
 
     /// Capture public lifecycle identity synchronously at the delegate boundary. A
@@ -252,7 +262,7 @@ import WebKit
     }
 
     /// The same request path is used by WebKit and popup fixtures. Only the requesting
-    /// window is blocked; detached pages, stale documents, and busy windows fail closed.
+    /// window owns the popover; detached pages, stale documents, and busy windows fail closed.
     static func request(scope: Scope, type: Kind, tabID: UUID,
                         window: NSWindow?,
                         isCurrent: @escaping @MainActor () -> Bool,
@@ -266,9 +276,9 @@ import WebKit
             if known { onGrant() }
             return known ? .grant : .deny
         }
-        guard pending[tabID] == nil, window.attachedSheet == nil else { return .deny }
-        let alert = makePrompt(scope: scope, type: type)
-        let prompt = Pending(scope: scope, type: type, alert: alert, window: window)
+        guard pending[tabID] == nil, activePrompt(in: window) == nil, window.attachedSheet == nil else { return .deny }
+        let presentation = makePrompt(scope: scope, type: type)
+        let prompt = Pending(scope: scope, type: type, presentation: presentation, window: window)
         pending[tabID] = prompt
         let token = prompt.token
         prompt.closeObserver = NotificationCenter.default.addObserver(
@@ -277,7 +287,7 @@ import WebKit
                     if pending[tabID]?.token == token { cancel(tabID: tabID) }
                 }
             }
-        // Poll only while a sheet is pending. Check the isolated document token and
+        // Poll only while a popover is pending. Check the isolated document token and
         // presentation changes such as hiding or window transfer between callbacks.
         prompt.monitor = Task { @MainActor in
             while !Task.isCancelled {
@@ -288,7 +298,7 @@ import WebKit
             }
         }
         let response = await withTaskCancellationHandler {
-            await alert.beginSheetModal(for: window)
+            await presentation.present(in: window, tabID: tabID)
         } onCancel: {
             Task { @MainActor in
                 if pending[tabID] === prompt { cancel(tabID: tabID) }
@@ -317,9 +327,7 @@ import WebKit
     private static func cancel(tabID: UUID) {
         guard let prompt = pending.removeValue(forKey: tabID) else { return }
         prompt.stopObserving()
-        if let window = prompt.window, window.attachedSheet === prompt.alert.window {
-            window.endSheet(prompt.alert.window, returnCode: .abort)
-        }
+        prompt.presentation.finish(.abort)
     }
 
     private static func cancelPrompts(scope: Scope, type: Kind? = nil) {
