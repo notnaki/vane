@@ -69,8 +69,8 @@ private struct DisabledKeyboardSurface: View {
         return (store, window, web, retire)
     }
 
-    /// Admit a real document and its visible keyboard owner before starting the handoff
-    /// deadline. Retire the fixture while its owned AppKit loop is still running.
+    /// Admit the native loop and exact mounted page owner before the handoff deadline,
+    /// keeping the target page cold. Retire the fixture before closing its owned loop.
     private func withNativePageFixture(
         _ body: @MainActor (TabStore, NSWindow, WKWebView) async throws -> Void
     ) async throws {
@@ -84,16 +84,13 @@ private struct DisabledKeyboardSurface: View {
         do {
             let (store, window, web, retire) = makeFixture(isPrivate: true)
             defer { retire() }
-            web.loadHTMLString("<body id='first-search-fixture'>Keyboard focus fixture</body>", baseURL: nil)
             window.makeKeyAndOrderFront(nil)
             app.activate(ignoringOtherApps: true)
             try await compatibilityWait {
-                guard app.isRunning, app.isActive, window.isKeyWindow, app.keyWindow === window,
-                      window.isVisible, window.occlusionState.contains(.visible),
-                      app.modalWindow == nil, window.attachedSheet == nil,
-                      web.window === window, store.activePageResponder === web else { return false }
-                return (try? await web.evaluateJavaScript(
-                    "document.readyState === 'complete' && !!document.getElementById('first-search-fixture')")) as? Bool == true
+                app.isRunning && app.isActive && window.isKeyWindow && app.keyWindow === window
+                    && window.isVisible && window.occlusionState.contains(.visible)
+                    && app.modalWindow == nil && window.attachedSheet == nil
+                    && web.window === window && store.activePageResponder === web
             }
             try await body(store, window, web)
         } catch { failure = error }
@@ -433,6 +430,7 @@ private struct DisabledKeyboardSurface: View {
             diagnose("created")
             XCTAssertTrue(NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window,
                           "The focus fixture must own a running foreground AppKit window before the action")
+            XCTAssertNil(web.url, "The first-search handoff must still exercise a cold page")
             let selected = store.current
             store.current = nil
             XCTAssertTrue(window.makeFirstResponder(nil))
