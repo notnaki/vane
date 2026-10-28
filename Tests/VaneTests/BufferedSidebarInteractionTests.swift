@@ -185,6 +185,52 @@ import XCTest
                        "Sidebar focus reveal must not propagate to an ancestor scrolling surface")
     }
 
+    func testPendingFocusRevealDoesNotOverrideANewerViewportScroll() async throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 260, height: 320),
+                              styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 260, height: 320))
+        let document = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 4100))
+        scroll.documentView = document
+        window.contentView = scroll
+        let ids = (0..<100).map(String.init), owner = UUID()
+        let viewport = SidebarRowsViewport()
+        viewport.configure(rows: ids, anchor: document)
+        viewport.receive(count: ids.count, visible: scroll.contentView.bounds, clip: scroll.contentView)
+        viewport.setFocus(true, row: ids[0], owner: owner)
+        // A real bounds change arrives before the queued focus publication/reveal.
+        scroll.contentView.scroll(to: NSPoint(x: 11, y: 3500))
+        viewport.receive(count: ids.count, visible: scroll.contentView.bounds, clip: scroll.contentView)
+        try await compatibilityWait { viewport.focusedRows == [ids[0]] }
+        XCTAssertEqual(scroll.contentView.bounds.minY, 3500, accuracy: 0.01)
+        XCTAssertEqual(scroll.contentView.bounds.minX, 11, accuracy: 0.01)
+        viewport.setFocus(true, row: ids[1], owner: owner)
+        try await compatibilityWait { viewport.focusedRows == [ids[1]] }
+        XCTAssertEqual(scroll.contentView.bounds.minY, Look.rowHeight + Look.rowGap, accuracy: 0.01,
+                       "A new explicit focus must still reveal its row")
+        viewport.setFocus(true, row: ids[0], owner: owner)
+        scroll.contentView.scroll(to: NSPoint(x: 11, y: 3500))
+        // The deferred block must also reject movement whose report has not arrived.
+        try await compatibilityWait { viewport.focusedRows == [ids[0]] }
+        XCTAssertEqual(scroll.contentView.bounds.minY, 3500, accuracy: 0.01)
+        let redirect = State()
+        scroll.contentView.postsBoundsChangedNotifications = true
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: nil
+        ) { _ in MainActor.assumeIsolated {
+            guard redirect.activated.isEmpty else { return }
+            redirect.activated.append("redirect")
+            viewport.setFocus(true, row: ids[1], owner: owner)
+        } }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        viewport.setFocus(true, row: ids[99], owner: owner)
+        try await compatibilityWait { viewport.focusedRows == [ids[1]] }
+        XCTAssertEqual(scroll.contentView.bounds.minY, Look.rowHeight + Look.rowGap, accuracy: 0.01,
+                       "Synchronous scroll callbacks must retain a newer explicit focus request")
+    }
+
     func testFocusedRowRemainsMountedAcrossScrollAndStillReceivesSpace() async throws {
         try await withNativeContext {
             let f = try await fixture(), id = f.store.tabs[3].id.uuidString
@@ -318,10 +364,17 @@ import XCTest
             f.state.requested = ids[0]
             try await compatibilityWait { f.state.focused == ids[0] }
             let document = try XCTUnwrap(scroll.documentView)
+            let rowsHeight = CGFloat(ids.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap
+            try await compatibilityWait { document.frame.height >= rowsHeight }
             let farOffset = document.frame.height - scroll.contentView.bounds.height
             scroll.contentView.scroll(to: NSPoint(x: 0, y: farOffset))
             scroll.reflectScrolledClipView(scroll.contentView)
-            try await compatibilityWait { self.anchor(ids[98], in: f.host) != nil }
+            do { try await compatibilityWait { self.anchor(ids[98], in: f.host) != nil } }
+            catch {
+                let mounted = ids.indices.filter { self.anchor(ids[$0], in: f.host) != nil }
+                print("KEY_NEIGHBOR_SCROLL target=\(farOffset) bounds=\(scroll.contentView.bounds) document=\(document.frame) mounted=\(mounted) focused=\(String(describing: f.state.focused.flatMap { ids.firstIndex(of: $0) })) active=\(NSApp.isActive) key=\(f.window.isKeyWindow)")
+                throw error
+            }
             try await Task.sleep(for: .milliseconds(100))
             XCTAssertEqual(scroll.contentView.bounds.minY, farOffset, accuracy: 1,
                            "Wheel/viewport changes must not pull back to an unchanged old focus")

@@ -47,7 +47,13 @@ struct SidebarRowWindow {
     private var focusUpdateScheduled = false
     private weak var anchor: NSView?
     private var rowIDs: [String] = []
-    private var pendingFocusReveal: (UUID, String)?
+    private struct FocusReveal {
+        let owner: UUID
+        let row: String
+        weak var clip: NSClipView?
+        var origin: CGPoint?
+    }
+    private var pendingFocusReveal: FocusReveal?
 
     func configure(rows: [String], anchor: NSView) {
         rowIDs = rows
@@ -58,9 +64,32 @@ struct SidebarRowWindow {
     private weak var clip: NSClipView?
     private var scheduled = false
 
+    private func usableClip() -> NSClipView? {
+        guard let anchor, anchor.window != nil, anchor.bounds.width > 0, anchor.bounds.height > 0,
+              let clip, clip.bounds.height > 0,
+              anchor.enclosingScrollView?.contentView === clip else { return nil }
+        return clip
+    }
+
+    private func bindOrRetireReveal(in clip: NSClipView) {
+        guard var reveal = pendingFocusReveal else { return }
+        if reveal.origin == nil {
+            reveal.clip = clip
+            reveal.origin = clip.bounds.origin
+            pendingFocusReveal = reveal
+        } else if reveal.clip !== clip || reveal.origin != clip.bounds.origin {
+            // New viewport movement wins over an earlier queued focus reveal.
+            // Focus ownership still publishes and keeps its control mounted.
+            pendingFocusReveal = nil
+        }
+    }
+
     func setFocus(_ active: Bool, row: String, owner: UUID) {
         if active {
-            if focusOwners[owner] != row { pendingFocusReveal = (owner, row) }
+            if focusOwners[owner] != row {
+                pendingFocusReveal = FocusReveal(owner: owner, row: row)
+                if let clip = usableClip() { bindOrRetireReveal(in: clip) }
+            }
             focusOwners[owner] = row
         } else { focusOwners.removeValue(forKey: owner) }
         scheduleFocusUpdate()
@@ -78,18 +107,20 @@ struct SidebarRowWindow {
             if self.focusedRows != next { self.focusedRows = next }
             // Reveal only newly entered focus. Bounds notifications must never
             // pull a wheel gesture back to an unchanged, retained focused row.
-            if let (owner, row) = self.pendingFocusReveal {
-                guard self.focusOwners[owner] == row else {
+            if let reveal = self.pendingFocusReveal {
+                guard self.focusOwners[reveal.owner] == reveal.row else {
                     self.pendingFocusReveal = nil
                     return
                 }
                 // A focus callback may precede native attachment or the first clip
                 // report. Keep its reveal until configure/receive supplies geometry.
-                guard let index = self.rowIDs.firstIndex(of: row),
-                      let anchor = self.anchor, anchor.window != nil,
-                      anchor.bounds.width > 0, anchor.bounds.height > 0,
-                      let clip = self.clip, clip.bounds.height > 0,
-                      anchor.enclosingScrollView?.contentView === clip else { return }
+                guard let index = self.rowIDs.firstIndex(of: reveal.row),
+                      let anchor = self.anchor, let clip = self.usableClip() else { return }
+                // Recheck native bounds even if their notification is still queued.
+                self.bindOrRetireReveal(in: clip)
+                guard self.pendingFocusReveal != nil else { return }
+                // Scrolling can call back synchronously with a newer focus request.
+                self.pendingFocusReveal = nil
                 let rect = NSRect(x: 0, y: CGFloat(index) * (Look.rowHeight + Look.rowGap),
                                   width: anchor.bounds.width, height: Look.rowHeight)
                 // Only this vertical clip owns sidebar offsets. NSView's
@@ -104,13 +135,13 @@ struct SidebarRowWindow {
                     anchor.enclosingScrollView?.reflectScrolledClipView(clip)
                 }
             }
-            self.pendingFocusReveal = nil
         }
     }
 
     func receive(count: Int, visible: CGRect, clip: NSClipView) {
         pending = (count, visible)
         self.clip = clip
+        if pendingFocusReveal != nil, let clip = usableClip() { bindOrRetireReveal(in: clip) }
         if pendingFocusReveal != nil { scheduleFocusUpdate() }
         guard !scheduled else { return }
         scheduled = true
