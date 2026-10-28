@@ -88,11 +88,11 @@ import XCTest
 
     private func start(frame: WKFrameInfo? = nil) async throws {
         try await evaluate("request()", frame: frame)
-        try await compatibilityWait { self.window.attachedSheet != nil }
+        try await compatibilityWait { SitePermissions.activePrompt(in: self.window) != nil }
     }
 
     private func answer(_ response: NSApplication.ModalResponse) throws {
-        window.endSheet(try XCTUnwrap(window.attachedSheet), returnCode: response)
+        try XCTUnwrap(SitePermissions.activePrompt(in: window)).finish(response)
     }
 
     /// Dispatch through the actual Objective-C selector that macOS 26 WebKit calls.
@@ -115,7 +115,7 @@ import XCTest
         try await load("<p>Location request</p>")
         let main = try XCTUnwrap(recorder.mainFrame)
         decision = try legacyLocation(frame: main)
-        try await compatibilityWait { self.window.attachedSheet != nil }
+        try await compatibilityWait { SitePermissions.activePrompt(in: self.window) != nil }
         try answer(.alertThirdButtonReturn)
         let denied = await decision!.value
         XCTAssertEqual(denied, .deny)
@@ -124,7 +124,7 @@ import XCTest
         decision = try legacyLocation(frame: main)
         let repeated = await decision!.value
         XCTAssertEqual(repeated, .deny)
-        XCTAssertNil(window.attachedSheet)
+        XCTAssertNil(SitePermissions.activePrompt(in: window))
     }
 
     func testLegacyLocationAllowOnceExpiresAtNavigation() async throws {
@@ -132,7 +132,7 @@ import XCTest
         let main = try XCTUnwrap(recorder.mainFrame)
         let scope = try XCTUnwrap(SitePermissions.scope(for: tab))
         decision = try legacyLocation(frame: main)
-        try await compatibilityWait { self.window.attachedSheet != nil }
+        try await compatibilityWait { SitePermissions.activePrompt(in: self.window) != nil }
         try answer(.alertFirstButtonReturn)
         let granted = await decision!.value
         XCTAssertEqual(granted, .grant)
@@ -155,18 +155,18 @@ import XCTest
         decision = try legacyLocation(frame: frame, origin: main.securityOrigin)
         let denied = await decision!.value
         XCTAssertEqual(denied, .deny)
-        XCTAssertNil(window.attachedSheet)
+        XCTAssertNil(SitePermissions.activePrompt(in: window))
     }
 
     func testLegacyLocationNavigationCancelsPromptWithoutSaving() async throws {
         try await load("<p>Location request</p>")
         let main = try XCTUnwrap(recorder.mainFrame)
         decision = try legacyLocation(frame: main)
-        try await compatibilityWait { self.window.attachedSheet != nil }
+        try await compatibilityWait { SitePermissions.activePrompt(in: self.window) != nil }
         try await load("<p>Replacement document</p>", path: "/location-replaced")
         let denied = await decision!.value
         XCTAssertEqual(denied, .deny)
-        XCTAssertNil(window.attachedSheet)
+        XCTAssertNil(SitePermissions.activePrompt(in: window))
         XCTAssertTrue(SitePermissions.all(profileID: profile).isEmpty)
     }
 
@@ -179,7 +179,7 @@ import XCTest
           p => { window.result = p.coords.latitude + ',' + p.coords.longitude; },
           e => { window.result = 'error:' + e.code + ':' + e.message; });
         """)
-        try await locationSheet()
+        try await locationPrompt()
         try answer(.alertFirstButtonReturn)
         try await compatibilityWait {
             try await self.tab.web.evaluateJavaScript("window.result") as? String == "50.644358,3.345453"
@@ -198,7 +198,7 @@ import XCTest
         navigator.geolocation.getCurrentPosition(
           () => { window.result = 'granted'; }, e => { window.result = 'error:' + e.code + ':' + e.message; });
         """)
-        try await locationSheet()
+        try await locationPrompt()
         try answer(.alertThirdButtonReturn)
         try await compatibilityWait {
             try await self.tab.web.evaluateJavaScript("window.result.startsWith('error:1:')") as? Bool == true
@@ -208,11 +208,11 @@ import XCTest
         XCTAssertEqual(SitePermissions.remembered(scope: scope, type: .location), false)
     }
 
-    private func locationSheet() async throws {
+    private func locationPrompt() async throws {
         try await locationContext()
         do {
             try await compatibilityWait {
-                if self.window.attachedSheet != nil { return true }
+                if SitePermissions.activePrompt(in: self.window) != nil { return true }
                 return try await self.tab.web.evaluateJavaScript("window.result !== 'pending'") as? Bool == true
             }
         } catch {
@@ -220,7 +220,7 @@ import XCTest
             throw error
         }
         try await locationContext()
-        XCTAssertNotNil(window.attachedSheet, "WebKit must dispatch the site decision before returning a location result")
+        XCTAssertNotNil(SitePermissions.activePrompt(in: window), "WebKit must dispatch the site decision before returning a location result")
     }
 
     private func locationContext() async throws {
@@ -273,7 +273,7 @@ import XCTest
         SitePermissions.remember(scope: topScope, type: .cameraAndMicrophone, allow: true)
         try await evaluate("request()", frame: frame)
         try await compatibilityWait { try await self.value("window.result", frame: frame) == "NotAllowedError" }
-        XCTAssertNil(window.attachedSheet)
+        XCTAssertNil(SitePermissions.activePrompt(in: window))
         XCTAssertEqual(tab.web.cameraCaptureState, .none)
         XCTAssertEqual(tab.web.microphoneCaptureState, .none)
     }
@@ -301,7 +301,7 @@ import XCTest
         tab.webView(tab.web, requestMediaCapturePermissionFor: main.securityOrigin, initiatedByFrame: oldFrame,
                     type: .camera, decisionHandler: { result = $0 })
         XCTAssertEqual(result, .deny)
-        XCTAssertNil(window.attachedSheet)
+        XCTAssertNil(SitePermissions.activePrompt(in: window))
         XCTAssertTrue(SitePermissions.all(profileID: profile).isEmpty)
     }
 
@@ -318,7 +318,7 @@ import XCTest
         } }
         let result = await decision!.value
         XCTAssertEqual(result, .deny)
-        XCTAssertNil(window.attachedSheet)
+        XCTAssertNil(SitePermissions.activePrompt(in: window))
         XCTAssertTrue(SitePermissions.all(profileID: profile).isEmpty)
     }
 
@@ -347,7 +347,7 @@ import XCTest
         try await load(html, path: "/next")
         try await evaluate("request()")
         try await granted()
-        XCTAssertNil(window.attachedSheet)
+        XCTAssertNil(SitePermissions.activePrompt(in: window))
     }
 
     func testClosingPromptWindowPreservesCaptureOwnerWhenDocumentMovesToAnotherWindow() async throws {
@@ -358,7 +358,7 @@ import XCTest
         SiteControl.set(.microphone, to: nil, on: tab)
         try await compatibilityWait { self.tab.web.microphoneCaptureState == .none }
         try await evaluate("navigator.mediaDevices.getUserMedia({audio:true}).catch(e => { window.micResult = e.name; }); true;")
-        try await compatibilityWait { self.window.attachedSheet != nil }
+        try await compatibilityWait { SitePermissions.activePrompt(in: self.window) != nil }
         let original = window!
         original.close()
         let replacement = NSWindow(contentRect: original.frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -428,7 +428,7 @@ import XCTest
         try await load("<script>window.oldDocument = 'original'</script>")
         let frame = try XCTUnwrap(recorder.mainFrame)
         decision = try legacyLocation(frame: frame)
-        try await compatibilityWait { self.window.attachedSheet != nil }
+        try await compatibilityWait { SitePermissions.activePrompt(in: self.window) != nil }
         try answer(.alertFirstButtonReturn)
         let grant = await decision!.value
         XCTAssertEqual(grant, .grant)
@@ -449,7 +449,7 @@ import XCTest
         try await load("<script>window.oldDocument = 'still here'</script>")
         let frame = try XCTUnwrap(recorder.mainFrame)
         decision = try legacyLocation(frame: frame)
-        try await compatibilityWait { self.window.attachedSheet != nil }
+        try await compatibilityWait { SitePermissions.activePrompt(in: self.window) != nil }
         try answer(.alertFirstButtonReturn)
         let result = await decision!.value
         XCTAssertEqual(result, .grant)

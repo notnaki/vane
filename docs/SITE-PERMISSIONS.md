@@ -61,7 +61,7 @@ The main frame receives a random document token at document start in a separate
 Vane records the tab generation and requesting window synchronously in WebKit’s
 delegate callback before scheduling work. It reads the token in the requesting main
 frame, checks its initial URL, and validates the token before using a remembered answer
-and after the user answers a sheet. The captured generation is checked before and after
+and after the user answers a popover. The captured generation is checked before and after
 asynchronous evaluation. A tab generation invalidates outstanding requests on provisional navigation,
 commit, release, and WebContent process termination. The frame may survive a
 same-origin navigation; its document token does not. Restoring a cached document
@@ -74,16 +74,25 @@ inherit regular answers, and disappear at tab closure or app exit. They may surv
 navigation within that private tab, as the button “Allow for This Private Tab” states.
 Regular saved decisions survive navigation and relaunch until reset.
 
-A pending sheet is attached only to its requesting window. A busy window rejects a
-second sheet; other windows remain usable. While a sheet is pending, Vane checks its
-owner and main document every 150 ms, cancelling on replacement, hiding, window
-transfer, or closure. Explicit lifecycle events and task cancellation also
-cancel it. Closing a prompt’s window cancels that prompt without forgetting capture
-ownership for a shared document that survives in another window; actual document
-teardown owns grant expiration. A cancelled/stale answer cannot save a decision. Revocation rechecks the
+Camera, microphone, and location requests appear in a native permission popover,
+anchored below the requesting tab’s address-bar site-controls button (or Page Actions
+in the compact bar). If that control is hidden or absent, the popover uses the top of
+the requesting window. The bubble names the site (including nondefault ports) and requested device;
+insecure HTTP keeps its scheme, and accessibility help includes the full origin. Not Now
+and Escape deny this request without saving a decision. Allow grants once, until the
+tab navigates or closes. The Allow button’s context menu also offers Allow Once,
+Always Allow (Allow for This Private Tab in private browsing), and Don’t Allow, which
+saves Block. macOS device authorization remains separate.
+
+A pending popover leaves browser navigation available. A busy window rejects a second
+permission prompt; other windows remain usable. While a popover is pending, Vane checks
+its owner and main document every 150 ms, cancelling on replacement, hiding, window
+transfer, or closure. Explicit lifecycle events and task cancellation also cancel it.
+Closing a prompt’s window cancels that prompt without forgetting capture ownership for
+a shared document that survives in another window; actual document teardown owns grant
+expiration. A cancelled/stale answer cannot save a decision. Revocation rechecks the
 pending request after asynchronous document validation, so a late validation result
-cannot resurrect an Allow. Escape chooses Don’t Allow and saves Block. Cancelling
-or dismissing the sheet through lifecycle/task cancellation denies without saving.
+cannot resurrect an Allow. Closing the bubble denies without saving.
 
 Ask/Block and resets stop affected tracked camera/microphone capture across matching
 regular origins and profiles; private changes affect only that private tab. A combined
@@ -111,10 +120,10 @@ python3 scripts/check-permission-display.py
 ```
 
 The fixtures use isolated profiles/defaults, loopback HTTP, real WebKit frames and
-native sheets. Test-only WebKit preferences enable fake camera/microphone devices
+native popovers. Test-only WebKit preferences enable fake camera/microphone devices
 before constructing the view. A test-only preference disables WebKit’s focus
 requirement in the XCTest host; fake-device requests still pass through Vane’s actual
-delegate and native permission sheet. Tests inspect live/ended synthetic tracks and
+delegate and native permission popover. Tests inspect live/ended synthetic tracks and
 WebKit capture states, navigation, retained-view teardown, and termination of the
 fixture’s identified WebContent process. The separate display fixture uses an isolated
 app host so WebKit can receive a focused user gesture. It bypasses the chooser with a
@@ -124,7 +133,7 @@ verifies exit, and removes the temporary app. Location fixtures dispatch the mac
 compatibility selector with WebKit-created frames, verify prompt decisions and document
 lifetimes, and verify reload revocation including cancellation and retry. Native
 `navigator.geolocation` grant/deny tests run through WebKit’s selected delegate and
-Vane’s sheet, using a test-only WebKit provider that supplies synthetic coordinates
+Vane’s popover, using a test-only WebKit provider that supplies synthetic coordinates
 in place of the physical location source. The test view’s window occlusion check is
 disabled because XCTest’s inactive host otherwise leaves geolocation requests queued
 for a hidden page; the fixtures still require WebKit to report the document visible.
