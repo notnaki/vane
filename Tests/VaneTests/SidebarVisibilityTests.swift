@@ -1,9 +1,53 @@
 import AppKit
 import XCTest
 import SwiftUI
+import QuartzCore
 @testable import vane
 
 @MainActor final class SidebarVisibilityTests: XCTestCase {
+    private func sidebarViewport(in view: NSView) -> NSScrollView? {
+        guard !view.isHiddenOrHasHiddenAncestor else { return nil }
+        if let scroll = view as? NSScrollView { return scroll }
+        return view.subviews.lazy.compactMap { self.sidebarViewport(in: $0) }.first
+    }
+
+    private func origins(of viewport: NSScrollView, in host: NSView) -> (presented: CGPoint, model: CGPoint)? {
+        guard let layer = viewport.layer, let presentation = layer.presentation(),
+              let root = host.layer, let presentedRoot = root.presentation() else { return nil }
+        return (presentation.convert(.zero, to: presentedRoot), layer.convert(.zero, to: root))
+    }
+
+    private func admitRestingViewport(in host: NSView) async throws -> NSScrollView {
+        var admitted: NSScrollView?
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            host.window?.displayIfNeeded()
+            CATransaction.flush()
+            guard let viewport = self.sidebarViewport(in: host),
+                  let points = self.origins(of: viewport, in: host),
+                  abs(points.presented.x - points.model.x) < 0.5,
+                  abs(points.presented.y - points.model.y) < 0.5 else { return false }
+            admitted = viewport
+            return true
+        }
+        return try XCTUnwrap(admitted)
+    }
+
+    func testPresentationSamplingExcludesParkedProfileTrees() {
+        let root = NSView()
+        let parked = NSView()
+        let hiddenViewport = NSScrollView()
+        let arriving = NSScrollView()
+        parked.addSubview(hiddenViewport)
+        root.addSubview(parked)
+        root.addSubview(arriving)
+        parked.isHidden = true
+        XCTAssertTrue(sidebarViewport(in: root) === arriving,
+                      "A retained parked profile must not supply the arriving profile's geometry")
+        arriving.isHidden = true
+        XCTAssertNil(sidebarViewport(in: root), "An entirely hidden tree has no visible sidebar")
+    }
+
     func testFloatingRevealRetainsTheLaidOutSidebar() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -201,6 +245,22 @@ import SwiftUI
 
     func testReturningToCachedProfileDoesNotReplaySidebarDocking() async throws {
         TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        if policy == .prohibited { app.setActivationPolicy(.accessory) }
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do { try await exerciseCachedProfileDocking() } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Sidebar presentation loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func exerciseCachedProfileDocking() async throws {
         let manager = ProfileManager.shared
         let previous = manager.active
         let mode = BatterySaver.shared.mode
@@ -218,24 +278,34 @@ import SwiftUI
             _ = manager.delete(secondProfile.id)
             manager.active = previous
         }
+        try await LibraryFocusFixture.admitForeground(window)
+        let host = try XCTUnwrap(window.contentView)
+        _ = try await admitRestingViewport(in: host)
         source.sidebarShown = false
         source.sidebarPeeking = true
         let target = try XCTUnwrap(Windows.hop(source, to: second))
-        try await Task.sleep(for: .milliseconds(350))
+        let targetViewport = try await admitRestingViewport(in: host)
         let returning = try XCTUnwrap(Windows.hop(target, to: first))
-        try await Task.sleep(for: .milliseconds(350))
+        let sourceViewport = try await admitRestingViewport(in: host)
+        let floatingOrigin = try XCTUnwrap(origins(of: sourceViewport, in: host)).presented
         returning.sidebarShown = true
-        // Switch before the outgoing dock animation has finished.
-        try await Task.sleep(for: .milliseconds(20))
+        // Observe the source's docking update before the profile switch. SwiftUI
+        // can drive this through layout, without a separate CALayer animation.
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            CATransaction.flush()
+            guard let points = self.origins(of: sourceViewport, in: host) else { return false }
+            return abs(points.presented.x - floatingOrigin.x) > 0.5 ||
+                abs(points.presented.y - floatingOrigin.y) > 0.5
+        }
         _ = try XCTUnwrap(Windows.hop(returning, to: second))
         try await Task.sleep(for: .milliseconds(30))
-        let host = try XCTUnwrap(window.contentView)
         host.layoutSubtreeIfNeeded()
-        func scroll(in view: NSView) -> NSScrollView? {
-            if let scroll = view as? NSScrollView { return scroll }
-            return view.subviews.lazy.compactMap { scroll(in: $0) }.first
-        }
-        let viewport = try XCTUnwrap(scroll(in: host))
+        let viewport = try XCTUnwrap(sidebarViewport(in: host))
+        XCTAssertTrue(viewport === targetViewport, "Sample the cached arriving profile, not its parked source")
+        XCTAssertFalse(viewport.isHiddenOrHasHiddenAncestor,
+                       "Presentation samples must belong to the visible arriving profile")
         func presentedOrigin() throws -> CGPoint {
             let layer = try XCTUnwrap(viewport.layer?.presentation())
             return layer.convert(.zero, to: host.layer?.presentation())

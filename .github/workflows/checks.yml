@@ -281,6 +281,7 @@ jobs:
           cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
           Manifest-v3 workers can retain WebKit's engine UA instead of the selected page UA.
           This known limitation is advisory. Its desired-behavior assertions remain active.
+          A passing sample does not establish a repair; intermittent signed-app failures remain tracked in issue #513.
           Popup UA, manifest-v2 background UA, storage isolation and controller ownership remain required.
           See the attached log for the actual failure and fixture cleanup results.
           EOF
