@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "index": 1,
+  "count": 1,
+  "inventory_sha256": "4a344cafa6cf316ad854467d7b3d52ba540c0d280be72e92949254e2ade2db10",
+  "suite": "known-limitations",
+  "tests": [
+    "VaneTests.ExtensionUserAgentTests/testKnownServiceWorkerUserAgentLimitation"
+  ],
+  "shards": [
+    {
+      "index": 1,
+      "tests": 1,
+      "estimated_seconds": 2.773
+    }
+  ]
+}

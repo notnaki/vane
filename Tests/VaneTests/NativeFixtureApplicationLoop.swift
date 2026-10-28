@@ -8,6 +8,26 @@ private enum NativeApplicationLoopFailure: String, Error {
     case launchTimedOut, unexpectedLoopReturn, incompleteHeartbeat
 }
 
+struct NativeFixtureLaunchAdmission {
+    enum Observation: Equatable { case waiting, ready, timedOut, watchdogExpired }
+    let finishedAtEntry: Bool
+    let deadline: ContinuousClock.Instant
+    let watchdogDeadline: ContinuousClock.Instant
+    private(set) var observedUnfinished = false
+
+    mutating func observe(finished: Bool, at now: ContinuousClock.Instant) -> Observation {
+        if !finished { observedUnfinished = true }
+        // A delayed timer callback must never admit work past the watchdog.
+        if now >= watchdogDeadline { return .watchdogExpired }
+        // An executor-delayed heartbeat cannot time out an application launch
+        // that was already complete before run(). The independent 12s startup
+        // watchdog still bounds the entire admission, including scheduling.
+        if finishedAtEntry && !observedUnfinished && finished { return .ready }
+        if now >= deadline { return .timedOut }
+        return finished ? .ready : .waiting
+    }
+}
+
 private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     private let lock = NSLock()
     private let generation: UUID
@@ -38,11 +58,14 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     private let generation = UUID()
     private let originalPolicy = NSApplication.shared.activationPolicy()
     private let eventTag = Int.random(in: 1...Int.max)
+    private let beforeHeartbeat: @MainActor @Sendable () async -> Void
+    private let launchReadiness: @MainActor @Sendable () -> Bool
     private lazy var entryGate = NativeApplicationLoopEntryGate(generation: generation)
     private var admission: CheckedContinuation<Void, any Error>?
     private var joinWaiters: [CheckedContinuation<Void, any Error>] = []
     private var heartbeat: Task<Void, Never>?
     private var watchdog: CFRunLoopTimer?
+    private var watchdogDeadline: ContinuousClock.Instant?
     private var firstFailure: NativeApplicationLoopFailure?
     private var enteredRun = false
     private var runReturned = false
@@ -53,7 +76,11 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     private var closing = false
     private var closed = false
 
-    private init() {}
+    private init(beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void,
+                 launchReadiness: @escaping @MainActor @Sendable () -> Bool) {
+        self.beforeHeartbeat = beforeHeartbeat
+        self.launchReadiness = launchReadiness
+    }
     private var isCurrent: Bool { Self.ownerGeneration == generation && !closed }
 
     nonisolated private static func enqueue(_ action: @escaping @MainActor @Sendable () -> Void) {
@@ -76,8 +103,9 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         return nil
     }
 
-    static func acquire() async throws -> NativeFixtureApplicationLoop {
-        let lease = NativeFixtureApplicationLoop()
+    static func acquire(beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void = {},
+                        launchReadiness: @escaping @MainActor @Sendable () -> Bool = { true }) async throws -> NativeFixtureApplicationLoop {
+        let lease = NativeFixtureApplicationLoop(beforeHeartbeat: beforeHeartbeat, launchReadiness: launchReadiness)
         try await lease.start()
         if Task.isCancelled { lease.record(.cancelled) }
         do { try lease.verifyRunning() }
@@ -114,8 +142,16 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         guard isCurrent else { return }
         guard entryGate.claim(generation) else { abortStart(.cancelled); return }
         if let failure = preflightFailure() { abortStart(failure); return }
+        guard let watchdogDeadline else { abortStart(.timerUnavailable); return }
+        guard ContinuousClock.now < watchdogDeadline else { abortStart(.startupWatchdogExpired); return }
         let deadline = ContinuousClock.now + .seconds(5)
-        heartbeat = Task { @MainActor in await self.checkHeartbeat(until: deadline) }
+        let finishedAtEntry = NSRunningApplication.current.isFinishedLaunching
+        print("Native fixture AppKit admission: finishedAtEntry=\(finishedAtEntry)")
+        heartbeat = Task { @MainActor in
+            await self.beforeHeartbeat()
+            await self.checkHeartbeat(admission: NativeFixtureLaunchAdmission(finishedAtEntry: finishedAtEntry,
+                deadline: deadline, watchdogDeadline: watchdogDeadline))
+        }
         enteredRun = true
         NSApplication.shared.run()
         runReturned = true
@@ -125,27 +161,53 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         completeIfJoined()
     }
 
-    private func checkHeartbeat(until deadline: ContinuousClock.Instant) async {
-        defer { finishHeartbeat() }
+    private func checkHeartbeat(admission initialAdmission: NativeFixtureLaunchAdmission) async {
+        defer { finishHeartbeat(deadline: initialAdmission.watchdogDeadline) }
         let app = NSApplication.shared
         guard app.isRunning else { record(.loopNotRunning); return }
+        var admission = initialAdmission
+        var readyOnPreviousTurn = false
         do {
-            while !NSRunningApplication.current.isFinishedLaunching {
+            while true {
+                try Task.checkCancellation()
                 guard app.isRunning else { record(.loopNotRunning); return }
-                guard ContinuousClock.now < deadline else { record(.launchTimedOut); return }
-                try await Task.sleep(for: .milliseconds(20))
+                let finished = NSRunningApplication.current.isFinishedLaunching && launchReadiness()
+                switch admission.observe(finished: finished, at: .now) {
+                case .ready:
+                    if readyOnPreviousTurn {
+                        try verifyRunning()
+                        return
+                    }
+                    // Confirm readiness after yielding the executor. A prior
+                    // ready sample cannot authorize a later unfinished launch.
+                    readyOnPreviousTurn = true
+                    await Task.yield()
+                    continue
+                case .timedOut:
+                    print("Native fixture AppKit admission timed out: finishedAtEntry=\(admission.finishedAtEntry), finishedNow=\(finished), observedUnfinished=\(admission.observedUnfinished)")
+                    record(.launchTimedOut)
+                    return
+                case .watchdogExpired:
+                    record(.startupWatchdogExpired)
+                    return
+                case .waiting:
+                    if readyOnPreviousTurn {
+                        print("Native fixture AppKit admission: readiness withdrew before final verification")
+                    }
+                    readyOnPreviousTurn = false
+                    try await Task.sleep(for: .milliseconds(20))
+                    continue
+                }
             }
-            guard ContinuousClock.now < deadline else { record(.launchTimedOut); return }
-            try await Task.sleep(for: .milliseconds(50))
-            try verifyRunning()
         } catch {
             if firstFailure == nil { record(.cancelled) }
         }
     }
 
-    private func finishHeartbeat() {
+    private func finishHeartbeat(deadline: ContinuousClock.Instant) {
         heartbeatFinished = true
         heartbeat = nil
+        if firstFailure == nil, !closing, ContinuousClock.now >= deadline { record(.startupWatchdogExpired) }
         if firstFailure == nil && !closing {
             invalidateWatchdog()
             admissionSucceeded = true
@@ -165,7 +227,7 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
             record(.loopNotRunning)
             throw firstFailure!
         }
-        guard NSRunningApplication.current.isFinishedLaunching else {
+        guard NSRunningApplication.current.isFinishedLaunching && launchReadiness() else {
             record(.incompleteHeartbeat)
             throw firstFailure!
         }
@@ -209,10 +271,12 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
 
     private func armWatchdog(_ failure: NativeApplicationLoopFailure) -> Bool {
         invalidateWatchdog()
+        let deadline = ContinuousClock.now + .seconds(12)
         guard let timer = CFRunLoopTimerCreateWithHandler(nil, CFAbsoluteTimeGetCurrent() + 12, 0, 0, 0, { _ in
             MainActor.assumeIsolated { self.cancelOrExpire(failure) }
         }) else { return false }
         watchdog = timer
+        watchdogDeadline = deadline
         CFRunLoopAddTimer(CFRunLoopGetMain(), timer, CFRunLoopMode.commonModes)
         return true
     }
@@ -220,6 +284,7 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     private func invalidateWatchdog() {
         if let watchdog { CFRunLoopTimerInvalidate(watchdog) }
         watchdog = nil
+        watchdogDeadline = nil
     }
 
     private func abortStart(_ failure: NativeApplicationLoopFailure) {

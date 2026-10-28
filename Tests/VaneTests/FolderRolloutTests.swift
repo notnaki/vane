@@ -70,7 +70,21 @@ import XCTest
             view.layoutSubtreeIfNeeded()
         }
         configure(shape, animation: nil)
-        try await Task.sleep(for: .milliseconds(80))
+        // Admit the collapsed layout's current owners before expansion. Waiting
+        // for the expanded destination here would erase the early-motion sample.
+        let initialRows = SidebarRows(tabs: tabs, splits: [], shape: shape).rows
+        func rowAnchors(in root: NSView) -> [NativeSidebarRowLayoutView] {
+            ((root as? NativeSidebarRowLayoutView).map { [$0] } ?? []) + root.subviews.flatMap { rowAnchors(in: $0) }
+        }
+        try await compatibilityWait {
+            let anchors = rowAnchors(in: view)
+            return view.window === window && window.isVisible && initialRows.allSatisfy { row in
+                guard let marker = markers.views[row.id], marker.window === window,
+                      let anchor = anchors.first(where: { $0.rowID == row.id && $0.window === window }) else { return false }
+                return anchor.committedGeneration == anchor.generation && anchor.hasCommittedCurrentBounds
+                    && anchor.bounds.width > 0 && anchor.bounds.height > 0
+            }
+        }
         var expanded = shape
         expanded.toggle(folder: folder.id)
         configure(expanded, animation: .linear(duration: 1))
