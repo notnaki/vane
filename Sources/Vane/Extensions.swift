@@ -1185,6 +1185,13 @@ import WebKit
     /// gesture, which is what `activeTab` extensions actually wait for.
     func run(_ context: WKWebExtensionContext, for tab: Tab?, from view: NSView?) {
         guard installed.contains(where: { $0 === context }) else { return }
+        let key = ActionKey(context, tab)
+        if let existing = actionWindows[key], !existing.isClosed {
+            context.performAction(for: shim(tab))
+            existing.show()
+            return
+        }
+        for presentation in Array(actionWindows.values) { presentation.close() }
         let shim = shim(tab)
         // Only an action that *has* a popup will ever ask for its anchor. Recording one for
         // an onClicked-only extension would leave it in the table with nothing to consume
@@ -1196,6 +1203,17 @@ import WebKit
         if let action = context.action(for: shim), action.isEnabled, action.presentsPopup, let web = action.popupWebView {
             userAgent.track(web)
         }
+    }
+
+    /// Presentation ownership is separate from the SDK action's view ownership.
+    /// Callers closing a presented popup must retire both through this host.
+    func actionPopupWindow(_ context: WKWebExtensionContext, for tab: Tab?) -> NSWindow? {
+        guard let presentation = actionWindows[ActionKey(context, tab)], !presentation.isClosed else { return nil }
+        return presentation.window
+    }
+
+    func closeActionPopup(_ context: WKWebExtensionContext, for tab: Tab?) {
+        actionWindows[ActionKey(context, tab)]?.close()
     }
 
     /// The button each pending popup was run from, keyed by extension *and* tab.
@@ -1503,9 +1521,20 @@ import WebKit
         // An extension's idea of "the active tab" is a tab in the browser window; a Little
         // Arc is a page passing through and has no row for an extension to act on.
         myStores.first { !$0.isLittle && $0.window?.isKeyWindow == true }
+            ?? actionWindows.values.first { $0.window.isKeyWindow }?.parentStore
     }
 
     func sync() {
+        for presentation in Array(actionWindows.values) {
+            if let tab = presentation.parentTab {
+                if let store = store(holding: tab) { presentation.rebindParent(to: store) }
+                else { presentation.close() }
+            } else if let store = presentation.parentStore, myStores.contains(where: { $0 === store }) {
+                presentation.rebindParent(to: store)
+            } else {
+                presentation.close()
+            }
+        }
         guard !loaded.isEmpty else { return }
         let stores = myStores
         let liveWindows = Set(stores.map(ObjectIdentifier.init))
@@ -1585,19 +1614,26 @@ import WebKit
             focusedWindow = focused
             controller.didFocusWindow(current.map { adapter(for: $0) })
         }
+        // A requested extension popup is a window only for its owner. Restore its
+        // truthful focused-window identity after the browser-wide focus diff.
+        for adapter in requestedWindows.values where adapter.presentation.window.isKeyWindow {
+            adapter.presentation.context.didFocusWindow(adapter)
+        }
     }
 
     // MARK: WKWebExtensionControllerDelegate
 
     func webExtensionController(_ controller: WKWebExtensionController,
                                 openWindowsFor context: WKWebExtensionContext) -> [any WKWebExtensionWindow] {
-        myStores
+        let browsers: [any WKWebExtensionWindow] = myStores
             .filter { context.hasAccessToPrivateData || !$0.isPrivate }
             .map { adapter(for: $0) }
+        return browsers + requestedWindows.values.filter { $0.accessible(context) }
     }
 
     func webExtensionController(_ controller: WKWebExtensionController,
                                 focusedWindowFor context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
+        if let popup = requestedWindows.values.first(where: { $0.accessible(context) && $0.presentation.window.isKeyWindow }) { return popup }
         guard let store = myFocusedStore,
               context.hasAccessToPrivateData || !store.isPrivate else { return nil }
         return adapter(for: store)
@@ -1626,6 +1662,41 @@ import WebKit
                                 openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionWindow)? {
         try requireActive(context)
+        if configuration.windowType == .popup {
+            guard !configuration.shouldBePrivate, configuration.windowState == .normal,
+                  configuration.tabs.isEmpty, configuration.tabURLs.count == 1,
+                  let url = configuration.tabURLs.first,
+                  url.scheme == context.baseURL.scheme, url.host == context.baseURL.host,
+                  url.port == context.baseURL.port, url.user == nil, url.password == nil,
+                  let cfg = context.webViewConfiguration else {
+                throw Failure("Extension popup windows support one page from the owning extension, without moved tabs or private/window-state changes.")
+            }
+            let parent = myFocusedStore ?? frontmostStore
+            let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 400, height: 500), configuration: cfg)
+            userAgent.track(web)
+            let presentation = ExtensionWindowPresentation(web: web, context: context,
+                parentStore: parent, parentTab: nil, title: context.webExtension.displayName ?? "Extension",
+                requestedFrame: configuration.frame) { [weak self] closed in
+                    guard let self, let adapter = self.requestedWindows.removeValue(forKey: ObjectIdentifier(closed)) else { return }
+                    if context.isLoaded {
+                        context.didCloseTab(adapter.tab, windowIsClosing: true)
+                        context.didCloseWindow(adapter)
+                        self.sync()
+                    }
+                }
+            presentation.openExternal = { [weak self, weak parent] url in
+                guard let self, let store = parent ?? self.myFocusedStore ?? self.myStores.first else { return }
+                store.newBlankTab().navigate(to: url)
+            }
+            let adapter = ExtensionRequestedWindow(presentation)
+            requestedWindows[ObjectIdentifier(presentation)] = adapter
+            context.didOpenWindow(adapter)
+            context.didOpenTab(adapter.tab)
+            context.didActivateTab(adapter.tab, previousActiveTab: nil)
+            web.load(URLRequest(url: url))
+            presentation.show(focused: configuration.shouldBeFocused)
+            return adapter
+        }
         let store = Windows.open(isPrivate: configuration.shouldBePrivate,
                                  urls: configuration.tabURLs,
                                  profile: ProfileManager.shared.profiles.first { $0.id == profileID })
@@ -1658,28 +1729,28 @@ import WebKit
         // Taken first, whatever happens next: an anchor left in the table would come up
         // under the *next* popup, on a button nobody pressed.
         try requireActive(context)
-        let anchor = anchors.removeValue(forKey: ActionKey(context, subject(of: action)))?.view
+        let tab = subject(of: action)
+        let key = ActionKey(context, tab)
+        let anchor = anchors.removeValue(forKey: key)?.view
         let name = context.webExtension.displayName ?? "An extension"
-        guard let popover = action.popupPopover else {
+        guard let web = action.popupWebView else {
             throw Failure("“\(name)” has no popup to show.")
         }
-        if let web = action.popupWebView { userAgent.track(web) }
-        let id = ObjectIdentifier(context)
-        popovers[id] = (popovers[id] ?? []).filter(\.isShown) + [popover]
-        // The button that ran the action: the pill's pinned glyph, or the extension's row in
-        // the Site Control Center. Each window — a Little Vane and a private one included —
-        // hands over its own, so a popup never opens over the wrong pill.
-        if let anchor, anchor.window != nil {
-            return popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
-        }
-        // Nothing was clicked: an extension opened its own popup from a background script.
-        // The top of the frontmost window is where a toolbar would be, which is the honest
-        // fallback — and a popup with nowhere at all to go is an error, not a silent no-op.
-        guard let host = frontmostStore?.window?.contentView else {
+        userAgent.track(web)
+        let parent = tab.flatMap { store(holding: $0) }
+            ?? myStores.first { $0.window === anchor?.window } ?? frontmostStore
+        guard let parent else {
             throw Failure("There is no window open to show “\(name)”'s popup in.")
         }
-        let rect = NSRect(x: host.bounds.maxX - 40, y: host.bounds.maxY - 8, width: 32, height: 4)
-        popover.show(relativeTo: rect, of: host, preferredEdge: .minY)
+        if let existing = actionWindows[key], existing.web === web { existing.show(); return }
+        for presentation in Array(actionWindows.values) { presentation.close() }
+        let presentation = ExtensionWindowPresentation(web: web, context: context, action: action,
+            parentStore: parent, parentTab: tab, title: name) { [weak self] closed in
+                if self?.actionWindows[key] === closed { self?.actionWindows[key] = nil }
+            }
+        actionWindows[key] = presentation
+        presentation.focusChanged = { [weak self] in self?.sync() }
+        presentation.show()
     }
 
     /// Any of this profile's windows that is actually key, Little Vane included — unlike
@@ -1758,10 +1829,12 @@ import WebKit
     // MARK: Helpers
 
     private var pages: [(context: WKWebExtensionContext, window: NSWindow)] = []
-    private var popovers: [ObjectIdentifier: [NSPopover]] = [:]
+    private var actionWindows: [ActionKey: ExtensionWindowPresentation] = [:]
+    private var requestedWindows: [ObjectIdentifier: ExtensionRequestedWindow] = [:]
 
     private func closePages(for context: WKWebExtensionContext) {
-        for popover in popovers.removeValue(forKey: ObjectIdentifier(context)) ?? [] { popover.close() }
+        for presentation in Array(actionWindows.values) where presentation.context === context { presentation.close() }
+        for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
         for page in pages where page.context === context {
             (page.window.contentView as? WKWebView)?.stopLoading()
             page.window.contentView = nil
