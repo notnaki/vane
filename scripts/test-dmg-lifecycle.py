@@ -44,7 +44,7 @@ if name == "hdiutil":
         device = "/dev/disk987"
         reused = (state["scenario"] == "reused-device" or
                   state["scenario"] == "reused-after-busy" and state.get("detaches", 0) > 0 or
-                  state["scenario"] == "reused-before-force" and state.get("detaches", 0) >= 6)
+                  state["scenario"] == "reused-before-force" and state.get("detaches", 0) >= 10)
         if state.get("layout_done") and reused:
             image = "/Users/someone/unrelated.dmg"
         if state["scenario"] == "invalid-info":
@@ -60,7 +60,7 @@ if name == "hdiutil":
     elif verb == "detach":
         if state.get("layout_done") and (state["scenario"] == "reused-device" or
                 state["scenario"] == "reused-after-busy" and state.get("detaches", 0) > 0 or
-                state["scenario"] == "reused-before-force" and state.get("detaches", 0) >= 6):
+                state["scenario"] == "reused-before-force" and state.get("detaches", 0) >= 10):
             state["unrelated_detached"] = True
         count = state.get("detaches", 0)
         state["detaches"] = count + 1

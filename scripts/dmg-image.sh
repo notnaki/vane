@@ -38,7 +38,7 @@ except (KeyError, TypeError, ValueError, OSError, plistlib.InvalidFileException)
 # Force is allowed only for cleanup after failure, never to finish a build.
 dmg_detach_owned() {
   local image=$1 device=$2 force=${3:-false} attempt state status
-  for attempt in 1 2 3; do
+  for attempt in 1 2 3 4 5; do
     if dmg_image_state "$image" "$device"; then
       state=0
     else
@@ -63,7 +63,7 @@ dmg_detach_owned() {
       status=$?
     fi
     if [ "$status" -ne 16 ]; then return "$status"; fi
-    if [ "$attempt" -lt 3 ]; then sleep 0.5; fi
+    if [ "$attempt" -lt 5 ]; then sleep 0.5; fi
   done
   if [ "$force" = true ]; then
     if dmg_image_state "$image" "$device"; then

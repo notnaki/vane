@@ -59,6 +59,7 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     private let originalPolicy = NSApplication.shared.activationPolicy()
     private let eventTag = Int.random(in: 1...Int.max)
     private let beforeHeartbeat: @MainActor @Sendable () async -> Void
+    private let launchReadiness: @MainActor @Sendable () -> Bool
     private lazy var entryGate = NativeApplicationLoopEntryGate(generation: generation)
     private var admission: CheckedContinuation<Void, any Error>?
     private var joinWaiters: [CheckedContinuation<Void, any Error>] = []
@@ -75,8 +76,10 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     private var closing = false
     private var closed = false
 
-    private init(beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void) {
+    private init(beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void,
+                 launchReadiness: @escaping @MainActor @Sendable () -> Bool) {
         self.beforeHeartbeat = beforeHeartbeat
+        self.launchReadiness = launchReadiness
     }
     private var isCurrent: Bool { Self.ownerGeneration == generation && !closed }
 
@@ -100,8 +103,9 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         return nil
     }
 
-    static func acquire(beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void = {}) async throws -> NativeFixtureApplicationLoop {
-        let lease = NativeFixtureApplicationLoop(beforeHeartbeat: beforeHeartbeat)
+    static func acquire(beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void = {},
+                        launchReadiness: @escaping @MainActor @Sendable () -> Bool = { true }) async throws -> NativeFixtureApplicationLoop {
+        let lease = NativeFixtureApplicationLoop(beforeHeartbeat: beforeHeartbeat, launchReadiness: launchReadiness)
         try await lease.start()
         if Task.isCancelled { lease.record(.cancelled) }
         do { try lease.verifyRunning() }
@@ -162,12 +166,23 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         let app = NSApplication.shared
         guard app.isRunning else { record(.loopNotRunning); return }
         var admission = initialAdmission
+        var readyOnPreviousTurn = false
         do {
             while true {
+                try Task.checkCancellation()
                 guard app.isRunning else { record(.loopNotRunning); return }
-                let finished = NSRunningApplication.current.isFinishedLaunching
+                let finished = NSRunningApplication.current.isFinishedLaunching && launchReadiness()
                 switch admission.observe(finished: finished, at: .now) {
-                case .ready: break
+                case .ready:
+                    if readyOnPreviousTurn {
+                        try verifyRunning()
+                        return
+                    }
+                    // Confirm readiness after yielding the executor. A prior
+                    // ready sample cannot authorize a later unfinished launch.
+                    readyOnPreviousTurn = true
+                    await Task.yield()
+                    continue
                 case .timedOut:
                     print("Native fixture AppKit admission timed out: finishedAtEntry=\(admission.finishedAtEntry), finishedNow=\(finished), observedUnfinished=\(admission.observedUnfinished)")
                     record(.launchTimedOut)
@@ -176,13 +191,14 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
                     record(.startupWatchdogExpired)
                     return
                 case .waiting:
+                    if readyOnPreviousTurn {
+                        print("Native fixture AppKit admission: readiness withdrew before final verification")
+                    }
+                    readyOnPreviousTurn = false
                     try await Task.sleep(for: .milliseconds(20))
                     continue
                 }
-                break
             }
-            try await Task.sleep(for: .milliseconds(50))
-            try verifyRunning()
         } catch {
             if firstFailure == nil { record(.cancelled) }
         }
@@ -211,7 +227,7 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
             record(.loopNotRunning)
             throw firstFailure!
         }
-        guard NSRunningApplication.current.isFinishedLaunching else {
+        guard NSRunningApplication.current.isFinishedLaunching && launchReadiness() else {
             record(.incompleteHeartbeat)
             throw firstFailure!
         }

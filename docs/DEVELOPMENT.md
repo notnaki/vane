@@ -93,6 +93,17 @@ including for administrators. Update a PR when main advances and validate the ne
 integration before merging. A green feature branch against yesterday's base does
 not validate its combination with another feature merged today.
 
+Use a small, focused CI preflight before spending time on the full suite for
+non-trivial changes. This is required while diagnosing or repairing CI failures
+or behavior that depends on the hosted runner. Select the affected tests and
+closely related fixtures, build once, and retain the same assertions, outcome
+deadlines, and native cleanup verification. For intermittent cases, choose the
+repetition count before starting and preserve every attempt and its diagnostics.
+Advance to the full suite after the preflight passes and earlier failures have
+been explained and repaired. Full required CI must still pass on the latest
+integrated PR commit before merging. Documentation-only and trivial changes
+can use their appropriate lightweight checks.
+
 Preserve failed attempts when assessing a change. An unchanged native assertion
 failure followed by a passing rerun is evidence of unresolved intermittency, not
 a repair. Separate pre-test runner outages from actual assertion failures. Compare

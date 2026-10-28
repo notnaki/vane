@@ -8,6 +8,28 @@ import XCTest
 @MainActor enum SidebarSnapshot {
     private static var count = 0
 
+    static func imageWhenReady<V: View>(_ view: V, width: CGFloat = 250, height: CGFloat = 400,
+                                        sidebarScope: SidebarNativeReadinessScope? = nil,
+                                        ready: (NSView) -> Bool) async throws -> CGImage {
+        _ = NSApplication.shared
+        let bounds = NSRect(x: 0, y: 0, width: width, height: height)
+        let window = NSWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .darkAqua)
+        let host = NSHostingView(rootView: view.frame(width: width, height: height)
+            .environment(\.colorScheme, .dark).background(Color(white: 0.25)))
+        host.frame = bounds
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            return (sidebarScope.map { nativePopulationIsReady(in: host, scope: $0) } ?? true) && ready(host)
+        }
+        host.layoutSubtreeIfNeeded()
+        return try XCTUnwrap(captureBitmap(in: host).cgImage)
+    }
+
     static func pixels<V: View>(_ view: V, width: CGFloat = 250, height: CGFloat = 400, appearance: NSAppearance.Name = .darkAqua,
                                 sidebarScope: SidebarNativeReadinessScope? = nil,
                                 beforeCapture: (NSView) -> Void = { _ in }) throws -> Data {
@@ -44,21 +66,50 @@ import XCTest
     }
 
     static func pixels(sectionsOf store: TabStore) throws -> Data {
+        let population = SectionsPopulation(store: store)
+        defer { population.close() }
+        return try pixels(population.view(store: store), sidebarScope: population.scope)
+    }
+
+    static func imageWhenReady(sectionsOf store: TabStore, ready: (NSView) -> Bool) async throws -> CGImage {
+        let population = SectionsPopulation(store: store)
+        defer { population.close() }
+        return try await imageWhenReady(population.view(store: store), sidebarScope: population.scope, ready: ready)
+    }
+
+    @MainActor private final class SectionsPopulation {
         // Standalone sections omit the live strip's declaration. Give this exact
         // mounted surface its own population lifetime, including empty sections.
-        let scope = SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID, surfaceID: UUID())
-        let owner = NSObject(), ownerID = UUID()
-        let cache = Feel02SidebarRowsCache()
-        let pinned = cache.resolve(in: store, shape: store.pins).rows
-        let today = cache.resolve(in: store, shape: store.todayShape).rows
-        let coordinator = SidebarNativeReadinessCoordinator.shared
-        coordinator.expectPopulation(scope, sections: ["today": today.map(\.id),
-            "pinned": store.pinnedSectionCollapsed ? [] : pinned.map(\.id)], populationOwnerID: ownerID)
-        coordinator.retainPopulationExpectation(scope, owner: ObjectIdentifier(owner), populationOwnerID: ownerID)
-        defer { coordinator.releasePopulationExpectation(scope, owner: ObjectIdentifier(owner)) }
-        return try pixels(SidebarSpaceSections().environmentObject(store)
-            .environment(\.sidebarNativeReadinessScope, scope)
-            .environment(\.sidebarNativeReadinessOwnerID, ownerID), sidebarScope: scope)
+        let scope: SidebarNativeReadinessScope
+        private let owner = NSObject(), ownerID = UUID()
+
+        init(store: TabStore) {
+            scope = SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID, surfaceID: UUID())
+            let cache = Feel02SidebarRowsCache()
+            let pinned = cache.resolve(in: store, shape: store.pins).rows
+            let today = cache.resolve(in: store, shape: store.todayShape).rows
+            let coordinator = SidebarNativeReadinessCoordinator.shared
+            coordinator.expectPopulation(scope, sections: ["today": today.map(\.id),
+                "pinned": store.pinnedSectionCollapsed ? [] : pinned.map(\.id)], populationOwnerID: ownerID)
+            coordinator.retainPopulationExpectation(scope, owner: ObjectIdentifier(owner), populationOwnerID: ownerID)
+        }
+
+        func view(store: TabStore) -> some View {
+            SidebarSpaceSections().environmentObject(store)
+                .environment(\.sidebarNativeReadinessScope, scope)
+                .environment(\.sidebarNativeReadinessOwnerID, ownerID)
+        }
+
+        func close() {
+            SidebarNativeReadinessCoordinator.shared.releasePopulationExpectation(scope, owner: ObjectIdentifier(owner))
+        }
+    }
+
+    private static func nativePopulationIsReady(in host: NSView, scope: SidebarNativeReadinessScope) -> Bool {
+        guard let window = host.window, let scroll = SidebarSectionsViewport.scrollView(in: host),
+              scroll.window === window, let document = scroll.documentView,
+              document.isDescendant(of: host), scroll.contentView.bounds.height > 0 else { return false }
+        return SidebarNativeReadinessCoordinator.shared.isReady(scope)
     }
 
     static func admitNativePopulation(in host: NSView, scope: SidebarNativeReadinessScope) throws {
@@ -66,10 +117,7 @@ import XCTest
         let deadline = Date(timeIntervalSinceNow: 2)
         while true {
             host.layoutSubtreeIfNeeded()
-            if let scroll = SidebarSectionsViewport.scrollView(in: host),
-               scroll.window === window, let document = scroll.documentView,
-               document.isDescendant(of: host), scroll.contentView.bounds.height > 0,
-               SidebarNativeReadinessCoordinator.shared.isReady(scope) { return }
+            if host.window === window, nativePopulationIsReady(in: host, scope: scope) { return }
             guard Date() < deadline else {
                 XCTFail("Snapshot sidebar population did not commit for \(scope)")
                 throw NSError(domain: "SidebarSnapshotReadiness", code: 1)
@@ -79,6 +127,11 @@ import XCTest
     }
 
     static func pixels(in host: NSView) throws -> Data {
+        let bitmap = try captureBitmap(in: host)
+        return Data(bytes: try XCTUnwrap(bitmap.bitmapData), count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+    }
+
+    private static func captureBitmap(in host: NSView) throws -> NSBitmapImageRep {
         let bounds = host.bounds
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: bounds))
         host.cacheDisplay(in: bounds, to: bitmap)
@@ -88,6 +141,6 @@ import XCTest
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try bitmap.representation(using: .png, properties: [:])?.write(to: url)
         }
-        return Data(bytes: try XCTUnwrap(bitmap.bitmapData), count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+        return bitmap
     }
 }

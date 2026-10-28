@@ -76,3 +76,16 @@ The next run40758318040 passed all four native shards. Its worker-UA job failed 
 - [x] Replace whole-job tolerance with strict classification of the exact named probe and six whitelisted startup/current comparisons. Require nonnil bare-engine identity, exact complete execution, matching assertion totals, fresh verified cleanup, and correct manifest/filter. Keep the actual XCTest comparisons unchanged.
 - [x] Make that classified job a required aggregate dependency. Unknown failures and upload failures block merging; a passing sample still does not establish an identity repair.
 - [x] Bundle the three exact nonempty evidence files into one archive, publishing only after successful creation; require its upload. Final offline verification:8 classifier/archive tests,9 unchanged shard tests,8227 gate states, actionlint and diff checks passed. Original run40758318040 raw fixture files are retained byte-for-byte with provenance.
+
+## Latest-main integration qualification
+
+Main advanced to5622c4a through PR547, overlapping the snapshot and DMG fixtures. Reconcile in a separate managed `ci-main-integration` checkout so the original checkout's active compact-window work stays preserved. Retain main's asynchronous image capture/cold-pin assertions and deterministic first-EBUSY control, with scoped population admission and ownership checks before every detach. Keep main's five-attempt bound.
+
+A broader new-window cohort also exposed `incompleteHeartbeat` before its action test: launch readiness withdrew after the helper's first ready sample and fixed50ms delay. A controlled additional readiness gate reproduces the rejection while still requiring actual AppKit/launch checks. Replace that guessed delay with bounded re-observation after an executor yield using the same admission state; preserve final actual readiness and5s/12s bounds. The late readiness-loss negative control still fails at the original deadline.
+
+- [x] Controlled lost-readiness RED→GREEN; seven admission policy/native tests passed, primary0/cleanup0.
+- [x] Reconcile all three conflicts and audit the new cold-pin native capture. Replace FolderRollout's initial80ms guess with committed initial-row/owner admission; keep early-animation sample timing/outcomes unchanged.
+- [x] Predeclare and complete three fresh owned-AppKit smoke +124-test repetitions. Every primary/cleanup status is0/0; each cohort has122 passes and two existing opt-in diagnostic skips. All50 password-autofill tests and exact selected coverage are verified. Preserve every attempt under `integration-5622c4a`.
+- [x] One live DMG integration passed: injected first EBUSY recovered normally on verified-owned attempt2; final image/Finder assertions passed, no force, owned mounts/directories removed, pre-existing mounts unchanged.
+- [x] Offline classifier/archive, shard, DMG lifecycle and8227 gate regressions/lint passed; all32 diagnostic/preflight processes exited.
+- [ ] Independently review the combined shipping diff against5622c4a, pass new required CI, squash-merge, and verify actual main before calling CI repaired.

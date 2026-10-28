@@ -204,8 +204,9 @@ import XCTest
         try await compatibilityWait { editableFields(in: host).isEmpty }
     }
 
-    func testHoverKeepsLongTabTitleAndSubtitleInPlace() throws {
+    func testHoverKeepsLongTabTitleAndSubtitleInPlace() async throws {
         TestEnvironment.prepare()
+        _ = NSApplication.shared
         let store = TabStore(isPrivate: true)
         let tab = Tab(isPrivate: true, profileID: store.profileID)
         tab.park(url: URL(string: "about:blank")!,
@@ -218,31 +219,73 @@ import XCTest
             TabStore.all.removeAll { $0 === store }
         }
 
-        // Compare only the title area of a selected row, whose fill does not change on
-        // hover. Revealing the trailing button must not move or retruncate this text.
+        // ImageRenderer substitutes a yellow unsupported-view graphic for the native
+        // controls. Sample the mounted AppKit hierarchy so this verifies actual ink.
+        let commit = SidebarHoverSnapshotCommit()
+        func content(held: Bool, generation: Int) -> some View {
+            SidebarTabSurface(store: store, tab: tab, held: held,
+                returnHovering: .constant(false),
+                pr: GitHub.Row(author: "notnaki", state: .open),
+                action: {}, previewSelected: true)
+                .frame(width: 250, height: Look.rowHeight)
+                .environment(\.colorScheme, .dark)
+                .transaction { $0.disablesAnimations = true }
+                .background(SidebarHoverSnapshotProbe(generation: generation, commit: commit))
+        }
+        let host = NSHostingView(rootView: content(held: false, generation: 0))
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 250, height: Look.rowHeight),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        var generation = 0
+
+        // Keep the original full leading 180pt comparison, including title/subtitle.
+        // A completed native update is a prerequisite, rather than a guessed delay.
         for mode: BatterySaver.Mode in [.off, .alwaysOn] {
             saver.setMode(mode)
-            func titlePixels(held: Bool) throws -> Data {
-                let renderer = ImageRenderer(content:
-                    SidebarTabSurface(store: store, tab: tab, held: held,
-                        returnHovering: .constant(false),
-                        pr: GitHub.Row(author: "notnaki", state: .open),
-                        action: {}, previewSelected: true)
-                    .frame(width: 250, height: Look.rowHeight)
-                    .transaction { $0.disablesAnimations = true })
-                let image = try XCTUnwrap(renderer.cgImage)
-                let context = try XCTUnwrap(CGContext(data: nil, width: 180,
-                    height: image.height, bitsPerComponent: 8, bytesPerRow: 180 * 4,
+            func titlePixels(held: Bool) async throws -> Data {
+                generation += 1
+                host.rootView = content(held: held, generation: generation)
+                host.layoutSubtreeIfNeeded()
+                try await compatibilityWait { commit.generation == generation && commit.view?.window === window }
+                host.layoutSubtreeIfNeeded()
+                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                let image = try XCTUnwrap(bitmap.cgImage)
+                let width = Int(180 * CGFloat(image.width) / 250)
+                let context = try XCTUnwrap(CGContext(data: nil, width: width,
+                    height: image.height, bitsPerComponent: 8, bytesPerRow: width * 4,
                     space: CGColorSpaceCreateDeviceRGB(),
                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                context.clear(CGRect(x: 0, y: 0, width: width, height: image.height))
                 context.draw(image, in: CGRect(x: 0, y: 0,
                     width: image.width, height: image.height))
                 return Data(bytes: try XCTUnwrap(context.data),
                             count: context.bytesPerRow * context.height)
             }
-            XCTAssertTrue(try titlePixels(held: false) == titlePixels(held: true),
+            let before = try await titlePixels(held: false)
+            let after = try await titlePixels(held: true)
+            XCTAssertTrue(before == after,
                            "Hover must keep the title stable (\(mode))")
         }
+    }
+}
+
+@MainActor private final class SidebarHoverSnapshotCommit {
+    var generation = -1
+    weak var view: NSView?
+}
+
+private struct SidebarHoverSnapshotProbe: NSViewRepresentable {
+    let generation: Int
+    let commit: SidebarHoverSnapshotCommit
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ view: NSView, context: Context) {
+        commit.view = view
+        commit.generation = generation
     }
 }
 

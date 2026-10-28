@@ -1,10 +1,10 @@
 #!/bin/bash
 
 set -Eeuo pipefail
+trap 'printf "error: DMG fixture failed (status=%s, line=%s): %s\n" "$?" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 source "$ROOT/scripts/dmg-image.sh"
-trap 'status=$?; echo "error: DMG test command failed (status $status, line $LINENO): $BASH_COMMAND" >&2' ERR
 BUILDER="$ROOT/scripts/build-dmg.sh"
 python3 "$ROOT/scripts/test-dmg-lifecycle.py"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/vane-dmg-test.XXXXXX")
@@ -61,7 +61,21 @@ if "$BUILDER" "$CORRUPT_APP" "$WORK/corrupt.dmg" >"$WORK/corrupt.log" 2>&1; then
   exit 1
 fi
 
-"$BUILDER" "$APP" "$DMG"
+# Finder can retain the background image briefly after its window closes. Exercise
+# the first busy detach deterministically, retaining the real mounted-image checks.
+mkdir -p "$WORK/bin"
+cat > "$WORK/bin/hdiutil" <<'SH'
+#!/bin/bash
+if [ "${1:-}" = detach ] && [ ! -f "$VANE_DMG_DETACH_PROBE" ]; then
+  touch "$VANE_DMG_DETACH_PROBE"
+  echo "hdiutil test control: first owned-image detach is busy" >&2
+  exit 16
+fi
+exec /usr/bin/hdiutil "$@"
+SH
+chmod +x "$WORK/bin/hdiutil"
+PATH="$WORK/bin:$PATH" VANE_DMG_DETACH_PROBE="$WORK/busy-detach" "$BUILDER" "$APP" "$DMG"
+test -f "$WORK/busy-detach"
 
 test -f "$DMG"
 ATTACH_PLIST="$WORK/attach.plist"

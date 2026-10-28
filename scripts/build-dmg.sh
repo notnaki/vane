@@ -1,10 +1,10 @@
 #!/bin/bash
 
 set -Eeuo pipefail
+trap 'printf "error: DMG build failed (status=%s, line=%s): %s\n" "$?" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 source "$ROOT/scripts/dmg-image.sh"
-trap 'status=$?; echo "error: DMG build command failed (status $status, line $LINENO): $BASH_COMMAND" >&2' ERR
 APP=${1:-"$ROOT/Vane.app"}
 OUTPUT=${2:-"$ROOT/Vane.dmg"}
 BACKGROUND="$ROOT/installer/dmg-background.svg"
