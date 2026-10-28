@@ -301,7 +301,8 @@ import XCTest
         let host = ExtensionHost.host(for: profile)
         let controller = host.controller
         let custom = "Vane Prior Worker Identity/1.0 (no Safari token)"
-        for (identity, stage) in [(custom, "Manifest v3 custom worker"),
+        for (identity, stage) in [(safariUA, "Manifest v3 initial Safari worker"),
+                                  (custom, "Manifest v3 custom worker"),
                                   (safariUA, "Manifest v3 Safari worker after custom worker")] {
             Settings.userAgent = identity
             let context = try await install(version: 3)
@@ -342,14 +343,30 @@ import XCTest
         XCTAssertEqual(defaultLive, safariUA)
         Settings.userAgent = custom
         try await closePresentedPopup(action)
+        host.run(context, for: nil, from: anchor)
         let (recreatedAction, recreated) = try await popup(context)
+        try await waitForPresentation(recreatedAction)
         XCTAssertFalse(recreated === web, "Recreation must inspect a fresh popup, not cached startup values")
         try await assertIdentity(in: recreated, context: context, expected: custom, startup: safariUA)
         XCTAssertTrue(ExtensionHost.host(for: profile).controller === controller)
         XCTAssertTrue(context.isLoaded)
         XCTAssertEqual(context.grantedPermissions, granted)
         XCTAssertEqual(context.grantedPermissionMatchPatterns, sites)
-        recreatedAction.closePopup()
+
+        // Returning to the default must clear the custom policy retained in the
+        // controller's copied seed, including a subsequently recreated popup.
+        Settings.userAgent = safariUA
+        let resetLive = try await recreated.evaluateJavaScript("navigator.userAgent") as? String
+        XCTAssertEqual(resetLive, safariUA)
+        try await closePresentedPopup(recreatedAction)
+        let (defaultAction, defaultPopup) = try await popup(context)
+        XCTAssertFalse(defaultPopup === recreated)
+        try await assertIdentity(in: defaultPopup, context: context, expected: safariUA)
+        XCTAssertTrue(ExtensionHost.host(for: profile).controller === controller)
+        XCTAssertTrue(context.isLoaded)
+        XCTAssertEqual(context.grantedPermissions, granted)
+        XCTAssertEqual(context.grantedPermissionMatchPatterns, sites)
+        defaultAction.closePopup()
     }
 
     private func waitForPresentation(_ action: WKWebExtension.Action) async throws {
