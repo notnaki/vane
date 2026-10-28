@@ -3524,10 +3524,20 @@ struct Stash {
     /// go-home click on the tab on screen would otherwise trade the page for a blank card.
     /// Every pane of a split is on screen, not just the active one — `onScreenTabs` is what
     /// the card is actually drawing.
-    func goHome(_ id: Tab.ID) {
-        guard let tab = tabs.first(where: { $0.id == id }), sendHome(tab) else { return }
-        if onScreenTabs.contains(where: { $0.id == id }) { tab.resume() }
-        axAnnounce("Back on the pinned page.")
+    /// Command-click separates the away URL into Today while keeping the original pin
+    /// and its folder in place. Capture that URL before `sendHome` replaces it.
+    func goHome(_ id: Tab.ID, separating: Bool = false) {
+        guard let tab = tabs.first(where: { $0.id == id }),
+              !separating || (tab.kind == .pinned && !isTabLocked(id)) else { return }
+        let away = separating ? tab.currentURL : nil
+        guard sendHome(tab) else { return }
+        if let away {
+            newTabBeside(id).go(away)
+            axAnnounce("Separated into Today tabs.")
+        } else {
+            if onScreenTabs.contains(where: { $0.id == id }) { tab.resume() }
+            axAnnounce("Back on the pinned page.")
+        }
     }
 
     /// `byScript` is a popup dismissing itself — see `closedByScript`. Everything else about

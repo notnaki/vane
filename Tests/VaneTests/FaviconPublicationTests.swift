@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Darwin
 import WebKit
 import XCTest
@@ -36,6 +37,73 @@ private actor QueuedFaviconPublicationRequests {
                 throw NSError(domain: "FaviconPublicationTimeout", code: 1)
             }
             try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func testUnchangedDeclaredArtworkKeepsSiblingImageWhileRealChangesPublish() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        for changed in [false, true] {
+            let profile = UUID()
+            let page = URL(string: "http://127.0.0.1:1/icon-identity")!
+            let declaration = URL(string: "http://127.0.0.1:1/new-declaration.svg")!
+            let replacement = changed
+                ? Data("<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='blue'/></svg>".utf8)
+                : Data("<!-- different bytes, identical artwork -->".utf8) + Self.artwork
+            let requests = QueuedFaviconPublicationRequests()
+            let initial = Self.artwork
+            var cache: Favicons? = Favicons(profileID: profile, fetch: { url in
+                await requests.record(url)
+                return url == declaration ? replacement : initial
+            })
+            let active = Tab(profileID: profile), sibling = Tab(profileID: profile)
+            let directory = ProfileManager.faviconDir(for: profile, in: Store.directory)
+            defer {
+                active.tearDown(); sibling.tearDown()
+                Favicons.forget(profile)
+                Store.forget(profile)
+                try? FileManager.default.removeItem(at: directory)
+            }
+            _ = cache?.icon(for: page)
+            try await waitUntil {
+                cache?.generation == 1 && FileManager.default.fileExists(
+                    atPath: directory.appendingPathComponent("127.0.0.1").path)
+            }
+            let original = try XCTUnwrap(cache?.icon(for: page))
+            sibling.park(url: page, Parked(title: "An unchanged sibling"))
+            try await waitUntil { sibling.favicon != nil }
+            cache?.load(for: sibling)
+            XCTAssertTrue(sibling.favicon === original)
+
+            let web = active.web
+            let navigation = FaviconPublicationNavigation()
+            web.navigationDelegate = navigation
+            defer { web.navigationDelegate = nil; withExtendedLifetime(navigation) {} }
+            navigation.expected = try XCTUnwrap(web.loadHTMLString(
+                "<html><head><link rel='icon' href='\(declaration.absoluteString)'></head><body>Icon identity</body></html>",
+                baseURL: page))
+            try await compatibilityWait { navigation.finished || navigation.failure != nil }
+            if let failure = navigation.failure { throw failure }
+            try await compatibilityWait { active.currentURL == page && !web.isLoading }
+            let declared = Favicons.declared(try await web.evaluateJavaScript(Favicons.linkJS))
+            XCTAssertEqual(declared, [declaration])
+            var siblingPublications = 0
+            let subscription = sibling.$favicon.dropFirst().sink { _ in siblingPublications += 1 }
+            defer { withExtendedLifetime(subscription) {} }
+            cache?.load(for: active)
+            // Admit the actual declaration fetch, then await completion of the cache's
+            // real tasks, rather than waiting for the desired absence of publications.
+            try await compatibilityWait { await requests.snapshot().contains(declaration) }
+            weak var finishing = cache
+            cache = nil
+            try await waitUntil { finishing == nil }
+            if changed {
+                XCTAssertFalse(sibling.favicon === original, "Changed artwork must still reach existing tabs")
+                XCTAssertEqual(siblingPublications, 1)
+            } else {
+                XCTAssertTrue(sibling.favicon === original, "Equivalent artwork must not restart every sibling's image transition")
+                XCTAssertEqual(siblingPublications, 0)
+            }
         }
     }
 
