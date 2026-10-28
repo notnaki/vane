@@ -33,6 +33,25 @@ Local validation on 2026-10-12, macOS **27.0.1 (26A434)** / **Xcode 27.0 (27A266
 
 The final PR records its reviewed head and CI outcome separately. The integrated broad run preceded only the final hidden-row selection guard; the focused run above includes that fix.
 
+## Runtime-script diagnostics and open acceptance — 2026-10-28
+
+The startup check previously treated every reported context error as an activation failure. System WebKit can report `WKWebExtensionContextErrorDomain:7` (script execution) after the background has successfully loaded. Activation therefore raced optional-feature errors. Vane now retains these diagnostics in the extension manager while requiring successful background completion separately. Background-load errors (code 6), unknown codes, other domains, callback errors including code 7, cancellation, and the existing startup deadline remain blocking.
+
+The live MV2 regression registers a nonce message listener, throws an optional-feature error, and requires a newly created popup document to receive the nonce from that background. It failed with the previous classifier under a running AppKit loop and passes with the repair. The literal domain/code matrix also checks that diagnostics remain visible. Focused local validation on macOS 27.0.1 (26A434): **34 passed**, zero failures, primary status 0 and cleanup status 0:
+
+```sh
+VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT=300 python3 scripts/run-native-tests.py \
+  --build-system native --jobs 4 \
+  --filter 'ExtensionBackgroundStartupTests|ExtensionBackgroundWatchdogTests|ExtensionCodeStoreTests'
+```
+
+Issues [484](https://github.com/notnaki/vane/issues/484) and [513](https://github.com/notnaki/vane/issues/513) remain open. This activation repair establishes neither real-package acceptance nor an MV3 worker identity repair:
+
+- **Bitwarden:** The official Developer ID 2026.10.0 package was copied without resource changes and checked against its per-file SHA-256 inventory. The source archive SHA-256 is `a44011745891f7aefe6bc34e8dc0feb3e3e5002630b9c084fe15be8a26c0746c`. A signed sandboxed task-only entry point linked to Vane's current debug objects exercised the production installer and an actual anchored action popup in an isolated profile. Installation succeeded; the welcome JavaScript did not reply within the original **20-second** deadline. A post-failure sample of the exact popup renderer showed JavaScriptCore draining microtasks and repeated extension namespace/runtime property lookups. The sample does not identify the executing JavaScript document or establish the loop's cause. Close/reopen and restoration acceptance were not reached. The Mac App Store download stalled on its account sheet; this vendor package is not acceptance for the reporter's exact Store package. No credentials were used. Both task app processes exited and the scoped WebKit store was positively retired.
+- **MV3 workers:** The previously captured first-start failures remain valid. Current upstream source still [establishes a remote worker context and sends its UA in separate steps](https://github.com/WebKit/WebKit/blob/da4d88f94a06e713938e0aa76943578d00626772/Source/WebKit/UIProcess/WebProcessPool.cpp#L815). The connection [initializes its fallback UA without an application name](https://github.com/WebKit/WebKit/blob/da4d88f94a06e713938e0aa76943578d00626772/Source/WebKit/WebProcess/Storage/WebSWContextManagerConnection.cpp#L103) and captures the effective value at worker installation. This audit found no supported host operation that makes those initial steps atomic. Page configuration, a later page-JavaScript reply, or a later worker UA setter is not proof of the worker's initial identity. No new worker workaround, resource rewriting, engine replacement, test exclusion, or weaker assertion is included.
+
+Local evidence is retained under `~/.codex/artifacts/vane-extension-repair-2026-10-28/`, including signed-binary/source provenance, owned process kernel identities, original failure reports, renderer samples, and retirement logs. Later inspector experiments are diagnostic arms only and cannot change the original failed acceptance verdict.
+
 ## Signed Safari app fixtures — 2026-10-24
 
 On macOS **27.0.1 (26A434)** / **Xcode 27.0 (27A266a)**, an isolated Apple

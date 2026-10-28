@@ -946,12 +946,13 @@ struct SpacePreviewList: View, Equatable {
                               url: fixedIcon == nil && page?.isFileURL != true ? page : nil) { cached in
                     SidebarPageIcon(icon: fixedIcon ?? cached, easel: page.flatMap(EaselAddress.boardID) != nil,
                                     pr: row.pr, rounded: page?.isFileURL != true,
-                                    size: returning ? Look.rowIcon / Look.sidebarFaviconScale : Look.rowIcon)
+                                    size: Look.rowIcon, faviconScale: returning ? 1 : Look.sidebarFaviconScale)
                 }
                 .frame(width: Look.rowIcon, height: Look.rowIcon)
                 if returning {
                     Text("/").font(.system(size: Look.rowIcon)).foregroundStyle(Look.inkTertiary)
-                        .frame(width: Look.returnMarkerWidth).offset(x: 1, y: -0.5).accessibilityHidden(true)
+                        .fixedSize()
+                        .frame(width: Look.returnMarkerWidth).offset(x: 1, y: -1).accessibilityHidden(true)
                 }
             }
         } label: {

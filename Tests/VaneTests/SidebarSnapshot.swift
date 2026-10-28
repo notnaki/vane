@@ -8,6 +8,27 @@ import XCTest
 @MainActor enum SidebarSnapshot {
     private static var count = 0
 
+    static func imageWhenReady<V: View>(_ view: V, width: CGFloat = 250, height: CGFloat = 400,
+                                        ready: (NSView) -> Bool) async throws -> CGImage {
+        _ = NSApplication.shared
+        let bounds = NSRect(x: 0, y: 0, width: width, height: height)
+        let window = NSWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .darkAqua)
+        let host = NSHostingView(rootView: view.frame(width: width, height: height)
+            .environment(\.colorScheme, .dark).background(Color(white: 0.25)))
+        host.frame = bounds
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            return ready(host)
+        }
+        host.layoutSubtreeIfNeeded()
+        return try XCTUnwrap(captureBitmap(in: host).cgImage)
+    }
+
     static func pixels<V: View>(_ view: V, width: CGFloat = 250, height: CGFloat = 400, appearance: NSAppearance.Name = .darkAqua) throws -> Data {
         _ = NSApplication.shared
         let bounds = NSRect(x: 0, y: 0, width: width, height: height)
@@ -28,6 +49,11 @@ import XCTest
     }
 
     static func pixels(in host: NSView) throws -> Data {
+        let bitmap = try captureBitmap(in: host)
+        return Data(bytes: try XCTUnwrap(bitmap.bitmapData), count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+    }
+
+    private static func captureBitmap(in host: NSView) throws -> NSBitmapImageRep {
         let bounds = host.bounds
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: bounds))
         host.cacheDisplay(in: bounds, to: bitmap)
@@ -37,6 +63,6 @@ import XCTest
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try bitmap.representation(using: .png, properties: [:])?.write(to: url)
         }
-        return Data(bytes: try XCTUnwrap(bitmap.bitmapData), count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+        return bitmap
     }
 }

@@ -5300,15 +5300,16 @@ private struct GoHomeGlyph: View {
     var body: some View {
         Button { store.goHome(tab.id) } label: {
             if tiled {
-                TabIcon(tab: tab, size: Look.rowIcon / Look.sidebarFaviconScale)
+                TabIcon(tab: tab, size: Look.rowIcon, faviconScale: 1)
                     .frame(width: Look.returnTileSize, height: Look.returnTileSize)
                     .overlay(alignment: .trailing) {
                     Text("/")
                         .font(.system(size: Look.rowIcon))
                         .foregroundStyle(Look.inkTertiary)
+                        .fixedSize()
                         .frame(width: Look.returnMarkerWidth)
                         .padding(.trailing, 2)
-                        .offset(y: -0.5)
+                        .offset(y: -1)
                         .opacity(returnHovering.wrappedValue || rowHovering ? 0 : 1)
                         .accessibilityHidden(true)
                     }
@@ -5419,6 +5420,7 @@ struct SidebarPageIcon: View {
     var pr: GitHub.Row? = nil
     var rounded = true
     var size: CGFloat = Look.rowIcon
+    var faviconScale: CGFloat = Look.sidebarFaviconScale
 
     var body: some View {
         Group {
@@ -5426,7 +5428,7 @@ struct SidebarPageIcon: View {
             else if easel { EaselIcon().frame(width: 16, height: 16) }
             else if let icon {
                 SiteIcon(icon: icon,
-                         size: rounded ? size * Look.sidebarFaviconScale : size,
+                         size: rounded ? size * faviconScale : size,
                          rounded: rounded)
             }
             else { FaviconPlaceholder(size: size) }
@@ -5451,6 +5453,7 @@ struct SidebarPageIcon: View {
 struct TabIcon: View {
     @ObservedObject var tab: Tab
     var size: CGFloat = 16
+    var faviconScale: CGFloat = Look.sidebarFaviconScale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
     /// Set only on the rows a live folder owns — see `PinnedRow`. Every other row in the app
@@ -5459,7 +5462,7 @@ struct TabIcon: View {
 
     var body: some View {
         SidebarPageIcon(icon: tab.favicon, easel: tab.easelID != nil, pr: pr,
-                        rounded: tab.currentURL?.isFileURL != true, size: size)
+                        rounded: tab.currentURL?.isFileURL != true, size: size, faviconScale: faviconScale)
         .overlay(alignment: .bottomTrailing) {
             if tab.needsRecovery {
                 Image(systemName: "exclamationmark.circle.fill")

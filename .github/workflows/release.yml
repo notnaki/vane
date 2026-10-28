@@ -1,5 +1,5 @@
 # Temporary diagnostic branch only; never merge this workflow replacement.
-name: Focused folder motion diagnostics
+name: Focused sidebar and packaging preflight
 on:
   workflow_dispatch:
 permissions:
@@ -20,8 +20,9 @@ jobs:
         id: cache
         with:
           path: .build
-          key: focused-folder-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved', 'Sources/**/*.swift', 'Tests/**/*.swift') }}
+          key: focused-folder-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved', 'Sources/**/*.swift', 'Tests/**/*.swift') }}
           restore-keys: |
+            focused-folder-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-
             focused-folder-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-
             swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
       - run: python3 scripts/ci-source-state.py restore
@@ -32,19 +33,20 @@ jobs:
         with:
           path: .build
           key: ${{ steps.cache.outputs.cache-primary-key }}
-      - name: Unqualified animation control
-        env:
-          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
+      - name: Discover focused inventory
         run: |
-          set +e
-          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter '^VaneTests[.]FolderRolloutControlTests/' > "$RUNNER_TEMP/folder-control.log" 2>&1
-          status=$?
-          set -e
-          cat "$RUNNER_TEMP/folder-control.log"
-          echo "CONTROL_DRIVER_STATUS=$status"
-          grep -q 'cleanup status=0' "$RUNNER_TEMP/folder-control.log"
-          grep -q "FolderRolloutControlTests.*testNewFolderChildrenRollDownFromTheirHeaderAcrossNativeOwners.*\(passed\|failed\)" "$RUNNER_TEMP/folder-control.log"
-      - name: Qualified folder and legacy keyboard checks
+          swift test --build-system native list --skip-build > "$RUNNER_TEMP/folder-all-tests.txt"
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import pathlib, sys
+          directory = pathlib.Path(sys.argv[1])
+          wanted = {'FolderRolloutTests', 'BufferedSidebarInteractionTests', 'SidebarHoverLayoutTests', 'SpacePreviewParityTests', 'NativeSidebarStableOwnershipTests'}
+          tests = [line.strip() for line in (directory / 'folder-all-tests.txt').read_text().splitlines() if '/' in line and line.strip().split('/')[0].removeprefix('VaneTests.') in wanted]
+          assert {test.split('/')[0].removeprefix('VaneTests.') for test in tests} == wanted
+          assert len(tests) == 45, (len(tests), tests)
+          (directory / 'folder-selected-tests.txt').write_text('\n'.join(tests) + '\n')
+          PY
+          python3 scripts/native-test-shards.py plan --inventory "$RUNNER_TEMP/folder-selected-tests.txt" --suite all --index 1 --count 1 --manifest "$RUNNER_TEMP/folder-selected.json" --filter-output "$RUNNER_TEMP/folder-selected.filter"
+      - name: Three predetermined native cohorts
         timeout-minutes: 10
         env:
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
@@ -52,20 +54,25 @@ jobs:
           set -euo pipefail
           started=$SECONDS
           for iteration in 1 2 3; do
-            if (( SECONDS - started > 240 )); then exit 1; fi
-            log="$RUNNER_TEMP/folder-admitted-$iteration.log"
-            if ! python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter '^VaneTests[.](FolderRolloutTests|BufferedSidebarInteractionTests)/' > "$log" 2>&1; then
+            if (( SECONDS - started > 360 )); then exit 1; fi
+            log="$RUNNER_TEMP/folder-qualified-$iteration.log"
+            export VANE_SIDEBAR_SNAPSHOT_DIR="$RUNNER_TEMP/folder-snapshots-$iteration"
+            if ! python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter "$(cat "$RUNNER_TEMP/folder-selected.filter")" > "$log" 2>&1; then
               cat "$log"
               exit 1
             fi
             cat "$log"
-            grep -q 'Native suite primary status=0; cleanup status=0' "$log"
-            grep -q "FolderRolloutTests.*testFolderChildrenFollowMotionPolicyAcrossNativeOwners.*passed" "$log"
-            grep -q "BufferedSidebarInteractionTests.*testFocusedRowRemainsMountedAcrossScrollAndStillReceivesSpace.*passed" "$log"
+            python3 scripts/native-test-shards.py verify --manifest "$RUNNER_TEMP/folder-selected.json" --log "$log"
           done
-      - uses: actions/upload-artifact@v4
+      - name: Busy-detach packaging integration
+        run: |
+          set -o pipefail
+          ./scripts/test-build-dmg.sh 2>&1 | tee "$RUNNER_TEMP/folder-packaging.log"
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: focused-folder-evidence
+          name: focused-sidebar-evidence
           path: |
             ${{ runner.temp }}/folder-*.log
+            ${{ runner.temp }}/folder-selected*.json
+            ${{ runner.temp }}/folder-snapshots-*/
