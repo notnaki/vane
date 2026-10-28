@@ -5296,7 +5296,8 @@ private struct TabHomeIcon: View {
             // frame is a layout box, not a clip — which is what `rowTarget` is for.
             GoHomeGlyph(store: store, tab: tab).frame(width: size, height: size)
         } else {
-            TabIcon(tab: tab, size: size)
+            TabIcon(tab: tab, size: size,
+                    faviconScale: tab.kind == .pinned ? 1 : Look.sidebarFaviconScale)
         }
     }
 }
@@ -5497,9 +5498,9 @@ struct TabIcon: View {
             }
         }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: tab.needsRecovery)
-        // The swap, when it comes, is a fade rather than a cut — the same 0.15s the rest of
-        // the sidebar's hovers use.
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: tab.favicon)
+        // Background artwork refreshes must not crossfade every sibling on this host.
+        // Even identical images dip in opacity while SwiftUI blends their replacements.
+        .animation(nil, value: tab.favicon)
         .accessibilityHidden(true)          // the row's own label and value say all of this
     }
 }

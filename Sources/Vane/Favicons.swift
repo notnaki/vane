@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import ImageIO
 import WebKit
 
@@ -13,7 +14,11 @@ import WebKit
 /// so 300 hosts retain at most about 5 MiB of bitmap storage rather than site-sized art.
 @MainActor struct FaviconMemoryCache {
     private let capacity: Int
-    private var images: [String: NSImage] = [:]
+    private struct Entry {
+        let image: NSImage
+        let artwork: Data?
+    }
+    private var images: [String: Entry] = [:]
     private var recent: [String] = []
 
     init(capacity: Int = 300) { self.capacity = max(0, capacity) }
@@ -22,15 +27,23 @@ import WebKit
         guard let image = images[key] else { return nil }
         recent.removeAll { $0 == key }
         recent.append(key)
-        return image
+        return image.image
     }
 
-    mutating func store(_ image: NSImage, for key: String) {
-        guard capacity > 0 else { return }
-        images[key] = image
+    @discardableResult
+    mutating func store(_ image: NSImage, for key: String, artwork: Data? = nil) -> NSImage {
+        guard capacity > 0 else { return image }
+        let entry: Entry
+        if let artwork, let existing = images[key], existing.artwork == artwork {
+            entry = existing
+        } else {
+            entry = Entry(image: image, artwork: artwork)
+        }
+        images[key] = entry
         recent.removeAll { $0 == key }
         recent.append(key)
         while recent.count > capacity { images.removeValue(forKey: recent.removeFirst()) }
+        return entry.image
     }
 
     subscript(key: String) -> NSImage? {
@@ -182,7 +195,7 @@ import WebKit
         if let url = tab.currentURL, url.isFileURL { tab.favicon = Files.icon(for: url); return }
         guard let url = tab.currentURL, let key = Favicons.key(for: url) else { tab.favicon = nil; return }
         if let img = memory[key] {
-            tab.favicon = img
+            if tab.favicon !== img { tab.favicon = img }
             if tab.suspended { return }
         }
         // Keep disk reads and decoding off the main actor, including during restoration.
@@ -191,21 +204,21 @@ import WebKit
         Task { @MainActor [weak self, weak tab, weak web] in
             let diskImage = if self?.memory[key] == nil, let file {
                 await Favicons.decoded(file)
-            } else { nil as NSImage? }
+            } else { Icon(image: nil) }
             // Neither the page's script reply nor an icon download belongs to the tab's
             // lifetime. Keep it weak across both awaits so Close can release it at once.
             guard let self, tab?.existingWeb === web, tab?.currentURL == url else { return }
             if let img = self.memory[key] {
-                tab?.favicon = img
-            } else if let diskImage {
-                self.memory[key] = diskImage
-                tab?.favicon = diskImage
+                if tab?.favicon !== img { tab?.favicon = img }
+            } else if let image = diskImage.image {
+                let stored = self.memory.store(image, for: key, artwork: diskImage.artwork)
+                if tab?.favicon !== stored { tab?.favicon = stored }
                 // Cache-only leaves may be waiting on the same host. Publish even
                 // when restoration's worker beats their own pending disk read.
                 self.publishArrival(for: key)
             }
             if tab?.suspended == true {
-                tab?.favicon = self.memory[key]
+                if tab?.favicon !== self.memory[key] { tab?.favicon = self.memory[key] }
                 if self.memory[key] == nil, !self.missed(key), let fallback = Favicons.fallback(for: url) {
                     self.warm(key: key, urls: [fallback], persist: tab?.isPrivate == false, fallback: fallback)
                 }
@@ -226,11 +239,14 @@ import WebKit
             var candidates = declared
             let fallback = self.memory[key] != nil || self.missed(key) ? nil : Favicons.fallback(for: url)
             if let fallback { candidates.append(fallback) }
-            guard !candidates.isEmpty else { tab?.favicon = self.memory[key]; return }
+            guard !candidates.isEmpty else {
+                if tab?.favicon !== self.memory[key] { tab?.favicon = self.memory[key] }
+                return
+            }
             let persist = tab?.isPrivate == false
             await self.warm(key: key, urls: candidates, persist: persist, fallback: fallback).value
             guard tab?.existingWeb === web, tab?.currentURL == url else { return }
-            tab?.favicon = self.memory[key]
+            if tab?.favicon !== self.memory[key] { tab?.favicon = self.memory[key] }
         }
     }
 
@@ -263,9 +279,11 @@ import WebKit
                 self.pending[key]?.urls.removeFirst()
                 let data = await self.fetchImageData(url)
                 if self.pending[key]?.fallbackURLs.contains(url) == true { attemptedFallback = true }
-                guard let data, let img = await Favicons.decoded(data)
-                else { continue }
-                self.memory[key] = img
+                guard let data else { continue }
+                let decoded = await Favicons.decoded(data)
+                guard let image = decoded.image else { continue }
+                let previous = self.memory[key]
+                let img = self.memory.store(image, for: key, artwork: decoded.artwork)
                 received = url
                 self.misses.removeValue(forKey: key)
                 // Eligibility belongs to the successful URL, before publication can
@@ -278,9 +296,9 @@ import WebKit
                     self.pending[key]?.discardAlternatives(through: acceptedRevision)
                 }
                 for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
-                    tab.favicon = img
+                    if tab.favicon !== img { tab.favicon = img }
                 }
-                self.publishArrival(for: key)
+                if previous !== img { self.publishArrival(for: key) }
                 // Show decoded artwork before utility-priority persistence and pruning.
                 // A public fallback does not authorize storing another tab's private-only
                 // declaration. Eligibility follows the successful URL, not the batch.
@@ -547,14 +565,14 @@ import WebKit
         diskInflight[key] = Task { @MainActor [weak self] in
             // PNG/ICO reads and decode are just as capable of blocking a frame as
             // SVG rasterization. One pending read per host also coalesces row redraws.
-            let image = await Self.decoded(file)
+            let decoded = await Self.decoded(file)
             guard let self else { return }
             defer { self.diskInflight[key] = nil }
             guard self.memory[key] == nil else { return }
-            if let image {
-                self.memory[key] = image
+            if let image = decoded.image {
+                let image = self.memory.store(image, for: key, artwork: decoded.artwork)
                 for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
-                    tab.favicon = image
+                    if tab.favicon !== image { tab.favicon = image }
                 }
                 self.publishArrival(for: key)
             } else if !self.missed(key) {
@@ -565,7 +583,30 @@ import WebKit
 
     /// Freshly made here and handed over untouched, which is the whole of what the box
     /// asserts: nothing else has a reference to it on either side.
-    private struct Icon: @unchecked Sendable { let image: NSImage? }
+    private struct Icon: @unchecked Sendable {
+        let image: NSImage?
+        let artwork: Data?
+        nonisolated init(image: NSImage?) {
+            self.image = image
+            artwork = image.flatMap(Favicons.canonicalArtwork)
+        }
+    }
+
+    /// Decode workers compare rendered artwork, so URL/encoding changes do not restart
+    /// every mounted image transition. The bounded bytes share the image's LRU lifetime.
+    private nonisolated static func canonicalArtwork(_ image: NSImage) -> Data? {
+        let side = maxPixelDimension
+        guard let bitmap = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
+                bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+              let bytes = context.data else { return nil }
+        context.clear(CGRect(x: 0, y: 0, width: side, height: side))
+        context.draw(bitmap, in: CGRect(x: 0, y: 0, width: side, height: side))
+        var artwork = Data(bytes: bytes, count: side * side * 4)
+        artwork.append(image.isTemplate ? 1 : 0)
+        return Data(SHA256.hash(data: artwork))
+    }
 
     private nonisolated static func readData(_ file: URL) -> Data? {
         guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
@@ -580,12 +621,12 @@ import WebKit
 
     /// The same read, off the main actor. The caller publishes the result — nothing here
     /// touches the cache, because the cache belongs to the actor this has just left.
-    private nonisolated static func decoded(_ file: URL) async -> NSImage? {
-        await Task.detached(priority: .userInitiated) { read(file) }.value.image
+    private nonisolated static func decoded(_ file: URL) async -> Icon {
+        await Task.detached(priority: .userInitiated) { read(file) }.value
     }
 
-    private nonisolated static func decoded(_ data: Data) async -> NSImage? {
-        await Task.detached(priority: .userInitiated) { Icon(image: image(from: data)) }.value.image
+    private nonisolated static func decoded(_ data: Data) async -> Icon {
+        await Task.detached(priority: .userInitiated) { Icon(image: image(from: data)) }.value
     }
 
     private func writeDisk(_ key: String, _ data: Data) async {
