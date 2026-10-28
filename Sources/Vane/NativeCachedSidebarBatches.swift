@@ -738,7 +738,11 @@ private final class NativeBatchMouseObservation {
                     $0.visible.depth <= row.visible.depth
                 } ?? rows.endIndex : index + 1
                 let revealedCount = rows[(index + 1)..<end].filter { previousRows[$0.id] == nil }.count
-                folderAncestors.append((row.visible.depth, index, row.id, CGFloat(revealedCount) * pitch))
+                // Hundreds of offscreen children must not keep the viewport
+                // empty while the whole document rolls past the reveal edge.
+                let visibleTravel = max(pitch, disclosureViewport.maxY - CGFloat(index + 1) * pitch)
+                folderAncestors.append((row.visible.depth, index, row.id,
+                    min(CGFloat(revealedCount) * pitch, visibleTravel)))
             }
         }
         let currentOwners = Set(ownership.values)

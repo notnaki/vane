@@ -445,6 +445,36 @@ import XCTest
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
     }
 
+    func testColdWanderedPinMarkerMatchesTheRestoredRow() throws {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        let home = URL(string: "https://invalid.test/pinned")!
+        let away = URL(string: "https://invalid.test/elsewhere")!
+        let outgoing = Space(name: "Outgoing", profileID: profile)
+        let incoming = Space(name: "Incoming", profileID: profile, pinnedTabURLs: [home])
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([outgoing, incoming], for: profile))
+        XCTAssertTrue(Suspension.SpaceState.save([home.absoluteString: Parked(title: "Pinned document", page: away)],
+            space: incoming.id, profileID: profile, in: Store.directory))
+        let store = TabStore(profileID: profile, space: outgoing, session: [])
+        defer {
+            store.dropStashes()
+            let tabs = store.tabs
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(tabs)
+            Store.forget(profile)
+            try? FileManager.default.removeItem(at: Suspension.SpaceState.url(for: profile, in: Store.directory))
+            try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: profile, in: Store.directory))
+        }
+        let before = try pixels(store.swipePreview(in: incoming))
+        XCTAssertTrue(store.tabs.isEmpty)
+        store.switchTo(space: incoming)
+        XCTAssertFalse(try XCTUnwrap(store.tabs.first).atHome)
+        let after = try pixels(SidebarSpaceSections().environmentObject(store))
+        XCTAssertEqual(before.count, after.count)
+        XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10,
+                                "The saved preview must use the same close-to-favicon slash as the live return tile")
+    }
+
     private func pixels<V: View>(_ preview: V) throws -> Data {
         try SidebarSnapshot.pixels(preview)
     }

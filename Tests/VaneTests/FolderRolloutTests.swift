@@ -30,16 +30,22 @@ import XCTest
         try await checkRollout(reduceDuringMotion: false, detachDuringStart: true)
     }
 
-    private func checkRollout(reduceDuringMotion: Bool, detachDuringStart: Bool = false) async throws {
+    func testLargeFolderRolloutRevealsVisibleRowsWithoutTravellingItsEntireDocument() async throws {
+        try await checkRollout(reduceDuringMotion: false, largeFolder: true)
+    }
+
+    private func checkRollout(reduceDuringMotion: Bool, detachDuringStart: Bool = false,
+                              largeFolder: Bool = false) async throws {
         TestEnvironment.prepare()
         let saver = BatterySaver.shared.mode
         BatterySaver.shared.setMode(.off)
         defer { BatterySaver.shared.setMode(saver) }
         let markers = Markers()
         let folder = Folder(name: "Rollout", collapsed: true)
-        let tabs = (0..<24).map { _ in Tab(isPrivate: true) }
+        let childCount = largeFolder ? 300 : 12
+        let tabs = (0..<(childCount + 12)).map { _ in Tab(isPrivate: true) }
         let shape = Pins(entries: [.init(row: .folder(folder))] + tabs.enumerated().map {
-            .init(row: .tab($0.element.id.uuidString), parent: $0.offset < 12 ? folder.id : nil)
+            .init(row: .tab($0.element.id.uuidString), parent: $0.offset < childCount ? folder.id : nil)
         })
         let modelIDs = Set(shape.entries.map(\.id))
         let view = NativeCachedSidebarBatchesView<Marker>(frame: NSRect(x: 0, y: 0, width: 250, height: 750))
@@ -62,6 +68,16 @@ import XCTest
         var expanded = shape
         expanded.toggle(folder: folder.id)
         configure(expanded, animation: .linear(duration: 1))
+        if largeFolder {
+            try await compatibilityWait { markers.views[tabs[0].id.uuidString]?.window != nil }
+            try await Task.sleep(for: .milliseconds(250))
+            let revealed = tabs.prefix(16).compactMap { markers.views[$0.id.uuidString] }.filter {
+                $0.convert($0.bounds, to: view).intersects(CGRect(x: 0, y: 41, width: 250, height: 709))
+            }
+            XCTAssertFalse(revealed.isEmpty,
+                           "A large folder must reveal its visible rows without rolling through 300 offscreen slots")
+            return
+        }
         if detachDuringStart {
             window.contentView = nil
             try await Task.sleep(for: .milliseconds(100))
