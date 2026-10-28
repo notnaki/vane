@@ -3813,6 +3813,9 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     var dimmed = false
     var keyboardEnabled = true
     var labelSpacing: CGFloat = Look.rowSpacing
+    var hoverLeadingInset: CGFloat = 0
+    var hoverHighlight = true
+    var trailingInset: CGFloat = Look.rowTrailingInset
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let label: () -> Label
@@ -3869,12 +3872,13 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
                 .vaneMotionPolicy()
         }
         .padding(.leading, Look.rowInset)
-        .padding(.trailing, Look.rowTrailingInset)
+        .padding(.trailing, trailingInset)
         .frame(width: morph?.width, height: morph?.height ?? Look.rowHeight)
         .background {
             RoundedRectangle(cornerRadius: Look.pillRadius)
                 // Fade one ink colour rather than interpolating toward transparent black.
                 .fill(Look.ink(1))
+                .padding(.leading, selected || ticked ? 0 : hoverLeadingInset)
                 .opacity(highlightOpacity * (1 - (morph?.progress ?? 0)))
                 // Clear the old highlight promptly as the pointer moves to another row.
                 // Titles, inline editors and hit targets keep their final geometry.
@@ -3895,7 +3899,7 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     }
 
     private var highlightOpacity: Double {
-        selected || ticked ? Look.selectedAlpha : (held || hovering ? Look.hoveredAlpha : 0)
+        selected || ticked ? Look.selectedAlpha : ((held || hovering) && hoverHighlight ? Look.hoveredAlpha : 0)
     }
 }
 
@@ -4355,12 +4359,13 @@ struct LivePRTitle: View {
     var pr: GitHub.Row?
     var developerEndpoint: String? = nil
     var returnCaption = false
+    var returnCaptionSelected = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ShimmerTitle(title: title, reveal: reveal)
             if returnCaption {
-                Text("Back to Pinned URL")
+                Text(returnCaptionSelected ? "Back to Pinned URL" : "Separate From Pinned Tab")
                     .font(Look.small)
                     .foregroundStyle(Look.inkTertiary)
                     .transition(.offset(y: 4).combined(with: .opacity))
@@ -4424,8 +4429,12 @@ struct SidebarTabPresentation: View {
         SidebarRow(selected: selected, ticked: ticked, held: held,
                    keyboardEnabled: !previewing && !renaming,
                    labelSpacing: returning ? 6 : Look.rowSpacing,
+                   hoverLeadingInset: returning ? Look.rowInset + Look.rowIcon + Look.returnMarkerGap : 0,
+                   hoverHighlight: !returning || !returnHovering,
+                   trailingInset: Look.tabRowTrailingInset,
                    action: action) {
-            TabHomeIcon(store: store, tab: tab, returnHovering: held ? .constant(returnHovering) : $returnHovering)
+            TabHomeIcon(store: store, tab: tab, returnHovering: held ? .constant(returnHovering) : $returnHovering,
+                        rowSelected: selected)
         } label: {
             HStack(spacing: 6) {
                 // Keep the away marker visible during rename and Return hover too.
@@ -4434,7 +4443,8 @@ struct SidebarTabPresentation: View {
                 } else {
                     LivePRTitle(title: title, reveal: tab.titleReveal, pr: pr,
                                 developerEndpoint: tab.developer ? DeveloperMode.endpoint(tab.currentURL) : nil,
-                                returnCaption: returning && returnHovering)
+                                returnCaption: returning && returnHovering,
+                                returnCaptionSelected: selected)
                         // A stable title inside a fixed slot: the growing caption stack
                         // moves the title upward without jumping the label's layout box.
                         .frame(height: Look.rowHeight)
@@ -5242,6 +5252,7 @@ private struct TabHomeIcon: View {
     let store: TabStore
     @ObservedObject var tab: Tab
     @Binding var returnHovering: Bool
+    var rowSelected = false
     var size: CGFloat = Look.rowIcon
     @Environment(\.rowHovering) private var hovering
     @Environment(\.ghostTileMorph) private var morph
@@ -5252,10 +5263,11 @@ private struct TabHomeIcon: View {
             // its return control belongs in the tile corner, not in the icon's place.
             TabIcon(tab: tab, size: size)
         } else if tab.kind == .pinned && !tab.atHome {
-            GoHomeGlyph(store: store, tab: tab, tiled: true, returnHovering: $returnHovering)
+            GoHomeGlyph(store: store, tab: tab, tiled: true, returnHovering: $returnHovering,
+                        rowSelected: rowSelected)
                 // Keep favicon and slash inside one return target. Hovering the
                 // marker must reveal the caption without shifting the title.
-                .frame(width: size + 10, height: size)
+                .frame(width: size + Look.returnMarkerGap + Look.returnMarkerWidth, height: size)
         } else if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: hovering) {
             // The favicon's box, so the row's text starts exactly where it always did. The
             // glyph's hit target is bigger than this and is allowed to spill past it — a
@@ -5277,24 +5289,30 @@ private struct GoHomeGlyph: View {
     let tab: Tab
     var tiled = false
     var returnHovering: Binding<Bool> = .constant(false)
+    var rowSelected = false
+    @Environment(\.rowHovering) private var rowHovering
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         Button { store.goHome(tab.id) } label: {
             if tiled {
-                HStack(spacing: 4) {
+                HStack(spacing: Look.returnMarkerGap) {
                     TabIcon(tab: tab).frame(width: Look.rowIcon, height: Look.rowIcon)
                     Text("/")
-                        .font(Look.rowTitle.weight(.bold))
+                        .font(Look.rowTitle)
                         .foregroundStyle(Look.inkTertiary)
-                        .frame(width: 6)
+                        .frame(width: Look.returnMarkerWidth)
+                        .opacity(returnHovering.wrappedValue || rowHovering ? 0 : 1)
                         .accessibilityHidden(true)
                 }
                 .padding(.horizontal, 6)
                 .frame(height: Look.returnTileSize)
                 .background(returnHovering.wrappedValue ? chromeTheme.hovered : .clear,
-                            in: .rect(cornerRadius: Look.pillRadius))
+                            in: UnevenRoundedRectangle(topLeadingRadius: Look.pillRadius,
+                                bottomLeadingRadius: Look.pillRadius,
+                                bottomTrailingRadius: rowSelected ? 0 : Look.pillRadius,
+                                topTrailingRadius: rowSelected ? 0 : Look.pillRadius))
                 .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
                            value: returnHovering.wrappedValue)
                 .contentShape(.rect(cornerRadius: Look.pillRadius))

@@ -37,6 +37,9 @@ import XCTest
     private func checkRollout(reduceDuringMotion: Bool, detachDuringStart: Bool = false,
                               largeFolder: Bool = false) async throws {
         TestEnvironment.prepare()
+        let previousPolicy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.accessory)
+        defer { NSApp.setActivationPolicy(previousPolicy) }
         let saver = BatterySaver.shared.mode
         BatterySaver.shared.setMode(.off)
         defer { BatterySaver.shared.setMode(saver) }
@@ -49,10 +52,12 @@ import XCTest
         })
         let modelIDs = Set(shape.entries.map(\.id))
         let view = NativeCachedSidebarBatchesView<Marker>(frame: NSRect(x: 0, y: 0, width: 250, height: 750))
-        let window = NSWindow(contentRect: view.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: view.frame, styleMask: .titled, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = view
-        window.orderFront(nil)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window.orderFrontRegardless()
         defer { view.detach(); window.contentView = nil; window.close(); SharedTabs.release(tabs) }
         func configure(_ shape: Pins, animation: Animation?) {
             let rows = SidebarRows(tabs: tabs, splits: [], shape: shape).rows
@@ -63,6 +68,11 @@ import XCTest
             view.reconcile(visible: view.bounds)
             view.layoutSubtreeIfNeeded()
         }
+        try await compatibilityWait {
+            NSApp.isActive && window.isKeyWindow && window.occlusionState.contains(.visible)
+        }
+        print("FOLDER_ROLLOUT_CONTEXT active=\(NSApp.isActive) key=\(window.isKeyWindow) visible=\(window.occlusionState.rawValue) reduced=\(Motion.reduced) os=\(ProcessInfo.processInfo.operatingSystemVersionString)")
+        XCTAssertFalse(Motion.reduced, "This animation fixture must admit the unreduced motion path")
         configure(shape, animation: nil)
         try await Task.sleep(for: .milliseconds(80))
         var expanded = shape

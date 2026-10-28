@@ -138,7 +138,11 @@ import XCTest
     func testFocusedRowRemainsMountedAcrossScrollAndStillReceivesSpace() async throws {
         let f = try await fixture(), id = f.store.tabs[3].id.uuidString
         f.state.requested = id
-        try await compatibilityWait { f.state.focused == id }
+        do { try await compatibilityWait { f.state.focused == id } }
+        catch {
+            print("BUFFERED_FOCUS_CONTEXT active=\(NSApp.isActive) key=\(f.window.isKeyWindow) visible=\(f.window.occlusionState.rawValue) responder=\(String(describing: f.window.firstResponder)) requested=\(String(describing: f.state.requested)) focused=\(String(describing: f.state.focused)) anchorMounted=\(anchor(id, in: f.host)?.window === f.window)")
+            throw error
+        }
         let original = try XCTUnwrap(anchor(id, in: f.host))
         let document = try XCTUnwrap(f.scroll.documentView)
         f.scroll.contentView.scroll(to: NSPoint(x: 0, y: document.frame.height - f.scroll.contentView.bounds.height))

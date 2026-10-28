@@ -54,6 +54,8 @@ enum Look {
     static let rowSpacing: CGFloat = 11
     /// A wandered pin's Return tile draws around the ordinary favicon slot.
     static let returnTileSize: CGFloat = rowHeight
+    static let returnMarkerGap: CGFloat = 3
+    static let returnMarkerWidth: CGFloat = 4
     /// From a row's fill to its trailing edge: the close ×'s target on a tab row, and simply
     /// where the title's box stops on the rows that have no glyph at all — New Tab, and the
     /// Space preview's rows in `SpacesUI`. Left where it was when the × grew a target
@@ -61,6 +63,8 @@ enum Look {
     /// points further in than it did, and buying that back by trimming the inset would move
     /// the trailing edge of every row in the app, including the ones with nothing in it.
     static let rowTrailingInset: CGFloat = 12
+    /// Tab controls sit near the pill edge while keeping their full press target.
+    static let tabRowTrailingInset: CGFloat = 6
     /// A row's trailing glyphs — the speaker and the close × — are pressable squares, not
     /// bare glyphs. `rowGlyph` draws an × 15×13 in a 36pt row: a third of the row's height
     /// to aim at, and a near miss is not nothing, because the row answers a click of its
