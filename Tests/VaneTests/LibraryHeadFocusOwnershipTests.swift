@@ -66,6 +66,13 @@ import XCTest
         try await LibraryFocusFixture.wait("initial Downloads editor", in: window) {
             prompt() == LibrarySection.downloads.searchPrompt
         }
+        let field = try XCTUnwrap((window.firstResponder as? NSTextView)?.delegate as? NSTextField)
+        var ink: NSColor?
+        field.effectiveAppearance.performAsCurrentDrawingAppearance {
+            ink = field.textColor?.usingColorSpace(.deviceRGB)
+        }
+        XCTAssertEqual(try XCTUnwrap(ink).alphaComponent, 0.8, accuracy: 0.001,
+                       "Native search text must retain the Library's primary ink strength")
         // A departing head can remain mounted while a replacement appears. Its
         // delayed onAppear request has no authority over the selected section.
         state.mountsOutgoing = true
