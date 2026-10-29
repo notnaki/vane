@@ -104,7 +104,7 @@ private struct SpaceFooterIcon: View {
     }
 
     var body: some View {
-        Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
+        SpaceIcon(icon, filledCloud: true)
             .font(.system(size: size))
             .scaleEffect(scale)
             // Replacing only the glyph cancels an in-flight presentation animation

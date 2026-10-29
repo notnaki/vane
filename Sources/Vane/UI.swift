@@ -2611,7 +2611,7 @@ private struct SpaceRow: View {
         return HStack(spacing: 0) {
             HStack(spacing: Look.rowSpacing) {
                 ZStack {
-                    Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
+                    SpaceIcon(icon, filledCloud: true)
                         .font(Look.spaceIcon)
                         .foregroundStyle(Look.inkPrimary)
                         .opacity(highlighted ? 0 : 1)
@@ -2963,45 +2963,19 @@ private struct SpaceMenu: View {
     if !(await SessionPersistence.shared.flush()) { Toasts.show("Could not save session", in: store) }
 }
 
-/// A grid of SF Symbols. ponytail: a fixed list, not a symbol browser — 24 covers what a
-/// space is ever named after, and the alternative is shipping a search field over an API
-/// that cannot enumerate itself.
+/// The sidebar shares its symbol and emoji picker with the theme editor.
 private struct SpaceIcons: View {
-    @Environment(\.spaceChromeTheme) private var chromeTheme
     let store: TabStore
     let space: Space
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.fixed(Look.rowHeight), spacing: 6), count: 6),
-                  spacing: 6) {
-            ForEach(Spaces.icons, id: \.self) { name in
-                Button { pick(name) } label: { tile(name) }
-                    .buttonStyle(TactileButtonStyle())
-                    .accessibilityLabel(name)
-                    .accessibilityAddTraits(current == name ? [.isButton, .isSelected] : .isButton)
-            }
+        SpaceIconPicker(current: space.icon ?? "cloud") { icon in
+            var edited = space
+            edited.icon = icon
+            store.update(space: edited)
+            dismiss()
         }
-        .padding(12)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Space icon")
-    }
-
-    private var current: String { space.icon ?? "cloud" }
-
-    private func tile(_ name: String) -> some View {
-        Image(systemName: name)
-            .font(Look.icon)
-            .frame(width: Look.rowHeight, height: Look.rowHeight)
-            .background(current == name ? chromeTheme.selected : .clear,
-                        in: .rect(cornerRadius: Look.pillRadius))
-    }
-
-    private func pick(_ name: String) {
-        var edited = space
-        edited.icon = name
-        store.update(space: edited)
-        dismiss()
     }
 }
 
@@ -5226,7 +5200,7 @@ private struct TabRowTrailing: View {
             let glyph = TabRowGlyph.decide(kind: closing.kind, suspended: closing.suspended,
                                            pane: pane, atHome: closing.atHome)
             Button { store.close(closing.id) } label: {
-                Image(systemName: glyph.symbol)
+                SpaceIcon(glyph.symbol)
                     .font(.system(size: 13, weight: .semibold))
                     .rowTarget()
                     .background {

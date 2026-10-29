@@ -28,6 +28,7 @@ struct ThemeEditor: View {
     var saveSpace: ((Space) -> Void)? = nil
 
     @State private var name = ""
+    @State private var choosingIcon = false
     /// Which page of presets the chevrons have walked to.
     @State private var page = 0
     @State private var wheel: ThemeWheel?
@@ -113,19 +114,19 @@ struct ThemeEditor: View {
     /// pill, the icon on the left as a menu, the field filling the rest.
     private var nameRow: some View {
         HStack(spacing: Look.rowSpacing) {
-            Menu {
-                ForEach(Spaces.icons, id: \.self) { symbol in
-                    Button { edit { $0.icon = symbol } } label: { Label(symbol, systemImage: symbol) }
-                }
-            } label: {
-                Image(systemName: current.icon ?? "cloud").font(Look.spaceIcon)
+            Button { choosingIcon = true } label: {
+                SpaceIcon(current.icon ?? "cloud").font(Look.spaceIcon)
             }
-            .menuStyle(.borderlessButton).tint(Look.inkSecondary)
-            .menuIndicator(.hidden)
-            .fixedSize()
+            .buttonStyle(.plain)
             .foregroundStyle(Look.inkSecondary)
             .help("Space icon")
             .accessibilityLabel("Space icon")
+            .popover(isPresented: $choosingIcon) {
+                SpaceIconPicker(current: current.icon ?? "cloud") { icon in
+                    edit { $0.icon = icon }
+                    choosingIcon = false
+                }
+            }
 
             TextField("Space name", text: $name)
                 .textFieldStyle(.plain)

@@ -91,6 +91,13 @@ app exports its page link.
 
 Create a Space from **Spaces → New Space…** or the sidebar creation menu. Choose a name,
 profile, and appearance. Right-click its name or footer button to edit its theme.
+Choose **Icon** for a symbol grid or **Emoji** for searchable emoji and category buttons.
+The smiley beside search opens the macOS emoji picker; the trash control resets the icon.
+Emoji stay visible in the sidebar, footer, Library, search, and Space menus.
+
+In **Spaces → Manage Spaces…**, click a card’s header or **Go to Space** to close
+Library and show that Space. Drag a card’s footer handle onto another card to reorder
+Spaces within the same profile. Page rows can still be dragged between Spaces.
 
 Hover the Space card to reveal its chevron and `…` menu. Click the card to collapse or
 expand its pinned tabs; Today stays visible. Double-click its name to rename the Space.

@@ -9,15 +9,23 @@ import Foundation
 /// it. Vane wrote Favourites into each Space (`Space.pinnedURLs`), so switching Space swapped
 /// the grid out — `migrate` is what un-does that on the first read, once, in place.
 enum Spaces {
-    /// What a Space's icon can be. ponytail: a fixed list, not a symbol browser — 24 covers
-    /// what a Space is ever named after, and the alternative is shipping a search field over
-    /// an API that cannot enumerate itself. (Arc offers the emoji picker; an SF Symbol grid
-    /// is the same idea in the toolkit Vane is actually built on.)
+    /// Curated SF Symbols offered beside the system emoji picker.
     static let icons = [
         "cloud", "star", "bolt", "book", "briefcase", "gamecontroller",
         "music.note", "heart", "leaf", "flame", "house", "cart",
         "graduationcap", "hammer", "paintbrush", "globe", "camera", "film",
         "airplane", "car", "cup.and.saucer", "sparkles", "moon", "sun.max",
+    ]
+
+    /// Filled, compact symbols for the Space picker. Persisted legacy names remain valid.
+    static let pickerIcons = [
+        "star.fill", "bookmark.fill", "heart.fill", "flag.fill", "bolt.fill", "triangle.fill", "asterisk", "bell.fill",
+        "lightbulb.fill", "triangle.lefthalf.filled", "square.grid.2x2.fill", "circle.grid.3x3.fill", "square.3.layers.3d", "cylinder.fill", "archivebox.fill", "square.on.square.fill",
+        "folder.fill", "tray.fill", "calendar", "envelope.fill", "checkmark.square.fill", "doc.fill", "book.fill", "message.fill",
+        "person.2.fill", "terminal.fill", "wrench.and.screwdriver.fill", "square.fill", "oval.portrait.fill", "circle.fill", "moon.fill", "sun.max.fill",
+        "globe.americas.fill", "leaf.fill", "cloud.fill", "pawprint.fill", "basket.fill", "gift.fill", "bed.double.fill", "fork.knife",
+        "dumbbell.fill", "airplane", "music.note", "paintpalette.fill", "video.fill", "bandage.fill", "chevron.left.forwardslash.chevron.right", "globe.europe.africa.fill",
+        "cloud", "map.fill", "bird.fill", "cup.and.saucer.fill", "flame.fill", "scroll.fill", "hand.thumbsup.fill", "tram.fill",
     ]
 
     // MARK: - Legacy migration

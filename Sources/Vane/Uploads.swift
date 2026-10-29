@@ -34,13 +34,24 @@ import WebKit
 
     static func choose(parameters: WKOpenPanelParameters, tab: Tab, web: WKWebView,
                        completion: @escaping @MainActor ([URL]?) -> Void) {
-        guard tab.existingWeb === web, let window = web.window, window.isVisible,
+        guard tab.existingWeb === web else { completion(nil); return }
+        choose(parameters: parameters, id: tab.id, web: web, isCurrent: { [weak tab, weak web] in
+            guard let tab, let web else { return false }
+            return tab.existingWeb === web
+        }, completion: completion)
+    }
+
+    /// Extension pages share the same panel ownership and directory safeguards.
+    /// The caller revokes this request when its document or presentation goes away.
+    static func choose(parameters: WKOpenPanelParameters, id: UUID, web: WKWebView,
+                       isCurrent: @escaping @MainActor () -> Bool,
+                       completion: @escaping @MainActor ([URL]?) -> Void) {
+        guard isCurrent(), let window = web.window, window.isVisible,
               !web.isHiddenOrHasHiddenAncestor, window.attachedSheet == nil,
-              pending[tab.id] == nil else { completion(nil); return }
-        let id = tab.id
-        let request = Pending(window: window, isCurrent: { [weak tab, weak web, weak window] in
-            guard let tab, let web, let window else { return false }
-            return tab.existingWeb === web && web.window === window && window.isVisible
+              pending[id] == nil else { completion(nil); return }
+        let request = Pending(window: window, isCurrent: { [weak web, weak window] in
+            guard let web, let window else { return false }
+            return isCurrent() && web.window === window && window.isVisible
                 && !web.isHiddenOrHasHiddenAncestor
         }, completion: completion)
         let panel = request.panel

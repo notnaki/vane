@@ -1663,7 +1663,10 @@ import WebKit
         guard let popover = action.popupPopover else {
             throw Failure("“\(name)” has no popup to show.")
         }
-        if let web = action.popupWebView { userAgent.track(web) }
+        if let web = action.popupWebView {
+            userAgent.track(web)
+            configurePageUI(web, context: context, popup: popover)
+        }
         let id = ObjectIdentifier(context)
         popovers[id] = (popovers[id] ?? []).filter(\.isShown) + [popover]
         // The button that ran the action: the pill's pinned glyph, or the extension's row in
@@ -1758,9 +1761,32 @@ import WebKit
     // MARK: Helpers
 
     private var pages: [(context: WKWebExtensionContext, window: NSWindow)] = []
+    private var pageUI: [ObjectIdentifier: ExtensionPageUI] = [:]
+
+    private func configurePageUI(_ web: WKWebView, context: WKWebExtensionContext,
+                                 popup: NSPopover? = nil, window: NSWindow? = nil) {
+        pageUI = pageUI.filter { $0.value.hasView }
+        let key = ObjectIdentifier(web)
+        let delegate = pageUI[key] ?? ExtensionPageUI(web: web, context: context, isEnabled: { [weak self, weak context] in
+            guard let self, let context else { return false }
+            return !self.invalidated && context.isLoaded && self.installed.contains { $0 === context }
+        }, didClose: { [weak self] closed in
+            guard let self, self.pageUI[key] === closed else { return }
+            self.pageUI.removeValue(forKey: key)
+        })
+        pageUI[key] = delegate
+        web.uiDelegate = delegate
+        web.navigationDelegate = delegate
+        if let popup { delegate.observe(popup) }
+        if let window { delegate.observe(window) }
+    }
+
     private var popovers: [ObjectIdentifier: [NSPopover]] = [:]
 
     private func closePages(for context: WKWebExtensionContext) {
+        for key in Array(pageUI.keys) where pageUI[key]?.context === context {
+            pageUI.removeValue(forKey: key)?.invalidate()
+        }
         for popover in popovers.removeValue(forKey: ObjectIdentifier(context)) ?? [] { popover.close() }
         for page in pages where page.context === context {
             (page.window.contentView as? WKWebView)?.stopLoading()
@@ -1841,6 +1867,7 @@ import WebKit
                               backing: .buffered, defer: false)
         window.title = title
         window.contentView = web
+        configurePageUI(web, context: context, window: window)
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)
