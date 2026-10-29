@@ -53,7 +53,10 @@ embedded forms need focus. Private windows do not use or save credentials.
 Submission offers are explicitly unverified: Review lets you correct the website, username
 and password before saving. New-account collisions require a separate update review. Visible
 form rejection markers retract the attempt; submission is not proof of a successful sign-in.
-Never Saved is reversible in Settings. Existing imports/exports remain available.
+Never Saved is reversible in Settings. Turn off **Offer to save passwords** in
+**Settings → Passwords** to stop browser save/update offers for the selected profile.
+Pending offers are dismissed. Saved-password autofill, manual edits, and imports remain available.
+The setting defaults to on and is independent for each profile.
 
 See [Password manager](PASSWORD-MANAGER.md) for controls, security boundaries, fixture evidence
 and remaining real-site limitations. Passkeys remain pending Apple approval and provisioning.
@@ -71,6 +74,7 @@ Import from Arc reads local SQLite snapshots and decrypts supported `v10` creden
 using Arc's Keychain Safe Storage key. Passwords keep their scheme and port; autofill
 uses HTTPS and matches the full origin. Existing Vane passwords are kept, and duplicate
 Arc logins use the most recently modified password (creation time in older schemas).
+Arc Space emoji icons and recognized built-in icons are preserved during import.
 Pinned Arc split views keep their pane order, orientation, shares, focus, and sidebar
 position. Unsupported or damaged splits keep their available pages as ordinary tabs in
 order; skipped sidebar row types are reported and their reachable children are preserved.

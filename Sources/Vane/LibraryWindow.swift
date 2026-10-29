@@ -472,6 +472,8 @@ extension Library {
             target = hopped
         }
         target.switchTo(space: space)
+        close(store)
+        if target !== store { close(target) }
         rebuild()
         return target
     }
@@ -1718,6 +1720,7 @@ private struct SpacesPane: View {
             .padding(.top, Look.libraryHead)
         }
         .scrollContentBackground(.hidden)
+        .animation(Motion.reduced ? nil : Look.quick, value: spaces.map(\.id))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
@@ -1888,7 +1891,7 @@ private struct SpaceCard: View {
             .clipShape(.rect(cornerRadius: Look.cardRadius))
         }
         .hairline(radius: Look.cardRadius, over ? chromeTheme.selectedEdge : Look.cardStroke)
-        .onDrop(of: [.utf8PlainText], isTargeted: $over) { drop($0) }
+        .onDrop(of: [SpaceCardDragging.type, .utf8PlainText], isTargeted: $over) { drop($0) }
         // A Space made from the Library's `+` is named on its own card, not on a sidebar
         // button that is not on screen. See `NewSpaceCard`.
         .onChange(of: library.naming, initial: true) { fulfillNamingRequest() }
@@ -1905,7 +1908,7 @@ private struct SpaceCard: View {
     /// same theme editor the sidebar's `+` does — one place in the app renames a Space.
     private var header: some View {
         HStack(spacing: Look.captionGap * 3) {
-            Image(systemName: space.icon ?? "cloud").font(Look.caption)
+            SpaceIcon(space.icon ?? "cloud").font(Look.caption)
                 .foregroundStyle(Look.inkSecondary)
             Text(space.name).font(Look.small).lineLimit(1)
                 .foregroundStyle(space.id == store.currentSpaceID ? Look.inkPrimary : Look.inkSecondary)
@@ -1936,9 +1939,7 @@ private struct SpaceCard: View {
         .onTapGesture { Library.show(space, from: store) }
     }
 
-    /// Arc's card foot: the handle a card is dragged by, and the "…" that holds what is done
-    /// to the Space itself. ponytail ceiling: reordering Spaces is the sidebar's own drag —
-    /// the handle switches to the Space rather than picking the card up.
+    /// Space navigation, an explicit reorder handle, and the card's actions.
     private var footer: some View {
         HStack(spacing: 0) {
             Button { Library.show(space, from: store) } label: {
@@ -1947,6 +1948,14 @@ private struct SpaceCard: View {
             .buttonStyle(.plain).font(Look.caption).foregroundStyle(Look.inkTertiary)
             .vaneTooltip("Go to \(space.name)")
             .accessibilityLabel("Go to \(space.name)")
+            Spacer(minLength: 0)
+            Image(systemName: "line.3.horizontal")
+                .font(Look.caption).foregroundStyle(Look.inkTertiary)
+                .frame(width: Look.rowTarget, height: Look.cardRow)
+                .contentShape(.rect)
+                .onDrag { SpaceCardDragging.provider(for: space) }
+                .vaneTooltip("Reorder \(space.name)", hint: "Drag to another Space in this profile")
+                .accessibilityLabel("Reorder \(space.name)")
             Spacer(minLength: 0)
             // ponytail: no Delete here. The sidebar's Space menu already deletes one, with
             // its own confirmation, and a second route to the same irreversible thing is a
@@ -1990,6 +1999,14 @@ private struct SpaceCard: View {
     /// singleton behind — cannot be picked up by a later drop of somebody else's text.
     private func drop(_ providers: [NSItemProvider]) -> Bool {
         over = false
+        if let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(SpaceCardDragging.type.identifier) }) {
+            let target = space, owner = store
+            _ = provider.loadDataRepresentation(forTypeIdentifier: SpaceCardDragging.type.identifier) { data, _ in
+                guard let data else { return }
+                Task { @MainActor in SpaceCardDragging.accept(data, onto: target, in: owner) }
+            }
+            return true
+        }
         guard let from = LibraryDragging.shared.from, from != space.id,
               let provider = providers.first else { return false }
         let pinned = LibraryDragging.shared.pinned

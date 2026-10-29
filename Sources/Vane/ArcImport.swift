@@ -45,6 +45,7 @@ struct ArcSpace: Equatable, Sendable {
     let pinned: [ArcRow]
     let today: [ArcRow]
     var hasSplitViews = false
+    var icon: String? = nil
 }
 
 /// Everything Vane wants out of `StorableSidebar.json`: the spaces, and each profile's
@@ -132,6 +133,20 @@ struct ArcSidebar: Equatable, Sendable {
               let r = mid["red"] as? Double, let g = mid["green"] as? Double,
               let b = mid["blue"] as? Double else { return nil }
         return hex(red: r, green: g, blue: b)
+    }
+
+    /// Preserve Arc emoji before considering its built-in symbol spelling.
+    static func spaceIcon(_ customInfo: Any?) -> String? {
+        guard let info = customInfo as? [String: Any],
+              let type = info["iconType"] as? [String: Any] else { return nil }
+        if let text = type["emoji_v2"] as? String, let emoji = Spaces.emojiIcon(text) { return emoji }
+        if let number = type["emoji"] as? Int, number >= 0,
+           let scalar = UnicodeScalar(number), let emoji = Spaces.emojiIcon(String(scalar)) { return emoji }
+        guard let symbol = type["icon"] as? String else { return nil }
+        let aliases = ["briefcase": "briefcase", "game": "gamecontroller", "headphones": "headphones",
+                       "computer": "desktopcomputer", "code": "chevron.left.forwardslash.chevron.right"]
+        if Spaces.icons.contains(symbol) { return symbol }
+        return aliases[symbol]
     }
 
     /// Arc's automatic folder, as the `LiveSource` Vane keeps the same folder filled from.
@@ -265,7 +280,7 @@ struct ArcSidebar: Equatable, Sendable {
                                        pinned: pinned, today: today,
                                        hasSplitViews: seen.contains { id in
                                            (items[id]?["data"] as? [String: Any])?["splitView"] != nil
-                                       }))
+                                       }, icon: spaceIcon(space["customInfo"])))
         }
 
         for (descriptor, container) in pairs(box["topAppsContainerIDs"]) {
@@ -896,6 +911,7 @@ enum ArcImport {
         let (todayShape, todayURLs, todayTitles) = shape(arc.today)
 
         var space = ProfileManager.shared.createSpace(name: arc.title, in: profileID)
+        space.icon = arc.icon ?? space.icon
         space.pinnedTabURLs = pinnedURLs
         space.tabURLs = todayURLs
         let workspace = layout(pinned: arc.pinned, today: arc.today)

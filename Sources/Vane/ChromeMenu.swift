@@ -286,7 +286,7 @@ private struct ChromeMenuSurface: View {
         let item = items[index]
         return Button { choose(index) } label: {
             HStack(spacing: 8) {
-                Image(systemName: item.symbol).font(.system(size: 16, weight: .medium))
+                SpaceIcon(item.symbol).font(.system(size: 16, weight: .medium))
                     .frame(width: 20).accessibilityHidden(true)
                     .scaleEffect(selection.index == index && !reduced ? 1.08 : 1)
                 Text(item.title).font(.system(size: 13, weight: .medium))

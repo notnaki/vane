@@ -128,7 +128,7 @@ extension EnvironmentValues {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if marker.artwork != artwork {
-            let renderer = ImageRenderer(content: Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
+            let renderer = ImageRenderer(content: SpaceIcon(icon, filledCloud: true)
                 .font(.system(size: layout.iconSize)).foregroundStyle(Look.inkPrimary)
                 // SF Symbols can overhang their point-size square (notably cloud).
                 // Match the unclipped SwiftUI glyph inside the larger button target.

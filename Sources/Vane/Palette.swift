@@ -779,14 +779,14 @@ struct CommandField: NSViewRepresentable {
                     if let image {
                         SiteIcon(icon: image, size: Look.rowIcon, rounded: !row.detail.hasPrefix("file:"))
                     } else {
-                        Image(systemName: row.icon)
+                        SpaceIcon(row.icon)
                             .font(Look.symbol)
                             .foregroundStyle(Look.barGlyph)
                             .frame(width: Look.rowIcon, height: Look.rowIcon)
                     }
                 }
             } else if row.chip {
-                Image(systemName: row.icon)
+                SpaceIcon(row.icon)
                     .font(Look.chipGlyph)
                     .foregroundStyle(Look.barGlyph)
                     .frame(width: Look.chip, height: Look.chip)
@@ -795,7 +795,7 @@ struct CommandField: NSViewRepresentable {
                     // titles down the bar stay on one line whether or not a row wears one.
                     .frame(width: Look.rowIcon)
             } else {
-                Image(systemName: row.icon)
+                SpaceIcon(row.icon)
                     .font(Look.symbol)
                     .foregroundStyle(Look.barGlyph)
                     .frame(width: Look.rowIcon, height: Look.rowIcon)
