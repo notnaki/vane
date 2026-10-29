@@ -27,8 +27,17 @@ Actual-main run `40782819583` at `b029274` subsequently failed `PasswordAutofill
 
 ## Other concrete fixture gaps found by the shard audit
 
-- [ ] Mount/pointer setup: exact row/trailing-control hit-test ownership and current viewport population must replace50/150/200ms setup guesses. Preserve inactive first-mouse behavior, action cadence, mounting bounds and early samples. Controlled clean/delayed attachment qualification is in progress in a separate checkout.
-- [ ] Find/download cancellation: prove actual native search entry and held result, or exact late-download completion/cancellation acknowledgement, before negative assertions. Do not replace these with desired-result polling or longer sleeps. Scoped DEBUG boundaries must leave release behavior intact.
+- [x] Mount/pointer setup: exact row/trailing-control hit-test ownership and current viewport population must replace50/150/200ms setup guesses. Preserve inactive first-mouse behavior, action cadence, mounting bounds and early samples. Controlled clean/delayed attachment qualification is preserved in the mount worktree and composed below.
+- [x] Find/download cancellation: prove actual native search entry and held result, or exact late-download completion/cancellation acknowledgement, before negative assertions. Do not replace these with desired-result polling or longer sleeps. Scoped DEBUG boundaries must leave release behavior intact.
 - [ ] Compose and independently review the current shipping diff, run the combined focused preflight, pass required CI integrated with latest main, squash-merge, and verify a fresh actual-main run. CI reliability is not marked repaired while this gate remains incomplete.
 
 The audit's additional cases passed the failed main run; they are source-demonstrated validity gaps, not additional reproduced historical failures. Existing opt-in diagnostic/AX coverage limitations remain explicit and must not be counted as passes. No new skip, exclusion, relaxed assertion or outcome deadline is authorized.
+
+
+## Composed source against main 426b53f
+
+Integration `dade318a691850f8a76db0341791137c467669e2` combines navigation admission, callback completion barriers and mounted-sidebar prerequisites with main `426b53f`. Its 12-file diff received independent review with no actionable findings. The debug native build passed. One frozen affected-native cohort passed all 113 cases without skips, primary 0 / cleanup 0, and both exact hosts exited. Invocation, source/binary hashes, logs and retirement identities are retained under `ci-composed-dade318-native/` in the task artifact directory.
+
+The callback controls reproduced three failures before the repair, then passed three fixed repetitions and the full 36-case Find/download cohort. The mount controls reproduced detached ownership, stale captured population and header-geometry gaps before their repairs. Three uncontaminated 24-case cohorts passed afterward; two additional passing cohorts overlapped another task and remain preserved but excluded from qualification. The exact original outcome deadlines, inactive first-mouse behavior, pointer cadence and early samples were retained. All recorded component hosts exited. The mounted snapshot observer and native result holders are default-nil DEBUG boundaries; release delivery is unchanged.
+
+Full required CI remains held on the independent earlier password-document stall. Draft 556 now has reviewed private live phase transport and eight frozen macOS 26 diagnostic vectors, which passed native execution and diagnostic validity. The original-prefix target committed in about 146 milliseconds in that sample; this does not explain either the original failure or the prior eight-second successful Date-bound sample. The temporary diagnostic workflow is deliberately nonmergeable and is not part of this shipping diff. Main strict latest-integration `checks` and administrator enforcement remain enabled.
