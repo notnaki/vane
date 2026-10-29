@@ -11,6 +11,7 @@ import textwrap
 import threading
 import time
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("password_preflight", Path(__file__).with_name("password-document-preflight.py"))
 p = importlib.util.module_from_spec(spec)
@@ -148,6 +149,33 @@ class DiagnosticSafety(unittest.TestCase):
             self.assertIn("evidence", output.read_text())
             self.assertIn("after", result)
 
+    def test_live_progress_callback_runs_before_sampler_completion(self):
+        class Sampler:
+            pid = 90
+            def __init__(self): self.status = None; self.signals = []
+            def poll(self): return self.status
+            def terminate(self): self.signals.append('terminate'); self.status = -15
+            def kill(self): self.signals.append('kill'); self.status = -9
+            def wait(self, timeout): return self.status
+        sampler, runner, seen, cancel = Sampler(), Runner(), [], threading.Event()
+        runner.live[90] = {'pid': 90, 'start': 900, 'path': '/usr/bin/sample'}
+        def launch(arguments, stdout, **kwargs):
+            stdout.write(b'Sampling process 42 for 1 second with 10 milliseconds between samples\n')
+            stdout.flush()
+            return sampler
+        def observed(value):
+            self.assertIsNone(sampler.status, 'progress must be delivered while the child is still active')
+            seen.append(value)
+            cancel.set()
+        with tempfile.TemporaryDirectory() as directory:
+            result = p.capture_process(CONTENT, Path(directory) / 'sample.txt', cancel, runner.process_identity,
+                counters=lambda _: {}, popen=launch, progress=observed)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]['sampler_identity'], runner.live[90])
+        self.assertTrue(seen[0]['target_live_at_sample_progress'])
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual(sampler.signals, ['terminate'])
+
     def test_identity_change_before_sampler_launch_refuses_without_process(self):
         with tempfile.TemporaryDirectory() as directory:
             def forbidden(*args, **kwargs): self.fail("must not launch a sampler")
@@ -193,31 +221,85 @@ class DiagnosticSafety(unittest.TestCase):
             inventory.write_text("\n".join(value["prefix"]) + "\n")
             planned = p.plan(inventory, config)
             self.assertEqual(planned["vectors"][0]["repetitions"], 1)
-            self.assertEqual(sum(arm["repetitions"] for arm in planned["vectors"]), 3)
-            self.assertEqual([arm['control'] for arm in planned['vectors']], ['native-only', 'trace', 'pending-calibration'])
+            self.assertEqual(sum(arm["repetitions"] for arm in planned["vectors"]), 1)
+            self.assertEqual([arm['control'] for arm in planned['vectors']], ['pending-calibration'])
             self.assertEqual(planned["vectors"][-1]["control"], "pending-calibration")
             inventory.write_text("\n".join(value["prefix"][1:]))
             with self.assertRaisesRegex(ValueError, "missing"):
                 p.plan(inventory, config)
 
     def test_pending_calibration_requires_a_real_live_sampler_inside_monotonic_hold(self):
-        def source(phase, stamp):
-            return {'source': {'phase': phase, 'monotonicNs': stamp, 'fields': {'path': 'password'}}}
-        channel = {'events': [source('calibration-held', 1000000000), source('calibration-released', 2200000000), source('commit', 2250000000)]}
-        sample = {'role': 'ui', 'target_live_at_start': True, 'sampler_pid': 99,
-                  'capture_started_monotonic_ns': 1800000000, 'status': 'cancelled',
-                  'sample_progress_monotonic_ns': 1810000000, 'target_live_at_sample_progress': True,
-                  'sampler_identity': {'pid': 99, 'start': 400, 'path': os.path.realpath('/usr/bin/sample')}}
-        self.assertTrue(p.verify_pending_calibration(channel, [sample])['valid'])
+        samples = []
+        for role, target, pid in [('ui', UI, 99), ('content', CONTENT, 100)]:
+            samples.append({'role': role, 'claim': target, 'target_live_at_start': True, 'sampler_pid': pid,
+                'capture_started_monotonic_ns': 1800000000, 'status': 'cancelled',
+                'sample_progress_monotonic_ns': 1810000000, 'target_live_at_sample_progress': True,
+                'sampler_identity': {'pid': pid, 'start': 400, 'path': os.path.realpath('/usr/bin/sample')}})
+        proof = {'schema': 1, 'channelToken': 'a' * 32, 'nativeToken': 'b' * 32, 'navigationToken': 'one',
+            'issuedMonotonicNs': 1850000000, 'samples': [{'role': s['role'], 'target': s['claim'],
+                'sampler': s['sampler_identity'], 'captureStartedMonotonicNs': s['capture_started_monotonic_ns'],
+                'progressMonotonicNs': s['sample_progress_monotonic_ns']} for s in samples]}
+        def source(phase, stamp, **fields):
+            return {'source': {'phase': phase, 'monotonicNs': stamp, 'channelToken': 'a' * 32,
+                'nativeToken': 'b' * 32, 'fields': dict(path='password', token='one', **fields)}}
+        channel = {'events': [source('calibration-start', 900001000, startedMonotonicNs=900000000,
+                                    deadlineMonotonicNs=3900000000),
+            source('load-entry', 950000000), source('calibration-held', 1000000000),
+            source('calibration-acknowledged', 1900000000, proof=proof),
+            source('calibration-released', 2000000000), source('commit', 2050000000)]}
+        self.assertTrue(p.verify_pending_calibration(channel, samples)['valid'])
         for changes in ({'target_live_at_start': False}, {'sampler_pid': None},
                         {'capture_started_monotonic_ns': 2250000000}, {'status': 'incomplete'},
                         {'target_live_at_sample_progress': False}, {'sample_progress_monotonic_ns': 2250000000},
                         {'sampler_identity': None}, {'sampler_identity': {'pid': 100, 'start': 400, 'path': '/usr/bin/sample'}},
                         {'sampler_identity': {'pid': 99, 'start': 0, 'path': '/usr/bin/sample'}},
                         {'sampler_identity': {'pid': 99, 'start': 400, 'path': '/wrong/sample'}}):
-            self.assertFalse(p.verify_pending_calibration(channel, [dict(sample, **changes)])['valid'])
-        self.assertFalse(p.verify_pending_calibration({'events': []}, [sample])['valid'])
+            self.assertFalse(p.verify_pending_calibration(channel, [dict(samples[0], **changes), samples[1]])['valid'])
+        for missing in ('calibration-start', 'calibration-acknowledged'):
+            stripped = {'events': [r for r in channel['events'] if r['source']['phase'] != missing]}
+            self.assertFalse(p.verify_pending_calibration(stripped, samples)['valid'])
+        self.assertFalse(p.verify_pending_calibration({'events': []}, samples)['valid'])
         self.assertFalse(p.verify_pending_calibration(channel, [])['valid'])
+
+    def test_actual_swift_acknowledgment_decoder_rejects_unowned_or_stale_proof(self):
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as directory:
+            binary = str(Path(directory) / 'acknowledgment-controls')
+            subprocess.run(['swiftc', str(root / 'Tests/VaneTests/PasswordDocumentSamplerAcknowledgment.swift'),
+                str(root / 'scripts/test-password-sampler-ack.swift'), '-o', binary], check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+            result = subprocess.run([binary], check=True, capture_output=True, text=True, timeout=10)
+            self.assertIn('44 actual Swift validation controls passed', result.stdout)
+
+    def test_acknowledgment_requires_both_real_progress_roles_and_revalidates_launches(self):
+        for changed in (None, 'target', 'sampler'):
+            with tempfile.TemporaryDirectory() as directory:
+                runner, proofs = Runner(), []
+                c = p.Collector(Path(directory), runner, acknowledge=proofs.append, channel_token='a' * 32)
+                c.manifest = (Path(directory), 'b' * 32)
+                c.line(p.PROCESS + json.dumps(self.record(phase='before-load')), now=0)
+                c.line(p.PROCESS + json.dumps(self.record()), now=0.5)
+                c.pending['one']['scheduled'] = {'ui', 'content'}
+                c.calibration_hold('one', 1000000000)
+                rows = []
+                for role, target, pid in [('ui', UI, 90), ('content', CONTENT, 91)]:
+                    child = {'pid': pid, 'start': 300 + pid, 'path': '/usr/bin/sample'}
+                    runner.live[pid] = child
+                    rows.append((role, {'claim': target, 'sampler_identity': child,
+                        'capture_started_monotonic_ns': 1700000000, 'sample_progress_monotonic_ns': 1800000000,
+                        'target_live_at_start': True, 'target_live_at_sample_progress': True}))
+                with mock.patch.object(p.time, 'monotonic_ns', return_value=2000000000):
+                    c.progress.put_nowait(('one', *rows[0])); c.acknowledge_progress()
+                    self.assertEqual(proofs, [], 'one role must not release the genuine policy')
+                    if changed:
+                        pid = 42 if changed == 'target' else 90
+                        runner.live[pid] = dict(runner.live[pid], start=999)
+                    c.progress.put_nowait(('one', *rows[1])); c.acknowledge_progress()
+                    self.assertEqual(len(proofs), 0 if changed else 1)
+                    if not changed:
+                        c.acknowledge_progress(); self.assertEqual(len(proofs), 1)
+                        self.assertEqual({r['role'] for r in proofs[0]['samples']}, {'ui', 'content'})
+                c.finish()
 
     def test_native_only_requires_actual_production_bytes_and_no_ancestry_events(self):
         fields = {'mode': 'native-only', 'productionSHA256': 'a' * 64, 'installedSHA256': 'a' * 64,

@@ -97,7 +97,7 @@ def task_counters(pid):
 
 
 def capture_process(claim, output, cancelled, identity, counters=task_counters,
-                    popen=subprocess.Popen, now=time.monotonic, pause=time.sleep):
+                    popen=subprocess.Popen, now=time.monotonic, pause=time.sleep, progress=None):
     """Only the sampler Popen child may be terminated; never the sampled PID."""
     result = {"claim": claim, "status": "refused"}
     if cancelled.is_set():
@@ -120,10 +120,19 @@ def capture_process(claim, output, cancelled, identity, counters=task_counters,
             reason = None
             while sampler.poll() is None:
                 if 'sample_progress_monotonic_ns' not in result:
-                    progress = os.pread(stream.fileno(), 4096, 0)
-                    if ('Sampling process ' + str(claim['pid']) + ' for ').encode() in progress:
+                    progress_output = os.pread(stream.fileno(), 4096, 0)
+                    if ('Sampling process ' + str(claim['pid']) + ' for ').encode() in progress_output:
                         result.update(sample_progress_monotonic_ns=time.monotonic_ns(),
                                       target_live_at_sample_progress=same_identity(claim, identity(claim['pid'])))
+                        if progress is not None:
+                            child = result.get('sampler_identity')
+                            if (not result['target_live_at_sample_progress'] or not isinstance(child, dict)
+                                    or not same_identity(child, identity(child['pid']))
+                                    or os.path.realpath(child['path']) != os.path.realpath('/usr/bin/sample')):
+                                raise ValueError('live sampler progress identity was unavailable')
+                            progress({key: result[key] for key in ('claim', 'sampler_identity',
+                                'capture_started_monotonic_ns', 'sample_progress_monotonic_ns',
+                                'target_live_at_start', 'target_live_at_sample_progress')})
                 if cancelled.is_set(): reason = "navigation committed during capture"
                 elif now() >= deadline: reason = "sampler exceeded diagnostic bound"
                 elif any(path.exists() and path.stat().st_size > MAX_SAMPLE_BYTES for path in (output, console)):
@@ -161,7 +170,7 @@ def capture_process(claim, output, cancelled, identity, counters=task_counters,
 
 class Collector:
     """Bounded diagnostics scheduled independently of XCTest's original deadline."""
-    def __init__(self, evidence, runner=None, capture=capture_process):
+    def __init__(self, evidence, runner=None, capture=capture_process, acknowledge=None, channel_token=None):
         self.evidence = evidence
         self.runner = runner or native_runner()
         self.capture = capture
@@ -170,6 +179,10 @@ class Collector:
         self.committed = set()
         self.jobs = []
         self.events = []
+        self.acknowledge, self.channel_token = acknowledge, channel_token
+        self.progress = queue.Queue(maxsize=MAX_SAMPLES)
+        self.acknowledgments = []
+        self.calibration_holds = {}
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
     def line(self, line, now=None):
@@ -198,9 +211,11 @@ class Collector:
 
     def tick(self, now=None):
         now = time.monotonic() if now is None else now
+        self.acknowledge_progress()
         if not self.manifest or len(self.jobs) >= MAX_SAMPLES: return
         for token, entry in self.pending.items():
             if entry["cancel"].is_set() or now - entry["first"] < 0.75: continue
+            if self.acknowledge is not None and token not in self.calibration_holds: continue
             for role in ("ui", "content"):
                 if role in entry["scheduled"] or len(self.jobs) >= MAX_SAMPLES: continue
                 receipt = entry.get("pending") if role == "content" else entry.get("before-load")
@@ -214,10 +229,72 @@ class Collector:
                     hosts = self.runner.load_records(*self.manifest)
                     claim = authorize_claim(receipt[1], role, hosts, self.runner.process_identity)
                     output = self.evidence / ("sample-%02d-%s.txt" % (len(self.jobs), role))
-                    future = self.pool.submit(self.capture, claim, output, entry["cancel"], self.runner.process_identity)
+                    kwargs = {}
+                    if self.acknowledge is not None:
+                        def progress(value, token=token, role=role):
+                            self.progress.put_nowait((token, role, value))
+                        kwargs['progress'] = progress
+                    future = self.pool.submit(self.capture, claim, output, entry["cancel"], self.runner.process_identity, **kwargs)
                     self.jobs.append((token, role, output.name, future))
                 except (ValueError, OSError, KeyError) as error:
                     self.events.append({"token": token, "role": role, "status": "refused", "reason": str(error)})
+
+    def calibration_hold(self, token, stamp):
+        if self.acknowledge is None: return
+        if (not isinstance(token, str) or not 0 < len(token) <= 64 or type(stamp) is not int or stamp <= 0
+                or token in self.calibration_holds or len(self.calibration_holds) >= 32):
+            raise ValueError('invalid or duplicate genuine calibration hold')
+        self.calibration_holds[token] = stamp
+
+    def acknowledge_progress(self):
+        if self.acknowledge is None: return
+        for _ in range(MAX_SAMPLES):
+            try: token, role, value = self.progress.get_nowait()
+            except queue.Empty: break
+            try:
+                entry = self.pending[token]
+                if role not in ('ui', 'content') or role not in entry['scheduled'] or entry['cancel'].is_set():
+                    raise ValueError('sampler progress is not from an active scheduled role')
+                rows = entry.setdefault('progress', {})
+                if role in rows: raise ValueError('duplicate sampler progress role')
+                rows[role] = value
+                if set(rows) != {'ui', 'content'} or entry.get('acknowledged'): continue
+                hosts = self.runner.load_records(*self.manifest)
+                samples = []
+                now_ns = time.monotonic_ns()
+                held_ns = self.calibration_holds[token]
+                if (not re.fullmatch('[a-f0-9]{32}', self.channel_token or '')
+                        or not re.fullmatch('[a-f0-9]{32}', self.manifest[1])):
+                    raise ValueError('sampler acknowledgment contract tokens are invalid')
+                for name in ('ui', 'content'):
+                    row = rows[name]
+                    record = entry['pending' if name == 'content' else 'before-load'][1]
+                    target = authorize_claim(record, name, hosts, self.runner.process_identity)
+                    sampler = row.get('sampler_identity')
+                    begin, stamp = row.get('capture_started_monotonic_ns'), row.get('sample_progress_monotonic_ns')
+                    if (not same_identity(row.get('claim'), target)
+                            or row.get('target_live_at_start') is not True
+                            or row.get('target_live_at_sample_progress') is not True
+                            or not isinstance(sampler, dict)
+                            or not same_identity(sampler, self.runner.process_identity(sampler['pid']))
+                            or os.path.realpath(sampler['path']) != os.path.realpath('/usr/bin/sample')
+                            or type(begin) is not int or type(stamp) is not int
+                            or not 0 < held_ns <= begin <= stamp <= now_ns or now_ns - stamp > 500_000_000):
+                        raise ValueError('sampler progress identities or freshness changed before acknowledgment')
+                    samples.append({'role': name, 'target': target, 'sampler': sampler,
+                                    'captureStartedMonotonicNs': begin, 'progressMonotonicNs': stamp})
+                if len({r['sampler']['pid'] for r in samples}) != 2:
+                    raise ValueError('sampler progress does not have two distinct children')
+                issued_ns = time.monotonic_ns()
+                if any(issued_ns - r['progressMonotonicNs'] > 500_000_000 for r in samples):
+                    raise ValueError('sampler progress became stale during identity validation')
+                proof = {'schema': 1, 'channelToken': self.channel_token, 'nativeToken': self.manifest[1],
+                         'navigationToken': token, 'issuedMonotonicNs': issued_ns, 'samples': samples}
+                self.acknowledge(proof)
+                entry['acknowledged'] = True
+                self.acknowledgments.append(proof)
+            except (ValueError, OSError, KeyError, TypeError) as error:
+                self.events.append({'token': token, 'role': role, 'status': 'refused', 'reason': str(error)})
 
     def finish(self):
         for token, entry in self.pending.items():
@@ -237,6 +314,7 @@ class Collector:
     def report(self):
         events = self.finish()
         return {"events": events, "password_load_receipts": len(self.pending),
+                'sampler_acknowledgments': self.acknowledgments,
                 "valid": bool(self.pending) and all(event["status"] in ("captured", "cancelled") for event in events)}
 
 
@@ -324,31 +402,59 @@ def verify_execution(log, expected, allowed_skips, expected_order_hash=None):
 
 def verify_pending_calibration(channel, samples):
     events = [row['source'] for row in channel['events']]
-    held = [row for row in events if row['phase'] == 'calibration-held']
-    released = [row for row in events if row['phase'] == 'calibration-released']
-    commits = [row for row in events if row['phase'] == 'commit' and row['fields'].get('path') == 'password']
+    def one(phase):
+        rows = [r for r in events if r['phase'] == phase]
+        return rows[0] if len(rows) == 1 else None
+    start, held, accepted, released = (one(name) for name in
+        ('calibration-start', 'calibration-held', 'calibration-acknowledged', 'calibration-released'))
+    commits = [r for r in events if r['phase'] == 'commit' and r['fields'].get('path') == 'password']
+    loads = [r for r in events if r['phase'] == 'load-entry' and r['fields'].get('path') == 'password']
+    if not all((start, held, accepted, released)) or len(commits) != 1 or len(loads) != 1:
+        return {'valid': False, 'problems': ['missing/duplicate real calibration, acknowledgment or navigation receipts']}
     problems = []
-    if len(held) != 1 or len(released) != 1 or len(commits) != 1:
-        return {'valid': False, 'problems': ['missing or duplicate real pending calibration phase receipts']}
-    begin, end, commit = held[0]['monotonicNs'], released[0]['monotonicNs'], commits[0]['monotonicNs']
-    if end - begin < 1_200_000_000 or commit < end:
-        problems.append('real policy hold did not cover1200ms before commit')
-    def owned_sampler(row):
+    begin, end = held['monotonicNs'], released['monotonicNs']
+    budget_start = start['fields'].get('startedMonotonicNs')
+    deadline = start['fields'].get('deadlineMonotonicNs')
+    if (type(deadline) is not int or type(budget_start) is not int or deadline - budget_start != 3_000_000_000
+            or not budget_start <= start['monotonicNs'] <= begin <= accepted['monotonicNs'] < end < deadline
+            or commits[0]['monotonicNs'] < end or any(r['phase'] == 'calibration-failed' for r in events)):
+        problems.append('calibration did not release acknowledged progress inside its absolute3s budget')
+    proof = accepted['fields'].get('proof', {})
+    token = loads[0]['fields'].get('token')
+    issued = proof.get('issuedMonotonicNs') if isinstance(proof, dict) else None
+    if (not isinstance(proof, dict) or type(proof.get('schema')) is not int or proof['schema'] != 1
+            or proof.get('channelToken') != accepted.get('channelToken')
+            or proof.get('nativeToken') != accepted.get('nativeToken')
+            or proof.get('navigationToken') != token or held['fields'].get('token') != token
+            or type(issued) is not int or not begin <= issued <= accepted['monotonicNs']
+            or accepted['monotonicNs'] - issued > 500_000_000):
+        return {'valid': False, 'problems': problems + ['accepted acknowledgment token or lifetime mismatch']}
+    rows = proof.get('samples', [])
+    if len(rows) != 2 or sorted(r.get('role', '') for r in rows) != ['content', 'ui']:
+        return {'valid': False, 'problems': problems + ['accepted acknowledgment needs both exact sampler roles']}
+    verified = []
+    for role in ('ui', 'content'):
+        actual = [r for r in samples if r.get('role') == role]
+        claimed = next(r for r in rows if r['role'] == role)
+        if len(actual) != 1:
+            problems.append('missing/duplicate actual sampler role: ' + role)
+            continue
+        row = actual[0]
         child = row.get('sampler_identity')
-        return (isinstance(child, dict) and type(child.get('pid')) is int and child['pid'] == row.get('sampler_pid')
-                and type(child.get('start')) is int and child['start'] > 0
-                and isinstance(child.get('path'), str)
-                and child['path'] == os.path.realpath('/usr/bin/sample'))
-    live = [row for row in samples if row.get('role') == 'ui' and row.get('target_live_at_start') is True
-            and row.get('target_live_at_sample_progress') is True
-            and type(row.get('sampler_pid')) is int and row['sampler_pid'] > 0
-            and owned_sampler(row)
-            and begin <= row.get('capture_started_monotonic_ns', 0) < end
-            and begin <= row.get('sample_progress_monotonic_ns', 0) < end
-            and row.get('status') in ('captured', 'cancelled')]
-    if not live: problems.append('no live manifest-owned native-host sampler started during the real policy hold')
+        capture, progress = row.get('capture_started_monotonic_ns'), row.get('sample_progress_monotonic_ns')
+        if (not same_identity(child, claimed.get('sampler')) or child.get('pid') != row.get('sampler_pid')
+                or os.path.realpath(child['path']) != os.path.realpath('/usr/bin/sample')
+                or not same_identity(row.get('claim'), claimed.get('target'))
+                or row.get('target_live_at_start') is not True or row.get('target_live_at_sample_progress') is not True
+                or type(capture) is not int or type(progress) is not int
+                or not begin <= capture <= progress <= issued < end
+                or claimed.get('captureStartedMonotonicNs') != capture or claimed.get('progressMonotonicNs') != progress
+                or row.get('status') not in ('captured', 'cancelled')):
+            problems.append('actual live sampling progress differs from accepted proof: ' + role)
+        else: verified.append(role)
     return {'valid': not problems, 'problems': problems, 'holdMonotonicNs': end - begin,
-            'samplersStartedWhilePending': len(live)}
+            'samplersStartedWhilePending': len(verified), 'verifiedRoles': verified,
+            'totalBudgetMonotonicNs': deadline - budget_start if type(deadline) is int and type(budget_start) is int else None}
 
 
 def verify_script_provenance(channel, control):
@@ -445,7 +551,9 @@ def run_attempt(evidence, control, tests, allowed_skips, expected_order_hash):
     environment.setdefault("VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT", "900")
     write_json(evidence / "invocation.json", {"head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                "arguments": arguments, "control": control, "diagnostic_only": True})
-    collector = Collector(evidence)
+    acknowledge = ((lambda proof: phase_module().publish_private(phase_directory, 'samplers-ready.json', proof))
+                   if control == 'pending-calibration' else None)
+    collector = Collector(evidence, acknowledge=acknowledge, channel_token=channel_token)
     phases = phase_module().PhaseReader(phase_directory, channel_token, collector.runner, collector)
     print('PASSWORD DIAGNOSTIC ATTEMPT started: ' + evidence.name, flush=True)
     command = [sys.executable, "-u", __file__, "--runner-child", str(evidence), "--", *arguments]
@@ -505,9 +613,9 @@ def plan(inventory, config):
     current = set(inventory.read_text().splitlines())
     missing = set(value["prefix"]) - current
     if missing: raise ValueError("original diagnostic prefix missing from current inventory: " + repr(sorted(missing)))
-    expected = [("native-only-prefix", "native-only", 1, "prefix"),
-                ("ancestry-trace-prefix", "trace", 1, "prefix"),
-                ("pending-calibration", "pending-calibration", 1, "target")]
+    expected = [("pending-sampler-acknowledgment", "pending-calibration", 1, "target")]
+    if value.get('stage') != 'sampler-readiness' or value.get('qualified_comparison_run') != 40948827683:
+        raise ValueError('sampler readiness must retain the separately qualified script comparison')
     if [(v.get("name"), v.get("control"), v.get("repetitions"), v.get("selection")) for v in value.get("vectors", [])] != expected:
         raise ValueError("diagnostic repetitions/vector order changed")
     return value
@@ -542,8 +650,9 @@ def main(arguments):
             if not ownership_path.exists() or not json.loads(ownership_path.read_text()).get("allExited"):
                 print("Diagnostic cohort stopped: native host exit is unverified", file=sys.stderr)
                 return 2
-    comparison = (verify_comparison_provenance(attempts) if options.calibration is None else
-                  {'valid': True, 'applicable': False, 'reason': 'single calibration, not a comparison'})
+    comparison = {'valid': True, 'applicable': False,
+                  'reason': 'single sampler readiness calibration; previous script comparison is retained separately',
+                  'qualified_comparison_run': value['qualified_comparison_run']}
     write_json(options.evidence / "summary.json", {"diagnostic_only": True, "attempts": attempts,
                'script_comparison': comparison})
     return 1 if not comparison['valid'] or any(attempt["native_exit"] or not attempt["execution_valid"] or not attempt["diagnostics_valid"] for attempt in attempts) else 0

@@ -606,7 +606,8 @@ import XCTest
     }
     #endif
 
-    private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String) async throws {
+    private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String,
+                                      calibration: PasswordDocumentPendingCalibration? = nil) async throws {
         let web = tab.web, url = origin.url.appendingPathComponent(path)
         let started = Date.now
         #if DEBUG
@@ -617,6 +618,7 @@ import XCTest
         let diagnostic = false
         #endif
         let diagnosticToken = UUID().uuidString
+        calibration?.bindNavigation(token: diagnosticToken, web: web)
         #if DEBUG
         let stages = NavigationStages()
         var expectedNavigation: Tab.NavigationStageIdentity?
@@ -695,14 +697,17 @@ import XCTest
                 else { delivery() }
             }
             defer { gate.release(); tab.navigationDecisionDiagnosticGate = previous }
-            async let releaseFailure: String? = gate.releaseAfterInterval()
+            async let releaseFailure: String? = gate.releaseAfterSamplingProgress()
             var loadFailure: (any Error)?
             do {
                 try await loadContinuationPage(tab, origin: origin, path: "password",
-                    html: "<form>" + identity + "<input id=password type=password autocomplete=current-password></form>")
+                    html: "<form>" + identity + "<input id=password type=password autocomplete=current-password></form>", calibration: gate)
             } catch { loadFailure = error; gate.release() }
             let failure = await releaseFailure
-            if let loadFailure { throw loadFailure }
+            if let loadFailure {
+                if let failure { XCTFail("Pending calibration also failed: \(failure)") }
+                throw loadFailure
+            }
             if let failure { throw NSError(domain: "PasswordPendingCalibration", code: 1,
                                            userInfo: [NSLocalizedDescriptionKey: failure]) }
             return

@@ -11,6 +11,7 @@ import XCTest
     private let channelToken: String
     private let nativeToken: String
     private let host: [String: Any]
+    private let producer: NativeFixtureDiagnostics.Identity
     private var sequence = 0
     private(set) var failure: String?
 
@@ -52,6 +53,7 @@ import XCTest
             channelToken = token
             nativeToken = expectedNativeToken
             host = ["pid": Int(identity.pid), "start": identity.start, "path": identity.path]
+            producer = identity
         } catch {
             _ = Darwin.close(root)
             throw error
@@ -59,6 +61,25 @@ import XCTest
     }
 
     deinit { _ = Darwin.close(descriptor) }
+
+    func samplerAcknowledgment(token: String, content: NativeFixtureDiagnostics.Identity,
+                               held: UInt64, deadline: UInt64) throws -> [String: Any]? {
+        var metadata = stat()
+        if fstatat(descriptor, "samplers-ready.json", &metadata, AT_SYMLINK_NOFOLLOW) != 0 {
+            guard errno == ENOENT else { throw Failure(description: "Cannot inspect sampler acknowledgment") }
+            return nil
+        }
+        let data = try Self.readPrivate(descriptor, "samplers-ready.json")
+        typealias Ack = PasswordDocumentSamplerAcknowledgment
+        func row(_ identity: NativeFixtureDiagnostics.Identity) -> Ack.Identity {
+            .init(pid: identity.pid, start: identity.start, path: identity.path)
+        }
+        let contract = Ack.Contract(channelToken: channelToken, nativeToken: nativeToken, navigationToken: token,
+            host: row(producer), content: row(content), heldMonotonicNs: held, deadlineMonotonicNs: deadline)
+        _ = try Ack.validated(data, contract: contract, now: DispatchTime.now().uptimeNanoseconds,
+                              identity: { NativeFixtureDiagnostics.identity($0).map(row) })
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
 
     func record(_ phase: String, fields: [String: Any] = [:], file: StaticString = #filePath, line: UInt = #line) {
         guard failure == nil else { return }

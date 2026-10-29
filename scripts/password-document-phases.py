@@ -87,8 +87,8 @@ class PhaseReader:
             if not re.fullmatch('[a-f0-9]{32}', self.token): raise ValueError('invalid phase channel token')
             if self.descriptor is None: self.descriptor = private_directory(self.directory)
             names = os.listdir(self.descriptor)
-            if len(names) > MAX_EVENTS + 2: raise ValueError('phase channel exceeded file-count bound')
-            if any(name != 'context.json' and not re.fullmatch(r'event-[0-9]{4}\.json', name)
+            if len(names) > MAX_EVENTS + 4: raise ValueError('phase channel exceeded file-count bound')
+            if any(name not in ('context.json', 'samplers-ready.json') and not re.fullmatch(r'event-[0-9]{4}\.json', name)
                    and not name.startswith('.phase-') for name in names):
                 raise ValueError('unexpected phase channel entry')
             if 'context.json' not in names: return []
@@ -131,6 +131,8 @@ class PhaseReader:
                 if value['phase'] == 'process':
                     if not matching_host(fields.get('ui'), host): raise ValueError('process receipt UI does not match phase producer')
                     self.collector.line('PASSWORD DOCUMENT PROCESS ' + json.dumps(fields), now=now)
+                elif value['phase'] == 'calibration-held':
+                    self.collector.calibration_hold(fields.get('token'), value['monotonicNs'])
                 elif value['phase'] == 'commit':
                     token = fields.get('token')
                     if not isinstance(token, str) or not 0 < len(token) <= 64: raise ValueError('invalid navigation token')
