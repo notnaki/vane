@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = "VaneTests.PasswordAutofillTests/testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep"
@@ -33,6 +34,13 @@ MAX_SAMPLE_BYTES = 4 * 1024 * 1024
 
 def native_runner():
     spec = importlib.util.spec_from_file_location("password_native_runner", ROOT / "scripts/run-native-tests.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def phase_module():
+    spec = importlib.util.spec_from_file_location("password_phase_channel", ROOT / "scripts/password-document-phases.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -100,13 +108,22 @@ def capture_process(claim, output, cancelled, identity, counters=task_counters,
     sampler = None
     try:
         console = output.with_suffix(".console.txt")
-        with console.open("wb") as stream:
+        with console.open("w+b") as stream:
             # An explicit owned report avoids sample's default untracked /tmp copy.
             sampler = popen(["/usr/bin/sample", str(claim["pid"]), "1", "10", "-file", str(output)],
                             stdout=stream, stderr=subprocess.STDOUT)
+            result.update(sampler_pid=getattr(sampler, 'pid', None), capture_started_monotonic_ns=time.monotonic_ns(),
+                          target_live_at_start=same_identity(claim, identity(claim['pid'])))
+            if type(result['sampler_pid']) is int:
+                result['sampler_identity'] = identity(result['sampler_pid'])
             deadline = now() + SAMPLE_BOUND
             reason = None
             while sampler.poll() is None:
+                if 'sample_progress_monotonic_ns' not in result:
+                    progress = os.pread(stream.fileno(), 4096, 0)
+                    if ('Sampling process ' + str(claim['pid']) + ' for ').encode() in progress:
+                        result.update(sample_progress_monotonic_ns=time.monotonic_ns(),
+                                      target_live_at_sample_progress=same_identity(claim, identity(claim['pid'])))
                 if cancelled.is_set(): reason = "navigation committed during capture"
                 elif now() >= deadline: reason = "sampler exceeded diagnostic bound"
                 elif any(path.exists() and path.stat().st_size > MAX_SAMPLE_BYTES for path in (output, console)):
@@ -203,7 +220,13 @@ class Collector:
                     self.events.append({"token": token, "role": role, "status": "refused", "reason": str(error)})
 
     def finish(self):
-        for entry in self.pending.values(): entry["cancel"].set()
+        for token, entry in self.pending.items():
+            entry["cancel"].set()
+            if 'ui' in entry['scheduled'] and 'content' not in entry['scheduled']:
+                reason = ('fresh pending content receipt was unavailable after UI sampling became necessary'
+                          if 'pending' not in entry else 'bounded content sampling capacity was unavailable')
+                self.events.append({'token': token, 'role': 'content', 'status': 'incomplete', 'reason': reason})
+                entry['scheduled'].add('content')
         self.pool.shutdown(wait=True, cancel_futures=False)
         for token, role, output, future in self.jobs:
             try: result = future.result()
@@ -253,6 +276,12 @@ def runner_child(evidence, arguments):
     def launch(*args, **kwargs):
         nonlocal announced
         if not announced:
+            phase_directory = os.environ.get('VANE_PASSWORD_PHASE_DIRECTORY')
+            channel_token = os.environ.get('VANE_PASSWORD_PHASE_TOKEN')
+            if not phase_directory or not channel_token: raise ValueError('missing direct phase channel contract')
+            contract = runner.read_private_json(directory / 'contract.json')
+            phase_module().publish_private(Path(phase_directory), 'context.json',
+                {'schema': 1, 'channelToken': channel_token, 'nativeDirectory': str(directory), 'nativeToken': contract['token']})
             print(MANIFEST + str(directory), flush=True)
             announced = True
         return original_popen(*args, **kwargs)
@@ -293,15 +322,50 @@ def verify_execution(log, expected, allowed_skips, expected_order_hash=None):
             "outcomes": outcomes, "preserved_original_skips": sorted(name for name, values in outcomes.items() if values == ["skipped"] and name in allowed_skips)}
 
 
+def verify_pending_calibration(channel, samples):
+    events = [row['source'] for row in channel['events']]
+    held = [row for row in events if row['phase'] == 'calibration-held']
+    released = [row for row in events if row['phase'] == 'calibration-released']
+    commits = [row for row in events if row['phase'] == 'commit' and row['fields'].get('path') == 'password']
+    problems = []
+    if len(held) != 1 or len(released) != 1 or len(commits) != 1:
+        return {'valid': False, 'problems': ['missing or duplicate real pending calibration phase receipts']}
+    begin, end, commit = held[0]['monotonicNs'], released[0]['monotonicNs'], commits[0]['monotonicNs']
+    if end - begin < 1_200_000_000 or commit < end:
+        problems.append('real policy hold did not cover1200ms before commit')
+    def owned_sampler(row):
+        child = row.get('sampler_identity')
+        return (isinstance(child, dict) and type(child.get('pid')) is int and child['pid'] == row.get('sampler_pid')
+                and type(child.get('start')) is int and child['start'] > 0
+                and isinstance(child.get('path'), str)
+                and child['path'] == os.path.realpath('/usr/bin/sample'))
+    live = [row for row in samples if row.get('role') == 'ui' and row.get('target_live_at_start') is True
+            and row.get('target_live_at_sample_progress') is True
+            and type(row.get('sampler_pid')) is int and row['sampler_pid'] > 0
+            and owned_sampler(row)
+            and begin <= row.get('capture_started_monotonic_ns', 0) < end
+            and begin <= row.get('sample_progress_monotonic_ns', 0) < end
+            and row.get('status') in ('captured', 'cancelled')]
+    if not live: problems.append('no live manifest-owned native-host sampler started during the real policy hold')
+    return {'valid': not problems, 'problems': problems, 'holdMonotonicNs': end - begin,
+            'samplersStartedWhilePending': len(live)}
+
+
 def run_attempt(evidence, control, tests, allowed_skips, expected_order_hash):
     evidence.mkdir(mode=0o700)
+    phase_directory = evidence / 'phase-channel'
+    phase_directory.mkdir(mode=0o700)
+    channel_token = uuid.uuid4().hex
     selection = "^(?:" + "|".join(re.escape(test) for test in tests) + ")$"
     arguments = ["--build-system", "native", "--skip-build", "--jobs", "1", "--filter", selection]
-    environment = dict(os.environ, VANE_PASSWORD_DOCUMENT_CONTROL=control, PYTHONDONTWRITEBYTECODE="1")
+    environment = dict(os.environ, VANE_PASSWORD_DOCUMENT_CONTROL=control, PYTHONDONTWRITEBYTECODE="1",
+                       VANE_PASSWORD_PHASE_DIRECTORY=str(phase_directory), VANE_PASSWORD_PHASE_TOKEN=channel_token)
     environment.setdefault("VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT", "900")
     write_json(evidence / "invocation.json", {"head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                "arguments": arguments, "control": control, "diagnostic_only": True})
     collector = Collector(evidence)
+    phases = phase_module().PhaseReader(phase_directory, channel_token, collector.runner, collector)
+    print('PASSWORD DIAGNOSTIC ATTEMPT started: ' + evidence.name, flush=True)
     command = [sys.executable, "-u", __file__, "--runner-child", str(evidence), "--", *arguments]
     child = subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     lines = queue.Queue(maxsize=256)
@@ -314,24 +378,33 @@ def run_attempt(evidence, control, tests, allowed_skips, expected_order_hash):
     with (evidence / "native.log").open("wb") as log:
         complete = False
         while not complete:
+            phases.poll()
+            collector.tick()
             try: raw = lines.get(timeout=0.025)
             except queue.Empty: raw = b""
             if raw is None: complete = True
             elif raw:
                 log.write(raw)
                 log.flush()
-                line = raw.decode("utf-8", errors="replace")
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                collector.line(line)
-            collector.tick()
+                # Keep stdout replay/backpressure out of the live observation path.
     thread.join(timeout=1)
     status = child.wait()
+    phases.poll()
     execution = verify_execution((evidence / "native.log").read_text(errors="replace"), tests, allowed_skips, expected_order_hash)
     write_json(evidence / "execution.json", execution)
     diagnostics = collector.report()
+    channel = phases.report()
+    phases.close()
+    diagnostics['phase_channel'] = channel
+    diagnostics['valid'] = diagnostics['valid'] and channel['valid']
+    if control == 'pending-calibration':
+        calibration = verify_pending_calibration(channel, diagnostics['events'])
+        diagnostics['pending_calibration'] = calibration
+        diagnostics['valid'] = diagnostics['valid'] and calibration['valid']
     write_json(evidence / "diagnostics.json", dict(diagnostics, native_exit=status,
                diagnostic_only=True, interpretation="No sample or passing retry establishes a repair."))
+    print('PASSWORD DIAGNOSTIC ATTEMPT completed: ' + evidence.name + ' native=' + str(status)
+          + ' execution=' + str(execution['valid']) + ' telemetry=' + str(diagnostics['valid']), flush=True)
     return {"native_exit": status, "execution_valid": execution["valid"], "diagnostics_valid": diagnostics["valid"]}
 
 
@@ -345,7 +418,8 @@ def plan(inventory, config):
     missing = set(value["prefix"]) - current
     if missing: raise ValueError("original diagnostic prefix missing from current inventory: " + repr(sorted(missing)))
     expected = [("original-prefix", "trace", 1, "prefix"), ("original-direct", "trace", 3, "target"),
-                ("held-discovery-direct", "held-discovery", 3, "target")]
+                ("held-discovery-direct", "held-discovery", 3, "target"),
+                ("pending-calibration", "pending-calibration", 1, "target")]
     if [(v.get("name"), v.get("control"), v.get("repetitions"), v.get("selection")) for v in value.get("vectors", [])] != expected:
         raise ValueError("diagnostic repetitions/vector order changed")
     return value
@@ -357,7 +431,7 @@ def main(arguments):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
-    parser.add_argument("--calibration", choices=("trace", "held-discovery"), help="one local direct diagnostic; never acceptance")
+    parser.add_argument("--calibration", choices=("trace", "held-discovery", "pending-calibration"), help="one local direct diagnostic; never acceptance")
     options = parser.parse_args(arguments)
     config = ROOT / "scripts/password-document-preflight.json"
     value = plan(options.inventory, config)

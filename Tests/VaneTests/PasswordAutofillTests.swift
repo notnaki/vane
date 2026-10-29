@@ -7,6 +7,7 @@ import XCTest
 
 @MainActor final class PasswordAutofillTests: XCTestCase {
     private var nativeFixtureProfiles: Set<UUID> = []
+    private var passwordPhaseChannel: PasswordDocumentPhaseChannel?
     override func tearDown() async throws {
         try await releaseNativeFixtureProfiles()
     }
@@ -250,14 +251,21 @@ import XCTest
 
     private func wait(for stage: String = "fixture condition", file: StaticString = #filePath, line: UInt = #line,
                       diagnostics: () async -> String = { "" },
+                      phaseToken: String? = nil, phasePath: String? = nil,
                       _ condition: () async throws -> Bool) async throws {
         let deadline = Date.now.addingTimeInterval(5)
+        if let phaseToken {
+            passwordPhaseChannel?.record("wait-start", fields: ["token": phaseToken, "path": phasePath ?? "",
+                "deadlineWallSeconds": deadline.timeIntervalSince1970])
+        }
         do {
             while try await !condition() {
                 if Date.now > deadline { throw FixtureTimeout(stage: stage) }
                 try await Task.sleep(for: .milliseconds(20))
             }
+            if let phaseToken { passwordPhaseChannel?.record("wait-end", fields: ["token": phaseToken, "path": phasePath ?? ""]) }
         } catch {
+            if let phaseToken { passwordPhaseChannel?.record("wait-error", fields: ["token": phaseToken, "path": phasePath ?? ""]) }
             NativeFixtureDiagnostics.emit("\(file):\(line): Failed waiting for \(stage): \(error); collecting native diagnostics")
             // XCTest records the thrown failure once. Recording XCTFail here too
             // obscures the original failure with a second, unexpected thrown error.
@@ -616,8 +624,11 @@ import XCTest
             previousObserver?(event)
             stages?.append(event)
             if diagnostic {
+                self.passwordPhaseChannel?.record("navigation-" + event.stage,
+                    fields: ["token": diagnosticToken, "path": path, "detail": event.detail])
                 print("PASSWORD DOCUMENT navigation path=\(path) elapsed=\(Date.now.timeIntervalSince(started)) stage=\(event.stage) detail=\(event.detail)")
                 if event.stage == "commit-accepted", event.identity == expectedNavigation {
+                    self.passwordPhaseChannel?.record("commit", fields: ["token": diagnosticToken, "path": path])
                     print("PASSWORD DOCUMENT COMMIT " + diagnosticToken)
                 }
                 fflush(stdout)
@@ -625,14 +636,21 @@ import XCTest
         }
         defer { tab.navigationStageObserver = previousObserver }
         #endif
+        if diagnostic { passwordPhaseChannel?.record("state-before-entry", fields: ["token": diagnosticToken, "path": path]) }
         let before = continuationLoadState(tab, web: web, requestedURL: url)
+        if diagnostic { passwordPhaseChannel?.record("state-before-return", fields: ["token": diagnosticToken, "path": path]) }
         if diagnostic { emitPasswordDocumentProcesses(web, token: diagnosticToken, path: path, phase: "before-load") }
+        if diagnostic { passwordPhaseChannel?.record("load-entry", fields: ["token": diagnosticToken, "path": path]) }
         let navigationID = ObjectIdentifier(web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html))
+        if diagnostic { passwordPhaseChannel?.record("load-return", fields: ["token": diagnosticToken, "path": path]) }
         #if DEBUG
         expectedNavigation = .navigation(navigationID)
         #endif
+        if diagnostic { passwordPhaseChannel?.record("state-after-entry", fields: ["token": diagnosticToken, "path": path]) }
         let after = continuationLoadState(tab, web: web, requestedURL: url)
+        if diagnostic { passwordPhaseChannel?.record("state-after-return", fields: ["token": diagnosticToken, "path": path]) }
         var emittedPendingIdentity = false
+        var firstPredicate = true
         try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
             #if DEBUG
             NativeFixtureDiagnostics.emit("continuation callback stages: " + stages.snapshot(expected: navigationID))
@@ -642,12 +660,20 @@ import XCTest
                 "timeout={\(continuationLoadState(tab, web: web, requestedURL: url))}"
             NativeFixtureDiagnostics.emit("continuation document \(path) cached state before sampling: " + state)
             return state + "; " + (await NativeFixtureDiagnostics.failureReport(for: web))
-        }) {
+        }, phaseToken: diagnostic ? diagnosticToken : nil, phasePath: path) {
+            if firstPredicate, diagnostic {
+                passwordPhaseChannel?.record("first-predicate-entry", fields: ["token": diagnosticToken, "path": path])
+            }
             if diagnostic, !emittedPendingIdentity, web.isLoading, Date.now.timeIntervalSince(started) >= 0.5 {
                 emittedPendingIdentity = true
                 emitPasswordDocumentProcesses(web, token: diagnosticToken, path: path, phase: "pending")
             }
-            return !web.isLoading
+            let ready = !web.isLoading
+            if firstPredicate, diagnostic {
+                passwordPhaseChannel?.record("first-predicate-return", fields: ["token": diagnosticToken, "path": path, "ready": ready])
+            }
+            firstPredicate = false
+            return ready
         }
         if Date.now.timeIntervalSince(started) >= 0.5 {
             print("Continuation fixture \(path) loaded in \(Date.now.timeIntervalSince(started))s")
@@ -658,6 +684,29 @@ import XCTest
         _ = try await js(tab.web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
         // Let the native bridge receive the submitted username before starting navigation.
         try await Task.sleep(for: .milliseconds(100))
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["VANE_PASSWORD_DOCUMENT_CONTROL"] == "pending-calibration" {
+            let gate = PasswordDocumentPendingCalibration(channel: passwordPhaseChannel)
+            let previous = tab.navigationDecisionDiagnosticGate
+            tab.navigationDecisionDiagnosticGate = { action, delivery in
+                if action.targetFrame?.isMainFrame == true, action.request.url?.path == "/password" { gate.hold(delivery) }
+                else if let previous { previous(action, delivery) }
+                else { delivery() }
+            }
+            defer { gate.release(); tab.navigationDecisionDiagnosticGate = previous }
+            async let releaseFailure: String? = gate.releaseAfterInterval()
+            var loadFailure: (any Error)?
+            do {
+                try await loadContinuationPage(tab, origin: origin, path: "password",
+                    html: "<form>" + identity + "<input id=password type=password autocomplete=current-password></form>")
+            } catch { loadFailure = error; gate.release() }
+            let failure = await releaseFailure
+            if let loadFailure { throw loadFailure }
+            if let failure { throw NSError(domain: "PasswordPendingCalibration", code: 1,
+                                           userInfo: [NSLocalizedDescriptionKey: failure]) }
+            return
+        }
+        #endif
         try await loadContinuationPage(tab, origin: origin, path: "password",
             html: "<form>" + identity + "<input id=password type=password autocomplete=current-password></form>")
     }
@@ -710,9 +759,17 @@ import XCTest
         let control = ProcessInfo.processInfo.environment["VANE_PASSWORD_DOCUMENT_CONTROL"]
         let passwordScript = control == nil ? nil : try passwordDocumentAncestryDiagnosticScript()
         try await withNativeContinuationFixture(passwordScript: passwordScript) { tab, origin in
+            if control != nil {
+                passwordPhaseChannel = try PasswordDocumentPhaseChannel()
+                passwordPhaseChannel?.record("case-start")
+            }
+            defer { passwordPhaseChannel = nil }
             #if DEBUG
             if control != nil {
                 tab.passwordStageObserver = { event in
+                    self.passwordPhaseChannel?.record("password-native",
+                        fields: ["stage": event.stage, "document": event.document.uuidString,
+                                 "detail": event.detail, "continuationAllowed": event.continuationAllowed.map { $0 as Any } ?? NSNull()])
                     print("PASSWORD DOCUMENT native stage=\(event.stage) document=\(event.document) continuationAllowed=\(event.continuationAllowed.map(String.init) ?? "none") \(event.detail)")
                     fflush(stdout)
                 }
@@ -865,6 +922,7 @@ import XCTest
             ["pid": Int(identity.pid), "start": identity.start, "path": identity.path]
         }
         let record: [String: Any] = ["token": token, "path": path, "phase": phase, "ui": row(ui), "content": row(content)]
+        passwordPhaseChannel?.record("process", fields: record)
         if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]),
            let json = String(data: data, encoding: .utf8) {
             print("PASSWORD DOCUMENT PROCESS " + json)

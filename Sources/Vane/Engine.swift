@@ -427,6 +427,8 @@ struct TitleReveal: Equatable, Sendable {
         var detail = ""
     }
     var passwordStageObserver: ((PasswordStageEvent) -> Void)?
+    // Diagnostic-only delivery of the already-computed action policy.
+    var navigationDecisionDiagnosticGate: ((WKNavigationAction, @escaping @MainActor () -> Void) -> Void)?
     private var navigationActionStageSerial = 0
 
     private func recordNavigationStage(_ stage: String, navigation: WKNavigation?, detail: String = "") {
@@ -2034,7 +2036,13 @@ struct TitleReveal: Equatable, Sendable {
                !Tab.sameDocument(navigationAction, from: self?.committedURL) {
                 self?.provisional = true
             }
+            #if DEBUG
+            if let gate = self?.navigationDecisionDiagnosticGate {
+                gate(navigationAction) { decided(policy) }
+            } else { decided(policy) }
+            #else
             decided(policy)
+            #endif
         }
         #if compiler(>=6.4)
         if #available(macOS 27.0, *), let navigation = navigationAction.mainFrameNavigation,
