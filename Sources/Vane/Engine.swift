@@ -194,6 +194,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         menu.removeAllItems()
         for original in originalItems { original.item.title = original.title }
         guard let contextLink, openBackground != nil else {
+            if let owner = navigationOwner,
+               PageContextMenu.populate(menu, originals: originalItems.map(\.item), tab: owner, web: self) {
+                return
+            }
             originalItems.forEach { menu.addItem($0.item) }
             return
         }

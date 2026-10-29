@@ -73,6 +73,12 @@ import WebKit
 }
 
 @MainActor enum PagePrinting {
+    static func run(for web: WKWebView) {
+        guard let window = web.window else { return }
+        let op = operation(for: web, printInfo: .shared)
+        op.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+    }
+
     static func operation(for web: WKWebView, printInfo: NSPrintInfo) -> NSPrintOperation {
         let operation = web.printOperation(with: printInfo)
         // WebKit hands back a print view with no size; left alone it prints a blank sheet.
@@ -85,10 +91,8 @@ import WebKit
 /// reached whatever view was first responder — the sidebar's chrome, or the command bar's
 /// field — so this asks the active tab's web view for its own print operation instead.
 @MainActor private func printPage() {
-    guard let store = Windows.current, let web = store.active?.existingWeb,
-          let window = store.window else { return }
-    let op = PagePrinting.operation(for: web, printInfo: .shared)
-    op.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+    guard let web = Windows.current?.active?.existingWeb else { return }
+    PagePrinting.run(for: web)
 }
 
 private extension NSMenuItem {
@@ -556,15 +560,24 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 /// defaults to, written by WebKit itself. A "Page Source"/"PDF" picker is three more code
 /// paths for a menu item nobody visits twice.
 @MainActor private func savePageAs() {
-    guard let tab = Windows.current?.active, tab.easelID == nil, let url = tab.currentURL else { return }
-    let panel = NSSavePanel()
-    let base = TidyTitles.title(for: tab)
-    panel.nameFieldStringValue = (base.isEmpty ? (url.host ?? "Page") : base) + ".webarchive"
-    panel.canCreateDirectories = true
-    guard panel.runModal() == .OK, let destination = panel.url else { return }
-    tab.web.createWebArchiveData { result in
-        guard case .success(let data) = result else { return }
-        try? data.write(to: destination)
+    guard let tab = Windows.current?.active else { return }
+    PageSaving.save(tab)
+}
+
+@MainActor enum PageSaving {
+    static func save(_ tab: Tab) {
+        guard tab.easelID == nil, let url = tab.currentURL, let web = tab.existingWeb else { return }
+        let document = tab.readingDocumentGeneration
+        let panel = NSSavePanel()
+        let base = TidyTitles.title(for: tab)
+        panel.nameFieldStringValue = (base.isEmpty ? (url.host ?? "Page") : base) + ".webarchive"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url,
+              tab.existingWeb === web, tab.readingDocumentGeneration == document else { return }
+        web.createWebArchiveData { result in
+            guard case .success(let data) = result else { return }
+            try? data.write(to: destination)
+        }
     }
 }
 
