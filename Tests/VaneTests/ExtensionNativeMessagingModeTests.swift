@@ -309,13 +309,76 @@ extension ExtensionNativeMessagingErrorTests {
         XCTAssertFalse(unmanaged.nativeMessagingErrorCompatibilityEnabled)
     }
 
+    func testReviewedSequentialRetriesYieldToTheExtensionPageTimer() async throws {
+        for approved in [false, true] {
+            try await withNativeModeFixture(retryPage: true) { fixture in
+                if approved { _ = try await fixture.host.setNativeMessagingErrorCompatibility(true, for: fixture.folder.path) { _ in true } }
+                let context = try XCTUnwrap(fixture.host.installed.first)
+                let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 360, height: 240),
+                                    configuration: try XCTUnwrap(context.webViewConfiguration))
+                let window = NSWindow(contentRect: web.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                let oldPolicy = NSApp.activationPolicy()
+                defer { web.stopLoading(); window.contentView = nil; window.close(); NSApp.setActivationPolicy(oldPolicy) }
+                window.contentView = web
+                NSApp.setActivationPolicy(.regular)
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                try await waitNativeModePage("retry page foreground") { NSApp.isActive && window.isKeyWindow && web.window === window }
+                web.load(URLRequest(url: try XCTUnwrap(context.optionsPageURL)))
+                try await waitNativeModePage("retry page loaded in exact owner") {
+                    !web.isLoading && web.title == "Sequential retry fixture" && web.window === window && window.isVisible
+                        && NSApp.isActive && window.isKeyWindow
+                }
+                #if DEBUG
+                let before = fixture.host.nativeMessagingDeniedRequestCount
+                #endif
+                let result = NativeModeRetryResult()
+                web.callAsyncJavaScript("return await window.exerciseNativeRetries();", arguments: [:], in: nil, in: .page) {
+                    result.value = $0
+                }
+                try await waitNativeModePage("bounded retries and page timer") { result.value != nil }
+                let values = try XCTUnwrap(try result.value?.get() as? [String: Any])
+                XCTAssertEqual(values["attempts"] as? Int, 3)
+                XCTAssertEqual(values["errors"] as? Int, 3)
+                XCTAssertEqual(values["replies"] as? Int, 0)
+                XCTAssertEqual(values["microtasks"] as? Int, 3)
+                XCTAssertGreaterThan(try XCTUnwrap(values["finalTicks"] as? Int), 0)
+                if approved {
+                    XCTAssertEqual(values["nativeType"] as? String, "function")
+                    XCTAssertGreaterThan(try XCTUnwrap(values["ticksAtCompletion"] as? Int), 0,
+                                         "Real SDK error replies must let the page's timer run during sequential retries")
+                    XCTAssertEqual(values["unavailableErrors"] as? Int, 3)
+                    #if DEBUG
+                    XCTAssertEqual(fixture.host.nativeMessagingDeniedRequestCount - before, 3)
+                    #endif
+                } else {
+                    XCTAssertEqual(values["nativeType"] as? String, "undefined")
+                    XCTAssertEqual(values["ticksAtCompletion"] as? Int, 0,
+                                   "The bounded hidden-API control must reproduce the microtask-before-timer ordering")
+                    #if DEBUG
+                    XCTAssertEqual(fixture.host.nativeMessagingDeniedRequestCount, before)
+                    #endif
+                }
+            }
+        }
+    }
+
+    private func waitNativeModePage(_ description: String, _ ready: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !ready() {
+            guard ContinuousClock.now < deadline else { throw ExtensionHost.Failure("Timed out: " + description) }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     private static let nativePermission = WKWebExtension.Permission(rawValue: "nativeMessaging")
 
-    private func withNativeModeFixture(required: [String] = ["storage", "nativeMessaging"], optional: [String] = ["cookies"], hasBackground: Bool = false,
+    private func withNativeModeFixture(required: [String] = ["storage", "nativeMessaging"], optional: [String] = ["cookies"], hasBackground: Bool = false, retryPage: Bool = false,
         _ body: @MainActor (NativeModeFixture) async throws -> Void) async throws {
         TestEnvironment.prepare()
         let loop = try await NativeFixtureApplicationLoop.acquire()
-        let fixture = NativeModeFixture(hasBackground: hasBackground)
+        let fixture = NativeModeFixture(hasBackground: hasBackground, retryPage: retryPage)
         var failure: (any Error)?
         do {
             try FileManager.default.createDirectory(at: fixture.folder, withIntermediateDirectories: true)
@@ -351,7 +414,8 @@ extension ExtensionNativeMessagingErrorTests {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("native-mode-" + UUID().uuidString).resolvingSymlinksInPath()
     lazy var host = ExtensionHost.host(for: profile)
     private let hasBackground: Bool
-    init(hasBackground: Bool) { self.hasBackground = hasBackground }
+    private let retryPage: Bool
+    init(hasBackground: Bool, retryPage: Bool) { self.hasBackground = hasBackground; self.retryPage = retryPage }
     var store: ExtensionCodeStore { ExtensionCodeStore(profileID: profile) }
     func otherHost() -> ExtensionHost {
         let other = UUID()
@@ -367,6 +431,12 @@ extension ExtensionNativeMessagingErrorTests {
     func write(version: String, required: [String], optional: [String]) throws {
         var manifest: [String: Any] = ["manifest_version": 3, "name": "Native Mode Fixture", "version": version,
             "permissions": required, "optional_permissions": optional, "host_permissions": ["https://mode.example/*"]]
+        if retryPage {
+            manifest["options_ui"] = ["page": "retry.html"]
+            try Data("<title>Sequential retry fixture</title><script src='retry.js'></script>".utf8)
+                .write(to: folder.appendingPathComponent("retry.html"))
+            try Data(Self.retryScript.utf8).write(to: folder.appendingPathComponent("retry.js"))
+        }
         if hasBackground {
             manifest["manifest_version"] = 2
             manifest["permissions"] = required + ["https://mode.example/*"]
@@ -376,6 +446,29 @@ extension ExtensionNativeMessagingErrorTests {
         }
         try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
     }
+    private static let retryScript = #"""
+    window.exerciseNativeRetries = async () => {
+      let ticks = 0, attempts = 0, errors = 0, replies = 0, unavailableErrors = 0, microtasks = 0;
+      const nativeType = typeof browser.runtime.sendNativeMessage;
+      const timer = setInterval(() => ticks++, 0);
+      // Match an extension's async wrapper: an absent API becomes a rejected
+      // Promise, so the caller retries through microtasks rather than a plain loop.
+      const send = async () => browser.runtime.sendNativeMessage('com.vane.sequential-fixture', {kind:'bounded-test'});
+      for (let index = 0; index < 3; index++) {
+        attempts++;
+        queueMicrotask(() => microtasks++);
+        try { await send(); replies++; }
+        catch (error) {
+          errors++;
+          if (String(error.message).includes('Native messaging hosts are unavailable in Vane.')) unavailableErrors++;
+        }
+      }
+      const ticksAtCompletion = ticks;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      clearInterval(timer);
+      return {nativeType,attempts,errors,replies,unavailableErrors,microtasks,ticksAtCompletion,finalTicks:ticks};
+    };
+    """#
     func restart() async throws {
         ExtensionHost.forget(profile)
         host = ExtensionHost.host(for: profile)
@@ -393,3 +486,5 @@ extension ExtensionNativeMessagingErrorTests {
     var enteredContext: WKWebExtensionContext?
 }
 #endif
+
+@MainActor private final class NativeModeRetryResult { var value: Result<Any, any Error>? }
