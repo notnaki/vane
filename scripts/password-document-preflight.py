@@ -351,6 +351,88 @@ def verify_pending_calibration(channel, samples):
             'samplersStartedWhilePending': len(live)}
 
 
+def verify_script_provenance(channel, control):
+    source = [row.get('source', {}) for row in channel.get('events', []) if isinstance(row, dict)]
+    records = [row.get('fields', {}) for row in source if row.get('phase') == 'script-provenance']
+    breadcrumbs = sum(row.get('phase') == 'password-native' and
+                      str(row.get('fields', {}).get('stage', '')).startswith('javascript-') for row in source)
+    if len(records) != 1:
+        return {'valid': False, 'problems': ['missing or duplicate installed-script provenance'], 'mode': control}
+    fields = records[0]
+    problems = []
+    if fields.get('mode') != control: problems.append('script provenance control differs from declared arm')
+    for key in ('productionSHA256', 'installedSHA256'):
+        if not isinstance(fields.get(key), str) or not re.fullmatch('[a-f0-9]{64}', fields[key]):
+            problems.append('missing SHA256 script fingerprint: ' + key)
+    if (type(fields.get('matchingInstalledScripts')) is not int or fields['matchingInstalledScripts'] != 1
+            or fields.get('mainFrameOnly') is not True
+            or type(fields.get('injectionTime')) is not int or fields['injectionTime'] != 1
+            or any(type(fields.get(key)) is not int or fields[key] <= 0 for key in ('productionBytes', 'installedBytes'))):
+        problems.append('actual installed script does not match the single main-frame document-end resource')
+    native_only = control == 'native-only'
+    equal = fields.get('productionSHA256') == fields.get('installedSHA256')
+    if native_only:
+        if (fields.get('byteExactProduction') is not True or not equal
+                or fields.get('productionBytes') != fields.get('installedBytes')):
+            problems.append('native-only installed script is not byte-identical to the production resource')
+        if breadcrumbs: problems.append('native-only unexpectedly emitted ancestry instrumentation')
+    elif fields.get('byteExactProduction') is not False or equal or not breadcrumbs:
+        problems.append('trace arm lacks distinct rewritten bytes or actual ancestry receipts')
+    return {'valid': not problems, 'problems': problems, 'mode': control, 'installed': fields,
+            'ancestryBreadcrumbs': breadcrumbs, 'ancestryAbsenceExpected': native_only}
+
+
+def verify_username_step_receipt(channel):
+    source = [row.get('source', {}) for row in channel.get('events', []) if isinstance(row, dict)]
+    loads = [row for row in source if row.get('phase') == 'load-entry' and row.get('fields', {}).get('path') == 'password']
+    receipts = [row for row in source if row.get('phase') == 'password-native'
+                and row.get('fields', {}).get('stage') == 'main-username-step']
+    chosen = [row for row in source if row.get('phase') == 'password-native'
+              and row.get('fields', {}).get('stage') == 'chosen-applied']
+    if len(loads) != 1:
+        return {'valid': False, 'classification': 'incomplete-load-receipt', 'messageAdmittedBeforeLoad': False,
+                'allObservedContinuationAllowedFalse': False, 'receipts': []}
+    load = loads[0]['monotonicNs']
+    admitted = bool(receipts) and all(row['monotonicNs'] < load for row in receipts)
+    selected_documents = {row['fields']['document'] for row in chosen if isinstance(row['fields'].get('document'), str)}
+    selection_before_load = bool(chosen) and all(row['monotonicNs'] < load for row in chosen)
+    documents_complete = all(isinstance(row['fields'].get('document'), str) and row['fields']['document'] for row in chosen)
+    outgoing = next(iter(selected_documents)) if documents_complete and len(selected_documents) == 1 else None
+    document_matches = bool(outgoing) and bool(receipts) and all(row['fields'].get('document') == outgoing for row in receipts)
+    denied = bool(receipts) and all(row['fields'].get('continuationAllowed') is False for row in receipts)
+    classification = ('incomplete-main-message-admission' if not admitted else
+                      'incomplete-outgoing-document-attribution' if not selection_before_load or not document_matches else
+                      'continuation-decision-mismatch' if not denied else 'fully-admitted-negative')
+    return {'valid': admitted and denied and selection_before_load and document_matches, 'classification': classification,
+            'messageAdmittedBeforeLoad': admitted, 'allObservedContinuationAllowedFalse': denied,
+            'anyMessageAdmittedBeforeLoad': any(row['monotonicNs'] < load for row in receipts),
+            'postLoadReceiptCount': sum(row['monotonicNs'] >= load for row in receipts),
+            'selectionRecordedBeforeLoad': selection_before_load, 'outgoingSelectionDocument': outgoing,
+            'mainReceiptsMatchOutgoingDocument': document_matches,
+            'receipts': [{'secondsRelativeToLoad': (row['monotonicNs'] - load) / 1e9,
+                          'continuationAllowed': row['fields'].get('continuationAllowed'),
+                          'document': row['fields'].get('document')} for row in receipts]}
+
+
+def verify_comparison_provenance(attempts):
+    expected = ('native-only', 'trace', 'pending-calibration')
+    proofs = [row.get('script_provenance', {}) for row in attempts]
+    problems = []
+    if len(proofs) != 3 or tuple(row.get('mode') for row in proofs) != expected:
+        return {'valid': False, 'problems': ['missing or out-of-order declared comparison arms']}
+    if not all(row.get('valid') for row in proofs): problems.append('an arm lacks valid installed-script provenance')
+    installed = [row.get('installed', {}) for row in proofs]
+    production = [row.get('productionSHA256') for row in installed]
+    if not production[0] or len(set(production)) != 1: problems.append('production resource differs between arms')
+    if (installed[0].get('installedSHA256') != production[0]
+            or installed[1].get('installedSHA256') != installed[2].get('installedSHA256')
+            or installed[1].get('installedSHA256') == production[0]):
+        problems.append('comparison did not isolate exact production bytes versus the same ancestry rewrite')
+    return {'valid': not problems, 'problems': problems, 'productionSHA256': production[0],
+            'nativeOnlySHA256': installed[0].get('installedSHA256'),
+            'ancestryTraceSHA256': installed[1].get('installedSHA256')}
+
+
 def run_attempt(evidence, control, tests, allowed_skips, expected_order_hash):
     evidence.mkdir(mode=0o700)
     phase_directory = evidence / 'phase-channel'
@@ -397,6 +479,11 @@ def run_attempt(evidence, control, tests, allowed_skips, expected_order_hash):
     phases.close()
     diagnostics['phase_channel'] = channel
     diagnostics['valid'] = diagnostics['valid'] and channel['valid']
+    script = verify_script_provenance(channel, control)
+    admission = verify_username_step_receipt(channel)
+    diagnostics['script_provenance'] = script
+    diagnostics['username_admission'] = admission
+    diagnostics['valid'] = diagnostics['valid'] and script['valid'] and admission['valid']
     if control == 'pending-calibration':
         calibration = verify_pending_calibration(channel, diagnostics['events'])
         diagnostics['pending_calibration'] = calibration
@@ -405,7 +492,8 @@ def run_attempt(evidence, control, tests, allowed_skips, expected_order_hash):
                diagnostic_only=True, interpretation="No sample or passing retry establishes a repair."))
     print('PASSWORD DIAGNOSTIC ATTEMPT completed: ' + evidence.name + ' native=' + str(status)
           + ' execution=' + str(execution['valid']) + ' telemetry=' + str(diagnostics['valid']), flush=True)
-    return {"native_exit": status, "execution_valid": execution["valid"], "diagnostics_valid": diagnostics["valid"]}
+    return {"native_exit": status, "execution_valid": execution["valid"], "diagnostics_valid": diagnostics["valid"],
+            'script_provenance': script, 'username_admission': admission}
 
 
 def plan(inventory, config):
@@ -417,8 +505,8 @@ def plan(inventory, config):
     current = set(inventory.read_text().splitlines())
     missing = set(value["prefix"]) - current
     if missing: raise ValueError("original diagnostic prefix missing from current inventory: " + repr(sorted(missing)))
-    expected = [("original-prefix", "trace", 1, "prefix"), ("original-direct", "trace", 3, "target"),
-                ("held-discovery-direct", "held-discovery", 3, "target"),
+    expected = [("native-only-prefix", "native-only", 1, "prefix"),
+                ("ancestry-trace-prefix", "trace", 1, "prefix"),
                 ("pending-calibration", "pending-calibration", 1, "target")]
     if [(v.get("name"), v.get("control"), v.get("repetitions"), v.get("selection")) for v in value.get("vectors", [])] != expected:
         raise ValueError("diagnostic repetitions/vector order changed")
@@ -431,7 +519,7 @@ def main(arguments):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
-    parser.add_argument("--calibration", choices=("trace", "held-discovery", "pending-calibration"), help="one local direct diagnostic; never acceptance")
+    parser.add_argument("--calibration", choices=("trace", "native-only", "held-discovery", "pending-calibration"), help="one local direct diagnostic; never acceptance")
     options = parser.parse_args(arguments)
     config = ROOT / "scripts/password-document-preflight.json"
     value = plan(options.inventory, config)
@@ -454,7 +542,11 @@ def main(arguments):
             if not ownership_path.exists() or not json.loads(ownership_path.read_text()).get("allExited"):
                 print("Diagnostic cohort stopped: native host exit is unverified", file=sys.stderr)
                 return 2
-    return 1 if any(attempt["native_exit"] or not attempt["execution_valid"] or not attempt["diagnostics_valid"] for attempt in attempts) else 0
+    comparison = (verify_comparison_provenance(attempts) if options.calibration is None else
+                  {'valid': True, 'applicable': False, 'reason': 'single calibration, not a comparison'})
+    write_json(options.evidence / "summary.json", {"diagnostic_only": True, "attempts": attempts,
+               'script_comparison': comparison})
+    return 1 if not comparison['valid'] or any(attempt["native_exit"] or not attempt["execution_valid"] or not attempt["diagnostics_valid"] for attempt in attempts) else 0
 
 
 if __name__ == "__main__":

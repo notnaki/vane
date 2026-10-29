@@ -14,7 +14,7 @@
 
 - No production repair, Date deadline replacement, assertion weakening, deadline extension or skipped calibration.
 - Preserve original in-place iframe removal → main username submit → password load security sequence.
-- Keep the original7 remote vectors and prior evidence; append one pending-calibration arm last (8 attempts total). Aggregate remains unconditional failure.
+- Preserve the earlier7/8-attempt evidence. The next comparison has3 fresh-host arms: native-only414 prefix, ancestry-trace414 prefix, positive pending calibration. No retries; aggregate remains unconditional failure.
 - Native UI requires explicit ownership; exact host cleanup remains canonical runner responsibility.
 - Default-nil DEBUG calibration gate delivers the real computed policy unchanged.
 - Phase records: at most256, at most16384 bytes each, atomic publication, private regular files, no symlink traversal.
@@ -66,3 +66,16 @@
 ## Self-review
 
 The file channel stays outside the canonical retirement directory because that protocol rejects unexpected files. All five review risks have explicit reader tests or mandatory native calibration checks. The new gate cannot change policy and is excluded from Release; it is scoped to one disposable tab. Timing is observed before any deadline change. Execution is inline as Root explicitly requested.
+
+### Task4: Shipping-script observer-effect comparison
+
+**Files:** Modify PasswordAutofillTests.swift, password-document-preflight.py/.json and its offline fixtures. No workflow edits.
+
+**Interfaces:** Runtime script-provenance phase records the actual installed WKUserScript UTF-8 SHA256, compiled production Autofill.script SHA256, exact byte equality and injection attributes. verify_script_provenance(channel, control) validates native-only absence versus actual trace receipts. verify_username_step_receipt(channel) reports native message admission before password load independently of continuationAllowed.
+
+- [ ] Add failing controls for wrong/missing installed hashes, unexpected native-only JS breadcrumbs and late/missing native main-username-step receipts; retain native XCTest outcome separately.
+- [ ] Native-only skips only the ancestry rewrite and uses the normal production script. Both arms retain identical native clocks/channel/collector and Date5s/security sequence, including the existing100ms submission gap.
+- [ ] Record SHA256 from the installed script and compiled production resource; require byte equality/zero ancestry receipts for native-only and distinct rewritten bytes/actual ancestry receipts for trace.
+- [ ] Compare every actual native main-username-step receipt time with load-entry regardless of authority value; any late receipt makes admission incomplete. Bind receipts to the recorded chosen-applied outgoing document and separately assert observed continuationAllowed=false posthoc. Add no action wait/guard.
+- [ ] Declare exactly one native-only prefix, one ancestry-trace prefix and one positive pending calibration on the same compiled macOS26 integration. Require the same production SHA across all3 and identical trace SHA between trace and calibration.
+- [ ] Build and run offline fixtures only; obtain independent current-diff review before scoped commit/push to Draft556 under Root authorization. No local native launch is authorized for this comparison.

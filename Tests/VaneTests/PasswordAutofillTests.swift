@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CryptoKit
 import WebKit
 import Network
 import XCTest
@@ -757,13 +758,27 @@ import XCTest
 
     func testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep() async throws {
         let control = ProcessInfo.processInfo.environment["VANE_PASSWORD_DOCUMENT_CONTROL"]
-        let passwordScript = control == nil ? nil : try passwordDocumentAncestryDiagnosticScript()
+        let passwordScript = control == nil || control == "native-only" ? nil : try passwordDocumentAncestryDiagnosticScript()
         try await withNativeContinuationFixture(passwordScript: passwordScript) { tab, origin in
+            defer { passwordPhaseChannel = nil }
             if control != nil {
                 passwordPhaseChannel = try PasswordDocumentPhaseChannel()
                 passwordPhaseChannel?.record("case-start")
+                let production = Data(Autofill.script.utf8)
+                let expected = Data((passwordScript ?? Autofill.script).utf8)
+                let installed = tab.web.configuration.userContentController.userScripts.filter { Data($0.source.utf8) == expected }
+                guard installed.count == 1, let script = installed.first else {
+                    throw NSError(domain: "PasswordDocumentDiagnostic", code: 3,
+                                  userInfo: [NSLocalizedDescriptionKey: "Expected exactly one installed password script"])
+                }
+                let actual = Data(script.source.utf8)
+                func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+                passwordPhaseChannel?.record("script-provenance", fields: ["mode": control ?? "none",
+                    "productionSHA256": digest(production), "installedSHA256": digest(actual),
+                    "byteExactProduction": actual == production, "productionBytes": production.count,
+                    "installedBytes": actual.count, "matchingInstalledScripts": installed.count,
+                    "mainFrameOnly": script.isForMainFrameOnly, "injectionTime": script.injectionTime.rawValue])
             }
-            defer { passwordPhaseChannel = nil }
             #if DEBUG
             if control != nil {
                 tab.passwordStageObserver = { event in

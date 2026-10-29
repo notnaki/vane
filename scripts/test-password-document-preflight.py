@@ -193,7 +193,8 @@ class DiagnosticSafety(unittest.TestCase):
             inventory.write_text("\n".join(value["prefix"]) + "\n")
             planned = p.plan(inventory, config)
             self.assertEqual(planned["vectors"][0]["repetitions"], 1)
-            self.assertEqual(sum(arm["repetitions"] for arm in planned["vectors"]), 8)
+            self.assertEqual(sum(arm["repetitions"] for arm in planned["vectors"]), 3)
+            self.assertEqual([arm['control'] for arm in planned['vectors']], ['native-only', 'trace', 'pending-calibration'])
             self.assertEqual(planned["vectors"][-1]["control"], "pending-calibration")
             inventory.write_text("\n".join(value["prefix"][1:]))
             with self.assertRaisesRegex(ValueError, "missing"):
@@ -217,6 +218,73 @@ class DiagnosticSafety(unittest.TestCase):
             self.assertFalse(p.verify_pending_calibration(channel, [dict(sample, **changes)])['valid'])
         self.assertFalse(p.verify_pending_calibration({'events': []}, [sample])['valid'])
         self.assertFalse(p.verify_pending_calibration(channel, [])['valid'])
+
+    def test_native_only_requires_actual_production_bytes_and_no_ancestry_events(self):
+        fields = {'mode': 'native-only', 'productionSHA256': 'a' * 64, 'installedSHA256': 'a' * 64,
+                  'byteExactProduction': True, 'matchingInstalledScripts': 1,
+                  'productionBytes': 100, 'installedBytes': 100, 'mainFrameOnly': True, 'injectionTime': 1}
+        def channel(value, extra=()):
+            return {'events': [{'source': {'phase': 'script-provenance', 'fields': value}}] + list(extra)}
+        self.assertTrue(p.verify_script_provenance(channel(fields), 'native-only')['valid'])
+        for changes in ({'installedSHA256': 'b' * 64}, {'byteExactProduction': False},
+                        {'matchingInstalledScripts': 2}, {'mainFrameOnly': False}):
+            self.assertFalse(p.verify_script_provenance(channel(dict(fields, **changes)), 'native-only')['valid'])
+        js = {'source': {'phase': 'password-native', 'fields': {'stage': 'javascript-anchor-enter'}}}
+        self.assertFalse(p.verify_script_provenance(channel(fields, [js]), 'native-only')['valid'])
+        self.assertFalse(p.verify_script_provenance({'events': []}, 'native-only')['valid'])
+
+    def test_trace_requires_rewritten_bytes_and_actual_ancestry_receipts(self):
+        fields = {'mode': 'trace', 'productionSHA256': 'a' * 64, 'installedSHA256': 'b' * 64,
+                  'byteExactProduction': False, 'matchingInstalledScripts': 1,
+                  'productionBytes': 100, 'installedBytes': 150, 'mainFrameOnly': True, 'injectionTime': 1}
+        proof = {'source': {'phase': 'script-provenance', 'fields': fields}}
+        js = {'source': {'phase': 'password-native', 'fields': {'stage': 'javascript-anchor-enter'}}}
+        self.assertTrue(p.verify_script_provenance({'events': [proof, js]}, 'trace')['valid'])
+        self.assertFalse(p.verify_script_provenance({'events': [proof]}, 'trace')['valid'])
+        self.assertFalse(p.verify_script_provenance({'events': [proof, js]}, 'pending-calibration')['valid'])
+
+    def test_main_username_admission_is_independent_of_authorization_and_native_pass(self):
+        load = {'source': {'phase': 'load-entry', 'monotonicNs': 200, 'fields': {'path': 'password'}}}
+        chosen = {'source': {'phase': 'password-native', 'monotonicNs': 50,
+                            'fields': {'stage': 'chosen-applied', 'document': 'fixture'}}}
+        def channel(stamp, allowed):
+            return {'events': [chosen, load, {'source': {'phase': 'password-native', 'monotonicNs': stamp,
+                'fields': {'stage': 'main-username-step', 'continuationAllowed': allowed, 'document': 'fixture'}}}]}
+        admitted = p.verify_username_step_receipt(channel(100, False))
+        self.assertTrue(admitted['valid'])
+        late = p.verify_username_step_receipt(channel(300, False))
+        self.assertFalse(late['valid'])
+        self.assertFalse(late['messageAdmittedBeforeLoad'])
+        self.assertTrue(late['allObservedContinuationAllowedFalse'])
+        authorized = p.verify_username_step_receipt(channel(100, True))
+        self.assertFalse(authorized['valid'])
+        self.assertTrue(authorized['messageAdmittedBeforeLoad'])
+        self.assertFalse(authorized['allObservedContinuationAllowedFalse'])
+        self.assertFalse(p.verify_username_step_receipt({'events': [load]})['valid'])
+        mixed = channel(100, False)
+        mixed['events'].append(channel(300, False)['events'][-1])
+        self.assertFalse(p.verify_username_step_receipt(mixed)['valid'], 'early receipt cannot hide a later one')
+
+    def test_main_receipt_must_match_recorded_outgoing_selection_document(self):
+        events = [{'source': {'phase': 'password-native', 'monotonicNs': 50,
+                              'fields': {'stage': 'chosen-applied', 'document': 'selected'}}},
+                  {'source': {'phase': 'load-entry', 'monotonicNs': 200, 'fields': {'path': 'password'}}},
+                  {'source': {'phase': 'password-native', 'monotonicNs': 100,
+                              'fields': {'stage': 'main-username-step', 'document': 'other', 'continuationAllowed': False}}}]
+        self.assertFalse(p.verify_username_step_receipt({'events': events})['valid'])
+        events[-1]['source']['fields']['document'] = 'selected'
+        self.assertTrue(p.verify_username_step_receipt({'events': events})['valid'])
+        self.assertFalse(p.verify_username_step_receipt({'events': events[1:]})['valid'])
+
+    def test_comparison_requires_same_production_and_same_trace_bytes_in_declared_order(self):
+        def arm(mode, installed, production='a' * 64):
+            return {'script_provenance': {'valid': True, 'mode': mode,
+                    'installed': {'productionSHA256': production, 'installedSHA256': installed}}}
+        pair = [arm('native-only', 'a' * 64), arm('trace', 'b' * 64), arm('pending-calibration', 'b' * 64)]
+        self.assertTrue(p.verify_comparison_provenance(pair)['valid'])
+        self.assertFalse(p.verify_comparison_provenance(pair[::-1])['valid'])
+        self.assertFalse(p.verify_comparison_provenance(pair[:2] + [arm('pending-calibration', 'c' * 64)])['valid'])
+        self.assertFalse(p.verify_comparison_provenance(pair[:2] + [arm('pending-calibration', 'b' * 64, 'c' * 64)])['valid'])
 
     def test_actual_ancestry_breadcrumb_function_retains_state_changes_and_cap(self):
         source = (p.ROOT / "Tests/VaneTests/PasswordAutofillTests.swift").read_text()
