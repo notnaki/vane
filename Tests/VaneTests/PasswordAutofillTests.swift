@@ -593,7 +593,8 @@ import XCTest
     }
     #endif
 
-    private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String) async throws {
+    private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String,
+                                      beforeRequest: (@MainActor () throws -> Void)? = nil) async throws {
         let web = tab.web, url = origin.url.appendingPathComponent(path)
         let started = Date.now
         #if DEBUG
@@ -606,6 +607,7 @@ import XCTest
         defer { tab.navigationStageObserver = previousObserver }
         #endif
         let before = continuationLoadState(tab, web: web, requestedURL: url)
+        try beforeRequest?()
         let navigationID = ObjectIdentifier(web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html))
         let after = continuationLoadState(tab, web: web, requestedURL: url)
         try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
@@ -625,13 +627,246 @@ import XCTest
         }
     }
 
-    private func submitUsernameAndLoadPassword(_ tab: Tab, origin: PasswordOrigin, identity: String = "") async throws {
+    private func submitUsernameAndLoadPassword(_ tab: Tab, origin: PasswordOrigin, identity: String = "",
+                                               beforeNavigation: (() -> Void)? = nil) async throws {
+        #if DEBUG
+        let admitRequest = try await awaitSubmittedUsernameProcessing(tab, origin: origin)
+        #else
+        // Release product builds expose no fixture boundary. Preserve this existing,
+        // unqualified release-test setup; the processed-ACK repair is for DEBUG CI.
         _ = try await js(tab.web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
-        // Let the native bridge receive the submitted username before starting navigation.
         try await Task.sleep(for: .milliseconds(100))
+        #endif
         try await loadContinuationPage(tab, origin: origin, path: "password",
-            html: "<form>" + identity + "<input id=password type=password autocomplete=current-password></form>")
+            html: "<form>" + identity + "<input id=password type=password autocomplete=current-password></form>",
+            beforeRequest: {
+                #if DEBUG
+                try admitRequest()
+                #endif
+                beforeNavigation?()
+            })
     }
+
+    #if DEBUG
+    @MainActor private final class UsernameSubmissionReceipt {
+        let scope: Tab.UsernameStepScope
+        var request: UUID?
+        var processed: Bool?
+        var discarded = false
+        var duplicate = false
+        var evaluation: Result<Void, Error>?
+
+        init(scope: Tab.UsernameStepScope) { self.scope = scope }
+
+        func observe(_ event: Tab.UsernameStepEvent) {
+            guard event.scope == scope else { return }
+            switch event.phase {
+            case .received:
+                if request == nil { request = event.request }
+                else if request != event.request { duplicate = true }
+            case .processed(let allowed):
+                if event.request == request { processed = allowed }
+            case .discarded:
+                if event.request == request { discarded = true }
+            }
+        }
+
+        var diagnostics: String {
+            "received=\(request != nil), processed=\(processed.map(String.init) ?? "absent"), " +
+                "discarded=\(discarded), duplicate=\(duplicate), evaluationReturned=\(evaluation != nil)"
+        }
+    }
+
+    private func awaitSubmittedUsernameProcessing(_ tab: Tab, origin: PasswordOrigin) async throws -> @MainActor () throws -> Void {
+        // One prerequisite budget includes foreground admission, DOM submission,
+        // JavaScript completion and actual native processing. A late true is rejected.
+        let clock = ContinuousClock(), deadline = clock.now.advanced(by: .seconds(5))
+        let web = tab.web, window = try XCTUnwrap(web.window)
+        let outgoingURL = try XCTUnwrap(web.url)
+        let scope = Tab.UsernameStepScope(tab: tab, web: web)
+        let receipt = UsernameSubmissionReceipt(scope: scope)
+        func currentDocument() -> Bool {
+            tab.existingWeb === web && Tab.UsernameStepScope(tab: tab, web: web) == scope &&
+                web.url == outgoingURL && tab.currentURL == outgoingURL &&
+                PasswordOrigin(url: outgoingURL) == origin && !web.isLoading
+        }
+        func checkDeadline() throws {
+            try Task.checkCancellation()
+            guard clock.now < deadline else {
+                throw FixtureTimeout(stage: "submitted username native processing: " + receipt.diagnostics)
+            }
+            guard currentDocument() else {
+                throw FixtureTimeout(stage: "submitted username outgoing document changed: " + receipt.diagnostics)
+            }
+        }
+        while true {
+            try checkDeadline()
+            if nativeContinuationReady(window, document: web) { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let previous = tab.usernameStepBoundary
+        tab.usernameStepBoundary = { [weak receipt] event, delivery in
+            receipt?.observe(event)
+            if let previous { previous(event, delivery) }
+            else { delivery?() }
+        }
+        defer { tab.usernameStepBoundary = previous }
+        try checkDeadline()
+        emitNativeContinuationReadiness(window, document: web, stage: "username-submit")
+        // A callback result acknowledges evaluation, not native message processing.
+        // Keep it independently bounded and require both before requesting navigation.
+        web.evaluateJavaScript("""
+            (function () {
+                if (document.readyState !== 'complete') throw new Error('Username document is not ready');
+                return document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+            })()
+            """, in: nil, in: .page) { [weak receipt] result in
+                receipt?.evaluation = result.map { _ in () }
+            }
+        while true {
+            try checkDeadline()
+            if let evaluation = receipt.evaluation { try evaluation.get() }
+            if receipt.discarded || receipt.duplicate {
+                throw FixtureTimeout(stage: "submitted username receipt rejected: " + receipt.diagnostics)
+            }
+            // `false` is a genuine processed denial, never the initial absent ACK.
+            if receipt.evaluation != nil, receipt.processed != nil,
+               nativeContinuationReady(window, document: web) {
+                // Recheck at the actual SDK request, across the async return and
+                // failure-state getters, without starting another prerequisite budget.
+                return {
+                    try checkDeadline()
+                    guard self.nativeContinuationReady(window, document: web) else {
+                        throw FixtureTimeout(stage: "submitted username presentation owner changed")
+                    }
+                }
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    /// Hold a real, already validated SDK message rather than fabricating a native
+    /// username step. The delay is an adversarial delivery condition, not readiness.
+    @MainActor private final class HeldUsernameStep {
+        let scope: Tab.UsernameStepScope
+        var events: [Tab.UsernameStepEvent] = []
+        var navigationBeforeProcessed = false
+        private var releaseTask: Task<Void, Never>?
+
+        init(tab: Tab) { scope = Tab.UsernameStepScope(tab: tab, web: tab.web) }
+
+        func receive(_ event: Tab.UsernameStepEvent, delivery: (@MainActor () -> Void)?) {
+            guard event.scope == scope else { delivery?(); return }
+            events.append(event)
+            guard let delivery else { return }
+            guard releaseTask == nil else { delivery(); return }
+            releaseTask = Task { @MainActor in
+                do { try await Task.sleep(for: .milliseconds(400)) }
+                catch { return }
+                delivery()
+            }
+        }
+
+        func willNavigate() {
+            navigationBeforeProcessed = !events.contains { event in
+                if case .processed = event.phase { return true }
+                return false
+            }
+        }
+
+        func join(cancel: Bool = false) async {
+            if cancel { releaseTask?.cancel() }
+            await releaseTask?.value
+            releaseTask = nil
+        }
+    }
+
+    private func assertHeldUsernameStep(_ tab: Tab, origin: PasswordOrigin,
+                                        continuationAllowed: Bool) async throws {
+        let web = tab.web, window = try XCTUnwrap(web.window)
+        XCTAssertTrue(nativeContinuationReady(window, document: web))
+        XCTAssertFalse(web.isLoading)
+        let held = HeldUsernameStep(tab: tab)
+        let previous = tab.usernameStepBoundary
+        tab.usernameStepBoundary = { [weak held] event, delivery in
+            held?.receive(event, delivery: delivery)
+        }
+        var operationError: Error?
+        do {
+            try await submitUsernameAndLoadPassword(tab, origin: origin,
+                beforeNavigation: { held.willNavigate() })
+        } catch { operationError = error }
+        await held.join(cancel: operationError != nil)
+        tab.usernameStepBoundary = previous
+        if let operationError { throw operationError }
+        let received = held.events.filter { $0.phase == .received }
+        XCTAssertEqual(received.count, 1, "The control must hold one genuine main-document username message")
+        print("Held username step: requestedBeforeProcessed=\(held.navigationBeforeProcessed), " +
+              "phases=\(held.events.map { String(describing: $0.phase) })")
+        XCTAssertFalse(held.navigationBeforeProcessed,
+                       "A password navigation must follow actual native processing, including denied authorization")
+        if held.navigationBeforeProcessed {
+            // The RED control navigated first: the old document's held delivery
+            // must be discarded, rather than acknowledged against its replacement.
+            XCTAssertEqual(held.events.last?.phase, .discarded)
+            return
+        }
+        XCTAssertEqual(held.events.last?.phase, .processed(continuationAllowed: continuationAllowed))
+        XCTAssertTrue(held.events.allSatisfy { $0.scope == held.scope && $0.request == received.first?.request })
+        if continuationAllowed {
+            try await wait { try await js(web, "password.value") as? String == "bob-secret" }
+            expectEqual(try await js(web, "password.value") as? String, "bob-secret")
+        } else {
+            try await Task.sleep(for: .milliseconds(250))
+            expectEqual(try await js(web, "password.value") as? String, "")
+        }
+    }
+
+    func testSubmittedMainUsernameAwaitsProcessedAuthorizationBeforeNavigation() async throws {
+        try await withNativeContinuationFixture { tab, origin in
+            try await loadContinuationPage(tab, origin: origin, path: "username",
+                html: "<form><input id=user autocomplete=username></form>")
+            tab.fillChosen(host: origin.host, account: "bob")
+            try await wait { try await js(tab.web, "user.value") as? String == "bob" }
+            try await assertHeldUsernameStep(tab, origin: origin, continuationAllowed: true)
+        }
+    }
+
+    func testSubmittedMainUsernameAwaitsProcessedDenialBeforeNavigation() async throws {
+        try await withNativeContinuationFixture { tab, origin in
+            try await loadContinuationPage(tab, origin: origin, path: "login", html:
+                "<iframe id=embedded srcdoc='<form><input id=user autocomplete=username></form>'></iframe>")
+            try await wait(for: "embedded username DOM") {
+                try await js(tab.web, "!!embedded.contentDocument.getElementById('user')") as? Bool == true
+            }
+            _ = try await js(tab.web, "embedded.contentDocument.getElementById('user').focus()")
+            var embeddedTarget = ""
+            try await wait(for: "isolated-world embedded username target") {
+                embeddedTarget = try await js(tab.web, """
+                    (function () {
+                        var raw = window.__vaneAnchor && window.__vaneAnchor();
+                        var anchor = raw && JSON.parse(raw);
+                        return anchor && anchor.target || '';
+                    })()
+                    """, world: Autofill.world) as? String ?? ""
+                return !embeddedTarget.isEmpty
+            }
+            tab.closeChooser(.escape)
+            _ = try await js(tab.web, "embedded.contentDocument.getElementById('user').click()")
+            try await wait(for: "native embedded-account chooser") {
+                tab.passwordChoice?.target == embeddedTarget && tab.passwordChoice?.accounts.contains("bob") == true
+            }
+            let choice = try XCTUnwrap(tab.passwordChoice)
+            let target = try XCTUnwrap(choice.target)
+            tab.fillChosen(host: choice.host, account: "bob", port: choice.port, target: target)
+            try await wait(for: "explicitly chosen account to fill the embedded username") {
+                try await js(tab.web, "embedded.contentDocument.getElementById('user').value") as? String == "bob"
+            }
+            _ = try await js(tab.web, "document.body.innerHTML='<form><input autocomplete=username value=bob></form>'")
+            try await assertHeldUsernameStep(tab, origin: origin, continuationAllowed: false)
+        }
+    }
+    #endif
 
     func testSelectedAccountContinuesWithHiddenOrReadOnlyIdentity() async throws {
         for identity in ["<input type=hidden autocomplete=username value=bob>",
