@@ -51,7 +51,10 @@ jobs:
       - name: Default browser prompt build policy
         run: python3 scripts/test-default-browser-prompt.py
 
-      - name: Parallel checks workflow regression
+      # DIAGNOSTIC DRAFT ONLY: the canonical full-CI DAG must be restored
+      # before this schema check and any merge validation are allowed to pass.
+      - name: Full workflow schema deferred during diagnostic preflight
+        if: ${{ false }}
         run: python3 scripts/test-checks-workflow.py
 
       - name: Native shard coverage fixtures
@@ -68,6 +71,9 @@ jobs:
 
       - name: Native fixture runner safety
         run: python3 scripts/test-native-fixture-runner.py
+
+      - name: Password diagnostic collector ownership and bounds
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-password-document-preflight.py
 
   build:
     name: Shared debug build
@@ -135,17 +141,12 @@ jobs:
           key: ${{ steps.swift-cache.outputs.cache-primary-key }}
 
   native:
-    # Share compiled products; each shard still owns its own isolated desktop.
-    name: Native regressions (${{ matrix.shard }}/4)
+    # DIAGNOSTIC DRAFT ONLY. This is not full native regression coverage.
+    name: Password document diagnostics (macOS 26)
     needs: [changes, build]
     if: needs.changes.outputs.app_required == 'true'
     runs-on: macos-26
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    env:
-      NATIVE_SHARD: ${{ matrix.shard }}
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@v7
 
@@ -161,21 +162,9 @@ jobs:
             --revision "$GITHUB_SHA" \
             --archive "$RUNNER_TEMP/vane-debug-runtime/vane-debug-runtime.tar.gz"
 
-      - name: Discover and partition all native tests
-        run: |
-          set -euo pipefail
-          swift test --build-system native list --skip-build > "$RUNNER_TEMP/vane-native-tests.txt"
-          python3 scripts/native-test-shards.py plan \
-            --inventory "$RUNNER_TEMP/vane-native-tests.txt" \
-            --suite required \
-            --index "$NATIVE_SHARD" --count 4 \
-            --manifest "$RUNNER_TEMP/vane-native-shard.json" \
-            --filter-output "$RUNNER_TEMP/vane-native-shard.filter"
+      - name: Discover exact diagnostic inventory
+        run: swift test --build-system native list --skip-build > "$RUNNER_TEMP/vane-native-tests.txt"
 
-      # A fresh selected host verifies startup, async progress and two owned
-      # stop-and-return cycles before this shard uses the same loop helper.
-      # The outer bound includes SwiftPM's restored-build planning/startup.
-      # NativeFixtureApplicationLoop keeps its own 12s lifecycle watchdogs.
       - name: Owned AppKit loop preflight
         timeout-minutes: 4
         env:
@@ -186,47 +175,31 @@ jobs:
           set -euo pipefail
           python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/vane-appkit-loop-preflight.log"
           if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-appkit-loop-preflight.log"; then exit 1; fi
-          grep -Fq "Test Case '-[VaneTests.NativeApplicationLoopSmokeTests testOwnedLoopAdmitsAsyncWorkAndStops]' passed" "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Expected owned AppKit loop preflight did not pass.'; exit 1; }
-          grep -Fq 'AppKit loop smoke: delayedHeartbeat=true, completed=true' "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Delayed AppKit heartbeat regression did not complete.'; exit 1; }
-          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Owned AppKit loop preflight retirement was not verified.'; exit 1; }
+          grep -Fq "Test Case '-[VaneTests.NativeApplicationLoopSmokeTests testOwnedLoopAdmitsAsyncWorkAndStops]' passed" "$RUNNER_TEMP/vane-appkit-loop-preflight.log"
+          grep -Fq 'AppKit loop smoke: delayedHeartbeat=true, completed=true' "$RUNNER_TEMP/vane-appkit-loop-preflight.log"
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-appkit-loop-preflight.log"
 
-      - name: Native regression tests
-        timeout-minutes: 24
+      - name: Investigate original prefix and predeclared controls
+        timeout-minutes: 18
         env:
-          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
-          # Capture the original process/order, even when no ReportCrash file appears.
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '720'
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
           set -euo pipefail
-          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 \
-            --filter "$(cat "$RUNNER_TEMP/vane-native-shard.filter")" \
-            2>&1 | tee "$RUNNER_TEMP/vane-swift-tests.log"
-          # Swift's signal handler can return after a software-raised trap. A fatal
-          # signal remains a failed test run even if the process then exits zero.
-          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-swift-tests.log"; then
-            echo '::error::Swift runtime captured a fatal signal during tests.'
-            exit 1
-          fi
+          python3 scripts/password-document-preflight.py \
+            --inventory "$RUNNER_TEMP/vane-native-tests.txt" \
+            --evidence "$RUNNER_TEMP/vane-password-document-preflight"
 
-      - name: Verify every selected native test completed
-        run: |
-          python3 scripts/native-test-shards.py verify \
-            --manifest "$RUNNER_TEMP/vane-native-shard.json" \
-            --log "$RUNNER_TEMP/vane-swift-tests.log"
-
-      - name: Preserve native loop failure evidence
+      - name: Preserve every diagnostic attempt
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
-          name: native-loop-logs-${{ matrix.shard }}
-          overwrite: true
+          name: password-document-preflight-macos26
           path: |
+            ${{ runner.temp }}/vane-password-document-preflight
             ${{ runner.temp }}/vane-appkit-loop-preflight.log
-            ${{ runner.temp }}/vane-swift-tests.log
             ${{ runner.temp }}/vane-native-tests.txt
-            ${{ runner.temp }}/vane-native-shard.json
-            ${{ runner.temp }}/vane-native-shard.filter
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 7
 
   known-limitations:
@@ -234,7 +207,8 @@ jobs:
     # ownership, execution and evidence failures remain required check failures.
     name: Known limitation — extension worker UA (advisory)
     needs: [changes, build]
-    if: needs.changes.outputs.app_required == 'true'
+    # DIAGNOSTIC DRAFT ONLY: full validation resumes after canonical workflow restoration.
+    if: ${{ false }}
     runs-on: macos-26
     timeout-minutes: 8
     steps:
@@ -326,7 +300,8 @@ jobs:
     # Common runtime/fixture checks run once, away from the native test desktops.
     name: Packaging and integrations
     needs: [changes, build]
-    if: needs.changes.outputs.app_required == 'true'
+    # DIAGNOSTIC DRAFT ONLY: full validation resumes after canonical workflow restoration.
+    if: ${{ false }}
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
@@ -373,35 +348,17 @@ jobs:
         run: bash scripts/test-update-installer.sh Vane.app --unsigned
 
   checks:
-    # A docs-only run skips all app jobs intentionally; unexpected skips still fail.
+    # This draft can NEVER satisfy required CI, even if every sample passes.
     if: ${{ always() }}
     needs: [changes, source, build, native, packaging, known-limitations]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Require every selected check to pass
-        env:
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          APP_REQUIRED: ${{ needs.changes.outputs.app_required }}
-          SOURCE_RESULT: ${{ needs.source.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
-          NATIVE_RESULT: ${{ needs.native.result }}
-          PACKAGING_RESULT: ${{ needs.packaging.result }}
-          KNOWN_LIMITATIONS_RESULT: ${{ needs.known-limitations.result }}
+      - name: Diagnostic preflight cannot authorize merging
         run: |
-          set -euo pipefail
-          [ "$CHANGES_RESULT" = success ] || { echo '::error::Change detection failed.'; exit 1; }
-          case "$APP_REQUIRED" in
-            true) expected=success ;;
-            false) expected=skipped ;;
-            *) echo '::error::Missing or invalid change scope.'; exit 1 ;;
-          esac
-          for result in "$SOURCE_RESULT" "$BUILD_RESULT" "$NATIVE_RESULT" "$PACKAGING_RESULT" "$KNOWN_LIMITATIONS_RESULT"; do
-            if [ "$result" != "$expected" ]; then
-              echo "::error::A selected check did not succeed or an app job skipped unexpectedly (result=$result, expected=$expected)."
-              exit 1
-            fi
-          done
+          echo '::error::Diagnostic preflight only. Full required CI has not run. Do not merge this draft.'
+          echo 'This investigation cannot validate a merge. Restore the canonical full workflow and qualify the causal repair before required CI.' >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
   prune-caches:
     # Keep deletion credentials away from the build and from pull request runs.
