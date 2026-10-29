@@ -29,22 +29,57 @@ import XCTest
                        "Display-link samples must stop at marker ink, before menus and input handlers")
     }
 
-    private func render(emphasis: Double, showIcons: Bool, icon: String = "square.fill", selected: Bool = false) throws -> NSBitmapImageRep {
+    private func render(emphasis: Double, showIcons: Bool, icon: String = "square.fill", selected: Bool = false) async throws -> NSBitmapImageRep {
         TestEnvironment.prepare()
-        let layout = SpaceStripLayout(count: 3, availableWidth: 132, showIcons: showIcons)
-        let renderer = ImageRenderer(content:
-            SpaceFooterMarker(icon: icon, layout: layout, emphasis: emphasis, selected: selected)
-                .frame(width: 32, height: 32)
-                .environment(\.colorScheme, .dark))
-        renderer.scale = 4
-        let image = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
-        if let path = ProcessInfo.processInfo.environment["VANE_FOOTER_RENDER_DIR"] {
-            let directory = URL(fileURLWithPath: path, isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try image.representation(using: .png, properties: [:])?.write(to:
-                directory.appendingPathComponent("\(showIcons ? "icons" : "dots")-\(icon)-\(emphasis)-\(selected).png"))
+        _ = NSApplication.shared
+        let policy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.accessory)
+        defer { NSApp.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var captured: NSBitmapImageRep?
+        var failure: (any Error)?
+        do {
+            let layout = SpaceStripLayout(count: 3, availableWidth: 132, showIcons: showIcons)
+            let host = NSHostingView(rootView:
+                SpaceFooterMarker(icon: icon, layout: layout, emphasis: emphasis, selected: selected)
+                    .frame(width: 32, height: 32).environment(\.colorScheme, .dark))
+            let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 32, height: 32),
+                                  styleMask: .titled, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.appearance = NSAppearance(named: .darkAqua)
+            window.contentView = host
+            defer { window.orderOut(nil); window.contentView = nil; window.close() }
+            try await LibraryFocusFixture.admitForeground(window)
+            // Admit the actual presentation owner, not the desired pixel result.
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                return window.contentView === host && host.window === window
+                    && window.occlusionState.contains(.visible) && host.bounds.size == CGSize(width: 32, height: 32)
+                    && host.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            }
+            host.displayIfNeeded()
+            let image = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 128, pixelsHigh: 128,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            image.size = CGSize(width: 32, height: 32)
+            host.cacheDisplay(in: host.bounds, to: image)
+            if let path = ProcessInfo.processInfo.environment["VANE_FOOTER_RENDER_DIR"] {
+                let directory = URL(fileURLWithPath: path, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try image.representation(using: .png, properties: [:])?.write(to:
+                    directory.appendingPathComponent("\(showIcons ? "icons" : "dots")-\(icon)-\(emphasis)-\(selected).png"))
+            }
+            captured = image
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Footer render AppKit loop cleanup also failed: \(error)") }
         }
-        return image
+        if let failure { throw failure }
+        return try XCTUnwrap(captured)
     }
 
     private func coverage(_ image: NSBitmapImageRep) -> Double {
@@ -81,17 +116,19 @@ import XCTest
         return total
     }
 
-    func testSwipeProgressDoesNotResizeTheIcon() throws {
-        let widths = try [0.0, 0.25, 0.5, 0.75, 1.0].map {
-            glyphWidth(try render(emphasis: $0, showIcons: true))
+    func testSwipeProgressDoesNotResizeTheIcon() async throws {
+        var widths: [Int] = []
+        for emphasis in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            widths.append(glyphWidth(try await render(emphasis: emphasis, showIcons: true)))
         }
         XCTAssertLessThanOrEqual((widths.max() ?? 0) - (widths.min() ?? 0), 1,
                                  "Swipe progress should blend brightness without controlling icon growth")
     }
 
-    func testIconStaysVisibleAndBrightensThroughoutEmphasisTransfer() throws {
-        let samples = try [0.0, 0.25, 0.5, 0.75, 1.0].map {
-            coverage(try render(emphasis: $0, showIcons: true))
+    func testIconStaysVisibleAndBrightensThroughoutEmphasisTransfer() async throws {
+        var samples: [Double] = []
+        for emphasis in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            samples.append(coverage(try await render(emphasis: emphasis, showIcons: true)))
         }
         XCTAssertGreaterThan(samples[0], 0, "Inactive Spaces must retain their icons")
         for (previous, next) in zip(samples, samples.dropFirst()) {
@@ -101,22 +138,24 @@ import XCTest
                              "Inactive icons should remain legible rather than shrinking to tiny glyphs")
     }
 
-    func testSelectionEnlargesTheIconAtFixedSwipeProgress() throws {
-        let inactive = try render(emphasis: 0.5, showIcons: true, selected: false)
-        let active = try render(emphasis: 0.5, showIcons: true, selected: true)
+    func testSelectionEnlargesTheIconAtFixedSwipeProgress() async throws {
+        let inactive = try await render(emphasis: 0.5, showIcons: true, selected: false)
+        let active = try await render(emphasis: 0.5, showIcons: true, selected: true)
         XCTAssertGreaterThan(glyphWidth(active), glyphWidth(inactive),
                              "Selection should enlarge the icon independently of swipe progress")
     }
 
-    func testDotModeHidesTheInactiveSymbolButIconModeKeepsItsIdentity() throws {
-        func pixels(_ icon: String, showIcons: Bool) throws -> Data {
-            try XCTUnwrap(render(emphasis: 0, showIcons: showIcons, icon: icon)
-                .representation(using: .png, properties: [:]))
+    func testDotModeHidesTheInactiveSymbolButIconModeKeepsItsIdentity() async throws {
+        func pixels(_ icon: String, showIcons: Bool) async throws -> Data {
+            let image = try await render(emphasis: 0, showIcons: showIcons, icon: icon)
+            return try XCTUnwrap(image.representation(using: .png, properties: [:]))
         }
-        XCTAssertEqual(try pixels("square.fill", showIcons: false),
-                       try pixels("triangle.fill", showIcons: false))
-        XCTAssertNotEqual(try pixels("square.fill", showIcons: true),
-                          try pixels("triangle.fill", showIcons: true))
+        let dotSquare = try await pixels("square.fill", showIcons: false)
+        let dotTriangle = try await pixels("triangle.fill", showIcons: false)
+        let iconSquare = try await pixels("square.fill", showIcons: true)
+        let iconTriangle = try await pixels("triangle.fill", showIcons: true)
+        XCTAssertEqual(dotSquare, dotTriangle)
+        XCTAssertNotEqual(iconSquare, iconTriangle)
     }
 
     func testSelectionGrowthAnimatesQuicklyDuringInstantProgressUpdates() async throws {
