@@ -92,6 +92,8 @@ import WebKit
     #if DEBUG
     // DEBUG assertions inspect only an already-created background page.
     var backgroundCreationObserver: ((WKWebView, WKWebExtensionContext) -> Void)?
+    // Test-only suspension after genuine signed discovery, before adoption.
+    var safariDiscoveryDidVerify: (() async -> Void)?
     #endif
 
     static func applyUserAgent() {
@@ -673,6 +675,9 @@ import WebKit
         if ["app", "appex"].contains(folder.pathExtension.lowercased()) {
             let generations = installationGenerations()
             let candidates = try await Task.detached(priority: .utility) { try SafariExtensionSource.candidates(in: folder) }.value
+            #if DEBUG
+            if let safariDiscoveryDidVerify { await safariDiscoveryDidVerify() }
+            #endif
             try Task.checkCancellation()
             guard candidates.count == 1, let candidate = candidates.first else { throw Failure("This app contains several Safari extensions. Choose its specific .appex bundle, or use Install Extension in the extension manager.") }
             let path = candidate.source.key

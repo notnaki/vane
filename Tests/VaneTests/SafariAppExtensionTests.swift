@@ -325,4 +325,73 @@ import XCTest
         XCTAssertTrue(try ExtensionCodeStore(profileID: profile).records().isEmpty)
     }
 
+    #if DEBUG
+    func testDisabledModeChangeInvalidatesEarlierVerifiedSafariDiscovery() async throws {
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let host = ExtensionHost.host(for: profile)
+        let gate = VerifiedSafariDiscoveryGate()
+        var discovery: Task<Bool, any Error>?
+        var failure: (any Error)?
+        do {
+            try write(version: "1.0", permissions: ["storage", "nativeMessaging"])
+            _ = try await host.load(app, installing: true) { _ in true }
+            let path = try XCTUnwrap(host.entries.first?.path)
+            try host.disable(path)
+            let store = ExtensionCodeStore(profileID: profile)
+            let before = try XCTUnwrap(store.records()[path])
+            host.safariDiscoveryDidVerify = { await gate.enter() }
+            let operation = Task { @MainActor in
+                try await host.load(self.app, installing: true) { _ in
+                    XCTFail("A stale discovery cannot reach another access review"); return true
+                }
+            }
+            discovery = operation
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !gate.entered {
+                guard ContinuousClock.now < deadline else { throw ExtensionHost.Failure("Verified Safari discovery did not enter its admission boundary") }
+                await Task.yield()
+            }
+            let accepted = try await host.setNativeMessagingErrorCompatibility(true, for: path) { _ in true }
+            XCTAssertTrue(accepted)
+            let approvedIndex = try Data(contentsOf: store.root.appendingPathComponent("installations.json"))
+            let changed = try XCTUnwrap(store.records()[path])
+            XCTAssertEqual(changed.identity, before.identity)
+            XCTAssertEqual(changed.revision, before.revision)
+            XCTAssertEqual(changed.nativeMessagingErrorCompatibilityVersion, 1)
+            XCTAssertTrue(host.installed.isEmpty)
+            gate.release()
+            do { _ = try await operation.value; XCTFail("A mode change must invalidate earlier signed discovery even while disabled") }
+            catch is CancellationError { }
+            catch { XCTFail("Expected stale-discovery cancellation, got \(error)") }
+            XCTAssertEqual(try Data(contentsOf: store.root.appendingPathComponent("installations.json")), approvedIndex)
+            XCTAssertTrue(host.installed.isEmpty)
+            XCTAssertEqual(host.entries.first?.status, "Disabled")
+        } catch { failure = error }
+        host.safariDiscoveryDidVerify = nil
+        gate.release()
+        if let discovery { discovery.cancel(); _ = try? await discovery.value }
+        for entry in host.entries { try? host.remove(folder: entry.path) }
+        ExtensionHost.forget(profile)
+        do { try await loop.close() }
+        catch { if failure == nil { failure = error } else { XCTFail("Signed discovery loop cleanup: \(error)") } }
+        if let failure { throw failure }
+    }
+
+    @MainActor private final class VerifiedSafariDiscoveryGate {
+        private(set) var entered = false
+        private var continuation: CheckedContinuation<Void, Never>?
+        func enter() async {
+            await withCheckedContinuation { continuation in
+                entered = true
+                self.continuation = continuation
+            }
+        }
+        func release() {
+            let pending = continuation
+            continuation = nil
+            pending?.resume()
+        }
+    }
+    #endif
+
 }
