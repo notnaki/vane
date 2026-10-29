@@ -7,6 +7,7 @@ import XCTest
 
 @MainActor final class PasswordAutofillTests: XCTestCase {
     private var nativeFixtureProfiles: Set<UUID> = []
+    private var fixtureWallNow: () -> Date = { .now }
     override func tearDown() async throws {
         try await releaseNativeFixtureProfiles()
     }
@@ -248,17 +249,136 @@ import XCTest
         }
     }
 
+    @MainActor private final class SupervisedFixtureWait {
+        var result: Result<Void, Error>?
+        var overran = false
+    }
+
+    /// The controlled predicates yield or finish within six seconds. This seven-
+    /// second supervisor cancels and joins a cooperative overrun; it does not
+    /// claim to interrupt a predicate that blocks the executor indefinitely.
+    private func supervisedFixtureWait(for stage: String,
+                                       _ condition: @escaping @MainActor () async throws -> Bool) async -> SupervisedFixtureWait {
+        let attempt = SupervisedFixtureWait(), clock = ContinuousClock()
+        let supervisorDeadline = clock.now.advanced(by: .seconds(7))
+        let worker = Task { @MainActor in
+            do {
+                try await self.wait(for: stage, condition)
+                attempt.result = .success(())
+            } catch { attempt.result = .failure(error) }
+        }
+        let supervisor = Task { @MainActor in
+            do { try await clock.sleep(until: supervisorDeadline) }
+            catch { return }
+            guard attempt.result == nil else { return }
+            attempt.overran = true
+            worker.cancel()
+        }
+        await worker.value
+        supervisor.cancel()
+        await supervisor.value
+        return attempt
+    }
+
+    func testFixtureWaitBackwardWallStepStillExpires() async throws {
+        var offset: TimeInterval = 0
+        let previous = fixtureWallNow
+        fixtureWallNow = { Date.now.addingTimeInterval(offset) }
+        defer { fixtureWallNow = previous }
+        let attempt = await supervisedFixtureWait(for: "backward wall step") {
+            offset = -60
+            return false
+        }
+        XCTAssertFalse(attempt.overran, "A wall-clock rollback must not extend the five-second wait")
+        guard !attempt.overran else { return }
+        guard case .failure(let error) = attempt.result else {
+            return XCTFail("A false predicate must time out")
+        }
+        let failure = try XCTUnwrap(error as? FixtureFailure)
+        XCTAssertTrue(failure.cause is FixtureTimeout)
+    }
+
+    func testFixtureWaitRejectsLateTrue() async throws {
+        let attempt = await supervisedFixtureWait(for: "late true predicate") {
+            try await Task.sleep(for: .seconds(6))
+            return true
+        }
+        XCTAssertFalse(attempt.overran, "The finite predicate must return before the independent supervisor")
+        guard !attempt.overran else { return }
+        guard case .failure(let error) = attempt.result else {
+            return XCTFail("A predicate returning true after six seconds must not pass a five-second wait")
+        }
+        let failure = try XCTUnwrap(error as? FixtureFailure)
+        XCTAssertTrue(failure.cause is FixtureTimeout)
+    }
+
+    #if DEBUG
+    func testFixtureWaitForwardWallStepAwaitsActualUsernameProcessing() async throws {
+        try await withNativeContinuationFixture { tab, origin in
+            try await loadContinuationPage(tab, origin: origin, path: "username",
+                html: "<form><input autocomplete=username value=bob></form>")
+            let web = tab.web, window = try XCTUnwrap(web.window)
+            XCTAssertTrue(nativeContinuationReady(window, document: web))
+            XCTAssertFalse(web.isLoading)
+            let held = HeldUsernameStep(tab: tab)
+            let receipt = UsernameSubmissionReceipt(scope: held.scope)
+            let previousBoundary = tab.usernameStepBoundary, previousWall = fixtureWallNow
+            var offset: TimeInterval = 0
+            var steppedWhilePending = false
+            fixtureWallNow = { Date.now.addingTimeInterval(offset) }
+            tab.usernameStepBoundary = { [weak held, weak receipt] event, delivery in
+                receipt?.observe(event)
+                held?.receive(event, delivery: delivery)
+            }
+            web.evaluateJavaScript("document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))",
+                                   in: nil, in: .page) { [weak receipt] result in
+                receipt?.evaluation = result.map { _ in () }
+            }
+            let attempt = await supervisedFixtureWait(for: "forward wall step with real held username message") {
+                if !steppedWhilePending, receipt.request != nil, receipt.processed == nil,
+                   !receipt.discarded, !receipt.duplicate {
+                    steppedWhilePending = true
+                    offset = 60
+                }
+                if let evaluation = receipt.evaluation { try evaluation.get() }
+                return receipt.evaluation != nil && receipt.processed != nil
+            }
+            await held.join()
+            tab.usernameStepBoundary = previousBoundary
+            fixtureWallNow = previousWall
+            XCTAssertEqual(held.events.filter { $0.phase == .received }.count, 1)
+            XCTAssertEqual(held.events.last?.phase, .processed(continuationAllowed: false))
+            XCTAssertTrue(steppedWhilePending, "The wall step must occur while the matching real native receipt is pending")
+            print("Fixture wall-step control: steppedWhilePending=\(steppedWhilePending), " + receipt.diagnostics)
+            XCTAssertFalse(attempt.overran)
+            guard !attempt.overran else { return }
+            if case .failure(let error) = attempt.result {
+                XCTFail("A forward wall-clock step must not expire the pending native ACK: \(error)")
+            }
+        }
+    }
+    #endif
+
     private func wait(for stage: String = "fixture condition", file: StaticString = #filePath, line: UInt = #line,
                       diagnostics: () async -> String = { "" },
                       _ condition: () async throws -> Bool) async throws {
-        let deadline = Date.now.addingTimeInterval(5)
+        let clock = ContinuousClock(), started = clock.now
+        let deadline = started.advanced(by: .seconds(5))
+        let wallStarted = fixtureWallNow()
         do {
-            while try await !condition() {
-                if Date.now > deadline { throw FixtureTimeout(stage: stage) }
+            while true {
+                try Task.checkCancellation()
+                guard clock.now < deadline else { throw FixtureTimeout(stage: stage) }
+                let ready = try await condition()
+                try Task.checkCancellation()
+                guard clock.now < deadline else { throw FixtureTimeout(stage: stage) }
+                if ready { return }
                 try await Task.sleep(for: .milliseconds(20))
             }
         } catch {
-            NativeFixtureDiagnostics.emit("\(file):\(line): Failed waiting for \(stage): \(error); collecting native diagnostics")
+            NativeFixtureDiagnostics.emit("\(file):\(line): Failed waiting for \(stage): \(error); " +
+                "elapsedMonotonic=\(started.duration(to: clock.now)), " +
+                "elapsedWallMetadata=\(fixtureWallNow().timeIntervalSince(wallStarted)); collecting native diagnostics")
             // XCTest records the thrown failure once. Recording XCTFail here too
             // obscures the original failure with a second, unexpected thrown error.
             let report = await diagnostics()
