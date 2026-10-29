@@ -123,6 +123,8 @@ import WebKit
         var requiredAccess: ExtensionAccess? = nil
         var optionalAccess: ExtensionAccess? = nil
         var compatibility: [String] = []
+        var nativeMessagingErrorCompatibilityAvailable: Bool = false
+        var nativeMessagingErrorCompatibilityEnabled: Bool = false
         var id: String { path }
     }
 
@@ -153,6 +155,7 @@ import WebKit
         let revision: String?
         let contextID: String?
         let disabled: Bool
+        let nativeMessagingErrorCompatibilityVersion: Int?
     }
 
     /// Discovery initially has no trusted extension key. Once verification supplies
@@ -161,7 +164,8 @@ import WebKit
         let identities = contextIdentifiers
         return Dictionary(uniqueKeysWithValues: folders.keys.map { path in
             (path, InstallationGeneration(identity: records[path]?.identity, revision: records[path]?.revision,
-                contextID: identities[path], disabled: disabled.contains(path)))
+                contextID: identities[path], disabled: disabled.contains(path),
+                nativeMessagingErrorCompatibilityVersion: records[path]?.nativeMessagingErrorCompatibilityVersion))
         })
     }
 
@@ -188,7 +192,13 @@ import WebKit
                          requiredAccess: record?.required ?? ExtensionConsent.saved(for: URL(fileURLWithPath: path), profileID: profileID),
                          optionalAccess: record?.optional ?? legacyMetadata[path]?.optional,
                          compatibility: (record?.compatibility ?? limitations[path] ?? [])
-                            + (userAgent.limitation.map { [$0] } ?? []))
+                            + (userAgent.limitation.map { [$0] } ?? []),
+                         nativeMessagingErrorCompatibilityAvailable: !invalidated && metadataFailure == nil && profileID != Profile.incognito.id
+                            && record.map { ExtensionNativeMessagingErrors.isApproved(version: ExtensionNativeMessagingErrors.currentVersion,
+                                required: $0.required, optional: $0.optional) } == true,
+                         nativeMessagingErrorCompatibilityEnabled: record.map {
+                            ExtensionNativeMessagingErrors.isApproved(version: $0.nativeMessagingErrorCompatibilityVersion,
+                                required: $0.required, optional: $0.optional) } == true)
         }
     }
 
@@ -313,6 +323,96 @@ import WebKit
     }
 
     // MARK: Install / remove
+
+    @discardableResult
+    func setNativeMessagingErrorCompatibility(_ enabled: Bool, for path: String,
+        review: @MainActor (ExtensionConsent.NativeMessagingErrorReview) -> Bool = ExtensionConsent.askNativeMessagingErrors) async throws -> Bool {
+        guard !invalidated, profileID != Profile.incognito.id else { throw CancellationError() }
+        if let metadataFailure { throw Failure(metadataFailure) }
+        guard let record = records[path], folders[path] != nil else {
+            throw Failure("This accepted extension is unavailable. Install or repair it before reviewing compatibility.")
+        }
+        guard ExtensionNativeMessagingErrors.isApproved(version: ExtensionNativeMessagingErrors.currentVersion,
+            required: record.required, optional: record.optional) else {
+            throw Failure("This extension does not declare native messaging.")
+        }
+        guard operations[path] == nil, restoring[path] == nil else { return false }
+        try Task.checkCancellation()
+        let approved = ExtensionNativeMessagingErrors.isApproved(version: record.nativeMessagingErrorCompatibilityVersion,
+            required: record.required, optional: record.optional)
+        if enabled && approved || !enabled && record.nativeMessagingErrorCompatibilityVersion == nil { return true }
+        let generation = installationGenerations()[path]
+        let wasActive = loaded.contains { $0.path == path }
+        let shouldActivate = !disabled.contains(path)
+        let token = UUID()
+        operations[path] = token
+        rebuild()
+        defer { if operations[path] == token { operations[path] = nil }; rebuild() }
+        func checkLifetime() throws {
+            try Task.checkCancellation()
+            guard !invalidated, operations[path] == token, installationGenerations()[path] == generation else {
+                throw CancellationError()
+            }
+        }
+        if enabled {
+            let accepted = review(.init(name: record.name))
+            try checkLifetime()
+            guard accepted else { return false }
+        }
+        try checkLifetime()
+        var revised = record
+        revised.nativeMessagingErrorCompatibilityVersion = enabled ? ExtensionNativeMessagingErrors.currentVersion : nil
+        var replacement: WKWebExtensionContext?
+        var replaced = false
+        do {
+            if shouldActivate {
+                try deactivate(path)
+                replaced = true
+                replacement = try await context(for: revised, path: path, checkLifetime: checkLifetime)
+            }
+            try checkLifetime()
+            var next = records
+            next[path] = revised
+            // Metadata is the commit point. Until it succeeds the old record is
+            // authoritative, and an active candidate is never exposed in loaded.
+            try codeStore.save(next)
+            records = next
+            if let replacement { loaded.append((path, replacement)) }
+            failures[path] = nil
+            startPolling()
+            SiteChanges.shared.bump()
+            return true
+        } catch {
+            if let replacement {
+                if replacement.isLoaded { try? unloadContext(replacement) }
+                closePages(for: replacement)
+            }
+            if !invalidated, operations[path] == token {
+                if replaced && wasActive {
+                    do {
+                        // An unstructured recovery is not cancelled merely
+                        // because the mode-changing caller was cancelled.
+                        let restored = try await Task { @MainActor in
+                            try await self.context(for: record, path: path, recoveringSafariUpdate: true) {
+                                guard !self.invalidated, self.operations[path] == token,
+                                      self.installationGenerations()[path] == generation else { throw CancellationError() }
+                            }
+                        }.value
+                        guard !invalidated, operations[path] == token else {
+                            try? unloadContext(restored); closePages(for: restored); throw CancellationError()
+                        }
+                        loaded.append((path, restored))
+                    } catch {
+                        if !invalidated, operations[path] == token {
+                            failures[path] = "The compatibility change failed and the accepted extension could not restart. Choose Retry. Your settings are retained. " + error.localizedDescription
+                        }
+                    }
+                }
+                if !invalidated, operations[path] == token, failures[path] == nil { failures[path] = error.localizedDescription }
+            }
+            throw error
+        }
+    }
 
     struct Failure: LocalizedError {
         let errorDescription: String?
@@ -647,16 +747,19 @@ import WebKit
                 throw Failure("manifest.json changed while Vane was checking it. Retry to review the current extension before enabling it.")
             }
             let identity = oldRecord?.identity ?? contextIdentifiers[path].flatMap(UUID.init(uuidString:))?.uuidString ?? UUID().uuidString
-            let record = ExtensionCodeStore.Record(identity: identity, revision: frozen.revision,
+            var record = ExtensionCodeStore.Record(identity: identity, revision: frozen.revision,
                 sourcePath: storeSource?.listingURL.absoluteString ?? source.resolvingSymlinksInPath().path, name: ext.displayName ?? source.lastPathComponent,
                 version: ext.version ?? "Unknown", summary: ext.displayDescription ?? "",
                 required: requested,
                 optional: ExtensionAccess(permissions: Set(ext.optionalPermissions.map(\.rawValue)), sites: Set(ext.optionalPermissionMatchPatterns.map(\.string))),
                 compatibility: issues, integratedCapabilities: requested.permissions.intersection(Self.integratedCapabilities), store: storeSource)
+            record.nativeMessagingErrorCompatibilityVersion = ExtensionNativeMessagingErrors.retainedVersion(from: oldRecord,
+                for: record.required, optional: record.optional)
             if enable {
                 try deactivate(path)
                 replaced = true
-                let context = makeContext(ext, identity: identity, runtimeID: storeSource?.id)
+                let context = try makeContext(ext, identity: identity, runtimeID: storeSource?.id,
+                    nativeMessagingErrorCompatibilityVersion: record.nativeMessagingErrorCompatibilityVersion)
                 candidates[path] = context
                 if let storeSource {
                     try await waitForDataPurge(storeSource.id, checkLifetime: checkLifetime)
@@ -861,14 +964,17 @@ import WebKit
             }
             try checkLifetime()
             let identity = oldRecord?.identity ?? contextIdentifiers[path].flatMap(UUID.init(uuidString:))?.uuidString ?? UUID().uuidString
-            let record = ExtensionCodeStore.Record(identity: identity, revision: frozen.revision,
+            var record = ExtensionCodeStore.Record(identity: identity, revision: frozen.revision,
                 sourcePath: candidate.source.appPath, name: ext.displayName ?? candidate.source.extensionBundleID,
                 version: ext.version ?? "Unknown", summary: ext.displayDescription ?? "", required: requested,
                 optional: ExtensionAccess(permissions: Set(ext.optionalPermissions.map(\.rawValue)), sites: Set(ext.optionalPermissionMatchPatterns.map(\.string))),
                 compatibility: issues, integratedCapabilities: requested.permissions.intersection(Self.integratedCapabilities), safari: candidate.source)
+            record.nativeMessagingErrorCompatibilityVersion = ExtensionNativeMessagingErrors.retainedVersion(from: oldRecord,
+                for: record.required, optional: record.optional)
             if enable {
                 try deactivate(path); replaced = true
-                let context = makeContext(ext, identity: identity, runtimeID: candidate.source.runtimeID)
+                let context = try makeContext(ext, identity: identity, runtimeID: candidate.source.runtimeID,
+                    nativeMessagingErrorCompatibilityVersion: record.nativeMessagingErrorCompatibilityVersion)
                 candidates[path] = context
                 try await waitForDataPurge(candidate.source.runtimeID, checkLifetime: checkLifetime)
                 if oldRecord == nil && folders[path] == nil {
@@ -934,13 +1040,32 @@ import WebKit
         }
     }
 
-    private func makeContext(_ ext: WKWebExtension, identity: String, runtimeID: String? = nil) -> WKWebExtensionContext {
+    private func makeContext(_ ext: WKWebExtension, identity: String, runtimeID: String? = nil,
+                             nativeMessagingErrorCompatibilityVersion: Int? = nil) throws -> WKWebExtensionContext {
         let context = WKWebExtensionContext(for: ext)
         context.uniqueIdentifier = runtimeID ?? identity.lowercased()
         context.baseURL = URL(string: "webkit-extension://\(identity.lowercased())/")!
         context.isInspectable = Settings.inspectorEnabled
         context.inspectionName = ext.displayName
         context.unsupportedAPIs = ExtensionDiagnostics.unsupportedAPIs
+        let native = WKWebExtension.Permission(rawValue: "nativeMessaging")
+        let optional = ExtensionAccess(permissions: Set(ext.optionalPermissions.map(\.rawValue)),
+            sites: Set(ext.optionalPermissionMatchPatterns.map(\.string)))
+        let approved = ExtensionNativeMessagingErrors.isApproved(version: nativeMessagingErrorCompatibilityVersion,
+            required: ExtensionAccess(ext), optional: optional)
+        if approved {
+            // Signed Safari sources otherwise have an automatic NSExtension
+            // fallback. Exposing either API requires our permanent denial owner.
+            guard controller.delegate === self,
+                  responds(to: NSSelectorFromString("webExtensionController:sendMessage:toApplicationWithIdentifier:forExtensionContext:replyHandler:")),
+                  responds(to: NSSelectorFromString("webExtensionController:connectUsingMessagePort:forExtensionContext:completionHandler:")) else {
+                throw Failure("Native messaging error handling is unavailable. Desktop apps remain blocked.")
+            }
+            context.unsupportedAPIs.subtract(ExtensionNativeMessagingErrors.apiNames)
+            context.setPermissionStatus(.grantedExplicitly, for: native)
+        } else {
+            context.setPermissionStatus(.deniedExplicitly, for: native)
+        }
         for permission in ext.requestedPermissions where !ExtensionDiagnostics.unsupportedPermissions.contains(permission.rawValue) {
             context.setPermissionStatus(.grantedExplicitly, for: permission)
         }
@@ -973,7 +1098,8 @@ import WebKit
         // Record access is checked against the actual code before anything can execute.
         guard ExtensionAccess(ext) == record.required else { throw Failure("The accepted extension files changed. Choose " + (record.safari == nil ? "Update from Folder" : "Update from App") + " to validate and review a fresh copy.") }
         try checkLifetime()
-        let context = makeContext(ext, identity: record.identity, runtimeID: record.safari?.runtimeID ?? record.store?.id)
+        let context = try makeContext(ext, identity: record.identity, runtimeID: record.safari?.runtimeID ?? record.store?.id,
+            nativeMessagingErrorCompatibilityVersion: record.nativeMessagingErrorCompatibilityVersion)
         candidates[path] = context
         do {
             if let runtimeID = record.safari?.runtimeID ?? record.store?.id { try await waitForDataPurge(runtimeID, checkLifetime: checkLifetime) }
@@ -1886,9 +2012,17 @@ import WebKit
 
     func revokeRuntimeAccess(_ context: WKWebExtensionContext) {
         guard installed.contains(where: { $0 === context }) else { return }
-        let required = context.webExtension.requestedPermissions
+        var retained = context.webExtension.requestedPermissions
+        // This is installation-scoped compatibility approval, not a temporary
+        // optional grant. Its separate disable control rebuilds the context.
+        if let path = loaded.first(where: { $0.context === context })?.path,
+           let record = records[path],
+           ExtensionNativeMessagingErrors.isApproved(version: record.nativeMessagingErrorCompatibilityVersion,
+               required: record.required, optional: record.optional) {
+            retained.insert(WKWebExtension.Permission(rawValue: "nativeMessaging"))
+        }
         let patterns = context.webExtension.requestedPermissionMatchPatterns.union(context.webExtension.allRequestedMatchPatterns)
-        context.grantedPermissions = context.grantedPermissions.filter { required.contains($0.key) }
+        context.grantedPermissions = context.grantedPermissions.filter { retained.contains($0.key) }
         context.grantedPermissionMatchPatterns = context.grantedPermissionMatchPatterns.filter { patterns.contains($0.key) }
         context.deniedPermissions = [:]
         context.deniedPermissionMatchPatterns = [:]
@@ -1934,7 +2068,9 @@ import WebKit
             if !errorCodes.isEmpty { sections.append("Error codes: " + errorCodes.joined(separator: ", ")) }
         }
         sections.append("Compatibility limitations: " + (entry.compatibility.isEmpty ? "None identified from the manifest" : "Present; inspect in manager"))
-        sections.append("Native messaging: unavailable. Chrome Web Store installation and full Chromium compatibility are not provided.")
+        sections.append(entry.nativeMessagingErrorCompatibilityEnabled
+            ? "Native messaging: Error-only mode enabled. Desktop apps remain blocked."
+            : "Native messaging: desktop apps are blocked. Error-only mode is disabled.")
         sections.append("Source paths, website targets, error messages, credentials, browsing content and extension storage are excluded.")
         return sections.joined(separator: "\n")
     }

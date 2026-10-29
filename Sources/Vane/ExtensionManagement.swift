@@ -596,7 +596,10 @@ private struct ExtensionDetailView: View {
                 .font(.caption).foregroundStyle(.secondary)
             if let context = entry.context {
                 let required = entry.requiredAccess ?? ExtensionAccess(permissions: [], sites: [])
-                let permissions = context.grantedPermissions.filter { !required.permissions.contains($0.key.rawValue) && $0.value > .now }
+                let permissions = context.grantedPermissions.filter {
+                    !required.permissions.contains($0.key.rawValue) && $0.value > .now
+                        && !(entry.nativeMessagingErrorCompatibilityEnabled && $0.key.rawValue == "nativeMessaging")
+                }
                 let sites = context.grantedPermissionMatchPatterns.filter { !required.sites.contains($0.key.string) && $0.value > .now }
                 let usesActiveTab = required.permissions.contains("activeTab") || entry.optionalAccess?.permissions.contains("activeTab") == true
                 if permissions.isEmpty && sites.isEmpty {
@@ -658,10 +661,35 @@ private struct ExtensionDetailView: View {
             Text("Compatibility").font(.headline)
             Text("Vane runs MV2/MV3 WebExtensions through macOS WebKit. Installing from the store does not guarantee compatibility; available APIs depend on both WebKit and Vane’s browser integration.")
                 .font(.callout).foregroundStyle(.secondary)
+            if entry.nativeMessagingErrorCompatibilityAvailable {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(entry.nativeMessagingErrorCompatibilityEnabled
+                        ? "Error-only mode enabled. Desktop apps remain blocked."
+                        : "Some extensions need error callbacks when desktop integration is unavailable.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button(entry.nativeMessagingErrorCompatibilityEnabled ? "Disable Error-Only Mode" : "Review Error-Only Mode…") {
+                        changeNativeMessagingErrorMode()
+                    }
+                    .controlSize(.small)
+                    .disabled(host.isBusy)
+                    .accessibilityIdentifier("extension-manager.native-error-mode")
+                    .help("Separate from installation access. Vane never connects to desktop apps.")
+                }
+                .animation(Motion.reduced ? nil : Look.list, value: entry.nativeMessagingErrorCompatibilityEnabled)
+            }
             ForEach(entry.compatibility, id: \.self) { limitation in
                 Label(limitation, systemImage: "info.circle").font(.callout)
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    private func changeNativeMessagingErrorMode() {
+        Task {
+            do {
+                _ = try await host.setNativeMessagingErrorCompatibility(!entry.nativeMessagingErrorCompatibilityEnabled, for: entry.path)
+            } catch is CancellationError { }
+            catch { self.error = error.localizedDescription }
         }
     }
 

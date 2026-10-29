@@ -58,6 +58,21 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
 @MainActor enum ExtensionConsent {
     nonisolated static let baseKey = "extensionConsent.v1"
 
+    struct NativeMessagingErrorReview { let name: String }
+
+    static func makeNativeMessagingErrorPrompt(_ review: NativeMessagingErrorReview) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Enable error-only desktop compatibility for “\(review.name)”?"
+        alert.informativeText = "The extension can receive errors when it requests desktop integration. Vane will not connect to desktop apps. Desktop-dependent features remain unavailable."
+        alert.addButton(withTitle: "Enable Error-Only Mode")
+        alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+        return alert
+    }
+
+    static func askNativeMessagingErrors(_ review: NativeMessagingErrorReview) -> Bool {
+        makeNativeMessagingErrorPrompt(review).runModal() == .alertFirstButtonReturn
+    }
+
     struct Review {
         let name: String
         let requested: ExtensionAccess
