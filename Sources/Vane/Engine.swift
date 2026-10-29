@@ -128,6 +128,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     var saveLink: ((URL, String?) -> Void)?
     private var contextFilename: String?
     private var originalItems: [(item: NSMenuItem, title: String)] = []
+    private var pageContextMenu: PageContextMenu?
     var contextLink: URL? {
         didSet { if let activeMenu { update(activeMenu) } }
     }
@@ -157,6 +158,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         super.willOpenMenu(menu, with: event)
         if activeMenu !== menu {
             originalItems = menu.items.map { ($0, $0.title) }
+            pageContextMenu = nil
         }
         activeMenu = menu
         update(menu)
@@ -165,6 +167,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
         activeMenu = nil
         originalItems = []
+        pageContextMenu = nil
         contextFilename = nil
         contextArmedAt = nil
         contextLink = nil
@@ -194,6 +197,13 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         menu.removeAllItems()
         for original in originalItems { original.item.title = original.title }
         guard let contextLink, openBackground != nil else {
+            if pageContextMenu == nil, let owner = navigationOwner {
+                pageContextMenu = PageContextMenu(originals: originalItems.map(\.item), tab: owner, web: self)
+            }
+            if let pageContextMenu {
+                pageContextMenu.populate(menu, originals: originalItems.map(\.item))
+                return
+            }
             originalItems.forEach { menu.addItem($0.item) }
             return
         }
