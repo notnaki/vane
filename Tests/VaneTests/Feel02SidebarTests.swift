@@ -340,39 +340,56 @@ import XCTest
         NSApp.setActivationPolicy(.accessory)
         defer { NSApp.setActivationPolicy(previousPolicy) }
         var selected = 0, closed = 0
+        let geometry = NativeFixtureGeometry()
         let row = SidebarRow(selected: false, action: { selected += 1 }) {
             Image(systemName: "globe")
         } label: {
-            Text("Pointer fixture")
+            Text("Pointer fixture").background(NativeFixtureGeometryProbe(id: "row", geometry: geometry))
         } trailing: {
             Button { closed += 1 } label: { Image(systemName: "xmark").frame(width: 32, height: 32) }
                 .buttonStyle(.plain)
+                .background(NativeFixtureGeometryProbe(id: "close", geometry: geometry))
         }
         let host = Feel02FirstMouseHostingView(rootView: row.frame(width: 300, height: 44))
         let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 300, height: 44),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = host
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        defer { window.contentView = nil; window.close() }
-        host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(50))
-        func send(_ type: NSEvent.EventType, x: CGFloat) throws {
+        host.sizingOptions = []
+        let attachment = NativeFixtureMountAdmission.attach(host, to: window)
+        // This first click must exercise the inactive-window acceptsFirstMouse
+        // route even when a preceding fixture has finished launching AppKit.
+        window.orderFront(nil)
+        defer { attachment?.cancel(); window.contentView = nil; window.close() }
+        try await compatibilityWait {
+            guard let row = geometry["row"], let close = geometry["close"],
+                  let rowPoint = NativeFixtureMountAdmission.hitPoint(row, root: host, window: window),
+                  let closePoint = NativeFixtureMountAdmission.hitPoint(close, root: host, window: window) else { return false }
+            return !close.convert(close.bounds, to: nil).contains(rowPoint)
+                && !row.convert(row.bounds, to: nil).contains(closePoint)
+        }
+        let rowPoint = try XCTUnwrap(NativeFixtureMountAdmission.hitPoint(try XCTUnwrap(geometry["row"]), root: host, window: window))
+        print("MOUNT_ADMISSION pointer rootWindow=\(host.window === window) contentOwner=\(window.contentView === host) active=\(NSApp.isActive) key=\(window.isKeyWindow) running=\(NSApp.isRunning)")
+        func send(_ type: NSEvent.EventType, at point: NSPoint) throws {
             NSApp.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type,
-                location: CGPoint(x: x, y: 22), modifierFlags: [],
+                location: point, modifierFlags: [],
                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                 context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)))
         }
-        try send(.leftMouseDown, x: 60)
+        XCTAssertFalse(window.isKeyWindow, "First-mouse admission must not make the target key")
+        try send(.leftMouseDown, at: rowPoint)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(selected, 0, "Pointer feedback must not invoke the row early")
-        try send(.leftMouseUp, x: 60)
+        try send(.leftMouseUp, at: rowPoint)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(selected, 1, "Adding feedback must not consume or postpone a normal click")
-        try send(.leftMouseDown, x: 276)
+        try await compatibilityWait {
+            guard let close = geometry["close"] else { return false }
+            return NativeFixtureMountAdmission.hitPoint(close, root: host, window: window) != nil
+        }
+        let closePoint = try XCTUnwrap(NativeFixtureMountAdmission.hitPoint(try XCTUnwrap(geometry["close"]), root: host, window: window))
+        try send(.leftMouseDown, at: closePoint)
         try await Task.sleep(for: .milliseconds(50))
-        try send(.leftMouseUp, x: 276)
+        try send(.leftMouseUp, at: closePoint)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(closed, 1, "A child control retains its own activation")
         XCTAssertEqual(selected, 1, "Closing must not also select the row")
