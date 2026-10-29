@@ -47,6 +47,12 @@ Generated values use the platform secure random source and are stored only after
 
 ## Review a submitted password
 
+In **Settings → Passwords**, **Offer to save passwords** controls browser save/update
+offers for the selected profile and defaults to on. Turn it off when using an extension
+password manager. Pending offers are dismissed and submission lookups cannot create new
+offers or save credentials while it is off. Existing saved-password autofill, manual
+Settings edits and password imports remain available.
+
 A form submission can produce an unverified save/update offer. Click Review to correct
 the HTTPS website, username and password, then explicitly Save or Update. Return while
 typing in the page does not accept an offer. Submission is not proof that authentication

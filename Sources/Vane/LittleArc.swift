@@ -387,8 +387,7 @@ import SwiftUI
             let row = entry(space.name) { move(store, to: space) }
             // The Space's own glyph, as the sidebar and the Spaces menu draw it. The
             // description is what a screen reader reads, so the row is not "image, Work".
-            row.image = NSImage(systemSymbolName: space.icon ?? "cloud",
-                                accessibilityDescription: space.name)
+            row.image = Spaces.iconImage(space.icon ?? "cloud", description: space.name)
             row.state = space.id == showing ? .on : .off
             menu.addItem(row)
         }

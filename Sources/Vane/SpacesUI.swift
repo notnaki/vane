@@ -742,7 +742,7 @@ struct SpacePreviewList: View, Equatable {
             SpaceSectionsLayout(initialOffset: scrollOffset, animatesCutoffs: false) {
                 HStack(spacing: 0) {
                     HStack(spacing: Look.rowSpacing) {
-                        Image(systemName: (space.icon ?? "cloud") == "cloud" ? "cloud.fill" : (space.icon ?? "cloud"))
+                        SpaceIcon(space.icon ?? "cloud", filledCloud: true)
                             .font(Look.spaceIcon).foregroundStyle(Look.inkPrimary).frame(width: Look.tileIcon)
                         Text(space.name).font(Look.spaceTitle).lineLimit(1)
                         Spacer(minLength: 0)

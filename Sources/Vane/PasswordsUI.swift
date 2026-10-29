@@ -96,6 +96,7 @@ import SwiftUI
                     Button { beginAdding() } label: { Label("Add password", systemImage: "plus") }
                         .buttonStyle(.borderedProminent)
                 }
+                PasswordSavingPreference(profileID: profileID)
                 Footnote("Passkeys are pending Apple’s browser capability approval and provisioning. Saved passwords remain available here.")
                 DisclosureGroup("Folder unlock method") {
                     SettingsRow("Unlock folders using") {
@@ -1515,5 +1516,28 @@ struct PasswordSiteIcon: View {
             .frame(width: 32, height: 32)
             .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
             .accessibilityHidden(true)
+    }
+}
+
+/// Its defaults binding is recreated when Settings changes its selected profile.
+struct PasswordSavingPreference: View {
+    let profileID: UUID
+    @AppStorage private var offersSaving: Bool
+
+    init(profileID: UUID) {
+        self.profileID = profileID
+        _offersSaving = AppStorage(wrappedValue: true, Passwords.offerSavingKey(profileID), store: UserDefaults.vane)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Look.captionGap) {
+            SettingsRow("Offer to save passwords") {
+                Toggle("Offer to save passwords", isOn: Binding(
+                    get: { offersSaving },
+                    set: { Passwords.setOffersSaving($0, profileID: profileID) }))
+                    .labelsHidden()
+            }
+            Footnote("Applies to this profile. Saved-password autofill, manual edits, and imports remain available.")
+        }
     }
 }

@@ -578,7 +578,9 @@ enum Passwords {
                              password: String, profileID: UUID,
                              operations: ReviewOperations = .init()) throws -> SaveDecision {
         return try serviceLane.sync {
+            guard offersSaving(profileID: profileID) else { throw SavingDisabled() }
             let (existing, revision) = try operations.snapshot(origin, account, profileID)
+            guard offersSaving(profileID: profileID) else { throw SavingDisabled() }
             let sameIdentity = origin == offer.origin && account == offer.account
             if existing != nil && (!offer.update || !sameIdentity || (offer.revision != nil && offer.revision != revision)) {
                 return .review(PendingSave(attempt: offer.attempt, revision: revision, port: origin.port,
@@ -667,6 +669,28 @@ enum Passwords {
         var d = UserDefaults.vane.dictionary(forKey: usedKey(profileID)) ?? [:]
         guard d.removeValue(forKey: origin.key(account: account)) != nil else { return }
         UserDefaults.vane.set(d, forKey: usedKey(profileID))
+    }
+
+    // MARK: Browser save offers
+
+    static func offerSavingKey(_ profileID: UUID) -> String {
+        ProfileManager.defaultsKey("offerToSavePasswords", profileID)
+    }
+
+    static func offersSaving(profileID: UUID) -> Bool {
+        UserDefaults.vane.object(forKey: offerSavingKey(profileID)) as? Bool ?? true
+    }
+
+    @MainActor static func setOffersSaving(_ enabled: Bool, profileID: UUID) {
+        UserDefaults.vane.set(enabled, forKey: offerSavingKey(profileID))
+        guard !enabled else { return }
+        for store in TabStore.all where store.profileID == profileID {
+            for tab in store.everyTab { tab.cancelPasswordSaveOffer() }
+        }
+    }
+
+    struct SavingDisabled: LocalizedError {
+        var errorDescription: String? { "Password-save offers are turned off for this profile." }
     }
 
     // MARK: Never for this site

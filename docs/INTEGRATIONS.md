@@ -78,6 +78,9 @@ resolved targets stay inside the verified bundle.
 Details show source, version, required installation access, declared optional
 capabilities/sites, current additional grants, keyboard commands, and compatibility
 limitations. **Open Options…** appears when an enabled extension declares an options page.
+File inputs in options pages and action popups open a native file-selection sheet on
+that view’s window. Closing the view, navigating, or disabling the extension cancels
+pending selection. The same macOS folder-upload safeguards used by tabs apply.
 **Reveal Source Folder** opens its external source in Finder when available. Missing or
 unreadable files have recovery guidance; a source warning does not mean accepted managed
 code has stopped working.
