@@ -601,6 +601,7 @@ def run_attempt(evidence, control, tests, allowed_skips, expected_order_hash):
     print('PASSWORD DIAGNOSTIC ATTEMPT completed: ' + evidence.name + ' native=' + str(status)
           + ' execution=' + str(execution['valid']) + ' telemetry=' + str(diagnostics['valid']), flush=True)
     return {"native_exit": status, "execution_valid": execution["valid"], "diagnostics_valid": diagnostics["valid"],
+            'execution_skips': execution['preserved_original_skips'],
             'script_provenance': script, 'username_admission': admission}
 
 
@@ -608,14 +609,18 @@ def plan(inventory, config):
     value = json.loads(config.read_text())
     if (value.get("schema") != 1 or value.get("diagnostic_only") is not True or value.get("target") != TARGET
             or len(value.get("prefix", [])) != 414 or value["prefix"][-1] != TARGET
-            or len(set(value["prefix"])) != 414):
+            or len(set(value["prefix"])) != 414 or len(value.get('original_prefix_skips', [])) != 32
+            or len(set(value['original_prefix_skips'])) != 32 or TARGET in value['original_prefix_skips']
+            or not set(value['original_prefix_skips']).issubset(value['prefix'])):
         raise ValueError("diagnostic control config does not match the preserved original prefix")
     current = set(inventory.read_text().splitlines())
     missing = set(value["prefix"]) - current
     if missing: raise ValueError("original diagnostic prefix missing from current inventory: " + repr(sorted(missing)))
-    expected = [("pending-sampler-acknowledgment", "pending-calibration", 1, "target")]
-    if value.get('stage') != 'sampler-readiness' or value.get('qualified_comparison_run') != 40948827683:
-        raise ValueError('sampler readiness must retain the separately qualified script comparison')
+    expected = [(('pressure-' if i % 2 == 0 else 'direct-') + str(i // 2 + 1),
+                 'native-only', 1, 'prefix' if i % 2 == 0 else 'target') for i in range(6)]
+    if (value.get('stage') != 'pressure-capture' or value.get('qualified_comparison_run') != 40948827683
+            or value.get('qualified_sampler_run') != 40953824107):
+        raise ValueError('pressure capture must retain the qualified comparison and live sampler evidence')
     if [(v.get("name"), v.get("control"), v.get("repetitions"), v.get("selection")) for v in value.get("vectors", [])] != expected:
         raise ValueError("diagnostic repetitions/vector order changed")
     return value
@@ -627,7 +632,6 @@ def main(arguments):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
-    parser.add_argument("--calibration", choices=("trace", "native-only", "held-discovery", "pending-calibration"), help="one local direct diagnostic; never acceptance")
     options = parser.parse_args(arguments)
     config = ROOT / "scripts/password-document-preflight.json"
     value = plan(options.inventory, config)
@@ -637,25 +641,47 @@ def main(arguments):
     shutil.copyfile(options.inventory, options.evidence / "inventory.txt")
     (options.evidence / "source.diff").write_bytes(subprocess.check_output(["git", "diff"], cwd=ROOT))
     attempts = []
-    vectors = value["vectors"] if options.calibration is None else [{"name": "calibration", "control": options.calibration, "selection": "target", "repetitions": 1}]
+    vectors = value['vectors']
+    pinned_revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+    def summary(stopped=False, reasons=()):
+        write_json(options.evidence / 'summary.json', {'diagnostic_only': True, 'attempts': attempts,
+            'purpose': 'capture-only; passing samples do not establish repair',
+            'pinned_revision': pinned_revision, 'planned_arms': 6, 'remaining_unstarted': 6 - len(attempts),
+            'stopped': stopped, 'stop_reasons': list(reasons),
+            'qualified_comparison_run': value['qualified_comparison_run'],
+            'qualified_sampler_run': value['qualified_sampler_run']})
     for vector in vectors:
+        if subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip() != pinned_revision:
+            summary(True, ['checked-out integration changed before the next arm'])
+            return 2
         tests = value["prefix"] if vector["selection"] == "prefix" else [TARGET]
         expected_order_hash = value["original_prefix_order_sha256"] if vector["selection"] == "prefix" else hashlib.sha256(json.dumps(tests, separators=(",", ":")).encode()).hexdigest()
         for index in range(vector["repetitions"]):
             label = vector["name"] + "-" + str(index + 1)
             result = run_attempt(options.evidence / label, vector["control"], tests, set(value["original_prefix_skips"]), expected_order_hash)
             attempts.append(dict(label=label, **result))
-            write_json(options.evidence / "summary.json", {"diagnostic_only": True, "attempts": attempts})
             ownership_path = options.evidence / label / "ownership.json"
-            if not ownership_path.exists() or not json.loads(ownership_path.read_text()).get("allExited"):
-                print("Diagnostic cohort stopped: native host exit is unverified", file=sys.stderr)
-                return 2
-    comparison = {'valid': True, 'applicable': False,
-                  'reason': 'single sampler readiness calibration; previous script comparison is retained separately',
-                  'qualified_comparison_run': value['qualified_comparison_run']}
-    write_json(options.evidence / "summary.json", {"diagnostic_only": True, "attempts": attempts,
-               'script_comparison': comparison})
-    return 1 if not comparison['valid'] or any(attempt["native_exit"] or not attempt["execution_valid"] or not attempt["diagnostics_valid"] for attempt in attempts) else 0
+            try: retired = json.loads(ownership_path.read_text()).get('allExited') is True
+            except (OSError, ValueError, AttributeError): retired = False
+            reasons = []
+            if not retired: reasons.append('native host exit is unverified')
+            if type(result.get('native_exit')) is not int or result['native_exit'] != 0:
+                reasons.append('native assertion or execution failed')
+            if result.get('execution_valid') is not True: reasons.append('selected execution is incomplete or invalid')
+            if result.get('diagnostics_valid') is not True: reasons.append('diagnostic transport or instrumentation is incomplete')
+            if result.get('username_admission', {}).get('valid') is not True: reasons.append('security scenario admission is incomplete')
+            script = result.get('script_provenance', {})
+            if (script.get('valid') is not True or script.get('mode') != 'native-only'
+                    or script.get('ancestryBreadcrumbs') != 0
+                    or script.get('installed', {}).get('byteExactProduction') is not True):
+                reasons.append('actual shipping script provenance is invalid')
+            expected_skips = sorted(value['original_prefix_skips']) if vector['selection'] == 'prefix' else []
+            if result.get('execution_skips') != expected_skips: reasons.append('exact original named skip set differs')
+            summary(bool(reasons), reasons)
+            if reasons:
+                print('Pressure capture stopped at ' + label + ': ' + '; '.join(reasons), file=sys.stderr)
+                return 2 if not retired else 1
+    return 0
 
 
 if __name__ == "__main__":

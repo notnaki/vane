@@ -221,12 +221,71 @@ class DiagnosticSafety(unittest.TestCase):
             inventory.write_text("\n".join(value["prefix"]) + "\n")
             planned = p.plan(inventory, config)
             self.assertEqual(planned["vectors"][0]["repetitions"], 1)
-            self.assertEqual(sum(arm["repetitions"] for arm in planned["vectors"]), 1)
-            self.assertEqual([arm['control'] for arm in planned['vectors']], ['pending-calibration'])
-            self.assertEqual(planned["vectors"][-1]["control"], "pending-calibration")
+            self.assertEqual(sum(arm["repetitions"] for arm in planned["vectors"]), 6)
+            self.assertEqual([arm['control'] for arm in planned['vectors']], ['native-only'] * 6)
+            self.assertEqual([arm['selection'] for arm in planned['vectors']], ['prefix', 'target'] * 3)
             inventory.write_text("\n".join(value["prefix"][1:]))
             with self.assertRaisesRegex(ValueError, "missing"):
                 p.plan(inventory, config)
+
+    def pressure_driver(self, failure=None, failure_index=0):
+        value = json.loads(Path(__file__).with_name('password-document-preflight.json').read_text())
+        value['vectors'] = [{'name': ('pressure-' if i % 2 == 0 else 'direct-') + str(i // 2 + 1),
+            'control': 'native-only', 'selection': 'prefix' if i % 2 == 0 else 'target', 'repetitions': 1}
+            for i in range(6)]
+        seen = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory, evidence = root / 'inventory', root / 'evidence'
+            inventory.write_text('\n'.join(value['prefix']) + '\n')
+            def attempt(path, control, tests, allowed_skips, expected_order_hash):
+                index = len(seen); seen.append((control, len(tests)))
+                path.mkdir()
+                if failure != 'missing-retirement' or index != failure_index:
+                    p.write_json(path / 'ownership.json', {'allExited': not (failure == 'retirement' and index == failure_index)})
+                result = {'native_exit': 0, 'execution_valid': True, 'diagnostics_valid': True,
+                    'execution_skips': value['original_prefix_skips'] if len(tests) == 414 else [],
+                    'username_admission': {'valid': True},
+                    'script_provenance': {'valid': True, 'mode': control, 'ancestryBreadcrumbs': 0,
+                                          'installed': {'byteExactProduction': True}}}
+                if index == failure_index:
+                    if failure == 'native': result['native_exit'] = 1
+                    elif failure == 'execution': result['execution_valid'] = False
+                    elif failure == 'telemetry': result['diagnostics_valid'] = False
+                    elif failure == 'scenario': result['username_admission']['valid'] = False
+                    elif failure == 'shipping-script': result['script_provenance']['installed']['byteExactProduction'] = False
+                    elif failure == 'changed-skips': result['execution_skips'] = []
+                return result
+            with mock.patch.object(p, 'plan', return_value=value), mock.patch.object(p, 'run_attempt', side_effect=attempt):
+                status = p.main(['--inventory', str(inventory), '--evidence', str(evidence)])
+            return status, seen, json.loads((evidence / 'summary.json').read_text())
+
+    def test_pressure_capture_stops_at_first_native_or_incomplete_result(self):
+        for failure in ('native', 'execution', 'telemetry', 'scenario', 'shipping-script',
+                        'retirement', 'missing-retirement', 'changed-skips'):
+            with self.subTest(failure=failure):
+                status, seen, summary = self.pressure_driver(failure)
+                self.assertNotEqual(status, 0)
+                self.assertEqual(len(seen), 1, 'later arms must not replace a failure with passing attempts')
+                self.assertEqual(len(summary['attempts']), 1)
+                self.assertTrue(summary['stopped'])
+                self.assertEqual(summary['remaining_unstarted'], 5)
+
+    def test_pressure_capture_runs_six_fresh_arms_only_when_each_prior_arm_is_valid(self):
+        status, seen, summary = self.pressure_driver()
+        self.assertEqual(status, 0)
+        self.assertEqual(seen, [('native-only', n) for n in [414, 1, 414, 1, 414, 1]])
+        self.assertEqual(len(summary['attempts']), 6)
+        self.assertFalse(summary['stopped'])
+        self.assertEqual(summary['remaining_unstarted'], 0)
+        self.assertEqual(summary['purpose'], 'capture-only; passing samples do not establish repair')
+
+    def test_pressure_capture_preserves_prior_arms_then_stops_on_later_failure(self):
+        status, seen, summary = self.pressure_driver('native', failure_index=2)
+        self.assertNotEqual(status, 0)
+        self.assertEqual(len(seen), 3)
+        self.assertEqual([a['native_exit'] for a in summary['attempts']], [0, 0, 1])
+        self.assertEqual(summary['remaining_unstarted'], 3)
 
     def test_pending_calibration_requires_a_real_live_sampler_inside_monotonic_hold(self):
         samples = []
