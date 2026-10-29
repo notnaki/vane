@@ -3,6 +3,7 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -32,6 +33,27 @@ def fixture():
     return claim,report,verdict
 
 class ProtocolTests(unittest.TestCase):
+    def test_workflow_is_one_branch_one_arm_and_fails_invalid_admission(self):
+        import subprocess
+        workflow=(Path(__file__).resolve().parents[1]/".github/workflows/mv3-eligible-client-capability.yml").read_text()
+        self.assertIn("branches: [codex/mv3-eligible-client-capability]",workflow)
+        self.assertIn("contents: read",workflow)
+        self.assertIn("persist-credentials: false",workflow)
+        self.assertIn("runs-on: macos-26",workflow)
+        self.assertEqual(workflow.count(" --run"),1)
+        self.assertEqual(workflow.count("if: ${{ always() }}"),2)
+        for forbidden in ("continue-on-error:","matrix:","actions/cache", "workflow_dispatch:","pull_request:","secrets.","--prepare-only"):
+            self.assertNotIn(forbidden,workflow)
+        block=workflow.split("        run: |\n",1)[1].split("          # Qualified build and sole capability arm.",1)[0]
+        prefix="\n".join(line[10:] for line in block.splitlines())
+        for values in ({}, {"GITHUB_RUN_ATTEMPT":"2"}, {"GITHUB_RUN_ATTEMPT":"1\n1"},
+                       {"GITHUB_REF":"refs/heads/main"},{"GITHUB_EVENT_NAME":"pull_request"},{"GITHUB_RUN_ATTEMPT":None}):
+            with tempfile.TemporaryDirectory() as directory:
+                env={"PATH":os.environ["PATH"],"RUNNER_TEMP":directory,"GITHUB_REF":"refs/heads/codex/mv3-eligible-client-capability", "GITHUB_EVENT_NAME":"push", "GITHUB_RUN_ATTEMPT":"1",**values}
+                env={key:value for key,value in env.items() if value is not None}
+                result=subprocess.run(["bash","-c",prefix+"\ntouch \"$RUNNER_TEMP/admitted\""],env=env,capture_output=True)
+                self.assertEqual(result.returncode==0,not values)
+                self.assertEqual((Path(directory)/"admitted").exists(),not values)
     def test_bound_observable_capability(self):
         claim,report,verdict=fixture()
         self.assertEqual(capability.validate_report(report,claim,verdict),"observed")

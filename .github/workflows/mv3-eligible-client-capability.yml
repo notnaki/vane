@@ -1,0 +1,58 @@
+name: MV3 eligible-client capability (diagnostic only)
+
+on:
+  push:
+    branches: [codex/mv3-eligible-client-capability]
+
+permissions:
+  contents: read
+
+jobs:
+  capability:
+    name: One fresh system-WebKit capability
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Qualify source and run exactly one primary plus canonical cleanup
+        timeout-minutes: 9
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE_ROOT="$RUNNER_TEMP/mv3-client-capability"
+          mkdir -p "$EVIDENCE_ROOT"
+          exec > "$EVIDENCE_ROOT/job.log" 2>&1
+          if [[ "$GITHUB_EVENT_NAME" != push || "$GITHUB_REF" != refs/heads/codex/mv3-eligible-client-capability || "$GITHUB_RUN_ATTEMPT" != 1 ]]; then
+            echo 'Refused: only the first push attempt on the exact diagnostic branch is authorized.'
+            exit 1
+          fi
+          echo 'Capability not yet attempted; any prerequisite failure remains a failed job.'
+          # Qualified build and sole capability arm.
+          git rev-parse HEAD
+          git diff --check
+          sw_vers
+          xcrun swift --version
+          xcrun --sdk macosx --show-sdk-version
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-worker-client-capability.py
+          node --check Tests/Diagnostics/WorkerClientCapability/worker.js
+          swift build --build-system native -c debug
+          BINARY_DIRECTORY="$(swift build --build-system native -c debug --show-bin-path)"
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/worker-client-capability.py --binary "$BINARY_DIRECTORY/vane" --evidence-dir "$EVIDENCE_ROOT/attempt-1" --run
+
+      - name: Show the retained transcript even after failure
+        if: ${{ always() }}
+        shell: bash
+        run: cat "$RUNNER_TEMP/mv3-client-capability/job.log"
+
+      - name: Preserve every raw attempt and ownership report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: mv3-eligible-client-capability-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mv3-client-capability
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14

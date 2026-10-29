@@ -64,7 +64,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-worker-client-capability.py
 node --check Tests/Diagnostics/WorkerClientCapability/worker.js
 swift build --build-system native -c debug
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/worker-client-capability.py \
-  --binary .build/out/Products/Debug/vane \
+  --binary "$(swift build --build-system native -c debug --show-bin-path)/vane" \
   --evidence-dir "$RUNNER_TEMP/mv3-client-capability/attempt-1" --run
 ```
 
@@ -79,3 +79,11 @@ The sole resulting claim is whether this exact qualified runtime exposes the fre
 - Independent review found two P2s: late readiness/reply success after deadline, and post-Popen bookkeeping outside protected retirement. Current source checks absolute deadlines and protects launch bookkeeping/capture/write failure through the owned-launch finally scope; no advertised bound was extended.
 - `capability-prepare-1` signed and verified an ad-hoc sandbox/Hardened Runtime normal app without launching it. Its preparation predates the deadline correction and is retained as earlier evidence, not current native qualification. Current signed preparation will have its own fresh provenance.
 - No local native/UI app, test, remote run, push or PR has been started for this capability. No SDK capability result or UA fix is claimed.23 offline controls establish report/ownership behavior only.
+
+## Authorized integration and single push
+
+- Root authorized the one branch-push workflow only after latest-diff review and main integration. Reviewed source54bc9814 is preserved in recovery commit29e99ef. Actual main10c31ed merged cleanly as9ed5c59.
+- The workflow has exactly one job, read-only contents permission, no checkout credential persistence, secret reference, cache, matrix, conditional native skip or retry. Invalid event/ref/rerun admission exits nonzero; raw transcript/artifacts are retained with always steps. UA failure/unavailable and cleanup failure stay nonzero. It does not replace required CI or prove a product fix.
+- Use SwiftPM's public show-bin-path for the explicitly selected native build system; Xcode's default .build/out product path is a different build system and must not be assumed on a fresh runner.
+-24 offline controls include executing the workflow's actual admission prefix against valid, wrong-branch, wrong-event, repeated, malformed and missing attempt values. No local native/UI run is authorized.
+- After the one remote outcome, preserve its raw artifacts, stop without an unchanged retry, and archive the diagnostic worktree only after its code/evidence and exact test-process/store cleanup are preserved.

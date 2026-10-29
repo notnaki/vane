@@ -133,7 +133,7 @@ def source_fingerprint(root):
     files = sorted([*root.glob("Sources/Vane/**/*.swift"), root/"Package.swift", root/"Vane.entitlements",
                     *root.glob("Tests/Diagnostics/WorkerClientCapability/*"),
                     root/"scripts/worker-client-capability.py",root/"scripts/test-worker-client-capability.py",
-                    root/"scripts/run-native-tests.py"])
+                    root/"scripts/run-native-tests.py",root/".github/workflows/mv3-eligible-client-capability.yml"])
     values = {str(path.relative_to(root)):hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
     return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest(), values
 
