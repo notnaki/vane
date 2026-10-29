@@ -9,6 +9,10 @@ if args.first == "selfcheck", args.contains("--pure") { SelfCheck.run(pureOnly: 
 
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
+#if DEBUG
+if args.first == "worker-client-capability" { ExtensionWorkerClientCapability.run(cleanup: false) }
+if args.first == "worker-client-capability-cleanup" { ExtensionWorkerClientCapability.run(cleanup: true) }
+#endif
 // The Dock icon has to lead somewhere when every window is closed, and its menu has to
 // offer a window. That is the whole of the delegate; see AppLifecycle.swift.
 app.delegate = AppLifecycle.shared

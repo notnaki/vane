@@ -1,0 +1,1 @@
+{"manifest_version":3,"name":"MV3 Eligible Client Capability","version":"1.0","permissions":["storage"],"background":{"service_worker":"worker.js"},"action":{"default_popup":"popup.html"}}
