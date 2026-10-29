@@ -188,6 +188,12 @@ identity. Ordinary runtime grants follow the existing reload rules. A failed con
 or metadata save retains the old accepted mode and attempts to restart it; a restart
 failure is shown in the manager. Old or unknown mode versions keep the APIs hidden.
 
+Reported WebKit context script diagnostics (domain `WKWebExtensionContextErrorDomain`,
+code7) stay visible in a separate Runtime diagnostics section. They do not label a loaded
+extension as a failed update. Metadata/activation failures, failed background-completion
+callbacks, unknown codes and other error domains still require attention. Copied diagnostics
+continue to export only allowlisted domain/code metadata, excluding the runtime message text.
+
 ### Routine CI commands
 
 The `Known limitation — extension worker UA (advisory)` job separately runs

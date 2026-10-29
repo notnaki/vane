@@ -125,9 +125,20 @@ import XCTest
         XCTAssertTrue(context.isLoaded)
         // Older supported engines do not report page script errors in this array.
         // Every diagnostic they do report must remain visible after activation.
+        let entry = try XCTUnwrap(host.entries.first)
         for error in context.errors {
-            XCTAssertTrue(host.entries.first?.failure?.contains(error.localizedDescription) == true,
-                          "Keep the extension's runtime error visible in the manager")
+            let value = error as NSError
+            if value.domain == WKWebExtensionContext.errorDomain && value.code == 7 {
+                XCTAssertTrue(entry.runtimeDiagnostics?.contains(error.localizedDescription) == true,
+                              "Runtime diagnostics remain visible without suggesting a broken update")
+            } else {
+                XCTAssertTrue(entry.failure?.contains(error.localizedDescription) == true,
+                              "Other reported errors must still need attention")
+            }
+        }
+        if ExtensionDiagnostics.blockingErrors(context.errors, manifest: context.webExtension.manifest).isEmpty {
+            XCTAssertNil(entry.failure)
+            XCTAssertEqual(entry.status, "Enabled")
         }
     }
 
@@ -146,6 +157,10 @@ import XCTest
                                                           manifest: ["description": "Error classification fixture"])
         XCTAssertEqual(displayed.count, 4, "Activation policy must retain runtime diagnostics for display")
         XCTAssertEqual(displayed.first?.localizedDescription, script.localizedDescription)
+        let runtime = ExtensionDiagnostics.runtimeErrors([script, failedLoad, unknownContext, differentDomain],
+                                                        manifest: ["description": "Error classification fixture"])
+        XCTAssertEqual(runtime.count, 1)
+        XCTAssertEqual(runtime.first?.localizedDescription, script.localizedDescription)
     }
 
     func testThrowingAcceptedWorkerRestoreLeavesVisibleFailureAndRetainsAcceptedCode() async throws {

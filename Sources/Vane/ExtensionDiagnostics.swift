@@ -38,14 +38,20 @@ import WebKit
     /// Successful background completion is required separately. A running page's
     /// script diagnostics stay visible without turning activation into a race.
     static func blockingErrors(_ errors: [any Error], manifest: [String: Any]) -> [any Error] {
-        displayErrors(errors, manifest: manifest).filter { error in
-            let value = error as NSError
-            // WebKit distinguishes ScriptExecutionError (7) from a failed
-            // background load (6); the public SDK does not yet name code 7.
-            // This excludes only reported runtime diagnostics, never errors
-            // delivered by the required background-completion callback.
-            return !(value.domain == WKWebExtensionContext.errorDomain && value.code == 7)
-        }
+        displayErrors(errors, manifest: manifest).filter { !isRuntimeDiagnostic($0) }
+    }
+
+    static func runtimeErrors(_ errors: [any Error], manifest: [String: Any]) -> [any Error] {
+        displayErrors(errors, manifest: manifest).filter { isRuntimeDiagnostic($0) }
+    }
+
+    private static func isRuntimeDiagnostic(_ error: any Error) -> Bool {
+        let value = error as NSError
+        // WebKit distinguishes ScriptExecutionError (7) from a failed
+        // background load (6); the public SDK does not yet name code 7.
+        // This excludes only reported runtime diagnostics, never errors
+        // delivered by the required background-completion callback.
+        return value.domain == WKWebExtensionContext.errorDomain && value.code == 7
     }
 
     /// Absent optional description metadata alone does not need attention.

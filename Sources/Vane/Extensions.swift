@@ -125,6 +125,7 @@ import WebKit
         var requiredAccess: ExtensionAccess? = nil
         var optionalAccess: ExtensionAccess? = nil
         var compatibility: [String] = []
+        var runtimeDiagnostics: String? = nil
         var nativeMessagingErrorCompatibilityAvailable: Bool = false
         var nativeMessagingErrorCompatibilityEnabled: Bool = false
         var id: String { path }
@@ -178,8 +179,9 @@ import WebKit
             let storeSource = storeSource(for: path)
             let source = sourceFolder(for: path)
             let busy = operations[path] != nil || restoring[path] != nil
-            let runtimeErrors = context.map { ExtensionDiagnostics.displayErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
-            let failure = failures[path] ?? (runtimeErrors.isEmpty ? nil : ExtensionDiagnostics.describe(runtimeErrors))
+            let blockingErrors = context.map { ExtensionDiagnostics.blockingErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
+            let runtimeErrors = context.map { ExtensionDiagnostics.runtimeErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
+            let failure = failures[path] ?? (blockingErrors.isEmpty ? nil : ExtensionDiagnostics.describe(blockingErrors))
             return Entry(path: path, name: record?.name ?? folders[path] ?? URL(fileURLWithPath: path).lastPathComponent,
                          context: context, status: busy ? "Checking…" : failure != nil ? (context != nil ? "Update needs attention" : "Needs attention")
                             : context != nil ? "Enabled" : disabled.contains(path) ? "Disabled" : "Inactive",
@@ -195,6 +197,7 @@ import WebKit
                          optionalAccess: record?.optional ?? legacyMetadata[path]?.optional,
                          compatibility: (record?.compatibility ?? limitations[path] ?? [])
                             + (userAgent.limitation.map { [$0] } ?? []),
+                         runtimeDiagnostics: runtimeErrors.isEmpty ? nil : ExtensionDiagnostics.describe(runtimeErrors),
                          nativeMessagingErrorCompatibilityAvailable: !invalidated && metadataFailure == nil && profileID != Profile.incognito.id
                             && record.map { ExtensionNativeMessagingErrors.isApproved(version: ExtensionNativeMessagingErrors.currentVersion,
                                 required: $0.required, optional: $0.optional) } == true,

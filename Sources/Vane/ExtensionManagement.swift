@@ -441,6 +441,16 @@ private struct ExtensionDetailView: View {
                 runtimeAccess
                 if let context = entry.context { commands(context) }
                 compatibility
+                if let diagnostics = entry.runtimeDiagnostics {
+                    VStack(alignment: .leading, spacing: 9) {
+                        Label("Runtime diagnostics", systemImage: "info.circle").font(.headline)
+                        Text(entry.nativeMessagingErrorCompatibilityEnabled
+                            ? "Extension scripts reported these messages. Desktop integration remains unavailable in error-only mode."
+                            : "Extension scripts reported these messages after loading. Some features may be unavailable.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(diagnostics).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                }
                 Divider()
                 HStack(alignment: .center, spacing: 12) {
                     Button(copied ? "Diagnostics Copied" : "Copy Diagnostics", systemImage: copied ? "checkmark" : "doc.on.doc") {
@@ -457,6 +467,7 @@ private struct ExtensionDetailView: View {
             }.padding(24).frame(maxWidth: 720, alignment: .leading).frame(maxWidth: .infinity)
         }
         .accessibilityLabel(entry.name + " details")
+        .animation(Motion.reduced ? nil : Look.list, value: entry.runtimeDiagnostics != nil)
         .alert("Could not change extension", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK", role: .cancel) { error = nil }
         } message: { Text(error ?? "") }
