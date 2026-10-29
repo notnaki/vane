@@ -127,6 +127,26 @@ import XCTest
         XCTAssertNil(tab.existingWeb)
     }
 
+    func testNavigationDoesNotRebindOpenMenuToTheNextDocument() async throws {
+        try await withLoop {
+            let url = URL(string: "https://example.test/original")!
+            _ = web.loadSimulatedRequest(URLRequest(url: url), responseHTML: "<p>Original page</p>")
+            try await compatibilityWait { self.tab.currentURL == url && !self.web.isLoading }
+            let menu = nativeMenu([])
+            web.willOpenMenu(menu, with: event)
+            menu.update()
+            XCTAssertTrue(try XCTUnwrap(menu.items.first { $0.title == "Reload" }).isEnabled)
+            // Match didStartProvisionalNavigation's document invalidation followed by
+            // the context bridge reset, which rebuilds the still-open native menu.
+            tab.readingDocumentGeneration = UUID()
+            web.navigationStarted()
+            menu.update()
+            for title in ["Reload", "Save Page As…", "Print…", "Copy Page Address", "View Page Source"] {
+                XCTAssertFalse(try XCTUnwrap(menu.items.first { $0.title == title }).isEnabled, title)
+            }
+        }
+    }
+
     func testViewSourceUsesClickedTabWhenAnotherTabIsActive() async throws {
         try await withLoop {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 400),

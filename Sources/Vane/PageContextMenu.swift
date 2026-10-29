@@ -31,7 +31,13 @@ import WebKit
     private let document: UUID
     private let url: URL?
 
-    private init(tab: Tab, web: WKWebView) {
+    init?(originals: [NSMenuItem], tab: Tab, web: WKWebView) {
+        // Native identifiers remain stable when menu titles are localized. Unknown
+        // WebKit actions denote a specialized menu; extension commands are retained.
+        guard !originals.contains(where: { item in
+            guard let id = item.identifier?.rawValue, id.hasPrefix("WKMenuItemIdentifier") else { return false }
+            return !Self.navigationIDs.contains(id) && id != Self.inspectID
+        }) else { return nil }
         self.tab = tab
         self.web = web
         document = tab.readingDocumentGeneration
@@ -41,22 +47,16 @@ import WebKit
         }
     }
 
-    @discardableResult
-    static func populate(_ menu: NSMenu, originals: [NSMenuItem], tab: Tab, web: WKWebView) -> Bool {
-        // Native identifiers remain stable when menu titles are localized. Unknown
-        // WebKit actions denote a specialized menu; extension commands are retained.
-        guard !originals.contains(where: { item in
-            guard let id = item.identifier?.rawValue, id.hasPrefix("WKMenuItemIdentifier") else { return false }
-            return !navigationIDs.contains(id) && id != inspectID
-        }) else { return false }
-        let target = PageContextMenu(tab: tab, web: web)
-        for action in [Action.back, .forward, .reload] { menu.addItem(target.item(action)) }
+    /// The web view retains one context per menu opening. An asynchronous bridge
+    /// update can rebuild its items, but cannot recapture a replacement document.
+    func populate(_ menu: NSMenu, originals: [NSMenuItem]) {
+        for action in [Action.back, .forward, .reload] { menu.addItem(item(action)) }
         menu.addItem(.separator())
-        for action in [Action.save, .printPage, .copyAddress] { menu.addItem(target.item(action)) }
+        for action in [Action.save, .printPage, .copyAddress] { menu.addItem(item(action)) }
 
-        let extras = originals.filter { !navigationIDs.contains($0.identifier?.rawValue ?? "") }
+        let extras = originals.filter { !Self.navigationIDs.contains($0.identifier?.rawValue ?? "") }
         var separated = false
-        for item in extras where item.identifier?.rawValue != inspectID {
+        for item in extras where item.identifier?.rawValue != Self.inspectID {
             if item.isSeparatorItem {
                 if separated && menu.items.last?.isSeparatorItem == false { menu.addItem(item) }
             } else {
@@ -65,12 +65,11 @@ import WebKit
             }
         }
         if menu.items.last?.isSeparatorItem == false { menu.addItem(.separator()) }
-        menu.addItem(target.item(.source))
-        for item in extras where item.identifier?.rawValue == inspectID {
+        menu.addItem(item(.source))
+        for item in extras where item.identifier?.rawValue == Self.inspectID {
             item.title = "Inspect"
             menu.addItem(item)
         }
-        return true
     }
 
     private func item(_ action: Action) -> NSMenuItem {
