@@ -8,17 +8,22 @@ permissions:
 jobs:
   footer:
     runs-on: macos-26
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v5
+      - name: Identify Swift toolchain
+        id: toolchain
+        run: echo "key=$(python3 scripts/ci-build-artifact.py toolchain)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
         with:
-          name: debug-runtime
-          run-id: 40949702990
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/runtime
-      - name: Restore original failing runtime
-        run: python3 scripts/ci-build-artifact.py restore --revision 519f70553954bfbec95bac651130ddead0a41dd0 --archive "$RUNNER_TEMP/runtime/vane-debug-runtime.tar.gz"
+          path: .build
+          key: footer-preflight-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ github.sha }}
+          restore-keys: |
+            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-
+      - name: Restore matching source timestamps
+        run: python3 scripts/ci-source-state.py restore
+      - name: Build focused fixture runtime once
+        run: swift build --build-system native -c debug --build-tests
       - name: Admit owned AppKit loop
         env:
           VANE_APPKIT_LOOP_SMOKE: '1'
@@ -33,7 +38,7 @@ jobs:
           status=0
           for attempt in 1 2 3; do
             set +e
-            VANE_FOOTER_RENDER_DIR="$RUNNER_TEMP/footer-preflight/render-$attempt" python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter 'SpaceFooterMarkerTests|SpaceFooterPresentationTests|SpaceIconTests' 2>&1 | tee "$RUNNER_TEMP/footer-preflight/attempt-$attempt.log"
+            VANE_FOOTER_RENDER_DIR="$RUNNER_TEMP/footer-preflight/render-$attempt" python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter 'SidebarChromeTests|SidebarNativeReadinessTests|SidebarPresentationPerformanceTests|SidebarViewportPerformanceTests|SitePermissionWebTests|SpaceButtonSelectionTests|SpaceColourTransitionTests|SpaceFooterMarkerTests|SpaceFooterPresentationTests|SpaceIconTests' 2>&1 | tee "$RUNNER_TEMP/footer-preflight/attempt-$attempt.log"
             results=("${PIPESTATUS[@]}")
             set -e
             printf 'attempt=%s primary=%s tee=%s\n' "$attempt" "${results[0]}" "${results[1]}" >> "$RUNNER_TEMP/footer-preflight/results.txt"
