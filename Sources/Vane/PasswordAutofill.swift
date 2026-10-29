@@ -2,6 +2,11 @@ import Foundation
 import WebKit
 
 @MainActor enum Autofill {
+    #if DEBUG
+    // A diagnostic test may instrument its own disposable profile before WebKit
+    // copies the initial configuration. No global/default-profile override.
+    static var diagnosticScriptsByProfile: [UUID: String] = [:]
+    #endif
     /// Its own content world, like PictureInPicture's. Nothing this script defines is on the
     /// page's `window`, so a hostile page cannot replace `__vaneFill` with a function that
     /// keeps whatever it is handed, and cannot post its own messages to `vanepw`.

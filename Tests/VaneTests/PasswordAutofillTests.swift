@@ -445,9 +445,13 @@ import XCTest
               "appOcclusion=\(app.occlusionState.rawValue), windowOcclusion=\(window.occlusionState.rawValue)")
     }
 
-    private func withNativeContinuationFixture(_ body: (Tab, PasswordOrigin) async throws -> Void) async throws {
+    private func withNativeContinuationFixture(passwordScript: String? = nil, _ body: (Tab, PasswordOrigin) async throws -> Void) async throws {
         TestEnvironment.prepare()
         let profile = UUID(), origin = PasswordOrigin(host: "continuation.example.test")
+        #if DEBUG
+        if let passwordScript { Autofill.diagnosticScriptsByProfile[profile] = passwordScript }
+        defer { Autofill.diagnosticScriptsByProfile.removeValue(forKey: profile) }
+        #endif
         defer { Passwords.deleteAll(profileID: profile) }
         guard Passwords.save(origin: origin, account: "bob", password: "bob-secret", profileID: profile),
               Passwords.save(origin: origin, account: "ada", password: "ada-secret", profileID: profile)
@@ -597,17 +601,38 @@ import XCTest
         let web = tab.web, url = origin.url.appendingPathComponent(path)
         let started = Date.now
         #if DEBUG
+        // Only the designated failing case installs this observer. Earlier pressure
+        // cases must not consume the bounded external collector's sampling budget.
+        let diagnostic = ProcessInfo.processInfo.environment["VANE_PASSWORD_DOCUMENT_CONTROL"] != nil && tab.passwordStageObserver != nil
+        #else
+        let diagnostic = false
+        #endif
+        let diagnosticToken = UUID().uuidString
+        #if DEBUG
         let stages = NavigationStages()
+        var expectedNavigation: Tab.NavigationStageIdentity?
         let previousObserver = tab.navigationStageObserver
         tab.navigationStageObserver = { [weak stages] event in
             previousObserver?(event)
             stages?.append(event)
+            if diagnostic {
+                print("PASSWORD DOCUMENT navigation path=\(path) elapsed=\(Date.now.timeIntervalSince(started)) stage=\(event.stage) detail=\(event.detail)")
+                if event.stage == "commit-accepted", event.identity == expectedNavigation {
+                    print("PASSWORD DOCUMENT COMMIT " + diagnosticToken)
+                }
+                fflush(stdout)
+            }
         }
         defer { tab.navigationStageObserver = previousObserver }
         #endif
         let before = continuationLoadState(tab, web: web, requestedURL: url)
+        if diagnostic { emitPasswordDocumentProcesses(web, token: diagnosticToken, path: path, phase: "before-load") }
         let navigationID = ObjectIdentifier(web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html))
+        #if DEBUG
+        expectedNavigation = .navigation(navigationID)
+        #endif
         let after = continuationLoadState(tab, web: web, requestedURL: url)
+        var emittedPendingIdentity = false
         try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
             #if DEBUG
             NativeFixtureDiagnostics.emit("continuation callback stages: " + stages.snapshot(expected: navigationID))
@@ -618,6 +643,10 @@ import XCTest
             NativeFixtureDiagnostics.emit("continuation document \(path) cached state before sampling: " + state)
             return state + "; " + (await NativeFixtureDiagnostics.failureReport(for: web))
         }) {
+            if diagnostic, !emittedPendingIdentity, web.isLoading, Date.now.timeIntervalSince(started) >= 0.5 {
+                emittedPendingIdentity = true
+                emitPasswordDocumentProcesses(web, token: diagnosticToken, path: path, phase: "pending")
+            }
             return !web.isLoading
         }
         if Date.now.timeIntervalSince(started) >= 0.5 {
@@ -678,9 +707,27 @@ import XCTest
     }
 
     func testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep() async throws {
-        try await withNativeContinuationFixture { tab, origin in
+        let control = ProcessInfo.processInfo.environment["VANE_PASSWORD_DOCUMENT_CONTROL"]
+        let passwordScript = control == nil ? nil : try passwordDocumentAncestryDiagnosticScript()
+        try await withNativeContinuationFixture(passwordScript: passwordScript) { tab, origin in
+            #if DEBUG
+            if control != nil {
+                tab.passwordStageObserver = { event in
+                    print("PASSWORD DOCUMENT native stage=\(event.stage) document=\(event.document) continuationAllowed=\(event.continuationAllowed.map(String.init) ?? "none") \(event.detail)")
+                    fflush(stdout)
+                }
+            }
+            defer { tab.passwordStageObserver = nil }
+            #endif
             try await loadContinuationPage(tab, origin: origin, path: "login", html:
                 "<iframe id=embedded srcdoc='<form><input id=user autocomplete=username></form>'></iframe>")
+            if control != nil {
+                let scriptState = try await tab.web.callAsyncJavaScript(
+                    "return {fill:typeof window.__vaneFill,error:window.__vanePasswordDiagnosticError||null}",
+                    arguments: [:], in: nil, contentWorld: Autofill.world)
+                print("PASSWORD DOCUMENT diagnostic script state \(scriptState)")
+                fflush(stdout)
+            }
             try await wait(for: "embedded username DOM") {
                 try await js(tab.web, "!!embedded.contentDocument.getElementById('user')") as? Bool == true
             }
@@ -711,10 +758,117 @@ import XCTest
             try await wait(for: "explicitly chosen account to fill the embedded username") {
                 try await js(tab.web, "embedded.contentDocument.getElementById('user').value") as? String == "bob"
             }
+            if control == "held-discovery" {
+                _ = try await js(tab.web, """
+                    (function () {
+                        var original = window.setTimeout;
+                        window.__vaneDiagnosticHeldDiscoveryCount = 0;
+                        window.setTimeout = function (callback, delay) {
+                            var args = Array.prototype.slice.call(arguments);
+                            if (delay === 80) {
+                                window.__vaneDiagnosticHeldDiscoveryCount++;
+                                args[1] = 6000;
+                            }
+                            return original.apply(window, args);
+                        };
+                        return true;
+                    })()
+                    """, world: Autofill.world)
+            }
             _ = try await js(tab.web, "document.body.innerHTML='<form><input autocomplete=username value=bob></form>'")
+            if control == "held-discovery" {
+                try await wait(for: "diagnostic held discovery timer registration") {
+                    (try await js(tab.web, "window.__vaneDiagnosticHeldDiscoveryCount", world: Autofill.world) as? Int ?? 0) > 0
+                }
+                print("PASSWORD DOCUMENT held discovery control applied")
+            }
+            if control != nil { print("PASSWORD DOCUMENT replacing-iframe-done; dispatching main submit") }
             try await submitUsernameAndLoadPassword(tab, origin: origin)
             try await Task.sleep(for: .milliseconds(250))
             expectEqual(try await js(tab.web, "password.value") as? String, "")
+        }
+    }
+
+    /// Diagnostic-only script instrumentation; it leaves every traversal unbounded
+    /// and changes no authorization decision. Never use this as acceptance evidence.
+    private func passwordDocumentAncestryDiagnosticScript() throws -> String {
+        var source = Autofill.script
+        func replace(_ marker: String, _ replacement: String) throws {
+            guard source.components(separatedBy: marker).count == 2 else {
+                throw NSError(domain: "PasswordDocumentDiagnostic", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Diagnostic script marker is not unique"])
+            }
+            source = source.replacingOccurrences(of: marker, with: replacement)
+        }
+        try replace("var topWindow = window, contexts = new Map(), recentContext = null;",
+                    "var topWindow = window, contexts = new Map(), recentContext = null, diagnosticSerial = 0;")
+        try replace("var retired = false, observer = null, discoveryTimer = null;", """
+            var retired = false, observer = null, discoveryTimer = null;
+            var diagnosticContext = ++diagnosticSerial, diagnosticSeen = Object.create(null), diagnosticCount = 0;
+            function diagnosticTrace(stage, child) {
+              var parentSelf = null, present = null, connected = null;
+              try {
+                var frame = child.frameElement;
+                parentSelf = child.parent === child;
+                present = !!frame;
+                connected = frame ? !!frame.isConnected : false;
+              } catch (_) {}
+              var key = [stage, window === topWindow, parentSelf, present, connected].join('|');
+              if (diagnosticSeen[key] || diagnosticCount >= 96) return;
+              diagnosticSeen[key] = true; diagnosticCount++;
+              try { topWindow.webkit.messageHandlers.vanepw.postMessage({
+                __vaneDiagnosticStage: stage, context: diagnosticContext, main: window === topWindow,
+                parentSelf: parentSelf, framePresent: present, frameConnected: connected
+              }); } catch (_) {}
+            }
+            """)
+        try replace("var child = window;\n        while (child !== topWindow)",
+                    "var child = window;\n        diagnosticTrace('attached-enter', child);\n        while (child !== topWindow)")
+        try replace("child = child.parent;\n        }\n        return true;",
+                    "diagnosticTrace('attached-advance', child);\n          child = child.parent;\n        }\n        diagnosticTrace('attached-exit', window);\n        return true;")
+        try replace("if (!attachedDocument()) return false;\n      for (var child = window; child !== topWindow; child = child.parent) {\n        if (!shown(child.frameElement)) return false;\n      }\n      return true;", """
+            if (!attachedDocument()) return false;
+                    diagnosticTrace('live-enter', window);
+                    for (var child = window; child !== topWindow; child = child.parent) {
+                      if (!shown(child.frameElement)) return false;
+                      diagnosticTrace('live-advance', child);
+                    }
+                    diagnosticTrace('live-exit', window);
+                    return true;
+            """)
+        try replace("for (var child = window; child !== topWindow; child = child.parent)\n          if (child.parent.document.activeElement !== child.frameElement) return false;\n        return true;", """
+            diagnosticTrace('focused-enter', window);
+                    for (var child = window; child !== topWindow; child = child.parent) {
+                      if (child.parent.document.activeElement !== child.frameElement) return false;
+                      diagnosticTrace('focused-advance', child);
+                    }
+                    diagnosticTrace('focused-exit', window);
+                    return true;
+            """)
+        try replace("function anchor(proposed) {", "function anchor(proposed) { diagnosticTrace('anchor-enter', window);")
+        try replace("width *= sx;\n        child = child.parent;", "width *= sx;\n          diagnosticTrace('anchor-advance', child);\n          child = child.parent;")
+        try replace("var identity = targetPair(true);\n      return { x: x", "diagnosticTrace('anchor-exit', window);\n        var identity = targetPair(true);\n        return { x: x")
+        // Failure-only primitive error metadata: a broken diagnostic script must
+        // be distinguishable from the product navigation failure being examined.
+        source = "try {\n" + source + "\n} catch (e) { window.__vanePasswordDiagnosticError = { name: String(e.name), line: Number(e.line || 0) }; throw e; }"
+        return source
+    }
+
+    private func emitPasswordDocumentProcesses(_ web: WKWebView, token: String, path: String, phase: String) {
+        let selector = NSSelectorFromString("_webProcessIdentifier")
+        guard web.responds(to: selector),
+              let ui = NativeFixtureDiagnostics.identity(ProcessInfo.processInfo.processIdentifier) else { return }
+        typealias Getter = @convention(c) (AnyObject, Selector) -> Int32
+        let pid = unsafeBitCast(web.method(for: selector), to: Getter.self)(web, selector)
+        guard let content = NativeFixtureDiagnostics.identity(pid) else { return }
+        func row(_ identity: NativeFixtureDiagnostics.Identity) -> [String: Any] {
+            ["pid": Int(identity.pid), "start": identity.start, "path": identity.path]
+        }
+        let record: [String: Any] = ["token": token, "path": path, "phase": phase, "ui": row(ui), "content": row(content)]
+        if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]),
+           let json = String(data: data, encoding: .utf8) {
+            print("PASSWORD DOCUMENT PROCESS " + json)
+            fflush(stdout)
         }
     }
 

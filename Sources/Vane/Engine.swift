@@ -420,6 +420,13 @@ struct TitleReveal: Equatable, Sendable {
     // A fixture may observe the real delegate without replacing it. Events contain
     // primitive metadata only, never a retained WebKit object or a request URL.
     var navigationStageObserver: ((NavigationStageEvent) -> Void)?
+    struct PasswordStageEvent {
+        let stage: String
+        let document: UUID
+        let continuationAllowed: Bool?
+        var detail = ""
+    }
+    var passwordStageObserver: ((PasswordStageEvent) -> Void)?
     private var navigationActionStageSerial = 0
 
     private func recordNavigationStage(_ stage: String, navigation: WKNavigation?, detail: String = "") {
@@ -764,8 +771,13 @@ struct TitleReveal: Equatable, Sendable {
         }
         c.addUserScript(WKUserScript(source: SitePermissionDocument.script, injectionTime: .atDocumentStart,
                                     forMainFrameOnly: true, in: SitePermissionDocument.world))
+        #if DEBUG
+        let passwordScript = Autofill.diagnosticScriptsByProfile[profileID] ?? Autofill.script
+        #else
+        let passwordScript = Autofill.script
+        #endif
         c.addUserScript(
-            WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd,
+            WKUserScript(source: passwordScript, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: true, in: Autofill.world))
         c.addUserScript(
             WKUserScript(source: Previews.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -1605,6 +1617,9 @@ struct TitleReveal: Equatable, Sendable {
                         if !automatic {
                             self.chosenAccount = (login.origin, login.account, target, document, .now.addingTimeInterval(120))
                             self.passwordStep?.continuationAllowed = false
+                            #if DEBUG
+                            self.passwordStageObserver?(PasswordStageEvent(stage: "chosen-applied", document: document, continuationAllowed: nil))
+                            #endif
                         } else if let continuation, self.passwordStep?.id == continuation.id,
                                   self.passwordStep?.expires == continuation.expires {
                             self.passwordStep?.continuationAllowed = false
@@ -2274,6 +2289,18 @@ struct TitleReveal: Equatable, Sendable {
               m.frameInfo.securityOrigin.protocol == "https",
               m.frameInfo.securityOrigin.host == secureHost,
               (m.frameInfo.securityOrigin.port == 0 ? 443 : m.frameInfo.securityOrigin.port) == secureOrigin?.port else { return }
+        #if DEBUG
+        if let stage = body["__vaneDiagnosticStage"] as? String,
+           ["attached-enter", "attached-advance", "attached-exit", "live-enter", "live-advance", "live-exit",
+            "focused-enter", "focused-advance", "focused-exit", "anchor-enter", "anchor-advance", "anchor-exit"].contains(stage),
+           let context = body["context"] as? Int, let main = body["main"] as? Bool {
+            func flag(_ name: String) -> String { (body[name] as? Bool).map(String.init) ?? "unavailable" }
+            passwordStageObserver?(PasswordStageEvent(stage: "javascript-" + stage,
+                document: readingDocumentGeneration, continuationAllowed: nil,
+                detail: "context=\(context), main=\(main), parentSelf=\(flag("parentSelf")), framePresent=\(flag("framePresent")), frameConnected=\(flag("frameConnected"))"))
+            return
+        }
+        #endif
         if let rejected = body["rejectedAttempt"] as? String {
             if lastPasswordAttempt == rejected {
                 passwordSaveReadTask?.cancel()
@@ -2307,6 +2334,9 @@ struct TitleReveal: Equatable, Sendable {
             // Typed usernames still carry into save prompts. Only a choice in this exact
             // main-document username target authorizes the next page to read a secret.
             passwordStep = (UUID(), origin, account, selectedExpiry ?? .now.addingTimeInterval(120), true, selectedExpiry != nil)
+            #if DEBUG
+            passwordStageObserver?(PasswordStageEvent(stage: "main-username-step", document: readingDocumentGeneration, continuationAllowed: selectedExpiry != nil))
+            #endif
             return
         }
         // A form appearing is not consent: nothing fills until the user picks a login from
