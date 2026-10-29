@@ -158,7 +158,7 @@ private struct RecentLibraryRow: View {
     var body: some View {
         Button(action: open) {
             HStack(spacing: Look.rowSpacing) {
-                Image(systemName: symbol).font(.system(size: Look.rowIcon))
+                SpaceIcon(symbol).font(.system(size: Look.rowIcon))
                     .frame(width: Look.rowIcon, height: Look.rowIcon).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(title).font(Look.rowTitle)

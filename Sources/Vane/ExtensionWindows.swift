@@ -311,7 +311,8 @@ import WebKit
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-        if let originalNavigation {
+        if let originalNavigation,
+           originalNavigation.responds(to: NSSelectorFromString("webView:decidePolicyForNavigationAction:decisionHandler:")) {
             originalNavigation.webView?(webView, decidePolicyFor: navigationAction, decisionHandler: decisionHandler)
             return
         }

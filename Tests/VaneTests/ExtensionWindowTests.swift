@@ -441,4 +441,30 @@ import XCTest
             """, arguments: [:], in: nil, contentWorld: .page) as? [Bool]
         XCTAssertEqual(rejected, [true, true, true, true, true], "Unsupported popup combinations must fail explicitly")
     }
+    private final class EmptyPolicyDelegate: NSObject, WKNavigationDelegate {}
+
+    func testCompactDelegateWithoutOriginalPolicyAllowsItsOwnedDocument() async throws {
+        try await withNativeWindowLoop {
+            let (store, tab, _) = try await browser()
+            let (_, context) = try await installed()
+            let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 230),
+                                configuration: try XCTUnwrap(context.webViewConfiguration))
+            let original = EmptyPolicyDelegate()
+            web.navigationDelegate = original
+            let presentation = ExtensionWindowPresentation(web: web, context: context,
+                parentStore: store, parentTab: tab, title: "Policy fallback") { _ in }
+            defer { presentation.close() }
+            presentation.show()
+            let url = try XCTUnwrap(context.optionsPageURL)
+            web.load(URLRequest(url: url))
+            try await wait("owned document with no original policy selector") {
+                !web.isLoading && web.url == url && web.title == "Compact options"
+                    && web.window === presentation.window && presentation.window.isVisible
+            }
+            XCTAssertTrue(context.isLoaded)
+            presentation.close()
+            XCTAssertTrue(web.navigationDelegate === original, "Closing restores the exact original delegate")
+        }
+    }
+
 }

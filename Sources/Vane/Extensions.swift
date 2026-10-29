@@ -1829,6 +1829,7 @@ import WebKit
                 guard let self, let store = parent ?? self.myFocusedStore ?? self.myStores.first else { return }
                 store.newBlankTab().navigate(to: url)
             }
+            configurePageUI(web, context: context, window: presentation.window)
             let adapter = ExtensionRequestedWindow(presentation)
             requestedWindows[ObjectIdentifier(presentation)] = adapter
             context.didOpenWindow(adapter)
@@ -1890,6 +1891,9 @@ import WebKit
                 if self?.actionWindows[key] === closed { self?.actionWindows[key] = nil }
             }
         actionWindows[key] = presentation
+        // Install file selection after the compact owner and SDK-forwarding proxy
+        // exist. The unused SDK popover is not this view's presentation owner.
+        configurePageUI(web, context: context, window: presentation.window)
         presentation.focusChanged = { [weak self] in self?.sync() }
         presentation.show()
     }
@@ -1999,8 +2003,29 @@ import WebKit
     private var pages: [(context: WKWebExtensionContext, window: NSWindow)] = []
     private var actionWindows: [ActionKey: ExtensionWindowPresentation] = [:]
     private var requestedWindows: [ObjectIdentifier: ExtensionRequestedWindow] = [:]
+    private var pageUI: [ObjectIdentifier: ExtensionPageUI] = [:]
+
+    private func configurePageUI(_ web: WKWebView, context: WKWebExtensionContext,
+                                 window: NSWindow) {
+        pageUI = pageUI.filter { $0.value.hasView }
+        let key = ObjectIdentifier(web)
+        let delegate = pageUI[key] ?? ExtensionPageUI(web: web, context: context, isEnabled: { [weak self, weak context] in
+            guard let self, let context else { return false }
+            return !self.invalidated && context.isLoaded && self.installed.contains { $0 === context }
+        }, didClose: { [weak self] closed in
+            guard let self, self.pageUI[key] === closed else { return }
+            self.pageUI.removeValue(forKey: key)
+        })
+        pageUI[key] = delegate
+        web.uiDelegate = delegate
+        web.navigationDelegate = delegate
+        delegate.observe(window)
+    }
 
     private func closePages(for context: WKWebExtensionContext) {
+        for key in Array(pageUI.keys) where pageUI[key]?.context === context {
+            pageUI.removeValue(forKey: key)?.invalidate()
+        }
         for presentation in Array(actionWindows.values) where presentation.context === context { presentation.close() }
         for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
         for page in pages where page.context === context {
@@ -2092,6 +2117,7 @@ import WebKit
                               backing: .buffered, defer: false)
         window.title = title
         window.contentView = web
+        configurePageUI(web, context: context, window: window)
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)

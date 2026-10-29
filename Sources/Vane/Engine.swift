@@ -2362,7 +2362,8 @@ struct TitleReveal: Equatable, Sendable {
     /// Submission authorization belongs to this account/origin, rather than the document
     /// that a successful form normally replaces before a slow Keychain query returns.
     func offerSubmittedPassword(origin: PasswordOrigin, account: String, password: String, attempt: String?) {
-        guard !isPrivate, !password.isEmpty, secureOrigin == origin,
+        guard !isPrivate, Passwords.offersSaving(profileID: profileID),
+              !password.isEmpty, secureOrigin == origin,
               !Passwords.isNeverSaved(host: origin.host, profileID: profileID) else { return }
         let host = origin.host
         if let attempt, lastPasswordAttempt == attempt { return }
@@ -2378,6 +2379,7 @@ struct TitleReveal: Equatable, Sendable {
             catch { outcome = .failure(error) }
             guard let self, let page, !Task.isCancelled, !self.tornDown, !self.suspended,
                   !self.isPrivate, self.profileID == profile, self.existingWeb === page,
+                  Passwords.offersSaving(profileID: profile),
                   self.secureOrigin == origin, self.passwordSaveReadRequest == request,
                   self.passwordSubmission?.request == request,
                   self.passwordSubmission.map({ $0.expires > .now }) == true,
@@ -2407,6 +2409,7 @@ struct TitleReveal: Equatable, Sendable {
 
     func confirmSave(origin reviewedOrigin: PasswordOrigin? = nil, account reviewedAccount: String? = nil,
                      password reviewedPassword: String? = nil) {
+        guard Passwords.offersSaving(profileID: profileID) else { cancelPasswordSaveOffer(); return }
         guard !isPrivate, let p = pendingSave else { return }
         let origin = reviewedOrigin ?? p.origin, account = reviewedAccount ?? p.account
         let password = reviewedPassword ?? p.password
@@ -2423,6 +2426,7 @@ struct TitleReveal: Equatable, Sendable {
     /// The UI path; the synchronous counterpart remains for offline checks and fixtures.
     func confirmSaveAsync(origin reviewedOrigin: PasswordOrigin? = nil, account reviewedAccount: String? = nil,
                           password reviewedPassword: String? = nil) {
+        guard Passwords.offersSaving(profileID: profileID) else { cancelPasswordSaveOffer(); return }
         guard !isPrivate, let offer = pendingSave, passwordCommitOffer != offer.id else { return }
         let origin = reviewedOrigin ?? offer.origin, account = reviewedAccount ?? offer.account
         let password = reviewedPassword ?? offer.password
@@ -2452,7 +2456,17 @@ struct TitleReveal: Equatable, Sendable {
         }
     }
 
+    func cancelPasswordSaveOffer() {
+        passwordSaveReadTask?.cancel()
+        passwordSaveReadRequest = UUID()
+        passwordSubmission = nil
+        pendingSave = nil
+        passwordSaveProblem = nil
+        lastPasswordAttempt = nil
+    }
+
     private func applyPasswordSave(_ decision: Passwords.SaveDecision, offer: PendingSave) {
+        guard Passwords.offersSaving(profileID: profileID) else { cancelPasswordSaveOffer(); return }
         switch decision {
         case .review(let updated):
             pendingSave = updated
@@ -3524,10 +3538,20 @@ struct Stash {
     /// go-home click on the tab on screen would otherwise trade the page for a blank card.
     /// Every pane of a split is on screen, not just the active one — `onScreenTabs` is what
     /// the card is actually drawing.
-    func goHome(_ id: Tab.ID) {
-        guard let tab = tabs.first(where: { $0.id == id }), sendHome(tab) else { return }
-        if onScreenTabs.contains(where: { $0.id == id }) { tab.resume() }
-        axAnnounce("Back on the pinned page.")
+    /// Command-click separates the away URL into Today while keeping the original pin
+    /// and its folder in place. Capture that URL before `sendHome` replaces it.
+    func goHome(_ id: Tab.ID, separating: Bool = false) {
+        guard let tab = tabs.first(where: { $0.id == id }),
+              !separating || (tab.kind == .pinned && !isTabLocked(id)) else { return }
+        let away = separating ? tab.currentURL : nil
+        guard sendHome(tab) else { return }
+        if let away {
+            newTabBeside(id).go(away)
+            axAnnounce("Separated into Today tabs.")
+        } else {
+            if onScreenTabs.contains(where: { $0.id == id }) { tab.resume() }
+            axAnnounce("Back on the pinned page.")
+        }
     }
 
     /// `byScript` is a popup dismissing itself — see `closedByScript`. Everything else about
