@@ -34,3 +34,10 @@ The final focused cohort (`ExtensionWindowTests|ExtensionLifecycleTests|Extensio
 The grant fixture declares `activeTab`, admits live parent/sibling documents, and checks per-tab access plus sibling, cross-tab, global-host, and native-messaging denial. It explicitly denies any additional native URL permission prompt from WebKit's `tabs.query`; one such prompt was observed. It compares each close interval without an intervening gesture. The older global-pattern observation is retained and is not described as a normal temporary tab grant.
 
 Logs, before-review source snapshots, the original unrelated native crash, and the permission-path explanation are preserved under `/Users/nuh/.codex/artifacts/vane-extension-repair-2026-10-28/window-review-2026-10-29/`. The qualified CI admission-helper changes belong to the separate CI integration work and must not be staged with this feature. No changes here were staged, committed, or pushed by the window implementer.
+
+
+## Parent integration follow-up
+
+Main `426b53f` added the shared extension file picker. Integration `529f64d` installs its `ExtensionPageUI` wrapper after the compact presentation captures the SDK delegates, observing the actual native window. The unused SDK popover cannot determine picker ownership. Requested extension popup windows use the same composition; teardown invalidates the wrapper before closing its presentation.
+
+A real compact-window control with an original navigation delegate lacking the optional policy selector reproduced an uncalled completion-handler exception (primary 1 / cleanup 0). The proxy now forwards only when that selector is implemented and otherwise makes its existing owned-URL decision. The repaired 15-case window/page-UI cohort passed, followed by the 134-case integrated extension cohort (one existing live-store skip). Each had primary 0 / cleanup 0 with both exact hosts exited. Independent whole-diff review of `529f64d` against `426b53f` was clear. Full current integration CI and merge remain pending.
