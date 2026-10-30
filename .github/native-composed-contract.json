@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "shipping_head": "d1f44256a6934e233c51f64e9bfe24d82a20a283",
+  "shipping_tree": "59f32c3137e671159027537204e8df4b39e35124",
+  "main_ancestor": "10c31ed1cda13d9b1f5d98caa967d555bee1edb6",
+  "canonical_checks_sha256": "ee7ef1f4693ca3df9143d6901a6b4657f0431d390e0b3c0cd775549aaa1437b1",
+  "selection_file_sha256": "79a7adbdb725f48c56c0340b6e0002d4bb9b77f9c89cba2a2c0eacf4649f0d32",
+  "primary_count": 188,
+  "expected_skips": [
+    "VaneTests.NavigationWebKitTests/testMacOS27PolicyProvidesUpcomingNavigationIdentity"
+  ],
+  "allowed_preflight_files": [
+    ".github/workflows/native-composed-preflight.yml",
+    ".github/native-composed-selection.json",
+    ".github/native-composed-contract.json"
+  ],
+  "branch": "refs/heads/codex/ci-native-composed-preflight-v2",
+  "run_attempt": 1,
+  "repetitions": 1
+}
