@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One opt-in signed normal-app capability probe; not an MV3 UA repair."""
+"""Separate opt-in normal-app capability and namespace-only diagnostics; no UA repair."""
 import hashlib
 import json
 import os
@@ -10,6 +10,7 @@ import uuid
 from urllib.parse import urlsplit
 
 PURPOSE = "Vane MV3 eligible-client capability"
+NAMESPACE_PURPOSE = "Vane cold named-store cleanup regression"
 SOURCE_PIN = "26695efdefc6076049ec50713a2c4e54b90b4d47"
 LATER_PIN = "da4d88f94a06e713938e0aa76943578d00626772"
 
@@ -138,6 +139,47 @@ def source_fingerprint(root):
     return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest(), values
 
 
+def validate_namespace_pair(creation, cleanup, claim, hosts):
+    if type(claim.get("schema")) is not int or claim["schema"] != 1 or claim.get("purpose") != NAMESPACE_PURPOSE:
+        raise ValueError("wrong namespace-regression purpose")
+    for key in ("namespace", "profileID", "storeID"):identifier(claim[key])
+    digest(claim["sourceFingerprint"])
+    if claim["storeID"] != store_identifier(claim["dataDirectory"],claim["profileID"]):
+        raise ValueError("foreign named-store namespace")
+    for report,phase in ((creation,"namespace-create"),(cleanup,"namespace-cleanup")):
+        for key in ("schema","purpose","namespace","profileID","storeID","sourceFingerprint","appBundleID"):
+            if report.get(key)!=claim[key]:raise ValueError("namespace report binding mismatch: "+key)
+        if type(report["schema"]) is not int or report.get("phase")!=phase or report.get("noExtensionWorkerOrPage") is not True:
+            raise ValueError("not the namespace-only operation")
+        runtime=report["runtime"]
+        if not isinstance(runtime.get("os"),str) or not runtime["os"] or len(runtime["os"])>160:raise ValueError("missing OS qualification")
+        if type(runtime.get("osMajor")) is not int or runtime["osMajor"]<26 or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,}",runtime.get("webkit","")):
+            raise ValueError("unqualified namespace runtime")
+        if runtime.get("frameworkPath")!="/System/Library/Frameworks/WebKit.framework" or not runtime.get("classImagePath","").startswith("/System/Library/Frameworks/WebKit.framework/"):
+            raise ValueError("not system WebKit")
+        if type(report.get("pid")) is not int:raise ValueError("missing actual phase PID")
+    if creation["runtime"]!=cleanup["runtime"]:raise ValueError("runtime changed between namespace processes")
+    if len(hosts)!=2:raise ValueError("requires exactly creation and fresh cleanup hosts")
+    for record,report in zip(hosts,(creation,cleanup)):
+        if record.get("ownedLaunchExited") is not True or record["host"]["pid"]!=report["pid"]:
+            raise ValueError("owned launch/exit proof missing")
+    first,second=(record["host"] for record in hosts)
+    if (first["pid"],first["start"])==(second["pid"],second["start"]) or first["path"]!=second["path"] or cleanup.get("creatorPID")!=creation["pid"]:
+        raise ValueError("cleanup is not a fresh same-container launch")
+    for report,section,keys in ((creation,"admission",("beforeAbsent","cookieVerified","afterPresent")),
+                                (cleanup,"admission",("creatorVerified","beforePresent")),
+                                (cleanup,"retirement",("afterAbsent","removalAttempted"))):
+        if any(type(report[section].get(key)) is not bool for key in keys):raise ValueError("untyped namespace admission/retirement")
+    errors=cleanup.get("removalErrors")
+    if not isinstance(errors,list) or any(not isinstance(error,str) for error in errors):raise ValueError("removal errors were not retained")
+    def count(report,key,wanted):return type(report.get(key)) is int and report[key]==wanted
+    created=all(creation["admission"].values()) and not creation.get("failure") and all(count(creation,key,n) for key,n in (("registryCallbackCount",2),("cookieWriteCallbackCount",1),("cookieReadCallbackCount",1)))
+    retired=all(cleanup["admission"].values()) and all(cleanup["retirement"].values()) and not errors and not cleanup.get("failure") and count(cleanup,"registryCallbackCount",2) and count(cleanup,"removalCallbackCount",1)
+    if creation.get("result")!=("created" if created else "failed") or cleanup.get("result")!=("retired" if retired else "failed"):
+        raise ValueError("namespace qualification was promoted")
+    return "retired" if created and retired else "failed"
+
+
 def admit_native_processes(snapshot, own_pid):
     foreign = []
     for line in snapshot.splitlines():
@@ -180,6 +222,51 @@ def owned_launch(create, body, retire):
                 raise
 
 
+def matches_owned_crash(raw, host, bundle_id):
+    from datetime import datetime,timezone
+    try:
+        decoder=json.JSONDecoder();text=raw.decode("utf-8").strip()
+        first,end=decoder.raw_decode(text);remaining=text[end:].strip()
+        body,end=decoder.raw_decode(remaining) if remaining else (first,len(text))
+        if remaining and remaining[end:].strip():return False
+        if first.get("bundleID",bundle_id)!=bundle_id or body.get("bundleInfo",{}).get("CFBundleIdentifier")!=bundle_id:return False
+        if type(body.get("pid")) is not int or body["pid"]!=host["pid"] or os.path.realpath(body.get("procPath",""))!=host["path"]:return False
+        stamp=body["procLaunch"];fraction=re.search(r"\.(\d{3,6}) ",stamp)
+        if not fraction:return False
+        launch=datetime.strptime(stamp,"%Y-%m-%d %H:%M:%S.%f %z")-datetime(1970,1,1,tzinfo=timezone.utc)
+        micros=(launch.days*86400+launch.seconds)*1000000+launch.microseconds
+        # Apple reports may truncate launch time to100us. The exact kernel-start
+        # identity remains in ownership.json; match only within reported precision.
+        return abs(micros-host["start"])<10**(6-len(fraction[1]))
+    except (ValueError,KeyError,TypeError,AttributeError):return False
+
+
+def collect_owned_crashes(host,bundle_id,evidence,label):
+    import time
+    result={"ownedHost":host,"bundleID":bundle_id,"reports":[],"available":False}
+    output=evidence/(label+"-owned-crashes");output.mkdir()
+    deadline=time.monotonic()+5
+    while time.monotonic()<deadline:
+        for directory in (Path.home()/"Library/Logs/DiagnosticReports",Path("/Library/Logs/DiagnosticReports")):
+            for path in directory.glob("*.ips"):
+                if not path.name.lower().startswith("vane"):continue
+                try:
+                    descriptor=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
+                    try:
+                        info=os.fstat(descriptor)
+                        if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0,os.geteuid()) or info.st_size>4*1024*1024:continue
+                        raw=os.read(descriptor,4*1024*1024+1)
+                    finally:os.close(descriptor)
+                    if len(raw)>4*1024*1024 or not matches_owned_crash(raw,host,bundle_id):continue
+                    target=output/path.name;target.write_bytes(raw)
+                    result["reports"].append({"name":path.name,"sha256":hashlib.sha256(raw).hexdigest()})
+                except OSError:continue
+        if result["reports"]:result["available"]=True;break
+        time.sleep(.05)
+    if not result["available"]:result["unavailableReason"]="No exact owned report published within the bounded postmortem interval"
+    (output/"index.json").write_text(json.dumps(result,indent=2)+"\n")
+
+
 def stop_owned(host, identity, send, pause, now):
     import signal
     for signum in (signal.SIGTERM, signal.SIGKILL):
@@ -214,7 +301,11 @@ def main():
     mode=parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--prepare-only", action="store_true")
     mode.add_argument("--run", action="store_true", help="one native/UI arm; requires separately coordinated lease")
+    mode.add_argument("--namespace-regression", action="store_true", help="one namespace creation and fresh cleanup; no worker")
+    mode.add_argument("--prepare-namespace", action="store_true", help="sign namespace fixture without launching it")
     args=parser.parse_args()
+    namespace_only=args.namespace_regression or args.prepare_namespace
+    prepare_only=args.prepare_only or args.prepare_namespace
     if sys.platform != "darwin": parser.error("requires macOS26+ and a coordinated GUI session")
     if any(key.startswith("DYLD_") or key.startswith("WEBKIT_") for key in os.environ):
         parser.error("engine override/tracing environment is not accepted")
@@ -223,7 +314,8 @@ def main():
     if evidence.exists(): parser.error("evidence directory must be fresh; preserve all prior attempts")
     evidence.mkdir(parents=True, mode=0o700)
     binary=args.binary.resolve()
-    if not binary.is_file() or b"worker-client-capability-cleanup" not in binary.read_bytes():
+    marker=b"namespace-store-cleanup" if namespace_only else b"worker-client-capability-cleanup"
+    if not binary.is_file() or marker not in binary.read_bytes():
         parser.error("built DEBUG capability executable is missing")
     fingerprint, sources=source_fingerprint(root)
     (evidence/"source-fingerprint.json").write_text(json.dumps({"fingerprint":fingerprint,"files":sources},indent=2)+"\n")
@@ -231,22 +323,27 @@ def main():
     if not downloads.is_dir(): parser.error("Downloads directory is required for existing sandbox entitlement")
     data=Path(tempfile.mkdtemp(prefix=".vane-client-capability-",dir=downloads)).resolve()
     namespace=str(uuid.uuid4()); profile=str(uuid.uuid4()); context=str(uuid.uuid4())
+    bundle_id="io.github.notnaki.vane."+("namespace-cleanup." if namespace_only else "client-capability.")+uuid.uuid4().hex
     claim={"schema":1,"purpose":PURPOSE,"namespace":namespace,"profileID":profile,"contextID":context,
            "identityRequestNonce":str(uuid.uuid4()),"resultRequestNonce":str(uuid.uuid4()),
            "dataDirectory":str(data),"storeID":store_identifier(data,profile),"sourceFingerprint":fingerprint}
-    fixture=data/"fixture";fixture.mkdir()
-    for path in (root/"Tests/Diagnostics/WorkerClientCapability").iterdir():
-        content=path.read_bytes()
-        if path.name=="worker.js":content=content.replace(b'"@NAMESPACE@"',json.dumps(namespace).encode())
-        (fixture/path.name).write_bytes(content)
-    claim["scriptSHA256"]=hashlib.sha256((fixture/"worker.js").read_bytes()).hexdigest()
+    if namespace_only:
+        claim={key:value for key,value in claim.items() if key not in ("contextID","identityRequestNonce","resultRequestNonce")}
+        claim.update(purpose=NAMESPACE_PURPOSE,appBundleID=bundle_id)
+    else:
+        fixture=data/"fixture";fixture.mkdir()
+        for path in (root/"Tests/Diagnostics/WorkerClientCapability").iterdir():
+            content=path.read_bytes()
+            if path.name=="worker.js":content=content.replace(b'"@NAMESPACE@"',json.dumps(namespace).encode())
+            (fixture/path.name).write_bytes(content)
+        claim["scriptSHA256"]=hashlib.sha256((fixture/"worker.js").read_bytes()).hexdigest()
     (data/"capability-claim.json").write_text(json.dumps(claim,indent=2)+"\n")
     (evidence/"claim.json").write_text(json.dumps(claim,indent=2)+"\n")
-    app=evidence/"Vane Client Capability.app";executable=app/"Contents/MacOS/vane"
+    app=evidence/("Vane Namespace Cleanup.app" if namespace_only else "Vane Client Capability.app");executable=app/"Contents/MacOS/vane"
     executable.parent.mkdir(parents=True);shutil.copy2(binary,executable)
     resources=app/"Contents/Resources";resources.mkdir()
     for bundle in binary.parent.glob("*.bundle"):shutil.copytree(bundle,resources/bundle.name)
-    info={"CFBundleIdentifier":"io.github.notnaki.vane.client-capability."+uuid.uuid4().hex,
+    info={"CFBundleIdentifier":bundle_id,
           "CFBundleExecutable":"vane","CFBundleName":"Vane Client Capability","CFBundlePackageType":"APPL",
           "CFBundleVersion":"1","CFBundleShortVersionString":"0.1","NSPrincipalClass":"NSApplication","LSMinimumSystemVersion":"26.0"}
     (app/"Contents/Info.plist").write_bytes(plistlib.dumps(info))
@@ -263,10 +360,11 @@ def main():
                 "sourceFingerprint":fingerprint,"binarySHA256":hashlib.sha256(binary.read_bytes()).hexdigest(),
                 "signedExecutableSHA256":hashlib.sha256(executable.read_bytes()).hexdigest(),
                 "signing":"ad-hoc sandboxed Hardened Runtime; not Developer ID/notarized release acceptance",
-                "sourcePin":SOURCE_PIN,"laterSourcePin":LATER_PIN,"mode":"prepare-only" if args.prepare_only else "one-capability"}
+                "sourcePin":SOURCE_PIN,"laterSourcePin":LATER_PIN,
+                "mode":"prepare-namespace" if args.prepare_namespace else "namespace-regression" if namespace_only else "prepare-only" if prepare_only else "one-capability"}
     (evidence/"provenance.json").write_text(json.dumps(provenance,indent=2)+"\n")
-    if args.prepare_only:
-        print("Prepared signed capability fixture; no process, store or native/UI probe launched")
+    if prepare_only:
+        print("Prepared signed "+("namespace" if namespace_only else "capability")+" fixture; no process, store or native/UI probe launched")
         return 0
     spec=importlib.util.spec_from_file_location("owned_native",root/"scripts/run-native-tests.py")
     native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
@@ -332,31 +430,45 @@ def main():
                 except Exception:
                     print("OWNED LAUNCH evidence write failed: "+json.dumps(record,sort_keys=True),file=sys.stderr,flush=True)
                     raise
-            return owned_launch(lambda:subprocess.Popen([str(executable),command],env=environment,stdout=output,stderr=subprocess.STDOUT),body,retire)
-    primary=1;cleanup=1;classification="failed"
+            code=owned_launch(lambda:subprocess.Popen([str(executable),command],env=environment,stdout=output,stderr=subprocess.STDOUT),body,retire)
+            if namespace_only and host is not None and (code<0 or code==124):collect_owned_crashes(host,bundle_id,evidence,label)
+            return code
+    primary=1;cleanup=1;classification="failed";creation=None
     try:
-        primary=launch("worker-client-capability","primary",75)
-        report=read_json(data/"capability-report.json");verdict=read_json(data/"identity-verdict.json")
-        classification=validate_report(report,claim,verdict)
-        expected={"observed":0,"failed":1,"unavailable":3}[classification]
-        if primary!=expected:raise ValueError("native exit did not match strict report classification")
+        if namespace_only:
+            primary=launch("namespace-store-create","primary",25)
+            creation=read_json(data/"namespace-create-report.json")
+            if primary!=0 or creation.get("result")!="created":raise ValueError("namespace creation failed")
+        else:
+            primary=launch("worker-client-capability","primary",75)
+            report=read_json(data/"capability-report.json");verdict=read_json(data/"identity-verdict.json")
+            classification=validate_report(report,claim,verdict)
+            expected={"observed":0,"failed":1,"unavailable":3}[classification]
+            if primary!=expected:raise ValueError("native exit did not match strict report classification")
     except Exception as error:
         (evidence/"validation-error.txt").write_text(str(error)+"\n");primary=1;classification="failed"
     finally:
         if all(item.get("ownedLaunchExited") is True for item in identities):
             try:
-                cleanup=launch("worker-client-capability-cleanup","cleanup",25)
-                result=read_json(data/"cleanup-report.json")
-                if result!={"namespace":namespace,"storeID":claim["storeID"],"retired":True} or type(result.get("retired")) is not bool:
-                    raise ValueError("exact named-store absence not verified")
+                cleanup=launch("namespace-store-cleanup" if namespace_only else "worker-client-capability-cleanup","cleanup",25)
+                if namespace_only:
+                    result=read_json(data/"namespace-cleanup-report.json")
+                    classification=validate_namespace_pair(creation,result,claim,identities)
+                    if classification!="retired" or primary!=0:raise ValueError("namespace admission/retirement qualification failed")
+                else:
+                    result=read_json(data/"cleanup-report.json")
+                    if result!={"namespace":namespace,"storeID":claim["storeID"],"retired":True} or type(result.get("retired")) is not bool:
+                        raise ValueError("exact named-store absence not verified")
                 if cleanup:raise ValueError("cleanup process failed")
             except Exception as error:
                 (evidence/"cleanup-error.txt").write_text(str(error)+"\n");cleanup=1
+                if namespace_only:classification="failed"
         shutil.copytree(data,evidence/"data")
         (evidence/"result.json").write_text(json.dumps({"primary":primary,"cleanup":cleanup,"classification":classification,
-            "capabilityOnly":True,"uaIssueFixed":False,"ownedHostsExited":all(x.get("ownedLaunchExited") is True for x in identities)},indent=2)+"\n")
+            "capabilityOnly":not namespace_only,"namespaceRegression":namespace_only,"uaProbeRun":not namespace_only,
+            "uaIssueFixed":False,"ownedHostsExited":all(x.get("ownedLaunchExited") is True for x in identities)},indent=2)+"\n")
         if cleanup==0 and (data/"capability-claim.json").read_text()==json.dumps(claim,indent=2)+"\n":shutil.rmtree(data)
-    print("Capability result",classification,"primary",primary,"cleanup",cleanup,"(no UA repair claim)")
+    print("Namespace regression" if namespace_only else "Capability result",classification,"primary",primary,"cleanup",cleanup,"(no UA repair claim)")
     return primary or cleanup
 
 

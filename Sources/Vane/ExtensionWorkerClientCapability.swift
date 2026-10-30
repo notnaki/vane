@@ -5,13 +5,14 @@ import ObjectiveC
 import Security
 import WebKit
 
-/// Diagnostic capability A only. No host policy changes, private callback, or
-/// worker API interception. Eligibility is not an initial origin-UA lookup.
+/// Separate DEBUG diagnostics for capability A and cold named-store retirement.
+/// Namespace mode creates no page/extension/worker. Neither mode changes policy.
 @MainActor enum ExtensionWorkerClientCapability {
     private static var runner: Runner?
     private static let purpose = "Vane MV3 eligible-client capability"
+    private static let namespacePurpose = "Vane cold named-store cleanup regression"
 
-    static func run(cleanup: Bool) -> Never {
+    static func run(cleanup: Bool, namespaceOnly: Bool = false) -> Never {
         do {
             guard let directory = Store.overrideDirectory else { throw Failure("VANE_DATA_DIR is required") }
             let root = URL(fileURLWithPath: directory).resolvingSymlinksInPath()
@@ -22,7 +23,7 @@ import WebKit
             try verifySignature()
             let data = try Data(contentsOf: root.appendingPathComponent("capability-claim.json"))
             guard data.count <= 65536, let claim = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  claim["schema"] as? Int == 1, claim["purpose"] as? String == purpose,
+                  claim["schema"] as? Int == 1, claim["purpose"] as? String == (namespaceOnly ? namespacePurpose : purpose),
                   claim["dataDirectory"] as? String == root.path,
                   let profile = UUID(uuidString: claim["profileID"] as? String ?? ""),
                   let store = UUID(uuidString: claim["storeID"] as? String ?? ""),
@@ -30,10 +31,12 @@ import WebKit
                   ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: root.path) == store else {
                 throw Failure("Invalid isolated capability claim")
             }
+            if namespaceOnly, claim["appBundleID"] as? String != Bundle.main.bundleIdentifier { throw Failure("Wrong namespace app/container") }
             let probe = Runner(root: root, claim: claim, storeID: store)
             runner = probe
             NSApp.delegate = probe
             probe.cleanupOnly = cleanup
+            probe.namespaceOnly = namespaceOnly
             DispatchQueue.main.asyncAfter(deadline: .now() + 60) { probe.abort("Overall capability deadline exceeded") }
             NSApp.run()
             throw Failure("Normal AppKit loop returned unexpectedly")
@@ -79,11 +82,33 @@ import WebKit
         }
     }
 
+    @MainActor private final class SDKReply<Value: Sendable> {
+        let deadline: ContinuousClock.Instant
+        let received: (Value) -> Void
+        var continuation: CheckedContinuation<Value, any Error>?
+        var timer: Task<Void, Never>?
+        init(deadline: ContinuousClock.Instant, received: @escaping (Value) -> Void) {
+            self.deadline = deadline; self.received = received
+        }
+        func finish(_ result: Result<Value, any Error>) {
+            // Retain every delivered removal error, including duplicate/late
+            // callbacks; only the continuation is single-resume.
+            if case .success(let value) = result { received(value) }
+            guard let pending = continuation else { return }
+            continuation = nil; timer?.cancel(); timer = nil
+            if case .success = result, ContinuousClock.now >= deadline {
+                pending.resume(throwing: Failure("SDK callback exceeded the absolute deadline"))
+            } else { pending.resume(with: result) }
+        }
+    }
+
     private final class Runner: NSObject, NSApplicationDelegate, WKWebExtensionControllerDelegate {
         let root: URL
         let claim: [String: Any]
         let storeID: UUID
         var cleanupOnly = false
+        var namespaceOnly = false
+        private var operationDeadline: ContinuousClock.Instant?
         private var began = false
         private var done = false
         private var badgeCompleted = false
@@ -94,12 +119,16 @@ import WebKit
         private var report: [String: Any]
         init(root: URL, claim: [String: Any], storeID: UUID) {
             self.root = root; self.claim = claim; self.storeID = storeID
-            report = claim.filter { ["schema", "namespace", "profileID", "storeID", "contextID", "sourceFingerprint", "scriptSHA256"].contains($0.key) }
+            report = claim.filter { ["schema", "purpose", "namespace", "profileID", "storeID", "contextID", "sourceFingerprint", "scriptSHA256", "appBundleID"].contains($0.key) }
         }
         func applicationDidFinishLaunching(_ notification: Notification) {
             guard !began else { return }
             began = true
-            Task { if self.cleanupOnly { await self.cleanup() } else { await self.perform() } }
+            Task {
+                if self.cleanupOnly { await self.cleanup() }
+                else if self.namespaceOnly { await self.createNamespace() }
+                else { await self.perform() }
+            }
         }
         private func wait(_ description: String, seconds: Int = 5, _ ready: () -> Bool) async throws {
             let deadline = ContinuousClock.now + .seconds(seconds)
@@ -113,6 +142,77 @@ import WebKit
         }
         private func write(_ value: [String: Any], _ name: String) throws {
             try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]).write(to: root.appendingPathComponent(name), options: .atomic)
+        }
+        private func sdk<Value: Sendable>(deadline: ContinuousClock.Instant,
+            received: @escaping (Value) -> Void = { _ in },
+            _ begin: (@escaping @Sendable (Result<Value, any Error>) -> Void) -> Void) async throws -> Value {
+            guard ContinuousClock.now < deadline else { throw Failure("SDK operation deadline expired") }
+            let reply = SDKReply<Value>(deadline: deadline, received: received)
+            let value: Value = try await withCheckedThrowingContinuation { continuation in
+                reply.continuation = continuation
+                reply.timer = Task {
+                    do { try await ContinuousClock().sleep(until: deadline) } catch { return }
+                    reply.finish(.failure(Failure("SDK callback did not arrive before the absolute deadline")))
+                }
+                begin { result in Task { @MainActor in reply.finish(result) } }
+            }
+            guard ContinuousClock.now < deadline else { throw Failure("SDK result consumed after the absolute deadline") }
+            return value
+        }
+        private func identifiers(deadline: ContinuousClock.Instant) async throws -> [UUID] {
+            try await sdk(deadline: deadline, received: { _ in
+                self.report["registryCallbackCount"] = (self.report["registryCallbackCount"] as? Int ?? 0) + 1
+            }) { completion in
+                WKWebsiteDataStore.fetchAllDataStoreIdentifiers { completion(.success($0)) }
+            }
+        }
+        private func qualifyRuntime() throws -> [String: Any] {
+            guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 else { throw Failure("Requires macOS26+") }
+            let image = class_getImageName(WKWebView.self).map { String(cString: $0) } ?? ""
+            guard image.hasPrefix("/System/Library/Frameworks/WebKit.framework/"), !image.contains("StagedFrameworks") else { throw Failure("Not system WebKit") }
+            return ["os": ProcessInfo.processInfo.operatingSystemVersionString,
+                "osMajor": ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+                "webkit": Bundle(for: WKWebView.self).infoDictionary?["CFBundleVersion"] as? String ?? "Unavailable",
+                "frameworkPath": "/System/Library/Frameworks/WebKit.framework", "classImagePath": image]
+        }
+        private func admitNamespacePhase(_ phase: String, deadline: ContinuousClock.Instant) async throws {
+            operationDeadline = deadline
+            try await wait("normal namespace AppKit launch") { NSApp.isRunning && NSRunningApplication.current.isFinishedLaunching }
+            guard ContinuousClock.now < deadline else { throw Failure("Namespace admission exceeded original deadline") }
+            report["phase"] = phase; report["pid"] = ProcessInfo.processInfo.processIdentifier
+            report["noExtensionWorkerOrPage"] = true
+            report["registryCallbackCount"] = 0
+            // First WebKit object in this process. No page/controller is needed.
+            WebKitStartup.prepare()
+            report["runtime"] = try qualifyRuntime()
+        }
+        private func createNamespace() async {
+            let deadline = ContinuousClock.now + .seconds(15)
+            do {
+                try await admitNamespacePhase("namespace-create", deadline: deadline)
+                let before = try await identifiers(deadline: deadline)
+                report["admission"] = ["beforeAbsent": !before.contains(storeID), "cookieVerified": false, "afterPresent": false]
+                guard !before.contains(storeID) else { throw Failure("Fresh namespace already exists") }
+                let store = WKWebsiteDataStore(forIdentifier: storeID)
+                guard store.identifier == storeID && store.isPersistent else { throw Failure("Wrong actual namespace store") }
+                let name = "owned-" + (claim["namespace"] as! String), value = claim["namespace"] as! String
+                guard let cookie = HTTPCookie(properties: [.domain: "vane-cleanup.invalid", .path: "/", .name: name, .value: value, .expires: Date.now.addingTimeInterval(3600)]) else { throw Failure("Invalid owned sentinel cookie") }
+                let _: Bool = try await sdk(deadline: deadline, received: { _ in
+                    self.report["cookieWriteCallbackCount"] = (self.report["cookieWriteCallbackCount"] as? Int ?? 0) + 1
+                }) { completion in store.httpCookieStore.setCookie(cookie) { completion(.success(true)) } }
+                let verified: Bool = try await sdk(deadline: deadline, received: { _ in
+                    self.report["cookieReadCallbackCount"] = (self.report["cookieReadCallbackCount"] as? Int ?? 0) + 1
+                }) { completion in
+                    store.httpCookieStore.getAllCookies { cookies in
+                        completion(.success(cookies.contains { $0.name == name && $0.value == value && $0.domain == "vane-cleanup.invalid" }))
+                    }
+                }
+                let after = try await identifiers(deadline: deadline)
+                report["admission"] = ["beforeAbsent": true, "cookieVerified": verified, "afterPresent": after.contains(storeID)]
+                guard verified && after.contains(storeID), report["registryCallbackCount"] as? Int == 2,
+                      report["cookieWriteCallbackCount"] as? Int == 1, report["cookieReadCallbackCount"] as? Int == 1 else { throw Failure("Namespace creation admission failed") }
+                report["result"] = "created"; finish(code: 0)
+            } catch { abort(String(describing: error)) }
         }
         private func js(_ web: WKWebView, _ source: String, arguments: [String: Any] = [:], seconds: Int = 1) async throws -> Any? {
             let reply = Reply(seconds: seconds)
@@ -248,13 +348,26 @@ import WebKit
         private func finish(code initialCode: Int32) -> Never {
             done = true
             var code = initialCode
+            func expireVerdict() {
+                if let operationDeadline, ContinuousClock.now >= operationDeadline {
+                    report["failure"] = "Final verdict exceeded the original absolute deadline"
+                    report["result"] = "failed"; code = 1
+                }
+            }
+            expireVerdict()
             if let context, context.isLoaded {
                 do { try controller?.unload(context) }
                 catch { report["cleanupFailure"] = String(describing: error); report["result"] = "failed"; code = 1 }
             }
             window?.contentView = nil; window?.close(); window = nil
             context = nil; controller = nil
-            do { try write(report, cleanupOnly ? "cleanup-failure.json" : "capability-report.json") }
+            let name = namespaceOnly ? (cleanupOnly ? "namespace-cleanup-report.json" : "namespace-create-report.json")
+                : (cleanupOnly ? "cleanup-failure.json" : "capability-report.json")
+            do {
+                try write(report, name)
+                expireVerdict()
+                if code != initialCode { try write(report, name) }
+            }
             catch { FileHandle.standardError.write(Data("Cannot save report: \(error)\n".utf8)); code = 1 }
             print("CAPABILITY result=\(report["result"] ?? "failed") eligible-client observation only; no initial-UA-map claim")
             fflush(stdout)
@@ -262,22 +375,70 @@ import WebKit
         }
         private func cleanup() async {
             let deadline = ContinuousClock.now + .seconds(15)
-            var lastError: (any Error)?
-            while ContinuousClock.now < deadline {
-                let identifiers: [UUID] = await withCheckedContinuation { continuation in
-                    WKWebsiteDataStore.fetchAllDataStoreIdentifiers { continuation.resume(returning: $0) }
+            // Match ProfileManager's cold-registry prerequisite. An AppKit loop
+            // alone does not initialize WebKit's WTF main run loop.
+            operationDeadline = deadline
+            report["removalErrors"] = [String](); report["removalCallbackCount"] = 0
+            report["registryCallbackCount"] = 0
+            do {
+                if namespaceOnly { try await admitNamespacePhase("namespace-cleanup", deadline: deadline) }
+                else {
+                    try await wait("normal cleanup AppKit launch") { NSApp.isRunning && NSRunningApplication.current.isFinishedLaunching }
+                    WebKitStartup.prepare()
                 }
-                if !identifiers.contains(storeID) {
-                    do { try write(["namespace":claim["namespace"]!, "storeID":storeID.uuidString.lowercased(), "retired":true], "cleanup-report.json") }
-                    catch { abort("Cannot save exact retirement proof") }
-                    print("CAPABILITY cleanup: exact owned named store absent"); exit(0)
+                let before = try await identifiers(deadline: deadline)
+                let present = before.contains(storeID)
+                var creatorVerified = false
+                if namespaceOnly {
+                    let data = try? Data(contentsOf: root.appendingPathComponent("namespace-create-report.json"))
+                    let creator = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                    let admission = creator?["admission"] as? [String: Any]
+                    creatorVerified = creator?["result"] as? String == "created"
+                        && creator?["schema"] as? Int == 1
+                        && creator?["noExtensionWorkerOrPage"] as? Bool == true
+                        && creator?["phase"] as? String == "namespace-create"
+                        && creator?["purpose"] as? String == claim["purpose"] as? String
+                        && creator?["profileID"] as? String == claim["profileID"] as? String
+                        && creator?["namespace"] as? String == claim["namespace"] as? String
+                        && creator?["storeID"] as? String == claim["storeID"] as? String
+                        && creator?["sourceFingerprint"] as? String == claim["sourceFingerprint"] as? String
+                        && creator?["appBundleID"] as? String == Bundle.main.bundleIdentifier
+                        && admission?["beforeAbsent"] as? Bool == true
+                        && admission?["cookieVerified"] as? Bool == true
+                        && admission?["afterPresent"] as? Bool == true
+                        && (creator?["pid"] as? Int ?? 0) > 0
+                        && creator?["pid"] as? Int != Int(ProcessInfo.processInfo.processIdentifier)
+                    report["creatorPID"] = creator?["pid"]
+                    report["admission"] = ["creatorVerified": creatorVerified, "beforePresent": present]
                 }
-                lastError = await withCheckedContinuation { continuation in
-                    WKWebsiteDataStore.remove(forIdentifier: storeID) { continuation.resume(returning: $0) }
+                report["retirement"] = ["removalAttempted": present, "afterAbsent": false]
+                if present {
+                    let _: String? = try await sdk(deadline: deadline, received: { error in
+                        self.report["removalCallbackCount"] = (self.report["removalCallbackCount"] as? Int ?? 0) + 1
+                        if let error {
+                            var errors = self.report["removalErrors"] as? [String] ?? []
+                            errors.append(error); self.report["removalErrors"] = errors
+                        }
+                    }) { completion in
+                        WKWebsiteDataStore.remove(forIdentifier: self.storeID) { error in completion(.success(error.map { String(describing: $0) })) }
+                    }
                 }
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            abort("Exact owned store retirement failed: \(String(describing: lastError))")
+                let after = try await identifiers(deadline: deadline)
+                let absent = !after.contains(storeID)
+                report["retirement"] = ["removalAttempted": present, "afterAbsent": absent]
+                let errors = report["removalErrors"] as? [String] ?? []
+                let callbacks = report["registryCallbackCount"] as? Int == 2
+                    && report["removalCallbackCount"] as? Int == (present ? 1 : 0)
+                let qualified = absent && errors.isEmpty && callbacks && (!namespaceOnly || (present && creatorVerified))
+                if namespaceOnly {
+                    report["result"] = qualified ? "retired" : "failed"
+                    finish(code: qualified ? 0 : 1)
+                }
+                guard qualified, ContinuousClock.now < deadline else { throw Failure("Exact named-store retirement failed") }
+                try write(["namespace":claim["namespace"]!, "storeID":storeID.uuidString.lowercased(), "retired":true], "cleanup-report.json")
+                guard ContinuousClock.now < deadline else { throw Failure("Retirement report exceeded absolute deadline") }
+                print("CAPABILITY cleanup: exact owned named store absent"); exit(0)
+            } catch { abort(String(describing: error)) }
         }
     }
 }

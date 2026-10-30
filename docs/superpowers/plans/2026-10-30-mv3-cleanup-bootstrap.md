@@ -1,0 +1,27 @@
+# Cold named-store cleanup bootstrap: source/design review
+
+This is a cleanup-fixture repair, not a worker-UA probe or a product fix. The namespace-only implementation and workflow replacement are prepared locally. Twenty-nine offline controls and the debug native-system build pass. No new native execution or push has occurred.
+
+## Preserved failure and source hypothesis
+
+The sole capability run40958822738 at614caa3 returned primary3 (unavailable), cleanup1. On macOS26.6.2 build25G83/WebKit21624.5.1.11.3, the worker's startup/current UA and popup UA passed; the one eligible-client query returned[]. The original pre-result verdict remains intact. Neither that empty eligible set nor the passing UA sample proves the initial origin lookup or an MV3 repair.
+
+Cleanup host9549/start1793309990015533 exited-11 without a cleanup report. Both exact app-host identities were subsequently absent, but absence of its named store56414e45-fff5-8e78-bd2b-6b0b0e7f0ab5 is unverified. The complete raw artifact ZIP is preserved outside the checkout, with uploaded SHA256f26f9f58fbfe106076f22068b1d13b32780555e20e4326ded42946d2c23b21b7. Its manifest contains no.ips/.crash report; the original cleanup log is empty. A native stack cannot be reconstructed from those missing records.
+
+The failed diagnostic bypassed AppLifecycle; in cleanup mode it constructed no WebKit object before WKWebsiteDataStore.fetchAllDataStoreIdentifiers. Its AppKit loop is running, which is insufficient to initialize WebKit's WTF main run loop. Profiles.swift917–926 documents this exact cold-registry null-lock crash and calls WebKitStartup.prepare immediately before the class query. WebKitStartup.prepare initializes a public nonpersistent data store without a page or disk-backed store. The implemented minimal patch reuses that guard at cleanup entry; it neither changes the primary nor opens a worker/document. This is a source-supported hypothesis and necessary prerequisite correction, not a stack-proven or green-validated crash fix.
+
+## Separate regression (implemented locally; not yet executed)
+
+Following Root and independent design review, distinct cleanup-only driver/entrypoint modes use a separate purpose discriminator. It must not call the capability primary, load an extension/worker, render worker.js, query clients, change UA configuration, or invoke an SDK background callback. The branch-push workflow is now replaced locally by the cleanup-only job; it invokes only --namespace-regression. Its final source/workflow must be independently reviewed before the single authorized cleanup-only push. The worker capability must not be repeated.
+
+Run exactly one fresh namespace creation primary followed by one fresh cleanup, once. Original SIGSEGV remains the RED; do not repeat an old UA/clients attempt or add a cohort.
+
+1. Creation primary: use a properly signed normal app and an actual admitted AppKit loop, isolated Downloads claim, fresh profile/context-purpose IDs and derived named-store UUID. Initialize WebKit with the canonical guard. Create only the owned persistent WKWebsiteDataStore; set and read back a namespace-bound cookie at a reserved.invalid domain through its public cookie store. No network request or page is needed. Public registry enumeration must show that exact store before a creation report is written. Exit and prove the exact PID/kernel-start/executable launch is absent before cleanup begins.
+2. Fresh cleanup: same signed app/container and exact claim, different process identity. No earlier WKWebView/controller/store object may mask cold-start initialization. Call WebKitStartup.prepare, enumerate, and require the previously created store to be present before removal. Remove only that identifier and verify its absence through a subsequent public enumeration within the unchanged15-second cleanup deadline. A missing pre-removal store is a failed regression fixture, even if absence can be reported for cleanup. Preserve removal errors; require typed matching namespace/store reports and exact host exit proof. Never delete defaults, sweep other namespaces, or report a missing callback as success.
+3. Retain every primary/cleanup log, claim, binary/source/runtime/signature fingerprint, preflight and ownership record. On a signal/crash, copy only an actual report whose PID, executable path, bundle identity and launch time match the owned launch. Boundedly wait for report publication and record unavailable if none appears; do not claim a stack exists. Do not collect another Vane app's report. Keep all original failure evidence and any unretired namespace on failure.
+
+No outcome deadline is extended. No guessed readiness sleep, repeated success attempt, new skip or broad suite is proposed. A green cleanup pair would qualify this fixture bootstrap/retirement path only; it would not retroactively verify the original failed runner's named-store absence or change capability A's unavailable result.
+
+## Source-only qualification
+
+Independent review found no actionable namespace correctness/security findings. Python offline controls:29 passed. Debug native-system build exited0; raw build log, command, timestamps and source diff are preserved in the external task artifact directory namespace-cleanup-validation-root/. Diff check passed. These checks launch no diagnostic app or store operation. The original capability remains unavailable and the earlier failed runner store remains unverified. A fresh namespace-only execution is still pending; this note does not claim a crash repair has been demonstrated.

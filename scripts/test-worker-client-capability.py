@@ -32,6 +32,16 @@ def fixture():
     verdict = {"identity":copy.deepcopy(identity),"uaVerdict":"passed"}
     return claim,report,verdict
 
+def namespace_fixture():
+    claim={"schema":1,"purpose":"Vane cold named-store cleanup regression","dataDirectory":"/tmp/namespace-contract", "appBundleID":"io.github.notnaki.vane.namespace.test", "namespace":str(uuid.uuid4()),"profileID":str(uuid.uuid4()),"sourceFingerprint":"a"*64}
+    claim["storeID"]=capability.store_identifier(claim["dataDirectory"],claim["profileID"])
+    common={k:claim[k] for k in ("schema","purpose","namespace","profileID","storeID","sourceFingerprint","appBundleID")}
+    common.update(runtime=fixture()[1]["runtime"],noExtensionWorkerOrPage=True)
+    create={**common,"phase":"namespace-create","pid":42,"admission":{"beforeAbsent":True,"cookieVerified":True,"afterPresent":True},"registryCallbackCount":2,"cookieWriteCallbackCount":1,"cookieReadCallbackCount":1,"result":"created"}
+    cleanup={**common,"phase":"namespace-cleanup","pid":43,"creatorPID":42,"admission":{"creatorVerified":True,"beforePresent":True},"retirement":{"afterAbsent":True,"removalAttempted":True},"registryCallbackCount":2,"removalCallbackCount":1,"removalErrors":[],"result":"retired"}
+    hosts=[{"host":{"pid":pid,"start":start,"path":"/owned/vane"},"ownedLaunchExited":True} for pid,start in ((42,100),(43,200))]
+    return claim,create,cleanup,hosts
+
 class ProtocolTests(unittest.TestCase):
     def test_workflow_is_one_branch_one_arm_and_fails_invalid_admission(self):
         import subprocess
@@ -40,11 +50,15 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("contents: read",workflow)
         self.assertIn("persist-credentials: false",workflow)
         self.assertIn("runs-on: macos-26",workflow)
-        self.assertEqual(workflow.count(" --run"),1)
+        self.assertEqual(workflow.count(" --namespace-regression"),1)
+        self.assertNotIn(" --run",workflow)
+        self.assertNotIn("node --check",workflow)
         self.assertEqual(workflow.count("if: ${{ always() }}"),2)
         for forbidden in ("continue-on-error:","matrix:","actions/cache", "workflow_dispatch:","pull_request:","secrets.","--prepare-only"):
             self.assertNotIn(forbidden,workflow)
-        block=workflow.split("        run: |\n",1)[1].split("          # Qualified build and sole capability arm.",1)[0]
+        marker="          # Qualified build and sole namespace pair."
+        self.assertIn(marker,workflow)  # never execute the build/native suffix if the marker changes
+        block=workflow.split("        run: |\n",1)[1].split(marker,1)[0]
         prefix="\n".join(line[10:] for line in block.splitlines())
         for values in ({}, {"GITHUB_RUN_ATTEMPT":"2"}, {"GITHUB_RUN_ATTEMPT":"1\n1"},
                        {"GITHUB_REF":"refs/heads/main"},{"GITHUB_EVENT_NAME":"pull_request"},{"GITHUB_RUN_ATTEMPT":None}):
@@ -54,6 +68,38 @@ class ProtocolTests(unittest.TestCase):
                 result=subprocess.run(["bash","-c",prefix+"\ntouch \"$RUNNER_TEMP/admitted\""],env=env,capture_output=True)
                 self.assertEqual(result.returncode==0,not values)
                 self.assertEqual((Path(directory)/"admitted").exists(),not values)
+    def test_crash_report_must_match_pid_path_bundle_and_start(self):
+        from datetime import datetime,timezone
+        host={"pid":42,"path":"/owned/vane","start":1793309990015533}
+        report={"pid":42,"procPath":"/owned/vane","bundleInfo":{"CFBundleIdentifier":"owned.bundle"},"procLaunch":datetime.fromtimestamp(host["start"]/1000000,timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f %z")}
+        raw=(json.dumps({"bundleID":"owned.bundle"})+"\n"+json.dumps(report)).encode()
+        self.assertTrue(capability.matches_owned_crash(raw,host,"owned.bundle"))
+        for field,value in (("pid",43),("procPath","/foreign/vane"),("procLaunch","2026-01-01 00:00:00.000000 +0000")):
+            changed=dict(report,**{field:value})
+            self.assertFalse(capability.matches_owned_crash(json.dumps(changed).encode(),host,"owned.bundle"))
+        self.assertFalse(capability.matches_owned_crash(raw,host,"other.bundle"))
+    def test_namespace_pair_keeps_admission_distinct_from_retirement(self):
+        claim,create,cleanup,hosts=namespace_fixture()
+        self.assertEqual(capability.validate_namespace_pair(create,cleanup,claim,hosts),"retired")
+        cleanup["admission"]["beforePresent"]=False;cleanup["result"]="failed"
+        self.assertEqual(capability.validate_namespace_pair(create,cleanup,claim,hosts),"failed")
+        self.assertTrue(cleanup["retirement"]["afterAbsent"])
+    def test_namespace_removal_error_cannot_be_erased_by_absence(self):
+        claim,create,cleanup,hosts=namespace_fixture()
+        cleanup["removalErrors"]=["WKWebsiteDataStore in use"];cleanup["result"]="failed"
+        self.assertEqual(capability.validate_namespace_pair(create,cleanup,claim,hosts),"failed")
+        cleanup["result"]="retired"
+        with self.assertRaises(ValueError):capability.validate_namespace_pair(create,cleanup,claim,hosts)
+    def test_namespace_binding_and_creation_must_be_real(self):
+        for edit in (lambda c,r,h:r.update(storeID=str(uuid.uuid4())),lambda c,r,h:r["admission"].update(creatorVerified=1),
+                     lambda c,r,h:r.update(noExtensionWorkerOrPage=False),lambda c,r,h:h[1].update(host=dict(h[0]["host"]))):
+            claim,create,cleanup,hosts=namespace_fixture();edit(claim,cleanup,hosts)
+            with self.assertRaises(ValueError):capability.validate_namespace_pair(create,cleanup,claim,hosts)
+    def test_namespace_deadline_failure_cannot_be_promoted(self):
+        claim,create,cleanup,hosts=namespace_fixture();cleanup["failure"]="SDK callback expired";cleanup["result"]="failed"
+        self.assertEqual(capability.validate_namespace_pair(create,cleanup,claim,hosts),"failed")
+        cleanup["result"]="retired"
+        with self.assertRaises(ValueError):capability.validate_namespace_pair(create,cleanup,claim,hosts)
     def test_bound_observable_capability(self):
         claim,report,verdict=fixture()
         self.assertEqual(capability.validate_report(report,claim,verdict),"observed")

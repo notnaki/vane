@@ -12,6 +12,8 @@ app.setActivationPolicy(.regular)
 #if DEBUG
 if args.first == "worker-client-capability" { ExtensionWorkerClientCapability.run(cleanup: false) }
 if args.first == "worker-client-capability-cleanup" { ExtensionWorkerClientCapability.run(cleanup: true) }
+if args.first == "namespace-store-create" { ExtensionWorkerClientCapability.run(cleanup: false, namespaceOnly: true) }
+if args.first == "namespace-store-cleanup" { ExtensionWorkerClientCapability.run(cleanup: true, namespaceOnly: true) }
 #endif
 // The Dock icon has to lead somewhere when every window is closed, and its menu has to
 // offer a window. That is the whole of the delegate; see AppLifecycle.swift.
