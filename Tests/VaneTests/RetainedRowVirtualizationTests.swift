@@ -150,14 +150,18 @@ import XCTest
         (root as? T).map { [$0] } ?? root.subviews.flatMap { descendants($0, T.self) }
     }
 
-    private func mountRealSidebar(_ store: TabStore, height: CGFloat = 240) -> (NSWindow, NSView) {
+    private func mountRealSidebar(_ store: TabStore, height: CGFloat = 240,
+                                  scope: SidebarNativeReadinessScope? = nil,
+                                  populationOwnerID: UUID? = nil) -> (NSWindow, NSView) {
         _ = NSApplication.shared
         store.palette = nil
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 250, height: height),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: SidebarSpaceSections()
-            .environmentObject(store).environmentObject(ProfileManager.shared))
+            .environmentObject(store).environmentObject(ProfileManager.shared)
+            .environment(\.sidebarNativeReadinessScope, scope)
+            .environment(\.sidebarNativeReadinessOwnerID, populationOwnerID))
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
         host.layoutSubtreeIfNeeded()
@@ -167,6 +171,22 @@ import XCTest
             window.close()
         }
         return (window, host)
+    }
+
+    private func withOwnedApplicationLoop(_ body: @MainActor () async throws -> Void) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await body() } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Retained scrolling fixture loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
     }
 
     private func move(_ scroll: NSScrollView, to offset: CGFloat, in host: NSView) async throws {
@@ -181,7 +201,15 @@ import XCTest
     /// scroll path when checking exact document geometry across disclosure.
     private func scrollNatively(_ scroll: NSScrollView, to offset: CGFloat, in host: NSView) async throws {
         let window = try XCTUnwrap(host.window)
-        let point = scroll.convert(NSPoint(x: 100, y: 80), to: nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
+                && NativeFixtureMountAdmission.scrollReady(scroll, root: host, window: window, minimumHeight: 1)
+        }
+        let point = try XCTUnwrap(NativeFixtureMountAdmission.scrollPoint(scroll, root: host, window: window),
+                                  "Native scrolling must target this exact visible clip view")
         NSApp.sendEvent(RetainedGeometryScrollEvent(window: window, phase: .began, point: point))
         for _ in 0..<160 {
             let delta = offset - scroll.contentView.bounds.minY
@@ -273,64 +301,103 @@ import XCTest
     }
 
     func testOffscreenCollapsedFolderHasNoPhantomHeightAndEndRemainsReachable() async throws {
-        let store = fixture(count: 28)
-        let folder = Folder(name: "Offscreen group", collapsed: true)
-        store.todayShape = Pins(entries: store.tabs.prefix(18).map { .init(row: .tab($0.id.uuidString)) }
-            + [.init(row: .folder(folder))]
-            + store.tabs[18..<25].map { .init(row: .tab($0.id.uuidString), parent: folder.id) }
-            + store.tabs.suffix(3).map { .init(row: .tab($0.id.uuidString)) })
-        let (_, host) = mountRealSidebar(store)
-        try await Task.sleep(for: .milliseconds(150))
-        let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
-        let document = try XCTUnwrap(scroll.documentView)
-        // Lazy row realization can finish after the initial window layout. Establish
-        // the reference from the actual top viewport, not a fixed sleep's timing.
-        try await scrollNatively(scroll, to: 0, in: host)
-        try await compatibilityWait {
-            descendants(host, TabTooltipAnchorView.self).contains { $0.title == "Row 0" }
-        }
-        let first = try XCTUnwrap(descendants(host, TabTooltipAnchorView.self).first { $0.title == "Row 0" })
-        let firstY = first.convert(first.bounds, to: document).minY
-        func assertVisibleRowPositions() {
-            var checked = 0
-            let collapsed = store.todayShape.entries.first { $0.folder?.id == folder.id }?.folder?.collapsed == true
-            for anchor in descendants(host, TabTooltipAnchorView.self) where anchor.enabled {
-                guard anchor.title.hasPrefix("Row "), let index = Int(anchor.title.dropFirst(4)),
-                      anchor.visibleRect.intersection(anchor.bounds).height > 1 else { continue }
-                checked += 1
-                let slot = index < 18 ? index : index + 1 - (collapsed ? 7 : 0)
-                XCTAssertEqual(anchor.convert(anchor.bounds, to: document).minY,
-                               firstY + CGFloat(slot) * (Look.rowHeight + Look.rowGap), accuracy: 1,
-                               "Realized row \(index) must keep its exact slot, not a lazy estimated position")
+        try await withOwnedApplicationLoop {
+            let store = fixture(count: 28)
+            let folder = Folder(name: "Offscreen group", collapsed: true)
+            store.todayShape = Pins(entries: store.tabs.prefix(18).map { .init(row: .tab($0.id.uuidString)) }
+                + [.init(row: .folder(folder))]
+                + store.tabs[18..<25].map { .init(row: .tab($0.id.uuidString), parent: folder.id) }
+                + store.tabs.suffix(3).map { .init(row: .tab($0.id.uuidString)) })
+            let scope = SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID, surfaceID: UUID())
+            let populationOwner = NSObject(), populationOwnerID = UUID()
+            let coordinator = SidebarNativeReadinessCoordinator.shared
+            let cache = Feel02SidebarRowsCache()
+            coordinator.expectPopulation(scope, sections: [
+                "today": cache.resolve(in: store, shape: store.todayShape).rows.map(\.id),
+                "pinned": store.pinnedSectionCollapsed ? [] : cache.resolve(in: store, shape: store.pins).rows.map(\.id),
+            ], populationOwnerID: populationOwnerID)
+            coordinator.retainPopulationExpectation(scope, owner: ObjectIdentifier(populationOwner),
+                                                    populationOwnerID: populationOwnerID)
+            let (window, host) = mountRealSidebar(store, scope: scope, populationOwnerID: populationOwnerID)
+            store.window = window
+            defer {
+                store.window = nil
+                window.contentView = nil
+                window.close()
+                coordinator.releasePopulationExpectation(scope, owner: ObjectIdentifier(populationOwner))
             }
-            XCTAssertGreaterThan(checked, 0, "The sampled viewport must contain real rows; position checks cannot pass vacuously")
-        }
-        func reachEnd() async throws -> CGFloat {
-            for _ in 0..<3 {
-                try await scrollNatively(scroll, to: max(0, document.frame.height - scroll.contentView.bounds.height), in: host)
+            NSApp.activate(ignoringOtherApps: true)
+            @MainActor func admitCurrentViewport() async throws {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                let today = cache.resolve(in: store, shape: store.todayShape).rows.map(\.id)
+                let pinned = store.pinnedSectionCollapsed ? [] : cache.resolve(in: store, shape: store.pins).rows.map(\.id)
+                coordinator.expectPopulation(scope, sections: ["today": today, "pinned": pinned],
+                                             populationOwnerID: populationOwnerID)
+                try await compatibilityWait {
+                    host.layoutSubtreeIfNeeded()
+                    guard NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow,
+                          window.isVisible && window.occlusionState.contains(.visible),
+                          window.contentView === host && host.window === window && store.window === window,
+                          let scroll = SidebarSectionsViewport.scrollView(in: host),
+                          NativeFixtureMountAdmission.scrollReady(scroll, root: host, window: window,
+                              minimumHeight: CGFloat(today.count) * Look.rowHeight) else { return false }
+                    return coordinator.isReady(scope)
+                }
             }
-            let last = try XCTUnwrap(descendants(host, TabTooltipAnchorView.self).first { $0.title == "Row 27" })
-            XCTAssertGreaterThan(last.visibleRect.intersection(last.bounds).height, 1,
-                                 "The final real row must remain reachable at the document end")
+            try await admitCurrentViewport()
+            let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
+            let document = try XCTUnwrap(scroll.documentView)
+            // Lazy row realization can finish after the initial window layout. Establish
+            // the reference from the actual top viewport, not a fixed sleep's timing.
+            try await scrollNatively(scroll, to: 0, in: host)
+            try await compatibilityWait {
+                descendants(host, TabTooltipAnchorView.self).contains { $0.title == "Row 0" }
+            }
+            let first = try XCTUnwrap(descendants(host, TabTooltipAnchorView.self).first { $0.title == "Row 0" })
+            let firstY = first.convert(first.bounds, to: document).minY
+            @MainActor func assertVisibleRowPositions() {
+                var checked = 0
+                let collapsed = store.todayShape.entries.first { $0.folder?.id == folder.id }?.folder?.collapsed == true
+                for anchor in descendants(host, TabTooltipAnchorView.self) where anchor.enabled {
+                    guard anchor.title.hasPrefix("Row "), let index = Int(anchor.title.dropFirst(4)),
+                          anchor.visibleRect.intersection(anchor.bounds).height > 1 else { continue }
+                    checked += 1
+                    let slot = index < 18 ? index : index + 1 - (collapsed ? 7 : 0)
+                    XCTAssertEqual(anchor.convert(anchor.bounds, to: document).minY,
+                                   firstY + CGFloat(slot) * (Look.rowHeight + Look.rowGap), accuracy: 1,
+                                   "Realized row \(index) must keep its exact slot, not a lazy estimated position")
+                }
+                XCTAssertGreaterThan(checked, 0, "The sampled viewport must contain real rows; position checks cannot pass vacuously")
+            }
+            @MainActor func reachEnd() async throws -> CGFloat {
+                try await admitCurrentViewport()
+                for _ in 0..<3 {
+                    try await scrollNatively(scroll, to: max(0, document.frame.height - scroll.contentView.bounds.height), in: host)
+                }
+                let last = try XCTUnwrap(descendants(host, TabTooltipAnchorView.self).first { $0.title == "Row 27" })
+                XCTAssertGreaterThan(last.visibleRect.intersection(last.bounds).height, 1,
+                                     "The final real row must remain reachable at the document end")
+                assertVisibleRowPositions()
+                return document.frame.height
+            }
+            let closedHeight = try await reachEnd()
+            try await scrollNatively(scroll, to: closedHeight / 2, in: host)
             assertVisibleRowPositions()
-            return document.frame.height
+            try await scrollNatively(scroll, to: 0, in: host)
+            assertVisibleRowPositions()
+            Motion.instant { store.todayShape.edit(folder: folder.id) { $0.collapsed = false } }
+            let openHeight = try await reachEnd()
+            try await scrollNatively(scroll, to: openHeight / 2, in: host)
+            assertVisibleRowPositions()
+            XCTAssertEqual(openHeight - closedHeight, 7 * (Look.rowHeight + Look.rowGap), accuracy: 1,
+                           "Opening an offscreen group must add precisely its seven slots")
+            try await scrollNatively(scroll, to: 0, in: host)
+            Motion.instant { store.todayShape.edit(folder: folder.id) { $0.collapsed = true } }
+            let closedAgain = try await reachEnd()
+            XCTAssertEqual(closedAgain, closedHeight, accuracy: 1,
+                           "Closing an offscreen group must not preserve lazy estimated-height gaps")
         }
-        let closedHeight = try await reachEnd()
-        try await scrollNatively(scroll, to: closedHeight / 2, in: host)
-        assertVisibleRowPositions()
-        try await scrollNatively(scroll, to: 0, in: host)
-        assertVisibleRowPositions()
-        Motion.instant { store.todayShape.edit(folder: folder.id) { $0.collapsed = false } }
-        let openHeight = try await reachEnd()
-        try await scrollNatively(scroll, to: openHeight / 2, in: host)
-        assertVisibleRowPositions()
-        XCTAssertEqual(openHeight - closedHeight, 7 * (Look.rowHeight + Look.rowGap), accuracy: 1,
-                       "Opening an offscreen group must add precisely its seven slots")
-        try await scrollNatively(scroll, to: 0, in: host)
-        Motion.instant { store.todayShape.edit(folder: folder.id) { $0.collapsed = true } }
-        let closedAgain = try await reachEnd()
-        XCTAssertEqual(closedAgain, closedHeight, accuracy: 1,
-                       "Closing an offscreen group must not preserve lazy estimated-height gaps")
     }
 
 

@@ -214,8 +214,16 @@ import XCTest
         try await compatibilityWait { dead.port != nil }
         let offlineURL = try dead.url("/offline")
         dead.stop()
+        // cancel() only requests shutdown. A refused connection requires the
+        // terminal listener callback, rather than a race with a live listener.
+        try await compatibilityWait { dead.listenerCancelled }
         tab.go(offlineURL)
-        try await compatibilityWait { self.tab.title == "Connection refused" && !self.tab.loading }
+        do {
+            try await compatibilityWait { self.tab.title == "Connection refused" && !self.tab.loading }
+        } catch {
+            print("NAVIGATION offline timeout: listener=\(dead.listener.state), callbacks=\(dead.connectionCallbacks), connections=\(dead.connections.count), requests=\(dead.requests), title=\(tab.title), loading=\(tab.loading), webLoading=\(tab.web.isLoading), address=\(tab.address), webURL=\(String(describing: tab.web.url))")
+            throw error
+        }
         XCTAssertEqual(tab.address, offlineURL.absoluteString)
         XCTAssertFalse(tab.history.recent().contains { $0.url == offlineURL.absoluteString })
         try await load("/recovered")
