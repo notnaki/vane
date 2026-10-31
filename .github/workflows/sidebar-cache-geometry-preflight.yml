@@ -1,0 +1,184 @@
+name: Cached sidebar geometry diagnostic
+on:
+  push:
+    branches: [codex/sidebar-cache-geometry]
+permissions:
+  contents: read
+concurrency:
+  group: sidebar-cache-geometry-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  focused-native:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      VANE_PINNED_PRODUCT: b2c755ba91faf96337eb4419d6369d964f7eab0a
+      VANE_DIAGNOSTIC_TEST_SHA: 6fb3a71022a41da9e0247dbf0b70d89c5fcf65a18384218fdfaa335aed682605
+      VANE_PINNED_INVENTORY_SHA: e1c97a48bae695c99a2bbef36121f94586a7b36c110c54e28366d8128d00010a
+      SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set diagnostic evidence directory
+        run: echo "VANE_DIAGNOSTIC_DIR=$RUNNER_TEMP/vane-sidebar-cache-geometry" >> "$GITHUB_ENV"
+      - name: Verify pinned product and exact diagnostic source
+        run: |
+          mkdir -p "$VANE_DIAGNOSTIC_DIR"
+          python3 - <<'PYCODE'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          evidence = Path(os.environ['VANE_DIAGNOSTIC_DIR'])
+          product = os.environ['VANE_PINNED_PRODUCT']
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert head == os.environ['GITHUB_SHA']
+          assert subprocess.check_output(['git', 'merge-base', product, head], text=True).strip() == product
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only', product, head], text=True).splitlines())
+          assert changed == {'Tests/VaneTests/SidebarVisibilityTests.swift', '.github/workflows/sidebar-cache-geometry-preflight.yml'}, changed
+          test_file = Path('Tests/VaneTests/SidebarVisibilityTests.swift')
+          assert hashlib.sha256(test_file.read_bytes()).hexdigest() == os.environ['VANE_DIAGNOSTIC_TEST_SHA']
+          subprocess.run(['git', 'diff', '--check', product, head], check=True)
+          source = {'product_head': product, 'diagnostic_head': head, 'test_file_sha256': os.environ['VANE_DIAGNOSTIC_TEST_SHA'], 'native_revision_receipt_available': False}
+          (evidence / 'source.json').write_text(json.dumps(source, indent=2) + '\n')
+          (evidence / 'diagnostic.patch').write_bytes(subprocess.check_output(['git', 'diff', '--binary', '--full-index', product, head]))
+          PYCODE
+      - name: Identify Swift toolchain
+        id: toolchain
+        run: |
+          VANE_TOOLCHAIN_KEY=$(python3 scripts/ci-build-artifact.py toolchain)
+          echo "key=$VANE_TOOLCHAIN_KEY" >> "$GITHUB_OUTPUT"
+      - name: Restore Swift debug build
+        uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
+          restore-keys: |
+            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - name: Build native tests once
+        run: |
+          set -euo pipefail
+          python3 scripts/ci-source-state.py restore
+          swift build --build-system native -c debug --build-tests 2>&1 | tee "$VANE_DIAGNOSTIC_DIR/build.log"
+          VANE_PREFLIGHT_BIN=$(swift build --build-system native -c debug --show-bin-path)
+          echo "VANE_PREFLIGHT_BIN=$VANE_PREFLIGHT_BIN" >> "$GITHUB_ENV"
+      - name: Owned AppKit loop smoke
+        env:
+          VANE_APPKIT_LOOP_SMOKE: '1'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
+        run: |
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$VANE_DIAGNOSTIC_DIR/smoke.log"
+          grep -Fq 'AppKit loop smoke: delayedHeartbeat=true, completed=true' "$VANE_DIAGNOSTIC_DIR/smoke.log"
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$VANE_DIAGNOSTIC_DIR/smoke.log"
+          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$VANE_DIAGNOSTIC_DIR/smoke.log"; then exit 1; fi
+      - name: Freeze discovered inventory and compiled diagnostic binary
+        run: |
+          set -euo pipefail
+          swift test --build-system native list --skip-build > "$VANE_DIAGNOSTIC_DIR/inventory.raw.txt"
+          python3 - <<'PYCODE'
+          import hashlib, json, os, plistlib, re
+          from pathlib import Path
+          evidence = Path(os.environ['VANE_DIAGNOSTIC_DIR'])
+          raw = evidence / 'inventory.raw.txt'
+          inventory = [x.strip() for x in raw.read_text().splitlines() if x.strip() and x.strip() != 'Native test host bootstrap: beforeAppKit=true, configured=true']
+          assert len(inventory) == len(set(inventory))
+          assert all(re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/[^\s/]+', x) for x in inventory)
+          canonical = '\n'.join(sorted(inventory))
+          assert hashlib.sha256(canonical.encode()).hexdigest() == os.environ['VANE_PINNED_INVENTORY_SHA']
+          tests = ['VaneTests.SidebarVisibilityTests/testCollapsingDockedSidebarDoesNotAcquireFloatingInsets', 'VaneTests.SidebarVisibilityTests/testDockingOrHidingEndsTheFloatingRevealImmediately', 'VaneTests.SidebarVisibilityTests/testFloatingRevealRetainsTheLaidOutSidebar', 'VaneTests.SidebarVisibilityTests/testHidingSidebarDisablesItsFocusedRenameField', 'VaneTests.SidebarVisibilityTests/testPresentationSamplingExcludesParkedProfileTrees', 'VaneTests.SidebarVisibilityTests/testReturningToCachedProfileDoesNotReplaySidebarDocking', 'VaneTests.SidebarVisibilityTests/testSlidingRowsReachTheWindowEdge', 'VaneTests.SidebarVisibilityTests/testVisibilityFollowsWindowAcrossNewAndParkedProfiles', 'VaneTests.SidebarVisibilityTests/testVisibilitySurvivesSpaceSwitchesWithinOneProfile']
+          assert sorted(x for x in inventory if x.startswith('VaneTests.SidebarVisibilityTests/')) == tests
+          pattern = '^(?:' + '|'.join(re.escape(x) for x in tests) + ')$'
+          assert sorted(x for x in inventory if re.search(pattern, x)) == tests
+          bundles = list(Path(os.environ['VANE_PREFLIGHT_BIN']).glob('*.xctest'))
+          assert len(bundles) == 1, bundles
+          bundle = bundles[0]
+          with (bundle / 'Contents/Info.plist').open('rb') as handle:
+              executable = plistlib.load(handle)['CFBundleExecutable']
+          binary = bundle / 'Contents/MacOS' / executable
+          fixture = Path('Tests/VaneTests/SidebarVisibilityTests.swift')
+          sha = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+          assert sha(fixture) == os.environ['VANE_DIAGNOSTIC_TEST_SHA']
+          (evidence / 'inventory.canonical.txt').write_text(canonical)
+          (evidence / 'selected.filter').write_text(pattern + '\n')
+          manifest = {'schema': 1, 'tests': tests, 'filter': pattern, 'inventory_raw_sha256': sha(raw), 'inventory_canonical_sha256': hashlib.sha256(canonical.encode()).hexdigest(), 'binary': str(binary), 'binary_sha256': sha(binary), 'fixture': str(fixture), 'fixture_sha256': sha(fixture), 'native_revision_receipt_available': False, 'attempts': 3}
+          (evidence / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          PYCODE
+      - name: Preserve three predetermined nine-case diagnostic attempts
+        env:
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib, json, os, re, subprocess, sys
+          from pathlib import Path
+          evidence = Path(os.environ['VANE_DIAGNOSTIC_DIR'])
+          manifest = json.loads((evidence / 'manifest.json').read_text())
+          tests = manifest['tests']
+          target = 'VaneTests.SidebarVisibilityTests/testReturningToCachedProfileDoesNotReplaySidebarDocking'
+          retirement = 'VaneTests.NativeFixtureRetirementTests/testRetireManifest'
+          sha = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+          results = []
+          any_test_failure = False
+          for attempt in (1, 2, 3):
+              log = evidence / f'attempt-{attempt}.log'
+              assert not log.exists()
+              assert sha(manifest['binary']) == manifest['binary_sha256']
+              assert sha(manifest['fixture']) == manifest['fixture_sha256']
+              with log.open('wb') as handle:
+                  run = subprocess.run(['python3', 'scripts/run-native-tests.py', '--build-system', 'native', '--skip-build', '--jobs', '1', '--filter', manifest['filter']], stdout=handle, stderr=subprocess.STDOUT, check=False)
+              text = log.read_text(errors='replace')
+              starts = re.findall(r"Test Case '-\[([^ ]+) ([^ ]+)\]' started\.", text)
+              finished = re.findall(r"Test Case '-\[([^ ]+) ([^ ]+)\]' (passed|failed|skipped) \(", text)
+              started = [a + '/' + b for a, b in starts]
+              outcomes = {}
+              for a, b, outcome in finished:
+                  outcomes.setdefault(a + '/' + b, []).append(outcome)
+              summary = re.findall(r'Native suite primary status=(-?\d+); cleanup status=(-?\d+)', text)
+              primary, cleanup = map(int, summary[0]) if len(summary) == 1 else (-999, -999)
+              errors = []
+              for case in tests:
+                  if started.count(case) != 1 or len(outcomes.get(case, [])) != 1:
+                      errors.append('missing/duplicate case ' + case)
+                  elif outcomes[case] == ['skipped'] or (case != target and outcomes[case] != ['passed']):
+                      errors.append('unexpected outcome ' + case)
+              if any(case not in set(tests) | {retirement} for case in started):
+                  errors.append('unselected case executed')
+              failed = any(outcomes.get(case) == ['failed'] for case in tests)
+              target_errors = [line for line in text.splitlines() if ' error: ' in line and '-[VaneTests.SidebarVisibilityTests testReturningToCachedProfileDoesNotReplaySidebarDocking]' in line]
+              original_messages = ('The arriving profile must already use docked geometry', 'An old floating inset must not animate after switching profiles')
+              original_geometry_failure = outcomes.get(target) == ['failed'] and bool(target_errors) and all(any(message in line for message in original_messages) for line in target_errors)
+              if outcomes.get(target) == ['failed'] and not original_geometry_failure:
+                  errors.append('ownership/admission/identity/unwrap or unclassified target failure')
+              trace = [line for line in text.splitlines() if line.startswith('SIDEBAR_CACHE_GEOMETRY ')]
+              if outcomes.get(target) == ['passed'] or original_geometry_failure:
+                  expected_stages = ['initial-rest', 'target-floating-rest', 'source-floating-rest', 'source-docking-started', 'target-before-return', 'early-30ms', 'settled-350ms']
+                  observed_stages = [re.search(r'stage=([^ ]+)', line).group(1) for line in trace]
+                  if observed_stages != expected_stages or any('nativeRevisionReceipt=unavailable' not in line for line in trace):
+                      errors.append('diagnostic trace missing/duplicated or revision receipt misrepresented')
+                  if any('captured=Optional(' not in line for line in trace if 'stage=early-30ms ' in line or 'stage=settled-350ms ' in line):
+                      errors.append('actual early/settled captured values missing')
+              if len(summary) != 1 or cleanup != 0 or outcomes.get(retirement) != ['passed']:
+                  errors.append('cleanup unverified')
+              if primary not in (0, 1) or primary != int(failed) or run.returncode != primary:
+                  errors.append('driver exit/status mismatch')
+              if re.search(r'\*\*\* Signal|Fatal error:|fatal signal|UNVERIFIED native fixture retirement|timeout|timed out', text, re.I):
+                  errors.append('fatal signal/timeout/infrastructure failure')
+              if sha(manifest['binary']) != manifest['binary_sha256'] or sha(manifest['fixture']) != manifest['fixture_sha256']:
+                  errors.append('frozen input changed')
+              result = {'attempt': attempt, 'exit': run.returncode, 'primary': primary, 'cleanup': cleanup, 'log_sha256': sha(log), 'outcomes': outcomes, 'validation_errors': errors, 'trace': trace, 'target_error_records': target_errors, 'original_geometry_failure': original_geometry_failure, 'native_revision_receipt_available': False, 'observation_only_not_repair': True}
+              (evidence / f'attempt-{attempt}.result.json').write_text(json.dumps(result, indent=2) + '\n')
+              results.append(result)
+              (evidence / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+              print(f'attempt={attempt} primary={primary} cleanup={cleanup} target={outcomes.get(target)} errors={errors}', flush=True)
+              if errors:
+                  sys.exit('Stop cohort: infrastructure, ownership, cleanup, or unexpected test failure; remaining attempts not run')
+              any_test_failure |= failed
+          sys.exit(1 if any_test_failure else 0)
+          PYCODE
+      - name: Preserve every diagnostic observation
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: sidebar-cache-geometry-diagnostic
+          path: ${{ runner.temp }}/vane-sidebar-cache-geometry/
+          if-no-files-found: warn
+          retention-days: 14

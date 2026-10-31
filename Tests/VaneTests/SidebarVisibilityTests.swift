@@ -370,14 +370,79 @@ import QuartzCore
         }
         try await LibraryFocusFixture.admitForeground(window)
         let host = try XCTUnwrap(window.contentView)
-        _ = try await admitRestingViewport(in: host)
+        // Buffer observations so diagnostic output cannot delay the early sample.
+        let observationStart = ProcessInfo.processInfo.systemUptime
+        var observations: [String] = []
+        defer { observations.forEach { print("SIDEBAR_CACHE_GEOMETRY " + $0) } }
+        func identity(_ value: AnyObject?) -> String {
+            value.map { String(describing: ObjectIdentifier($0)) } ?? "nil"
+        }
+        func animationTrace(_ viewport: NSScrollView?) -> String {
+            var trace: [String] = []
+            var layer = viewport?.layer
+            while let current = layer {
+                trace.append("\(type(of: current)):keys=\(current.animationKeys() ?? [])"
+                    + ":position=\(current.position):opacity=\(current.opacity)"
+                    + ":presentedOpacity=\(String(describing: current.presentation()?.opacity))")
+                if current === host.layer { break }
+                layer = current.superlayer
+            }
+            return trace.joined(separator: ";")
+        }
+        func observe(_ stage: String, store: TabStore, viewport: NSScrollView?,
+                     captured: CGPoint? = nil, sampledAt: TimeInterval? = nil) {
+            let now = ProcessInfo.processInfo.systemUptime
+            let points = viewport.flatMap { origins(of: $0, in: host) }
+            let fields = [
+                "stage=\(stage)", "tMs=\(((sampledAt ?? now) - observationStart) * 1000)",
+                "captured=\(String(describing: captured))", "store=\(identity(store))",
+                "profile=\(store.profileID)", "storeWindow=\(identity(store.window))",
+                "parkedIn=\(identity(store.parkedIn))", "window=\(identity(window))",
+                "shown=\(store.sidebarShown)", "peek=\(store.sidebarPeeking)",
+                "floating=\(store.sidebarFloatingChrome)", "revision=\(store.sidebarPresentationRevision)",
+                "profileVisible=\(store.profileVisible)", "ownsWindow=\(store.window === window)",
+                "appRunning=\(NSApp.isRunning)", "appHidden=\(NSApp.isHidden)",
+                "appActive=\(NSApp.isActive)", "windowVisible=\(window.isVisible)",
+                "key=\(window.isKeyWindow)", "exactKey=\(NSApp.keyWindow === window)",
+                "occlusion=\(window.occlusionState.rawValue)", "contentOwner=\(window.contentView === host)",
+                "viewport=\(identity(viewport))", "viewportWindow=\(viewport?.window === window)",
+                "hidden=\(String(describing: viewport?.isHiddenOrHasHiddenAncestor))",
+                "presented=\(String(describing: points?.presented))", "model=\(String(describing: points?.model))",
+                "ancestorAnimations=\(animationTrace(viewport))", "nativeRevisionReceipt=unavailable",
+            ]
+            observations.append(fields.joined(separator: " "))
+        }
+        func admitOwnerAtAction(_ store: TabStore, viewport: NSScrollView) throws {
+            // Fail at the prerequisite if ownership was withdrawn; never wait for
+            // the docking outcome or let a late foreground request consume motion.
+            let presentation = viewport.layer?.presentation()
+            let rootPresentation = host.layer?.presentation()
+            let visible = presentation.flatMap { layer in
+                rootPresentation.map { layer.convert(layer.bounds, to: $0).intersection($0.bounds) }
+            }
+            let ready = NSApp.isRunning && NSApp.isActive && !NSApp.isHidden
+                && window.isVisible && window.occlusionState.contains(.visible)
+                && window.isKeyWindow && NSApp.keyWindow === window
+                && window.contentView === host && host.window === window
+                && store.window === window && store.profileVisible
+                && viewport.window === window && viewport.isDescendant(of: host)
+                && sidebarViewport(in: host) === viewport && !viewport.isHiddenOrHasHiddenAncestor
+                && (visible?.width ?? 0) > 1 && (visible?.height ?? 0) > 1
+            _ = try XCTUnwrap(ready ? viewport : nil,
+                "The exact foreground sidebar presentation owner must be admitted before the action")
+        }
+        let initialViewport = try await admitRestingViewport(in: host)
+        observe("initial-rest", store: source, viewport: initialViewport)
         source.sidebarShown = false
         source.sidebarPeeking = true
         let target = try XCTUnwrap(Windows.hop(source, to: second))
         let targetViewport = try await admitRestingViewport(in: host)
+        observe("target-floating-rest", store: target, viewport: targetViewport)
         let returning = try XCTUnwrap(Windows.hop(target, to: first))
         let sourceViewport = try await admitRestingViewport(in: host)
+        observe("source-floating-rest", store: returning, viewport: sourceViewport)
         let floatingOrigin = try XCTUnwrap(origins(of: sourceViewport, in: host)).presented
+        try admitOwnerAtAction(returning, viewport: sourceViewport)
         returning.sidebarShown = true
         // Observe the source's docking update before the profile switch. SwiftUI
         // can drive this through layout, without a separate CALayer animation.
@@ -389,6 +454,9 @@ import QuartzCore
             return abs(points.presented.x - floatingOrigin.x) > 0.5 ||
                 abs(points.presented.y - floatingOrigin.y) > 0.5
         }
+        observe("source-docking-started", store: returning, viewport: sourceViewport)
+        observe("target-before-return", store: target, viewport: targetViewport)
+        try admitOwnerAtAction(returning, viewport: sourceViewport)
         _ = try XCTUnwrap(Windows.hop(returning, to: second))
         try await Task.sleep(for: .milliseconds(30))
         host.layoutSubtreeIfNeeded()
@@ -400,9 +468,13 @@ import QuartzCore
             let layer = try XCTUnwrap(viewport.layer?.presentation())
             return layer.convert(.zero, to: host.layer?.presentation())
         }
+        let earlySampleTime = ProcessInfo.processInfo.systemUptime
         let early = try presentedOrigin()
+        observe("early-30ms", store: target, viewport: viewport, captured: early, sampledAt: earlySampleTime)
         try await Task.sleep(for: .milliseconds(350))
+        let settledSampleTime = ProcessInfo.processInfo.systemUptime
         let settled = try presentedOrigin()
+        observe("settled-350ms", store: target, viewport: viewport, captured: settled, sampledAt: settledSampleTime)
         XCTAssertEqual(early.x, settled.x, accuracy: 0.5,
                        "The arriving profile must already use docked geometry")
         XCTAssertEqual(early.y, settled.y, accuracy: 0.5,
