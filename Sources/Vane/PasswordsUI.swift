@@ -1426,14 +1426,16 @@ struct PasswordEyeButton: View {
                 .overlay {
                     Rectangle().frame(width: 1.5, height: 20).rotationEffect(.degrees(-45))
                         .scaleEffect(y: revealed ? 1 : 0)
+                        .id(reduceMotion || batterySaver.isActive)
                 }
                 .font(Look.rowGlyph)
                 .frame(width: 28, height: 28).contentShape(.rect)
         }
-        .buttonStyle(.plain).foregroundStyle(Look.inkSecondary)
+        .buttonStyle(CompactControlStyle(size: 28)).foregroundStyle(Look.inkSecondary)
         .help(revealed ? "Hide password" : "Show password")
         .accessibilityLabel(revealed ? "Hide password" : "Show password")
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: revealed)
+        .vaneMotionPolicy()
     }
 }
 

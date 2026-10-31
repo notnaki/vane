@@ -546,6 +546,9 @@ private struct PeekButton: View {
     let act: () -> Void
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
     init(_ symbol: String, _ label: String, _ act: @escaping () -> Void) {
         self.symbol = symbol; self.label = label; self.act = act
@@ -557,14 +560,19 @@ private struct PeekButton: View {
                 .font(Look.peekButtonGlyph)
                 .foregroundStyle(.white)
                 .frame(width: Look.peekButtonSize, height: Look.peekButtonSize)
-                .background(hovering ? Color(white: 0.16) : .black, in: .circle)
+                .background {
+                    Circle().fill(hovering ? Color(white: 0.16) : .black)
+                        .animation(reduced ? nil : Look.quick, value: hovering)
+                        .id(reduced)
+                }
                 .contentShape(.circle)
         }
-        .buttonStyle(.plain)
-        .animation(reduceMotion ? nil : Look.quick, value: hovering)
+        .buttonStyle(TactileButtonStyle())
+        .contentShape(.circle)
         .onHover { hovering = $0 }
         .help(label)
         .accessibilityLabel(label)
+        .vaneMotionPolicy()
     }
 }
 
