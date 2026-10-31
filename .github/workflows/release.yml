@@ -5,7 +5,7 @@ name: release
 # sandboxed process cannot mount a disk image, so the dmg is only for people downloading in
 # a browser — and refuses anything not signed by team T7X84HN3W3.
 #
-# Releasing is deliberate — merging to main does not ship anything. Two ways in:
+# Stable releases are deliberate. Nightly opt-ins get a daily checked main build.
 #
 #   gh workflow run release.yml              # next patch after the highest v* tag
 #   gh workflow run release.yml -f bump=minor
@@ -31,6 +31,11 @@ name: release
 on:
   workflow_dispatch:
     inputs:
+      channel:
+        description: update channel to publish
+        type: choice
+        options: [stable, nightly]
+        default: stable
       bump:
         description: which part of the version to move
         type: choice
@@ -38,6 +43,8 @@ on:
         default: patch
   push:
     tags: ['v*']
+  schedule:
+    - cron: '23 2 * * *'
 
 permissions:
   contents: write   # push the tag, create the release
@@ -48,7 +55,41 @@ concurrency:
   queue: max
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      publish: ${{ steps.channel.outputs.publish }}
+      tag: ${{ steps.channel.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Select release channel
+        id: channel
+        env:
+          CHANNEL: ${{ github.event_name == 'schedule' && 'nightly' || inputs.channel || 'stable' }}
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = push ] && [[ "$GITHUB_REF_NAME" == *-nightly.* ]]; then
+            echo '::error::Nightly tags are reserved for the checked main workflow. Dispatch with channel=nightly instead.'
+            exit 1
+          fi
+          if [ "$CHANNEL" = nightly ]; then
+            python3 scripts/prepare-nightly.py
+          else
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+          fi
+
   release:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
     # Same image as checks.yml: Package.swift targets macOS 26, and the WebKit APIs this
     # browser is built on do not exist on older ones.
     runs-on: macos-26
@@ -56,6 +97,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # every tag, and the commit count make-app.sh stamps as the build
+          ref: ${{ github.sha }} # package precisely the revision checked by prepare
 
       - name: Require public release credentials
         env:
@@ -76,9 +118,20 @@ jobs:
       - name: Pick the tag
         env:
           BUMP: ${{ inputs.bump }}
+          NIGHTLY_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ -n "${NIGHTLY_TAG:-}" ]; then
+            TAG="$NIGHTLY_TAG"
+            if git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+              [ "$(git rev-list -n 1 "$TAG")" = "$GITHUB_SHA" ] \
+                || { echo "::error::Nightly tag $TAG points to a different commit"; exit 1; }
+            else
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git tag -a "$TAG" -m "vane-release-run:${GITHUB_RUN_ID}"
+            fi
+          elif [ "${{ github.event_name }}" = "push" ]; then
             TAG="$GITHUB_REF_NAME"
             echo "building the tag that was pushed: $TAG"
           else
@@ -300,7 +353,7 @@ jobs:
           echo "signing keychain removed"
 
       - name: Publish validated tag
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'push'
         run: |
           set -euo pipefail
           git push origin "$TAG"
@@ -310,17 +363,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # A tag with a hyphen in it is a pre-release, and GitHub's releases/latest — the one
-          # endpoint the in-app updater asks — skips those. So an rc can be published without
-          # offering itself to everyone running the last real version.
+          # Stable stays on releases/latest. Nightly opt-ins inspect the prerelease list.
           case "$TAG" in *-*) PRE=true ;; *) PRE=false ;; esac
+          LATEST=()
+          if [ "$PRE" = true ]; then LATEST=(--latest=false); fi
           # Idempotent, because the expensive half of this workflow is notarization and a
           # re-run that has already paid for it must be able to finish. A release left over
           # from an earlier attempt gets its assets replaced rather than a failed create.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG exists — replacing its assets"
             gh release upload "$TAG" Vane.dmg Vane.zip --clobber
-            gh release edit "$TAG" --prerelease="$PRE"
+            gh release edit "$TAG" --prerelease="$PRE" "${LATEST[@]}"
           else
-            gh release create "$TAG" Vane.dmg Vane.zip --generate-notes --prerelease="$PRE"
+            gh release create "$TAG" Vane.dmg Vane.zip --verify-tag --generate-notes --prerelease="$PRE" "${LATEST[@]}"
           fi

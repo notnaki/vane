@@ -7,8 +7,8 @@ milestones. Keep evidence tied to the exact candidate and environment.
 
 ## Publish a release
 
-Merging a PR to `main` does not publish a release. Start the release workflow for a
-patch bump (or choose `minor` or `major`):
+Merging a PR to `main` does not publish a stable release. Start the release workflow
+for a patch bump (or choose `minor` or `major`):
 
 ```sh
 gh workflow run release.yml
@@ -27,8 +27,50 @@ to a GitHub Release. To produce a Developer ID signed and notarized build, the
 repository needs `DEVELOPER_ID_CERT_P12_BASE64`, `DEVELOPER_ID_CERT_PASSWORD`,
 `AC_API_KEY_ID`, `AC_API_ISSUER_ID`, and `AC_API_KEY_P8_BASE64` as Actions secrets. The
 workflow stops before publishing if any of these five credentials is missing. A tag
-containing a hyphen, such as `v1.2.3-rc1`, publishes a prerelease that the in-app
-updater does not offer.
+containing a hyphen, such as `v1.2.3-rc1`, publishes a prerelease. Release candidates
+and betas are not offered by either in-app update channel.
+
+### Nightly channel
+
+**Settings → General → Update channel** offers **Stable** (the default) and
+**Nightly**. Nightly opts into automated early builds as well as newer stable
+releases. Both channels use the same app, profile data, signed installer, and
+version/downgrade checks. Changing the channel clears any pending offer and
+invalidates outstanding checks; an installation already in progress finishes.
+Automatic checks remain controlled by their existing toggle, and **Check for
+Updates…** always uses the selected channel. Selecting Stable again waits for a
+stable release newer than the running and installed versions; it does not roll
+back the app or its data.
+
+The release workflow runs nightly at **02:23 UTC**, subject to GitHub scheduling
+delays. It skips publication unless the exact `main` revision has a successful,
+completed latest `checks.yml` push run and has not already been published as a
+nightly. A read-only Ubuntu job performs eligibility checks before the macOS job
+receives signing credentials. The build checks out that exact revision and reuses
+the stable pipeline's signing, notarization, stapling, smoke tests, ZIP and DMG.
+No release build products enter PR-readable caches.
+
+To request the same checked-main path manually:
+
+```sh
+gh workflow run release.yml --ref main -f channel=nightly
+```
+
+Nightly tags have the form `v1.2.4-nightly.20261031.123456789`: the next patch after
+the highest stable tag, the workflow's original UTC creation date, and its run ID.
+The final `v1.2.4` outranks all of its nightlies; the next nightly after that stable
+tag uses `v1.2.5-nightly.…`. Reruns reuse their version and verify its source commit.
+Tags push only after packaging succeeds, and nightlies are GitHub prereleases with
+`latest=false`, leaving the stable download link unchanged. The `-nightly.*` tag
+namespace is reserved for this workflow; direct tag-push releases are refused.
+
+New installations default to Stable even when the app was downloaded from a nightly
+release; select Nightly explicitly to continue receiving early builds. Stable and
+Nightly store conditional-request headers and cached offers separately.
+
+Focused fixtures: `python3 scripts/test-update-channel.py`,
+`python3 scripts/test-prepare-nightly.py`, `python3 scripts/test-release-workflow.py`,
+and `swift test --filter UpdaterChannelTests`.
 
 ### Local signing
 

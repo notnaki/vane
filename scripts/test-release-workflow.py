@@ -45,13 +45,19 @@ def tag_from_environment(path):
 
 def main():
     assert "concurrency:\n  group: release\n  queue: max\n" in WORKFLOW.read_text()
+    assert "schedule:" in WORKFLOW.read_text(), "Nightlies need a daily schedule"
+    assert "options: [stable, nightly]" in WORKFLOW.read_text()
+    assert "needs: prepare" in WORKFLOW.read_text()
+    assert "if: needs.prepare.outputs.publish == 'true'" in WORKFLOW.read_text()
     names = [line.strip() for line in LINES if line.startswith("      - name: ")]
     assert names.index("- name: Require public release credentials") < names.index("- name: Pick the tag")
     assert names.index("- name: Notarize + staple the app") < names.index("- name: Package")
     assert names.index("- name: Package") < names.index("- name: Publish validated tag")
     assert names.index("- name: Publish validated tag") < names.index("- name: Publish")
     publish_section, _ = step("Publish validated tag")
-    assert "        if: github.event_name == 'workflow_dispatch'" in publish_section
+    assert "        if: github.event_name != 'push'" in publish_section
+    _, publish = step("Publish")
+    assert '--latest=false' in publish, "Prereleases must not replace the stable download"
 
     keys = ("CERT_B64", "CERT_PW", "KEY_ID", "ISSUER_ID", "KEY_B64")
     with tempfile.TemporaryDirectory(prefix="vane-release-test-") as directory:
@@ -102,7 +108,21 @@ def main():
         assert next_tag == "v0.0.18", next_tag
         assert command(["git", "tag", "--list", next_tag], remote) == "", "tag pushed before packaging"
 
-    print("PASS: credentials fail closed; tags publish after packaging; reruns reuse their tag")
+        nightly = "v0.0.19-nightly.20261031.9003"
+        nightly_env = {**environment, "GITHUB_RUN_ID": "9003", "NIGHTLY_TAG": nightly}
+        run_step("Pick the tag", source, nightly_env, event="schedule")
+        assert command(["git", "rev-list", "-n", "1", nightly], source) == sha
+        assert command(["git", "tag", "--list", nightly], remote) == ""
+        run_step("Publish validated tag", source, {**nightly_env, "TAG": nightly}, event="schedule")
+        assert command(["git", "tag", "--list", nightly], remote) == nightly
+        # Publication retries retain the prepared nightly tag, not a new stable patch.
+        run_step("Pick the tag", source, nightly_env, event="schedule")
+        command(["git", "tag", "-f", "-a", nightly, "-m", "wrong source"], source)
+        command(["git", "commit", "--allow-empty", "-m", "another revision"], source)
+        command(["git", "tag", "-f", "-a", nightly, "-m", "wrong source"], source)
+        run_step("Pick the tag", source, nightly_env, event="schedule", succeeds=False)
+
+    print("PASS: credentials fail closed; stable/nightly tags publish after packaging; reruns preserve version/source")
 
 
 if __name__ == "__main__":
