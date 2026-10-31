@@ -1,0 +1,338 @@
+name: native-policy-lean-capture
+
+on:
+  push:
+    branches: [codex/ci-native-policy-lean]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-policy-lean-capture-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    name: One lean observer-control capture (174, attempt 1)
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      EVIDENCE: /tmp/native-policy-lean-capture-${{ github.run_id }}-${{ github.run_attempt }}
+      EXPECTED_SHIPPING_PARENT: e29aa52745150b86c01e94c7b62cf8093cbcc3b7
+      VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
+      PYTHONDONTWRITEBYTECODE: '1'
+      VANE_NATIVE_POLICY_TRACE: '1'
+      SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+    steps:
+      - name: Refuse reruns or a second branch push
+        id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_CREATED: ${{ github.event.created }}
+          EVENT_BEFORE: ${{ github.event.before }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ['EVIDENCE']); p.mkdir(mode=0o700, exist_ok=False)
+          context = {k: os.environ.get(k) for k in ('GITHUB_SHA', 'GITHUB_REF', 'GITHUB_RUN_ID',
+              'GITHUB_RUN_ATTEMPT', 'EVENT_NAME', 'EVENT_CREATED', 'EVENT_BEFORE')}
+          allowed = (context['EVENT_NAME'] == 'push'
+              and context['GITHUB_REF'] == 'refs/heads/codex/ci-native-policy-lean'
+              and context['GITHUB_RUN_ATTEMPT'] == '1'
+              and context['EVENT_CREATED'] == 'true' and context['EVENT_BEFORE'] == '0' * 40)
+          (p / 'invocation-guard.json').write_text(json.dumps(dict(context, allowed=allowed), indent=2)+'\n')
+          if not allowed: raise SystemExit('Only the first push to the exact branch, run_attempt1, is permitted')
+          PY
+
+      - uses: actions/checkout@v7
+        id: checkout
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the frozen source and preserve its identity
+        id: source
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess, tarfile
+          from pathlib import Path
+          p = Path(os.environ['EVIDENCE'])
+          def git(*args): return subprocess.check_output(['git', *args], text=True).strip()
+          contract = json.loads(Path('.github/native-policy-capture-contract.json').read_text())
+          selection = Path('.github/native-policy-capture-selection.json')
+          assert contract['schema'] == 1 and contract['primary_count'] == 174
+          assert subprocess.check_output(['sw_vers','-productVersion'],text=True).strip().split('.')[0] == '26'
+          assert git('rev-parse', 'HEAD') == os.environ['GITHUB_SHA']
+          parents = git('rev-list', '--parents', '-n', '1', 'HEAD').split()[1:]
+          assert parents == [contract['shipping_head']] == [os.environ['EXPECTED_SHIPPING_PARENT']]
+          assert git('rev-parse', parents[0]+'^{tree}') == contract['shipping_tree']
+          assert set(git('diff', '--name-only', parents[0], 'HEAD').splitlines()) == set(contract['allowed_preflight_files'])
+          assert hashlib.sha256(Path('.github/workflows/checks.yml').read_bytes()).hexdigest() == contract['canonical_checks_sha256']
+          assert hashlib.sha256(selection.read_bytes()).hexdigest() == contract['selection_file_sha256']
+          subprocess.run(['git', 'merge-base', '--is-ancestor', contract['main_ancestor'], parents[0]], check=True)
+          files = git('ls-files', 'Sources', 'Tests', 'Package.swift', 'Package.resolved',
+              'scripts/run-native-tests.py', 'scripts/native-test-shards.py', '.github').splitlines()
+          hashes = {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in files if Path(name).is_file()}
+          (p/'source-hashes.json').write_text(json.dumps(hashes, indent=2, sort_keys=True)+'\n')
+          (p/'source-context.json').write_text(json.dumps({'head': git('rev-parse','HEAD'),
+              'tree': git('rev-parse','HEAD^{tree}'), 'contract':contract}, indent=2)+'\n')
+          with tarfile.open(p/'source.tar.gz','w:gz',dereference=False) as t:
+              for name in files: t.add(name, arcname=name, recursive=False)
+          (p/'selection.json').write_bytes(selection.read_bytes())
+          PY
+          {
+            sw_vers
+            uname -a
+            xcodebuild -version
+            swift --version
+            xcrun --sdk macosx --show-sdk-version
+          } > "$EVIDENCE/environment.txt" 2>&1
+
+      - name: Build the debug app and tests once
+        id: build
+        run: |
+          set +e
+          swift build --build-system native -c debug --build-tests > "$EVIDENCE/build.log" 2>&1
+          status=$?
+          printf '%s\n' "$status" > "$EVIDENCE/build.exit"
+          cat "$EVIDENCE/build.log"
+          replay=$?
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          exit "$replay"
+
+      - name: Bundle the same debug products
+        id: bundle
+        run: |
+          set +e
+          ./make-app.sh debug --skip-app-build > "$EVIDENCE/bundle.log" 2>&1
+          status=$?
+          printf '%s\n' "$status" > "$EVIDENCE/bundle.exit"
+          cat "$EVIDENCE/bundle.log"
+          replay=$?
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          exit "$replay"
+
+      - name: Discover and freeze exactly 174 selected cases
+        id: discover
+        run: |
+          set +e
+          swift test --build-system native list --skip-build > "$EVIDENCE/inventory.txt" 2> "$EVIDENCE/inventory.stderr"
+          status=$?
+          printf '%s\n' "$status" > "$EVIDENCE/inventory.exit"
+          if [ "$status" -ne 0 ]; then cat "$EVIDENCE/inventory.stderr"; exit "$status"; fi
+          set -e
+          python3 - <<'PY'
+          import hashlib, json, os, re, subprocess
+          from pathlib import Path
+          p=Path(os.environ['EVIDENCE']); m=json.loads((p/'selection.json').read_text())
+          expected=m['tests']; assert len(expected)==len(set(expected))==m['count']==174
+          contract=json.loads(Path('.github/native-policy-capture-contract.json').read_text())
+          assert m['expected_skips']==contract['expected_skips']==['VaneTests.NavigationWebKitTests/testMacOS27PolicyProvidesUpcomingNavigationIdentity', 'VaneTests.NavigationWebKitTests/testSupersededPolicyActionCannotRestartRetiredRequest']
+          assert hashlib.sha256(json.dumps(expected,separators=(',',':')).encode()).hexdigest()==m['tests_sha256']
+          lines=[s.strip() for s in (p/'inventory.txt').read_text().splitlines() if s.strip()]
+          bootstrap='Native test host bootstrap: beforeAppKit=true, configured=true'
+          inventory=[s for s in lines if s!=bootstrap]
+          assert all(re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/[^\s/]+',s) for s in inventory)
+          assert len(inventory)==len(set(inventory)) and set(expected)<=set(inventory)
+          pattern='^(?:'+'|'.join(re.escape(s) for s in expected)+')$'
+          assert {s for s in inventory if re.search(pattern,s)}==set(expected)
+          (p/'selected.filter').write_text(pattern+'\n')
+          bins={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in Path('.build').glob('**/debug/*') if f.is_file() and f.name=='vane'}
+          assert bins, 'Expected lowercase vane app binary is missing'
+          for f in Path('.build').glob('**/VanePackageTests.xctest/Contents/MacOS/*'):
+              if f.is_file():bins[str(f)]=hashlib.sha256(f.read_bytes()).hexdigest()
+          assert any('VanePackageTests.xctest/Contents/MacOS/' in f for f in bins)
+          (p/'binary-hashes-before.json').write_text(json.dumps(bins,indent=2,sort_keys=True)+'\n')
+          subprocess.run(['git','diff','--exit-code','--','Sources','Tests','Package.swift','Package.resolved',
+              'scripts/run-native-tests.py','.github/workflows/checks.yml'],check=True)
+          PY
+
+      - name: Run one canonical native cohort and retain retirement records
+        id: cohort
+        timeout-minutes: 24
+        run: |
+          cat > "$EVIDENCE/native-adapter.py" <<'PY'
+          import hashlib, importlib.util, json, os, shutil, sys, tarfile, traceback
+          from pathlib import Path
+          p=Path(os.environ['EVIDENCE']); root=Path.cwd()
+          import uuid
+          trace_contract={'schema':1,'token':uuid.uuid4().hex}
+          (p/'policy-trace-contract.json').write_text(json.dumps(trace_contract,indent=2)+'\n')
+          os.chmod(p/'policy-trace-contract.json',0o600)
+          os.environ['VANE_NATIVE_POLICY_TRACE_DIRECTORY']=str(p)
+          os.environ['VANE_NATIVE_POLICY_TRACE_TOKEN']=trace_contract['token']
+          spec=importlib.util.spec_from_file_location('canonical_native_runner',root/'scripts/run-native-tests.py')
+          runner=importlib.util.module_from_spec(spec); spec.loader.exec_module(runner)
+          original_create,original_remove=runner.tempfile.mkdtemp,runner.shutil.rmtree
+          directory=None; failures=[]; snapshot_done=False
+          def snapshot():
+              global snapshot_done
+              if directory is None or not directory.exists() or snapshot_done:return
+              with tarfile.open(p/'retirement.tar.gz','w:gz',dereference=False) as t:
+                  t.add(directory,arcname='retirement')
+              contract=runner.read_private_json(directory/'contract.json')
+              records=runner.load_records(directory,contract['token'])
+              if (directory/'cleanup-host.json').exists():
+                  records.append(runner.validate_record(runner.read_private_json(directory/'cleanup-host.json'),contract['token']))
+              observations=[]
+              for record in records:
+                  host=record['host']; live=runner.process_identity(host['pid'])
+                  observations.append({'host':host,'observed':live,
+                      'ownedLaunchExited':live is None or live['start']!=host['start']})
+              result={'hosts':observations,'allExited':len(observations)>=2 and all(r['ownedLaunchExited'] for r in observations)}
+              (p/'ownership.json').write_text(json.dumps(result,indent=2)+'\n')
+              if not result['allExited']:raise RuntimeError('native launch ownership/exit is unverified')
+              snapshot_done=True
+          def create(*args,**kwargs):
+              global directory
+              result=original_create(*args,**kwargs)
+              if kwargs.get('prefix')=='vane-native-retirement-':
+                  if directory is not None:raise RuntimeError('unexpected second native invocation')
+                  directory=Path(result).resolve()
+              return result
+          def remove(path,*args,**kwargs):
+              if directory is not None and Path(path).resolve()==directory:
+                  try:snapshot()
+                  except BaseException:
+                      failures.append(traceback.format_exc())
+                      return  # Retain original private records if publication failed.
+              return original_remove(path,*args,**kwargs)
+          runner.tempfile.mkdtemp,runner.shutil.rmtree=create,remove
+          code=1
+          try:
+              code=runner.main(['--build-system','native','--skip-build','--jobs','1',
+                  '--filter',(p/'selected.filter').read_text().strip()])
+          except BaseException:failures.append(traceback.format_exc());traceback.print_exc()
+          finally:
+              try:snapshot()
+              except BaseException:failures.append(traceback.format_exc())
+              runner.tempfile.mkdtemp,runner.shutil.rmtree=original_create,original_remove
+              (p/'native-status.json').write_text(json.dumps({'canonicalReturnCode':code,'archiveErrors':failures,
+                  'retirementDirectory':str(directory) if directory else None,'snapshotVerified':snapshot_done},indent=2)+'\n')
+          raise SystemExit(code if code else (1 if failures or not snapshot_done else 0))
+          PY
+          set +e
+          python3 "$EVIDENCE/native-adapter.py" > "$EVIDENCE/native.log" 2>&1
+          status=$?
+          printf '%s\n' "$status" > "$EVIDENCE/native.exit"
+          cat "$EVIDENCE/native.log"
+          replay=$?
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          exit "$replay"
+
+      - name: Verify exact execution and successful retirement
+        id: verify
+        if: ${{ always() && steps.guard.outcome == 'success' }}
+        run: |
+          python3 - <<'PY'
+          import json,os,re,stat,uuid
+          from pathlib import Path
+          p=Path(os.environ['EVIDENCE']); errors=[]; selection={'expected_skips':[]}
+          try:
+              selection=json.loads((p/'selection.json').read_text()); expected=selection['tests']
+              expected_skips=set(selection['expected_skips'])
+              log=(p/'native.log').read_text(errors='replace')
+              primary=re.split(r'^NATIVE TEST DRIVER [^\n]*phase=cleanup\n',log,maxsplit=1,flags=re.M)[0]
+              starts=[a+'/'+b for a,b in re.findall(r"Test Case '-\[([^ ]+) ([^]]+)\]' started\.",primary)]
+              outcomes={}
+              for a,b,status in re.findall(r"Test Case '-\[([^ ]+) ([^]]+)\]' (passed|skipped|failed) \(",primary):
+                  outcomes.setdefault(a+'/'+b,[]).append(status)
+              if starts!=expected:errors.append('exact predecessor execution order differs, including duplicate/missing cases')
+              if set(outcomes)!=set(expected) or any(outcomes.get(x)!=['skipped' if x in expected_skips else 'passed'] for x in expected):errors.append('missing/duplicate/unexpected-skip/failed outcome')
+              skip_records=[(a+'/'+b,reason) for a,b,reason in re.findall(r"-\[([^ ]+) ([^]]+)\] : Test skipped - ([^\n]+)",primary)]
+              if len(skip_records)!=len(expected_skips) or {name for name,_ in skip_records}!=expected_skips:errors.append('missing/duplicate/unexpected platform skip')
+              if any(reason not in selection['expected_skip_reasons'].get(name,[]) for name,reason in skip_records):errors.append('unexpected skip reason for exact test')
+              trace_contract=json.loads((p/'policy-trace-contract.json').read_text())
+              ownership=json.loads((p/'ownership.json').read_text())
+              primary_pid=ownership['hosts'][0]['host']['pid']
+              snapshots=[]
+              for f in p.glob('native-policy-*.json'):
+                  info=f.lstat()
+                  if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or stat.S_IMODE(info.st_mode)!=0o600 or info.st_size>262144:raise ValueError('unsafe/oversized policy snapshot')
+                  raw=f.read_bytes()
+                  if len(raw)>262144:raise ValueError('policy snapshot grew beyond bound')
+                  snapshots.append(json.loads(raw))
+              targets=[v for v in snapshots if v.get('label')=='consumed-continuation-fixture-exit']
+              if len(targets)!=1:errors.append('exact target policy snapshot unavailable/duplicate')
+              for snapshot in snapshots:
+                  if type(snapshot.get('schema')) is not int or snapshot['schema']!=1 or snapshot.get('observer')!='lean-no-system-reads':errors.append('wrong policy snapshot schema/observer')
+                  if type(snapshot.get('pid')) is not int or snapshot['pid']!=primary_pid or snapshot.get('token')!=trace_contract['token']:errors.append('policy snapshot host/token mismatch')
+                  events=snapshot.get('events')
+                  if not isinstance(events,list) or not events or len(events)>256 or any(not isinstance(v,str) for v in events):errors.append('invalid bounded policy events');continue
+                  if any(len(v.encode())>2048 for v in events):errors.append('oversized policy event')
+                  if any('observer=lean-no-system-reads' not in v for v in events):errors.append('wrong observer marker')
+                  if any('applicationPolicy=' in v or 'runningPolicy=' in v or 'running=' in v for v in events):errors.append('added system-state samples')
+                  parsed=[]
+                  for event in events:
+                      match=re.fullmatch(r'sequence=(\d+), elapsed=([^,]+), stage=(.*), loop=([^,]+), expected=(none|-?\d+), boundPolicy=(unsampled|-?\d+), observer=lean-no-system-reads',event)
+                      if not match:raise ValueError('malformed policy event')
+                      parsed.append(match.groups())
+                  sequences=[int(v[0]) for v in parsed]
+                  if sequences!=list(range(sequences[0],sequences[0]+len(sequences))) or type(snapshot.get('sequence')) is not int or snapshot['sequence']!=sequences[-1]:errors.append('policy sequence mismatch')
+                  if type(snapshot.get('dropped')) is not int or snapshot['dropped']!=snapshot['sequence']-len(parsed):errors.append('dropped-event count mismatch')
+                  if snapshot.get('label')=='consumed-continuation-fixture-exit':
+                      created=[v for v in parsed if v[2]=='loop-created initial-bound-value']
+                      if not created:raise ValueError('target loop identity unavailable')
+                      loop_id=created[-1][3];uuid.UUID(loop_id)
+                      checks=[v for v in parsed if v[3]==loop_id and v[2] in ('preflight-policy-check','verify-running-policy-check','run-return-policy-check','join-policy-check')]
+                      if any(v[4]=='none' or v[5]=='unsampled' for v in checks):errors.append('target invariant sample missing typed bound value')
+                      if json.loads((p/'native-status.json').read_text())['canonicalReturnCode']==0 and {v[2] for v in checks}!=set(('preflight-policy-check','verify-running-policy-check','run-return-policy-check','join-policy-check')):errors.append('successful target lacks complete invariant-check stages')
+                  if type(snapshot.get('dropped')) is not int or snapshot['dropped']<0:errors.append('untyped dropped-event count')
+              if 'failure=policyChanged' in primary and not any(any(re.search(r'invariantObserved=-?\d+',v) for v in t.get('events',[])) for t in snapshots):errors.append('failed policy value unavailable')
+              if re.search(r'(?im)Backtrace took|Program crashed|Fatal error:|Signal \d+|error: Exited with unexpected signal|Stack dump:',log):errors.append('fatal process diagnostic')
+              if 'Native suite primary status=0; cleanup status=0' not in log.splitlines():errors.append('primary or cleanup nonzero/unverified')
+              status=json.loads((p/'native-status.json').read_text())
+              if status['canonicalReturnCode']!=0 or status['archiveErrors'] or not status['snapshotVerified']:errors.append('canonical/archival result invalid')
+              if json.loads((p/'ownership.json').read_text())['allExited'] is not True:errors.append('exact owned launches remain unverified')
+          except BaseException as error:errors.append(type(error).__name__+': '+str(error))
+          (p/'execution.json').write_text(json.dumps({'selected':174,'errors':errors,
+              'expectedSkips':selection['expected_skips'],
+              'purpose':'lean observer-control174 prefix; a passing capture does not repair policyChanged or historicalb029'},indent=2)+'\n')
+          if errors:raise SystemExit('; '.join(errors))
+          PY
+
+      - name: Preserve final statuses and available binary hashes
+        id: finalize
+        if: ${{ always() }}
+        env:
+          STEP_OUTCOMES: ${{ toJSON(steps) }}
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          p=Path(os.environ['EVIDENCE']); p.mkdir(mode=0o700,exist_ok=True)
+          binaries={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in Path('.build').glob('**/debug/*')
+              if f.is_file() and f.name=='vane'}
+          for f in Path('.build').glob('**/VanePackageTests.xctest/Contents/MacOS/*'):
+              if f.is_file():binaries[str(f)]=hashlib.sha256(f.read_bytes()).hexdigest()
+          (p/'binary-hashes.json').write_text(json.dumps({'available':bool(binaries),'hashes':binaries,
+              'unavailableReason':None if binaries else 'build/checkout did not produce test binaries'},indent=2)+'\n')
+          (p/'step-outcomes.json').write_text(os.environ['STEP_OUTCOMES']+'\n')
+          (p/'availability.json').write_text(json.dumps({'source':(p/'source-hashes.json').exists(),
+              'nativeLog':(p/'native.log').exists(),'retirementArchive':(p/'retirement.tar.gz').exists(),
+              'note':'Unavailable evidence and every nonzero remain failures, never a passing retry.'},indent=2)+'\n')
+          drift=[]
+          if (p/'binary-hashes-before.json').exists():
+              if json.loads((p/'binary-hashes-before.json').read_text())!=binaries:drift.append('binary bytes changed after discovery')
+          if (p/'source-hashes.json').exists():
+              before=json.loads((p/'source-hashes.json').read_text())
+              after={n:hashlib.sha256(Path(n).read_bytes()).hexdigest() for n in before if Path(n).is_file()}
+              (p/'source-hashes-after.json').write_text(json.dumps(after,indent=2,sort_keys=True)+'\n')
+              if before!=after:drift.append('tracked source bytes changed during execution')
+          (p/'provenance-drift.json').write_text(json.dumps({'errors':drift},indent=2)+'\n')
+          if drift:raise SystemExit('; '.join(drift))
+
+          PY
+
+      - name: Publish every available raw result
+        id: publish
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-policy-lean-capture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
