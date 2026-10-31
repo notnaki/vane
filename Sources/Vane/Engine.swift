@@ -432,6 +432,34 @@ struct TitleReveal: Equatable, Sendable {
     var navigationStageObserver: ((NavigationStageEvent) -> Void)?
     private var navigationActionStageSerial = 0
 
+    struct UsernameStepScope: Equatable {
+        let profile: UUID
+        let tab: UUID
+        let web: ObjectIdentifier
+        let document: UUID
+
+        @MainActor init(tab: Tab, web: WKWebView) {
+            profile = tab.profileID
+            self.tab = tab.id
+            self.web = ObjectIdentifier(web)
+            document = tab.readingDocumentGeneration
+        }
+    }
+    struct UsernameStepEvent {
+        enum Phase: Equatable {
+            case received
+            case processed(continuationAllowed: Bool)
+            case discarded
+        }
+        let scope: UsernameStepScope
+        let request: UUID
+        let phase: Phase
+    }
+    // Nil keeps the ordinary synchronous SDK message path. A fixture can hold
+    // one genuine, validated message and observe processing without exporting
+    // credentials, a URL, or retained WebKit objects. A held delivery is single-use.
+    var usernameStepBoundary: ((UsernameStepEvent, (@MainActor () -> Void)?) -> Void)?
+
     private func recordNavigationStage(_ stage: String, navigation: WKNavigation?, detail: String = "") {
         navigationStageObserver?(NavigationStageEvent(stage: stage,
             identity: navigation.map { .navigation(ObjectIdentifier($0)) }, detail: detail))
@@ -2308,15 +2336,28 @@ struct TitleReveal: Equatable, Sendable {
         }
         if let account = body["usernameStep"] as? String, !account.isEmpty,
            body["mainDocument"] as? Bool == true, let origin = secureOrigin {
-            let selectedExpiry = chosenAccount.flatMap { chosen -> Date? in
-                guard chosen.origin == origin, chosen.account == account,
-                      chosen.document == readingDocumentGeneration,
-                      chosen.target == body["target"] as? String, chosen.expires > .now else { return nil }
-                return chosen.expires
+            let target = body["target"] as? String
+            #if DEBUG
+            if let boundary = usernameStepBoundary {
+                let scope = UsernameStepScope(tab: self, web: currentWeb), request = UUID()
+                var pending = true
+                boundary(UsernameStepEvent(scope: scope, request: request, phase: .received)) { [weak self, weak currentWeb] in
+                    guard pending else { return }
+                    pending = false
+                    guard let self, let currentWeb, !self.tornDown, !self.suspended, !self.isPrivate,
+                          self.existingWeb === currentWeb, self.secureOrigin == origin,
+                          UsernameStepScope(tab: self, web: currentWeb) == scope else {
+                        boundary(UsernameStepEvent(scope: scope, request: request, phase: .discarded), nil)
+                        return
+                    }
+                    let allowed = self.acceptUsernameStep(account: account, target: target, origin: origin)
+                    boundary(UsernameStepEvent(scope: scope, request: request,
+                        phase: .processed(continuationAllowed: allowed)), nil)
+                }
+                return
             }
-            // Typed usernames still carry into save prompts. Only a choice in this exact
-            // main-document username target authorizes the next page to read a secret.
-            passwordStep = (UUID(), origin, account, selectedExpiry ?? .now.addingTimeInterval(120), true, selectedExpiry != nil)
+            #endif
+            acceptUsernameStep(account: account, target: target, origin: origin)
             return
         }
         // A form appearing is not consent: nothing fills until the user picks a login from
@@ -2367,6 +2408,21 @@ struct TitleReveal: Equatable, Sendable {
         // submitted is decrypted, and only to answer that one question.
         guard let origin = secureOrigin else { return }
         offerSubmittedPassword(origin: origin, account: account, password: password, attempt: body["attempt"] as? String)
+    }
+
+    @discardableResult
+    private func acceptUsernameStep(account: String, target: String?, origin: PasswordOrigin) -> Bool {
+        let selectedExpiry = chosenAccount.flatMap { chosen -> Date? in
+            guard chosen.origin == origin, chosen.account == account,
+                  chosen.document == readingDocumentGeneration,
+                  chosen.target == target, chosen.expires > .now else { return nil }
+            return chosen.expires
+        }
+        // Typed usernames still carry into save prompts. Only a choice in this exact
+        // main-document username target authorizes the next page to read a secret.
+        let allowed = selectedExpiry != nil
+        passwordStep = (UUID(), origin, account, selectedExpiry ?? .now.addingTimeInterval(120), true, allowed)
+        return allowed
     }
 
     /// Submission authorization belongs to this account/origin, rather than the document

@@ -479,6 +479,10 @@ import XCTest
     }
 
     func testCancelledOrRemovedPendingRetryCannotAddDownload() async throws {
+        let callbacks = HeldDownloadCallbacks()
+        manager.nativeCallbackGate = callbacks.hold
+        manager.nativeCallbackObserver = callbacks.observe
+        defer { callbacks.releaseAll(); manager.nativeCallbackGate = nil; manager.nativeCallbackObserver = nil }
         for remove in [false, true] {
             server.holdHeaders = true
             let origin = manager.add(.init(name: "paused", source: try server.url(), state: "paused", sourceMethod: "GET"))
@@ -487,7 +491,10 @@ import XCTest
             if remove { manager.forget(origin) } else { manager.cancel(origin) }
             let count = manager.items.count
             server.holdHeaders = false
-            try await Task.sleep(for: .milliseconds(300))
+            try await compatibilityWait { callbacks.pending(kind: .retry, itemID: origin.id) != nil }
+            let callback = try XCTUnwrap(callbacks.pending(kind: .retry, itemID: origin.id))
+            callbacks.release(callback)
+            try await compatibilityWait { callbacks.cancelled.contains(callback) }
             XCTAssertEqual(manager.items.count, count)
             XCTAssertFalse(manager.items.contains { $0.status.isLive })
             if !remove { XCTAssertEqual(origin.state, .failed(Downloads.cancelledText)) }
@@ -500,10 +507,17 @@ import XCTest
         try await compatibilityWait { row.received > 0 }
         manager.pause(row)
         try await compatibilityWait { row.download == nil }
+        let callbacks = HeldDownloadCallbacks()
+        manager.nativeCallbackGate = callbacks.hold
+        manager.nativeCallbackObserver = callbacks.observe
+        defer { callbacks.releaseAll(); manager.nativeCallbackGate = nil; manager.nativeCallbackObserver = nil }
         XCTAssertTrue(manager.resume(row))
+        try await compatibilityWait { callbacks.pending(kind: .resume, itemID: row.id) != nil }
+        let callback = try XCTUnwrap(callbacks.pending(kind: .resume, itemID: row.id))
         manager.cancel(row)
         server.held = false
-        try await Task.sleep(for: .milliseconds(500))
+        callbacks.release(callback)
+        try await compatibilityWait { callbacks.cancelled.contains(callback) }
         XCTAssertEqual(row.state, .failed(Downloads.cancelledText))
         XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(row.url).path))
         XCTAssertFalse(manager.canResume(row))
@@ -559,6 +573,30 @@ import XCTest
         for row in manager.items { try await complete(row, bytes: server.bytes) }
     }
 
+}
+
+/// Holds actual startDownload/resumeDownload completions; observes actual cancel replies.
+@MainActor private final class HeldDownloadCallbacks {
+    typealias Identity = Downloads.NativeCallbackIdentity
+    private var held: [Identity: @MainActor () -> Void] = [:]
+    private(set) var cancelled = Set<Identity>()
+
+    func hold(_ identity: Identity, _ deliver: @escaping @MainActor () -> Void) {
+        precondition(held[identity] == nil)
+        held[identity] = deliver
+    }
+    func observe(_ identity: Identity, _ phase: Downloads.NativeCallbackPhase) {
+        if case .cancelled = phase { cancelled.insert(identity) }
+    }
+    func pending(kind: Downloads.NativeCallbackKind, itemID: UUID) -> Identity? {
+        held.keys.first { $0.kind == kind && $0.itemID == itemID }
+    }
+    func release(_ identity: Identity) { held.removeValue(forKey: identity)?() }
+    func releaseAll() {
+        let callbacks = Array(held.values)
+        held.removeAll()
+        callbacks.forEach { $0() }
+    }
 }
 
 /// Creates a foreign file in the gap between Vane choosing a path and WebKit's

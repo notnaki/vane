@@ -369,6 +369,14 @@ import XCTest
     }
 
     func testPageLeavingForAnAllowedSiteCannotBorrowItsPopupAllow() async throws {
+        try await checkPageLeavingForAnAllowedSiteCannotBorrowItsPopupAllow(policyDelay: nil)
+    }
+
+    func testPageLeavingForAnAllowedSiteCannotBorrowItsPopupAllowWithDelayedNavigationPolicy() async throws {
+        try await checkPageLeavingForAnAllowedSiteCannotBorrowItsPopupAllow(policyDelay: .seconds(2))
+    }
+
+    private func checkPageLeavingForAnAllowedSiteCannotBorrowItsPopupAllow(policyDelay: Duration?) async throws {
         var opened = 0
         var blocked: [(URL?, SitePermissions.Scope?)] = []
         tab.onPopup = { _, _, _ in opened += 1; return nil }
@@ -379,20 +387,27 @@ import XCTest
             SitePermissions.resetAll(profileID: tab.profileID)
         }
         tab.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = Popup.readsGesture
-        let allowed = try XCTUnwrap(SitePermissions.Scope(url: try server.url("/held"), profileID: tab.profileID))
+        let destination = try server.url("/held")
+        let allowed = try XCTUnwrap(SitePermissions.Scope(url: destination, profileID: tab.profileID))
         SitePermissions.set(scope: allowed, type: .popups, answer: true)
         server.heldPaths.insert("/held")
-        let page = """
-        <script>location.href = '\(try server.url("/held").absoluteString)'
-        setTimeout(() => window.open('/popup'), 300)</script>
-        """
-        tab.web.loadHTMLString(page, baseURL: URL(string: "https://leaving.example/")!)
-        try await compatibilityWait { !blocked.isEmpty }
+        try await attemptPopupBehindHeldNavigation(leaving: URL(string: "https://leaving.example/")!,
+                                                   destination: destination, policyDelay: policyDelay)
+        XCTAssertEqual(tab.web.url, destination, "the outgoing document is running behind a provisional destination")
+        XCTAssertTrue(server.requests.contains { $0.hasPrefix("GET /held ") })
         XCTAssertEqual(opened, 0)
         XCTAssertEqual(blocked.first?.1?.host, "leaving.example", "the toast names, and its Allow saves, the page that asked")
     }
 
     func testPageLeavingForAnotherOriginKeepsItsSilentPopupBlock() async throws {
+        try await checkPageLeavingForAnotherOriginKeepsItsSilentPopupBlock(policyDelay: nil)
+    }
+
+    func testPageLeavingForAnotherOriginKeepsItsSilentPopupBlockWithDelayedNavigationPolicy() async throws {
+        try await checkPageLeavingForAnotherOriginKeepsItsSilentPopupBlock(policyDelay: .seconds(2))
+    }
+
+    private func checkPageLeavingForAnotherOriginKeepsItsSilentPopupBlock(policyDelay: Duration?) async throws {
         var opened = 0
         var blocked = 0
         tab.onPopup = { _, _, _ in opened += 1; return nil }
@@ -408,15 +423,93 @@ import XCTest
         let scope = try XCTUnwrap(SitePermissions.Scope(url: leaving, profileID: tab.profileID))
         SitePermissions.set(scope: scope, type: .popups, answer: false)
         server.heldPaths.insert("/held")
-        let page = """
-        <script>location.href = '\(destination.absoluteString)'
-        setTimeout(() => { window.open('/popup'); document.title = 'Popup attempted' }, 300)</script>
-        """
-        tab.web.loadHTMLString(page, baseURL: leaving)
-        try await compatibilityWait { self.tab.title == "Popup attempted" }
+        try await attemptPopupBehindHeldNavigation(leaving: leaving, destination: destination,
+                                                   policyDelay: policyDelay)
         XCTAssertEqual(tab.web.url, destination, "the outgoing document is running behind a provisional destination")
         XCTAssertEqual(opened, 0)
         XCTAssertEqual(blocked, 0, "the outgoing document's Block remains silent while another origin loads")
+    }
+
+    /// One original compatibility budget covers document admission, navigation and the attempt.
+    /// The page owns both timers: public native JavaScript evaluation carries a user gesture,
+    /// so it may only write flags, never create a timer or invoke the action under test.
+    private func attemptPopupBehindHeldNavigation(leaving: URL, destination: URL,
+                                                  policyDelay: Duration?) async throws {
+        let owner = tab!
+        let web = owner.web
+        let token = UUID().uuidString
+        let deadline = ContinuousClock.now + .seconds(10)
+        let navigation = NavigationActionProbe(tab: owner)
+        navigation.delayedDestination = destination
+        navigation.policyDelay = policyDelay
+        let popup = NavigationPopupProbe(tab: owner)
+        web.navigationDelegate = navigation
+        web.uiDelegate = popup
+        defer {
+            navigation.cancelHeldPolicy()
+            web.navigationDelegate = owner
+            web.uiDelegate = owner
+        }
+        func wait(_ phase: String, until condition: () async throws -> Bool) async throws {
+            while ContinuousClock.now < deadline {
+                if try await condition() { return }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTFail("Outgoing popup fixture timed out at \(phase); url=\(web.url?.absoluteString ?? "nil"), loading=\(web.isLoading), policyHeld=\(navigation.isPolicyHeld), heldRequests=\(server.requests.filter { $0.hasPrefix("GET /held ") }.count), SDKAttempts=\(popup.attempts.count)")
+            throw NSError(domain: "CompatibilityTimeout", code: 1)
+        }
+        let page = """
+        <script>
+        const fixture = window.__outgoingPopupFixture = {
+            token: '\(token)', navigate: false, popup: false, attempts: 0
+        };
+        const navigationTimer = setInterval(() => {
+            if (!fixture.navigate) return;
+            clearInterval(navigationTimer);
+            location.href = '\(destination.absoluteString)';
+        }, 20);
+        const popupTimer = setInterval(() => {
+            if (!fixture.popup) return;
+            clearInterval(popupTimer);
+            fixture.attempts++;
+            window.open('/popup');
+            document.title = 'Popup attempted';
+        }, 20);
+        </script>
+        """
+        web.loadHTMLString(page, baseURL: leaving)
+        let untouchedOutgoingDocument = "window.__outgoingPopupFixture?.token === '\(token)' && location.href === '\(leaving.absoluteString)' && window.__outgoingPopupFixture.attempts === 0"
+        try await wait("outgoing document") {
+            guard self.tab === owner, owner.existingWeb === web, web.url == leaving,
+                  owner.currentURL == leaving, !owner.loading, !web.isLoading else { return false }
+            return try await web.evaluateJavaScript(untouchedOutgoingDocument) as? Bool == true
+        }
+        _ = try await web.evaluateJavaScript("window.__outgoingPopupFixture.navigate = true")
+        try await wait("held provisional navigation") {
+            guard self.tab === owner, owner.existingWeb === web, self.server.heldPaths.contains("/held"),
+                  self.server.requests.contains(where: { $0.hasPrefix("GET /held ") }),
+                  web.url == destination, owner.loading, web.isLoading else { return false }
+            return try await web.evaluateJavaScript(untouchedOutgoingDocument) as? Bool == true
+        }
+        XCTAssertEqual(navigation.didHoldPolicy, policyDelay != nil, "the adversarial control must actually delay its exact destination")
+        XCTAssertTrue(popup.attempts.isEmpty, "no popup may precede navigation admission")
+        _ = try await web.evaluateJavaScript("window.__outgoingPopupFixture.popup = true")
+        try await wait("page-owned popup and SDK callback") {
+            owner.title == "Popup attempted" && !popup.attempts.isEmpty
+        }
+        XCTAssertEqual(popup.attempts.count, 1, "a real SDK request must reach Vane even when Block is silent")
+        let attempt = try XCTUnwrap(popup.attempts.first)
+        XCTAssertFalse(attempt.gesture, "the page-owned timer must not inherit native evaluation's user gesture")
+        XCTAssertTrue(attempt.mainFrame)
+        XCTAssertEqual(attempt.scheme, leaving.scheme)
+        XCTAssertEqual(attempt.host, leaving.host)
+        XCTAssertEqual(attempt.port, leaving.port ?? 0)
+        XCTAssertEqual(attempt.provisionalURL, destination)
+        XCTAssertTrue(attempt.loading)
+        let exactOutgoingDocument = "window.__outgoingPopupFixture?.token === '\(token)' && location.href === '\(leaving.absoluteString)' && window.__outgoingPopupFixture.attempts === 1"
+        let outgoing = try await web.evaluateJavaScript(exactOutgoingDocument) as? Bool
+        XCTAssertEqual(outgoing, true)
+        print("NAVIGATION_POPUP_ADMITTED delayed=\(policyDelay != nil) requested=true outgoing=\(leaving.absoluteString) sdkSource=\(attempt.scheme)://\(attempt.host):\(attempt.port) gesture=\(attempt.gesture) sdkURL=\(attempt.provisionalURL?.absoluteString ?? "nil") loading=\(attempt.loading) attempts=\(popup.attempts.count)")
     }
 
     func testSupersededFailureAndFinishCannotReplaceCurrentDocumentOrWriteHistory() async throws {
@@ -791,6 +884,17 @@ import XCTest
     var responseNavigations: [WKNavigation] = []
     var lastAction: WKNavigationAction?
     var afterAction: (() -> Void)?
+    var delayedDestination: URL?
+    var policyDelay: Duration?
+    private(set) var didHoldPolicy = false
+    private var heldPolicy: (@MainActor (Bool) -> Void)?
+    private var releaseTask: Task<Void, Never>?
+    var isPolicyHeld: Bool { heldPolicy != nil }
+    func cancelHeldPolicy() {
+        releaseTask?.cancel(); releaseTask = nil
+        let decision = heldPolicy; heldPolicy = nil
+        decision?(false)
+    }
     init(tab: Tab) { self.tab = tab }
     func webView(_ web: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
@@ -799,6 +903,20 @@ import XCTest
         #endif
         lastAction = action
         actions.append("type=\(action.navigationType.rawValue) method=\(action.request.httpMethod ?? "nil")")
+        if !didHoldPolicy, action.targetFrame?.isMainFrame == true,
+           action.request.url == delayedDestination, let delay = policyDelay {
+            didHoldPolicy = true
+            heldPolicy = { [weak tab, weak web] allow in
+                guard allow, let tab, let web else { decisionHandler(.cancel); return }
+                tab.webView(web, decidePolicyFor: action, decisionHandler: decisionHandler)
+            }
+            releaseTask = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: delay) } catch { return }
+                let decision = self?.heldPolicy; self?.heldPolicy = nil
+                decision?(true)
+            }
+            return
+        }
         tab.webView(web, decidePolicyFor: action, decisionHandler: decisionHandler)
         afterAction?()
     }
@@ -814,4 +932,28 @@ import XCTest
     func webView(_ web: WKWebView, didCommit navigation: WKNavigation!) { tab.webView(web, didCommit: navigation) }
     func webView(_ web: WKWebView, didFinish navigation: WKNavigation!) { tab.webView(web, didFinish: navigation) }
     func webView(_ web: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { tab.webView(web, didFailProvisionalNavigation: navigation, withError: error) }
+}
+
+/// Observe the public WebKit action and forward it unchanged through production policy.
+@MainActor private final class NavigationPopupProbe: NSObject, WKUIDelegate {
+    struct Attempt {
+        let gesture: Bool
+        let mainFrame: Bool
+        let scheme: String
+        let host: String
+        let port: Int
+        let provisionalURL: URL?
+        let loading: Bool
+    }
+    let tab: Tab
+    var attempts: [Attempt] = []
+    init(tab: Tab) { self.tab = tab }
+    func webView(_ web: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        let source = action.sourceFrame.securityOrigin
+        attempts.append(Attempt(gesture: Popup.userInitiated(action), mainFrame: action.sourceFrame.isMainFrame,
+                                scheme: source.protocol, host: source.host, port: source.port,
+                                provisionalURL: web.url, loading: web.isLoading))
+        return tab.webView(web, createWebViewWith: configuration, for: action, windowFeatures: windowFeatures)
+    }
 }

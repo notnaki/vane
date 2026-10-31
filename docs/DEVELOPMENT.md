@@ -210,7 +210,7 @@ ownership. The planner checks that the exact advisory probe exists and that the
 required/advisory test sets partition the discovered inventory without overlap.
 An unfiltered local native run includes the probe and can fail on this known fault.
 A passing probe is one sample, not proof that worker identity is reliable or that
-the limitation is fixed. Its signed-app reproductions are tracked in [#513](https://github.com/notnaki/vane/issues/513).
+the limitation is fixed. Its signed-app reproductions and platform-limitation disposition are retained in [#513](https://github.com/notnaki/vane/issues/513). See [the worker identity boundary](EXTENSION-WORKER-IDENTITY.md).
 The advisory exception does not apply to other extension assertions or native
 fixture failures.
 

@@ -75,6 +75,20 @@ import CryptoKit
     /// protect. They never create placeholder files, which WKDownload rejects.
     private static var pendingDestinations: [UUID: URL] = [:]
 
+    #if DEBUG
+    enum NativeCallbackKind: Hashable { case retry, resume }
+    struct NativeCallbackIdentity: Hashable {
+        let kind: NativeCallbackKind
+        let itemID: UUID
+        let operation: UUID
+    }
+    enum NativeCallbackPhase { case arrived, cancelled }
+    // Fixtures may delay the real SDK callback, and observe its native cancel ack.
+    // Only primitive operation metadata is exposed; the default delivery is immediate.
+    var nativeCallbackGate: ((NativeCallbackIdentity, @escaping @MainActor () -> Void) -> Void)?
+    var nativeCallbackObserver: ((NativeCallbackIdentity, NativeCallbackPhase) -> Void)?
+    #endif
+
     @Published var items: [Item] = []
 
     /// Where finished files land: the profile's own folder, unless a harness has pointed
@@ -988,18 +1002,35 @@ import CryptoKit
         guard canRetry(item), let source = item.source else { return false }
         item.operation = UUID()
         let operation = item.operation
+        #if DEBUG
+        let itemID = item.id
+        #endif
         item.retryPending = true
         deleteResume(item)
         removePartial(item)
         resumeWebView(for: item).startDownload(using: URLRequest(url: source)) { [weak self, weak item] download in
-            guard let self, let item, !self.invalidated, item.retryPending,
-                  item.operation == operation, self.items.contains(where: { $0 === item }) else {
-                download.cancel { _ in }
-                return
+            #if DEBUG
+            let identity = NativeCallbackIdentity(kind: .retry, itemID: itemID, operation: operation)
+            #endif
+            let deliver: @MainActor () -> Void = { [weak self, weak item] in
+                guard let self, let item, !self.invalidated, item.retryPending,
+                      item.operation == operation, self.items.contains(where: { $0 === item }) else {
+                    download.cancel { _ in
+                        #if DEBUG
+                        self?.nativeCallbackObserver?(identity, .cancelled)
+                        #endif
+                    }
+                    return
+                }
+                self.retryOrigins[ObjectIdentifier(download)] = RetryOrigin(item: item, operation: operation)
+                self.attach(download, alwaysAsk: item.destinationBookmarkIsFile == true,
+                            suggestedFilename: item.name, from: self.resumeWebView(for: item))
             }
-            self.retryOrigins[ObjectIdentifier(download)] = RetryOrigin(item: item, operation: operation)
-            self.attach(download, alwaysAsk: item.destinationBookmarkIsFile == true,
-                        suggestedFilename: item.name, from: self.resumeWebView(for: item))
+            #if DEBUG
+            self?.nativeCallbackObserver?(identity, .arrived)
+            if let gate = self?.nativeCallbackGate { gate(identity, deliver); return }
+            #endif
+            deliver()
         }
         return true
     }
@@ -1161,19 +1192,34 @@ import CryptoKit
         save()
         item.resumePending = true
         resumeWebView(for: item).resumeDownload(fromResumeData: data) { [weak self] d in
-            item.resumePending = false
-            guard let self, item.operation == operation, item.status.isLive,
-                  self.items.contains(where: { $0 === item }) else {
-                d.cancel { [weak self] _ in self?.removePartial(item) }
-                return
+            #if DEBUG
+            let identity = NativeCallbackIdentity(kind: .resume, itemID: item.id, operation: operation)
+            #endif
+            let deliver: @MainActor () -> Void = { [weak self] in
+                item.resumePending = false
+                guard let self, item.operation == operation, item.status.isLive,
+                      self.items.contains(where: { $0 === item }) else {
+                    d.cancel { [weak self] _ in
+                        self?.removePartial(item)
+                        #if DEBUG
+                        self?.nativeCallbackObserver?(identity, .cancelled)
+                        #endif
+                    }
+                    return
+                }
+                self.resuming[ObjectIdentifier(d)] = item
+                item.watch(d)
+                d.delegate = self
+                if item.pausedByUser {
+                    item.status = .running
+                    self.pause(item)
+                }
             }
-            self.resuming[ObjectIdentifier(d)] = item
-            item.watch(d)
-            d.delegate = self
-            if item.pausedByUser {
-                item.status = .running
-                self.pause(item)
-            }
+            #if DEBUG
+            self?.nativeCallbackObserver?(identity, .arrived)
+            if let gate = self?.nativeCallbackGate { gate(identity, deliver); return }
+            #endif
+            deliver()
         }
     }
 

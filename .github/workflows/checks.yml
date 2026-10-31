@@ -293,7 +293,7 @@ jobs:
           Manifest-v3 workers can retain WebKit's engine UA instead of the selected page UA.
           Only the classified bare-engine startup/current mismatch is advisory. Its desired-behavior assertions remain active.
           Fixture, cleanup, unknown assertions, missing execution and evidence failures block required checks.
-          A passing sample does not establish a repair; intermittent signed-app failures remain tracked in issue #513.
+          A passing sample does not establish a repair; issue #513 retains the documented platform limitation and signed-app failures.
           Popup UA, manifest-v2 background UA, storage isolation and controller ownership remain required.
           See the attached log for the actual failure and fixture cleanup results.
           EOF
