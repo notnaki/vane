@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "shipping_head": "acdc340cdf64b717c8a988ea2ea71dd5d17a92a0",
+  "shipping_tree": "3479db32d37164c41e677b1df4b5992a8605a85a",
+  "main_ancestor": "10c31ed1cda13d9b1f5d98caa967d555bee1edb6",
+  "canonical_checks_sha256": "ee7ef1f4693ca3df9143d6901a6b4657f0431d390e0b3c0cd775549aaa1437b1",
+  "selection_file_sha256": "6be82397c0e9277c5279ce22bcdba4a3e3395dafa1d91118b5d9887bef486605",
+  "primary_count": 174,
+  "expected_skips": [
+    "VaneTests.NavigationWebKitTests/testMacOS27PolicyProvidesUpcomingNavigationIdentity",
+    "VaneTests.NavigationWebKitTests/testSupersededPolicyActionCannotRestartRetiredRequest"
+  ],
+  "allowed_preflight_files": [
+    ".github/workflows/native-policy-capture.yml",
+    ".github/native-policy-capture-selection.json",
+    ".github/native-policy-capture-contract.json"
+  ],
+  "branch": "refs/heads/codex/ci-native-policy-capture",
+  "run_attempt": 1,
+  "repetitions": 1
+}
