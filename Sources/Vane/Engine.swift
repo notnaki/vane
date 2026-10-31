@@ -2875,11 +2875,22 @@ struct Stash {
     /// Per window: hiding the sidebar in one window must not hide it in the next.
     @Published var sidebarShown = true {
         didSet {
-            if sidebarShown != oldValue { sidebarPeeking = false }
+            if sidebarShown != oldValue {
+                if sidebarShown { sidebarFloatingChrome = false }
+                sidebarPeeking = false
+            }
         }
     }
     /// Transient hover reveal that follows the window across Spaces and profiles.
-    @Published var sidebarPeeking = false
+    @Published var sidebarPeeking = false {
+        didSet {
+            if sidebarPeeking && !sidebarShown { sidebarFloatingChrome = true }
+        }
+    }
+    /// Retain the last visible surface while sliding offscreen. Inferring floating
+    /// chrome from !sidebarShown makes a collapsing docked sidebar acquire a dark
+    /// material, shadow and inset before it has left the window.
+    @Published private(set) var sidebarFloatingChrome = false
     /// Cached profile hosts may process visibility changes only when reattached.
     /// A changed revision marks that update as restoration, rather than a fresh toggle.
     @Published var sidebarPresentationRevision: UInt = 0
