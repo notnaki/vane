@@ -1,0 +1,146 @@
+name: Preview account proof focused preflight
+
+on:
+  push:
+    branches: [codex/preview-account-proof-preflight]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-account-proof-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  focused:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the frozen source and native tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift build --build-system native -c debug --build-tests 2>&1 | tee "$RUNNER_TEMP/account-build.log"
+
+      - name: Audit native runtime products without requiring an XCTest plist
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary_dir="$(swift build --build-system native -c debug --show-bin-path)"
+          python3 - "$binary_dir" <<'PY_AUDIT'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import stat
+          import sys
+          root = Path.cwd().resolve()
+          binary = Path(sys.argv[1]).resolve()
+          assert binary.is_relative_to(root / '.build') and binary.name == 'debug', binary
+          description = binary / 'description.json'
+          products = json.loads(description.read_text())['builtTestProducts']
+          products = [product for product in products if product['productName'] == 'VanePackageTests']
+          assert len(products) == 1, products
+          test = Path(products[0]['binaryPath'])
+          bundle = next((parent for parent in test.parents if parent.suffix == '.xctest'), None)
+          assert bundle is not None and bundle.resolve().is_relative_to(binary), test
+          def regular_executable(path):
+              return not path.is_symlink() and path.is_file() and stat.S_ISREG(path.stat().st_mode) and os.access(path, os.X_OK)
+          candidates = {path.resolve() for directory in (bundle, bundle / 'Contents' / 'MacOS')
+                        if directory.is_dir() for path in directory.iterdir() if regular_executable(path)}
+          assert candidates == {test.resolve()} and regular_executable(test), candidates
+          paths = [binary / 'vane', binary / 'NativeLeaseHolder', test]
+          assert all(regular_executable(path) for path in paths), paths
+          audit = {'revision': os.environ['GITHUB_SHA'], 'description': str(description),
+                   'description_sha256': hashlib.sha256(description.read_bytes()).hexdigest(),
+                   'test_bundle': str(bundle), 'test_executable': str(test),
+                   'binary_fingerprint': {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}}
+          (Path(os.environ['RUNNER_TEMP']) / 'account-build-audit.json').write_text(json.dumps(audit, indent=2) + '\n')
+          PY_AUDIT
+
+      - name: Discover and freeze account proof and lifecycle coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test --build-system native list --skip-build > "$RUNNER_TEMP/account-native-inventory.txt"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          root = Path(os.environ['RUNNER_TEMP'])
+          source = Path('Tests/VaneTests/Feel04PreviewTests.swift').read_text()
+          classes = ['Feel04AccountProofTests', 'Feel04RetryProofTests', 'Feel04PreparationTests', 'Feel04SessionTests']
+          expected = []
+          for cls in classes:
+              section = source.split(f'final class {cls}: XCTestCase {{', 1)[1].split('@MainActor final class ', 1)[0]
+              expected.extend(f'VaneTests.{cls}/{name}' for name in re.findall(r'^    func (test\w+)\(', section, re.M))
+          lifecycle = Path('Tests/VaneTests/FavouritePreviewLifecycleTests.swift').read_text()
+          expected.extend('VaneTests.FavouritePreviewLifecycleTests/' + name
+                          for name in re.findall(r'^    func (test\w+)\(', lifecycle, re.M))
+          expected = sorted(expected)
+          assert len(expected) == 31, expected
+          classes.append('FavouritePreviewLifecycleTests')
+          prefixes = tuple(f'VaneTests.{cls}/' for cls in classes)
+          found = sorted(line.strip() for line in (root / 'account-native-inventory.txt').read_text().splitlines()
+                         if line.startswith(prefixes))
+          assert found == expected, (found, expected)
+          (root / 'account-focused.json').write_text(json.dumps({'schema': 1, 'tests': found}, indent=2) + '\n')
+          (root / 'account-focused.filter').write_text('^(?:' + '|'.join(re.escape(test) for test in found) + ')$\n')
+          PY
+
+      - name: Exercise three predetermined attempts with verified cleanup
+        shell: bash
+        env:
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            set +e
+            python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 \
+              --filter "$(cat "$RUNNER_TEMP/account-focused.filter")" \
+              2>&1 | tee "$RUNNER_TEMP/account-focused-attempt-$attempt.log"
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            printf 'attempt=%s runner=%s tee=%s\n' "$attempt" "${pipeline_status[0]}" "${pipeline_status[1]}" \
+              | tee -a "$RUNNER_TEMP/account-focused-results.txt"
+            test "${pipeline_status[0]}" -eq 0
+            test "${pipeline_status[1]}" -eq 0
+            python3 scripts/native-test-shards.py verify \
+              --manifest "$RUNNER_TEMP/account-focused.json" \
+              --log "$RUNNER_TEMP/account-focused-attempt-$attempt.log"
+            python3 - "$attempt" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import sys
+          root = Path(os.environ['RUNNER_TEMP'])
+          expected = set(json.loads((root / 'account-focused.json').read_text())['tests'])
+          log = (root / f'account-focused-attempt-{sys.argv[1]}.log').read_text()
+          outcomes = [(f'{cls}/{name}', state) for cls, name, state in
+                      re.findall(r"Test Case '-\[([^ ]+) ([^]]+)\]' (passed|failed|skipped)", log)
+                      if f'{cls}/{name}' in expected]
+          assert len(outcomes) == len(expected), outcomes
+          assert {name for name, _ in outcomes} == expected, outcomes
+          assert all(state == 'passed' for _, state in outcomes), outcomes
+          PY
+          done
+
+      - name: Preserve every attempted outcome and selection
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: preview-account-proof-preflight-evidence
+          path: |
+            ${{ runner.temp }}/account-build.log
+            ${{ runner.temp }}/account-build-audit.json
+            ${{ runner.temp }}/account-native-inventory.txt
+            ${{ runner.temp }}/account-focused.json
+            ${{ runner.temp }}/account-focused.filter
+            ${{ runner.temp }}/account-focused-results.txt
+            ${{ runner.temp }}/account-focused-attempt-*.log
+          if-no-files-found: error
+          retention-days: 7
