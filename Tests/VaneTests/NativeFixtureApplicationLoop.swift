@@ -66,6 +66,7 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     var policyPollPendingForTesting: Bool { policyPollTimer != nil }
     private lazy var entryGate = NativeApplicationLoopEntryGate(generation: generation)
     private var admission: CheckedContinuation<Void, any Error>?
+    private var pendingLaunchAdmission: NativeFixtureLaunchAdmission?
     private var joinWaiters: [CheckedContinuation<Void, any Error>] = []
     private var heartbeat: Task<Void, Never>?
     private var watchdog: CFRunLoopTimer?
@@ -119,8 +120,13 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
             afterRunReturn: afterRunReturn, policyPollScheduled: policyPollScheduled)
         try await lease.start()
         if Task.isCancelled { lease.record(.cancelled) }
-        do { try lease.verifyRunning() }
-        catch {
+        do {
+            try await withTaskCancellationHandler {
+                try await lease.adoptAdmission()
+            } onCancel: {
+                Self.enqueue { lease.cancelOrExpire(.cancelled) }
+            }
+        } catch {
             // A cancelled or lost admission cannot throw while leaving its loop
             // behind. close retains the first lifecycle failure and joins first.
             try await lease.close()
@@ -173,10 +179,13 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     }
 
     private func checkHeartbeat(admission initialAdmission: NativeFixtureLaunchAdmission) async {
-        defer { finishHeartbeat(deadline: initialAdmission.watchdogDeadline) }
+        var admission = initialAdmission
+        defer {
+            pendingLaunchAdmission = admission
+            finishHeartbeat(deadline: initialAdmission.watchdogDeadline)
+        }
         let app = NSApplication.shared
         guard app.isRunning else { record(.loopNotRunning); return }
-        var admission = initialAdmission
         var readyOnPreviousTurn = false
         do {
             while true {
@@ -186,7 +195,19 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
                 switch admission.observe(finished: finished, at: .now) {
                 case .ready:
                     if readyOnPreviousTurn {
-                        try verifyRunning()
+                        if let failure = runningFailure() {
+                            if failure == .incompleteHeartbeat {
+                                guard observeAdmission(&admission, finished: false) == .waiting else { return }
+                                readyOnPreviousTurn = false
+                                try await Task.sleep(for: .milliseconds(20))
+                                continue
+                            }
+                            record(failure)
+                            return
+                        }
+                        // The final native getters may consume the remaining
+                        // budget even when they return a positive result.
+                        _ = observeAdmission(&admission, finished: true)
                         return
                     }
                     // Confirm readiness after yielding the executor. A prior
@@ -220,8 +241,8 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         heartbeat = nil
         if firstFailure == nil, !closing, ContinuousClock.now >= deadline { record(.startupWatchdogExpired) }
         if firstFailure == nil && !closing {
-            invalidateWatchdog()
-            admissionSucceeded = true
+            // Heartbeat readiness is provisional. Keep its original watchdog
+            // and admission history until the caller accepts the final sample.
             let completion = admission
             admission = nil
             completion?.resume()
@@ -232,19 +253,69 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         }
     }
 
+    private func runningFailure() -> NativeApplicationLoopFailure? {
+        if let firstFailure { return firstFailure }
+        guard isCurrent, enteredRun, !runReturned, NSApplication.shared.isRunning else { return .loopNotRunning }
+        guard NSRunningApplication.current.isFinishedLaunching && launchReadiness() else { return .incompleteHeartbeat }
+        guard NSApplication.shared.activationPolicy() == originalPolicy else { return .policyChanged }
+        return nil
+    }
+
     func verifyRunning() throws {
-        if let firstFailure { throw firstFailure }
-        guard isCurrent, enteredRun, !runReturned, NSApplication.shared.isRunning else {
-            record(.loopNotRunning)
+        if let failure = runningFailure() {
+            record(failure)
             throw firstFailure!
         }
-        guard NSRunningApplication.current.isFinishedLaunching && launchReadiness() else {
+    }
+
+    private func observeAdmission(_ admission: inout NativeFixtureLaunchAdmission,
+                                  finished: Bool) -> NativeFixtureLaunchAdmission.Observation {
+        let observation = admission.observe(finished: finished, at: .now)
+        switch observation {
+        case .timedOut: record(.launchTimedOut)
+        case .watchdogExpired: record(.startupWatchdogExpired)
+        case .ready, .waiting: break
+        }
+        return observation
+    }
+
+    private func adoptAdmission() async throws {
+        guard var state = pendingLaunchAdmission else {
             record(.incompleteHeartbeat)
             throw firstFailure!
         }
-        guard NSApplication.shared.activationPolicy() == originalPolicy else {
-            record(.policyChanged)
-            throw firstFailure!
+        var readyOnPreviousTurn = true
+        while true {
+            try Task.checkCancellation()
+            let failure = runningFailure()
+            try Task.checkCancellation()
+            if let failure, failure != .incompleteHeartbeat {
+                record(failure)
+                throw firstFailure!
+            }
+            switch observeAdmission(&state, finished: failure == nil) {
+            case .timedOut, .watchdogExpired:
+                throw firstFailure!
+            case .waiting:
+                readyOnPreviousTurn = false
+                try await Task.sleep(for: .milliseconds(20))
+            case .ready:
+                if !readyOnPreviousTurn {
+                    readyOnPreviousTurn = true
+                    await Task.yield()
+                    continue
+                }
+                if let firstFailure { throw firstFailure }
+                guard isCurrent, !runReturned else {
+                    record(.loopNotRunning)
+                    throw firstFailure!
+                }
+                // No readiness getter or suspension follows the accepted sample.
+                admissionSucceeded = true
+                pendingLaunchAdmission = nil
+                invalidateWatchdog()
+                return
+            }
         }
     }
 
@@ -373,6 +444,7 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         }
         if policy != originalPolicy { record(.policyChanged) }
         closed = true
+        pendingLaunchAdmission = nil
         invalidatePolicyPoll()
         invalidateWatchdog()
         heartbeat = nil
