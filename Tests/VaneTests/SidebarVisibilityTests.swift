@@ -91,6 +91,96 @@ import QuartzCore
         }
     }
 
+    func testCollapsingDockedSidebarDoesNotAcquireFloatingInsets() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        app.setActivationPolicy(.accessory)
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do { try await exerciseDismissalGeometry() } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Sidebar dismissal loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func exerciseDismissalGeometry() async throws {
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        saver.setMode(.off)
+        defer { saver.setMode(previousMode) }
+        let store = TabStore(isPrivate: true)
+        store.palette = nil
+        let bounds = NSRect(x: 100, y: 100, width: 900, height: 700)
+        let window = VaneWindow(contentRect: bounds, styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+                                backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        store.window = window
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        defer {
+            store.spaceGesture.monitor.remove()
+            window.orderOut(nil)
+            window.contentView = nil
+            store.window = nil
+            window.close()
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+        }
+        defer {
+            print("SIDEBAR_DISMISSAL_CONTEXT active=\(NSApp.isActive) key=\(window.isKeyWindow) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) canKey=\(window.canBecomeKey) policy=\(NSApp.activationPolicy().rawValue)")
+        }
+        // This geometry fixture requires a visible compositor owner, not keyboard
+        // focus. CLI XCTest hosts may remain inactive even with a visible window.
+        try await compatibilityWait {
+            window.isVisible && window.occlusionState.contains(.visible)
+        }
+        let viewport = try await admitRestingViewport(in: host)
+        let dockedHeight = viewport.bounds.height
+        XCTAssertGreaterThan(dockedHeight, 100)
+        store.sidebarShown = false
+        // Sample from the action onward, without admitting the desired outcome
+        // first. Even the hidden resting tree must retain the docked geometry.
+        for _ in 0..<16 {
+            try await Task.sleep(for: .milliseconds(20))
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            CATransaction.flush()
+            XCTAssertTrue(sidebarViewport(in: host) === viewport)
+            XCTAssertEqual(viewport.bounds.height, dockedHeight, accuracy: 0.5,
+                "Collapsing docked chrome must not shrink into a floating panel mid-slide")
+        }
+        store.sidebarPeeking = true
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            return abs(viewport.bounds.height - (dockedHeight - 10)) < 0.5
+        }
+        _ = try await admitRestingViewport(in: host)
+        let floatingHeight = viewport.bounds.height
+        store.sidebarPeeking = false
+        for _ in 0..<16 {
+            try await Task.sleep(for: .milliseconds(20))
+            host.layoutSubtreeIfNeeded()
+            XCTAssertEqual(viewport.bounds.height, floatingHeight, accuracy: 0.5,
+                "A dismissing floating panel must retain its inset until it leaves")
+        }
+        store.sidebarShown = true
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            return abs(viewport.bounds.height - dockedHeight) < 0.5
+        }
+        XCTAssertTrue(sidebarViewport(in: host) === viewport,
+                      "Reopening must retain the existing native sidebar")
+    }
+
     func testDockingOrHidingEndsTheFloatingRevealImmediately() {
         TestEnvironment.prepare()
         let profile = ProfileManager.shared.active.id

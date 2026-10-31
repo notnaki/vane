@@ -414,7 +414,7 @@ struct BrowserWindow: View {
             SpaceGround()
             LibraryNavigationLayout(gesture: store.libraryGesture,
                 libraryOpen: store.libraryOpen, sidebarShown: store.sidebarShown,
-                floating: !store.sidebarShown, sidebarWidth: sidebar.width,
+                floating: store.sidebarFloatingChrome, sidebarWidth: sidebar.width,
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
                 page: WebCard().modifier(DownloadFeedbackAnchor(target: .page))
@@ -543,7 +543,7 @@ struct BrowserWindow: View {
         // Retain its viewport while hidden too: realizing rows and native controls in
         // the reveal transaction stalls the slide partway through its first frames.
         let visible = store.sidebarShown || peeking
-        let floating = !store.sidebarShown
+        let floating = store.sidebarFloatingChrome
         let theme = SpaceChromeTheme(space: store.chromeSpace, fallback: store.profile.colorHex)
         return Sidebar()
             .disabled(!visible || store.palette != nil || store.libraryOpen)
