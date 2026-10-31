@@ -327,7 +327,7 @@ extension ExtensionNativeMessagingErrorTests {
                 try await waitNativeModePage("retry page foreground") { NSApp.isActive && window.isKeyWindow && web.window === window }
                 web.load(URLRequest(url: try XCTUnwrap(context.optionsPageURL)))
                 try await waitNativeModePage("retry page loaded in exact owner", diagnostics: {
-                    "loading=\(web.isLoading), title=\(web.title ?? "nil"), url=\(web.url?.absoluteString ?? "nil"), owner=\(web.window === window), visible=\(window.isVisible), active=\(NSApp.isActive), key=\(window.isKeyWindow)"
+                    "approved=\(approved), background=\(context.webExtension.hasBackgroundContent), prepared=\(ExtensionWorkerIdentity.identity(of: context.webExtension) != nil), loading=\(web.isLoading), title=\(web.title ?? "nil"), url=\(web.url?.absoluteString ?? "nil"), owner=\(web.window === window), visible=\(window.isVisible), active=\(NSApp.isActive), key=\(window.isKeyWindow), keyWindow=\(NSApp.keyWindow?.windowNumber ?? -1), frontmostPID=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1)"
                 }) {
                     !web.isLoading && web.title == "Sequential retry fixture" && web.window === window && window.isVisible
                         && NSApp.isActive && window.isKeyWindow

@@ -11,9 +11,9 @@ import XCTest
         return context
     }
 
-    func testInsertionPreservesClassicDirectiveAndExpressionSemantics() throws {
-        // Inserting before a real strict directive disables strict mode. Treating
-        // a continued string expression as a directive can instead enable it.
+    func testImportedClassicScriptsPreserveDirectiveAndExpressionSemantics() throws {
+        // Execute the generated entry against a native-script loader double.
+        // The vendor's standalone Script must keep its own directive semantics.
         let cases: [(String, Bool)] = [
             ("'use strict'; result = (function(){ return this === undefined; })();", true),
             ("'other'; /* hi */ 'use strict'\nvar result = (function(){ return this === undefined; })();", true),
@@ -25,9 +25,16 @@ import XCTest
             ("var result = (function(){ return this === undefined; })();", false),
         ]
         for (source, strict) in cases {
-            let instrumented = try ExtensionWorkerIdentity.inject(source, bootstrap: "globalThis.insertions = (globalThis.insertions || 0) + 1;")
             let context = try evaluate("var result;")
-            context.evaluateScript(instrumented)
+            let importer: @convention(block) (String) -> Void = { path in
+                XCTAssertEqual(path, "/background.js")
+                context.evaluateScript(source)
+            }
+            context.setObject(importer, forKeyedSubscript: "importScripts" as NSString)
+            let entry = try ExtensionWorkerIdentity.entrySource(bootstrap: "globalThis.insertions = (globalThis.insertions || 0) + 1;",
+                                                                 modulePath: nil, scripts: ["/background.js"])
+            context.evaluateScript(entry)
+            context.setObject(nil, forKeyedSubscript: "importScripts" as NSString)
             XCTAssertNil(context.exception, source)
             XCTAssertEqual(context.objectForKeyedSubscript("result")?.toBool(), strict, source)
             XCTAssertEqual(context.objectForKeyedSubscript("insertions")?.toInt32(), 1)

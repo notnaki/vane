@@ -103,7 +103,7 @@ import XCTest
         try await NativeFixtureProfileCleanup.release(released)
     }
 
-    private func install(version: Int, in targetProfile: UUID? = nil, module: Bool = false, generated: Bool = false, workerPath: String = "background.js", hashbang: Bool = false, strict: Bool = false, reusePage: Bool = false, cycle: Bool = false) async throws -> WKWebExtensionContext {
+    private func install(version: Int, in targetProfile: UUID? = nil, module: Bool = false, generated: Bool = false, workerPath: String = "background.js", hashbang: Bool = false, strict: Bool = false, reusePage: Bool = false, cycle: Bool = false, importsDependency: Bool = false) async throws -> WKWebExtensionContext {
         #if DEBUG
         backgroundObservations.removeAll()
         #endif
@@ -123,10 +123,11 @@ import XCTest
         let workerURL = folder.appendingPathComponent(workerPath)
         try FileManager.default.createDirectory(at: workerURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let dependencySource = (module && cycle ? "import './\(workerURL.lastPathComponent)';\n" : "") + "globalThis.dependencyStartupIdentity = navigator.userAgent;" + (module ? " globalThis.dependencyURL = import.meta.url;" : "")
-        try Data(dependencySource.utf8).write(to: workerURL.deletingLastPathComponent().appendingPathComponent("dependency.js"))
+        let dependencyDirectory = generated && !module && importsDependency ? folder! : workerURL.deletingLastPathComponent()
+        try Data(dependencySource.utf8).write(to: dependencyDirectory.appendingPathComponent("dependency.js"))
         try Data("<title>Reused worker source</title><script \(module ? "type='module'" : "") src='/\(workerPath)'></script>".utf8)
             .write(to: folder.appendingPathComponent("reused.html"))
-        let dependency = (hashbang ? "#!/usr/bin/env javascript\n" : "") + (strict ? "'use strict';\n" : "") + (module ? "import './dependency.js';\n" : "")
+        let dependency = (hashbang ? "#!/usr/bin/env javascript\n" : "") + (strict ? "'use strict';\n" : "") + (module ? "import './dependency.js';\n" : importsDependency ? "importScripts('./dependency.js');\n" : "")
         let cycleCounter = cycle ? "globalThis.vendorEntryExecutions = (globalThis.vendorEntryExecutions ?? 0) + 1;\n" : ""
         try Data((dependency + cycleCounter + """
             const startupUserAgent = globalThis.dependencyStartupIdentity ?? navigator.userAgent;
@@ -137,7 +138,7 @@ import XCTest
             browser.runtime.onMessage.addListener(async () => ({startup: startupUserAgent, current: navigator.userAgent,
               nonce: birthNonce, saved: (await chrome.storage.local.get('workerSaved')).workerSaved ?? 'missing',
               aliases: String(chrome.runtime.id === browser.runtime.id), strict: String(strictAtStartup),
-              url: sourceURL, workerURL: self.location.href, entryRuns: String(globalThis.vendorEntryExecutions ?? 1), dependencyURL: globalThis.dependencyURL ?? 'none'}));
+              url: sourceURL, workerURL: self.location.href, entryRuns: String(globalThis.vendorEntryExecutions ?? 1), revision: globalThis.packageRevision ?? 'initial', dependencyURL: globalThis.dependencyURL ?? 'none'}));
             """).utf8).write(to: workerURL)
         try Data("<title>UA fixture</title><script src='popup.js'></script>".utf8)
             .write(to: folder.appendingPathComponent("popup.html"))
@@ -363,6 +364,31 @@ import XCTest
         try await assertIdentity(in: web, context: context, expected: Settings.userAgent)
     }
 
+    func testNestedClassicImportsRetainTheWorkerBaseDirectory() async throws {
+        Settings.userAgent = "Vane Nested Classic/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3, workerPath: "nested/background.js", hashbang: true, strict: true, importsDependency: true)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: "Vane Nested Classic/1.0")
+        let identity = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+        XCTAssertEqual(identity?["strict"], "true")
+        let creationURL = try XCTUnwrap(identity?["workerURL"].flatMap(URL.init(string:)))
+        XCTAssertEqual(creationURL.deletingLastPathComponent().path, "/nested")
+    }
+
+    func testGeneratedClassicImportsRetainTheVirtualWorkerRoot() async throws {
+        Settings.userAgent = "Vane Generated Nested Classic/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3, generated: true, workerPath: "nested/background.js", importsDependency: true)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: "Vane Generated Nested Classic/1.0")
+        let identity = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+        let creationURL = try XCTUnwrap(identity?["workerURL"].flatMap(URL.init(string:)))
+        XCTAssertEqual(creationURL.deletingLastPathComponent(), context.baseURL)
+    }
+
     func testModuleCycleUsesSingleCanonicalVendorEntry() async throws {
         Settings.userAgent = "Vane Cyclic Worker/1.0"
         forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
@@ -373,6 +399,32 @@ import XCTest
         let identity = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
         XCTAssertEqual(identity?["entryRuns"], "1", "A module back-reference must not evaluate a query-distinct copy of the vendor entry")
         XCTAssertEqual(identity?["url"], context.baseURL.appendingPathComponent("background.js").absoluteString)
+    }
+
+    func testModuleResourceUpdateRefreshesCanonicalDependency() async throws {
+        Settings.userAgent = "Vane Updated Module/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let before = try await install(version: 3, module: true)
+        let (action, web) = try await popup(before)
+        let original = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+        XCTAssertEqual(original?["revision"], "initial")
+        action.closePopup()
+        let dependency = folder.appendingPathComponent("dependency.js")
+        let originalBytes = try String(contentsOf: dependency, encoding: .utf8)
+        try Data((originalBytes + "\nglobalThis.packageRevision = 'updated';").utf8).write(to: dependency)
+        let host = ExtensionHost.host(for: profile)
+        let accepted = try await host.load(folder, installing: true) { _ in true }
+        XCTAssertTrue(accepted)
+        let after = try XCTUnwrap(host.installed.first)
+        let (newAction, newWeb) = try await popup(after)
+        defer { newAction.closePopup() }
+        try await assertIdentity(in: newWeb, context: after, expected: "Vane Updated Module/1.0")
+        let updated = try await newWeb.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+        XCTAssertEqual(updated?["revision"], "updated", "A new wrapper must not reuse cached canonical vendor imports")
+        XCTAssertEqual(updated?["url"], original?["url"], "Vendor module identity remains canonical")
+        XCTAssertNotEqual(updated?["workerURL"], original?["workerURL"], "Changed dependency bytes require a new worker registration URL")
+        XCTAssertEqual(after.uniqueIdentifier, before.uniqueIdentifier)
+        XCTAssertEqual(after.baseURL, before.baseURL)
     }
 
     func testWorkerRecreationRetainsNavigatorIdentityAndStorage() async throws {
@@ -529,7 +581,10 @@ import XCTest
         let workerURL = try XCTUnwrap(reply?["url"].flatMap(URL.init(string:)))
         XCTAssertEqual(workerURL.path, "/nested/background.js")
         XCTAssertEqual(workerURL.host, context.baseURL.host)
-        XCTAssertTrue(workerURL.query?.contains("__vane_worker_identity=") == true)
+        XCTAssertNil(workerURL.query, "Vendor module identity must remain canonical")
+        let creationURL = try XCTUnwrap(reply?["workerURL"].flatMap(URL.init(string:)))
+        XCTAssertEqual(creationURL.deletingLastPathComponent().path, "/nested")
+        XCTAssertTrue(creationURL.lastPathComponent.hasPrefix("__vane_worker_entry_"))
         XCTAssertEqual(reply?["dependencyURL"], context.baseURL.appendingPathComponent("nested/dependency.js").absoluteString)
         XCTAssertEqual(reply?["strict"], "true")
     }
