@@ -217,7 +217,8 @@ private struct DeveloperBar: View {
             tool("arrow.clockwise", "Reload Ignoring Cache") { tab.web.reloadFromOrigin() }
         }
         .font(Look.caption.weight(.medium)).foregroundStyle(Color(white: 0.86))
-        .buttonStyle(FindControlStyle())
+        .buttonStyle(CompactControlStyle(bar: true))
+        .foregroundStyle(Look.barText)
         .padding(.horizontal, Look.rowTrailingInset).frame(height: Look.rowHeight)
         .background {
             Color(white: 0.18)

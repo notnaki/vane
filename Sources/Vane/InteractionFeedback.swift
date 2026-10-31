@@ -185,6 +185,43 @@ struct TactileButtonStyle: ButtonStyle {
     }
 }
 
+/// Small utility controls share a steady hit target, a quiet hover fill, and the
+/// same press acknowledgement as the browser chrome.
+struct CompactControlStyle: ButtonStyle {
+    var size: CGFloat = Look.control
+    var bar = false
+    @Environment(\.spaceChromeTheme) private var chromeTheme
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @State private var hovering = false
+
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
+
+    func makeBody(configuration: Configuration) -> some View {
+        TactileButtonStyle().makeBody(configuration: configuration)
+            .frame(width: size, height: size)
+            .contentShape(.rect)
+            .opacity(enabled ? 1 : Look.dimmed)
+            .background {
+                RoundedRectangle(cornerRadius: Look.chipRadius)
+                    .fill(enabled && (configuration.isPressed || hovering)
+                          ? (bar ? chromeTheme.barSelected : chromeTheme.controlFill) : .clear)
+                    .animation(reduced || configuration.isPressed || !enabled ? nil : Look.quick,
+                               value: hovering)
+                    // Rebuild only the paint when policy changes, settling an in-flight
+                    // hover fade without replacing the button or its keyboard focus.
+                    .id(reduced)
+            }
+            .onHover { hovering = $0 && enabled }
+            .onChange(of: enabled) { _, enabled in
+                if !enabled { Motion.instant { hovering = false } }
+            }
+            .onDisappear { hovering = false }
+            .vaneMotionPolicy()
+    }
+}
+
 private struct TactileButtonBody: View {
     let configuration: ButtonStyleConfiguration
     let scales: Bool
