@@ -413,7 +413,7 @@ import XCTest
         let originalBytes = try String(contentsOf: dependency, encoding: .utf8)
         try Data((originalBytes + "\nglobalThis.packageRevision = 'updated';").utf8).write(to: dependency)
         let host = ExtensionHost.host(for: profile)
-        let accepted = try await host.load(folder, installing: true) { _ in true }
+        let accepted = try await host.load(folder, installing: false, replacing: true) { _ in true }
         XCTAssertTrue(accepted)
         let after = try XCTUnwrap(host.installed.first)
         let (newAction, newWeb) = try await popup(after)
