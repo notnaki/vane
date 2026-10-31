@@ -39,18 +39,9 @@ def main():
     bindings = dict(re.findall(r'^          ([A-Z_]+): \$\{\{ needs\.([a-z-]+)\.result \}\}$', gate, re.MULTILINE))
     assert set(bindings.values()) == dependencies(gate)
     assert 'continue-on-error:' not in text
-    advisory = sections['known-limitations']
-    assert dependencies(advisory) == {'changes', 'build'}
-    assert 'classify-worker-ua.py' in advisory
-    assert 'PIPESTATUS' in advisory
-    assert 'if-no-files-found: error' in advisory
-    assert '--suite known-limitations' in advisory
+    assert 'known-limitations' not in sections
+    assert 'scripts/classify-worker-ua.py ' not in text
     assert '--suite required' in sections['native']
-    assert '--count 1' in advisory
-    assert 'scripts/run-native-tests.py' in advisory
-    assert 'if: ${{ always() }}' in advisory
-    assert 'actions/upload-artifact@v6' in advisory
-    assert 'GITHUB_STEP_SUMMARY' in advisory
     assert "VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'" in sections['native']
     preflight = sections['native'].split('- name: Owned AppKit loop preflight', 1)[1].split('- name: Native regression tests', 1)[0]
     assert 'timeout-minutes: 4' in preflight

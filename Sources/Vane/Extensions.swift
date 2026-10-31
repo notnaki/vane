@@ -60,6 +60,7 @@ import WebKit
         guard let host = hosts[profileID] else { return }
         host.invalidated = true
         host.nativeMessagingDenial.cancelAll()
+        host.workerIdentityUpdate?.cancel()
         host.storeUpdateTimer?.invalidate()
         ExtensionManagement.close(for: profileID)
         for task in host.restoring.values { task.cancel() }
@@ -97,7 +98,7 @@ import WebKit
     #endif
 
     static func applyUserAgent() {
-        for host in hosts.values { host.userAgent.apply() }
+        for host in hosts.values { host.userAgent.apply(); host.scheduleWorkerIdentityUpdate() }
     }
 
     /// Folder path alongside the context, because WKWebExtension does not report the
@@ -139,6 +140,7 @@ import WebKit
     private var limitations: [String: [String]] = [:]
     private let codeStore: ExtensionCodeStore
     private let nativeMessagingDenial = ExtensionNativeMessagingDenial()
+    private var workerIdentityUpdate: Task<Void, Never>?
     private var records: [String: ExtensionCodeStore.Record] = [:]
     private var metadataFailure: String?
     private static let integratedCapabilities: Set<String> = ["contextMenus", "menus"]
@@ -382,7 +384,7 @@ import WebKit
             // authoritative, and an active candidate is never exposed in loaded.
             try codeStore.save(next)
             records = next
-            if let replacement { loaded.append((path, replacement)) }
+            if let replacement { publish(replacement, at: path) }
             failures[path] = nil
             startPolling()
             SiteChanges.shared.bump()
@@ -406,7 +408,7 @@ import WebKit
                         guard !invalidated, operations[path] == token else {
                             try? unloadContext(restored); closePages(for: restored); throw CancellationError()
                         }
-                        loaded.append((path, restored))
+                        publish(restored, at: path)
                     } catch {
                         if !invalidated, operations[path] == token {
                             failures[path] = "The compatibility change failed and the accepted extension could not restart. Choose Retry. Your settings are retained. " + error.localizedDescription
@@ -733,7 +735,7 @@ import WebKit
             let manifestData = try Self.readManifest(frozen.url)
             let manifest = try Self.validate(frozen.url, data: manifestData)
             try ExtensionDiagnostics.validateResources(manifest, in: frozen.url)
-            let ext = try await WKWebExtension(resourceBaseURL: frozen.url)
+            let ext = try await runtimeExtension(in: frozen.url, manifest: manifest)
             try checkLifetime()
             let parseErrors = ExtensionDiagnostics.blockingErrors(ext.errors, manifest: manifest)
             guard parseErrors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(parseErrors) + "\nFix the extension folder and retry.") }
@@ -818,7 +820,7 @@ import WebKit
             limitations[path] = issues
             saveManagement()
             metadataIcons[path] = ext.icon(for: CGSize(width: 40, height: 40))
-            if let context = candidates.removeValue(forKey: path) { loaded.append((path, context)) }
+            if let context = candidates.removeValue(forKey: path) { publish(context, at: path) }
             accepted = true
             if let oldRecord { codeStore.discard(oldRecord) }
             startPolling()
@@ -847,7 +849,7 @@ import WebKit
                             guard !invalidated, operations[path] == token else {
                                 try? unloadContext(restored); closePages(for: restored); throw CancellationError()
                             }
-                            loaded.append((path, restored))
+                            publish(restored, at: path)
                         }
                     } catch {
                         failures[path] = "The update failed and the accepted version could not be restarted. Choose Retry. Your identity and settings are retained.\n" + error.localizedDescription
@@ -945,7 +947,7 @@ import WebKit
             let manifest = try Self.validate(resources)
             try ExtensionDiagnostics.validateResources(manifest, in: resources)
             guard let bundle = Bundle(url: bundleURL) else { throw Failure("The Safari extension bundle is invalid.") }
-            let ext = try await WKWebExtension(appExtensionBundle: bundle)
+            let ext = try await runtimeExtension(in: resources, manifest: manifest, appBundle: bundle, signatureHash: candidate.source.signatureHash)
             try checkLifetime()
             let errors = ExtensionDiagnostics.blockingErrors(ext.errors, manifest: manifest)
             guard errors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(errors)) }
@@ -1014,7 +1016,7 @@ import WebKit
             failures[path] = nil; limitations[path] = issues
             saveManagement()
             metadataIcons[path] = ext.icon(for: CGSize(width: 40, height: 40))
-            if let context = candidates.removeValue(forKey: path) { loaded.append((path, context)) }
+            if let context = candidates.removeValue(forKey: path) { publish(context, at: path) }
             accepted = true
             if let oldRecord { codeStore.discard(oldRecord) }
             startPolling(); SiteChanges.shared.bump()
@@ -1038,7 +1040,7 @@ import WebKit
                                 }
                             }.value
                             guard !invalidated, operations[path] == token else { try? unloadContext(restored); throw CancellationError() }
-                            loaded.append((path, restored))
+                            publish(restored, at: path)
                         } catch { failures[path] = "The app update failed and the accepted extension could not restart. Choose Retry. Your settings are retained. " + error.localizedDescription }
                     }
                 }
@@ -1046,6 +1048,99 @@ import WebKit
             }
             throw error
         }
+    }
+
+    @MainActor private struct RuntimeAccess {
+        let granted: [WKWebExtension.Permission: Date]
+        let denied: [WKWebExtension.Permission: Date]
+        let grantedSites: [WKWebExtension.MatchPattern: Date]
+        let deniedSites: [WKWebExtension.MatchPattern: Date]
+        init(_ context: WKWebExtensionContext) {
+            granted = context.grantedPermissions; denied = context.deniedPermissions
+            grantedSites = context.grantedPermissionMatchPatterns; deniedSites = context.deniedPermissionMatchPatterns
+        }
+        func apply(to context: WKWebExtensionContext) {
+            context.grantedPermissions = granted; context.deniedPermissions = denied
+            context.grantedPermissionMatchPatterns = grantedSites; context.deniedPermissionMatchPatterns = deniedSites
+        }
+    }
+
+    private func publish(_ context: WKWebExtensionContext, at path: String) {
+        loaded.append((path, context))
+        scheduleWorkerIdentityUpdate()
+    }
+
+    /// A worker bootstrap is immutable for one native context. Recreate only MV3
+    /// workers when the selection changes, retaining their exact access decisions.
+    /// One task coalesces changes and lets installation/removal keep their tokens.
+    private func scheduleWorkerIdentityUpdate() {
+        guard !invalidated, workerIdentityUpdate == nil,
+              loaded.contains(where: { ExtensionWorkerIdentity.identity(of: $0.context.webExtension).map { $0 != userAgent.effective } ?? false }) else { return }
+        workerIdentityUpdate = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { workerIdentityUpdate = nil }
+            var failed: Set<String> = []
+            while !invalidated && !Task.isCancelled {
+                let stale = loaded.filter { item in
+                    !failed.contains(item.path) && (ExtensionWorkerIdentity.identity(of: item.context.webExtension).map { $0 != userAgent.effective } ?? false)
+                }
+                guard !stale.isEmpty else { return }
+                var busy = false
+                for item in stale {
+                    guard operations[item.path] == nil, restoring[item.path] == nil else { busy = true; continue }
+                    guard let record = records[item.path], !disabled.contains(item.path) else { failed.insert(item.path); continue }
+                    let token = UUID(), generation = installationGenerations()[item.path]
+                    let access = RuntimeAccess(item.context)
+                    operations[item.path] = token
+                    defer { if operations[item.path] == token { operations[item.path] = nil }; rebuild() }
+                    do {
+                        try deactivate(item.path)
+                        let replacement = try await context(for: record, path: item.path, inheritingAccess: access) {
+                            try Task.checkCancellation()
+                            guard !self.invalidated, self.operations[item.path] == token,
+                                  self.installationGenerations()[item.path] == generation else { throw CancellationError() }
+                        }
+                        guard !invalidated, operations[item.path] == token, !Task.isCancelled else {
+                            try? unloadContext(replacement); closePages(for: replacement); throw CancellationError()
+                        }
+                        publish(replacement, at: item.path)
+                        failures[item.path] = nil
+                        SiteChanges.shared.bump()
+                    } catch is CancellationError { failed.insert(item.path) }
+                    catch {
+                        failed.insert(item.path)
+                        if !invalidated, operations[item.path] == token {
+                            failures[item.path] = "The extension could not restart with the selected user agent. Choose Retry. Its accepted code and settings are retained. " + error.localizedDescription
+                        }
+                    }
+                }
+                if busy {
+                    do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                }
+            }
+        }
+    }
+
+    private func runtimeExtension(in folder: URL, manifest: [String: Any], appBundle: Bundle? = nil,
+                                  signatureHash: String? = nil) async throws -> WKWebExtension {
+        let original: WKWebExtension
+        if let appBundle { original = try await WKWebExtension(appExtensionBundle: appBundle) }
+        else { original = try await WKWebExtension(resourceBaseURL: folder) }
+        guard (manifest["manifest_version"] as? Int) == 3 else { return original }
+        // Missing runtime introspection must not silently qualify a worker as a page.
+        guard original.responds(to: NSSelectorFromString("_hasServiceWorkerBackgroundContent")) else {
+            throw Failure("This WebKit version cannot determine the extension background environment.")
+        }
+        guard ExtensionWorkerIdentity.usesWorker(original) else { return original }
+        let store = codeStore, bundleURL = appBundle?.bundleURL
+        let resources = try await Task.detached(priority: .utility) {
+            let resources = try store.resources(in: folder)
+            if let bundleURL, let signatureHash {
+                try ExtensionWorkerIdentity.validateSignedResources(resources, bundleURL: bundleURL, signatureHash: signatureHash)
+            }
+            return resources
+        }.value
+        return try ExtensionWorkerIdentity.prepare(original, resources: resources, manifest: manifest, userAgent: userAgent.effective)
     }
 
     private func makeContext(_ ext: WKWebExtension, identity: String, runtimeID: String? = nil,
@@ -1081,7 +1176,7 @@ import WebKit
         return context
     }
 
-    private func context(for record: ExtensionCodeStore.Record, path: String, recoveringSafariUpdate: Bool = false, checkLifetime: @escaping @MainActor () throws -> Void) async throws -> WKWebExtensionContext {
+    private func context(for record: ExtensionCodeStore.Record, path: String, recoveringSafariUpdate: Bool = false, inheritingAccess access: RuntimeAccess? = nil, checkLifetime: @escaping @MainActor () throws -> Void) async throws -> WKWebExtensionContext {
         let folder: URL
         let appBundle: Bundle?
         if let safari = record.safari {
@@ -1098,9 +1193,8 @@ import WebKit
         }
         let manifest = try Self.validate(folder)
         try ExtensionDiagnostics.validateResources(manifest, in: folder)
-        let ext: WKWebExtension
-        if let appBundle { ext = try await WKWebExtension(appExtensionBundle: appBundle) }
-        else { ext = try await WKWebExtension(resourceBaseURL: folder) }
+        let ext = try await runtimeExtension(in: folder, manifest: manifest, appBundle: appBundle,
+                                             signatureHash: record.safari?.signatureHash)
         let errors = ExtensionDiagnostics.blockingErrors(ext.errors, manifest: manifest)
         guard errors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(errors)) }
         // Record access is checked against the actual code before anything can execute.
@@ -1108,6 +1202,7 @@ import WebKit
         try checkLifetime()
         let context = try makeContext(ext, identity: record.identity, runtimeID: record.safari?.runtimeID ?? record.store?.id,
             nativeMessagingErrorCompatibilityVersion: record.nativeMessagingErrorCompatibilityVersion)
+        access?.apply(to: context)
         candidates[path] = context
         do {
             if let runtimeID = record.safari?.runtimeID ?? record.store?.id { try await waitForDataPurge(runtimeID, checkLifetime: checkLifetime) }
@@ -1173,7 +1268,7 @@ import WebKit
                 do { try codeStore.save(next) }
                 catch { try? unloadContext(restored); closePages(for: restored); throw error }
                 records = next
-                loaded.append((path, restored))
+                publish(restored, at: path)
                 disabled.remove(path)
             }
             failures[path] = nil

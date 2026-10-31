@@ -326,7 +326,9 @@ extension ExtensionNativeMessagingErrorTests {
                 NSApp.activate(ignoringOtherApps: true)
                 try await waitNativeModePage("retry page foreground") { NSApp.isActive && window.isKeyWindow && web.window === window }
                 web.load(URLRequest(url: try XCTUnwrap(context.optionsPageURL)))
-                try await waitNativeModePage("retry page loaded in exact owner") {
+                try await waitNativeModePage("retry page loaded in exact owner", diagnostics: {
+                    "loading=\(web.isLoading), title=\(web.title ?? "nil"), url=\(web.url?.absoluteString ?? "nil"), owner=\(web.window === window), visible=\(window.isVisible), active=\(NSApp.isActive), key=\(window.isKeyWindow)"
+                }) {
                     !web.isLoading && web.title == "Sequential retry fixture" && web.window === window && window.isVisible
                         && NSApp.isActive && window.isKeyWindow
                 }
@@ -364,10 +366,10 @@ extension ExtensionNativeMessagingErrorTests {
         }
     }
 
-    private func waitNativeModePage(_ description: String, _ ready: () -> Bool) async throws {
+    private func waitNativeModePage(_ description: String, diagnostics: () -> String = { "" }, _ ready: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
         while !ready() {
-            guard ContinuousClock.now < deadline else { throw ExtensionHost.Failure("Timed out: " + description) }
+            guard ContinuousClock.now < deadline else { throw ExtensionHost.Failure("Timed out: " + description + " " + diagnostics()) }
             try await Task.sleep(for: .milliseconds(10))
         }
     }

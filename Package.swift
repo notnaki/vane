@@ -7,6 +7,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "vane",
+            dependencies: ["ExtensionResourceBridge"],
             path: "Sources/Vane",
             resources: [.copy("EaselFonts"), .copy("WelcomeAssets"), .copy("SpaceEmoji")],
             linkerSettings: [
@@ -16,6 +17,8 @@ let package = Package(
                 .linkedLibrary("z"),
             ]
         ),
+        .target(name: "ExtensionResourceBridge", path: "Sources/ExtensionResourceBridge",
+                publicHeadersPath: "include", linkerSettings: [.linkedFramework("WebKit")]),
         // A separate libSystem-only process owns revision leases in native tests.
         .executableTarget(name: "NativeLeaseHolder", path: "Tests/NativeLeaseHolder"),
         // Only the XCTest bundle links this early, process-local AppKit setup.

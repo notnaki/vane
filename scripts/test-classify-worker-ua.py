@@ -8,7 +8,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import tarfile
 import unittest
 
 sys.dont_write_bytecode = True
@@ -127,81 +126,14 @@ class ClassifierTests(unittest.TestCase):
         self.filter = ".*"
         self.classify()
 
-    def test_workflow_preserves_runner_and_capture_statuses(self):
+    def test_current_workflow_has_no_advisory_worker_exception(self):
         spec = importlib.util.spec_from_file_location("workflow_fixture", ROOT / "test-checks-workflow.py")
         workflow = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(workflow)
-        section = workflow.jobs((ROOT.parent / ".github/workflows/checks.yml").read_text())["known-limitations"]
-        script = workflow.block(section.split("- name: Exercise known WebKit worker UA behavior", 1)[1])
-        commands = self.directory / "commands"
-        commands.mkdir()
-        for name, body in {
-            "python3": '''if [ "$1" = scripts/run-native-tests.py ]; then
-  cat "$CLASSIFIER_SAMPLE_LOG"
-  exit "$CLASSIFIER_RUNNER_STATUS"
-fi
-exec "$CLASSIFIER_REAL_PYTHON" "$@"
-''',
-            "tee": '/usr/bin/tee "$@"\nexit "$CLASSIFIER_TEE_STATUS"\n',
-        }.items():
-            path = commands / name
-            path.write_text("#!/bin/bash\nset -eu\n" + body)
-            path.chmod(0o755)
-        for suffix, value in (("log", self.text), ("json", json.dumps(self.manifest)), ("filter", self.filter)):
-            (self.directory / ("vane-known-limitations." + suffix)).write_text(value)
-        for runner, tee, wanted in ((1, 0, True), (124, 0, False), (1, 1, False), (0, 0, False)):
-            env = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
-                   "RUNNER_TEMP": str(self.directory), "GITHUB_STEP_SUMMARY": str(self.directory / "summary.md"),
-                   "CLASSIFIER_SAMPLE_LOG": str(FIXTURE.with_suffix(".txt")),
-                   "CLASSIFIER_REAL_PYTHON": sys.executable,
-                   "CLASSIFIER_RUNNER_STATUS": str(runner), "CLASSIFIER_TEE_STATUS": str(tee)}
-            result = subprocess.run(["bash", "-c", script], cwd=ROOT.parent, env=env, capture_output=True, text=True)
-            self.assertEqual(result.returncode == 0, wanted, result.stdout + result.stderr)
-
-    def test_workflow_archives_every_exact_nonempty_evidence_file(self):
-        spec = importlib.util.spec_from_file_location("workflow_fixture", ROOT / "test-checks-workflow.py")
-        workflow = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(workflow)
-        section = workflow.jobs((ROOT.parent / ".github/workflows/checks.yml").read_text())["known-limitations"]
-        name = "- name: Prepare known limitation evidence archive"
-        self.assertIn(name, section)
-        prepare = section.split(name, 1)[1].split("- name: Preserve known limitation evidence", 1)[0]
-        self.assertIn("if: ${{ always() }}", prepare)
-        script = workflow.block(prepare)
-        upload = section.split("- name: Preserve known limitation evidence", 1)[1]
-        destination = re.search(r"^          path: \$\{\{ runner.temp \}\}/([^\n]+)$", upload, re.MULTILINE)
-        self.assertIsNotNone(destination, "Upload exactly one prepared archive")
-        expected = {"vane-known-limitations.log": FIXTURE.with_suffix(".txt").read_bytes(),
-                    "vane-known-limitations.json": FIXTURE.with_suffix(".json").read_bytes(),
-                    "vane-known-limitations.filter": FIXTURE.with_suffix(".filter").read_bytes()}
-        for bad, empty in [(None, False), *[(name, empty) for name in expected for empty in (False, True)]]:
-            with self.subTest(file=bad, empty=empty), tempfile.TemporaryDirectory(dir=self.directory) as directory:
-                root = Path(directory)
-                if bad is not None: (root / destination[1]).write_bytes(b"stale evidence must not survive")
-                for name, content in expected.items():
-                    if name != bad or empty:
-                        (root / name).write_bytes(b"" if name == bad else content)
-                result = subprocess.run(["bash", "-c", script], env={**os.environ, "RUNNER_TEMP": directory},
-                                        capture_output=True, text=True)
-                archive = root / destination[1]
-                self.assertEqual(result.returncode == 0, bad is None, result.stderr)
-                if bad is not None:
-                    self.assertFalse(archive.exists(), "Never publish a partial evidence archive")
-                else:
-                    with tarfile.open(archive) as bundle:
-                        self.assertEqual(sorted(bundle.getnames()), sorted(expected))
-                        for name, content in expected.items(): self.assertEqual(bundle.extractfile(name).read(), content)
-        with tempfile.TemporaryDirectory(dir=self.directory) as directory:
-            root = Path(directory)
-            for name, content in expected.items(): (root / name).write_bytes(content)
-            command = root / "tar"
-            command.write_text('#!/bin/bash\nprintf partial > "$2"\nexit 2\n')
-            command.chmod(0o755)
-            result = subprocess.run(["bash", "-c", script], env={**os.environ, "RUNNER_TEMP": directory,
-                                    "PATH": directory + os.pathsep + os.environ["PATH"]}, capture_output=True, text=True)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertFalse((root / destination[1]).exists())
-            self.assertFalse(list(root.glob("vane-known-limitations-evidence.*")), "Remove unpublished partial archives")
+        text = (ROOT.parent / ".github/workflows/checks.yml").read_text()
+        self.assertNotIn("known-limitations", workflow.jobs(text))
+        self.assertNotIn("scripts/classify-worker-ua.py ", text)
+        self.assertIn("--suite required", workflow.jobs(text)["native"])
 
 
 if __name__ == "__main__": unittest.main()

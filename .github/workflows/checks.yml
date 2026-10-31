@@ -57,7 +57,7 @@ jobs:
       - name: Native shard coverage fixtures
         run: python3 scripts/test-native-test-shards.py
 
-      - name: Worker UA classification fixtures
+      - name: Historical worker UA evidence fixtures
         run: python3 scripts/test-classify-worker-ua.py
 
       - name: Change scope fixtures
@@ -229,99 +229,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  known-limitations:
-    # Only a classified bare-engine UA mismatch is advisory. Fixture, cleanup,
-    # ownership, execution and evidence failures remain required check failures.
-    name: Known limitation — extension worker UA (advisory)
-    needs: [changes, build]
-    if: needs.changes.outputs.app_required == 'true'
-    runs-on: macos-26
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download compiled runtime
-        uses: actions/download-artifact@v5
-        with:
-          name: debug-runtime
-          path: ${{ runner.temp }}/vane-debug-runtime
-
-      - name: Restore and verify compiled runtime
-        run: |
-          python3 scripts/ci-build-artifact.py restore \
-            --revision "$GITHUB_SHA" \
-            --archive "$RUNNER_TEMP/vane-debug-runtime/vane-debug-runtime.tar.gz"
-
-      - name: Select only the known worker UA probe
-        run: |
-          set -euo pipefail
-          swift test --build-system native list --skip-build > "$RUNNER_TEMP/vane-native-tests.txt"
-          python3 scripts/native-test-shards.py plan \
-            --inventory "$RUNNER_TEMP/vane-native-tests.txt" \
-            --suite known-limitations --index 1 --count 1 \
-            --manifest "$RUNNER_TEMP/vane-known-limitations.json" \
-            --filter-output "$RUNNER_TEMP/vane-known-limitations.filter"
-
-      - name: Exercise known WebKit worker UA behavior
-        id: probe
-        env:
-          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
-        run: |
-          set -euo pipefail
-          test -s "$RUNNER_TEMP/vane-known-limitations.json"
-          test -s "$RUNNER_TEMP/vane-known-limitations.filter"
-          set +e
-          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 \
-            --filter "$(cat "$RUNNER_TEMP/vane-known-limitations.filter")" \
-            2>&1 | tee "$RUNNER_TEMP/vane-known-limitations.log"
-          pipeline_status=("${PIPESTATUS[@]}")
-          set -e
-          python3 scripts/classify-worker-ua.py \
-            --manifest "$RUNNER_TEMP/vane-known-limitations.json" \
-            --filter "$RUNNER_TEMP/vane-known-limitations.filter" \
-            --log "$RUNNER_TEMP/vane-known-limitations.log" \
-            --runner-status "${pipeline_status[0]}" --tee-status "${pipeline_status[1]}" \
-            --summary "$GITHUB_STEP_SUMMARY"
-
-      - name: Report advisory result
-        if: ${{ always() }}
-        env:
-          PROBE_OUTCOME: ${{ steps.probe.outcome }}
-        run: |
-          printf 'Extension worker UA validation step: **%s**.\n\n' "$PROBE_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
-          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-          Manifest-v3 workers can retain WebKit's engine UA instead of the selected page UA.
-          Only the classified bare-engine startup/current mismatch is advisory. Its desired-behavior assertions remain active.
-          Fixture, cleanup, unknown assertions, missing execution and evidence failures block required checks.
-          A passing sample does not establish a repair; issue #513 retains the documented platform limitation and signed-app failures.
-          Popup UA, manifest-v2 background UA, storage isolation and controller ownership remain required.
-          See the attached log for the actual failure and fixture cleanup results.
-          EOF
-
-      - name: Prepare known limitation evidence archive
-        if: ${{ always() }}
-        run: |
-          set -euo pipefail
-          evidence_archive="$RUNNER_TEMP/vane-known-limitations-evidence.tar.gz"
-          rm -f "$evidence_archive"
-          for file in vane-known-limitations.log vane-known-limitations.json vane-known-limitations.filter; do
-            test -s "$RUNNER_TEMP/$file" || { echo "::error::Missing or empty worker UA evidence: $file"; exit 1; }
-          done
-          evidence_pending=$(mktemp "$RUNNER_TEMP/vane-known-limitations-evidence.XXXXXX")
-          trap 'rm -f "$evidence_pending"' EXIT
-          COPYFILE_DISABLE=1 tar -czf "$evidence_pending" -C "$RUNNER_TEMP" \
-            vane-known-limitations.log vane-known-limitations.json vane-known-limitations.filter
-          mv "$evidence_pending" "$evidence_archive"
-
-      - name: Preserve known limitation evidence
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: known-extension-worker-ua
-          path: ${{ runner.temp }}/vane-known-limitations-evidence.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-
   packaging:
     # Common runtime/fixture checks run once, away from the native test desktops.
     name: Packaging and integrations
@@ -375,7 +282,7 @@ jobs:
   checks:
     # A docs-only run skips all app jobs intentionally; unexpected skips still fail.
     if: ${{ always() }}
-    needs: [changes, source, build, native, packaging, known-limitations]
+    needs: [changes, source, build, native, packaging]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -387,7 +294,6 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
           NATIVE_RESULT: ${{ needs.native.result }}
           PACKAGING_RESULT: ${{ needs.packaging.result }}
-          KNOWN_LIMITATIONS_RESULT: ${{ needs.known-limitations.result }}
         run: |
           set -euo pipefail
           [ "$CHANGES_RESULT" = success ] || { echo '::error::Change detection failed.'; exit 1; }
@@ -396,7 +302,7 @@ jobs:
             false) expected=skipped ;;
             *) echo '::error::Missing or invalid change scope.'; exit 1 ;;
           esac
-          for result in "$SOURCE_RESULT" "$BUILD_RESULT" "$NATIVE_RESULT" "$PACKAGING_RESULT" "$KNOWN_LIMITATIONS_RESULT"; do
+          for result in "$SOURCE_RESULT" "$BUILD_RESULT" "$NATIVE_RESULT" "$PACKAGING_RESULT"; do
             if [ "$result" != "$expected" ]; then
               echo "::error::A selected check did not succeed or an app job skipped unexpectedly (result=$result, expected=$expected)."
               exit 1

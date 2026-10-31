@@ -38,26 +38,20 @@ class NativeTestShardsTests(unittest.TestCase):
             return json.loads(manifest.read_text()), pattern.read_text().strip()
         self.assertFalse(manifest.exists())
 
-    def test_known_worker_ua_probe_is_separate_without_losing_required_coverage(self):
-        known = "VaneTests.ExtensionUserAgentTests/testKnownServiceWorkerUserAgentLimitation"
-        required = ["VaneTests.ExtensionUserAgentTests/testServiceWorkerPopupIdentityAndOwnershipFollowSelectionWhenSharedPoolIsReused",
-                    "VaneTests.ExtensionUserAgentTests/testDefaultSafariIdentityReachesPopupAndManifestTwoBackgroundBeforeScriptsRun",
-                    "VaneTests.Other/testNewRegression"]
-        inventory = required + [known]
-        mandatory, mandatory_filter = self.plan(inventory, count=1, suite="required")
-        advisory, advisory_filter = self.plan(inventory, count=1, suite="known-limitations")
-        self.assertEqual(mandatory["tests"], sorted(required))
-        self.assertEqual(advisory["tests"], [known])
-        self.assertEqual(mandatory["inventory_sha256"], advisory["inventory_sha256"])
-        self.assertEqual(set(mandatory["tests"]) | set(advisory["tests"]), set(inventory))
-        for test in inventory:
-            self.assertEqual(bool(re.search(mandatory_filter, test)), test in required)
-            self.assertEqual(bool(re.search(advisory_filter, test)), test == known)
+    def test_worker_identity_probe_is_blocking_with_every_required_test(self):
+        probe = "VaneTests.ExtensionUserAgentTests/testServiceWorkerNavigatorIdentityAcrossSelections"
+        inventory = [probe, "VaneTests.ExtensionUserAgentTests/testDefaultSafariIdentityReachesPopupAndManifestTwoBackgroundBeforeScriptsRun",
+                     "VaneTests.Other/testNewRegression"]
+        mandatory, pattern = self.plan(inventory, count=1, suite="required")
+        self.assertEqual(mandatory["tests"], sorted(inventory))
+        for test in inventory: self.assertIsNotNone(re.search(pattern, test))
 
-    def test_missing_or_renamed_known_probe_fails_closed(self):
+    def test_retired_advisory_suite_cannot_be_selected(self):
+        self.plan(["VaneTests.A/testA"], count=1, suite="known-limitations", success=False)
+
+    def test_missing_or_renamed_worker_identity_probe_fails_closed(self):
         tests = ["VaneTests.ExtensionUserAgentTests/testRenamedProbe", "VaneTests.Other/testA"]
         self.plan(tests, count=1, suite="required", success=False)
-        self.plan(tests, count=1, suite="known-limitations", success=False)
 
     def test_balances_duration_without_splitting_classes_or_losing_new_tests(self):
         tests = ["VaneTests.Slow/testA", "VaneTests.Slow/testB", "VaneTests.Medium/testA",

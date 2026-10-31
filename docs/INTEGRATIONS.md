@@ -57,6 +57,14 @@ update keeps the accepted version. Store support uses Apple's WebKit runtime and
 does not add Chrome-only APIs or native messaging; the compatibility section below
 still applies. Private profiles cannot install or run store extensions.
 
+MV3 service workers receive Vane's selected navigator identity before their code
+runs, including module dependencies. The accepted source stays unchanged on disk;
+Vane uses an in-memory bootstrap with a versioned worker URL. Changing the Develop
+identity restarts these workers while retaining their approved access and storage.
+The runtime remains Apple's system WebKit and keeps receiving Apple's updates.
+The native `chrome` and `browser` namespaces retain the APIs WebKit actually supports.
+See [worker navigator identity](EXTENSION-WORKER-IDENTITY.md) for details.
+
 For Safari apps, Vane verifies Apple-issued signatures on both the containing app and
 its embedded `com.apple.Safari.web-extension` bundle, including sealed resources. The
 bundle and signing identifiers must match, and both bundles must have the same verified
@@ -73,7 +81,8 @@ options pages, and rulesets before presenting installation consent. Review capab
 website access, and compatibility limitations before installing. Cancel leaves the
 extension uninstalled. Optional permissions are not silently granted. Signed bundle
 snapshots use the same size/count limits and allow relative links only when their
-resolved targets stay inside the verified bundle.
+resolved targets stay inside the verified bundle. The MV3 runtime resource view
+requires regular files and rejects resource links before worker activation.
 
 Details show source, version, required installation access, declared optional
 capabilities/sites, current additional grants, keyboard commands, and compatibility

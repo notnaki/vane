@@ -13,9 +13,9 @@ import sys
 IDENTIFIER = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/[^\s/]+")
 COMPLETED = re.compile(r"Test Case '-\[([^ ]+) ([^ ]+)\]' (passed|skipped|failed) \(")
 BOOTSTRAP_DIAGNOSTIC = "Native test host bootstrap: beforeAppKit=true, configured=true"
-# Explicit product limitation, kept executable in its own advisory CI job. A
-# renamed/missing probe fails planning instead of silently reducing coverage.
-KNOWN_LIMITATIONS = {"VaneTests.ExtensionUserAgentTests/testKnownServiceWorkerUserAgentLimitation"}
+# Worker navigator identity is required coverage. A missing/renamed regression
+# fails planning instead of silently deleting the former advisory's assertions.
+REQUIRED_WORKER_IDENTITY = {"VaneTests.ExtensionUserAgentTests/testServiceWorkerNavigatorIdentityAcrossSelections"}
 
 
 def validate_tests(tests):
@@ -34,11 +34,10 @@ def plan(arguments):
              if line.strip() and line.strip() != BOOTSTRAP_DIAGNOSTIC]
     validate_tests(tests)
     inventory = tests
-    if arguments.suite != "all":
-        missing = KNOWN_LIMITATIONS - set(tests)
+    if arguments.suite == "required":
+        missing = REQUIRED_WORKER_IDENTITY - set(tests)
         if missing:
-            raise ValueError("known limitation probe missing from inventory: " + ", ".join(sorted(missing)))
-        tests = [test for test in tests if (test in KNOWN_LIMITATIONS) == (arguments.suite == "known-limitations")]
+            raise ValueError("required worker identity probe missing from inventory: " + ", ".join(sorted(missing)))
     if not 1 <= arguments.index <= arguments.count:
         raise ValueError("shard index must be between 1 and count")
     classes = {}
@@ -68,10 +67,6 @@ def plan(arguments):
         raise ValueError("shards must cover the inventory exactly once and be nonempty")
     selected = shards[arguments.index - 1]
     pattern = "^(?:" + "|".join(re.escape(name) for name in sorted(selected["classes"])) + ")/"
-    if arguments.suite == "required":
-        pattern = "^(?!(?:" + "|".join(re.escape(test) for test in sorted(KNOWN_LIMITATIONS)) + ")$)" + pattern[1:]
-    elif arguments.suite == "known-limitations":
-        pattern = "^(?:" + "|".join(re.escape(test) for test in sorted(selected["tests"])) + ")$"
     if sorted(test for test in inventory if re.search(pattern, test)) != sorted(selected["tests"]):
         raise ValueError("filter does not match the selected tests exactly")
     manifest = {
@@ -123,7 +118,7 @@ def main():
     planner.add_argument("--durations", type=Path, default=Path(__file__).with_name("native-test-durations.json"))
     planner.add_argument("--manifest", type=Path, required=True)
     planner.add_argument("--filter-output", type=Path, required=True)
-    planner.add_argument("--suite", choices=("all", "required", "known-limitations"), default="all")
+    planner.add_argument("--suite", choices=("all", "required"), default="all")
     checker = commands.add_parser("verify")
     checker.add_argument("--manifest", type=Path, required=True)
     checker.add_argument("--log", type=Path, required=True)
