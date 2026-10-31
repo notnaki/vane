@@ -1,4 +1,8 @@
-# MV3 worker identity: native engine prototype
+# Declined proposal: MV3 native engine prototype
+
+## Decision — do not implement
+
+The user explicitly rejected this direction on2026-10-31: “DONT FORK WEBKIT”. Do not build, bundle, fork, patch, or replace WebKit for this task. Keep the following proposal only as historical design evidence. No engine prototype was built. Continue repairs against the system framework. This explicit decision supersedes the earlier historical constraint audit below.
 
 ## Requested result
 
@@ -38,6 +42,6 @@ Before a production decision, a bundled engine would also need a reproducible bu
 
 A successful prototype permits a separate reviewed production plan. It does not close #513 automatically. Keep the current system-engine limitation visible until a supported shipping repair passes required CI and actual-main verification. The separate historical navigation-stall CI investigation remains separate from the MV3 result.
 
-## Decision needed
+## Historical decision request
 
-Approve or decline building this isolated native-engine prototype. The major choice is whether to investigate a bundled engine as a possible shipping path, accepting its packaging and security-maintenance implications. No production runtime change is included in this approval.
+The proposal was submitted for a runtime architecture choice and was declined. It is not an implementation plan.
