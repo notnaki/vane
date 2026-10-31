@@ -37,6 +37,7 @@ import WebKit
     private var loadingOwner: UUID?
     private var backgroundLoad = false
     private var preparing = false
+    private var foregroundIntent = false
     private var preparedState: FavouritePreviewState?
     private var promotionTask: Task<Void, Never>?
     private var accountHint: String?
@@ -92,12 +93,16 @@ import WebKit
                 self.owner = owner; backgroundLoad = false; loadingOwner = owner; preparing = preparing || preparation; state = .loading
             }
             // A promotion must not restart WebKit or consume the failed-refresh cooldown.
-            if !preparation && preparing { promote(context, source: source) }
+            if !preparation {
+                foregroundIntent = true
+                if preparing { promote(context, source: source) }
+            }
             return
         }
         stop()
         backgroundLoad = background
-        preparing = preparation; accountHint = account; requestSource = source
+        preparing = preparation; foregroundIntent = !preparation && !background
+        accountHint = account; requestSource = source
         self.sessionRetries = sessionRetries
         self.owner = background ? nil : owner; self.context = context; state = .loading
         guard Self.enabled(context.service), !privateSession, blocked[context.profileID] == nil else {
@@ -195,7 +200,7 @@ import WebKit
         if loading && !BatterySaver.shared.isActive {
             // Let this one user-initiated request fill the cache. The loader's existing
             // deadline still retires WebKit; no closed-card refresh or polling begins.
-            self.owner = nil; state = .loading; preparing = false; preparedState = nil
+            self.owner = nil; state = .loading; preparing = false; foregroundIntent = false; preparedState = nil
             promotionTask?.cancel(); promotionTask = nil
             return
         }
@@ -215,7 +220,7 @@ import WebKit
         attempts = attempts.filter { $0.key.profileID != profileID }
         guard let context, context.profileID == profileID else { return }
         guard let owner else { stop(); return }
-        if loading && !preparing && sessionRetries < 1 {
+        if loading && foregroundIntent && sessionRetries < 1 {
             request(context, owner: owner, account: accountHint, source: requestSource,
                     sessionRetries: sessionRetries + 1)
         } else {
@@ -244,7 +249,7 @@ import WebKit
         // Cancellation is not a failed refresh. A deliberate return may retry immediately.
         if loading, let context { attempts[context] = nil }
         generation += 1; task?.cancel(); task = nil; loading = false; loadingOwner = nil; backgroundLoad = false; loader.cancel()
-        preparing = false; preparedState = nil; accountHint = nil; requestSource = nil
+        preparing = false; foregroundIntent = false; preparedState = nil; accountHint = nil; requestSource = nil
         promotionTask?.cancel(); promotionTask = nil
     }
     private func promote(_ context: FavouritePreviewContext, source: WKWebView?) {

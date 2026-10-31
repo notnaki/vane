@@ -302,7 +302,7 @@ import XCTest
         XCTAssertTrue(condition(), diagnostics(), file: file, line: line)
     }
     private func diagnostics(_ previews: FavouritePreviews, source: WKWebView, loader: Feel04Loader) -> String {
-        let fields = Set(["generation", "loading", "loadingOwner", "preparing", "preparedState", "accountHint"])
+        let fields = Set(["generation", "loading", "loadingOwner", "preparing", "foregroundIntent", "preparedState", "accountHint"])
         let internals = Mirror(reflecting: previews).children.compactMap { child -> String? in
             guard let label = child.label, fields.contains(label) else { return nil }
             return "\(label)=\(String(describing: child.value))"
