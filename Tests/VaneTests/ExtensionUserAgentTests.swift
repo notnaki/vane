@@ -412,6 +412,8 @@ import XCTest
 
     private func checkCanonicalDependencyUpdate(version: String) async throws {
         Settings.userAgent = "Vane Updated Module/1.0"
+        print("MV3_CACHE_POLICY alwaysRevalidatesExtensionResources=\(WebKitStartup.revalidatesExtensionResources)")
+        XCTAssertTrue(WebKitStartup.revalidatesExtensionResources)
         forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
         let before = try await install(version: 3, module: true)
         let (action, web) = try await popup(before)

@@ -48,6 +48,9 @@ import WebKit
     static func prepare(_ original: WKWebExtension, resources originalResources: [String: Data],
                         manifest: [String: Any], userAgent: String) throws -> WKWebExtension {
         guard usesWorker(original) else { return original }
+        guard WebKitStartup.revalidatesExtensionResources else {
+            throw ExtensionHost.Failure("This WebKit version cannot safely refresh extension worker resources. The extension has not been started.")
+        }
         guard let manifestBytes = originalResources["manifest.json"],
               let snapshotManifest = try JSONSerialization.jsonObject(with: manifestBytes) as? [String: Any],
               NSDictionary(dictionary: snapshotManifest).isEqual(to: manifest),
@@ -85,7 +88,7 @@ import WebKit
             withUnsafeBytes(of: &size) { digest.update(data: Data($0)) }
             digest.update(data: data)
         }
-        include(Data("Vane MV3 navigator resources 2".utf8))
+        include(Data("Vane MV3 navigator resources 3 revalidated".utf8))
         include(Data(directory.utf8)); include(Data(template.utf8)); include(Data(templateEntry.utf8))
         for name in originalResources.keys.sorted() { include(Data(name.utf8)); include(originalResources[name]!) }
         let token = digest.finalize().map { String(format: "%02x", $0) }.joined()
