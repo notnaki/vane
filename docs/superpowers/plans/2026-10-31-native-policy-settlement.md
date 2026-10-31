@@ -1,0 +1,21 @@
+# Native fixture policy settlement
+
+The lean capture41192791385 preserves a real shutdown getter discrepancy: same lease expected/accessory1, run-return check observed/prohibited2 at149.8593978s; final join check observed1 at149.8632891s. No fixture policy setter occurs between those reads; explicit restore2 follows join. The failure dump runs between observations, so its overhead may permit recovery. Underlying AppKit/OS internals are not established. This reproduces the same policyChanged failure family as41048022583 in an adjacent password case. The older b029 document-load stall remains separate and unresolved.
+
+Change the cleanup contract explicitly: require the exact original policy before shutdown completion within the SAME existing12-second monotonic watchdog budget, instead of treating an instantaneous run-return discrepancy as permanent. Keep startup/body checks immediate. Never call a setter to manufacture success; retain every credential/navigation assertion and deadline. A late matching getter must fail.
+
+Use one owned synchronous CFRunLoop polling timer while final join waits for the observable policy condition. Retain lease generation/ownership and all close waiters; callback checks current generation. Every success/failure/cancellation/watchdog path invalidates and clears it. Timer creation failure is fatal. No async settling task or new deadline. Paths without the shutdown budget retain their existing failure behavior.
+
+TDD: add default-nil after-run-return/poll-pending observation hooks to the test-only loop. Actual SDK controls first establish accessory policy, then introduce a real transient prohibited policy followed by owned restoration; old immediate check must fail, repaired cleanup must wait and pass. A permanent mismatch must still fail within the original watchdog; cancellation starts only after polling is observed pending and must join/clear it; restoring only after a deliberately blocked MainActor exceeds the original budget must fail. Controls own and join every restoration task and restore baseline state after shutdown.
+
+Preserve controlled RED attempts and every unexpected result. Run one frozen local relevant cohort and independent current-diff review, then one focused macOS26 preflight only after controls pass. Full CI and merge remain blocked until relevant earlier failures are explained/repaired; this change does not by itself resolve the historical b029 stall or MV3 issue513.
+
+## Controlled qualification (2026-10-31)
+
+The original immediate check plus default-nil control hooks executed two native controls: three intended assertions failed, zero unexpected failures. The transient SDK mismatch was accepted by the setter and observed as prohibited; old close recorded policyChanged and returned before the owned restoration. The late-equality control restored accessory after a deliberate 13s MainActor block and old close incorrectly succeeded. Primary 1, retirement 0; both exact hosts exited. Frozen old source and logs are preserved outside the repository in policy-shutdown-fix/red-original.
+
+The repaired source executed all four native controls successfully: transient recovery 0.123s, pending-poll cancellation 0.072s, permanent mismatch 12.005s, and late equality rejection 13.024s. No skips; primary 0 and retirement 0; exact hosts 9902/start1793443918789732 and 9945/start1793443945428091 exited. The post-run outer loop therefore serviced both polling and cancellation; the permanent mismatch remained prohibited after failure. The fixture never sets activation policy.
+
+Independent review of the current implementation and controls found no unresolved actionable findings. The review's acquisition-failure restoration ownership finding was repaired before GREEN; every created restoration task is joined before the baseline policy defer.
+
+This establishes the shutdown-policy repair, not a resolution of the separate historical b029 document-no-commit stall or the MV3 worker-UA limitation. Full required CI and latest-main integration remain pending. Main advanced from 10c31ed1 to 641bc399 (#559, Look.swift/UI.swift) during focused qualification; the next integration must include that tree and retain strict required checks with administrator enforcement.
