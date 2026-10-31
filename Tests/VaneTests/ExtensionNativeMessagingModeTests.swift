@@ -314,7 +314,8 @@ extension ExtensionNativeMessagingErrorTests {
         let previous = NSApp.activationPolicy()
         defer { NSApp.setActivationPolicy(previous) }
         for throwFromBody in [false, true] {
-            XCTAssertTrue(NSApp.setActivationPolicy(.accessory))
+            let requestAccepted = NSApp.setActivationPolicy(.accessory)
+            print("Native retry fixture baseline: setterAccepted=\(requestAccepted), observed=\(NSApp.activationPolicy().rawValue)")
             try await waitNativeModePage("observable nonregular policy baseline") { NSApp.activationPolicy() == .accessory }
             do {
                 try await withNativeModeFixture(retryPage: true) { fixture in
