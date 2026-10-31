@@ -310,25 +310,27 @@ extension ExtensionNativeMessagingErrorTests {
     }
 
     func testRetryFixtureAdmitsRegularPolicyAndRestoresOnlyAfterLoopJoin() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
         enum DeliberateFailure: Error { case body }
-        let previous = NSApp.activationPolicy()
-        defer { NSApp.setActivationPolicy(previous) }
+        let previous = app.activationPolicy()
+        defer { app.setActivationPolicy(previous) }
         for throwFromBody in [false, true] {
-            let requestAccepted = NSApp.setActivationPolicy(.accessory)
-            print("Native retry fixture baseline: setterAccepted=\(requestAccepted), observed=\(NSApp.activationPolicy().rawValue)")
-            try await waitNativeModePage("observable nonregular policy baseline") { NSApp.activationPolicy() == .accessory }
+            let requestAccepted = app.setActivationPolicy(.accessory)
+            print("Native retry fixture baseline: setterAccepted=\(requestAccepted), observed=\(app.activationPolicy().rawValue)")
+            try await waitNativeModePage("observable nonregular policy baseline") { app.activationPolicy() == .accessory }
             do {
                 try await withNativeModeFixture(retryPage: true) { fixture in
                     try fixture.verifyRunning()
-                    XCTAssertEqual(NSApp.activationPolicy(), .regular,
+                    XCTAssertEqual(app.activationPolicy(), .regular,
                                    "A retry window must be created inside a lease that already admits regular policy")
                     if throwFromBody { throw DeliberateFailure.body }
                 }
                 XCTAssertFalse(throwFromBody, "The deliberate body error must propagate after cleanup")
             } catch DeliberateFailure.body { XCTAssertTrue(throwFromBody) }
-            XCTAssertFalse(NSApp.isRunning, "The owned AppKit loop joins before restoring policy")
-            try await waitNativeModePage("observed original policy after joined cleanup") { NSApp.activationPolicy() == .accessory }
-            XCTAssertEqual(NSApp.activationPolicy(), .accessory,
+            XCTAssertFalse(app.isRunning, "The owned AppKit loop joins before restoring policy")
+            try await waitNativeModePage("observed original policy after joined cleanup") { app.activationPolicy() == .accessory }
+            XCTAssertEqual(app.activationPolicy(), .accessory,
                            "Success and body-error paths restore the observed baseline after teardown and join")
         }
     }
