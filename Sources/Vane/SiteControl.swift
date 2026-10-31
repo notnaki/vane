@@ -651,6 +651,7 @@ struct SiteControlPopover: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Site Control Center")
         .accessibilityValue(model.siteless ? "No page loaded" : "\(model.title), \(model.connection)")
+        .vaneMotionPolicy()
     }
 
     private func header(_ model: SiteControlModel) -> some View {
@@ -893,7 +894,7 @@ private struct StepButton: View {
                 .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
                 .contentShape(.rect)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CompactControlStyle(size: Look.step))
         .accessibilityLabel(glyph == "plus" ? "Zoom In" : "Zoom Out")
     }
 }
