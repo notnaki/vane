@@ -447,11 +447,12 @@ extension ExtensionNativeMessagingErrorTests {
     private func withNativeModeFixture(required: [String] = ["storage", "nativeMessaging"], optional: [String] = ["cookies"], hasBackground: Bool = false, retryPage: Bool = false,
         _ body: @MainActor (NativeModeFixture) async throws -> Void) async throws {
         TestEnvironment.prepare()
-        let originalPolicy = NSApp.activationPolicy()
+        let application = NSApplication.shared
+        let originalPolicy = application.activationPolicy()
         defer {
             // Covers acquisition failures too; successful acquisitions are closed
             // and joined below before this caller-owned policy is restored.
-            if NSApp.activationPolicy() != originalPolicy { NSApp.setActivationPolicy(originalPolicy) }
+            if application.activationPolicy() != originalPolicy { application.setActivationPolicy(originalPolicy) }
         }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: retryPage ? .regular : nil)
         let fixture = NativeModeFixture(hasBackground: hasBackground, retryPage: retryPage,
