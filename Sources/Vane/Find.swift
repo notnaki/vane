@@ -348,7 +348,7 @@ private struct FindBarBody: View {
             Button { close() } label: { Image(systemName: "xmark") }
                 .help("Close Find Bar").accessibilityLabel("Close Find Bar")
         }
-        .buttonStyle(FindControlStyle()).font(Look.caption).foregroundStyle(.secondary)
+        .buttonStyle(CompactControlStyle(bar: true)).font(Look.caption).foregroundStyle(Look.barText)
         .padding(.horizontal, Look.rowTrailingInset).padding(.vertical, Look.rowPadding)
         .background(chromeTheme.barFill, in: .rect(cornerRadius: Look.cardRadius))
         .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
@@ -404,26 +404,6 @@ private struct FindBarBody: View {
     private func close() {
         store.findOpen = false
         store.focusPage()
-    }
-}
-
-/// A full control-sized target without enlarging the find bar's quiet glyphs.
-struct FindControlStyle: ButtonStyle {
-    @Environment(\.spaceChromeTheme) private var chromeTheme
-    @Environment(\.isEnabled) private var enabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var hovering = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .frame(width: Look.control, height: Look.control)
-            .contentShape(.rect)
-            .foregroundStyle(enabled ? Look.barText : Look.barText.opacity(Look.dimmed))
-            .background(enabled && (configuration.isPressed || hovering)
-                        ? chromeTheme.barSelected : .clear,
-                        in: .rect(cornerRadius: Look.chipRadius))
-            .onHover { hovering = $0 }
-            .animation(reduceMotion ? nil : Look.quick, value: hovering)
     }
 }
 
