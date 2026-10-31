@@ -11,8 +11,6 @@ jobs:
   focused-native:
     runs-on: macos-26
     timeout-minutes: 30
-    env:
-      VANE_SIDEBAR_SNAPSHOT_DIR: ${{ runner.temp }}/vane-space-menu-captures
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,6 +46,7 @@ jobs:
           grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-preflight-smoke.log"
       - name: Capture the unchanged failing comparison once
         env:
+          VANE_SIDEBAR_SNAPSHOT_DIR: ${{ runner.temp }}/vane-space-menu-captures
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '300'
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
