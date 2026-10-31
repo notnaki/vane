@@ -191,7 +191,8 @@ extension ExtensionCodeStoreTests {
     }
 
     private func leaseHolder(_ revision: String, committedIndex: URL? = nil,
-                             bootstrapDelay: TimeInterval = 0, startupTimeout: Duration = .seconds(10)) throws -> (Process, Pipe) {
+                             bootstrapDelay: TimeInterval = 0, startupTimeout: Duration = .seconds(10),
+                             environmentOverrides: [String: String]? = nil) throws -> (Process, Pipe) {
         let diagnosticID = UUID().uuidString
         let ready = directory.appendingPathComponent("lease-ready-" + diagnosticID)
         let stderrURL = directory.appendingPathComponent("lease-stderr-" + diagnosticID)
@@ -201,29 +202,12 @@ extension ExtensionCodeStoreTests {
         let stderr = try FileHandle(forWritingTo: stderrURL)
         defer { try? stderr.close() }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = ["-c", """
-            import sys, time
-            delay = float(sys.argv[7])
-            if delay > 0: time.sleep(delay)
-            started = time.monotonic()
-            markers = open(sys.argv[5], 'x', buffering=1)
-            def milestone(name):
-                print(f"{name} elapsed={time.monotonic() - started:.6f}s", file=markers, flush=True)
-            milestone('script-entered')
-            import fcntl, os, select
-            milestone('imports-complete')
-            with open(sys.argv[1], 'r+') as lease:
-                milestone('lease-opened')
-                open(sys.argv[6], 'x').close()
-                fcntl.flock(lease, fcntl.LOCK_EX)
-                milestone('lease-acquired')
-                open(sys.argv[2], 'w').close()
-                milestone('ready-created')
-                if not select.select([sys.stdin], [], [], 5)[0]: sys.exit(2)
-                command = sys.stdin.buffer.read(1)
-                if command == b'C': os.replace(sys.argv[3], sys.argv[4])
-            """, store.root.appendingPathComponent(".revision-" + revision.lowercased() + ".lease").path,
+        if let environmentOverrides {
+            process.environment = ProcessInfo.processInfo.environment.merging(environmentOverrides) { _, override in override }
+        }
+        process.executableURL = Bundle(for: ExtensionCodeStoreTests.self).bundleURL
+            .resolvingSymlinksInPath().deletingLastPathComponent().appendingPathComponent("NativeLeaseHolder")
+        process.arguments = [store.root.appendingPathComponent(".revision-" + revision.lowercased() + ".lease").path,
             ready.path, committedIndex?.path ?? "", store.root.appendingPathComponent("installations.json").path,
             milestonesURL.path, startupReady.path, String(bootstrapDelay)]
         let input = Pipe()
@@ -255,7 +239,7 @@ extension ExtensionCodeStoreTests {
             try? stderr.close()
             let phase: LeaseHolderFailure.Phase = startupCompleted ? .leaseReadiness : .bootstrap
             let message = startupCompleted ? "Child process did not acquire its revision lease"
-                : "Child process did not complete its interpreter/bootstrap phase"
+                : "Child process did not complete its native bootstrap phase"
             throw LeaseHolderFailure(phase: phase,
                 phaseElapsed: startupCompleted ? readinessElapsed : startupElapsed,
                 errorDescription: message
@@ -293,6 +277,28 @@ extension ExtensionCodeStoreTests {
         XCTAssertEqual(child.terminationStatus, 0)
         try store.sweepUnreferencedRevisions()
         XCTAssertFalse(FileManager.default.fileExists(atPath: code.path))
+    }
+
+    func testLeaseHolderDoesNotDependOnPythonRuntimeEnvironment() throws {
+        var revision: String!
+        var code: URL!
+        do { let stage = try store.stage(source); revision = stage.revision; code = stage.url }
+        // Contaminate only the child's interpreter configuration. This controls the
+        // external-runtime dependency, not the historical cause of a CI bootstrap stall.
+        let missingPythonHome = directory.appendingPathComponent("unavailable-python-runtime")
+        do {
+            let (child, input) = try leaseHolder(revision, environmentOverrides: ["PYTHONHOME": missingPythonHome.path])
+            defer { if child.isRunning { child.terminate() }; child.waitUntilExit() }
+            try store.sweepUnreferencedRevisions()
+            XCTAssertTrue(FileManager.default.fileExists(atPath: code.path))
+            try input.fileHandleForWriting.write(contentsOf: Data("R".utf8))
+            child.waitUntilExit()
+            XCTAssertEqual(child.terminationStatus, 0)
+            try store.sweepUnreferencedRevisions()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: code.path))
+        } catch {
+            XCTFail("The cross-process lease lifecycle must not depend on Python runtime configuration: \(error)")
+        }
     }
 
     func testLeaseHolderHeldParentLeaseStillExhaustsAcquisitionBudget() throws {

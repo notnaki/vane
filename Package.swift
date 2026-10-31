@@ -16,6 +16,8 @@ let package = Package(
                 .linkedLibrary("z"),
             ]
         ),
+        // A separate libSystem-only process owns revision leases in native tests.
+        .executableTarget(name: "NativeLeaseHolder", path: "Tests/NativeLeaseHolder"),
         // Only the XCTest bundle links this early, process-local AppKit setup.
         .target(
             name: "NativeTestHostBootstrap",

@@ -23,7 +23,10 @@ def pack(root, binary, archive, revision, toolchain):
         raise ValueError("only workspace-owned native debug products may be shared")
     description = binary / "description.json"
     products = json.loads(description.read_text())["builtTestProducts"]
-    payload = [binary / "vane", description, *sorted(binary.glob("*.bundle")), root / "Vane.app"]
+    lease_holder = binary / "NativeLeaseHolder"
+    if lease_holder.is_symlink() or not lease_holder.is_file() or not lease_holder.stat().st_mode & 0o111:
+        raise ValueError("debug artifact must contain an executable native lease holder")
+    payload = [binary / "vane", lease_holder, description, *sorted(binary.glob("*.bundle")), root / "Vane.app"]
     if not products:
         raise ValueError("debug artifact must contain built XCTest products")
     for product in products:
@@ -70,6 +73,12 @@ def restore(root, archive, revision, toolchain):
                 name.is_relative_to("Vane.app")
             ):
                 raise ValueError("unexpected shared build archive path: " + member.name)
+        try:
+            lease_holder = tar.getmember(str(binary / "NativeLeaseHolder"))
+        except KeyError:
+            raise ValueError("shared runtime is missing its native lease holder") from None
+        if not lease_holder.isfile() or not lease_holder.mode & 0o111:
+            raise ValueError("shared runtime native lease holder must be an executable file")
         tar.extractall(root, filter="data")
     print("Restored matching debug runtime; no compilation required")
 

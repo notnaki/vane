@@ -52,7 +52,69 @@ struct FeedbackOccluder: NSViewRepresentable {
     let scope: FeedbackOcclusionScope
 
     final class Marker: NSView {
-        weak var scope: FeedbackOcclusionScope?
+        /// Notification tokens have their own nonisolated lifetime so releasing a
+        /// marker never needs to enter AppKit from an actor-isolated deinitializer.
+        private final class GeometryObservations {
+            var tokens: [NSObjectProtocol] = []
+            deinit {
+                for token in tokens { NotificationCenter.default.removeObserver(token) }
+            }
+        }
+        private var geometryObservations: GeometryObservations?
+        private var observedAncestors: [ObjectIdentifier] = []
+        private weak var observedWindow: NSWindow?
+        weak var scope: FeedbackOcclusionScope? {
+            didSet { refreshGeometryObservations() }
+        }
+
+        private func refreshGeometryObservations() {
+            guard scope != nil, let window else {
+                geometryObservations = nil
+                observedAncestors = []
+                observedWindow = nil
+                return
+            }
+            var ancestors: [NSView] = []
+            var ancestor = superview
+            while let view = ancestor {
+                ancestors.append(view)
+                ancestor = view.superview
+            }
+            let identities = ancestors.map(ObjectIdentifier.init)
+            guard geometryObservations == nil || observedWindow !== window
+                    || observedAncestors != identities else { return }
+            geometryObservations = nil
+            observedAncestors = identities
+            observedWindow = window
+            let observations = GeometryObservations()
+            func observe(_ name: Notification.Name, object: AnyObject) {
+                observations.tokens.append(NotificationCenter.default.addObserver(
+                    forName: name, object: object, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.geometryChanged() }
+                })
+            }
+            for view in ancestors {
+                // Notification capability is shared with AppKit and other
+                // observers. Never disable a peer's request during teardown.
+                view.postsFrameChangedNotifications = true
+                view.postsBoundsChangedNotifications = true
+                observe(NSView.frameDidChangeNotification, object: view)
+                observe(NSView.boundsDidChangeNotification, object: view)
+            }
+            observe(NSWindow.didMoveNotification, object: window)
+            observe(NSWindow.didResizeNotification, object: window)
+            // A same-window ancestor reparent can leave the marker's own frame
+            // and window unchanged. Refresh its chain at the native update too.
+            observe(NSWindow.didUpdateNotification, object: window)
+            geometryObservations = observations
+        }
+
+        private func geometryChanged() {
+            refreshGeometryObservations()
+            scope?.geometryChanged()
+        }
+
         override init(frame: NSRect) {
             super.init(frame: frame)
             setAccessibilityElement(false)
@@ -61,27 +123,31 @@ struct FeedbackOccluder: NSViewRepresentable {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func setFrameOrigin(_ origin: NSPoint) {
             super.setFrameOrigin(origin)
-            scope?.geometryChanged()
+            geometryChanged()
         }
         override func setFrameSize(_ size: NSSize) {
             super.setFrameSize(size)
-            scope?.geometryChanged()
+            geometryChanged()
         }
         override func setBoundsOrigin(_ origin: NSPoint) {
             super.setBoundsOrigin(origin)
-            scope?.geometryChanged()
+            geometryChanged()
         }
         override func setBoundsSize(_ size: NSSize) {
             super.setBoundsSize(size)
-            scope?.geometryChanged()
+            geometryChanged()
         }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            scope?.geometryChanged()
+            geometryChanged()
+        }
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            geometryChanged()
         }
         override func layout() {
             super.layout()
-            scope?.geometryChanged()
+            geometryChanged()
         }
     }
 
