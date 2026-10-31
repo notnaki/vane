@@ -77,11 +77,13 @@ enum AppIconPersistence {
 
     /// A helper can fail, disconnect, reply twice, or never reply. Finish exactly once;
     /// timeout releases the continuation and connection without occupying any actor.
+    /// Late replies cannot claim success while the timeout callback waits for a worker.
     static func request(timeout: TimeInterval = 3,
                         start: @escaping @Sendable (@escaping @Sendable (Bool) -> Void) -> Void) async -> Bool {
         await withCheckedContinuation { continuation in
-            let reply = Reply(continuation)
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) { reply.finish(false) }
+            let deadline = DispatchTime.now() + timeout
+            let reply = Reply(continuation, deadline: deadline)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: deadline) { reply.finish(false) }
             start { reply.finish($0) }
         }
     }
@@ -93,17 +95,21 @@ enum AppIconPersistence {
         init(_ connection: NSXPCConnection) { self.connection = connection }
     }
 
-    private final class Reply: @unchecked Sendable {
+    final class Reply: @unchecked Sendable {
         private let lock = NSLock()
+        private let deadline: DispatchTime
         private var continuation: CheckedContinuation<Bool, Never>?
-        init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+        init(_ continuation: CheckedContinuation<Bool, Never>, deadline: DispatchTime) {
+            self.continuation = continuation
+            self.deadline = deadline
+        }
         func finish(_ value: Bool) {
-            let pending = lock.withLock {
-                let pending = continuation
+            let pending = lock.withLock { () -> (CheckedContinuation<Bool, Never>, Bool)? in
+                guard let pending = continuation else { return nil }
                 continuation = nil
-                return pending
+                return (pending, value && DispatchTime.now() < deadline)
             }
-            pending?.resume(returning: value)
+            if let (continuation, result) = pending { continuation.resume(returning: result) }
         }
     }
 }
