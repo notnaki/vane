@@ -31,8 +31,8 @@ import XCTest
 
     private func withLoop(_ body: () async throws -> Void) async throws {
         let policy = NSApp.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
-        defer { NSApp.setActivationPolicy(policy) }
+        NativeFixturePolicyDiagnostics.setActivationPolicy(NSApp, .accessory)
+        defer { NativeFixturePolicyDiagnostics.setActivationPolicy(NSApp, policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire()
         var failure: (any Error)?
         do { try await body() } catch { failure = error }

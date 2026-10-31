@@ -37,7 +37,7 @@ import XCTest
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let policy = NSApp.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
+        NativeFixturePolicyDiagnostics.setActivationPolicy(NSApp, .accessory)
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 260, height: 300),
             styleMask: .titled, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -49,7 +49,7 @@ import XCTest
             window.orderOut(nil)
             window.contentView = nil
             window.close()
-            NSApp.setActivationPolicy(policy)
+            NativeFixturePolicyDiagnostics.setActivationPolicy(NSApp, policy)
         }
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)

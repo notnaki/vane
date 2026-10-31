@@ -337,8 +337,8 @@ import XCTest
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let previousPolicy = NSApp.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
-        defer { NSApp.setActivationPolicy(previousPolicy) }
+        NativeFixturePolicyDiagnostics.setActivationPolicy(NSApp, .accessory)
+        defer { NativeFixturePolicyDiagnostics.setActivationPolicy(NSApp, previousPolicy) }
         var selected = 0, closed = 0
         let geometry = NativeFixtureGeometry()
         let row = SidebarRow(selected: false, action: { selected += 1 }) {

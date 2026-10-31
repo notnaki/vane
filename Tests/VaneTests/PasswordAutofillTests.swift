@@ -207,8 +207,8 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
-        if policy == .prohibited { app.setActivationPolicy(.accessory) }
-        defer { app.setActivationPolicy(policy) }
+        if policy == .prohibited { NativeFixturePolicyDiagnostics.setActivationPolicy(app, .accessory) }
+        defer { NativeFixturePolicyDiagnostics.setActivationPolicy(app, policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire()
         var failure: (any Error)?
         do {
@@ -578,6 +578,11 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     private func withNativeContinuationFixture(origin: PasswordOrigin = PasswordOrigin(host: "continuation.example.test"),
                                                 _ body: (Tab, PasswordOrigin) async throws -> Void) async throws {
         TestEnvironment.prepare()
+        defer {
+            if name.contains("testSuccessfulContinuationIsConsumedEvenWhenSiteFocusStartsAnotherRead") {
+                NativeFixturePolicyDiagnostics.dump("consumed-continuation-fixture-exit")
+            }
+        }
         let profile = UUID()
         defer { Passwords.deleteAll(profileID: profile) }
         guard Passwords.save(origin: origin, account: "bob", password: "bob-secret", profileID: profile),
@@ -586,9 +591,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         nativeFixtureProfiles.insert(profile)
         let app = NSApplication.shared
         let previousPolicy = app.activationPolicy()
-        defer { app.setActivationPolicy(previousPolicy) }
+        defer { NativeFixturePolicyDiagnostics.setActivationPolicy(app, previousPolicy) }
         let policyRequestAccepted: Bool?
-        if previousPolicy == .prohibited { policyRequestAccepted = app.setActivationPolicy(.accessory) }
+        if previousPolicy == .prohibited { policyRequestAccepted = NativeFixturePolicyDiagnostics.setActivationPolicy(app, .accessory) }
         else { policyRequestAccepted = nil }
         let loop = try await NativeFixtureApplicationLoop.acquire()
         var fixtureError: (any Error)?
@@ -597,7 +602,13 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
                                   styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            defer { tab.tearDown(); window.close() }
+            defer {
+                NativeFixturePolicyDiagnostics.mark("password-before-tab-teardown")
+                tab.tearDown()
+                NativeFixturePolicyDiagnostics.mark("password-after-tab-teardown")
+                window.close()
+                NativeFixturePolicyDiagnostics.mark("password-after-window-close")
+            }
             window.contentView = tab.web
             let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first, "A native account-selection fixture needs a display")
             let available = screen.visibleFrame.insetBy(dx: 20, dy: 20)
@@ -631,7 +642,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 return nativeContinuationReady(window, document: web)
             }
             emitNativeContinuationReadiness(window, document: web, stage: "admission")
+            NativeFixturePolicyDiagnostics.mark("password-before-body")
             try await body(tab, origin)
+            NativeFixturePolicyDiagnostics.mark("password-after-body")
         } catch { fixtureError = error }
         do { try await loop.close() }
         catch {

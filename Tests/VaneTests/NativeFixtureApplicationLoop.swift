@@ -80,6 +80,7 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
                  launchReadiness: @escaping @MainActor @Sendable () -> Bool) {
         self.beforeHeartbeat = beforeHeartbeat
         self.launchReadiness = launchReadiness
+        NativeFixturePolicyDiagnostics.mark("loop-created", loop: generation, expected: originalPolicy.rawValue)
     }
     private var isCurrent: Bool { Self.ownerGeneration == generation && !closed }
 
@@ -99,7 +100,12 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         if !(open == nil || (open as? String)?.isEmpty == true || (open as? [Any])?.isEmpty == true) {
             return .launchOpenRequest
         }
-        if app.activationPolicy() != originalPolicy { return .policyChanged }
+        let policy = app.activationPolicy()
+        if policy != originalPolicy {
+            NativeFixturePolicyDiagnostics.failure(loop: generation, site: #function,
+                expected: originalPolicy.rawValue, observed: policy.rawValue)
+            return .policyChanged
+        }
         return nil
     }
 
@@ -153,10 +159,13 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
                 deadline: deadline, watchdogDeadline: watchdogDeadline))
         }
         enteredRun = true
+        NativeFixturePolicyDiagnostics.mark("before-run", loop: generation, expected: originalPolicy.rawValue)
         NSApplication.shared.run()
+        NativeFixturePolicyDiagnostics.mark("after-run-return", loop: generation, expected: originalPolicy.rawValue)
         runReturned = true
         if !stopRequested { record(.unexpectedLoopReturn) }
-        if NSApplication.shared.activationPolicy() != originalPolicy { record(.policyChanged) }
+        let policy = NSApplication.shared.activationPolicy()
+        if policy != originalPolicy { record(.policyChanged, observedPolicy: policy.rawValue) }
         heartbeat?.cancel()
         completeIfJoined()
     }
@@ -231,13 +240,15 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
             record(.incompleteHeartbeat)
             throw firstFailure!
         }
-        guard NSApplication.shared.activationPolicy() == originalPolicy else {
-            record(.policyChanged)
+        let policy = NSApplication.shared.activationPolicy()
+        guard policy == originalPolicy else {
+            record(.policyChanged, observedPolicy: policy.rawValue)
             throw firstFailure!
         }
     }
 
     func close() async throws {
+        NativeFixturePolicyDiagnostics.mark("close-entered", loop: generation, expected: originalPolicy.rawValue)
         if closed {
             if let firstFailure { throw firstFailure }
             return
@@ -262,10 +273,11 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         }
     }
 
-    private func record(_ failure: NativeApplicationLoopFailure) {
+    private func record(_ failure: NativeApplicationLoopFailure, site: StaticString = #function, observedPolicy: Int? = nil) {
         if firstFailure == nil {
             firstFailure = failure
             print("Native fixture AppKit loop: failure=\(failure.rawValue)")
+            if failure == .policyChanged { NativeFixturePolicyDiagnostics.failure(loop: generation, site: site, expected: originalPolicy.rawValue, observed: observedPolicy) }
         }
     }
 
@@ -319,15 +331,19 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
             return
         }
         stopRequested = true
+        NativeFixturePolicyDiagnostics.mark("before-stop", loop: generation, expected: originalPolicy.rawValue)
         app.stop(nil)
+        NativeFixturePolicyDiagnostics.mark("after-stop", loop: generation, expected: originalPolicy.rawValue)
         app.postEvent(event, atStart: false)
     }
 
     private func completeIfJoined() {
         guard isCurrent, closing || !admissionSucceeded,
               startAborted || (runReturned && heartbeatFinished) else { return }
+        NativeFixturePolicyDiagnostics.mark("join-check", loop: generation, expected: originalPolicy.rawValue)
         if NSApplication.shared.isRunning { record(.loopStillRunning) }
-        if NSApplication.shared.activationPolicy() != originalPolicy { record(.policyChanged) }
+        let policy = NSApplication.shared.activationPolicy()
+        if policy != originalPolicy { record(.policyChanged, observedPolicy: policy.rawValue) }
         closed = true
         invalidateWatchdog()
         heartbeat = nil

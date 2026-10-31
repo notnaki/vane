@@ -19,8 +19,8 @@ import XCTest
     private func withNativeContext(_ operation: @MainActor () async throws -> Void) async throws {
         TestEnvironment.prepare()
         let policy = NSApplication.shared.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
-        defer { NSApp.setActivationPolicy(policy) }
+        NativeFixturePolicyDiagnostics.setActivationPolicy(NSApp, .accessory)
+        defer { NativeFixturePolicyDiagnostics.setActivationPolicy(NSApp, policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire()
         ownsAppKitLoop = true
         var failure: (any Error)?
@@ -118,7 +118,7 @@ import XCTest
     private func mount<V: View>(_ content: V) async throws -> (NSWindow, NSHostingView<ModifiedContent<V, NativeFixtureSnapshotReceipt>>) {
         _ = NSApplication.shared
         let policy = NSApp.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
+        NativeFixturePolicyDiagnostics.setActivationPolicy(NSApp, .accessory)
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 260, height: 300),
                               styleMask: .titled, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -131,7 +131,7 @@ import XCTest
         registerRetirement {
             attachment?.cancel()
             window.orderOut(nil); window.contentView = nil; window.close()
-            NSApp.setActivationPolicy(policy)
+            NativeFixturePolicyDiagnostics.setActivationPolicy(NSApp, policy)
         }
         try await compatibilityWait { NativeFixtureMountAdmission.surfaceReady(host, in: window) }
         if ownsAppKitLoop {

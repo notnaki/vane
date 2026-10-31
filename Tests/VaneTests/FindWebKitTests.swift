@@ -8,8 +8,8 @@ import XCTest
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
-        if policy == .prohibited { app.setActivationPolicy(.accessory) }
-        defer { app.setActivationPolicy(policy) }
+        if policy == .prohibited { NativeFixturePolicyDiagnostics.setActivationPolicy(app, .accessory) }
+        defer { NativeFixturePolicyDiagnostics.setActivationPolicy(app, policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire()
         WebKitStartup.prepare()
         let store = TabStore(isPrivate: true, profileID: UUID())
