@@ -470,6 +470,21 @@ extension Release {
     private static var launchedReplacement = false
     private static let launchWorker = BackupWorker()
 
+    private let defaults: UserDefaults
+    private let fetchRelease: (URLRequest) async throws -> (Data, URLResponse)
+    private var requestGeneration: UInt = 0
+    private var channel: UpdateChannel {
+        UpdateChannel.stored(defaults.string(forKey: UpdateChannel.preferenceKey))
+    }
+
+    init(defaults: UserDefaults = .vane,
+         fetchRelease: @escaping (URLRequest) async throws -> (Data, URLResponse) = {
+             try await URLSession.shared.data(for: $0)
+         }) {
+        self.defaults = defaults
+        self.fetchRelease = fetchRelease
+    }
+
     static var currentVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.1.0"
     }
@@ -561,6 +576,23 @@ extension Release {
         check(silent: true)
     }
 
+    /// Drop the old channel's offer and invalidate replies already on the wire. An update
+    /// being installed keeps its transaction; the new selection applies to future checks.
+    func channelChanged() {
+        requestGeneration &+= 1
+        lastCheck = nil
+        backingOff = false
+        guard !working, phase != .installing, phase != .ready else { return }
+        pending = nil
+        phase = nil
+        if let toast = Toasts.shared.queue.sticky, toast.id == toastID {
+            Toasts.shared.dismiss(toast)
+        }
+        if defaults.object(forKey: "checkForUpdates") as? Bool ?? true {
+            check(silent: true)
+        }
+    }
+
     // MARK: - Check
 
     /// `silent: false` is the menu item: it reports "up to date" rather than saying nothing,
@@ -585,8 +617,11 @@ extension Release {
         Task { await fetch(silent: silent) }
     }
 
-    private func fetch(silent: Bool) async {
-        guard let api = URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")
+    func fetch(silent: Bool) async {
+        let channel = self.channel
+        requestGeneration &+= 1
+        let generation = requestGeneration
+        guard let api = URL(string: "https://api.github.com/repos/\(Self.repo)/\(channel.apiPath)")
         else { return }
         var req = URLRequest(url: api)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -594,10 +629,10 @@ extension Release {
         // GitHub's 60-an-hour unauthenticated limit and carries no body to parse. The stored
         // tag and asset are what make a 304 actionable across a relaunch — without them the
         // "nothing changed" reply would answer a question we had forgotten the answer to.
-        if let etag = UserDefaults.vane.string(forKey: Keys.etag) {
+        if let etag = defaults.string(forKey: channel.cacheKey("etag")) {
             req.setValue(etag, forHTTPHeaderField: "If-None-Match")
         }
-        if let since = UserDefaults.vane.string(forKey: Keys.lastModified) {
+        if let since = defaults.string(forKey: channel.cacheKey("lastModified")) {
             req.setValue(since, forHTTPHeaderField: "If-Modified-Since")
         }
         // URLSession's own cache would answer a 304 with the cached 200 and hide the cheap
@@ -605,31 +640,27 @@ extension Release {
         req.cachePolicy = .reloadIgnoringLocalCacheData
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: req)
+            let (data, response) = try await fetchRelease(req)
+            guard self.channel == channel, generation == requestGeneration else { return }
             guard let http = response as? HTTPURLResponse else { return failedCheck(silent) }
             switch http.statusCode {
             case 304:
                 backingOff = false
                 // Through `trusted` again: a url that has been sitting in defaults since a
                 // previous launch is still a url that came off the network.
-                present(tag: UserDefaults.vane.string(forKey: Keys.tag),
-                        asset: Release.trusted(UserDefaults.vane.string(forKey: Keys.asset)
+                present(tag: defaults.string(forKey: channel.cacheKey("tag")),
+                        asset: Release.trusted(defaults.string(forKey: channel.cacheKey("asset"))
                             .flatMap(URL.init(string:))), silent: silent)
             case 200:
+                let release = try channel.release(from: data)
+                let tag = release?.tag
+                let asset = Release.asset(release?.assets.map { ($0.name, $0.url) } ?? [])
+                // Only a decoded response may advance the conditional cache. Otherwise a
+                // later 304 could turn a malformed response into a stale update offer.
                 backingOff = false
-                remember(http)
-                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else { return failedCheck(silent) }
-                let tag = json["tag_name"] as? String
-                let assets: [(name: String, url: String)] =
-                    ((json["assets"] as? [[String: Any]]) ?? []).compactMap { a in
-                        guard let name = a["name"] as? String,
-                              let url = a["browser_download_url"] as? String else { return nil }
-                        return (name, url)
-                    }
-                let asset = Release.asset(assets)
-                UserDefaults.vane.set(tag, forKey: Keys.tag)
-                UserDefaults.vane.set(asset?.absoluteString, forKey: Keys.asset)
+                remember(http, channel: channel)
+                defaults.set(tag, forKey: channel.cacheKey("tag"))
+                defaults.set(asset?.absoluteString, forKey: channel.cacheKey("asset"))
                 present(tag: tag, asset: asset, silent: silent)
             default:
                 // 403 is the rate limit, 404 a repo with no release yet, 5xx a bad day.
@@ -637,22 +668,16 @@ extension Release {
                 failedCheck(silent)
             }
         } catch {
+            guard self.channel == channel, generation == requestGeneration else { return }
             backingOff = true
             failedCheck(silent)
         }
     }
 
-    private enum Keys {
-        static let etag = "updateETag"
-        static let lastModified = "updateLastModified"
-        static let tag = "updateTag"
-        static let asset = "updateAsset"
-    }
-
-    private func remember(_ http: HTTPURLResponse) {
-        UserDefaults.vane.set(http.value(forHTTPHeaderField: "ETag"), forKey: Keys.etag)
-        UserDefaults.vane.set(http.value(forHTTPHeaderField: "Last-Modified"),
-                              forKey: Keys.lastModified)
+    private func remember(_ http: HTTPURLResponse, channel: UpdateChannel) {
+        defaults.set(http.value(forHTTPHeaderField: "ETag"), forKey: channel.cacheKey("etag"))
+        defaults.set(http.value(forHTTPHeaderField: "Last-Modified"),
+                     forKey: channel.cacheKey("lastModified"))
     }
 
     /// A silent check that cannot reach GitHub says nothing at all — a browser that toasts
