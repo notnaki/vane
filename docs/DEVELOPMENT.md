@@ -196,7 +196,7 @@ continue to export only allowlisted domain/code metadata, excluding the runtime 
 
 ### Routine CI commands
 
-The `Known limitation — extension worker UA (advisory)` job separately runs
+The `Extension worker UA compatibility (advisory)` job separately runs
 `ExtensionUserAgentTests.testKnownServiceWorkerUserAgentLimitation`. Manifest-v3
 workers can expose WebKit's engine UA instead of the selected page UA; this known
 fault currently does not block merges when the classifier verifies only the named
