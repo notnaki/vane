@@ -362,15 +362,27 @@ struct Feel02PressFeedback: ViewModifier {
     @Environment(\.sidebarRetainsControls) private var retainsControls
     @Environment(\.isEnabled) private var controlEnabled
     @Environment(\.feel02PressFeedbackEnabled) private var surfaceEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var pressed = false
     private var interactive: Bool { enabled && controlEnabled && surfaceEnabled }
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
     func body(content: Content) -> some View {
         content
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .fill(Look.inkPrimary.opacity(pressed && interactive ? 0.055 : 0))
-                    .transaction { $0.animation = nil; $0.disablesAnimations = true }
+                    .animation(pressed || reduced || !interactive ? nil : Look.feedback, value: pressed)
+                    // Cancel paint alone: the native target and inline editor keep their
+                    // identity when a release is interrupted by policy or disablement.
+                    .id(reduced || !interactive)
+                    .transaction {
+                        if pressed || reduced || !interactive {
+                            $0.animation = nil
+                            $0.disablesAnimations = true
+                        }
+                    }
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
@@ -379,9 +391,8 @@ struct Feel02PressFeedback: ViewModifier {
                 // still adds layout work even when its monitor target is disabled.
                 if interactive || (retainsControls && enabled && surfaceEnabled) {
                     Feel02PressAnchor(enabled: interactive, changed: { next in
-                        var transaction = Transaction(animation: nil)
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) { pressed = next }
+                        if next { Motion.instant { pressed = true } }
+                        else { pressed = false }
                     }, hoverChanged: hoverChanged)
                 }
             }

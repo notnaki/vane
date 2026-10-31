@@ -1508,10 +1508,7 @@ private struct PillHoverGlyphs: View {
     private var copied: Bool { feedback.copiedURL == address }
     var body: some View {
         Button { copyLink() } label: {
-            Image(systemName: copied ? "checkmark" : "link")
-                .contentTransition(reduceMotion || Motion.reduced ? .identity : .symbolEffect(.replace))
-                .foregroundStyle(copied ? Color.accentColor : Look.inkSecondary)
-                .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: copied)
+            CopyLinkGlyph(copied: copied)
                 .frame(width: Look.control, height: Look.control)
                 .contentShape(.rect)
         }
@@ -1822,6 +1819,7 @@ private struct FavoriteTile: View {
             .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: tab.favicon)
             .inStrip(tab.id, strip)
             .modifier(TabArrivalFeedback(feedback: store.feedback, id: tab.id))
+            .modifier(Feel02PressFeedback(enabled: store.renamingTab != tab.id))
             .lifted(tab.id)
             .contentShape(.rect)
             .onHover { hovering = $0 }
@@ -2566,6 +2564,8 @@ struct TabDrop: DropDelegate {
 /// profile it belongs to.
 private struct SpaceRow: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     @State private var icons = false
@@ -2573,6 +2573,7 @@ private struct SpaceRow: View {
     @State private var live = false
     @State private var hovered = false
     @FocusState private var optionsFocused: Bool
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
     var body: some View {
         if let space = store.currentSpace {
@@ -2623,6 +2624,8 @@ private struct SpaceRow: View {
                         .animation(Motion.reduced ? nil : Look.quick, value: store.pinnedSectionCollapsed)
                         .opacity(highlighted ? 1 : 0)
                 }
+                .animation(reduced ? nil : Look.quick, value: highlighted)
+                .id(reduced)
                 .frame(width: Look.tileIcon, height: Look.rowHeight)
                 .accessibilityHidden(true)
                 SpaceName(store: store, space: space, fallback: name)
@@ -2660,12 +2663,14 @@ private struct SpaceRow: View {
                         .foregroundStyle(Look.inkSecondary)
                         .frame(width: Look.rowTarget, height: Look.rowHeight)
                         .contentShape(.rect)
+                        .opacity(hovered || optionsFocused ? 1 : 0)
+                        .animation(reduced ? nil : Look.quick, value: hovered || optionsFocused)
+                        .id(reduced)
                 }
                 .menuStyle(.borderlessButton).tint(Look.inkSecondary)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .focused($optionsFocused)
-                .opacity(hovered || optionsFocused ? 1 : 0)
                 .accessibilityHidden(false)
                 .accessibilityLabel("Space options")
                 .accessibilityValue(space.name)
@@ -2676,8 +2681,12 @@ private struct SpaceRow: View {
         .padding(.leading, Look.rowInset)
         .padding(.trailing, space == nil ? Look.rowInset : Look.rowInset / 2)
         .frame(height: Look.rowHeight)
-        .background(highlighted ? chromeTheme.hovered : .clear,
-                    in: .rect(cornerRadius: Look.pillRadius))
+        .background {
+            RoundedRectangle(cornerRadius: Look.pillRadius)
+                .fill(highlighted ? chromeTheme.hovered : .clear)
+                .animation(reduced ? nil : Look.quick, value: highlighted)
+                .id(reduced)
+        }
         .contentShape(.rect(cornerRadius: Look.pillRadius))
         .onHover { hovered = $0 }
         .padding(.bottom, store.pinnedSectionCollapsed || store.pins.visible.isEmpty
@@ -2687,6 +2696,7 @@ private struct SpaceRow: View {
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: nil, into: .pinned,
                                   axis: .horizontal, extent: 0, marker: dropMarker, side: .constant(nil)))
+        .vaneMotionPolicy()
     }
 }
 
@@ -3531,7 +3541,8 @@ private struct FolderRow: View {
     private func labelRow(held: Bool = false) -> some View {
         SidebarRow(selected: false, held: held,
                    keyboardEnabled: store.renamingFolder != folder.id, action: { store.toggleFolder(folder.id, in: shape) }) {
-            FolderGlyph(folder: folder, live: LiveFolders.shared(for: store.profileID), dropOpen: receiving)
+            FolderGlyph(folder: folder, live: LiveFolders.shared(for: store.profileID), dropOpen: receiving,
+                        allowsHoverPreview: !held && !locked)
         } label: {
             if !held && store.renamingFolder == folder.id {
                 FolderNameField(store: store, folder: folder, shape: shape)
@@ -3592,15 +3603,18 @@ struct FolderDisclosure: View {
 /// apart, and it does so by looking at the string rather than by a second stored field.
 struct FolderGlyph: View {
     let folder: Folder
+    @Environment(\.rowHovering) private var hovering
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
     /// nil where the badge would be noise rather than news — the drag preview.
     var live: LiveFolders? = nil
     var dropOpen = false
+    var allowsHoverPreview = true
     var body: some View {
         Group {
             if folder.icon == Folder.defaultIcon {
-                FolderIcon(open: !folder.collapsed || dropOpen)
+                FolderIcon(open: !folder.collapsed || dropOpen,
+                           previewing: allowsHoverPreview && hovering && !reduceMotion && !batterySaver.isActive)
                     .frame(width: Look.tileIcon, height: Look.tileIcon)
                     .id(reduceMotion || batterySaver.isActive)
             } else if folder.iconIsEmoji {

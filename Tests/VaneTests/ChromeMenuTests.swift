@@ -7,6 +7,13 @@ final class ChromeMenuTests: XCTestCase {
     private let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
     private let size = CGSize(width: 264, height: 165)
 
+    func testHighlightFollowsItsRowAcrossGroupSeparators() {
+        XCTAssertEqual(ChromeMenuLayout.highlightOffset(index: 0, groupStarts: []), 0)
+        XCTAssertEqual(ChromeMenuLayout.highlightOffset(index: 1, groupStarts: [1]), 41)
+        XCTAssertEqual(ChromeMenuLayout.highlightOffset(index: 2, groupStarts: [1]), 73)
+        XCTAssertEqual(ChromeMenuLayout.highlightOffset(index: 2, groupStarts: [0, 2]), 82)
+    }
+
     func testCreationMenuFitsDefaultSidebarPaddingAndKeepsWidthAfterResize() {
         let menu = CGSize(width: ChromeMenuLayout.width, height: 198)
         let defaultFrame = ChromeMenuLayout.frame(anchor: CGRect(x: 188, y: 30, width: 32, height: 32),

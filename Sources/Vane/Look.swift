@@ -808,6 +808,8 @@ enum Look {
     // Motion. Short and easing out: a fill should arrive under the pointer, never chase it.
     /// Hover and selection fills.
     static let quick = Animation.easeOut(duration: 0.15)
+    /// Frequent pointer feedback should finish before the next action begins.
+    static let feedback = Animation.easeOut(duration: 0.12)
     /// A floating surface appearing: scale from `appearScale` and fade, together. The
     /// duration is spelled out because a surface that is a *window* of its own — a Peek —
     /// has to stay alive for exactly as long as its own fade, and `Animation` will not say.
