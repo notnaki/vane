@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
           swift test --build-system native list --skip-build > "$VANE_DIAGNOSTIC_DIR/inventory.raw.txt"
           python3 - <<'PYCODE'
-          import hashlib, json, os, plistlib, re
+          import hashlib, json, os, re
           from pathlib import Path
           evidence = Path(os.environ['VANE_DIAGNOSTIC_DIR'])
           raw = evidence / 'inventory.raw.txt'
@@ -89,18 +89,24 @@ jobs:
           assert sorted(x for x in inventory if x.startswith('VaneTests.SidebarVisibilityTests/')) == tests
           pattern = '^(?:' + '|'.join(re.escape(x) for x in tests) + ')$'
           assert sorted(x for x in inventory if re.search(pattern, x)) == tests
-          bundles = list(Path(os.environ['VANE_PREFLIGHT_BIN']).glob('*.xctest'))
-          assert len(bundles) == 1, bundles
-          bundle = bundles[0]
-          with (bundle / 'Contents/Info.plist').open('rb') as handle:
-              executable = plistlib.load(handle)['CFBundleExecutable']
-          binary = bundle / 'Contents/MacOS' / executable
+          bin_root = Path(os.environ['VANE_PREFLIGHT_BIN']).resolve()
+          description = bin_root / 'description.json'
+          products = json.loads(description.read_text())['builtTestProducts']
+          assert len(products) == 1, products
+          binary = Path(products[0]['binaryPath'])
+          assert binary.is_absolute(), binary
+          binary = binary.resolve()
+          bundle = next((parent for parent in binary.parents if parent.suffix == '.xctest'), None)
+          assert bundle is not None and bundle.is_relative_to(bin_root), binary
+          assert binary.is_file() and os.access(binary, os.X_OK), binary
+          executables = [path.resolve() for path in (bundle / 'Contents/MacOS').iterdir() if path.is_file() and not path.is_symlink() and os.access(path, os.X_OK)]
+          assert executables == [binary], executables
           fixture = Path('Tests/VaneTests/SidebarVisibilityTests.swift')
           sha = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
           assert sha(fixture) == os.environ['VANE_DIAGNOSTIC_TEST_SHA']
           (evidence / 'inventory.canonical.txt').write_text(canonical)
           (evidence / 'selected.filter').write_text(pattern + '\n')
-          manifest = {'schema': 1, 'tests': tests, 'filter': pattern, 'inventory_raw_sha256': sha(raw), 'inventory_canonical_sha256': hashlib.sha256(canonical.encode()).hexdigest(), 'binary': str(binary), 'binary_sha256': sha(binary), 'fixture': str(fixture), 'fixture_sha256': sha(fixture), 'native_revision_receipt_available': False, 'attempts': 3}
+          manifest = {'schema': 1, 'tests': tests, 'filter': pattern, 'inventory_raw_sha256': sha(raw), 'inventory_canonical_sha256': hashlib.sha256(canonical.encode()).hexdigest(), 'binary': str(binary), 'binary_sha256': sha(binary), 'build_description': str(description), 'build_description_sha256': sha(description), 'fixture': str(fixture), 'fixture_sha256': sha(fixture), 'native_revision_receipt_available': False, 'attempts': 3}
           (evidence / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
           PYCODE
       - name: Preserve three predetermined nine-case diagnostic attempts
