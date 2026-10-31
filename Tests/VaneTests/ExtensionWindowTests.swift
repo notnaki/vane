@@ -17,7 +17,6 @@ import XCTest
         TestEnvironment.prepare()
         _ = NSApplication.shared
         originalPolicy = NSApp.activationPolicy()
-        if originalPolicy == .prohibited { NSApp.setActivationPolicy(.accessory) }
         profile = UUID()
         ownedProfiles.insert(profile)
         folder = Store.directory.appendingPathComponent("extension-window-\(UUID())")
@@ -108,7 +107,7 @@ import XCTest
     }
 
     private func withNativeWindowLoop(_ body: () async throws -> Void) async throws {
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do { try await body() } catch { failure = error }
         ExtensionHost.forget(profile)
@@ -214,7 +213,7 @@ import XCTest
     }
 
     func testActionUsesNativeWindowRetainsParentAndClosesReopensWithoutChangingAccess() async throws {
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do { try await exerciseActionWindow() } catch { failure = error }
         ExtensionHost.forget(profile)
@@ -341,7 +340,7 @@ import XCTest
     }
 
     func testRequestedPopupUsesOwnExtensionViewReportsPopupAndNormalizesPartialFrame() async throws {
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do { try await exerciseRequestedPopup() } catch { failure = error }
         ExtensionHost.forget(profile)
@@ -351,7 +350,7 @@ import XCTest
     }
 
     func testSDKDelegatesForwardExternalLinksAndCloseTheOwnerOnTerminationCallback() async throws {
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do {
             let (store, tab, parent) = try await browser()
