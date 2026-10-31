@@ -18,7 +18,7 @@ enum Look {
     /// Equal clearance from the window edges, independent of the page card spacing.
     static let floatingSidebarGap: CGFloat = 5
     /// Let the page show through the floating sidebar while its controls stay opaque.
-    static let floatingSidebarFill = Color(white: 0.08).opacity(0.55)
+    static let floatingSidebarOpacity: Double = 0.55
     static let floatingSidebarMaterial = AnyShapeStyle(Material.thin)
     /// A one-pixel rim on Retina displays, visible over the translucent material.
     static let floatingSidebarStroke = Color.white.opacity(0.25)
