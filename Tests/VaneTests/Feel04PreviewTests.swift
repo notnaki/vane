@@ -257,13 +257,20 @@ import XCTest
 /// promote before delivering that earlier reply. Only this source owns the gate.
 @MainActor private final class Feel04AccountProofSource: WKWebView {
     var gateNextIdentity = false
+    var changesAccount = true
     var captured: ((String?, String?, Duration) -> Void)?
     private(set) var gated = false
+    private(set) var identityReplies: [String] = []
 
     override func __evaluateJavaScript(_ script: String, inFrame frame: WKFrameInfo?, in world: WKContentWorld,
                                       completionHandler: (@MainActor @Sendable (Any?, (any Error)?) -> Void)? = nil) {
         guard gateNextIdentity, script == DOMFavouritePreviewAdapter(service: .github).identityScript else {
-            super.__evaluateJavaScript(script, inFrame: frame, in: world, completionHandler: completionHandler)
+            super.__evaluateJavaScript(script, inFrame: frame, in: world) { [weak self] value, error in
+                if script == DOMFavouritePreviewAdapter(service: .github).identityScript {
+                    self?.identityReplies.append(value as? String ?? "<missing>")
+                }
+                completionHandler?(value, error)
+            }
             return
         }
         gateNextIdentity = false
@@ -272,7 +279,7 @@ import XCTest
         (() => {
           const proof = (\(script));
           const meta = document.querySelector('meta[name="user-login"]');
-          meta.content = 'other';
+          \(changesAccount ? "meta.content = 'other';" : "")
           return {proof, current: meta.content};
         })()
         """
@@ -280,6 +287,7 @@ import XCTest
             guard let self else { completionHandler?(nil, error); return }
             let values = value as? [String: String]
             self.gated = true
+            self.identityReplies.append(values?["proof"] ?? "<missing>")
             self.captured?(values?["proof"], values?["current"], ContinuousClock.now - started)
             completionHandler?(values?["proof"], error)
         }
@@ -330,6 +338,14 @@ import XCTest
     }
 
     func testPromotionDuringAccountVerificationRechecksBeforePublishing() async throws {
+        try await exercisePromotionDuringAccountVerification(changingAccount: true)
+    }
+
+    func testPromotionDuringAccountVerificationStillPublishesTheSameLiveAccount() async throws {
+        try await exercisePromotionDuringAccountVerification(changingAccount: false)
+    }
+
+    private func exercisePromotionDuringAccountVerification(changingAccount: Bool) async throws {
         TestEnvironment.prepare()
         let policy = NSApplication.shared.activationPolicy(), mode = BatterySaver.shared.mode
         defer { NSApp.setActivationPolicy(policy); BatterySaver.shared.setMode(mode) }
@@ -338,6 +354,7 @@ import XCTest
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         let source = Feel04AccountProofSource(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
+        source.changesAccount = changingAccount
         let window = NSWindow(contentRect: source.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = source
@@ -361,7 +378,7 @@ import XCTest
             try await settle { loader.contexts.count == 1 }
             source.captured = { old, current, elapsed in
                 XCTAssertEqual(old, "fixture", "The gated proof must come from the actual earlier identity read")
-                XCTAssertEqual(current, "other", "The real document must change before that reply is delivered")
+                XCTAssertEqual(current, changingAccount ? "other" : "fixture", "The actual document supplies the current account")
                 XCTAssertLessThan(elapsed, .milliseconds(400), "Admit this reply before the unchanged identity-probe deadline")
                 XCTAssertEqual(previews.state, .loading, "Prepared account content must remain hidden")
                 print("ACCOUNT PROOF captured before delivery: old=\(String(describing: old)), current=\(String(describing: current)), elapsed=\(elapsed), \(self.diagnostics(previews, source: source, loader: loader))")
@@ -370,10 +387,11 @@ import XCTest
             source.gateNextIdentity = true
             loader.finish()
             try await settle { source.gated }
-            try await settle({ previews.state == .unavailable }, diagnostics: {
+            let expected: FavouritePreviewState = changingAccount ? .unavailable : .ready(.init(account: "fixture", items: []))
+            try await settle({ previews.state == expected }, diagnostics: {
                 self.diagnostics(previews, source: source, loader: loader)
             })
-            print("ACCOUNT PROOF gated final: \(diagnostics(previews, source: source, loader: loader))")
+            print("ACCOUNT PROOF gated final: changing=\(changingAccount), reads=\(source.identityReplies), \(diagnostics(previews, source: source, loader: loader))")
             XCTAssertEqual(loader.contexts.count, 1, "Promotion must recheck proof without restarting the loader")
             XCTAssertEqual(previews.owner, owner)
         } catch { failure = error }

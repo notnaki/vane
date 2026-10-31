@@ -248,16 +248,34 @@ import WebKit
         promotionTask?.cancel(); promotionTask = nil
     }
     private func promote(_ context: FavouritePreviewContext, source: WKWebView?) {
-        preparing = false
-        guard let prepared = preparedState else { return }
-        preparedState = nil
+        guard promotionTask == nil else { return }
+        // Loading/verification can still be finishing. Keep account data behind
+        // the preparation barrier and promote its result through a fresh proof.
+        guard let prepared = preparedState else {
+            let ticket = generation, pendingLoad = task
+            promotionTask = Task { [weak self, weak source] in
+                await pendingLoad?.value
+                guard !Task.isCancelled, let self, self.generation == ticket else { return }
+                self.promotionTask = nil
+                guard self.preparedState != nil else {
+                    self.preparing = false; self.setState(.unavailable); return
+                }
+                self.promote(context, source: source)
+            }
+            return
+        }
         let snapshot: FavouritePreviewSnapshot
         switch prepared {
         case .ready(let value), .stale(let value): snapshot = value
-        default: setState(prepared); return
+        default:
+            preparing = false; preparedState = nil
+            setState(prepared); return
         }
         // Proof collected during the earlier dwell must still hold when the card opens.
-        if source == nil && !observeSessions { setState(prepared); return }
+        if source == nil && !observeSessions {
+            preparing = false; preparedState = nil
+            setState(prepared); return
+        }
         let ticket = generation
         promotionTask = Task { [weak self, weak source] in
             guard !Task.isCancelled, let self, self.generation == ticket else { return }
@@ -273,8 +291,19 @@ import WebKit
                 self.stop(); self.cache.invalidate(profileID: context.profileID)
                 self.setState(.unavailable); return
             }
-            // A refresh may have finished during the probe; don't replace it with stale data.
-            if self.state == .loading { self.setState(prepared) }
+            // A refresh can finish while presentation proof is in flight. Keep
+            // that result hidden too, and never replace it with an older snapshot.
+            let latest = self.preparedState ?? prepared
+            switch latest {
+            case .ready(let value), .stale(let value):
+                guard value.account == snapshot.account else {
+                    self.stop(); self.cache.invalidate(profileID: context.profileID)
+                    self.setState(.unavailable); return
+                }
+            default: break
+            }
+            self.preparing = false; self.preparedState = nil; self.promotionTask = nil
+            self.setState(latest)
         }
     }
 
