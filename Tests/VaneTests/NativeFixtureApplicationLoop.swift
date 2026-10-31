@@ -60,6 +60,10 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     private let eventTag = Int.random(in: 1...Int.max)
     private let beforeHeartbeat: @MainActor @Sendable () async -> Void
     private let launchReadiness: @MainActor @Sendable () -> Bool
+    private let afterRunReturn: (@MainActor @Sendable () -> Void)?
+    private let policyPollScheduled: (@MainActor @Sendable () -> Void)?
+    private var policyPollTimer: CFRunLoopTimer?
+    var policyPollPendingForTesting: Bool { policyPollTimer != nil }
     private lazy var entryGate = NativeApplicationLoopEntryGate(generation: generation)
     private var admission: CheckedContinuation<Void, any Error>?
     private var joinWaiters: [CheckedContinuation<Void, any Error>] = []
@@ -77,9 +81,13 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     private var closed = false
 
     private init(beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void,
-                 launchReadiness: @escaping @MainActor @Sendable () -> Bool) {
+                 launchReadiness: @escaping @MainActor @Sendable () -> Bool,
+                 afterRunReturn: (@MainActor @Sendable () -> Void)?,
+                 policyPollScheduled: (@MainActor @Sendable () -> Void)?) {
         self.beforeHeartbeat = beforeHeartbeat
         self.launchReadiness = launchReadiness
+        self.afterRunReturn = afterRunReturn
+        self.policyPollScheduled = policyPollScheduled
     }
     private var isCurrent: Bool { Self.ownerGeneration == generation && !closed }
 
@@ -104,8 +112,11 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     }
 
     static func acquire(beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void = {},
-                        launchReadiness: @escaping @MainActor @Sendable () -> Bool = { true }) async throws -> NativeFixtureApplicationLoop {
-        let lease = NativeFixtureApplicationLoop(beforeHeartbeat: beforeHeartbeat, launchReadiness: launchReadiness)
+                        launchReadiness: @escaping @MainActor @Sendable () -> Bool = { true },
+                        afterRunReturn: (@MainActor @Sendable () -> Void)? = nil,
+                        policyPollScheduled: (@MainActor @Sendable () -> Void)? = nil) async throws -> NativeFixtureApplicationLoop {
+        let lease = NativeFixtureApplicationLoop(beforeHeartbeat: beforeHeartbeat, launchReadiness: launchReadiness,
+            afterRunReturn: afterRunReturn, policyPollScheduled: policyPollScheduled)
         try await lease.start()
         if Task.isCancelled { lease.record(.cancelled) }
         do { try lease.verifyRunning() }
@@ -154,9 +165,9 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         }
         enteredRun = true
         NSApplication.shared.run()
+        afterRunReturn?()
         runReturned = true
         if !stopRequested { record(.unexpectedLoopReturn) }
-        if NSApplication.shared.activationPolicy() != originalPolicy { record(.policyChanged) }
         heartbeat?.cancel()
         completeIfJoined()
     }
@@ -323,12 +334,46 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         app.postEvent(event, atStart: false)
     }
 
+    private func armPolicyPoll() -> Bool {
+        if policyPollTimer != nil { return true }
+        guard let timer = CFRunLoopTimerCreateWithHandler(nil, CFAbsoluteTimeGetCurrent() + 0.01, 0.01, 0, 0, { _ in
+            MainActor.assumeIsolated {
+                guard self.isCurrent else { return }
+                self.completeIfJoined()
+            }
+        }) else { return false }
+        policyPollTimer = timer
+        CFRunLoopAddTimer(CFRunLoopGetMain(), timer, CFRunLoopMode.commonModes)
+        print("Native fixture AppKit loop: waitingForOriginalPolicy=true")
+        policyPollScheduled?()
+        return true
+    }
+
+    private func invalidatePolicyPoll() {
+        if let policyPollTimer { CFRunLoopTimerInvalidate(policyPollTimer) }
+        policyPollTimer = nil
+    }
+
     private func completeIfJoined() {
         guard isCurrent, closing || !admissionSucceeded,
               startAborted || (runReturned && heartbeatFinished) else { return }
         if NSApplication.shared.isRunning { record(.loopStillRunning) }
-        if NSApplication.shared.activationPolicy() != originalPolicy { record(.policyChanged) }
+        let policy = NSApplication.shared.activationPolicy()
+        // AppKit can transiently report another policy while run() unwinds.
+        // Keep the exact original-policy invariant at the completed join, using
+        // only the already-armed shutdown budget. Check time after the getter:
+        // a queued watchdog cannot authorize equality observed too late.
+        if firstFailure == nil, !startAborted, let deadline = watchdogDeadline {
+            if ContinuousClock.now >= deadline {
+                record(.shutdownWatchdogExpired)
+            } else if policy != originalPolicy {
+                if armPolicyPoll() { return }
+                record(.timerUnavailable)
+            }
+        }
+        if policy != originalPolicy { record(.policyChanged) }
         closed = true
+        invalidatePolicyPoll()
         invalidateWatchdog()
         heartbeat = nil
         let startup = admission
