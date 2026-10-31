@@ -9,6 +9,9 @@ struct SidebarSectionRows<Content: View>: View {
     @State private var virtualizesRetainedRows = RetainedRowVirtualizationExperiment.enabled
     @Environment(\.nativeCachedSidebarBatches) private var groupedNativeRows
     @Environment(\.sidebarNativeReadinessScope) private var nativeReadinessScope
+#if DEBUG
+    @Environment(\.sidebarSnapshotReceipt) private var snapshotReceipt
+#endif
     @ObservedObject private var dragging = Dragging.shared
     @SidebarObserved var store: TabStore
     let snapshot: Feel02SidebarRowsCache.Snapshot
@@ -27,6 +30,18 @@ struct SidebarSectionRows<Content: View>: View {
     }
 
     var body: some View {
+#if DEBUG
+        sectionRows.background {
+            if let snapshotReceipt {
+                snapshotReceipt(ObjectIdentifier(store), readinessSection, snapshot.rows.map(\.id))
+            }
+        }
+#else
+        sectionRows
+#endif
+    }
+
+    @ViewBuilder private var sectionRows: some View {
         let rows = collapsed ? [] : snapshot.rows
         if groupedNativeRows || NativeCachedSidebarBatchesExperiment.enabled {
             NativeCachedSidebarBatchSectionRows(rows: rows, modelIDs: snapshot.structuralRowIDs,
@@ -86,3 +101,18 @@ struct SidebarSectionRows<Content: View>: View {
         }
     }
 }
+
+#if DEBUG
+/// Optional native receipt supplied by regression fixtures. The immutable IDs
+/// belong to this section's captured snapshot, not a live model or mount count.
+/// Release builds contain neither the environment value nor an added view.
+private struct SidebarSnapshotReceiptKey: EnvironmentKey {
+    static let defaultValue: (@MainActor @Sendable (ObjectIdentifier, String?, [String]) -> AnyView)? = nil
+}
+extension EnvironmentValues {
+    var sidebarSnapshotReceipt: (@MainActor @Sendable (ObjectIdentifier, String?, [String]) -> AnyView)? {
+        get { self[SidebarSnapshotReceiptKey.self] }
+        set { self[SidebarSnapshotReceiptKey.self] = newValue }
+    }
+}
+#endif

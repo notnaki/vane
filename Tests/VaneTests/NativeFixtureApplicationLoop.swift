@@ -56,12 +56,19 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
 @MainActor final class NativeFixtureApplicationLoop {
     private static var ownerGeneration: UUID?
     private let generation = UUID()
-    private let originalPolicy = NSApplication.shared.activationPolicy()
+    private let requestedPolicy: NSApplication.ActivationPolicy?
+    private let requiredPolicy: NSApplication.ActivationPolicy
+    private let afterPolicyRequest: (@MainActor @Sendable () -> Void)?
     private let eventTag = Int.random(in: 1...Int.max)
     private let beforeHeartbeat: @MainActor @Sendable () async -> Void
     private let launchReadiness: @MainActor @Sendable () -> Bool
+    private let afterRunReturn: (@MainActor @Sendable () -> Void)?
+    private let policyPollScheduled: (@MainActor @Sendable () -> Void)?
+    private var policyPollTimer: CFRunLoopTimer?
+    var policyPollPendingForTesting: Bool { policyPollTimer != nil }
     private lazy var entryGate = NativeApplicationLoopEntryGate(generation: generation)
     private var admission: CheckedContinuation<Void, any Error>?
+    private var pendingLaunchAdmission: NativeFixtureLaunchAdmission?
     private var joinWaiters: [CheckedContinuation<Void, any Error>] = []
     private var heartbeat: Task<Void, Never>?
     private var watchdog: CFRunLoopTimer?
@@ -76,10 +83,19 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     private var closing = false
     private var closed = false
 
-    private init(beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void,
-                 launchReadiness: @escaping @MainActor @Sendable () -> Bool) {
+    private init(activationPolicy: NSApplication.ActivationPolicy?,
+                 afterPolicyRequest: (@MainActor @Sendable () -> Void)?,
+                 beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void,
+                 launchReadiness: @escaping @MainActor @Sendable () -> Bool,
+                 afterRunReturn: (@MainActor @Sendable () -> Void)?,
+                 policyPollScheduled: (@MainActor @Sendable () -> Void)?) {
+        requestedPolicy = activationPolicy
+        requiredPolicy = activationPolicy ?? NSApplication.shared.activationPolicy()
+        self.afterPolicyRequest = afterPolicyRequest
         self.beforeHeartbeat = beforeHeartbeat
         self.launchReadiness = launchReadiness
+        self.afterRunReturn = afterRunReturn
+        self.policyPollScheduled = policyPollScheduled
     }
     private var isCurrent: Bool { Self.ownerGeneration == generation && !closed }
 
@@ -90,7 +106,7 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         CFRunLoopWakeUp(CFRunLoopGetMain())
     }
 
-    private func preflightFailure() -> NativeApplicationLoopFailure? {
+    private func preflightFailure(allowPendingPolicy: Bool = false) -> NativeApplicationLoopFailure? {
         let app = NSApplication.shared
         if app.isRunning { return .existingLoop }
         if app.delegate != nil { return .delegatePresent }
@@ -99,17 +115,28 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         if !(open == nil || (open as? String)?.isEmpty == true || (open as? [Any])?.isEmpty == true) {
             return .launchOpenRequest
         }
-        if app.activationPolicy() != originalPolicy { return .policyChanged }
+        if !allowPendingPolicy, app.activationPolicy() != requiredPolicy { return .policyChanged }
         return nil
     }
 
-    static func acquire(beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void = {},
-                        launchReadiness: @escaping @MainActor @Sendable () -> Bool = { true }) async throws -> NativeFixtureApplicationLoop {
-        let lease = NativeFixtureApplicationLoop(beforeHeartbeat: beforeHeartbeat, launchReadiness: launchReadiness)
+    static func acquire(activationPolicy: NSApplication.ActivationPolicy? = nil,
+                        beforeHeartbeat: @escaping @MainActor @Sendable () async -> Void = {},
+                        launchReadiness: @escaping @MainActor @Sendable () -> Bool = { true },
+                        afterPolicyRequest: (@MainActor @Sendable () -> Void)? = nil,
+                        afterRunReturn: (@MainActor @Sendable () -> Void)? = nil,
+                        policyPollScheduled: (@MainActor @Sendable () -> Void)? = nil) async throws -> NativeFixtureApplicationLoop {
+        let lease = NativeFixtureApplicationLoop(activationPolicy: activationPolicy, afterPolicyRequest: afterPolicyRequest,
+            beforeHeartbeat: beforeHeartbeat, launchReadiness: launchReadiness,
+            afterRunReturn: afterRunReturn, policyPollScheduled: policyPollScheduled)
         try await lease.start()
         if Task.isCancelled { lease.record(.cancelled) }
-        do { try lease.verifyRunning() }
-        catch {
+        do {
+            try await withTaskCancellationHandler {
+                try await lease.adoptAdmission()
+            } onCancel: {
+                Self.enqueue { lease.cancelOrExpire(.cancelled) }
+            }
+        } catch {
             // A cancelled or lost admission cannot throw while leaving its loop
             // behind. close retains the first lifecycle failure and joins first.
             try await lease.close()
@@ -121,7 +148,7 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
 
     private func start() async throws {
         guard Self.ownerGeneration == nil else { throw NativeApplicationLoopFailure.existingOwner }
-        if let failure = preflightFailure() { throw failure }
+        if let failure = preflightFailure(allowPendingPolicy: requestedPolicy != nil) { throw failure }
         Self.ownerGeneration = generation
         let gate = entryGate
         let token = generation
@@ -129,6 +156,8 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
                 admission = continuation
                 guard armWatchdog(.startupWatchdogExpired) else { abortStart(.timerUnavailable); return }
+                guard !Task.isCancelled else { abortStart(.cancelled); return }
+                if let failure = requestPolicyForAdmission() { abortStart(failure); return }
                 Self.enqueue { self.enter() }
                 // Suspend the caller without synchronously pumping its run loop.
             }
@@ -138,44 +167,104 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         }
     }
 
+    /// Policy setters can report false while the target is already present.
+    /// Only actual compound readiness authorizes admission; the SDK Boolean is
+    /// metadata. A request is never repeated to manufacture a passing state.
+    private func requestPolicyForAdmission() -> NativeApplicationLoopFailure? {
+        guard let requestedPolicy else { return nil }
+        guard let watchdogDeadline else { return .timerUnavailable }
+        let start = ContinuousClock.now
+        let before = NSApplication.shared.activationPolicy()
+        let finishedBefore = before == requestedPolicy
+            && NSRunningApplication.current.isFinishedLaunching && launchReadiness()
+        var state = NativeFixtureLaunchAdmission(finishedAtEntry: finishedBefore,
+            deadline: start + .seconds(5), watchdogDeadline: watchdogDeadline)
+        // Pending policy before the request belongs to this same history, even
+        // if AppKit is warm/finished by the time enter() eventually executes.
+        _ = observeAdmission(&state, finished: finishedBefore)
+        if let firstFailure { return firstFailure }
+        let accepted = NSApplication.shared.setActivationPolicy(requestedPolicy)
+        let after = NSApplication.shared.activationPolicy()
+        let finishedAfter = after == requestedPolicy
+            && NSRunningApplication.current.isFinishedLaunching && launchReadiness()
+        _ = observeAdmission(&state, finished: finishedAfter)
+        pendingLaunchAdmission = state
+        print("Native fixture AppKit policy request: requested=\(requestedPolicy.rawValue) accepted=\(accepted) before=\(before.rawValue) after=\(after.rawValue)")
+        if let firstFailure { return firstFailure }
+        // A synchronous fault seam cannot restart either existing deadline.
+        afterPolicyRequest?()
+        return nil
+    }
+
+    private func launchReadyForAdmission() -> Bool {
+        NSRunningApplication.current.isFinishedLaunching && launchReadiness()
+            && (requestedPolicy == nil || NSApplication.shared.activationPolicy() == requiredPolicy)
+    }
+
     private func enter() {
         guard isCurrent else { return }
         guard entryGate.claim(generation) else { abortStart(.cancelled); return }
-        if let failure = preflightFailure() { abortStart(failure); return }
+        if let failure = preflightFailure(allowPendingPolicy: requestedPolicy != nil) { abortStart(failure); return }
         guard let watchdogDeadline else { abortStart(.timerUnavailable); return }
         guard ContinuousClock.now < watchdogDeadline else { abortStart(.startupWatchdogExpired); return }
-        let deadline = ContinuousClock.now + .seconds(5)
-        let finishedAtEntry = NSRunningApplication.current.isFinishedLaunching
-        print("Native fixture AppKit admission: finishedAtEntry=\(finishedAtEntry)")
+        var state: NativeFixtureLaunchAdmission
+        if let pendingLaunchAdmission {
+            state = pendingLaunchAdmission
+        } else {
+            let entryDeadline = ContinuousClock.now + .seconds(5)
+            let finishedAtEntry = NSRunningApplication.current.isFinishedLaunching
+            state = NativeFixtureLaunchAdmission(finishedAtEntry: finishedAtEntry,
+                deadline: entryDeadline, watchdogDeadline: watchdogDeadline)
+        }
+        if requestedPolicy != nil {
+            _ = observeAdmission(&state, finished: launchReadyForAdmission())
+            if let firstFailure { abortStart(firstFailure); return }
+        }
+        print("Native fixture AppKit admission: finishedAtEntry=\(state.finishedAtEntry)")
+        let initialAdmission = state
         heartbeat = Task { @MainActor in
             await self.beforeHeartbeat()
-            await self.checkHeartbeat(admission: NativeFixtureLaunchAdmission(finishedAtEntry: finishedAtEntry,
-                deadline: deadline, watchdogDeadline: watchdogDeadline))
+            await self.checkHeartbeat(admission: initialAdmission)
         }
         enteredRun = true
         NSApplication.shared.run()
+        afterRunReturn?()
         runReturned = true
         if !stopRequested { record(.unexpectedLoopReturn) }
-        if NSApplication.shared.activationPolicy() != originalPolicy { record(.policyChanged) }
         heartbeat?.cancel()
         completeIfJoined()
     }
 
     private func checkHeartbeat(admission initialAdmission: NativeFixtureLaunchAdmission) async {
-        defer { finishHeartbeat(deadline: initialAdmission.watchdogDeadline) }
+        var admission = initialAdmission
+        defer {
+            pendingLaunchAdmission = admission
+            finishHeartbeat(deadline: initialAdmission.watchdogDeadline)
+        }
         let app = NSApplication.shared
         guard app.isRunning else { record(.loopNotRunning); return }
-        var admission = initialAdmission
         var readyOnPreviousTurn = false
         do {
             while true {
                 try Task.checkCancellation()
                 guard app.isRunning else { record(.loopNotRunning); return }
-                let finished = NSRunningApplication.current.isFinishedLaunching && launchReadiness()
+                let finished = launchReadyForAdmission()
                 switch admission.observe(finished: finished, at: .now) {
                 case .ready:
                     if readyOnPreviousTurn {
-                        try verifyRunning()
+                        if let failure = runningFailure() {
+                            if failure == .incompleteHeartbeat {
+                                guard observeAdmission(&admission, finished: false) == .waiting else { return }
+                                readyOnPreviousTurn = false
+                                try await Task.sleep(for: .milliseconds(20))
+                                continue
+                            }
+                            record(failure)
+                            return
+                        }
+                        // The final native getters may consume the remaining
+                        // budget even when they return a positive result.
+                        _ = observeAdmission(&admission, finished: true)
                         return
                     }
                     // Confirm readiness after yielding the executor. A prior
@@ -209,8 +298,8 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         heartbeat = nil
         if firstFailure == nil, !closing, ContinuousClock.now >= deadline { record(.startupWatchdogExpired) }
         if firstFailure == nil && !closing {
-            invalidateWatchdog()
-            admissionSucceeded = true
+            // Heartbeat readiness is provisional. Keep its original watchdog
+            // and admission history until the caller accepts the final sample.
             let completion = admission
             admission = nil
             completion?.resume()
@@ -221,19 +310,71 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         }
     }
 
+    private func runningFailure() -> NativeApplicationLoopFailure? {
+        if let firstFailure { return firstFailure }
+        guard isCurrent, enteredRun, !runReturned, NSApplication.shared.isRunning else { return .loopNotRunning }
+        guard NSRunningApplication.current.isFinishedLaunching && launchReadiness() else { return .incompleteHeartbeat }
+        guard NSApplication.shared.activationPolicy() == requiredPolicy else {
+            return requestedPolicy != nil && !admissionSucceeded ? .incompleteHeartbeat : .policyChanged
+        }
+        return nil
+    }
+
     func verifyRunning() throws {
-        if let firstFailure { throw firstFailure }
-        guard isCurrent, enteredRun, !runReturned, NSApplication.shared.isRunning else {
-            record(.loopNotRunning)
+        if let failure = runningFailure() {
+            record(failure)
             throw firstFailure!
         }
-        guard NSRunningApplication.current.isFinishedLaunching && launchReadiness() else {
+    }
+
+    private func observeAdmission(_ admission: inout NativeFixtureLaunchAdmission,
+                                  finished: Bool) -> NativeFixtureLaunchAdmission.Observation {
+        let observation = admission.observe(finished: finished, at: .now)
+        switch observation {
+        case .timedOut: record(.launchTimedOut)
+        case .watchdogExpired: record(.startupWatchdogExpired)
+        case .ready, .waiting: break
+        }
+        return observation
+    }
+
+    private func adoptAdmission() async throws {
+        guard var state = pendingLaunchAdmission else {
             record(.incompleteHeartbeat)
             throw firstFailure!
         }
-        guard NSApplication.shared.activationPolicy() == originalPolicy else {
-            record(.policyChanged)
-            throw firstFailure!
+        var readyOnPreviousTurn = true
+        while true {
+            try Task.checkCancellation()
+            let failure = runningFailure()
+            try Task.checkCancellation()
+            if let failure, failure != .incompleteHeartbeat {
+                record(failure)
+                throw firstFailure!
+            }
+            switch observeAdmission(&state, finished: failure == nil) {
+            case .timedOut, .watchdogExpired:
+                throw firstFailure!
+            case .waiting:
+                readyOnPreviousTurn = false
+                try await Task.sleep(for: .milliseconds(20))
+            case .ready:
+                if !readyOnPreviousTurn {
+                    readyOnPreviousTurn = true
+                    await Task.yield()
+                    continue
+                }
+                if let firstFailure { throw firstFailure }
+                guard isCurrent, !runReturned else {
+                    record(.loopNotRunning)
+                    throw firstFailure!
+                }
+                // No readiness getter or suspension follows the accepted sample.
+                admissionSucceeded = true
+                pendingLaunchAdmission = nil
+                invalidateWatchdog()
+                return
+            }
         }
     }
 
@@ -323,12 +464,47 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         app.postEvent(event, atStart: false)
     }
 
+    private func armPolicyPoll() -> Bool {
+        if policyPollTimer != nil { return true }
+        guard let timer = CFRunLoopTimerCreateWithHandler(nil, CFAbsoluteTimeGetCurrent() + 0.01, 0.01, 0, 0, { _ in
+            MainActor.assumeIsolated {
+                guard self.isCurrent else { return }
+                self.completeIfJoined()
+            }
+        }) else { return false }
+        policyPollTimer = timer
+        CFRunLoopAddTimer(CFRunLoopGetMain(), timer, CFRunLoopMode.commonModes)
+        print("Native fixture AppKit loop: waitingForOriginalPolicy=true")
+        policyPollScheduled?()
+        return true
+    }
+
+    private func invalidatePolicyPoll() {
+        if let policyPollTimer { CFRunLoopTimerInvalidate(policyPollTimer) }
+        policyPollTimer = nil
+    }
+
     private func completeIfJoined() {
         guard isCurrent, closing || !admissionSucceeded,
               startAborted || (runReturned && heartbeatFinished) else { return }
         if NSApplication.shared.isRunning { record(.loopStillRunning) }
-        if NSApplication.shared.activationPolicy() != originalPolicy { record(.policyChanged) }
+        let policy = NSApplication.shared.activationPolicy()
+        // AppKit can transiently report another policy while run() unwinds.
+        // Keep the exact required-policy invariant at the completed join, using
+        // only the already-armed shutdown budget. Check time after the getter:
+        // a queued watchdog cannot authorize equality observed too late.
+        if firstFailure == nil, !startAborted, let deadline = watchdogDeadline {
+            if ContinuousClock.now >= deadline {
+                record(.shutdownWatchdogExpired)
+            } else if policy != requiredPolicy {
+                if armPolicyPoll() { return }
+                record(.timerUnavailable)
+            }
+        }
+        if policy != requiredPolicy { record(.policyChanged) }
         closed = true
+        pendingLaunchAdmission = nil
+        invalidatePolicyPoll()
         invalidateWatchdog()
         heartbeat = nil
         let startup = admission

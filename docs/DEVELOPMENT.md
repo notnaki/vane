@@ -165,6 +165,35 @@ user keychain changes and removes its generated keys and server on exit. Add
 and checks the native chooser, cancellation, navigation, and tab closure using an
 injected provider of generated in-memory identities.
 
+### Extension desktop error compatibility
+
+Extensions that declare `nativeMessaging` can offer **Review Error-Only Mode…**
+in Manage Extensions → Compatibility. Installation approval leaves this mode off.
+The separate review persists only for that accepted installation in its profile;
+**Disable Error-Only Mode** revokes it. Removing the permission declaration clears
+approval, and adding it back requires a fresh review. A disabled extension stays disabled.
+
+This mode exposes WebKit’s real `runtime.sendNativeMessage` and `runtime.connectNative`
+APIs by granting the SDK permission before context loading. Both public native-message
+delegates permanently reject all applications and payloads. Vane registers no native
+host, starts no desktop app, and forwards no messages. Calls reject and ports disconnect
+with an unavailable error after a defined 100 ms delay. Pending delays are bounded at
+32 per context and 128 overall; overflow fails immediately, and unloading cancels pending
+work. This keeps sequential extension retries from starving the popup. Desktop-dependent
+features remain unavailable. Optional runtime access has its own revoke control; it does
+not revoke this separately reviewed compatibility choice.
+
+Changing this mode rebuilds the extension context using its accepted code and existing
+identity. Ordinary runtime grants follow the existing reload rules. A failed context load
+or metadata save retains the old accepted mode and attempts to restart it; a restart
+failure is shown in the manager. Old or unknown mode versions keep the APIs hidden.
+
+Reported WebKit context script diagnostics (domain `WKWebExtensionContextErrorDomain`,
+code7) stay visible in a separate Runtime diagnostics section. They do not label a loaded
+extension as a failed update. Metadata/activation failures, failed background-completion
+callbacks, unknown codes and other error domains still require attention. Copied diagnostics
+continue to export only allowlisted domain/code metadata, excluding the runtime message text.
+
 ### Routine CI commands
 
 The `Known limitation — extension worker UA (advisory)` job separately runs
@@ -181,7 +210,7 @@ ownership. The planner checks that the exact advisory probe exists and that the
 required/advisory test sets partition the discovered inventory without overlap.
 An unfiltered local native run includes the probe and can fail on this known fault.
 A passing probe is one sample, not proof that worker identity is reliable or that
-the limitation is fixed. Its signed-app reproductions are tracked in [#513](https://github.com/notnaki/vane/issues/513).
+the limitation is fixed. Its signed-app reproductions and platform-limitation disposition are retained in [#513](https://github.com/notnaki/vane/issues/513). See [the worker identity boundary](EXTENSION-WORKER-IDENTITY.md).
 The advisory exception does not apply to other extension assertions or native
 fixture failures.
 

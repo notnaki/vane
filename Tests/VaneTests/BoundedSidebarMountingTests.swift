@@ -4,6 +4,38 @@ import XCTest
 @testable import vane
 
 @MainActor final class BoundedSidebarMountingTests: XCTestCase {
+    @MainActor private final class Retirement {
+        private var action: (@MainActor () -> Void)?
+        init(_ action: @escaping @MainActor () -> Void) { self.action = action }
+        func retire() { let pending = action; action = nil; pending?() }
+    }
+    private var fixtureRetirements: [Retirement] = []
+    private var ownsAppKitLoop = false
+    private func registerRetirement(_ action: @escaping @MainActor () -> Void) {
+        let retirement = Retirement(action)
+        fixtureRetirements.append(retirement)
+        addTeardownBlock { @MainActor in retirement.retire() }
+    }
+    private func withNativeContext(_ operation: @MainActor () async throws -> Void) async throws {
+        TestEnvironment.prepare()
+        let policy = NSApplication.shared.activationPolicy()
+        NSApp.setActivationPolicy(.accessory)
+        defer { NSApp.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        ownsAppKitLoop = true
+        var failure: (any Error)?
+        do { try await operation() } catch { failure = error }
+        fixtureRetirements.reversed().forEach { $0.retire() }
+        fixtureRetirements.removeAll()
+        ownsAppKitLoop = false
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Mount fixture AppKit cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
     private final class WeakControl {
         weak var view: NSButton?
         init(_ view: NSButton) { self.view = view }
@@ -31,12 +63,31 @@ import XCTest
                 Text("Space header").frame(height: 30)
             } rows: {
                 SidebarSectionRows(store: store, snapshot: cache.resolve(in: store, shape: store.todayShape),
-                                   transition: .opacity) { row, _, _ in
+                                   readinessSection: "today", transition: .opacity) { row, _, _ in
                     Control(id: row.id, controls: controls).frame(height: Look.rowHeight)
                 }
             }
         }
     }
+
+    private struct CapturedOutline: View {
+        let store: TabStore
+        let snapshot: Feel02SidebarRowsCache.Snapshot
+        let controls: Controls
+        var body: some View {
+            SpaceSectionsLayout(animatesCutoffs: false, retainsRows: snapshot.eagerlyMountsVisibleRows) {
+                Text("Space header").frame(height: 30)
+            } rows: {
+                SidebarSectionRows(store: store, snapshot: snapshot, readinessSection: "today", transition: .opacity) { row, _, _ in
+                    Control(id: row.id, controls: controls).frame(height: Look.rowHeight)
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Today")
+                .accessibilityValue("\(snapshot.todayCount) open")
+            }
+        }
+    }
+    @MainActor private final class Publication { var delivered = false }
 
     private func fixture(count: Int) -> TabStore {
         TestEnvironment.prepare()
@@ -51,7 +102,7 @@ import XCTest
         }
         store.syncShapes()
         store.palette = nil
-        addTeardownBlock { @MainActor in
+        registerRetirement {
             store.tabs.forEach { TidyTitles.rename($0, to: nil) }
             store.dropStashes()
             SharedTabs.release(store.tabs)
@@ -64,36 +115,91 @@ import XCTest
         (root as? T).map { [$0] } ?? root.subviews.flatMap { descendants($0, T.self) }
     }
 
-    private func mount<V: View>(_ content: V) -> (NSWindow, NSHostingView<V>) {
+    private func mount<V: View>(_ content: V) async throws -> (NSWindow, NSHostingView<ModifiedContent<V, NativeFixtureSnapshotReceipt>>) {
         _ = NSApplication.shared
         let policy = NSApp.activationPolicy()
         NSApp.setActivationPolicy(.accessory)
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 260, height: 300),
                               styleMask: .titled, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: content)
-        window.contentView = host
-        NSApp.activate()
+        let host = NSHostingView(rootView: content.modifier(NativeFixtureSnapshotReceipt()))
+        host.sizingOptions = []
+        let attachment = NativeFixtureMountAdmission.attach(host, to: window)
+        if ownsAppKitLoop { NSApp.activate(ignoringOtherApps: true) }
+        else { NSApp.activate() }
         window.makeKeyAndOrderFront(nil)
-        host.layoutSubtreeIfNeeded()
-        addTeardownBlock { @MainActor in
+        registerRetirement {
+            attachment?.cancel()
             window.orderOut(nil); window.contentView = nil; window.close()
             NSApp.setActivationPolicy(policy)
         }
+        try await compatibilityWait { NativeFixtureMountAdmission.surfaceReady(host, in: window) }
+        if ownsAppKitLoop {
+            try await compatibilityWait {
+                NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
+                    && NSRunningApplication.current.isFinishedLaunching
+            }
+        }
         return (window, host)
+    }
+
+    private func renderedSnapshotReady(_ store: TabStore, root: NSView, window: NSWindow) -> Bool {
+#if DEBUG
+        let snapshot = Feel02SidebarRowsCache().resolve(in: store, shape: store.todayShape)
+        let expected = NativeFixtureSnapshotMarker.Snapshot(store: ObjectIdentifier(store),
+            section: "today", ids: snapshot.rows.map(\.id))
+        let markers = descendants(root, NativeFixtureSnapshotMarker.self).filter {
+            $0.belongs(to: ObjectIdentifier(store), section: "today")
+        }
+        // An outgoing duplicate cannot acknowledge a newer section lifetime.
+        return markers.count == 1 && markers[0].acknowledges(expected, root: root, window: window)
+#else
+        return true
+#endif
+    }
+
+    private func admitOutline(_ store: TabStore, controls: Controls, root: NSView,
+                              window: NSWindow) async throws -> NSScrollView {
+        var admitted: NSScrollView?
+        let extent = CGFloat(store.tabs.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap
+        do {
+            try await compatibilityWait {
+                guard NativeFixtureMountAdmission.surfaceReady(root, in: window),
+                      self.renderedSnapshotReady(store, root: root, window: window) else { return false }
+                // Read the current snapshot receipt first, then force and check
+                // the actual current child layout before the immediate sample.
+                root.layoutSubtreeIfNeeded()
+                guard let scroll = self.descendants(root, NSScrollView.self).first,
+                      NativeFixtureMountAdmission.scrollReady(scroll, root: root, window: window, minimumHeight: extent),
+                      NativeFixtureMountAdmission.populated(scroll, by: controls.byID.values.compactMap(\.view),
+                        root: root, window: window, spacing: Look.rowGap, nativeControls: true, slotHeight: Look.rowHeight) else { return false }
+                admitted = scroll
+                return true
+            }
+        } catch {
+            let scroll = descendants(root, NSScrollView.self).first
+            print("MOUNT_ADMISSION rejected extent=\(extent) root=\(root.bounds) document=\(String(describing: scroll?.documentView?.bounds)) visible=\(String(describing: scroll?.documentVisibleRect))")
+            if let scroll, let document = scroll.documentView {
+                for (id, entry) in controls.byID.sorted(by: { $0.key < $1.key }) {
+                    guard let view = entry.view, view.visibleRect.intersection(view.bounds).height > 1 else { continue }
+                    print("MOUNT_ADMISSION control=\(id) rect=\(view.convert(view.bounds, to: document)) visible=\(view.visibleRect) window=\(view.window === window) hit=\(String(describing: NativeFixtureMountAdmission.hitPoint(view, root: root, window: window, nativeControl: true)))")
+                }
+            }
+            throw error
+        }
+        return try XCTUnwrap(admitted)
     }
 
     func testMediumSidebarMountsVisibleControlsAndPreservesNativeOffset() async throws {
         useLegacySidebarMountingPolicy()
         let store = fixture(count: 100), controls = Controls(), offset = Offset()
-        let (window, host) = mount(Outline(store: store, controls: controls, offset: offset))
-        try await compatibilityWait { !controls.byID.isEmpty }
-        try await Task.sleep(for: .milliseconds(150))
+        let (window, host) = try await mount(Outline(store: store, controls: controls, offset: offset))
+        let scroll = try await admitOutline(store, controls: controls, root: host, window: window)
+        print("MOUNT_ADMISSION medium rootWindow=\(host.window === window) contentOwner=\(window.contentView === host) controls=\(controls.byID.values.compactMap(\.view).count) active=\(NSApp.isActive) key=\(window.isKeyWindow) running=\(NSApp.isRunning)")
         XCTAssertEqual(controls.byID.values.compactMap(\.view).count, 100,
                        "A bounded medium outline must mount every structurally visible control")
-        let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
         let start = scroll.documentVisibleRect.minY
-        let point = scroll.convert(NSPoint(x: 100, y: 100), to: nil)
+        let point = try XCTUnwrap(NativeFixtureMountAdmission.scrollPoint(scroll, root: host, window: window))
         for sample in 0..<8 {
             NSApp.sendEvent(ScrollEvent(window: window, dy: -12,
                 phase: sample == 0 ? .began : .changed, x: point.x, y: point.y))
@@ -124,10 +230,8 @@ import XCTest
         }
         for count in [100, 1_000] {
             let store = fixture(count: count), controls = Controls(), offset = Offset()
-            let (_, host) = mount(Outline(store: store, controls: controls, offset: offset))
-            try await compatibilityWait { !controls.byID.isEmpty }
-            try await Task.sleep(for: .milliseconds(200))
-            let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
+            let (window, host) = try await mount(Outline(store: store, controls: controls, offset: offset))
+            let scroll = try await admitOutline(store, controls: controls, root: host, window: window)
             let document = try XCTUnwrap(scroll.documentView)
             let originalHeight = document.frame.height
             let originalFirst = try XCTUnwrap(controls.byID[store.tabs[0].id.uuidString]?.view)
@@ -189,7 +293,7 @@ import XCTest
             if let previous { setenv(flag, previous, 1) } else { unsetenv(flag) }
         }
         let store = fixture(count: 100), controls = Controls(), offset = Offset()
-        let (_, host) = mount(Outline(store: store, controls: controls, offset: offset))
+        let (_, host) = try await mount(Outline(store: store, controls: controls, offset: offset))
         let sourceID = store.tabs[2].id
         try await compatibilityWait { controls.byID[sourceID.uuidString]?.view?.window != nil }
         let original = try XCTUnwrap(controls.byID[sourceID.uuidString]?.view)
@@ -223,7 +327,7 @@ import XCTest
         store.splits = [try XCTUnwrap(Split(tabs: [lead, pane]))]
         // Actual section policy, with native controls that deliberately do not
         // install an editor: pending editing ownership must not depend on focus.
-        let (window, host) = mount(Outline(store: store, controls: controls, offset: Offset()))
+        let (window, host) = try await mount(Outline(store: store, controls: controls, offset: Offset()))
         try await compatibilityWait { controls.byID[lead.uuidString]?.view?.window === window }
         let original = try XCTUnwrap(controls.byID[lead.uuidString]?.view)
         XCTAssertNil(controls.byID[pane.uuidString]?.view)
@@ -264,7 +368,7 @@ import XCTest
             store.splits = [try XCTUnwrap(Split(tabs: [store.tabs[8].id, tab.id])).focusing(tab.id)]
             XCTAssertNotEqual(store.leadPane(store.splits[0]), tab.id)
         }
-        let (window, host) = mount(SidebarSpaceSections().environmentObject(store)
+        let (window, host) = try await mount(SidebarSpaceSections().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         store.renamingTab = tab.id
         func field() -> NSTextField? {
@@ -281,7 +385,7 @@ import XCTest
         editor.insertText(draft, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
         try await compatibilityWait { input.stringValue == draft }
         let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
-        let point = scroll.convert(NSPoint(x: 100, y: 100), to: nil)
+        let point = try XCTUnwrap(NativeFixtureMountAdmission.scrollPoint(scroll, root: host, window: window))
         for packet in 0..<80 {
             NSApp.sendEvent(ScrollEvent(window: window, dy: -24,
                 phase: packet == 0 ? .began : .changed, x: point.x, y: point.y))
@@ -301,13 +405,52 @@ import XCTest
         XCTAssertEqual(TabActions.rename(tab), draft)
     }
 
+#if DEBUG
+    func testShrinkAdmissionWaitsForCurrentRenderedStructureInSameHost() async throws {
+        try await withNativeContext { try await exerciseShrinkAdmission() }
+    }
+
+    private func exerciseShrinkAdmission() async throws {
+        useLegacySidebarMountingPolicy()
+        let store = fixture(count: 129), controls = Controls(), cache = Feel02SidebarRowsCache()
+        let oldSnapshot = cache.resolve(in: store, shape: store.todayShape)
+        let (window, host) = try await mount(CapturedOutline(store: store, snapshot: oldSnapshot, controls: controls))
+        _ = try await admitOutline(store, controls: controls, root: host, window: window)
+        try await compatibilityWait { self.renderedSnapshotReady(store, root: host, window: window) }
+        XCTAssertLessThan(controls.byID.values.compactMap(\.view).count, 64,
+            "Reading the rendered snapshot receipt must not realize the offscreen 129 controls")
+        let originalHost = host
+        let removed = Array(store.tabs.suffix(2))
+        defer { removed.forEach { $0.tearDown() } }
+        Motion.instant { store.tabs.removeLast(2); store.syncShapes() }
+        XCTAssertEqual(store.tabs.count, 127)
+        let snapshot = cache.resolve(in: store, shape: store.todayShape)
+        let publication = Publication()
+        // Deliberately hold the real rendered snapshot while the same model and
+        // native host already exist. This is injected publication lag, not a
+        // guessed readiness sleep or a delay of the outcome under test.
+        let delivery = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            guard !Task.isCancelled else { return }
+            Motion.instant { host.rootView = CapturedOutline(store: store, snapshot: snapshot, controls: controls).modifier(NativeFixtureSnapshotReceipt()) }
+            publication.delivered = true
+        }
+        defer { delivery.cancel() }
+        _ = try await admitOutline(store, controls: controls, root: host, window: window)
+        XCTAssertTrue(publication.delivered, "Previous 129 geometry must not acknowledge the 127 snapshot")
+        XCTAssertTrue(window.contentView === originalHost)
+        XCTAssertEqual(controls.byID.values.compactMap(\.view).count, 127)
+        XCTAssertTrue(renderedSnapshotReady(store, root: host, window: window))
+    }
+
+#endif
+
     func testStructuralBoundaryMounts127AndKeeps129Virtualized() async throws {
         useLegacySidebarMountingPolicy()
         for count in [127, 129] {
             let store = fixture(count: count), controls = Controls()
-            let (_, host) = mount(Outline(store: store, controls: controls, offset: Offset()))
-            try await compatibilityWait { !controls.byID.isEmpty }
-            try await Task.sleep(for: .milliseconds(150))
+            let (window, host) = try await mount(Outline(store: store, controls: controls, offset: Offset()))
+            _ = try await admitOutline(store, controls: controls, root: host, window: window)
             let mounted = controls.byID.values.compactMap(\.view).count
             if count == 127 { XCTAssertEqual(mounted, 127) }
             else { XCTAssertLessThan(mounted, 129, "Larger outlines must retain native virtualization") }
@@ -323,7 +466,7 @@ import XCTest
         let folder = Folder(name: "Protected group", collapsed: true, requiresAuthentication: true)
         store.todayShape = Pins(entries: [.init(row: .folder(folder))]
             + store.tabs.map { .init(row: .tab($0.id.uuidString), parent: folder.id) })
-        let (_, host) = mount(Outline(store: store, controls: controls, offset: offset))
+        let (_, host) = try await mount(Outline(store: store, controls: controls, offset: offset))
         try await compatibilityWait { controls.byID[folder.id.uuidString]?.view != nil }
         let identity = try XCTUnwrap(controls.byID[folder.id.uuidString]?.view)
         XCTAssertNil(controls.byID[store.tabs[0].id.uuidString])
@@ -351,7 +494,7 @@ import XCTest
         store.todayShape = Pins(entries: [.init(row: .folder(folder))]
             + store.tabs.prefix(5).map { .init(row: .tab($0.id.uuidString), parent: folder.id) }
             + store.tabs.dropFirst(5).map { .init(row: .tab($0.id.uuidString)) })
-        let (_, host) = mount(Outline(store: store, controls: controls, offset: offset))
+        let (_, host) = try await mount(Outline(store: store, controls: controls, offset: offset))
         try await compatibilityWait { controls.byID.values.compactMap(\.view).count == 101 }
         let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
         let document = try XCTUnwrap(scroll.documentView)
@@ -377,7 +520,7 @@ import XCTest
     func testMediumRealRenameDraftSurvivesNativeScrollAndCommits() async throws {
         let store = fixture(count: 100)
         let tab = store.tabs[0]
-        let (window, host) = mount(SidebarSpaceSections().environmentObject(store)
+        let (window, host) = try await mount(SidebarSpaceSections().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         // Real rename input follows a committed visible row, rather than racing
         // the initial native hosting/focus graph immediately after mount.
@@ -400,7 +543,7 @@ import XCTest
         editor.insertText(draft, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
         XCTAssertEqual(editor.string, draft)
         let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
-        let point = scroll.convert(NSPoint(x: 100, y: 100), to: nil)
+        let point = try XCTUnwrap(NativeFixtureMountAdmission.scrollPoint(scroll, root: host, window: window))
         func move(_ delta: CGFloat) async throws {
             NSApp.sendEvent(ScrollEvent(window: window, phase: .began, x: point.x, y: point.y))
             for _ in 0..<24 {
@@ -424,13 +567,17 @@ import XCTest
     }
 
     func testSameHost127To129To127PreservesActiveRenameDraft() async throws {
+        try await withNativeContext { try await exerciseThresholdRename() }
+    }
+
+    private func exerciseThresholdRename() async throws {
         useLegacySidebarMountingPolicy()
         let store = fixture(count: 127)
         let tab = store.tabs[0]
         let originalIDs = store.tabs.map(\.id)
-        let (window, host) = mount(SidebarSpaceSections().environmentObject(store)
+        let (window, host) = try await mount(SidebarSpaceSections().environmentObject(store)
             .environmentObject(ProfileManager.shared))
-        let originalHost = window.contentView
+        let originalHost = host
         func field() -> NSTextField? {
             descendants(host, NSTextField.self).first { $0.isEditable && $0.isEnabled }
         }
@@ -523,13 +670,42 @@ import XCTest
             XCTAssertNil(store.current, "Changing the row container must not select or resume a tab")
         }
         func waitForMounting(eager: Bool) async throws {
-            host.layoutSubtreeIfNeeded()
-            try await compatibilityWait {
-                let mounted = descendants(host, Feel02PressAnchorView.self).count
-                return eager ? mounted >= 127 : mounted > 0 && mounted < 64
+            do {
+                try await compatibilityWait {
+                    guard NativeFixtureMountAdmission.surfaceReady(host, in: window),
+                          self.renderedSnapshotReady(store, root: host, window: window) else { return false }
+                    host.layoutSubtreeIfNeeded()
+                    let titles = Set(store.tabs.map { TidyTitles.title(for: $0) })
+                    let anchors = descendants(host, TabTooltipAnchorView.self).filter { titles.contains($0.title) }
+                    guard let first = anchors.first(where: { $0.title == TidyTitles.title(for: store.tabs[0]) }),
+                          let scroll = first.enclosingScrollView,
+                          NativeFixtureMountAdmission.scrollReady(scroll, root: host, window: window,
+                            minimumHeight: CGFloat(store.tabs.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap)
+                    else { return false }
+                    guard let document = scroll.documentView else { return false }
+                    let firstRect = first.convert(first.bounds, to: document)
+                    let today = NSRect(x: document.bounds.minX, y: firstRect.minY,
+                        width: document.bounds.width,
+                        height: CGFloat(store.tabs.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap)
+                    return NativeFixtureMountAdmission.populated(scroll,
+                        by: anchors.filter { $0.enclosingScrollView === scroll }, root: host,
+                        window: window, spacing: Look.rowGap, region: today)
+                }
+            } catch {
+                print("THRESHOLD_MOUNT count=\(store.tabs.count) eager=\(eager) root=\(host.bounds) contentOwner=\(window.contentView === host)")
+                for anchor in descendants(host, TabTooltipAnchorView.self) {
+                    guard anchor.visibleRect.intersection(anchor.bounds).height > 1 else { continue }
+                    let scroll = anchor.enclosingScrollView
+                    print("THRESHOLD_MOUNT title=\(anchor.title) bounds=\(anchor.bounds) frame=\(anchor.frame) visible=\(anchor.visibleRect) window=\(anchor.window === window) scroll=\(String(describing: scroll.map(ObjectIdentifier.init))) document=\(String(describing: scroll?.documentView?.bounds)) viewport=\(String(describing: scroll?.documentVisibleRect)) nativeHit=\(String(describing: NativeFixtureMountAdmission.hitPoint(anchor, root: host, window: window)))")
+                }
+                throw error
             }
+            // Mount counts are sampled after independent native admission. Waiting
+            // for the desired low count would conceal a transient overmount.
+            let mounted = descendants(host, Feel02PressAnchorView.self).count
+            if eager { XCTAssertGreaterThanOrEqual(mounted, 127) }
+            else { XCTAssertGreaterThan(mounted, 0); XCTAssertLessThan(mounted, 64) }
         }
-
         try await waitForMounting(eager: true)
         let firstDraft = "Threshold 127 draft"
         let firstEditor = try await beginDraft(firstDraft, phase: "127-before-growth")
@@ -545,7 +721,6 @@ import XCTest
         try await waitForMounting(eager: false)
         try await assertDraftPreserved(firstDraft, previousEditor: firstEditor)
         XCTAssertEqual(store.tabs.map(\.id), originalIDs + added.map(\.id))
-
         // Re-arm a real editor if the first crossing committed. The return leg
         // must also carry an actively typed draft, rather than only a saved name.
         let secondDraft = "Threshold 129 draft"
@@ -636,9 +811,8 @@ import XCTest
         XCTAssertFalse(snapshot.eagerlyMountsVisibleRows)
         let captured = preview(store, space: Space(name: "Small stale shape", profileID: store.profileID))
         XCTAssertFalse(captured.eagerlyMountsVisibleRows)
-        _ = mount(Outline(store: store, controls: controls, offset: Offset()))
-        try await compatibilityWait { !controls.byID.isEmpty }
-        try await Task.sleep(for: .milliseconds(150))
+        let (window, host) = try await mount(Outline(store: store, controls: controls, offset: Offset()))
+        _ = try await admitOutline(store, controls: controls, root: host, window: window)
         XCTAssertLessThan(controls.byID.values.compactMap(\.view).count, 40)
     }
 

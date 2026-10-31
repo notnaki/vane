@@ -21,7 +21,7 @@ class BuildArtifactTests(unittest.TestCase):
         self.binary = self.root / ".build/arm64-apple-macosx/debug"
         self.binary.mkdir(parents=True)
         (self.root / ".build/debug").symlink_to("arm64-apple-macosx/debug")
-        for relative in ("vane", "VanePackageTests.xctest/Contents/MacOS/VanePackageTests",
+        for relative in ("vane", "NativeLeaseHolder", "VanePackageTests.xctest/Contents/MacOS/VanePackageTests",
                          "Vane_vane.bundle/resource.txt", "vane.build/large.o"):
             p = self.binary / relative
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -53,6 +53,43 @@ class BuildArtifactTests(unittest.TestCase):
         self.assertTrue((self.root / ".build/debug").is_symlink())
         self.assertTrue((self.binary / "vane").stat().st_mode & 0o111)
         self.assertTrue((self.root / "Vane.app/Contents/MacOS/Vane").stat().st_mode & 0o111)
+
+    def test_roundtrip_preserves_native_lease_holder_and_executable_mode(self):
+        self.pack()
+        (self.root / ".build").rename(self.root / "original-build")
+        (self.root / "Vane.app").rename(self.root / "original-app")
+        self.artifact.restore(self.root, self.archive, "revision", "toolchain")
+        helper = self.binary / "NativeLeaseHolder"
+        self.assertTrue(helper.is_file(), "restored test runtime must include the independent lease holder")
+        self.assertEqual(helper.read_text(), "fixture")
+        self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
+
+    def test_missing_native_lease_holder_cannot_be_published(self):
+        (self.binary / "NativeLeaseHolder").unlink()
+        with self.assertRaises(ValueError):
+            self.pack()
+
+    def test_nonexecutable_native_lease_holder_cannot_be_published(self):
+        (self.binary / "NativeLeaseHolder").chmod(0o644)
+        with self.assertRaises(ValueError):
+            self.pack()
+
+    def test_restore_rejects_missing_or_nonexecutable_native_lease_holder(self):
+        self.pack()
+        helper = str((self.binary / "NativeLeaseHolder").relative_to(self.root))
+        for defect in ("missing", "nonexecutable"):
+            with self.subTest(defect=defect):
+                bad = self.root / (defect + ".tar")
+                with tarfile.open(self.archive) as original, tarfile.open(bad, "w") as archive:
+                    for member in original:
+                        if member.name == helper:
+                            if defect == "missing":
+                                continue
+                            member.mode = 0o644
+                        archive.addfile(member, original.extractfile(member) if member.isfile() else None)
+                # Even a preexisting helper cannot conceal an incomplete archive.
+                with self.assertRaises(ValueError):
+                    self.artifact.restore(self.root, bad, "revision", "toolchain")
 
     def test_mismatched_revision_toolchain_or_checkout_rejects_before_extracting(self):
         self.pack()

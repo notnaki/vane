@@ -135,8 +135,8 @@ import XCTest
         return context
     }
 
-    private func popup(_ context: WKWebExtensionContext) async throws -> (WKWebExtension.Action, WKWebView) {
-        let action = try XCTUnwrap(context.action(for: nil))
+    private func popup(_ context: WKWebExtensionContext, for tab: Tab? = nil) async throws -> (WKWebExtension.Action, WKWebView) {
+        let action = try XCTUnwrap(ExtensionHost.host(for: profile).action(context, for: tab))
         let web = try XCTUnwrap(action.popupWebView)
         let deadline = ContinuousClock.now + .seconds(10)
         while ContinuousClock.now < deadline {
@@ -337,20 +337,45 @@ import XCTest
     }
 
     func testDevelopChangeUpdatesLiveBackgroundAndRecreatedPopupWithoutChangingAccess() async throws {
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        if policy == .prohibited { app.setActivationPolicy(.accessory) }
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do { try await exerciseDevelopChangeWithPresentedWindow() } catch { failure = error }
+        do { try await loop.close() }
+        catch { if failure == nil { failure = error } else { XCTFail("Popup AppKit cleanup also failed: \(error)") } }
+        if let failure { throw failure }
+    }
+
+    private func exerciseDevelopChangeWithPresentedWindow() async throws {
         let context = try await install(version: 2)
         let host = ExtensionHost.host(for: profile)
+        let store = TabStore(profileID: profile, session: [])
+        let tab = store.newBlankTab()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        store.window = window
         let anchor = NSView(frame: NSRect(x: 440, y: 250, width: 28, height: 28))
         try XCTUnwrap(window.contentView).addSubview(anchor)
         window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         defer {
             window.close()
+            store.window = nil
+            TabStore.all.removeAll { $0 === store }
+            store.everyTab.forEach { $0.tearDown() }
+        }
+        let admissionDeadline = ContinuousClock.now + .seconds(5)
+        while !NSApp.isActive || !window.isKeyWindow || !window.isVisible {
+            guard ContinuousClock.now < admissionDeadline else { throw ExtensionHost.Failure("Popup parent foreground admission timed out") }
+            try await Task.sleep(for: .milliseconds(20))
         }
 
-        host.run(context, for: nil, from: anchor)
-        let (action, web) = try await popup(context)
+        host.run(context, for: tab, from: anchor)
+        let (action, web) = try await popup(context, for: tab)
         try await waitForPresentation(action)
         try await assertIdentity(in: web, context: context, expected: safariUA)
         let controller = host.controller
@@ -364,8 +389,8 @@ import XCTest
         let defaultLive = try await web.evaluateJavaScript("navigator.userAgent") as? String
         XCTAssertEqual(defaultLive, safariUA)
         Settings.userAgent = custom
-        try await closePresentedPopup(action)
-        let (recreatedAction, recreated) = try await popup(context)
+        try await closePresentedPopup(action, host: host, context: context, tab: tab)
+        let (recreatedAction, recreated) = try await popup(context, for: tab)
         XCTAssertFalse(recreated === web, "Recreation must inspect a fresh popup, not cached startup values")
         try await assertIdentity(in: recreated, context: context, expected: custom, startup: safariUA)
         XCTAssertTrue(ExtensionHost.host(for: profile).controller === controller)
@@ -376,8 +401,9 @@ import XCTest
     }
 
     private func waitForPresentation(_ action: WKWebExtension.Action) async throws {
+        let web = try XCTUnwrap(action.popupWebView)
         let deadline = ContinuousClock.now + .seconds(5)
-        while action.popupPopover?.isShown != true {
+        while web.window?.isVisible != true || web.window?.styleMask.contains(.titled) != true {
             guard ContinuousClock.now < deadline else {
                 throw NSError(domain: "ExtensionUserAgentTests.PresentationTimeout", code: 1)
             }
@@ -385,12 +411,16 @@ import XCTest
         }
     }
 
-    private func closePresentedPopup(_ action: WKWebExtension.Action) async throws {
-        let popover = try XCTUnwrap(action.popupPopover)
-        XCTAssertTrue(popover.isShown)
-        let closed = XCTNSNotificationExpectation(name: NSPopover.didCloseNotification, object: popover)
-        action.closePopup()
+    private func closePresentedPopup(_ action: WKWebExtension.Action, host: ExtensionHost,
+                                     context: WKWebExtensionContext, tab: Tab) async throws {
+        let web = try XCTUnwrap(action.popupWebView)
+        let window = try XCTUnwrap(web.window)
+        XCTAssertTrue(window.isVisible && window.styleMask.contains(.titled))
+        let closed = XCTNSNotificationExpectation(name: NSWindow.willCloseNotification, object: window)
+        host.closeActionPopup(context, for: tab)
         await fulfillment(of: [closed], timeout: 5)
+        XCTAssertFalse(window.isVisible)
+        XCTAssertNil(web.window)
     }
 
     func testExplicitCustomIdentitySurvivesHostRestoration() async throws {

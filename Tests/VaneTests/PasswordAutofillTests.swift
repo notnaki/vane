@@ -5,8 +5,24 @@ import Network
 import XCTest
 @testable import vane
 
+private final class PasswordFixtureReadHold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: DispatchTimeoutResult?
+    private var operationEntered = false
+    private var operationFinished = false
+
+    func record(_ result: DispatchTimeoutResult) { lock.withLock { self.result = result } }
+    var completed: Bool { lock.withLock { result != nil } }
+    var released: Bool { lock.withLock { result == .success } }
+    func enterOperation() { lock.withLock { operationEntered = true } }
+    var entered: Bool { lock.withLock { operationEntered } }
+    func finishOperation() { lock.withLock { operationFinished = true } }
+    var finished: Bool { lock.withLock { operationFinished } }
+}
+
 @MainActor final class PasswordAutofillTests: XCTestCase {
     private var nativeFixtureProfiles: Set<UUID> = []
+    private var fixtureWallNow: () -> Date = { .now }
     override func tearDown() async throws {
         try await releaseNativeFixtureProfiles()
     }
@@ -248,17 +264,136 @@ import XCTest
         }
     }
 
+    @MainActor private final class SupervisedFixtureWait {
+        var result: Result<Void, Error>?
+        var overran = false
+    }
+
+    /// The controlled predicates yield or finish within six seconds. This seven-
+    /// second supervisor cancels and joins a cooperative overrun; it does not
+    /// claim to interrupt a predicate that blocks the executor indefinitely.
+    private func supervisedFixtureWait(for stage: String,
+                                       _ condition: @escaping @MainActor () async throws -> Bool) async -> SupervisedFixtureWait {
+        let attempt = SupervisedFixtureWait(), clock = ContinuousClock()
+        let supervisorDeadline = clock.now.advanced(by: .seconds(7))
+        let worker = Task { @MainActor in
+            do {
+                try await self.wait(for: stage, condition)
+                attempt.result = .success(())
+            } catch { attempt.result = .failure(error) }
+        }
+        let supervisor = Task { @MainActor in
+            do { try await clock.sleep(until: supervisorDeadline) }
+            catch { return }
+            guard attempt.result == nil else { return }
+            attempt.overran = true
+            worker.cancel()
+        }
+        await worker.value
+        supervisor.cancel()
+        await supervisor.value
+        return attempt
+    }
+
+    func testFixtureWaitBackwardWallStepStillExpires() async throws {
+        var offset: TimeInterval = 0
+        let previous = fixtureWallNow
+        fixtureWallNow = { Date.now.addingTimeInterval(offset) }
+        defer { fixtureWallNow = previous }
+        let attempt = await supervisedFixtureWait(for: "backward wall step") {
+            offset = -60
+            return false
+        }
+        XCTAssertFalse(attempt.overran, "A wall-clock rollback must not extend the five-second wait")
+        guard !attempt.overran else { return }
+        guard case .failure(let error) = attempt.result else {
+            return XCTFail("A false predicate must time out")
+        }
+        let failure = try XCTUnwrap(error as? FixtureFailure)
+        XCTAssertTrue(failure.cause is FixtureTimeout)
+    }
+
+    func testFixtureWaitRejectsLateTrue() async throws {
+        let attempt = await supervisedFixtureWait(for: "late true predicate") {
+            try await Task.sleep(for: .seconds(6))
+            return true
+        }
+        XCTAssertFalse(attempt.overran, "The finite predicate must return before the independent supervisor")
+        guard !attempt.overran else { return }
+        guard case .failure(let error) = attempt.result else {
+            return XCTFail("A predicate returning true after six seconds must not pass a five-second wait")
+        }
+        let failure = try XCTUnwrap(error as? FixtureFailure)
+        XCTAssertTrue(failure.cause is FixtureTimeout)
+    }
+
+    #if DEBUG
+    func testFixtureWaitForwardWallStepAwaitsActualUsernameProcessing() async throws {
+        try await withNativeContinuationFixture { tab, origin in
+            try await loadContinuationPage(tab, origin: origin, path: "username",
+                html: "<form><input autocomplete=username value=bob></form>")
+            let web = tab.web, window = try XCTUnwrap(web.window)
+            XCTAssertTrue(nativeContinuationReady(window, document: web))
+            XCTAssertFalse(web.isLoading)
+            let held = HeldUsernameStep(tab: tab)
+            let receipt = UsernameSubmissionReceipt(scope: held.scope)
+            let previousBoundary = tab.usernameStepBoundary, previousWall = fixtureWallNow
+            var offset: TimeInterval = 0
+            var steppedWhilePending = false
+            fixtureWallNow = { Date.now.addingTimeInterval(offset) }
+            tab.usernameStepBoundary = { [weak held, weak receipt] event, delivery in
+                receipt?.observe(event)
+                held?.receive(event, delivery: delivery)
+            }
+            web.evaluateJavaScript("document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))",
+                                   in: nil, in: .page) { [weak receipt] result in
+                receipt?.evaluation = result.map { _ in () }
+            }
+            let attempt = await supervisedFixtureWait(for: "forward wall step with real held username message") {
+                if !steppedWhilePending, receipt.request != nil, receipt.processed == nil,
+                   !receipt.discarded, !receipt.duplicate {
+                    steppedWhilePending = true
+                    offset = 60
+                }
+                if let evaluation = receipt.evaluation { try evaluation.get() }
+                return receipt.evaluation != nil && receipt.processed != nil
+            }
+            await held.join()
+            tab.usernameStepBoundary = previousBoundary
+            fixtureWallNow = previousWall
+            XCTAssertEqual(held.events.filter { $0.phase == .received }.count, 1)
+            XCTAssertEqual(held.events.last?.phase, .processed(continuationAllowed: false))
+            XCTAssertTrue(steppedWhilePending, "The wall step must occur while the matching real native receipt is pending")
+            print("Fixture wall-step control: steppedWhilePending=\(steppedWhilePending), " + receipt.diagnostics)
+            XCTAssertFalse(attempt.overran)
+            guard !attempt.overran else { return }
+            if case .failure(let error) = attempt.result {
+                XCTFail("A forward wall-clock step must not expire the pending native ACK: \(error)")
+            }
+        }
+    }
+    #endif
+
     private func wait(for stage: String = "fixture condition", file: StaticString = #filePath, line: UInt = #line,
                       diagnostics: () async -> String = { "" },
                       _ condition: () async throws -> Bool) async throws {
-        let deadline = Date.now.addingTimeInterval(5)
+        let clock = ContinuousClock(), started = clock.now
+        let deadline = started.advanced(by: .seconds(5))
+        let wallStarted = fixtureWallNow()
         do {
-            while try await !condition() {
-                if Date.now > deadline { throw FixtureTimeout(stage: stage) }
+            while true {
+                try Task.checkCancellation()
+                guard clock.now < deadline else { throw FixtureTimeout(stage: stage) }
+                let ready = try await condition()
+                try Task.checkCancellation()
+                guard clock.now < deadline else { throw FixtureTimeout(stage: stage) }
+                if ready { return }
                 try await Task.sleep(for: .milliseconds(20))
             }
         } catch {
-            NativeFixtureDiagnostics.emit("\(file):\(line): Failed waiting for \(stage): \(error); collecting native diagnostics")
+            NativeFixtureDiagnostics.emit("\(file):\(line): Failed waiting for \(stage): \(error); " +
+                "elapsedMonotonic=\(started.duration(to: clock.now)), " +
+                "elapsedWallMetadata=\(fixtureWallNow().timeIntervalSince(wallStarted)); collecting native diagnostics")
             // XCTest records the thrown failure once. Recording XCTFail here too
             // obscures the original failure with a second, unexpected thrown error.
             let report = await diagnostics()
@@ -384,35 +519,30 @@ import XCTest
     }
 
     func testSelectedAccountContinuesAcrossUsernameNavigation() async throws {
-        TestEnvironment.prepare()
-        let profile = UUID(), origin = PasswordOrigin(host: "login.example.test")
-        defer { Passwords.deleteAll(profileID: profile) }
-        guard Passwords.save(origin: origin, account: "ada", password: "ada-secret", profileID: profile),
-              Passwords.save(origin: origin, account: "bob", password: "bob-secret", profileID: profile)
-        else { throw XCTSkip("Disposable Keychain fixtures unavailable") }
-        nativeFixtureProfiles.insert(profile)
-        let tab = Tab(profileID: profile)
-        let window = NSWindow(contentRect: CGRect(x: -4000, y: -4000, width: 800, height: 600),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = tab.web
-        window.orderFront(nil)
-        defer { tab.tearDown(); window.close() }
-        tab.web.loadSimulatedRequest(URLRequest(url: origin.url.appendingPathComponent("username")),
-            responseHTML: "<form><input id=user autocomplete=username></form>")
-        try await wait { !tab.web.isLoading }
-        tab.fillChosen(host: origin.host, account: "bob")
-        try await wait { try await self.js(tab.web, "user.value") as? String == "bob" }
-        _ = try await js(tab.web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
-        try await Task.sleep(for: .milliseconds(100))
-        tab.web.loadSimulatedRequest(URLRequest(url: origin.url.appendingPathComponent("password")),
-            responseHTML: "<form><input id=password type=password autocomplete=current-password></form>")
-        try await wait { !tab.web.isLoading }
-        try await Task.sleep(for: .milliseconds(250))
-        expectEqual(try await js(tab.web, "password.value") as? String, "bob-secret")
-        _ = try await js(tab.web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
-        try await Task.sleep(for: .milliseconds(100))
-        expectTrue(tab.pendingSave == nil, "An unchanged saved password must not create a save prompt")
+        try await exerciseSelectedAccountContinuation(holdSubmission: false)
+    }
+
+    private func exerciseSelectedAccountContinuation(holdSubmission: Bool) async throws {
+        try await withNativeContinuationFixture(origin: PasswordOrigin(host: "login.example.test")) { tab, origin in
+            tab.web.loadSimulatedRequest(URLRequest(url: origin.url.appendingPathComponent("username")),
+                responseHTML: "<form><input id=user autocomplete=username></form>")
+            try await wait { !tab.web.isLoading }
+            tab.fillChosen(host: origin.host, account: "bob")
+            try await wait { try await self.js(tab.web, "user.value") as? String == "bob" }
+            try await withInlineUsernameSubmissionControl(tab, enabled: holdSubmission, allowed: true) { action in
+                let admitRequest = try await submitUsername(tab, origin: origin)
+                try admitRequest()
+                try action.admit()
+                tab.web.loadSimulatedRequest(URLRequest(url: origin.url.appendingPathComponent("password")),
+                    responseHTML: "<form><input id=password type=password autocomplete=current-password></form>")
+                try await wait { !tab.web.isLoading }
+                try await Task.sleep(for: .milliseconds(250))
+                expectEqual(try await js(tab.web, "password.value") as? String, "bob-secret")
+                _ = try await js(tab.web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
+                try await Task.sleep(for: .milliseconds(100))
+                expectTrue(tab.pendingSave == nil, "An unchanged saved password must not create a save prompt")
+            }
+        }
     }
 
     /// These tests exercise an owned user-interaction context, not pixel coverage.
@@ -445,9 +575,10 @@ import XCTest
               "appOcclusion=\(app.occlusionState.rawValue), windowOcclusion=\(window.occlusionState.rawValue)")
     }
 
-    private func withNativeContinuationFixture(_ body: (Tab, PasswordOrigin) async throws -> Void) async throws {
+    private func withNativeContinuationFixture(origin: PasswordOrigin = PasswordOrigin(host: "continuation.example.test"),
+                                                _ body: (Tab, PasswordOrigin) async throws -> Void) async throws {
         TestEnvironment.prepare()
-        let profile = UUID(), origin = PasswordOrigin(host: "continuation.example.test")
+        let profile = UUID()
         defer { Passwords.deleteAll(profileID: profile) }
         guard Passwords.save(origin: origin, account: "bob", password: "bob-secret", profileID: profile),
               Passwords.save(origin: origin, account: "ada", password: "ada-secret", profileID: profile)
@@ -593,7 +724,8 @@ import XCTest
     }
     #endif
 
-    private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String) async throws {
+    private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String,
+                                      beforeRequest: (@MainActor () throws -> Void)? = nil) async throws {
         let web = tab.web, url = origin.url.appendingPathComponent(path)
         let started = Date.now
         #if DEBUG
@@ -606,6 +738,7 @@ import XCTest
         defer { tab.navigationStageObserver = previousObserver }
         #endif
         let before = continuationLoadState(tab, web: web, requestedURL: url)
+        try beforeRequest?()
         let navigationID = ObjectIdentifier(web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html))
         let after = continuationLoadState(tab, web: web, requestedURL: url)
         try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
@@ -625,13 +758,313 @@ import XCTest
         }
     }
 
-    private func submitUsernameAndLoadPassword(_ tab: Tab, origin: PasswordOrigin, identity: String = "") async throws {
-        _ = try await js(tab.web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
-        // Let the native bridge receive the submitted username before starting navigation.
-        try await Task.sleep(for: .milliseconds(100))
-        try await loadContinuationPage(tab, origin: origin, path: "password",
-            html: "<form>" + identity + "<input id=password type=password autocomplete=current-password></form>")
+    private struct UsernameFollowingAction {
+        let admit: @MainActor () throws -> Void
     }
+
+    private enum InlineUsernameControlFailure: Error { case processingPending }
+
+    private func withInlineUsernameSubmissionControl(_ tab: Tab, enabled: Bool, allowed: Bool,
+                                                     _ body: (UsernameFollowingAction) async throws -> Void) async throws {
+        #if DEBUG
+        if enabled {
+            let web = tab.web, window = try XCTUnwrap(web.window)
+            XCTAssertTrue(nativeContinuationReady(window, document: web))
+            XCTAssertFalse(web.isLoading)
+            let held = HeldUsernameStep(tab: tab), previous = tab.usernameStepBoundary
+            tab.usernameStepBoundary = { [weak held] event, delivery in
+                held?.receive(event, delivery: delivery)
+            }
+            var operationError: Error?
+            do {
+                try await body(UsernameFollowingAction(admit: {
+                    guard held.events.contains(where: { $0.phase == .received }) else {
+                        throw FixtureTimeout(stage: "inline400ms fault missing a genuine received message before following action")
+                    }
+                    held.willPerformAction()
+                    if held.actionBeforeProcessed { throw InlineUsernameControlFailure.processingPending }
+                }))
+            } catch { operationError = error }
+            let premature = operationError is InlineUsernameControlFailure
+            await held.join(cancel: operationError != nil && !premature)
+            tab.usernameStepBoundary = previous
+            if let operationError, !premature { throw operationError }
+            let received = held.events.filter { $0.phase == .received }
+            XCTAssertEqual(received.count, 1)
+            XCTAssertTrue(held.events.allSatisfy { $0.scope == held.scope && $0.request == received.first?.request })
+            XCTAssertEqual(held.events.last?.phase, .processed(continuationAllowed: allowed))
+            print("Inline username control: faultReceived=\(received.count == 1), " +
+                  "followingActionBeforeProcessed=\(held.actionBeforeProcessed), phases=\(held.events.map { String(describing: $0.phase) })")
+            XCTAssertFalse(held.actionBeforeProcessed,
+                           "Actual following-action boundary must await matching native username processing")
+            return
+        }
+        #endif
+        try await body(UsernameFollowingAction(admit: {}))
+    }
+
+    #if DEBUG
+    func testInlineSelectedAccountAwaitsProcessedUsernameBeforeNavigation() async throws {
+        try await exerciseSelectedAccountContinuation(holdSubmission: true)
+    }
+
+    func testInlineConsumedContinuationAwaitsProcessedUsernameBeforeNavigation() async throws {
+        try await exerciseConsumedContinuation(holdSubmission: true)
+    }
+
+    func testInlineRevocationMetadataAwaitsProcessedUsernameBeforeRelease() async throws {
+        try await exerciseRevokedContinuation(delaySecret: false, holdSubmission: true)
+    }
+
+    func testInlineRevocationSecretAwaitsProcessedUsernameBeforeRelease() async throws {
+        try await exerciseRevokedContinuation(delaySecret: true, holdSubmission: true)
+    }
+    #endif
+
+    private func submitUsername(_ tab: Tab, origin: PasswordOrigin,
+                                script: String = "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))") async throws -> @MainActor () throws -> Void {
+        #if DEBUG
+        return try await awaitSubmittedUsernameProcessing(tab, origin: origin, script: script)
+        #else
+        // Release product builds expose no fixture boundary. Preserve this existing,
+        // unqualified release-test setup; the processed-ACK repair is for DEBUG CI.
+        _ = try await js(tab.web, script)
+        try await Task.sleep(for: .milliseconds(100))
+        return {}
+        #endif
+    }
+
+    private func submitUsernameAndLoadPassword(_ tab: Tab, origin: PasswordOrigin, identity: String = "",
+                                               beforeNavigation: (() -> Void)? = nil) async throws {
+        let admitRequest = try await submitUsername(tab, origin: origin)
+        try await loadContinuationPage(tab, origin: origin, path: "password",
+            html: "<form>" + identity + "<input id=password type=password autocomplete=current-password></form>",
+            beforeRequest: {
+                try admitRequest()
+                beforeNavigation?()
+            })
+    }
+
+    #if DEBUG
+    @MainActor private final class UsernameSubmissionReceipt {
+        let scope: Tab.UsernameStepScope
+        var request: UUID?
+        var processed: Bool?
+        var discarded = false
+        var duplicate = false
+        var evaluation: Result<Void, Error>?
+
+        init(scope: Tab.UsernameStepScope) { self.scope = scope }
+
+        func observe(_ event: Tab.UsernameStepEvent) {
+            guard event.scope == scope else { return }
+            switch event.phase {
+            case .received:
+                if request == nil { request = event.request }
+                else if request != event.request { duplicate = true }
+            case .processed(let allowed):
+                if event.request == request { processed = allowed }
+            case .discarded:
+                if event.request == request { discarded = true }
+            }
+        }
+
+        var diagnostics: String {
+            "received=\(request != nil), processed=\(processed.map(String.init) ?? "absent"), " +
+                "discarded=\(discarded), duplicate=\(duplicate), evaluationReturned=\(evaluation != nil)"
+        }
+    }
+
+    private func awaitSubmittedUsernameProcessing(_ tab: Tab, origin: PasswordOrigin, script: String) async throws -> @MainActor () throws -> Void {
+        // One prerequisite budget includes foreground admission, DOM submission,
+        // JavaScript completion and actual native processing. A late true is rejected.
+        let clock = ContinuousClock(), deadline = clock.now.advanced(by: .seconds(5))
+        let web = tab.web, window = try XCTUnwrap(web.window)
+        let outgoingURL = try XCTUnwrap(web.url)
+        let scope = Tab.UsernameStepScope(tab: tab, web: web)
+        let receipt = UsernameSubmissionReceipt(scope: scope)
+        func currentDocument() -> Bool {
+            tab.existingWeb === web && Tab.UsernameStepScope(tab: tab, web: web) == scope &&
+                web.url == outgoingURL && tab.currentURL == outgoingURL &&
+                PasswordOrigin(url: outgoingURL) == origin && !web.isLoading
+        }
+        func checkDeadline() throws {
+            try Task.checkCancellation()
+            guard clock.now < deadline else {
+                throw FixtureTimeout(stage: "submitted username native processing: " + receipt.diagnostics)
+            }
+            guard currentDocument() else {
+                throw FixtureTimeout(stage: "submitted username outgoing document changed: " + receipt.diagnostics)
+            }
+        }
+        while true {
+            try checkDeadline()
+            if nativeContinuationReady(window, document: web) { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let previous = tab.usernameStepBoundary
+        tab.usernameStepBoundary = { [weak receipt] event, delivery in
+            receipt?.observe(event)
+            if let previous { previous(event, delivery) }
+            else { delivery?() }
+        }
+        defer { tab.usernameStepBoundary = previous }
+        try checkDeadline()
+        emitNativeContinuationReadiness(window, document: web, stage: "username-submit")
+        // A callback result acknowledges evaluation, not native message processing.
+        // Keep it independently bounded and require both before requesting navigation.
+        web.evaluateJavaScript("""
+            (function () {
+                if (document.readyState !== 'complete') throw new Error('Username document is not ready');
+                \(script)
+            })()
+            """, in: nil, in: .page) { [weak receipt] result in
+                receipt?.evaluation = result.map { _ in () }
+            }
+        while true {
+            try checkDeadline()
+            if let evaluation = receipt.evaluation { try evaluation.get() }
+            if receipt.discarded || receipt.duplicate {
+                throw FixtureTimeout(stage: "submitted username receipt rejected: " + receipt.diagnostics)
+            }
+            // `false` is a genuine processed denial, never the initial absent ACK.
+            if receipt.evaluation != nil, receipt.processed != nil,
+               nativeContinuationReady(window, document: web) {
+                // Recheck at the actual SDK request, across the async return and
+                // failure-state getters, without starting another prerequisite budget.
+                return {
+                    try checkDeadline()
+                    guard self.nativeContinuationReady(window, document: web) else {
+                        throw FixtureTimeout(stage: "submitted username presentation owner changed")
+                    }
+                }
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    /// Hold a real, already validated SDK message rather than fabricating a native
+    /// username step. The delay is an adversarial delivery condition, not readiness.
+    @MainActor private final class HeldUsernameStep {
+        let scope: Tab.UsernameStepScope
+        var events: [Tab.UsernameStepEvent] = []
+        var actionBeforeProcessed = false
+        private var releaseTask: Task<Void, Never>?
+
+        init(tab: Tab) { scope = Tab.UsernameStepScope(tab: tab, web: tab.web) }
+
+        func receive(_ event: Tab.UsernameStepEvent, delivery: (@MainActor () -> Void)?) {
+            guard event.scope == scope else { delivery?(); return }
+            events.append(event)
+            guard let delivery else { return }
+            guard releaseTask == nil else { delivery(); return }
+            releaseTask = Task { @MainActor in
+                do { try await Task.sleep(for: .milliseconds(400)) }
+                catch { return }
+                delivery()
+            }
+        }
+
+        func willPerformAction() {
+            actionBeforeProcessed = !events.contains { event in
+                if case .processed = event.phase { return true }
+                return false
+            }
+        }
+
+        func join(cancel: Bool = false) async {
+            if cancel { releaseTask?.cancel() }
+            await releaseTask?.value
+            releaseTask = nil
+        }
+    }
+
+    private func assertHeldUsernameStep(_ tab: Tab, origin: PasswordOrigin,
+                                        continuationAllowed: Bool) async throws {
+        let web = tab.web, window = try XCTUnwrap(web.window)
+        XCTAssertTrue(nativeContinuationReady(window, document: web))
+        XCTAssertFalse(web.isLoading)
+        let held = HeldUsernameStep(tab: tab)
+        let previous = tab.usernameStepBoundary
+        tab.usernameStepBoundary = { [weak held] event, delivery in
+            held?.receive(event, delivery: delivery)
+        }
+        var operationError: Error?
+        do {
+            try await submitUsernameAndLoadPassword(tab, origin: origin,
+                beforeNavigation: { held.willPerformAction() })
+        } catch { operationError = error }
+        await held.join(cancel: operationError != nil)
+        tab.usernameStepBoundary = previous
+        if let operationError { throw operationError }
+        let received = held.events.filter { $0.phase == .received }
+        XCTAssertEqual(received.count, 1, "The control must hold one genuine main-document username message")
+        print("Held username step: requestedBeforeProcessed=\(held.actionBeforeProcessed), " +
+              "phases=\(held.events.map { String(describing: $0.phase) })")
+        XCTAssertFalse(held.actionBeforeProcessed,
+                       "A password navigation must follow actual native processing, including denied authorization")
+        if held.actionBeforeProcessed {
+            // The RED control navigated first: the old document's held delivery
+            // must be discarded, rather than acknowledged against its replacement.
+            XCTAssertEqual(held.events.last?.phase, .discarded)
+            return
+        }
+        XCTAssertEqual(held.events.last?.phase, .processed(continuationAllowed: continuationAllowed))
+        XCTAssertTrue(held.events.allSatisfy { $0.scope == held.scope && $0.request == received.first?.request })
+        if continuationAllowed {
+            try await wait { try await js(web, "password.value") as? String == "bob-secret" }
+            expectEqual(try await js(web, "password.value") as? String, "bob-secret")
+        } else {
+            try await Task.sleep(for: .milliseconds(250))
+            expectEqual(try await js(web, "password.value") as? String, "")
+        }
+    }
+
+    func testSubmittedMainUsernameAwaitsProcessedAuthorizationBeforeNavigation() async throws {
+        try await withNativeContinuationFixture { tab, origin in
+            try await loadContinuationPage(tab, origin: origin, path: "username",
+                html: "<form><input id=user autocomplete=username></form>")
+            tab.fillChosen(host: origin.host, account: "bob")
+            try await wait { try await js(tab.web, "user.value") as? String == "bob" }
+            try await assertHeldUsernameStep(tab, origin: origin, continuationAllowed: true)
+        }
+    }
+
+    func testSubmittedMainUsernameAwaitsProcessedDenialBeforeNavigation() async throws {
+        try await withNativeContinuationFixture { tab, origin in
+            try await loadContinuationPage(tab, origin: origin, path: "login", html:
+                "<iframe id=embedded srcdoc='<form><input id=user autocomplete=username></form>'></iframe>")
+            try await wait(for: "embedded username DOM") {
+                try await js(tab.web, "!!embedded.contentDocument.getElementById('user')") as? Bool == true
+            }
+            _ = try await js(tab.web, "embedded.contentDocument.getElementById('user').focus()")
+            var embeddedTarget = ""
+            try await wait(for: "isolated-world embedded username target") {
+                embeddedTarget = try await js(tab.web, """
+                    (function () {
+                        var raw = window.__vaneAnchor && window.__vaneAnchor();
+                        var anchor = raw && JSON.parse(raw);
+                        return anchor && anchor.target || '';
+                    })()
+                    """, world: Autofill.world) as? String ?? ""
+                return !embeddedTarget.isEmpty
+            }
+            tab.closeChooser(.escape)
+            _ = try await js(tab.web, "embedded.contentDocument.getElementById('user').click()")
+            try await wait(for: "native embedded-account chooser") {
+                tab.passwordChoice?.target == embeddedTarget && tab.passwordChoice?.accounts.contains("bob") == true
+            }
+            let choice = try XCTUnwrap(tab.passwordChoice)
+            let target = try XCTUnwrap(choice.target)
+            tab.fillChosen(host: choice.host, account: "bob", port: choice.port, target: target)
+            try await wait(for: "explicitly chosen account to fill the embedded username") {
+                try await js(tab.web, "embedded.contentDocument.getElementById('user').value") as? String == "bob"
+            }
+            _ = try await js(tab.web, "document.body.innerHTML='<form><input autocomplete=username value=bob></form>'")
+            try await assertHeldUsernameStep(tab, origin: origin, continuationAllowed: false)
+        }
+    }
+    #endif
 
     func testSelectedAccountContinuesWithHiddenOrReadOnlyIdentity() async throws {
         for identity in ["<input type=hidden autocomplete=username value=bob>",
@@ -732,73 +1165,158 @@ import XCTest
     }
 
     func testSuccessfulContinuationIsConsumedEvenWhenSiteFocusStartsAnotherRead() async throws {
+        try await exerciseConsumedContinuation(holdSubmission: false)
+    }
+
+    private func exerciseConsumedContinuation(holdSubmission: Bool) async throws {
         try await withNativeContinuationFixture { tab, origin in
             try await loadContinuationPage(tab, origin: origin, path: "username",
                 html: "<form><input id=user autocomplete=username></form>")
             tab.fillChosen(host: origin.host, account: "bob")
             try await wait { try await js(tab.web, "user.value") as? String == "bob" }
-            _ = try await js(tab.web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
-            try await Task.sleep(for: .milliseconds(100))
-            try await loadContinuationPage(tab, origin: origin, path: "password", html: """
-                <form id=login><input id=password type=password autocomplete=current-password></form>
-                <script>
-                password.addEventListener('input', function () {
-                    window.firstFilled = password.value;
-                    login.innerHTML = '<input id=replacement type=password autocomplete=current-password>';
-                    replacement.focus();
-                });
-                </script>
-                """)
-            try await wait { try await js(tab.web, "window.firstFilled || ''") as? String == "bob-secret" }
-            try await Task.sleep(for: .milliseconds(250))
-            expectEqual(try await js(tab.web, "replacement.value") as? String, "")
+            try await withInlineUsernameSubmissionControl(tab, enabled: holdSubmission, allowed: true) { action in
+                let admitRequest = try await submitUsername(tab, origin: origin)
+                try await loadContinuationPage(tab, origin: origin, path: "password", html: """
+                    <form id=login><input id=password type=password autocomplete=current-password></form>
+                    <script>
+                    password.addEventListener('input', function () {
+                        window.firstFilled = password.value;
+                        login.innerHTML = '<input id=replacement type=password autocomplete=current-password>';
+                        replacement.focus();
+                    });
+                    </script>
+                    """, beforeRequest: {
+                        try admitRequest()
+                        try action.admit()
+                    })
+                try await wait { try await js(tab.web, "window.firstFilled || ''") as? String == "bob-secret" }
+                try await Task.sleep(for: .milliseconds(250))
+                expectEqual(try await js(tab.web, "replacement.value") as? String, "")
+            }
         }
     }
 
     func testRevokedContinuationCannotReadOrFillAfterDelayedPasswordService() async throws {
         for delaySecret in [false, true] {
-            try await withNativeContinuationFixture { tab, origin in
-                try await loadContinuationPage(tab, origin: origin, path: "username",
-                    html: "<form><input id=user autocomplete=username></form>")
-                tab.fillChosen(host: origin.host, account: "bob")
-                try await wait { try await js(tab.web, "user.value") as? String == "bob" }
-                let entered = expectation(description: delaySecret ? "secret read started" : "metadata read started")
-                let release = DispatchSemaphore(value: 0)
-                defer { release.signal() }
-                var reader = tab.passwordReader
-                let matches = reader.matches, password = reader.password
-                if delaySecret {
-                    reader.password = { origin, account, profile in
-                        entered.fulfill()
-                        _ = release.wait(timeout: .now() + 3)
-                        return try password(origin, account, profile)
-                    }
-                } else {
-                    reader.matches = { origin, profile in
-                        entered.fulfill()
-                        _ = release.wait(timeout: .now() + 3)
-                        return try matches(origin, profile)
-                    }
-                    reader.password = { origin, account, profile in
-                        XCTFail("A replaced continuation must not read a secret after metadata returns")
-                        return try password(origin, account, profile)
-                    }
-                }
-                tab.passwordReader = reader
-                try await submitUsernameAndLoadPassword(tab, origin: origin)
-                await fulfillment(of: [entered], timeout: 2)
-                // The password target remains live, but another form submits a username
-                // without a choice while its earlier continuation read is pending.
-                _ = try await js(tab.web, """
-                    document.body.insertAdjacentHTML('beforeend','<form id=other><input autocomplete=username value=bob></form>');
-                    other.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
-                    """)
-                try await Task.sleep(for: .milliseconds(100))
-                release.signal()
-                try await Passwords.flushPendingOperations()
-                try await Task.sleep(for: .milliseconds(250))
-                expectEqual(try await js(tab.web, "password.value") as? String, "")
+            try await exerciseRevokedContinuation(delaySecret: delaySecret, holdSubmission: false)
+        }
+    }
+
+    private func finishOwnedPasswordRead(_ release: DispatchSemaphore, after primary: Error? = nil) async throws {
+        release.signal()
+        // Cancellation must not skip the actual service-lane barrier. This owned
+        // unstructured task is deliberately uncancelled and always awaited/joined.
+        let drain = Task { @MainActor in try await Passwords.flushPendingOperations() }
+        do { try await drain.value }
+        catch {
+            if let primary {
+                XCTFail("Owned password-read cleanup also failed: \(error)")
+                throw primary
             }
+            throw error
+        }
+        if let primary { throw primary }
+        try Task.checkCancellation()
+    }
+
+    func testPasswordReadCleanupJoinsAndPreservesPrimaryAfterCancellation() async throws {
+        enum PrimaryFailure: Error { case original }
+        let entered = expectation(description: "real password service lane entered")
+        let release = DispatchSemaphore(value: 0), state = PasswordFixtureReadHold()
+        let read = Task {
+            try await Passwords.perform {
+                state.enterOperation()
+                entered.fulfill()
+                state.record(release.wait(timeout: .now() + 3))
+                // Deliberate bounded worker completion latency, after observable
+                // admission. It is not a guessed readiness delay on the UI actor.
+                Thread.sleep(forTimeInterval: 0.4)
+                state.finishOperation()
+            }
+        }
+        await fulfillment(of: [entered], timeout: 2)
+        let cleanup = Task { @MainActor in
+            let pending = state.entered && !state.completed
+            guard pending else {
+                release.signal()
+                return (false, FixtureTimeout(stage: "cleanup control missing real entered/pending service read") as Error?, state.finished)
+            }
+            withUnsafeCurrentTask { $0?.cancel() }
+            var failure: Error?
+            do { try await finishOwnedPasswordRead(release, after: PrimaryFailure.original) }
+            catch { failure = error }
+            return (pending, failure, state.finished)
+        }
+        let (pendingBeforeCancellation, failure, joinedAtReturn) = await cleanup.value
+        // Join explicitly even against the broken cleanup, before any assertion
+        // can leave this control with outstanding owned service work.
+        try await read.value
+        XCTAssertTrue(pendingBeforeCancellation, "A real entered service read must still be held before cancellation")
+        XCTAssertTrue(state.released, "The actual worker must receive a signal rather than time out")
+        print("Owned read cancellation control: pendingBeforeCancellation=\(pendingBeforeCancellation), " +
+              "joinedAtCleanupReturn=\(joinedAtReturn), primaryPreserved=\(failure is PrimaryFailure)")
+        XCTAssertTrue(failure is PrimaryFailure, "Owned read cleanup must preserve the original primary error")
+        XCTAssertTrue(joinedAtReturn, "Owned read cleanup must join the real service lane before returning")
+    }
+
+    private func exerciseRevokedContinuation(delaySecret: Bool, holdSubmission: Bool) async throws {
+        try await withNativeContinuationFixture { tab, origin in
+            try await loadContinuationPage(tab, origin: origin, path: "username",
+                html: "<form><input id=user autocomplete=username></form>")
+            tab.fillChosen(host: origin.host, account: "bob")
+            try await wait { try await js(tab.web, "user.value") as? String == "bob" }
+            let entered = expectation(description: delaySecret ? "secret read started" : "metadata read started")
+            let release = DispatchSemaphore(value: 0)
+            let readHold = PasswordFixtureReadHold()
+            defer { release.signal() }
+            var reader = tab.passwordReader
+            let matches = reader.matches, password = reader.password
+            if delaySecret {
+                reader.password = { origin, account, profile in
+                    entered.fulfill()
+                    readHold.record(release.wait(timeout: .now() + 3))
+                    return try password(origin, account, profile)
+                }
+            } else {
+                reader.matches = { origin, profile in
+                    entered.fulfill()
+                    readHold.record(release.wait(timeout: .now() + 3))
+                    return try matches(origin, profile)
+                }
+                reader.password = { origin, account, profile in
+                    XCTFail("A replaced continuation must not read a secret after metadata returns")
+                    return try password(origin, account, profile)
+                }
+            }
+            tab.passwordReader = reader
+            try await submitUsernameAndLoadPassword(tab, origin: origin)
+            await fulfillment(of: [entered], timeout: 2)
+            do {
+                try await withInlineUsernameSubmissionControl(tab, enabled: holdSubmission, allowed: false) { action in
+                    // The password target remains live, but another form submits a username
+                    // without a choice while its earlier continuation read is pending.
+                    let admitRelease = try await submitUsername(tab, origin: origin, script: """
+                        document.body.insertAdjacentHTML('beforeend','<form id=other><input autocomplete=username value=bob></form>');
+                        other.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+                        """)
+                    guard !readHold.completed else {
+                        throw FixtureTimeout(stage: "password-service read no longer held at actual release")
+                    }
+                    try admitRelease()
+                    try action.admit()
+                    release.signal()
+                    try await Passwords.flushPendingOperations()
+                    try await Task.sleep(for: .milliseconds(250))
+                    expectEqual(try await js(tab.web, "password.value") as? String, "")
+                }
+            } catch {
+                try await finishOwnedPasswordRead(release, after: error)
+                throw error
+            }
+            // Join the held read even if an adversarial control stopped at its
+            // unmet prerequisite; never leave it to race fixture/profile teardown.
+            try await finishOwnedPasswordRead(release)
+            XCTAssertTrue(readHold.released, "The controlled service wait must be signalled rather than expiring")
         }
     }
 

@@ -59,6 +59,7 @@ import WebKit
     static func forget(_ profileID: UUID) {
         guard let host = hosts[profileID] else { return }
         host.invalidated = true
+        host.nativeMessagingDenial.cancelAll()
         host.storeUpdateTimer?.invalidate()
         ExtensionManagement.close(for: profileID)
         for task in host.restoring.values { task.cancel() }
@@ -66,7 +67,7 @@ import WebKit
         host.operations.removeAll()
         for context in host.installed + Array(host.candidates.values) {
             host.closePages(for: context)
-            try? host.controller.unload(context)
+            try? host.unloadContext(context)
         }
         host.candidates.removeAll()
         host.icons.removeAll()
@@ -91,6 +92,8 @@ import WebKit
     #if DEBUG
     // DEBUG assertions inspect only an already-created background page.
     var backgroundCreationObserver: ((WKWebView, WKWebExtensionContext) -> Void)?
+    // Test-only suspension after genuine signed discovery, before adoption.
+    var safariDiscoveryDidVerify: (() async -> Void)?
     #endif
 
     static func applyUserAgent() {
@@ -122,6 +125,9 @@ import WebKit
         var requiredAccess: ExtensionAccess? = nil
         var optionalAccess: ExtensionAccess? = nil
         var compatibility: [String] = []
+        var runtimeDiagnostics: String? = nil
+        var nativeMessagingErrorCompatibilityAvailable: Bool = false
+        var nativeMessagingErrorCompatibilityEnabled: Bool = false
         var id: String { path }
     }
 
@@ -132,6 +138,7 @@ import WebKit
     private var candidates: [String: WKWebExtensionContext] = [:]
     private var limitations: [String: [String]] = [:]
     private let codeStore: ExtensionCodeStore
+    private let nativeMessagingDenial = ExtensionNativeMessagingDenial()
     private var records: [String: ExtensionCodeStore.Record] = [:]
     private var metadataFailure: String?
     private static let integratedCapabilities: Set<String> = ["contextMenus", "menus"]
@@ -151,6 +158,7 @@ import WebKit
         let revision: String?
         let contextID: String?
         let disabled: Bool
+        let nativeMessagingErrorCompatibilityVersion: Int?
     }
 
     /// Discovery initially has no trusted extension key. Once verification supplies
@@ -159,7 +167,8 @@ import WebKit
         let identities = contextIdentifiers
         return Dictionary(uniqueKeysWithValues: folders.keys.map { path in
             (path, InstallationGeneration(identity: records[path]?.identity, revision: records[path]?.revision,
-                contextID: identities[path], disabled: disabled.contains(path)))
+                contextID: identities[path], disabled: disabled.contains(path),
+                nativeMessagingErrorCompatibilityVersion: records[path]?.nativeMessagingErrorCompatibilityVersion))
         })
     }
 
@@ -170,8 +179,9 @@ import WebKit
             let storeSource = storeSource(for: path)
             let source = sourceFolder(for: path)
             let busy = operations[path] != nil || restoring[path] != nil
-            let runtimeErrors = context.map { ExtensionDiagnostics.displayErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
-            let failure = failures[path] ?? (runtimeErrors.isEmpty ? nil : ExtensionDiagnostics.describe(runtimeErrors))
+            let blockingErrors = context.map { ExtensionDiagnostics.blockingErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
+            let runtimeErrors = context.map { ExtensionDiagnostics.runtimeErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
+            let failure = failures[path] ?? (blockingErrors.isEmpty ? nil : ExtensionDiagnostics.describe(blockingErrors))
             return Entry(path: path, name: record?.name ?? folders[path] ?? URL(fileURLWithPath: path).lastPathComponent,
                          context: context, status: busy ? "Checking…" : failure != nil ? (context != nil ? "Update needs attention" : "Needs attention")
                             : context != nil ? "Enabled" : disabled.contains(path) ? "Disabled" : "Inactive",
@@ -186,7 +196,14 @@ import WebKit
                          requiredAccess: record?.required ?? ExtensionConsent.saved(for: URL(fileURLWithPath: path), profileID: profileID),
                          optionalAccess: record?.optional ?? legacyMetadata[path]?.optional,
                          compatibility: (record?.compatibility ?? limitations[path] ?? [])
-                            + (userAgent.limitation.map { [$0] } ?? []))
+                            + (userAgent.limitation.map { [$0] } ?? []),
+                         runtimeDiagnostics: runtimeErrors.isEmpty ? nil : ExtensionDiagnostics.describe(runtimeErrors),
+                         nativeMessagingErrorCompatibilityAvailable: !invalidated && metadataFailure == nil && profileID != Profile.incognito.id
+                            && record.map { ExtensionNativeMessagingErrors.isApproved(version: ExtensionNativeMessagingErrors.currentVersion,
+                                required: $0.required, optional: $0.optional) } == true,
+                         nativeMessagingErrorCompatibilityEnabled: record.map {
+                            ExtensionNativeMessagingErrors.isApproved(version: $0.nativeMessagingErrorCompatibilityVersion,
+                                required: $0.required, optional: $0.optional) } == true)
         }
     }
 
@@ -311,6 +328,96 @@ import WebKit
     }
 
     // MARK: Install / remove
+
+    @discardableResult
+    func setNativeMessagingErrorCompatibility(_ enabled: Bool, for path: String,
+        review: @MainActor (ExtensionConsent.NativeMessagingErrorReview) -> Bool = ExtensionConsent.askNativeMessagingErrors) async throws -> Bool {
+        guard !invalidated, profileID != Profile.incognito.id else { throw CancellationError() }
+        if let metadataFailure { throw Failure(metadataFailure) }
+        guard let record = records[path], folders[path] != nil else {
+            throw Failure("This accepted extension is unavailable. Install or repair it before reviewing compatibility.")
+        }
+        guard ExtensionNativeMessagingErrors.isApproved(version: ExtensionNativeMessagingErrors.currentVersion,
+            required: record.required, optional: record.optional) else {
+            throw Failure("This extension does not declare native messaging.")
+        }
+        guard operations[path] == nil, restoring[path] == nil else { return false }
+        try Task.checkCancellation()
+        let approved = ExtensionNativeMessagingErrors.isApproved(version: record.nativeMessagingErrorCompatibilityVersion,
+            required: record.required, optional: record.optional)
+        if enabled && approved || !enabled && record.nativeMessagingErrorCompatibilityVersion == nil { return true }
+        let generation = installationGenerations()[path]
+        let wasActive = loaded.contains { $0.path == path }
+        let shouldActivate = !disabled.contains(path)
+        let token = UUID()
+        operations[path] = token
+        rebuild()
+        defer { if operations[path] == token { operations[path] = nil }; rebuild() }
+        func checkLifetime() throws {
+            try Task.checkCancellation()
+            guard !invalidated, operations[path] == token, installationGenerations()[path] == generation else {
+                throw CancellationError()
+            }
+        }
+        if enabled {
+            let accepted = review(.init(name: record.name))
+            try checkLifetime()
+            guard accepted else { return false }
+        }
+        try checkLifetime()
+        var revised = record
+        revised.nativeMessagingErrorCompatibilityVersion = enabled ? ExtensionNativeMessagingErrors.currentVersion : nil
+        var replacement: WKWebExtensionContext?
+        var replaced = false
+        do {
+            if shouldActivate {
+                try deactivate(path)
+                replaced = true
+                replacement = try await context(for: revised, path: path, checkLifetime: checkLifetime)
+            }
+            try checkLifetime()
+            var next = records
+            next[path] = revised
+            // Metadata is the commit point. Until it succeeds the old record is
+            // authoritative, and an active candidate is never exposed in loaded.
+            try codeStore.save(next)
+            records = next
+            if let replacement { loaded.append((path, replacement)) }
+            failures[path] = nil
+            startPolling()
+            SiteChanges.shared.bump()
+            return true
+        } catch {
+            if let replacement {
+                if replacement.isLoaded { try? unloadContext(replacement) }
+                closePages(for: replacement)
+            }
+            if !invalidated, operations[path] == token {
+                if replaced && wasActive {
+                    do {
+                        // An unstructured recovery is not cancelled merely
+                        // because the mode-changing caller was cancelled.
+                        let restored = try await Task { @MainActor in
+                            try await self.context(for: record, path: path, recoveringSafariUpdate: true) {
+                                guard !self.invalidated, self.operations[path] == token,
+                                      self.installationGenerations()[path] == generation else { throw CancellationError() }
+                            }
+                        }.value
+                        guard !invalidated, operations[path] == token else {
+                            try? unloadContext(restored); closePages(for: restored); throw CancellationError()
+                        }
+                        loaded.append((path, restored))
+                    } catch {
+                        if !invalidated, operations[path] == token {
+                            failures[path] = "The compatibility change failed and the accepted extension could not restart. Choose Retry. Your settings are retained. " + error.localizedDescription
+                        }
+                    }
+                }
+                if !invalidated, operations[path] == token, failures[path] == nil { failures[path] = error.localizedDescription }
+            }
+            throw error
+        }
+    }
 
     struct Failure: LocalizedError {
         let errorDescription: String?
@@ -464,14 +571,19 @@ import WebKit
         restoring[path] = nil
     }
 
+    private func unloadContext(_ context: WKWebExtensionContext) throws {
+        nativeMessagingDenial.cancel(contextID: ObjectIdentifier(context))
+        try controller.unload(context)
+    }
+
     private func deactivate(_ path: String) throws {
         if let context = candidates[path] {
-            if context.isLoaded { try controller.unload(context) }
+            if context.isLoaded { try unloadContext(context) }
             closePages(for: context)
             candidates[path] = nil
         }
         guard let context = loaded.first(where: { $0.path == path })?.context else { return }
-        try controller.unload(context)
+        try unloadContext(context)
         closePages(for: context)
         forget(context, tab: nil)
         loaded.removeAll { $0.path == path }
@@ -566,6 +678,9 @@ import WebKit
         if ["app", "appex"].contains(folder.pathExtension.lowercased()) {
             let generations = installationGenerations()
             let candidates = try await Task.detached(priority: .utility) { try SafariExtensionSource.candidates(in: folder) }.value
+            #if DEBUG
+            if let safariDiscoveryDidVerify { await safariDiscoveryDidVerify() }
+            #endif
             try Task.checkCancellation()
             guard candidates.count == 1, let candidate = candidates.first else { throw Failure("This app contains several Safari extensions. Choose its specific .appex bundle, or use Install Extension in the extension manager.") }
             let path = candidate.source.key
@@ -640,16 +755,19 @@ import WebKit
                 throw Failure("manifest.json changed while Vane was checking it. Retry to review the current extension before enabling it.")
             }
             let identity = oldRecord?.identity ?? contextIdentifiers[path].flatMap(UUID.init(uuidString:))?.uuidString ?? UUID().uuidString
-            let record = ExtensionCodeStore.Record(identity: identity, revision: frozen.revision,
+            var record = ExtensionCodeStore.Record(identity: identity, revision: frozen.revision,
                 sourcePath: storeSource?.listingURL.absoluteString ?? source.resolvingSymlinksInPath().path, name: ext.displayName ?? source.lastPathComponent,
                 version: ext.version ?? "Unknown", summary: ext.displayDescription ?? "",
                 required: requested,
                 optional: ExtensionAccess(permissions: Set(ext.optionalPermissions.map(\.rawValue)), sites: Set(ext.optionalPermissionMatchPatterns.map(\.string))),
                 compatibility: issues, integratedCapabilities: requested.permissions.intersection(Self.integratedCapabilities), store: storeSource)
+            record.nativeMessagingErrorCompatibilityVersion = ExtensionNativeMessagingErrors.retainedVersion(from: oldRecord,
+                for: record.required, optional: record.optional)
             if enable {
                 try deactivate(path)
                 replaced = true
-                let context = makeContext(ext, identity: identity, runtimeID: storeSource?.id)
+                let context = try makeContext(ext, identity: identity, runtimeID: storeSource?.id,
+                    nativeMessagingErrorCompatibilityVersion: record.nativeMessagingErrorCompatibilityVersion)
                 candidates[path] = context
                 if let storeSource {
                     try await waitForDataPurge(storeSource.id, checkLifetime: checkLifetime)
@@ -727,7 +845,7 @@ import WebKit
                             }
                             let restored = try await recovery.value
                             guard !invalidated, operations[path] == token else {
-                                try? controller.unload(restored); closePages(for: restored); throw CancellationError()
+                                try? unloadContext(restored); closePages(for: restored); throw CancellationError()
                             }
                             loaded.append((path, restored))
                         }
@@ -854,14 +972,17 @@ import WebKit
             }
             try checkLifetime()
             let identity = oldRecord?.identity ?? contextIdentifiers[path].flatMap(UUID.init(uuidString:))?.uuidString ?? UUID().uuidString
-            let record = ExtensionCodeStore.Record(identity: identity, revision: frozen.revision,
+            var record = ExtensionCodeStore.Record(identity: identity, revision: frozen.revision,
                 sourcePath: candidate.source.appPath, name: ext.displayName ?? candidate.source.extensionBundleID,
                 version: ext.version ?? "Unknown", summary: ext.displayDescription ?? "", required: requested,
                 optional: ExtensionAccess(permissions: Set(ext.optionalPermissions.map(\.rawValue)), sites: Set(ext.optionalPermissionMatchPatterns.map(\.string))),
                 compatibility: issues, integratedCapabilities: requested.permissions.intersection(Self.integratedCapabilities), safari: candidate.source)
+            record.nativeMessagingErrorCompatibilityVersion = ExtensionNativeMessagingErrors.retainedVersion(from: oldRecord,
+                for: record.required, optional: record.optional)
             if enable {
                 try deactivate(path); replaced = true
-                let context = makeContext(ext, identity: identity, runtimeID: candidate.source.runtimeID)
+                let context = try makeContext(ext, identity: identity, runtimeID: candidate.source.runtimeID,
+                    nativeMessagingErrorCompatibilityVersion: record.nativeMessagingErrorCompatibilityVersion)
                 candidates[path] = context
                 try await waitForDataPurge(candidate.source.runtimeID, checkLifetime: checkLifetime)
                 if oldRecord == nil && folders[path] == nil {
@@ -916,7 +1037,7 @@ import WebKit
                                     guard !self.invalidated, self.operations[path] == token else { throw CancellationError() }
                                 }
                             }.value
-                            guard !invalidated, operations[path] == token else { try? controller.unload(restored); throw CancellationError() }
+                            guard !invalidated, operations[path] == token else { try? unloadContext(restored); throw CancellationError() }
                             loaded.append((path, restored))
                         } catch { failures[path] = "The app update failed and the accepted extension could not restart. Choose Retry. Your settings are retained. " + error.localizedDescription }
                     }
@@ -927,13 +1048,32 @@ import WebKit
         }
     }
 
-    private func makeContext(_ ext: WKWebExtension, identity: String, runtimeID: String? = nil) -> WKWebExtensionContext {
+    private func makeContext(_ ext: WKWebExtension, identity: String, runtimeID: String? = nil,
+                             nativeMessagingErrorCompatibilityVersion: Int? = nil) throws -> WKWebExtensionContext {
         let context = WKWebExtensionContext(for: ext)
         context.uniqueIdentifier = runtimeID ?? identity.lowercased()
         context.baseURL = URL(string: "webkit-extension://\(identity.lowercased())/")!
         context.isInspectable = Settings.inspectorEnabled
         context.inspectionName = ext.displayName
         context.unsupportedAPIs = ExtensionDiagnostics.unsupportedAPIs
+        let native = WKWebExtension.Permission(rawValue: "nativeMessaging")
+        let optional = ExtensionAccess(permissions: Set(ext.optionalPermissions.map(\.rawValue)),
+            sites: Set(ext.optionalPermissionMatchPatterns.map(\.string)))
+        let approved = ExtensionNativeMessagingErrors.isApproved(version: nativeMessagingErrorCompatibilityVersion,
+            required: ExtensionAccess(ext), optional: optional)
+        if approved {
+            // Signed Safari sources otherwise have an automatic NSExtension
+            // fallback. Exposing either API requires our permanent denial owner.
+            guard controller.delegate === self,
+                  responds(to: NSSelectorFromString("webExtensionController:sendMessage:toApplicationWithIdentifier:forExtensionContext:replyHandler:")),
+                  responds(to: NSSelectorFromString("webExtensionController:connectUsingMessagePort:forExtensionContext:completionHandler:")) else {
+                throw Failure("Native messaging error handling is unavailable. Desktop apps remain blocked.")
+            }
+            context.unsupportedAPIs.subtract(ExtensionNativeMessagingErrors.apiNames)
+            context.setPermissionStatus(.grantedExplicitly, for: native)
+        } else {
+            context.setPermissionStatus(.deniedExplicitly, for: native)
+        }
         for permission in ext.requestedPermissions where !ExtensionDiagnostics.unsupportedPermissions.contains(permission.rawValue) {
             context.setPermissionStatus(.grantedExplicitly, for: permission)
         }
@@ -966,7 +1106,8 @@ import WebKit
         // Record access is checked against the actual code before anything can execute.
         guard ExtensionAccess(ext) == record.required else { throw Failure("The accepted extension files changed. Choose " + (record.safari == nil ? "Update from Folder" : "Update from App") + " to validate and review a fresh copy.") }
         try checkLifetime()
-        let context = makeContext(ext, identity: record.identity, runtimeID: record.safari?.runtimeID ?? record.store?.id)
+        let context = try makeContext(ext, identity: record.identity, runtimeID: record.safari?.runtimeID ?? record.store?.id,
+            nativeMessagingErrorCompatibilityVersion: record.nativeMessagingErrorCompatibilityVersion)
         candidates[path] = context
         do {
             if let runtimeID = record.safari?.runtimeID ?? record.store?.id { try await waitForDataPurge(runtimeID, checkLifetime: checkLifetime) }
@@ -979,7 +1120,7 @@ import WebKit
             return context
         } catch {
             if candidates[path] === context { candidates[path] = nil }
-            try? controller.unload(context); closePages(for: context); throw error
+            try? unloadContext(context); closePages(for: context); throw error
         }
     }
 
@@ -1020,7 +1161,7 @@ import WebKit
                     guard !self.invalidated, self.operations[path] == token else { throw CancellationError() }
                 }
                 guard !invalidated, operations[path] == token, !Task.isCancelled else {
-                    try? controller.unload(restored); closePages(for: restored); throw CancellationError()
+                    try? unloadContext(restored); closePages(for: restored); throw CancellationError()
                 }
                 // Refresh cached platform limitations on adoption of new Vane support.
                 // Persist before exposing the active context; failed writes unload it.
@@ -1030,7 +1171,7 @@ import WebKit
                 var next = records
                 next[path] = revised
                 do { try codeStore.save(next) }
-                catch { try? controller.unload(restored); closePages(for: restored); throw error }
+                catch { try? unloadContext(restored); closePages(for: restored); throw error }
                 records = next
                 loaded.append((path, restored))
                 disabled.remove(path)
@@ -1185,6 +1326,13 @@ import WebKit
     /// gesture, which is what `activeTab` extensions actually wait for.
     func run(_ context: WKWebExtensionContext, for tab: Tab?, from view: NSView?) {
         guard installed.contains(where: { $0 === context }) else { return }
+        let key = ActionKey(context, tab)
+        if let existing = actionWindows[key], !existing.isClosed {
+            context.performAction(for: shim(tab))
+            existing.show()
+            return
+        }
+        for presentation in Array(actionWindows.values) { presentation.close() }
         let shim = shim(tab)
         // Only an action that *has* a popup will ever ask for its anchor. Recording one for
         // an onClicked-only extension would leave it in the table with nothing to consume
@@ -1196,6 +1344,17 @@ import WebKit
         if let action = context.action(for: shim), action.isEnabled, action.presentsPopup, let web = action.popupWebView {
             userAgent.track(web)
         }
+    }
+
+    /// Presentation ownership is separate from the SDK action's view ownership.
+    /// Callers closing a presented popup must retire both through this host.
+    func actionPopupWindow(_ context: WKWebExtensionContext, for tab: Tab?) -> NSWindow? {
+        guard let presentation = actionWindows[ActionKey(context, tab)], !presentation.isClosed else { return nil }
+        return presentation.window
+    }
+
+    func closeActionPopup(_ context: WKWebExtensionContext, for tab: Tab?) {
+        actionWindows[ActionKey(context, tab)]?.close()
     }
 
     /// The button each pending popup was run from, keyed by extension *and* tab.
@@ -1503,9 +1662,20 @@ import WebKit
         // An extension's idea of "the active tab" is a tab in the browser window; a Little
         // Arc is a page passing through and has no row for an extension to act on.
         myStores.first { !$0.isLittle && $0.window?.isKeyWindow == true }
+            ?? actionWindows.values.first { $0.window.isKeyWindow }?.parentStore
     }
 
     func sync() {
+        for presentation in Array(actionWindows.values) {
+            if let tab = presentation.parentTab {
+                if let store = store(holding: tab) { presentation.rebindParent(to: store) }
+                else { presentation.close() }
+            } else if let store = presentation.parentStore, myStores.contains(where: { $0 === store }) {
+                presentation.rebindParent(to: store)
+            } else {
+                presentation.close()
+            }
+        }
         guard !loaded.isEmpty else { return }
         let stores = myStores
         let liveWindows = Set(stores.map(ObjectIdentifier.init))
@@ -1585,19 +1755,26 @@ import WebKit
             focusedWindow = focused
             controller.didFocusWindow(current.map { adapter(for: $0) })
         }
+        // A requested extension popup is a window only for its owner. Restore its
+        // truthful focused-window identity after the browser-wide focus diff.
+        for adapter in requestedWindows.values where adapter.presentation.window.isKeyWindow {
+            adapter.presentation.context.didFocusWindow(adapter)
+        }
     }
 
     // MARK: WKWebExtensionControllerDelegate
 
     func webExtensionController(_ controller: WKWebExtensionController,
                                 openWindowsFor context: WKWebExtensionContext) -> [any WKWebExtensionWindow] {
-        myStores
+        let browsers: [any WKWebExtensionWindow] = myStores
             .filter { context.hasAccessToPrivateData || !$0.isPrivate }
             .map { adapter(for: $0) }
+        return browsers + requestedWindows.values.filter { $0.accessible(context) }
     }
 
     func webExtensionController(_ controller: WKWebExtensionController,
                                 focusedWindowFor context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
+        if let popup = requestedWindows.values.first(where: { $0.accessible(context) && $0.presentation.window.isKeyWindow }) { return popup }
         guard let store = myFocusedStore,
               context.hasAccessToPrivateData || !store.isPrivate else { return nil }
         return adapter(for: store)
@@ -1626,6 +1803,42 @@ import WebKit
                                 openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionWindow)? {
         try requireActive(context)
+        if configuration.windowType == .popup {
+            guard !configuration.shouldBePrivate, configuration.windowState == .normal,
+                  configuration.tabs.isEmpty, configuration.tabURLs.count == 1,
+                  let url = configuration.tabURLs.first,
+                  url.scheme == context.baseURL.scheme, url.host == context.baseURL.host,
+                  url.port == context.baseURL.port, url.user == nil, url.password == nil,
+                  let cfg = context.webViewConfiguration else {
+                throw Failure("Extension popup windows support one page from the owning extension, without moved tabs or private/window-state changes.")
+            }
+            let parent = myFocusedStore ?? frontmostStore
+            let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 400, height: 500), configuration: cfg)
+            userAgent.track(web)
+            let presentation = ExtensionWindowPresentation(web: web, context: context,
+                parentStore: parent, parentTab: nil, title: context.webExtension.displayName ?? "Extension",
+                requestedFrame: configuration.frame) { [weak self] closed in
+                    guard let self, let adapter = self.requestedWindows.removeValue(forKey: ObjectIdentifier(closed)) else { return }
+                    if context.isLoaded {
+                        context.didCloseTab(adapter.tab, windowIsClosing: true)
+                        context.didCloseWindow(adapter)
+                        self.sync()
+                    }
+                }
+            presentation.openExternal = { [weak self, weak parent] url in
+                guard let self, let store = parent ?? self.myFocusedStore ?? self.myStores.first else { return }
+                store.newBlankTab().navigate(to: url)
+            }
+            configurePageUI(web, context: context, window: presentation.window)
+            let adapter = ExtensionRequestedWindow(presentation)
+            requestedWindows[ObjectIdentifier(presentation)] = adapter
+            context.didOpenWindow(adapter)
+            context.didOpenTab(adapter.tab)
+            context.didActivateTab(adapter.tab, previousActiveTab: nil)
+            web.load(URLRequest(url: url))
+            presentation.show(focused: configuration.shouldBeFocused)
+            return adapter
+        }
         let store = Windows.open(isPrivate: configuration.shouldBePrivate,
                                  urls: configuration.tabURLs,
                                  profile: ProfileManager.shared.profiles.first { $0.id == profileID })
@@ -1658,31 +1871,31 @@ import WebKit
         // Taken first, whatever happens next: an anchor left in the table would come up
         // under the *next* popup, on a button nobody pressed.
         try requireActive(context)
-        let anchor = anchors.removeValue(forKey: ActionKey(context, subject(of: action)))?.view
+        let tab = subject(of: action)
+        let key = ActionKey(context, tab)
+        let anchor = anchors.removeValue(forKey: key)?.view
         let name = context.webExtension.displayName ?? "An extension"
-        guard let popover = action.popupPopover else {
+        guard let web = action.popupWebView else {
             throw Failure("“\(name)” has no popup to show.")
         }
-        if let web = action.popupWebView {
-            userAgent.track(web)
-            configurePageUI(web, context: context, popup: popover)
-        }
-        let id = ObjectIdentifier(context)
-        popovers[id] = (popovers[id] ?? []).filter(\.isShown) + [popover]
-        // The button that ran the action: the pill's pinned glyph, or the extension's row in
-        // the Site Control Center. Each window — a Little Vane and a private one included —
-        // hands over its own, so a popup never opens over the wrong pill.
-        if let anchor, anchor.window != nil {
-            return popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
-        }
-        // Nothing was clicked: an extension opened its own popup from a background script.
-        // The top of the frontmost window is where a toolbar would be, which is the honest
-        // fallback — and a popup with nowhere at all to go is an error, not a silent no-op.
-        guard let host = frontmostStore?.window?.contentView else {
+        userAgent.track(web)
+        let parent = tab.flatMap { store(holding: $0) }
+            ?? myStores.first { $0.window === anchor?.window } ?? frontmostStore
+        guard let parent else {
             throw Failure("There is no window open to show “\(name)”'s popup in.")
         }
-        let rect = NSRect(x: host.bounds.maxX - 40, y: host.bounds.maxY - 8, width: 32, height: 4)
-        popover.show(relativeTo: rect, of: host, preferredEdge: .minY)
+        if let existing = actionWindows[key], existing.web === web { existing.show(); return }
+        for presentation in Array(actionWindows.values) { presentation.close() }
+        let presentation = ExtensionWindowPresentation(web: web, context: context, action: action,
+            parentStore: parent, parentTab: tab, title: name) { [weak self] closed in
+                if self?.actionWindows[key] === closed { self?.actionWindows[key] = nil }
+            }
+        actionWindows[key] = presentation
+        // Install file selection after the compact owner and SDK-forwarding proxy
+        // exist. The unused SDK popover is not this view's presentation owner.
+        configurePageUI(web, context: context, window: presentation.window)
+        presentation.focusChanged = { [weak self] in self?.sync() }
+        presentation.show()
     }
 
     /// Any of this profile's windows that is actually key, Little Vane included — unlike
@@ -1724,6 +1937,33 @@ import WebKit
         return myStores.contains { $0.current == tab.id }
     }
 
+    // Both methods are permanent: absence lets WebKit forward signed Safari
+    // app sources through NSExtension. No native host is ever looked up here.
+    func webExtensionController(_ controller: WKWebExtensionController,
+                                sendMessage _: Any, toApplicationWithIdentifier _: String?,
+                                for context: WKWebExtensionContext) async throws -> Any? {
+        if !invalidated, context.isLoaded {
+            try? await nativeMessagingDenial.wait(contextID: ObjectIdentifier(context))
+        }
+        throw ExtensionNativeMessagingErrors.unavailable()
+    }
+
+    func webExtensionController(_ controller: WKWebExtensionController,
+                                connectUsing _: WKWebExtension.MessagePort,
+                                for context: WKWebExtensionContext,
+                                completionHandler: @escaping (Error?) -> Void) {
+        Task { @MainActor [weak self, weak context] in
+            if let self, let context, !self.invalidated, context.isLoaded {
+                try? await self.nativeMessagingDenial.wait(contextID: ObjectIdentifier(context))
+            }
+            completionHandler(ExtensionNativeMessagingErrors.unavailable())
+        }
+    }
+
+    #if DEBUG
+    var nativeMessagingDeniedRequestCount: Int { nativeMessagingDenial.requestCount }
+    #endif
+
     func webExtensionController(_ controller: WKWebExtensionController,
                                 promptForPermissions permissions: Set<WKWebExtension.Permission>,
                                 in tab: (any WKWebExtensionTab)?,
@@ -1761,10 +2001,12 @@ import WebKit
     // MARK: Helpers
 
     private var pages: [(context: WKWebExtensionContext, window: NSWindow)] = []
+    private var actionWindows: [ActionKey: ExtensionWindowPresentation] = [:]
+    private var requestedWindows: [ObjectIdentifier: ExtensionRequestedWindow] = [:]
     private var pageUI: [ObjectIdentifier: ExtensionPageUI] = [:]
 
     private func configurePageUI(_ web: WKWebView, context: WKWebExtensionContext,
-                                 popup: NSPopover? = nil, window: NSWindow? = nil) {
+                                 window: NSWindow) {
         pageUI = pageUI.filter { $0.value.hasView }
         let key = ObjectIdentifier(web)
         let delegate = pageUI[key] ?? ExtensionPageUI(web: web, context: context, isEnabled: { [weak self, weak context] in
@@ -1777,17 +2019,15 @@ import WebKit
         pageUI[key] = delegate
         web.uiDelegate = delegate
         web.navigationDelegate = delegate
-        if let popup { delegate.observe(popup) }
-        if let window { delegate.observe(window) }
+        delegate.observe(window)
     }
-
-    private var popovers: [ObjectIdentifier: [NSPopover]] = [:]
 
     private func closePages(for context: WKWebExtensionContext) {
         for key in Array(pageUI.keys) where pageUI[key]?.context === context {
             pageUI.removeValue(forKey: key)?.invalidate()
         }
-        for popover in popovers.removeValue(forKey: ObjectIdentifier(context)) ?? [] { popover.close() }
+        for presentation in Array(actionWindows.values) where presentation.context === context { presentation.close() }
+        for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
         for page in pages where page.context === context {
             (page.window.contentView as? WKWebView)?.stopLoading()
             page.window.contentView = nil
@@ -1805,9 +2045,17 @@ import WebKit
 
     func revokeRuntimeAccess(_ context: WKWebExtensionContext) {
         guard installed.contains(where: { $0 === context }) else { return }
-        let required = context.webExtension.requestedPermissions
+        var retained = context.webExtension.requestedPermissions
+        // This is installation-scoped compatibility approval, not a temporary
+        // optional grant. Its separate disable control rebuilds the context.
+        if let path = loaded.first(where: { $0.context === context })?.path,
+           let record = records[path],
+           ExtensionNativeMessagingErrors.isApproved(version: record.nativeMessagingErrorCompatibilityVersion,
+               required: record.required, optional: record.optional) {
+            retained.insert(WKWebExtension.Permission(rawValue: "nativeMessaging"))
+        }
         let patterns = context.webExtension.requestedPermissionMatchPatterns.union(context.webExtension.allRequestedMatchPatterns)
-        context.grantedPermissions = context.grantedPermissions.filter { required.contains($0.key) }
+        context.grantedPermissions = context.grantedPermissions.filter { retained.contains($0.key) }
         context.grantedPermissionMatchPatterns = context.grantedPermissionMatchPatterns.filter { patterns.contains($0.key) }
         context.deniedPermissions = [:]
         context.deniedPermissionMatchPatterns = [:]
@@ -1853,7 +2101,9 @@ import WebKit
             if !errorCodes.isEmpty { sections.append("Error codes: " + errorCodes.joined(separator: ", ")) }
         }
         sections.append("Compatibility limitations: " + (entry.compatibility.isEmpty ? "None identified from the manifest" : "Present; inspect in manager"))
-        sections.append("Native messaging: unavailable. Chrome Web Store installation and full Chromium compatibility are not provided.")
+        sections.append(entry.nativeMessagingErrorCompatibilityEnabled
+            ? "Native messaging: Error-only mode enabled. Desktop apps remain blocked."
+            : "Native messaging: desktop apps are blocked. Error-only mode is disabled.")
         sections.append("Source paths, website targets, error messages, credentials, browsing content and extension storage are excluded.")
         return sections.joined(separator: "\n")
     }

@@ -5,13 +5,20 @@ import XCTest
 
 @MainActor final class LibraryScrollInvalidationTests: XCTestCase {
     private final class Builds { var value = 0 }
-    private final class Rows: ObservableObject { @Published var count = 48 }
+    @MainActor private final class Rows: ObservableObject {
+        @Published var count = 48
+        let geometry = NativeFixtureGeometry()
+        var reportedOffset: CGFloat = -1
+    }
 
     private struct Fixture: View {
         @ObservedObject var rows: Rows
         let builds: Builds
         var body: some View {
             LibraryScrollView { countedRows(rows.count) }
+                .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
+                    rows.reportedOffset = offset
+                }
         }
         private func countedRows(_ count: Int) -> some View {
             builds.value += 1
@@ -20,6 +27,7 @@ import XCTest
                     Text("Library row \(index)")
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .frame(height: 30)
+                        .background(NativeFixtureGeometryProbe(id: String(index), geometry: rows.geometry))
                 }
             }
         }
@@ -34,8 +42,10 @@ import XCTest
             styleMask: .titled, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: Fixture(rows: rows, builds: builds))
-        window.contentView = host
+        host.sizingOptions = []
+        let attachment = NativeFixtureMountAdmission.attach(host, to: window)
         addTeardownBlock { @MainActor in
+            attachment?.cancel()
             window.orderOut(nil)
             window.contentView = nil
             window.close()
@@ -43,16 +53,27 @@ import XCTest
         }
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
-        host.layoutSubtreeIfNeeded()
         func scrolls(in view: NSView) -> [NSScrollView] {
             (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrolls(in: $0) }
         }
-        try await compatibilityWait { scrolls(in: host).count == 1 }
+        try await compatibilityWait {
+            NativeFixtureMountAdmission.surfaceReady(host, in: window) && scrolls(in: host).count == 1
+        }
         let viewport = try XCTUnwrap(scrolls(in: host).first)
-        try await compatibilityWait { (viewport.documentView?.frame.height ?? 0) > 1200 }
+        try await compatibilityWait {
+            NativeFixtureMountAdmission.scrollReady(viewport, root: host, window: window,
+                minimumHeight: CGFloat(rows.count) * 30)
+                && NativeFixtureMountAdmission.populated(viewport, by: rows.geometry.views,
+                    root: host, window: window, spacing: 0)
+        }
         viewport.contentView.scroll(to: NSPoint(x: 0, y: 80))
         viewport.reflectScrolledClipView(viewport.contentView)
-        try await Task.sleep(for: .milliseconds(250))
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            return rows.reportedOffset >= 0 && abs(rows.reportedOffset - viewport.documentVisibleRect.minY) < 1
+                && NativeFixtureMountAdmission.populated(viewport, by: rows.geometry.views,
+                    root: host, window: window, spacing: 0)
+        }
         XCTAssertGreaterThan(builds.value, 0)
         XCTAssertGreaterThan(viewport.documentVisibleRect.minY, 40)
         return (window, host, viewport)
@@ -60,10 +81,10 @@ import XCTest
 
     func testNativeLibraryScrollingDoesNotReinvokeContentBuilder() async throws {
         let builds = Builds()
-        let (window, _, viewport) = try await mount(rows: Rows(), builds: builds)
+        let (window, host, viewport) = try await mount(rows: Rows(), builds: builds)
         let before = builds.value
         let start = viewport.documentVisibleRect.minY
-        let point = viewport.convert(NSPoint(x: viewport.bounds.midX, y: viewport.bounds.midY), to: nil)
+        let point = try XCTUnwrap(NativeFixtureMountAdmission.scrollPoint(viewport, root: host, window: window))
         for sample in 0..<8 {
             NSApp.sendEvent(ScrollEvent(window: window, dy: -8,
                 phase: sample == 0 ? .began : .changed, x: point.x, y: point.y))

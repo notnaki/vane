@@ -77,6 +77,7 @@ import XCTest
     }
 
     private func picker(_ web: WKWebView, window: NSWindow) async throws -> NSOpenPanel {
+        try await LibraryFocusFixture.admitForeground(window)
         XCTAssertTrue(web.window === window)
         XCTAssertTrue(window.isVisible)
         XCTAssertNotNil(web.uiDelegate, "Production extension views need a retained file-picker delegate")
@@ -137,18 +138,30 @@ import XCTest
                                   styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             windows.append(window)
+            let store = TabStore(profileID: profile, session: [])
+            store.window = window
+            defer {
+                store.window = nil
+                let tabs = store.everyTab
+                store.dropStashes()
+                TabStore.all.removeAll { $0 === store }
+                SharedTabs.release(tabs)
+            }
             let anchor = NSView(frame: CGRect(x: 200, y: 180, width: 30, height: 30))
             window.contentView?.addSubview(anchor)
             try await LibraryFocusFixture.admitForeground(window)
             host.run(context, for: nil, from: anchor)
             let action = try XCTUnwrap(context.action(for: nil))
-            try await wait("Actual popup presented") { action.popupPopover?.isShown == true }
+            try await wait("Actual compact popup presented") { host.actionPopupWindow(context, for: nil)?.isVisible == true }
             let web = try XCTUnwrap(action.popupWebView)
             try await wait("Popup document loaded") { web.title == "Input ready" && !web.isLoading }
             let popupWindow = try XCTUnwrap(web.window)
             let panel = try await picker(web, window: popupWindow)
-            action.closePopup()
-            try await wait("Popup dismissal retires picker") { !panel.isVisible && popupWindow.attachedSheet == nil }
+            popupWindow.close()
+            try await wait("Popup dismissal retires picker") {
+                !panel.isVisible && popupWindow.attachedSheet == nil && !popupWindow.isVisible
+                    && host.actionPopupWindow(context, for: nil) == nil
+            }
         }
     }
     func testActualSDKPopupStillOpensBlankTargets() async throws {
@@ -182,11 +195,14 @@ import XCTest
             host.sync()
             host.run(context, for: tab, from: parentWeb)
             let action = try XCTUnwrap(host.action(context, for: tab))
-            try await wait("SDK popup presented") { action.popupPopover?.isShown == true }
+            try await wait("SDK popup presented in exact compact owner") {
+                guard let owner = host.actionPopupWindow(context, for: tab) else { return false }
+                return owner.isVisible && action.popupWebView?.window === owner
+            }
             let web = try XCTUnwrap(action.popupWebView)
             try await wait("SDK popup document ready") { web.title == "Input ready" && !web.isLoading }
             let delegate = try XCTUnwrap(web.uiDelegate as? ExtensionPageUI)
-            XCTAssertNotNil(delegate.originalUIDelegate, "The control must exercise the actual WebKit SDK delegate")
+            XCTAssertNotNil(delegate.originalUIDelegate, "File selection must preserve the existing popup delegate chain")
             _ = try await web.evaluateJavaScript("""
                 const link = document.createElement('a');
                 link.href = 'https://popup-forwarding.invalid/'; link.target = '_blank';
@@ -196,7 +212,7 @@ import XCTest
                 store.tabs.contains { $0.currentURL?.host == "popup-forwarding.invalid" }
             }
             XCTAssertEqual(store.profileID, profile)
-            action.closePopup()
+            host.closeActionPopup(context, for: tab)
         }
     }
 

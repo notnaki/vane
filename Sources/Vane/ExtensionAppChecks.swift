@@ -300,7 +300,7 @@ import WebKit
                 try Data("window.fixtureCommands=[];browser.commands.onCommand.addListener(name=>window.fixtureCommands.push(name));".utf8).write(to: folder.appendingPathComponent("fixture.js"))
                 let context = try await install("vane-smoke-mv3")
                 defer { try? host.remove(folder: folder.path) }
-                _ = await popup(context, tab: tab, label: "Synthetic actual action popover", expected: "document.body.innerText.includes('Popup fixture ready')")
+                _ = await popup(context, tab: tab, label: "Synthetic actual action window", expected: "document.body.innerText.includes('Popup fixture ready')")
                 guard let options = await options(context, label: "Synthetic actual options window",
                                                   expected: "document.body.innerText.includes('Runtime fixture ready')"),
                       let window = store?.window else { return }
@@ -329,13 +329,21 @@ import WebKit
                 guard let action = host.action(context, for: tab), action.presentsPopup,
                       let web = action.popupWebView else { throw Failure("WebKit exposes no action popup for this context.") }
                 window.makeKeyAndOrderFront(nil)
+                NSApp.activate()
+                try await wait(label + " parent foreground") { NSApp.isActive && window.isVisible && window.isKeyWindow }
                 let anchor = NSView(frame: NSRect(x: content.bounds.maxX - 48, y: content.bounds.maxY - 44, width: 28, height: 28))
                 content.addSubview(anchor)
                 popupAnchors.append(anchor)
                 host.run(context, for: tab, from: anchor)
-                try await wait(label + " presents", seconds: 15) { action.popupPopover?.isShown == true }
+                try await wait(label + " presents", seconds: 15) {
+                    guard let owner = host.actionPopupWindow(context, for: tab), let contents = owner.contentView else { return false }
+                    return owner !== window && owner.isVisible && owner.styleMask.contains(.titled)
+                        && web.window === owner && web.isDescendant(of: contents)
+                }
+                let owner = host.actionPopupWindow(context, for: tab)
                 try await waitJavaScript(label + " usable DOM", in: web, script: expected, seconds: 20)
-                record(label, .verified, "Production action path displayed a real anchored NSPopover and its expected usable DOM.")
+                guard let owner, owner.isVisible, web.window === owner else { throw Failure("The exact SDK popup lost its native presentation owner.") }
+                record(label, .verified, "Production action path displayed its exact SDK popup webview in the owning native titlebar window with its expected usable DOM.")
                 return web
             } catch { record(label, .unavailable, error.localizedDescription); return nil }
         }

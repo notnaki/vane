@@ -102,7 +102,7 @@ def main():
         result, failures = classify(json.loads(args.manifest.read_text()), args.filter.read_text(),
                                     args.log.read_text(), args.runner_status, args.tee_status)
         message = f"Extension worker UA: **{result}** ({len(failures)} known comparisons). "
-        message += "A passing sample does not establish a repair; issue #513 remains open.\n"
+        message += "A passing sample does not establish a repair; platform-limitation evidence is retained in issue #513.\n"
         if args.summary:
             with args.summary.open("a") as summary: summary.write(message)
         print(message.strip())
