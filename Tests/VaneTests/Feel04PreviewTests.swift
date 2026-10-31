@@ -346,34 +346,11 @@ import XCTest
     }
 
     private func exercisePromotionDuringAccountVerification(changingAccount: Bool) async throws {
-        TestEnvironment.prepare()
-        let policy = NSApplication.shared.activationPolicy(), mode = BatterySaver.shared.mode
-        defer { NSApp.setActivationPolicy(policy); BatterySaver.shared.setMode(mode) }
-        BatterySaver.shared.setMode(.off)
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        let source = Feel04AccountProofSource(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
-        source.changesAccount = changingAccount
-        let window = NSWindow(contentRect: source.frame, styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = source
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        let loader = Feel04Loader(), previews = FavouritePreviews(loader: loader)
-        let target = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://github.com/")!)!, owner = UUID()
-        var failure: (any Error)?
-        do {
-            try await settle {
-                NSApp.isRunning && NSApp.isActive && NSRunningApplication.current.isFinishedLaunching
-                    && window.isKeyWindow && NSApp.keyWindow === window
-                    && NativeFixtureMountAdmission.surfaceReady(source, in: window)
-            }
-            source.loadHTMLString("<meta name='user-login' content='fixture'><body>Fixture</body>", baseURL: target.siteURL)
-            try await settle { source.url == target.siteURL && !source.isLoading }
-            let document = try await source.evaluateJavaScript("({ready: document.readyState, account: document.querySelector('meta').content})") as? [String: String]
-            XCTAssertEqual(document?["ready"], "complete")
-            XCTAssertEqual(document?["account"], "fixture")
+        try await withMountedSource { source in
+            source.changesAccount = changingAccount
+            let loader = Feel04Loader(), previews = FavouritePreviews(loader: loader)
+            let target = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://github.com/")!)!, owner = UUID()
+            defer { previews.dismiss(owner: owner); loader.finish(); source.captured = nil }
             previews.prepare(target, owner: owner, source: source)
             try await settle { loader.contexts.count == 1 }
             source.captured = { old, current, elapsed in
@@ -381,6 +358,8 @@ import XCTest
                 XCTAssertEqual(current, changingAccount ? "other" : "fixture", "The actual document supplies the current account")
                 XCTAssertLessThan(elapsed, .milliseconds(400), "Admit this reply before the unchanged identity-probe deadline")
                 XCTAssertEqual(previews.state, .loading, "Prepared account content must remain hidden")
+                guard old == "fixture", current == (changingAccount ? "other" : "fixture"),
+                      elapsed < .milliseconds(400), previews.state == .loading else { return }
                 print("ACCOUNT PROOF captured before delivery: old=\(String(describing: old)), current=\(String(describing: current)), elapsed=\(elapsed), \(self.diagnostics(previews, source: source, loader: loader))")
                 previews.request(target, owner: owner, source: source)
             }
@@ -394,9 +373,71 @@ import XCTest
             print("ACCOUNT PROOF gated final: changing=\(changingAccount), reads=\(source.identityReplies), \(diagnostics(previews, source: source, loader: loader))")
             XCTAssertEqual(loader.contexts.count, 1, "Promotion must recheck proof without restarting the loader")
             XCTAssertEqual(previews.owner, owner)
+        }
+    }
+
+    func testPromotedPreparationRetriesSessionAndRetainsLiveSourceProof() async throws {
+        try await withMountedSource { source in
+            let loader = Feel04Loader(), previews = FavouritePreviews(loader: loader)
+            let target = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://github.com/")!)!, owner = UUID()
+            defer { previews.dismiss(owner: owner); loader.finish() }
+            previews.prepare(target, owner: owner, source: source)
+            try await settle { loader.contexts.count == 1 }
+            previews.request(target, owner: owner, source: source)
+            XCTAssertEqual(previews.state, .loading, "Opening must not bypass the account-proof barrier")
+            print("ACCOUNT RETRY before session change: \(diagnostics(previews, source: source, loader: loader))")
+            previews.sessionChanged(profileID: target.profileID)
+            try await settle({ loader.contexts.count == 2 }, diagnostics: {
+                "Explicitly opened preparation requires its one foreground retry: \(self.diagnostics(previews, source: source, loader: loader))"
+            })
+            guard loader.contexts.count == 2 else { return }
+            let account = try await source.evaluateJavaScript("document.querySelector('meta').content = 'other'") as? String
+            XCTAssertEqual(account, "other")
+            loader.finish()
+            try await settle { loader.completed == 2 }
+            try await settle({ previews.state == .unavailable }, diagnostics: {
+                "The retry must retain the live source proof: \(self.diagnostics(previews, source: source, loader: loader))"
+            })
+            print("ACCOUNT RETRY final: reads=\(source.identityReplies), \(diagnostics(previews, source: source, loader: loader))")
+            XCTAssertEqual(loader.contexts.count, 2, "Only the single bounded foreground retry may load")
+            XCTAssertEqual(previews.owner, owner)
+        }
+    }
+
+    private func withMountedSource(_ body: (Feel04AccountProofSource) async throws -> Void) async throws {
+        TestEnvironment.prepare()
+        let policy = NSApplication.shared.activationPolicy(), mode = BatterySaver.shared.mode
+        defer { NSApp.setActivationPolicy(policy); BatterySaver.shared.setMode(mode) }
+        BatterySaver.shared.setMode(.off)
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let source = Feel04AccountProofSource(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
+        let window = NSWindow(contentRect: source.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = source
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let url = URL(string: "https://github.com/")!
+        var failure: (any Error)?
+        do {
+            let ready = {
+                NSApp.isRunning && NSApp.isActive && NSRunningApplication.current.isFinishedLaunching
+                    && window.isKeyWindow && NSApp.keyWindow === window
+                    && NativeFixtureMountAdmission.surfaceReady(source, in: window)
+            }
+            try await settle(ready)
+            guard ready() else { throw NSError(domain: "AccountProofFixtureAdmission", code: 1) }
+            source.loadHTMLString("<meta name='user-login' content='fixture'><body>Fixture</body>", baseURL: url)
+            try await settle { source.url == url && !source.isLoading }
+            let document = try await source.evaluateJavaScript("({ready: document.readyState, account: document.querySelector('meta').content})") as? [String: String]
+            XCTAssertEqual(document?["ready"], "complete")
+            XCTAssertEqual(document?["account"], "fixture")
+            guard document?["ready"] == "complete", document?["account"] == "fixture" else {
+                throw NSError(domain: "AccountProofFixtureAdmission", code: 2)
+            }
+            try await body(source)
         } catch { failure = error }
-        previews.dismiss(owner: owner)
-        loader.finish()
         source.captured = nil
         source.stopLoading()
         window.orderOut(nil)
