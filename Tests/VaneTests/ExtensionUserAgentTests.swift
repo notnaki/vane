@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import WebKit
 import XCTest
 @testable import vane
@@ -138,7 +139,7 @@ import XCTest
             browser.runtime.onMessage.addListener(async () => ({startup: startupUserAgent, current: navigator.userAgent,
               nonce: birthNonce, saved: (await chrome.storage.local.get('workerSaved')).workerSaved ?? 'missing',
               aliases: String(chrome.runtime.id === browser.runtime.id), strict: String(strictAtStartup),
-              url: sourceURL, workerURL: self.location.href, entryRuns: String(globalThis.vendorEntryExecutions ?? 1), revision: globalThis.packageRevision ?? 'initial', dependencyURL: globalThis.dependencyURL ?? 'none'}));
+              url: sourceURL, workerURL: self.location.href, entryRuns: String(globalThis.vendorEntryExecutions ?? 1), revision: globalThis.packageRevision ?? 'initial', cache: self.registration?.updateViaCache ?? 'none', scope: self.registration?.scope ?? 'none', activeURL: self.registration?.active?.scriptURL ?? 'none', dependencyURL: globalThis.dependencyURL ?? 'none'}));
             """).utf8).write(to: workerURL)
         try Data("<title>UA fixture</title><script src='popup.js'></script>".utf8)
             .write(to: folder.appendingPathComponent("popup.html"))
@@ -402,6 +403,14 @@ import XCTest
     }
 
     func testModuleResourceUpdateRefreshesCanonicalDependency() async throws {
+        try await checkCanonicalDependencyUpdate(version: "1.0")
+    }
+
+    func testModuleVersionBumpedResourceUpdateRefreshesCanonicalDependency() async throws {
+        try await checkCanonicalDependencyUpdate(version: "2.0")
+    }
+
+    private func checkCanonicalDependencyUpdate(version: String) async throws {
         Settings.userAgent = "Vane Updated Module/1.0"
         forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
         let before = try await install(version: 3, module: true)
@@ -412,6 +421,12 @@ import XCTest
         let dependency = folder.appendingPathComponent("dependency.js")
         let originalBytes = try String(contentsOf: dependency, encoding: .utf8)
         try Data((originalBytes + "\nglobalThis.packageRevision = 'updated';").utf8).write(to: dependency)
+        if version != "1.0" {
+            let manifestURL = folder.appendingPathComponent("manifest.json")
+            var manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+            manifest["version"] = version
+            try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL)
+        }
         let host = ExtensionHost.host(for: profile)
         let accepted = try await host.load(folder, installing: false, replacing: true) { _ in true }
         XCTAssertTrue(accepted)
@@ -421,11 +436,40 @@ import XCTest
         try await assertIdentity(in: newWeb, context: after, expected: "Vane Updated Module/1.0")
         let updated = try await newWeb.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
         XCTAssertEqual(updated?["revision"], "updated", "A new wrapper must not reuse cached canonical vendor imports")
+        let codeStore = ExtensionCodeStore(profileID: profile)
+        let record = try XCTUnwrap(try codeStore.records()[folder.path])
+        let sourceBytes = try Data(contentsOf: dependency)
+        let acceptedBytes = try Data(contentsOf: codeStore.code(for: record).appendingPathComponent("dependency.js"))
+        XCTAssertEqual(acceptedBytes, sourceBytes, "The replacement snapshot must contain the actual changed dependency")
+        XCTAssertFalse(after === before)
+        print("MV3_CACHE_DIAGNOSTIC version=\(version), sourceSHA=\(SHA256.hash(data: sourceBytes)), acceptedSHA=\(SHA256.hash(data: acceptedBytes)), beforeLoaded=\(before.isLoaded), afterLoaded=\(after.isLoaded), original=\(original ?? [:]), updated=\(updated ?? [:])")
+        if updated?["revision"] != "updated" {
+            // Observe fresh bytes AFTER the original failed response/assertion.
+            // This never turns that failed outcome into an acceptance verdict.
+            let box = CacheDiagnosticResult()
+            do {
+                try await ExtensionBackgroundStartup.wait(timeout: .seconds(5), start: { complete in
+                    newWeb.callAsyncJavaScript("""
+                        const url = browser.runtime.getURL('dependency.js');
+                        const body = await (await fetch(url, {cache:'no-store'})).text();
+                        let registrations;
+                        try { registrations = await navigator.serviceWorker.getRegistrations().then(items => items.map(r => ({scope:r.scope, active:r.active?.scriptURL, cache:r.updateViaCache}))); }
+                        catch(error) { registrations = {unavailable:String(error)}; }
+                        return {url, body, registrations};
+                        """, arguments: [:], in: nil, in: .page) { value in
+                            MainActor.assumeIsolated { box.value = value; complete(nil) }
+                        }
+                }, check: {})
+                print("MV3_CACHE_AFTER_FAILURE_FETCH \(try box.value?.get() as Any)")
+            } catch { print("MV3_CACHE_AFTER_FAILURE_FETCH unavailable: \(error)") }
+        }
         XCTAssertEqual(updated?["url"], original?["url"], "Vendor module identity remains canonical")
         XCTAssertNotEqual(updated?["workerURL"], original?["workerURL"], "Changed dependency bytes require a new worker registration URL")
         XCTAssertEqual(after.uniqueIdentifier, before.uniqueIdentifier)
         XCTAssertEqual(after.baseURL, before.baseURL)
     }
+
+    @MainActor private final class CacheDiagnosticResult { var value: Result<Any, Error>? }
 
     func testWorkerRecreationRetainsNavigatorIdentityAndStorage() async throws {
         Settings.userAgent = "Vane Recreated Worker/1.0"

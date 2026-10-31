@@ -319,7 +319,14 @@ extension ExtensionNativeMessagingErrorTests {
                 let window = NSWindow(contentRect: web.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
                 let oldPolicy = NSApp.activationPolicy()
-                defer { web.stopLoading(); window.contentView = nil; window.close(); NSApp.setActivationPolicy(oldPolicy) }
+                let trace = NativeModePageTrace(window: window)
+                let oldDelegate = web.navigationDelegate
+                if oldDelegate == nil { web.navigationDelegate = trace }
+                defer {
+                    trace.close()
+                    if web.navigationDelegate === trace { web.navigationDelegate = oldDelegate }
+                    web.stopLoading(); window.contentView = nil; window.close(); NSApp.setActivationPolicy(oldPolicy)
+                }
                 window.contentView = web
                 NSApp.setActivationPolicy(.regular)
                 window.makeKeyAndOrderFront(nil)
@@ -327,7 +334,7 @@ extension ExtensionNativeMessagingErrorTests {
                 try await waitNativeModePage("retry page foreground") { NSApp.isActive && window.isKeyWindow && web.window === window }
                 web.load(URLRequest(url: try XCTUnwrap(context.optionsPageURL)))
                 try await waitNativeModePage("retry page loaded in exact owner", diagnostics: {
-                    "approved=\(approved), background=\(context.webExtension.hasBackgroundContent), prepared=\(ExtensionWorkerIdentity.identity(of: context.webExtension) != nil), loading=\(web.isLoading), title=\(web.title ?? "nil"), url=\(web.url?.absoluteString ?? "nil"), owner=\(web.window === window), visible=\(window.isVisible), active=\(NSApp.isActive), key=\(window.isKeyWindow), keyWindow=\(NSApp.keyWindow?.windowNumber ?? -1), frontmostPID=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1)"
+                    "approved=\(approved), background=\(context.webExtension.hasBackgroundContent), prepared=\(ExtensionWorkerIdentity.identity(of: context.webExtension) != nil), loading=\(web.isLoading), title=\(web.title ?? "nil"), url=\(web.url?.absoluteString ?? "nil"), owner=\(web.window === window), visible=\(window.isVisible), active=\(NSApp.isActive), key=\(window.isKeyWindow), keyWindow=\(NSApp.keyWindow?.windowNumber ?? -1), frontmostPID=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1), titleGate=\(web.title == "Sequential retry fixture"), trace=\(trace.events.joined(separator: " | "))"
                 }) {
                     !web.isLoading && web.title == "Sequential retry fixture" && web.window === window && window.isVisible
                         && NSApp.isActive && window.isKeyWindow
@@ -364,6 +371,39 @@ extension ExtensionNativeMessagingErrorTests {
                 }
             }
         }
+    }
+
+    @MainActor private final class NativeModePageTrace: NSObject, WKNavigationDelegate {
+        private(set) var events: [String] = []
+        private var observers: [NSObjectProtocol] = []
+        private let start = ContinuousClock.now
+        init(window: NSWindow) {
+            super.init()
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                         NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+                let owner: Any? = name == NSWindow.didBecomeKeyNotification || name == NSWindow.didResignKeyNotification ? window : nil
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: owner, queue: .main) { [weak self] note in
+                    let event = note.name.rawValue
+                    MainActor.assumeIsolated { self?.note(event) }
+                })
+            }
+        }
+        func close() { observers.forEach { NotificationCenter.default.removeObserver($0) }; observers.removeAll() }
+        private func note(_ text: String) {
+            let elapsed = start.duration(to: .now).components
+            events.append("\(elapsed.seconds)s+\(elapsed.attoseconds / 1_000_000_000_000_000)ms " + text)
+            if events.count > 32 { events.removeFirst() }
+        }
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { note("navigation start") }
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { note("navigation commit") }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { note("navigation finish") }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            let error = error as NSError; note("provisional failure \(error.domain):\(error.code)")
+        }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            let error = error as NSError; note("navigation failure \(error.domain):\(error.code)")
+        }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { note("content process terminated") }
     }
 
     private func waitNativeModePage(_ description: String, diagnostics: () -> String = { "" }, _ ready: () -> Bool) async throws {
