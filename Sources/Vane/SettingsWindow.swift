@@ -466,6 +466,7 @@ private struct GeneralPane: View {
     @ObservedObject var selection: SettingsSelection
     @AppStorage("warnBeforeQuit") private var warnQuit = true
     @AppStorage("checkForUpdates") private var autoUpdate = true
+    @AppStorage(UpdateChannel.preferenceKey) private var updateChannel = UpdateChannel.stable.rawValue
     @AppStorage(InteractionSounds.preferenceKey) private var interactionSounds = false
     @AppStorage(SpaceFooterPreferences.showIconsKey) private var showSpaceIcons = true
     @State private var isDefault = URLHandling.isDefaultBrowser
@@ -476,6 +477,7 @@ private struct GeneralPane: View {
                 SettingsRow("Automatically check for Vane updates") {
                     Toggle("Automatically check for Vane updates", isOn: $autoUpdate).labelsHidden()
                 }
+                UpdateChannelSettings(selection: $updateChannel)
                 SettingsRow("Warn before quitting") {
                     Toggle("Warn before quitting", isOn: $warnQuit).labelsHidden()
                 }
@@ -514,6 +516,31 @@ private struct GeneralPane: View {
             }
         }
         .onAppear { isDefault = URLHandling.isDefaultBrowser }
+    }
+}
+
+/// Native controls keep channel choice beside the existing automatic-check preference.
+struct UpdateChannelSettings: View {
+    @Binding var selection: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SettingsRow("Update channel") {
+                Picker("Update channel", selection: Binding(
+                    get: { selection },
+                    set: { value in
+                        Motion.animate(Look.quick) { selection = value }
+                        Updater.shared.channelChanged()
+                    }
+                )) {
+                    ForEach(UpdateChannel.allCases, id: \.rawValue) { channel in
+                        Text(channel.title).tag(channel.rawValue)
+                    }
+                }.labelsHidden().frame(width: 120)
+            }
+            Footnote(UpdateChannel.stored(selection).explanation)
+                .contentTransition(.opacity)
+        }
     }
 }
 

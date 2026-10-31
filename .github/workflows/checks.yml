@@ -46,7 +46,10 @@ jobs:
         run: node docs/tests/galaxy.test.cjs
 
       - name: Release workflow fixture
-        run: python3 scripts/test-release-workflow.py
+        run: |
+          python3 scripts/test-release-workflow.py
+          python3 scripts/test-prepare-nightly.py
+          python3 scripts/test-update-channel.py
 
       - name: Default browser prompt build policy
         run: python3 scripts/test-default-browser-prompt.py
