@@ -85,8 +85,10 @@ jobs:
           assert all(re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/[^\s/]+', x) for x in inventory)
           canonical = '\n'.join(sorted(inventory))
           assert hashlib.sha256(canonical.encode()).hexdigest() == os.environ['VANE_PINNED_INVENTORY_SHA']
-          tests = ['VaneTests.SidebarVisibilityTests/testCollapsingDockedSidebarDoesNotAcquireFloatingInsets', 'VaneTests.SidebarVisibilityTests/testDockingOrHidingEndsTheFloatingRevealImmediately', 'VaneTests.SidebarVisibilityTests/testFloatingRevealRetainsTheLaidOutSidebar', 'VaneTests.SidebarVisibilityTests/testHidingSidebarDisablesItsFocusedRenameField', 'VaneTests.SidebarVisibilityTests/testPresentationSamplingExcludesParkedProfileTrees', 'VaneTests.SidebarVisibilityTests/testReturningToCachedProfileDoesNotReplaySidebarDocking', 'VaneTests.SidebarVisibilityTests/testSlidingRowsReachTheWindowEdge', 'VaneTests.SidebarVisibilityTests/testVisibilityFollowsWindowAcrossNewAndParkedProfiles', 'VaneTests.SidebarVisibilityTests/testVisibilitySurvivesSpaceSwitchesWithinOneProfile']
-          assert sorted(x for x in inventory if x.startswith('VaneTests.SidebarVisibilityTests/')) == tests
+          tests = ['VaneTests.SidebarObservationTests/testLiveOnlyPresentationChangesDoNotInvalidateCapturedSidebars', 'VaneTests.SidebarObservationTests/testMountedSidebarSkipsSearchUpdatesButRendersRenameChanges', 'VaneTests.SidebarObservationTests/testOutlineSelectionRenameAndProtectionStillInvalidateRowsSynchronously', 'VaneTests.SidebarObservationTests/testSearchAndChromeChangesDoNotInvalidateEverySidebarRow', 'VaneTests.SidebarObservationTests/testSnapshotChangesRevokeBeforeOutlineAssignmentAndIncludeProtection', 'VaneTests.SidebarRowRetentionTests/testSmallSidebarKeepsControlsThroughFolderToggleAndScroll', 'VaneTests.SidebarScrollCutoffTests/testElasticScrollingDoesNotInventContentBeyondTheEnds', 'VaneTests.SidebarScrollCutoffTests/testFittingAndEmptyListsHaveNoLines', 'VaneTests.SidebarScrollCutoffTests/testOnlyEdgesWithMoreContentShowLines', 'VaneTests.SidebarScrollCutoffTests/testRemovingRowsOrGrowingViewportClearsBottomLine', 'VaneTests.SidebarVisibilityTests/testCollapsingDockedSidebarDoesNotAcquireFloatingInsets', 'VaneTests.SidebarVisibilityTests/testDockingOrHidingEndsTheFloatingRevealImmediately', 'VaneTests.SidebarVisibilityTests/testFloatingRevealRetainsTheLaidOutSidebar', 'VaneTests.SidebarVisibilityTests/testHidingSidebarDisablesItsFocusedRenameField', 'VaneTests.SidebarVisibilityTests/testPresentationSamplingExcludesParkedProfileTrees', 'VaneTests.SidebarVisibilityTests/testReturningToCachedProfileDoesNotReplaySidebarDocking', 'VaneTests.SidebarVisibilityTests/testSlidingRowsReachTheWindowEdge', 'VaneTests.SidebarVisibilityTests/testVisibilityFollowsWindowAcrossNewAndParkedProfiles', 'VaneTests.SidebarVisibilityTests/testVisibilitySurvivesSpaceSwitchesWithinOneProfile']
+          classes = {case.split('/', 1)[0] for case in tests}
+          assert classes == {'VaneTests.SidebarObservationTests', 'VaneTests.SidebarRowRetentionTests', 'VaneTests.SidebarScrollCutoffTests', 'VaneTests.SidebarVisibilityTests'}
+          assert sorted(x for x in inventory if x.split('/', 1)[0] in classes) == tests
           pattern = '^(?:' + '|'.join(re.escape(x) for x in tests) + ')$'
           assert sorted(x for x in inventory if re.search(pattern, x)) == tests
           bin_root = Path(os.environ['VANE_PREFLIGHT_BIN']).resolve()
@@ -109,7 +111,7 @@ jobs:
           manifest = {'schema': 1, 'tests': tests, 'filter': pattern, 'inventory_raw_sha256': sha(raw), 'inventory_canonical_sha256': hashlib.sha256(canonical.encode()).hexdigest(), 'binary': str(binary), 'binary_sha256': sha(binary), 'build_description': str(description), 'build_description_sha256': sha(description), 'fixture': str(fixture), 'fixture_sha256': sha(fixture), 'native_revision_receipt_available': False, 'attempts': 3}
           (evidence / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
           PYCODE
-      - name: Preserve three predetermined nine-case diagnostic attempts
+      - name: Preserve three predetermined nineteen-case diagnostic attempts
         env:
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
         run: |
@@ -148,6 +150,10 @@ jobs:
                       errors.append('unexpected outcome ' + case)
               if any(case not in set(tests) | {retirement} for case in started):
                   errors.append('unselected case executed')
+              selected_started = [case for case in started if case in tests]
+              selected_finished = [a + '/' + b for a, b, _ in finished if a + '/' + b in tests]
+              if selected_started != tests or selected_finished != tests:
+                  errors.append('selected case execution/completion order changed')
               failed = any(outcomes.get(case) == ['failed'] for case in tests)
               target_errors = [line for line in text.splitlines() if ' error: ' in line and '-[VaneTests.SidebarVisibilityTests testReturningToCachedProfileDoesNotReplaySidebarDocking]' in line]
               original_messages = ('The arriving profile must already use docked geometry', 'An old floating inset must not animate after switching profiles')
@@ -170,7 +176,7 @@ jobs:
                   errors.append('fatal signal/timeout/infrastructure failure')
               if sha(manifest['binary']) != manifest['binary_sha256'] or sha(manifest['fixture']) != manifest['fixture_sha256']:
                   errors.append('frozen input changed')
-              result = {'attempt': attempt, 'exit': run.returncode, 'primary': primary, 'cleanup': cleanup, 'log_sha256': sha(log), 'outcomes': outcomes, 'validation_errors': errors, 'trace': trace, 'target_error_records': target_errors, 'original_geometry_failure': original_geometry_failure, 'native_revision_receipt_available': False, 'observation_only_not_repair': True}
+              result = {'attempt': attempt, 'exit': run.returncode, 'primary': primary, 'cleanup': cleanup, 'log_sha256': sha(log), 'outcomes': outcomes, 'selected_started_order': selected_started, 'selected_completed_order': selected_finished, 'validation_errors': errors, 'trace': trace, 'target_error_records': target_errors, 'original_geometry_failure': original_geometry_failure, 'native_revision_receipt_available': False, 'observation_only_not_repair': True}
               (evidence / f'attempt-{attempt}.result.json').write_text(json.dumps(result, indent=2) + '\n')
               results.append(result)
               (evidence / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
