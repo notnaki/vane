@@ -2663,13 +2663,19 @@ private struct SpaceRow: View {
                         .foregroundStyle(Look.inkSecondary)
                         .frame(width: Look.rowTarget, height: Look.rowHeight)
                         .contentShape(.rect)
-                        .opacity(hovered || optionsFocused ? 1 : 0)
-                        .animation(reduced ? nil : Look.quick, value: hovered || optionsFocused)
-                        .id(reduced)
                 }
                 .menuStyle(.borderlessButton).tint(Look.inkSecondary)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                // Native Menu can extract its label's symbol without its opacity.
+                // Fade the complete rendering; reset only mask paint on policy changes.
+                .mask {
+                    Rectangle().fill(.white)
+                        .opacity(hovered || optionsFocused ? 1 : 0)
+                        .animation(reduced ? nil : Look.quick, value: hovered || optionsFocused)
+                        .id(reduced)
+                        .transition(.identity)
+                }
                 .focused($optionsFocused)
                 .accessibilityHidden(false)
                 .accessibilityLabel("Space options")
