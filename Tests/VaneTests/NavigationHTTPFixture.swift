@@ -19,6 +19,9 @@ import XCTest
     var authPaths: Set<String> = []
     var contentTypes: [String: String] = [:]
     var responseHeaders: [String: [String: String]] = [:]
+    private(set) var connectionCallbacks = 0
+    private(set) var listenerCancelled = false
+    private var stopped = false
 
     init() throws {
         let parameters = NWParameters.tcp
@@ -26,12 +29,20 @@ import XCTest
         listener = try NWListener(using: parameters)
         listener.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
-                if case .ready = state { self?.port = self?.listener.port?.rawValue }
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    if !self.stopped { self.port = self.listener.port?.rawValue }
+                case .cancelled: self.listenerCancelled = true
+                default: break
+                }
             }
         }
         listener.newConnectionHandler = { [weak self] connection in
             Task { @MainActor in
                 guard let self else { connection.cancel(); return }
+                self.connectionCallbacks += 1
+                guard !self.stopped else { connection.cancel(); return }
                 self.connections.append(connection)
                 connection.start(queue: .main)
                 self.receive(connection, bytes: Data())
@@ -47,7 +58,7 @@ import XCTest
     private func receive(_ connection: NWConnection, bytes: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, error in
             Task { @MainActor in
-                guard let self else { connection.cancel(); return }
+                guard let self, !self.stopped else { connection.cancel(); return }
                 var accumulated = bytes
                 if let data { accumulated.append(data) }
                 guard let separator = accumulated.range(of: Data("\r\n\r\n".utf8)) else {
@@ -91,5 +102,13 @@ import XCTest
         }
     }
 
-    func stop() { listener.cancel(); connections.forEach { $0.cancel() }; connections = []; heldPaths = [] }
+    func stop() {
+        guard !stopped else { return }
+        // Revoke queued actor work before asking Network to cancel asynchronously.
+        stopped = true
+        listener.cancel()
+        connections.forEach { $0.cancel() }
+        connections = []
+        heldPaths = []
+    }
 }

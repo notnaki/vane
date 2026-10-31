@@ -4,6 +4,29 @@ import XCTest
 @testable import vane
 
 final class SpaceChromeThemeTests: XCTestCase {
+    @MainActor func testIncognitoSurfacesRenderOpaqueBlackInEitherSystemAppearance() throws {
+        let theme = SpaceChromeTheme(space: nil, fallback: Profile.incognito.colorHex)
+        for scheme in [ColorScheme.dark, .light] {
+            let wash = ThemeWash.space(nil, fallback: .incognito, profiles: [], systemDark: scheme == .dark)
+            let renderer = ImageRenderer(content: HStack(spacing: 0) {
+                ThemeWashView(wash: wash)
+                Rectangle().fill(theme.bubble)
+                Rectangle().fill(theme.barFill)
+            }
+                .frame(width: 90, height: 30)
+                .background(Color.white)
+                .environment(\.colorScheme, scheme))
+            let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+            for x in [15, 45, 75] {
+                let pixel = try XCTUnwrap(bitmap.colorAt(x: x, y: 15)?.usingColorSpace(.sRGB))
+                XCTAssertEqual(pixel.redComponent, 0, accuracy: 0.001)
+                XCTAssertEqual(pixel.greenComponent, 0, accuracy: 0.001)
+                XCTAssertEqual(pixel.blueComponent, 0, accuracy: 0.001)
+                XCTAssertEqual(pixel.alphaComponent, 1, accuracy: 0.001)
+            }
+        }
+    }
+
     @MainActor func testFloatingSurfacesDarkenContinuouslyToBlackWithThePrimary() throws {
         var previous = -1.0
         for lightness in [0.0, 0.02, 0.1, 0.25, 0.5, 0.75, 1.0] {

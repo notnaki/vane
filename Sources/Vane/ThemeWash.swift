@@ -22,6 +22,12 @@ struct ThemeWash: VectorArithmetic {
     /// Resolve gesture endpoints from their captured Spaces, even before SwiftUI has
     /// rendered the first input sample or the newly selected page.
     static func space(_ space: Space?, fallback: Profile, profiles: [Profile], systemDark: Bool) -> Self {
+        // Incognito is an opaque black surface, independent of the desktop behind
+        // the window and the neutral mixing used by ordinary Space themes.
+        if fallback.id == Profile.incognito.id {
+            return Self(colors: [ThemeColor(red: 0, green: 0, blue: 0)],
+                        strength: 1, opacity: 1, grain: 0)
+        }
         let dark = space?.appearance == "dark" ? true : space?.appearance == "light" ? false : systemDark
         var palette = space.map(Spaces.palette(of:)) ?? []
         if palette.isEmpty {
