@@ -1,0 +1,87 @@
+name: Space menu parity baseline capture
+on:
+  push:
+    branches: [codex/space-menu-parity-baseline]
+permissions:
+  contents: read
+concurrency:
+  group: space-menu-parity-baseline-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  focused-native:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      VANE_SIDEBAR_SNAPSHOT_DIR: ${{ runner.temp }}/vane-space-menu-captures
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Verify diagnostic commit changes no app or test inputs
+        run: |
+          git diff --exit-code HEAD^ HEAD -- Sources Tests Package.swift Package.resolved
+          git rev-parse HEAD^ HEAD:Sources HEAD:Tests
+      - name: Identify Swift toolchain
+        id: toolchain
+        run: |
+          KEY=$(python3 scripts/ci-build-artifact.py toolchain)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+      - name: Restore Swift debug build
+        uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
+          restore-keys: |
+            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - name: Restore timestamps and build native tests
+        run: |
+          python3 scripts/ci-source-state.py restore
+          swift build --build-system native -c debug --build-tests
+      - name: Own AppKit loop smoke
+        env:
+          VANE_APPKIT_LOOP_SMOKE: '1'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
+        run: |
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/vane-preflight-smoke.log"
+          grep -Fq 'AppKit loop smoke: delayedHeartbeat=true, completed=true' "$RUNNER_TEMP/vane-preflight-smoke.log"
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-preflight-smoke.log"
+      - name: Capture the unchanged failing comparison once
+        env:
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '300'
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          set -euo pipefail
+          swift test --build-system native list --skip-build > "$RUNNER_TEMP/vane-preflight-inventory.txt"
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          pattern = r'^VaneTests[.]SpacePreviewParityTests/testNewProfileGhostMatchesFreshProfileRestoration$'
+          tests = [x.strip() for x in (root/'vane-preflight-inventory.txt').read_text().splitlines() if re.search(pattern, x.strip())]
+          assert len(tests) == 1
+          (root/'vane-preflight.filter').write_text(pattern)
+          (root/'vane-preflight.json').write_text(json.dumps({'schema': 1, 'tests': tests}))
+          print('Preflight selected', len(tests), 'tests; exactly one unchanged baseline attempt')
+          PY
+          result=0
+          for attempt in 1; do
+            set +e
+            python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter "$(cat "$RUNNER_TEMP/vane-preflight.filter")" 2>&1 | tee "$RUNNER_TEMP/vane-preflight-attempt-$attempt.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "attempt=$attempt status=$status" | tee -a "$RUNNER_TEMP/vane-preflight-results.txt"
+            if [ "$status" -ne 0 ]; then result=1; fi
+            if ! python3 scripts/native-test-shards.py verify --manifest "$RUNNER_TEMP/vane-preflight.json" --log "$RUNNER_TEMP/vane-preflight-attempt-$attempt.log"; then result=1; fi
+            if ! grep -Fq "Test Case '-[VaneTests.SpacePreviewParityTests testNewProfileGhostMatchesFreshProfileRestoration]' passed" "$RUNNER_TEMP/vane-preflight-attempt-$attempt.log"; then result=1; fi
+          done
+          exit "$result"
+      - name: Preserve original logs for all attempts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: space-menu-parity-baseline-evidence
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/vane-preflight*
+            ${{ runner.temp }}/vane-space-menu-captures
