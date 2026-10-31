@@ -18,7 +18,7 @@ The repaired source executed all four native controls successfully: transient re
 
 Independent review of the current implementation and controls found no unresolved actionable findings. The review's acquisition-failure restoration ownership finding was repaired before GREEN; every created restoration task is joined before the baseline policy defer.
 
-This establishes the shutdown-policy repair, not a resolution of the separate historical b029 document-no-commit stall or the MV3 worker-UA limitation. Full required CI and latest-main integration remain pending. Main advanced from 10c31ed1 to 641bc399 (#559, Look.swift/UI.swift) during focused qualification; the next integration must include that tree and retain strict required checks with administrator enforcement.
+This establishes the shutdown-policy repair, not a resolution of the separate historical b029 document-no-commit stall or the MV3 worker-UA limitation. At the focused-control checkpoint, full required CI and latest-main integration were pending. Main had advanced from 10c31ed1 to 641bc399 (#559, Look.swift/UI.swift). The following section records completed integration with that tree; full required CI remains held, and strict required checks with administrator enforcement remain enabled.
 
 ## Latest-main and macOS 26 qualification
 
