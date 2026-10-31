@@ -58,9 +58,12 @@ Published releases are built through the signing and notarization workflow.
 That does not establish compatibility with every site or complete clean-Mac
 installation/upgrade coverage. See [release validation](docs/RELEASING.md).
 
-Use **Vane → Check for Updates…** to check manually. The updater offers stable
-releases; tags containing a hyphen are prereleases and are not offered.
-Merging to `main` does not publish a release.
+Use **Vane → Check for Updates…** to check manually. Updates use **Stable** by
+default. Choose **Nightly** in **Settings → General → Update channel** to try early
+builds; these may have bugs. Switching back waits for a newer stable version and
+does not downgrade the app. Both channels use the same app and browsing data.
+Nightlies publish once a day when `main` has changed and its checks have passed.
+Stable releases are published separately.
 
 Stable release bundles packaged with a Developer ID offer the default-browser
 prompt once. Local, debug, and prerelease builds skip it. The manual

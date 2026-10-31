@@ -532,6 +532,8 @@ extension VaneWindow {
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
+        // Keep the sidebar and page usable, including when restoring an older saved frame.
+        window.minSize = NSSize(width: 800, height: 500)
         window.title = WindowTitle.current(in: store)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden

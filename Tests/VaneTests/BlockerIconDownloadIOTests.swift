@@ -149,6 +149,17 @@ private final class Task7ReplyGate: @unchecked Sendable {
         XCTAssertEqual(result.1.rules, 50_000)
     }
 
+    func testExpiredIconReplyCannotWinBeforeTimeoutCallbackIsDelivered() async {
+        let result = await withCheckedContinuation { continuation in
+            // The timer has not run, but its monotonic deadline has expired. A
+            // higher-priority late helper reply must not turn expiry into success.
+            let reply = AppIconPersistence.Reply(continuation, deadline: DispatchTime(uptimeNanoseconds: 1))
+            reply.finish(true)
+            reply.finish(false)
+        }
+        XCTAssertFalse(result)
+    }
+
     func testIconReplyYieldsActorAndAcceptsOnlyTheFirstCompletion() async {
         let gate = Task7ReplyGate()
         let task = Task { await AppIconPersistence.request(timeout: 10) { gate.receive($0) } }

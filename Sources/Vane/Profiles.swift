@@ -388,7 +388,7 @@ import WebKit
 struct Profile: Identifiable, Codable, Equatable, Hashable {
     /// A temporary browsing identity, never inserted into the saved profile list.
     static let incognito = Profile(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-                                   name: "Incognito", colorHex: "#111111")
+                                   name: "Incognito", colorHex: "#000000")
 
     let id: UUID
     var name: String
