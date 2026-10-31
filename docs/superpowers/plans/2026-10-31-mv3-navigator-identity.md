@@ -46,5 +46,5 @@
 
 - Content-version worker URLs prevent native registration reuse after identity/code changes. Explicit entries retain paths and relative imports; generated workers import original scripts from a versioned wrapper. Original disk files remain untouched.
 - The early message-based startup probe was removed after it collided with vendor listeners. The production bootstrap only changes navigator getters; first-instruction proof comes from blocking native fixtures. Original failed attempts are preserved.
-- The unmodified official Bitwarden Chrome 2026.10.0 startup check and signed MV3 exact-resource-seal case passed locally. A broader existing MV2 retry-page readiness timeout is retained for investigation; no passing retry is considered a repair.
+- The unmodified official Bitwarden Chrome 2026.10.0 startup check and signed MV3 exact-resource-seal case passed locally. A broader existing non-worker MV3 options-page readiness timeout is retained for investigation; no passing retry is considered a repair.
 - Local native execution requires a coordinator lease. Merge requires per-PR coordinator clearance and no unfinished main CI run; never cancel a main run to bypass that hold.

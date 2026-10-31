@@ -103,7 +103,7 @@ import XCTest
         try await NativeFixtureProfileCleanup.release(released)
     }
 
-    private func install(version: Int, in targetProfile: UUID? = nil, module: Bool = false, generated: Bool = false, workerPath: String = "background.js", hashbang: Bool = false, strict: Bool = false, reusePage: Bool = false) async throws -> WKWebExtensionContext {
+    private func install(version: Int, in targetProfile: UUID? = nil, module: Bool = false, generated: Bool = false, workerPath: String = "background.js", hashbang: Bool = false, strict: Bool = false, reusePage: Bool = false, cycle: Bool = false) async throws -> WKWebExtensionContext {
         #if DEBUG
         backgroundObservations.removeAll()
         #endif
@@ -122,12 +122,13 @@ import XCTest
         try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
         let workerURL = folder.appendingPathComponent(workerPath)
         try FileManager.default.createDirectory(at: workerURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let dependencySource = "globalThis.dependencyStartupIdentity = navigator.userAgent;" + (module ? " globalThis.dependencyURL = import.meta.url;" : "")
+        let dependencySource = (module && cycle ? "import './\(workerURL.lastPathComponent)';\n" : "") + "globalThis.dependencyStartupIdentity = navigator.userAgent;" + (module ? " globalThis.dependencyURL = import.meta.url;" : "")
         try Data(dependencySource.utf8).write(to: workerURL.deletingLastPathComponent().appendingPathComponent("dependency.js"))
         try Data("<title>Reused worker source</title><script \(module ? "type='module'" : "") src='/\(workerPath)'></script>".utf8)
             .write(to: folder.appendingPathComponent("reused.html"))
         let dependency = (hashbang ? "#!/usr/bin/env javascript\n" : "") + (strict ? "'use strict';\n" : "") + (module ? "import './dependency.js';\n" : "")
-        try Data((dependency + """
+        let cycleCounter = cycle ? "globalThis.vendorEntryExecutions = (globalThis.vendorEntryExecutions ?? 0) + 1;\n" : ""
+        try Data((dependency + cycleCounter + """
             const startupUserAgent = globalThis.dependencyStartupIdentity ?? navigator.userAgent;
             globalThis.entryStartupIdentity = startupUserAgent;
             const birthNonce = crypto.randomUUID();
@@ -136,7 +137,7 @@ import XCTest
             browser.runtime.onMessage.addListener(async () => ({startup: startupUserAgent, current: navigator.userAgent,
               nonce: birthNonce, saved: (await chrome.storage.local.get('workerSaved')).workerSaved ?? 'missing',
               aliases: String(chrome.runtime.id === browser.runtime.id), strict: String(strictAtStartup),
-              url: sourceURL, dependencyURL: globalThis.dependencyURL ?? 'none'}));
+              url: sourceURL, workerURL: self.location.href, entryRuns: String(globalThis.vendorEntryExecutions ?? 1), dependencyURL: globalThis.dependencyURL ?? 'none'}));
             """).utf8).write(to: workerURL)
         try Data("<title>UA fixture</title><script src='popup.js'></script>".utf8)
             .write(to: folder.appendingPathComponent("popup.html"))
@@ -152,9 +153,7 @@ import XCTest
         XCTAssertTrue(accepted)
         let context = try XCTUnwrap(host.installed.first)
         #if DEBUG
-        #if DEBUG
         assertBackgroundOwnership(for: context)
-        #endif
         #endif
         return context
     }
@@ -362,6 +361,18 @@ import XCTest
         let (action, web) = try await popup(context)
         defer { action.closePopup() }
         try await assertIdentity(in: web, context: context, expected: Settings.userAgent)
+    }
+
+    func testModuleCycleUsesSingleCanonicalVendorEntry() async throws {
+        Settings.userAgent = "Vane Cyclic Worker/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3, module: true, cycle: true)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: "Vane Cyclic Worker/1.0")
+        let identity = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+        XCTAssertEqual(identity?["entryRuns"], "1", "A module back-reference must not evaluate a query-distinct copy of the vendor entry")
+        XCTAssertEqual(identity?["url"], context.baseURL.appendingPathComponent("background.js").absoluteString)
     }
 
     func testWorkerRecreationRetainsNavigatorIdentityAndStorage() async throws {
