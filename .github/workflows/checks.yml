@@ -232,7 +232,7 @@ jobs:
   known-limitations:
     # Only a classified bare-engine UA mismatch is advisory. Fixture, cleanup,
     # ownership, execution and evidence failures remain required check failures.
-    name: Known limitation — extension worker UA (advisory)
+    name: Extension worker UA compatibility (advisory)
     needs: [changes, build]
     if: needs.changes.outputs.app_required == 'true'
     runs-on: macos-26
