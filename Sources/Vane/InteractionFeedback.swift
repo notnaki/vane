@@ -189,7 +189,7 @@ struct CopyLinkGlyph: View {
                 .foregroundStyle(Look.inkSecondary)
                 .opacity(copied ? 0 : 1)
             Image(systemName: "checkmark")
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(Look.inkPrimary)
                 .opacity(copied ? 1 : 0)
         }
             // Keep both glyphs mounted so the confirmation starts on the next frame,

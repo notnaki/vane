@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor final class CopyLinkFeedbackTests: XCTestCase {
     private var frame = 0
-    func testCheckmarkFinishesItsReplacementPromptly() async throws {
+    func testCheckmarkFinishesPromptlyAndUsesAdaptiveNeutralInk() async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Symbol timing requires system motion")
         let app = NSApplication.shared
@@ -21,6 +21,7 @@ import XCTest
             let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 100, height: 60),
                                   styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: .darkAqua)
             window.title = "Copy link feedback fixture"
             let host = NSHostingView(rootView: CopyGlyphSurface(state: state))
             window.contentView = host
@@ -42,6 +43,15 @@ import XCTest
             try await Task.sleep(for: .milliseconds(600))
             XCTAssertLessThanOrEqual(difference(prompt, try pixels(host)), 2,
                                      "The checkmark must be settled by 250ms, rather than still replacing the link")
+            try assertNeutralInk(in: host, dark: true)
+            window.appearance = NSAppearance(named: .aqua)
+            host.rootView = CopyGlyphSurface(state: state, dark: false)
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                return !state.presentedDark && host.window === window
+                    && window.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua
+            }
+            try assertNeutralInk(in: host, dark: false)
         } catch { failure = error }
         do { try await loop.close() }
         catch {
@@ -64,6 +74,26 @@ import XCTest
         return Data(bytes: try XCTUnwrap(bitmap.bitmapData), count: bitmap.bytesPerRow * bitmap.pixelsHigh)
     }
 
+    private func assertNeutralInk(in host: NSView, dark: Bool) throws {
+        host.layoutSubtreeIfNeeded()
+        host.displayIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        var visibleInk = 0
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+                let high = max(color.redComponent, color.greenComponent, color.blueComponent)
+                let low = min(color.redComponent, color.greenComponent, color.blueComponent)
+                if (dark ? high : 1 - low) > 0.2 {
+                    visibleInk += 1
+                    XCTAssertLessThan(high - low, 0.04, "Confirmation ink must be neutral, without an accent tint")
+                }
+            }
+        }
+        XCTAssertGreaterThan(visibleInk, 10, "The checkmark must remain visible against both light and dark backgrounds")
+    }
+
     private func difference(_ lhs: Data, _ rhs: Data) -> Int {
         guard lhs.count == rhs.count else { return 255 }
         return zip(lhs, rhs).reduce(0) { max($0, abs(Int($1.0) - Int($1.1))) }
@@ -73,14 +103,17 @@ import XCTest
 @MainActor private final class CopyGlyphState: ObservableObject {
     @Published var copied = false
     var mounted = false
+    var presentedDark = true
 }
 
 private struct CopyGlyphSurface: View {
     @ObservedObject var state: CopyGlyphState
+    var dark = true
     var body: some View {
         CopyLinkGlyph(copied: state.copied).font(.system(size: 14))
-            .frame(width: 100, height: 60).background(.black)
-            .environment(\.colorScheme, .dark)
+            .frame(width: 100, height: 60).background(dark ? Color.black : .white)
+            .environment(\.colorScheme, dark ? .dark : .light)
             .onAppear { state.mounted = true }
+            .onChange(of: dark, initial: true) { _, dark in state.presentedDark = dark }
     }
 }
