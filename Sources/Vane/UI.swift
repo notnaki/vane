@@ -552,7 +552,7 @@ struct BrowserWindow: View {
             .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
             .background {
                 RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
-                    .fill(theme.bubble.opacity(Look.floatingSidebarOpacity))
+                    .fill(theme.bubble.opacity(store.isPrivate ? 1 : Look.floatingSidebarOpacity))
                     .background(Look.floatingSidebarMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
                     .overlay {
                         RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
@@ -712,7 +712,7 @@ struct WebCard: View {
                 // the bare card is the one part of the page area that can take one: dropping
                 // a PDF on a window showing nothing is not ambiguous. Everywhere else files
                 // go to the sidebar — see `SidebarDrop`.
-                EmptyPane(radius: radius)
+                EmptyPane(radius: radius, fill: store.isPrivate ? .black : Look.emptyPaneFill)
                     .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                         Files.openDropped(providers, in: store)
                         return true
@@ -806,9 +806,10 @@ struct WebCard: View {
 /// stroke on one rounded rectangle is the whole of it.
 struct EmptyPane: View {
     var radius: CGFloat = Look.pageRadius
+    var fill: Color = Look.emptyPaneFill
     var body: some View {
         RoundedRectangle(cornerRadius: radius)
-            .fill(Look.emptyPaneFill)
+            .fill(fill)
             .hairline(radius: radius)
             // Decoration. The window already says it has no tabs — the sidebar's empty list
             // and the command bar over it — and a second element saying so is noise.
