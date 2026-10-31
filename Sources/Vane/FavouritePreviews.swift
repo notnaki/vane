@@ -38,6 +38,7 @@ import WebKit
     private var backgroundLoad = false
     private var preparing = false
     private var foregroundIntent = false
+    private var initialSessionPending = false
     private var preparedState: FavouritePreviewState?
     private var promotionTask: Task<Void, Never>?
     private var accountHint: String?
@@ -115,11 +116,13 @@ import WebKit
             observers[context.profileID] = sessionObserverFactory(context.profileID, self)
         }
         let ticket = generation
+        initialSessionPending = preparation
         task = Task(priority: preparation ? .background : .utility) { [weak self, weak source] in
             guard let self else { return }
             // Establish the session baseline before the hidden page can write cookies.
             let session = await self.observers[context.profileID]?.synchronize()
             guard !Task.isCancelled, self.generation == ticket else { return }
+            self.initialSessionPending = false
             // Speculative work is useful only for an already authenticated session.
             if self.backgroundLoad && self.observeSessions && session?.hasAuthentication(for: context.service) != true { return }
             var identity = account
@@ -249,11 +252,17 @@ import WebKit
         // Cancellation is not a failed refresh. A deliberate return may retry immediately.
         if loading, let context { attempts[context] = nil }
         generation += 1; task?.cancel(); task = nil; loading = false; loadingOwner = nil; backgroundLoad = false; loader.cancel()
-        preparing = false; foregroundIntent = false; preparedState = nil; accountHint = nil; requestSource = nil
+        preparing = false; foregroundIntent = false; initialSessionPending = false; preparedState = nil; accountHint = nil; requestSource = nil
         promotionTask?.cancel(); promotionTask = nil
     }
     private func promote(_ context: FavouritePreviewContext, source: WKWebView?) {
         guard promotionTask == nil else { return }
+        if initialSessionPending, preparedState == nil {
+            // No identity or cached data has been read yet. Adopt the ordinary
+            // foreground pipeline, retaining its final account/session checks.
+            preparing = false
+            return
+        }
         // Loading/verification can still be finishing. Keep account data behind
         // the preparation barrier and promote its result through a fresh proof.
         guard let prepared = preparedState else {
