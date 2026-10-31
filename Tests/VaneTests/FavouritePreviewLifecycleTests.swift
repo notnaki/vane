@@ -1,6 +1,32 @@
 import XCTest
 import WebKit
+import ObjectiveC
 @testable import vane
+
+// Intercept only this store's first real cookie reply. Foreground adoption runs
+// after WebKit reads the empty store, before the session observer receives it.
+@MainActor private final class FavouriteCookiePreflightGate {
+    static var current: FavouriteCookiePreflightGate?
+    weak var store: WKHTTPCookieStore?
+    var beforeDelivery: (@MainActor ([HTTPCookie]) -> Void)?
+    var deliveries = 0
+}
+
+extension WKHTTPCookieStore {
+    @objc(vane_preflightGetAllCookies:)
+    fileprivate dynamic func vane_preflightGetAllCookies(_ completion: @escaping @MainActor ([HTTPCookie]) -> Void) {
+        guard let gate = FavouriteCookiePreflightGate.current, self === gate.store,
+              let beforeDelivery = gate.beforeDelivery else {
+            vane_preflightGetAllCookies(completion); return
+        }
+        gate.beforeDelivery = nil
+        vane_preflightGetAllCookies { cookies in
+            gate.deliveries += 1
+            beforeDelivery(cookies)
+            completion(cookies)
+        }
+    }
+}
 
 @MainActor private final class FavouriteFixtureLoader: FavouritePreviewLoading {
     var calls = 0
@@ -104,17 +130,52 @@ import WebKit
         TestEnvironment.prepare()
         let loader = FavouriteFixtureLoader(), owner = UUID()
         let a = context(ProfileManager.shared.active.id)
-        let store = WKWebsiteDataStore.nonPersistent().httpCookieStore
+        let dataStore = WKWebsiteDataStore.nonPersistent(), gate = FavouriteCookiePreflightGate()
+        let store = dataStore.httpCookieStore
+        let original = try XCTUnwrap(class_getInstanceMethod(WKHTTPCookieStore.self, NSSelectorFromString("getAllCookies:")))
+        let gated = try XCTUnwrap(class_getInstanceMethod(WKHTTPCookieStore.self, #selector(WKHTTPCookieStore.vane_preflightGetAllCookies(_:))))
+        gate.store = store; FavouriteCookiePreflightGate.current = gate
+        method_exchangeImplementations(original, gated)
+        defer {
+            gate.beforeDelivery = nil; FavouriteCookiePreflightGate.current = nil
+            method_exchangeImplementations(original, gated)
+            withExtendedLifetime(dataStore) {}
+        }
+        func diagnostic(_ previews: FavouritePreviews) -> String {
+            let fields = Mirror(reflecting: previews).children
+            let names = ["generation", "loading", "preparing", "foregroundIntent", "initialSessionPending", "preparedState"]
+            return "state=\(previews.state), owner=\(String(describing: previews.owner)), loader=\(loader.calls)/\(loader.replies), "
+                + fields.compactMap { field in
+                    guard let name = field.label, names.contains(name) else { return nil }
+                    return "\(name)=\(field.value)"
+                }.joined(separator: ", ")
+        }
         let previews = FavouritePreviews(loader: loader, observeSessions: true,
             sessionObserverFactory: { id, coordinator in
-                // Queue user intent at the next suspension, while cookie preflight is pending.
-                Task { @MainActor in coordinator.request(a, owner: owner) }
+                gate.beforeDelivery = { cookies in
+                    XCTAssertTrue(cookies.isEmpty, "The held preflight must be WebKit's actual empty-cookie result")
+                    XCTAssertEqual(loader.calls, 0, "Adopt before extraction or hidden-page loading begins")
+                    XCTAssertNil(coordinator.owner)
+                    print("COOKIE PREFLIGHT before adoption: cookies=\(cookies.count), \(diagnostic(coordinator))")
+                    coordinator.request(a, owner: owner)
+                    XCTAssertEqual(coordinator.owner, owner)
+                    print("COOKIE PREFLIGHT after adoption: \(diagnostic(coordinator))")
+                }
                 return FavouriteSessionObserver(profileID: id, previews: coordinator, store: store)
             })
+        defer { previews.dismiss(owner: owner) }
         await previews.warm(a)
         try await settle { previews.owner == owner && previews.state == .ready(.init(account: "fixture", items: [])) }
+        print("COOKIE PREFLIGHT final: deliveries=\(gate.deliveries), \(diagnostic(previews))")
+        XCTAssertEqual(gate.deliveries, 1)
         XCTAssertEqual(loader.calls, 1)
+        XCTAssertEqual(loader.replies, 1)
+        XCTAssertEqual(previews.owner, owner)
+        guard previews.state == .ready(.init(account: "fixture", items: [])) else { return }
         previews.dismiss(owner: owner)
+        previews.request(a, owner: owner)
+        try await settle { previews.state == .unavailable }
+        XCTAssertEqual(loader.calls, 1, "A fresh unsigned result must not become authenticated cache replay")
     }
 
     func testQuickReturnAfterCookiePreflightAdoptionKeepsForegroundOwner() async throws {
