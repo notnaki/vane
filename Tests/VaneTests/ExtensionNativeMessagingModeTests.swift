@@ -327,6 +327,7 @@ extension ExtensionNativeMessagingErrorTests {
                 XCTAssertFalse(throwFromBody, "The deliberate body error must propagate after cleanup")
             } catch DeliberateFailure.body { XCTAssertTrue(throwFromBody) }
             XCTAssertFalse(NSApp.isRunning, "The owned AppKit loop joins before restoring policy")
+            try await waitNativeModePage("observed original policy after joined cleanup") { NSApp.activationPolicy() == .accessory }
             XCTAssertEqual(NSApp.activationPolicy(), .accessory,
                            "Success and body-error paths restore the observed baseline after teardown and join")
         }
