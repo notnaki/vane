@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "shipping_head": "150901f75f5ae9d62a9e371dee63ca411c5c1587",
+  "shipping_tree": "c0ec571142afff5fdf90ef76a1627560860b06da",
+  "main_ancestor": "641bc399c22fb7dd0c3b41e956ea79b60c5e7c88",
+  "canonical_checks_sha256": "ee7ef1f4693ca3df9143d6901a6b4657f0431d390e0b3c0cd775549aaa1437b1",
+  "selection_file_sha256": "737bc107f74a293360bee362f78f02451be3f80b6a645c6d3d55e172eb863c2e",
+  "primary_count": 178,
+  "expected_skips": [
+    "VaneTests.NavigationWebKitTests/testMacOS27PolicyProvidesUpcomingNavigationIdentity",
+    "VaneTests.NavigationWebKitTests/testSupersededPolicyActionCannotRestartRetiredRequest"
+  ],
+  "allowed_preflight_files": [
+    ".github/workflows/native-settlement-preflight.yml",
+    ".github/native-settlement-selection.json",
+    ".github/native-settlement-contract.json"
+  ],
+  "branch": "refs/heads/codex/ci-policy-settlement-preflight",
+  "run_attempt": 1,
+  "repetitions": 1
+}
