@@ -203,7 +203,9 @@ struct FirstLaunchView: View {
             HStack(spacing: 10) {
                 key("⌘")
                 key("T")
-            }.padding(.top, 12).accessibilityLabel("Command T opens a new tab")
+            }.padding(.top, 12)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Command T opens a new tab")
             Text("Your tabs live in the sidebar. Spaces keep them in their place.")
                 .font(.system(size: 14)).foregroundStyle(ink.opacity(0.72))
                 .multilineTextAlignment(.center)

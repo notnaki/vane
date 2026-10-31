@@ -12,9 +12,9 @@ User feedback: the current welcome is not fullscreen or tasteful. Use warm paper
 
 ## Tasks
 
-- [ ] Replace sheet ownership with screen-covering presentation; validate sizing, focus, restoration, and incoming-link handoff.
-- [ ] Build responsive welcome/setup screens and persist selected Space color and search engine through existing APIs.
-- [ ] Run focused FirstLaunch tests, build bundled app, visually check complete/back/skip and reduced motion, record a video of the real app.
+- [x] Replace sheet ownership with screen-covering presentation; validate sizing, focus, restoration, and incoming-link handoff.
+- [x] Build responsive welcome/setup screens and persist selected Space color and search engine through existing APIs.
+- [x] Run focused FirstLaunch tests, build bundled app, visually check complete/back/skip and reduced motion, record a video of the real app.
 - [ ] Open PR, independently review current diff, fix findings, run required CI against latest main, squash merge, verify and clean task app/worktree.
 
 ## Review focus
@@ -24,3 +24,5 @@ Presentation options restored once; window owner retained until dismissed; multi
 ## Progress
 
 Research: inspected current FirstLaunch.swift, Arc onboarding captures, and Zen's current welcome CSS/localized steps. Native screen recording will document the working app.
+
+Validation: six focused native tests and cleanup passed; pure selfcheck passed; signed app packaged. Real-app completion, Back, persistence, restart, Battery Saver, and Escape/initial-URL preservation checked. Full-screen dark captures and 800×600 light layout inspected. A 38-second MP4 is saved outside the worktree. Independent review of d2ff535 found no actionable issues. Final adjustment groups the shortcut keys into one accessibility element to avoid duplicate announcements. Required CI and merge remain pending.
