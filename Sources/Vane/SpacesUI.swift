@@ -73,6 +73,15 @@ import UniformTypeIdentifiers
         didSet { if footer.drag != nativeDrag { footer.drag = nativeDrag } }
     }
     var trackGround: ((Double) -> Void)?
+    // The floating sidebar shares the window's wash without taking ownership of
+    // its native gesture callbacks. Both registrations may arrive in either order.
+    let groundCopies = NSHashTable<ThemeWashSurface>.weakObjects()
+    weak var groundSurface: ThemeWashSurface? {
+        didSet {
+            guard groundSurface !== oldValue else { return }
+            for copy in groundCopies.allObjects { groundSurface?.addCopy(copy) }
+        }
+    }
     var captureGround: (() -> ThemeWashPresentation?)?
     var animateGround: ((Space, Space, Double, Double, CABasicAnimation, ThemeWashPresentation?) -> ((Space?) -> Void))?
     var colourDuration = Look.spaceSlideDuration
