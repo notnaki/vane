@@ -1,4 +1,4 @@
-"""Prospective canonical-boundary proof; delegates unchanged native wrapper behavior."""
+"""Private export handoff and receipt proof; delegates unchanged native wrapper."""
 import sys
 sys.dont_write_bytecode = True
 import hashlib
@@ -19,7 +19,7 @@ def sha(path):
 
 
 def run(wrapper, arguments, audit_dir, expected_bundle, binding, private_plan=None):
-    """Only canonical read and verified pre-deletion boundaries are interposed."""
+    """Capture after completed primary checks, then retain canonical receipt audit."""
     audit_dir = Path(audit_dir)
     assert audit_dir.is_absolute() and not audit_dir.is_symlink()
     assert audit_dir.resolve() == audit_dir, 'Audit path aliases are not accepted'
