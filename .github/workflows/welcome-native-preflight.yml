@@ -1,0 +1,87 @@
+name: Welcome native failure preflight
+on:
+  push:
+    branches: [codex/welcome-native-preflight]
+permissions:
+  contents: read
+concurrency:
+  group: welcome-native-preflight-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  focused:
+    runs-on: macos-26
+    timeout-minutes: 25
+    env:
+      VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '240'
+      VANE_FOCUSED_FILTER: '^VaneTests[.](SpacePreviewParityTests|SidebarSnapshotReadinessTests|FirstLaunchPresentationTests|PasswordAutofillTests)/'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Evidence directory and exact source
+        run: |
+          echo "VANE_EVIDENCE=$RUNNER_TEMP/welcome-native-preflight" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/welcome-native-preflight"
+          git show --no-patch --format=fuller HEAD > "$RUNNER_TEMP/welcome-native-preflight/source.txt"
+          git rev-parse HEAD^{tree} >> "$RUNNER_TEMP/welcome-native-preflight/source.txt"
+          sw_vers >> "$RUNNER_TEMP/welcome-native-preflight/source.txt"
+          xcodebuild -version >> "$RUNNER_TEMP/welcome-native-preflight/source.txt"
+      - name: Identify Swift toolchain
+        id: toolchain
+        run: echo "key=$(python3 scripts/ci-build-artifact.py toolchain)" >> "$GITHUB_OUTPUT"
+      - name: Restore debug build
+        uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
+          restore-keys: |
+            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - name: Build once
+        run: |
+          set -euo pipefail
+          python3 scripts/ci-source-state.py restore
+          swift build --build-system native -c debug --build-tests 2>&1 | tee "$VANE_EVIDENCE/build.log"
+      - name: Select and freeze the focused inventory
+        run: |
+          set -euo pipefail
+          swift test --build-system native list --skip-build > "$VANE_EVIDENCE/inventory.txt"
+          python3 - <<'PYCODE'
+          import os,re
+          from pathlib import Path
+          evidence=Path(os.environ['VANE_EVIDENCE'])
+          pattern=re.compile(os.environ['VANE_FOCUSED_FILTER'])
+          selected=[line.strip() for line in (evidence/'inventory.txt').read_text().splitlines() if pattern.search(line.strip())]
+          required={'VaneTests.SpacePreviewParityTests/testColdWanderedPinMarkerMatchesTheRestoredRow','VaneTests.PasswordAutofillTests/testEmbeddedSelectionAwaitsRealNativeFillCompletion'}
+          assert required <= set(selected), selected
+          (evidence/'selected.txt').write_text('\n'.join(selected)+'\n')
+          PYCODE
+          python3 scripts/native-test-shards.py plan --inventory "$VANE_EVIDENCE/selected.txt" --index 1 --count 1 --manifest "$VANE_EVIDENCE/manifest.json" --filter-output "$VANE_EVIDENCE/class-filter.txt"
+      - name: Verify owned UI lag sampling control
+        env:
+          VANE_NAVIGATION_LAG_DIR: ${{ runner.temp }}/welcome-native-preflight/control
+        run: |
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter '^VaneTests[.]NativeNavigationLagProbeTests/' 2>&1 | tee "$VANE_EVIDENCE/control.log"
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$VANE_EVIDENCE/control.log"
+      - name: Five predetermined diagnostic attempts
+        run: |
+          set -uo pipefail
+          overall=0
+          for attempt in 1 2 3 4 5; do
+            export VANE_NAVIGATION_LAG_DIR="$VANE_EVIDENCE/attempt-$attempt/lag"
+            export VANE_SIDEBAR_SNAPSHOT_DIR="$VANE_EVIDENCE/attempt-$attempt/sidebar"
+            mkdir -p "$VANE_NAVIGATION_LAG_DIR" "$VANE_SIDEBAR_SNAPSHOT_DIR"
+            python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter "$VANE_FOCUSED_FILTER" 2>&1 | tee "$VANE_EVIDENCE/attempt-$attempt.log"
+            status=${PIPESTATUS[0]}
+            echo "$status" > "$VANE_EVIDENCE/attempt-$attempt.status"
+            python3 scripts/native-test-shards.py verify --manifest "$VANE_EVIDENCE/manifest.json" --log "$VANE_EVIDENCE/attempt-$attempt.log" || status=1
+            grep -Fq "Test Case '-[VaneTests.PasswordAutofillTests testEmbeddedSelectionAwaitsRealNativeFillCompletion]' passed" "$VANE_EVIDENCE/attempt-$attempt.log" || status=1
+            grep -Fq "Test Case '-[VaneTests.SpacePreviewParityTests testColdWanderedPinMarkerMatchesTheRestoredRow]' passed" "$VANE_EVIDENCE/attempt-$attempt.log" || status=1
+            if [ "$status" -ne 0 ]; then overall=1; fi
+          done
+          exit "$overall"
+      - name: Preserve every attempt and sampled stack
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: welcome-native-failure-preflight
+          path: ${{ runner.temp }}/welcome-native-preflight
+          retention-days: 14
