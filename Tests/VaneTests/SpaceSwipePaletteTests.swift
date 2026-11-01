@@ -175,10 +175,11 @@ final class ScrollEvent: NSEvent, @unchecked Sendable {
     private let y: CGFloat
     private let momentum: NSEvent.Phase
     private let precise: Bool
+    private let eventTimestamp: TimeInterval
 
     @MainActor init(window: NSWindow, dx: CGFloat = 0, dy: CGFloat = 0,
          phase: NSEvent.Phase = .changed, x: CGFloat = 30, y: CGFloat = 150,
-         momentum: NSEvent.Phase = [], precise: Bool = true) {
+         momentum: NSEvent.Phase = [], precise: Bool = true, timestamp: TimeInterval = 1) {
         owner = window
         ownerNumber = window.windowNumber
         self.dx = dx
@@ -188,6 +189,7 @@ final class ScrollEvent: NSEvent, @unchecked Sendable {
         self.y = y
         self.momentum = momentum
         self.precise = precise
+        eventTimestamp = timestamp
         super.init()
     }
 
@@ -202,5 +204,5 @@ final class ScrollEvent: NSEvent, @unchecked Sendable {
     override var scrollingDeltaY: CGFloat { dy }
     override var phase: NSEvent.Phase { eventPhase }
     override var momentumPhase: NSEvent.Phase { momentum }
-    override var timestamp: TimeInterval { 1 }
+    override var timestamp: TimeInterval { eventTimestamp }
 }

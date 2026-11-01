@@ -31,6 +31,23 @@ import XCTest
         XCTAssertEqual(ProfileManager.shared.spaces(for: profile.id), before)
     }
 
+    func testOpeningFormRetiresTheOutgoingSwipePresentationImmediately() {
+        let (_, space, store) = fixture()
+        store.spaceGesture.monitor.install(store)
+        defer { store.spaceGesture.monitor.remove() }
+        store.spaceGesture.monitor.track(-30, width: 250, in: store)
+        store.spacePull = 2
+        XCTAssertTrue(store.spaceSwiping)
+        store.beginCreatingSpace()
+        XCTAssertTrue(store.creatingSpace)
+        XCTAssertFalse(store.spaceSwiping, "The removed sidebar cannot own a return animation behind the form")
+        XCTAssertEqual(store.spaceDrag, 0)
+        XCTAssertEqual(store.spacePull, 0)
+        store.cancelCreatingSpace()
+        XCTAssertEqual(store.currentSpaceID, space.id)
+        XCTAssertFalse(store.spaceSwiping, "Cancelling must restore an interactive sidebar")
+    }
+
     func testTemplateFromCreationFormUsesChosenProfileWithoutMakingAnEmptySpace() throws {
         let (profile, source, store) = fixture()
         let target = ProfileManager.shared.create(name: "Template target")
