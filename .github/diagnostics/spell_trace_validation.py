@@ -2,7 +2,7 @@
 import re
 
 
-def validate(text, slot, control_context=None):
+def validate(text, slot, control_context=None, private_control_text=None):
     errors, events, footer = [], [], None
     lines = [line for line in text.splitlines() if line.startswith('F17_SPELL ')]
     if not slot['trace_enabled']:
@@ -21,6 +21,7 @@ def validate(text, slot, control_context=None):
                 assert footer is None, 'duplicate footer'
                 footer = fields
                 continue
+            assert footer is None, 'spell event after footer'
             expected = {'event', 'kind', 'phase', 'tick', 'call', 'receiver', 'class', 'tag',
                         'sequence', 'range', 'checkingTypes', 'thread', 'mainThread'}
             assert fields.keys() == expected, 'event fields changed'
@@ -98,6 +99,12 @@ def validate(text, slot, control_context=None):
             assert any(w[1]['kind'] == 8 for w in completed_waits), 'actual wait success missing'
             assert any(w[1]['kind'] == 9 for w in completed_waits), 'actual wait failure missing'
             assert 'real-sdk-spell-trace-control' in (text if control_context is None else control_context), 'real SDK diagnostic control record missing'
+            if private_control_text is not None:
+                rows = private_control_text.splitlines()
+                assert len(rows) == 1, 'private wait control requires one truthful continuation row'
+                match = re.fullmatch(r'F17_CONTINUATION case=("(?:[^"\\]|\\.)*") phase=private-file-wait-control uptime=[\d.]+ actualWaitSuccesses=(\d+) actualWaitFailures=(\d+) actualWaitFunctionExits=(\d+)', rows[0])
+                assert match, 'private wait control counters missing'
+                assert list(map(int, match.groups()[1:])) == [sum(e['kind'] == kind for e in events) for kind in (8, 9, 7)], 'private wait control counters differ from actual C outcomes'
     except (AssertionError, KeyError, TypeError, ValueError) as error:
         errors.append('spell trace uncertainty: ' + (str(error) or type(error).__name__))
     return {'events': events, 'footer': footer, 'validation_errors': errors,

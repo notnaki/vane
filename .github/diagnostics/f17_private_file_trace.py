@@ -66,6 +66,7 @@ def validate_payload(raw, header):
     if header['channel']=='spell':
         assert text and all(line.startswith('F17_SPELL ') for line in text.splitlines()), 'foreign spell payload'
     else:
+        assert text, 'empty continuation payload'
         for line in text.splitlines():
             match=re.fullmatch(r'F17_CONTINUATION case=("(?:[^"\\]|\\.)*") phase=(\S+) uptime=([\d.]+) ([^\n]*)',line)
             assert match and strict_json(match[1].encode())==header['case'], 'continuation record/case mismatch or overflow'

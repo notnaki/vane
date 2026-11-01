@@ -149,7 +149,7 @@ for slot in attempt_slots:
     block=re.search(re.escape("Test Case '-["+tag+"]' started.")+r'(.*?)'+re.escape("Test Case '-["+tag+"]' passed ("),text,re.S)
     if block is None or 'PrematureFillAdmission()' not in block[1]:errors.append('Missing actual caught premature-admission counterexample '+method)
  context=[r for r in trace if r['phase'].startswith('owner-')]
- spell_trace=validate(spell_text+'\n'+trace_text,slot,control_context=raw_text) if mode=='controls' else validate_original18(raw_text,slot,spell_text=spell_text,spell_scope_verified=proof.get('private_capture_complete',False),continuation_text=trace_text);errors.extend(spell_trace['validation_errors'])
+ spell_trace=validate(spell_text+'\n'+trace_text,slot,control_context=raw_text,private_control_text=trace_text) if mode=='controls' else validate_original18(raw_text,slot,spell_text=spell_text,spell_scope_verified=proof.get('private_capture_complete',False),continuation_text=trace_text);errors.extend(spell_trace['validation_errors'])
  spell_trace['private_exports_capture']=str(audit/'private-exports-capture.json');spell_trace['derived_channels']={'continuation':str(continuation_log),'spell':str(spell_log)}
  proof_path=audit/'boundary-proof.json'
  proof=json.loads(proof_path.read_text()) if proof_path.exists() else {'proof_complete':False,'audit_errors':['Boundary proof missing'],'canonical_status':None}
