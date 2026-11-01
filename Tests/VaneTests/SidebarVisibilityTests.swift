@@ -17,7 +17,8 @@ import QuartzCore
         return (presentation.convert(.zero, to: presentedRoot), layer.convert(.zero, to: root))
     }
 
-    private func admitRestingViewport(in host: NSView) async throws -> NSScrollView {
+    private func admitRestingViewport(in host: NSView,
+                                     admitting owner: (NSScrollView) -> Bool = { _ in true }) async throws -> NSScrollView {
         var admitted: NSScrollView?
         try await compatibilityWait {
             host.layoutSubtreeIfNeeded()
@@ -26,7 +27,8 @@ import QuartzCore
             guard let viewport = self.sidebarViewport(in: host),
                   let points = self.origins(of: viewport, in: host),
                   abs(points.presented.x - points.model.x) < 0.5,
-                  abs(points.presented.y - points.model.y) < 0.5 else { return false }
+                  abs(points.presented.y - points.model.y) < 0.5,
+                  owner(viewport) else { return false }
             admitted = viewport
             return true
         }
@@ -412,15 +414,13 @@ import QuartzCore
             ]
             observations.append(fields.joined(separator: " "))
         }
-        func admitOwnerAtAction(_ store: TabStore, viewport: NSScrollView) throws {
-            // Fail at the prerequisite if ownership was withdrawn; never wait for
-            // the docking outcome or let a late foreground request consume motion.
+        func presentationOwnerReady(_ store: TabStore, viewport: NSScrollView) -> Bool {
             let presentation = viewport.layer?.presentation()
             let rootPresentation = host.layer?.presentation()
             let visible = presentation.flatMap { layer in
                 rootPresentation.map { layer.convert(layer.bounds, to: $0).intersection($0.bounds) }
             }
-            let ready = NSApp.isRunning && NSApp.isActive && !NSApp.isHidden
+            return NSApp.isRunning && NSApp.isActive && !NSApp.isHidden
                 && window.isVisible && window.occlusionState.contains(.visible)
                 && window.isKeyWindow && NSApp.keyWindow === window
                 && window.contentView === host && host.window === window
@@ -428,10 +428,31 @@ import QuartzCore
                 && viewport.window === window && viewport.isDescendant(of: host)
                 && sidebarViewport(in: host) === viewport && !viewport.isHiddenOrHasHiddenAncestor
                 && (visible?.width ?? 0) > 1 && (visible?.height ?? 0) > 1
+        }
+        func admitOwnerAtAction(_ store: TabStore, viewport: NSScrollView) throws {
+            // Fail at the prerequisite if ownership was withdrawn; never wait for
+            // the docking outcome or let a late foreground request consume motion.
+            let ready = presentationOwnerReady(store, viewport: viewport)
             _ = try XCTUnwrap(ready ? viewport : nil,
                 "The exact foreground sidebar presentation owner must be admitted before the action")
         }
-        let initialViewport = try await admitRestingViewport(in: host)
+        let screenGeometry = NSScreen.screens.enumerated().map { index, screen in
+            "screen=\(index):frame=\(screen.frame):visibleFrame=\(screen.visibleFrame)"
+                + ":intersection=\(window.frame.intersection(screen.frame))"
+                + ":visibleIntersection=\(window.frame.intersection(screen.visibleFrame))"
+        }.joined(separator: ";")
+        let initialOwnerContext = "phase=before-initial-admission frame=\(window.frame)"
+            + " autosave=\(window.frameAutosaveName) screen=\(String(describing: window.screen?.frame))"
+            + " visibleFrame=\(String(describing: window.screen?.visibleFrame)) screens=\(screenGeometry)"
+            + " active=\(NSApp.isActive) key=\(window.isKeyWindow) exactKey=\(NSApp.keyWindow === window)"
+            + " windowVisible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue)"
+        defer { print("SIDEBAR_CACHE_OWNER_CONTEXT " + initialOwnerContext) }
+        // Keyboard ownership can precede WindowServer visibility. Admit the exact
+        // native presentation before any scenario action, without requiring a
+        // particular sidebar position. Later action guards must remain immediate.
+        let initialViewport = try await admitRestingViewport(in: host, admitting: {
+            presentationOwnerReady(source, viewport: $0)
+        })
         observe("initial-rest", store: source, viewport: initialViewport)
         source.sidebarShown = false
         source.sidebarPeeking = true
