@@ -8,9 +8,6 @@ import os
 from pathlib import Path
 
 PROTOCOL = 'native-self-kernel-and-canonical-boundary-v1'
-SOURCE = '605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
-LEGACY_HEAD = '8ed979de0242990c23ab955b4b866bc78e32f737'
-MANIFEST_SHA = 'c77c7af65c2bfd41e5c77b6e8dbd7584a4bcc9268f22cecf7685afec04a4e357'
 WRITER_PINS = {
     'Tests/VaneTests/NativeFixtureRetirement.swift': '8975a42cc5104149d1cdc00b28ddea8ff140f80ed2c16611db36dffab9e61196',
     'Tests/VaneTests/NativeFixtureDiagnostics.swift': '4c21c7af56954720336987ae1212d8ff59bb34db28e6917d0801238794ce89a3',
@@ -21,7 +18,7 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def run(wrapper, arguments, audit_dir, expected_bundle, binding):
+def run(wrapper, arguments, audit_dir, expected_bundle, binding, private_plan=None):
     """Only canonical read and verified pre-deletion boundaries are interposed."""
     audit_dir = Path(audit_dir)
     assert audit_dir.is_absolute() and not audit_dir.is_symlink()
@@ -33,13 +30,15 @@ def run(wrapper, arguments, audit_dir, expected_bundle, binding):
     for path, digest in binding['native_writer_source_pins'].items():
         assert sha(path) == digest
     expected_bundle = Path(expected_bundle).resolve()
-    original_read, original_delete = wrapper.read_private_json, wrapper.shutil.rmtree
+    original_read, original_delete, original_commands = wrapper.read_private_json, wrapper.shutil.rmtree, wrapper.run_commands
     main_code = wrapper.main.__code__
     captured, errors, events, exits = {}, [], [], []
     scope = {}
     proof = {'protocol': PROTOCOL, 'binding': binding, 'external_initial_live_observation_performed': False,
              'identity_basis': 'immutable native writer actual kernel self PID/start/path at registration; canonical and current kernel exit checks',
              'original_delete_calls': 0, 'original_delete_returned': False, 'predelete_verified': False}
+    proof.update(private_capture_required=private_plan is not None, private_capture_complete=False,
+                 completed_primary_handoff_calls=0)
 
     def save(name, value):
         path = audit_dir / name
@@ -80,6 +79,49 @@ def run(wrapper, arguments, audit_dir, expected_bundle, binding):
         except Exception as error:
             errors.append('canonical read audit: ' + repr(error))
         return value
+
+    def commands(primary, cleanup, invoke, check_hosts):
+        # Wrap only main's exact completed callback; generic exit checks retain
+        # their original behavior in timeout, cleanup and final audit paths.
+        try:
+            frame = main_frame()
+            assert sys._getframe(1).f_code is main_code
+            assert primary is frame.f_locals['primary'] and cleanup is frame.f_locals['cleanup']
+            assert invoke is frame.f_locals['invoke'] and check_hosts is frame.f_locals['check_hosts']
+        except Exception as error:
+            errors.append('primary handoff binding: ' + repr(error))
+            return original_commands(primary, cleanup, invoke, check_hosts)
+
+        def completed_check_hosts():
+            result = check_hosts()  # All original validation/exit/prior-cleanup checks first.
+            if private_plan is not None:
+                try:
+                    proof['completed_primary_handoff_calls'] += 1
+                    assert proof['completed_primary_handoff_calls'] == 1
+                    assert frame.f_locals['check_hosts'] is check_hosts
+                    directory, token = Path(frame.f_locals['directory']), frame.f_locals['token']
+                    records = frame.f_locals['records']
+                    assert original_read(directory / 'contract.json') == {'schema': 1, 'token': token}
+                    for record in records:
+                        wrapper.validate_record(record, token)
+                        assert Path(record['host']['testBundlePath']).resolve() == expected_bundle
+                    from f17_private_file_trace import collect
+                    destination = audit_dir / 'private-exports'; destination.mkdir(mode=0o700)
+                    capture = collect(directory, token, records, destination, expected_bundle,
+                        binding['compiled_head'], private_plan['allowed_cases'], private_plan['expected_files'])
+                    proof['private_exports_capture'] = capture
+                    save('private-exports-capture.json', capture)
+                    if capture['validation_errors']:
+                        errors.extend('private exports: ' + item for item in capture['validation_errors'])
+                    else:
+                        proof['private_capture_complete'] = True
+                    proof['original_check_hosts_completed_before_capture'] = True
+                except Exception as error:
+                    errors.append('private export capture: ' + repr(error))
+            # Capture uncertainty never raises through canonical cleanup admission.
+            return result
+
+        return original_commands(primary, cleanup, invoke, completed_check_hosts)
 
     def delete(path, *args, **kwargs):
         proof['original_delete_calls'] += 1
@@ -123,13 +165,13 @@ def run(wrapper, arguments, audit_dir, expected_bundle, binding):
         return result
 
     status = None
-    wrapper.read_private_json, wrapper.shutil.rmtree = read, delete
+    wrapper.read_private_json, wrapper.shutil.rmtree, wrapper.run_commands = read, delete, commands
     try:
         status = wrapper.main(arguments)
     finally:
-        wrapper.read_private_json, wrapper.shutil.rmtree = original_read, original_delete
+        wrapper.read_private_json, wrapper.shutil.rmtree, wrapper.run_commands = original_read, original_delete, original_commands
         absent = bool(scope) and not Path(scope['directory']).exists()
-        complete = bool(proof['predelete_verified'] and proof['original_delete_calls'] == 1 and proof['original_delete_returned'] and absent and not errors)
+        complete = bool(proof['predelete_verified'] and proof['original_delete_calls'] == 1 and proof['original_delete_returned'] and absent and not errors and (private_plan is None or proof['private_capture_complete']))
         proof.update(canonical_status=status, canonical_reads=events, scope=scope,
                      contract_directory_absent=absent, audit_errors=errors,
                      proof_complete=complete,
@@ -143,27 +185,36 @@ def main(arguments):
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--audit-dir', type=Path, required=True)
+    parser.add_argument('--private-plan', type=Path, required=True)
     parser.add_argument('native_arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args(arguments)
     native = args.native_arguments
     if native and native[0] == '--':
         native = native[1:]
     root = Path.cwd().resolve(); manifest = Path(os.environ['VANE_BUILD_MANIFEST'])
-    assert sha(manifest) == MANIFEST_SHA
+    manifest_sha = os.environ['VANE_BUILD_MANIFEST_SHA']
+    assert sha(manifest) == manifest_sha
     runtime = json.loads(manifest.read_text())
-    assert runtime['head'] == LEGACY_HEAD and runtime['source'] == SOURCE
+    assert runtime['head'] == os.environ['GITHUB_SHA'] == os.environ['VANE_F17_TRACE_SOURCE_HEAD']
+    assert runtime['source'] == os.environ['VANE_F17_NATIVE_WRITER_SOURCE']
+    assert runtime['metadata']['revision'] == runtime['head']
+    assert os.environ['VANE_F17_PRIVATE_TRACE_V1'] == '1'
     binary = root / runtime['test_binary']
-    assert sha(binary) == runtime['binary_sha256'] == 'bfd9068f715e1ddd4fbf0c8691b458b83f68e8c1345426743471adc005cdc229'
+    assert sha(binary) == runtime['binary_sha256']
     wrapper_path = root / 'scripts/run-native-tests.py'
-    assert sha(wrapper_path) == runtime['source_pins']['scripts/run-native-tests.py']
+    assert sha(wrapper_path) == runtime['source_pins']['scripts/run-native-tests.py'] == 'ca6a8aa788bbd09b78f60d44e49dfea533d2e1e2f98c463c99df216c6325932b'
+    for path, digest in WRITER_PINS.items(): assert sha(root / path) == digest
+    for path, digest in runtime['native_writer_source_pins'].items(): assert sha(root / path) == digest
     spec = importlib.util.spec_from_file_location('canonical_owned_wrapper', wrapper_path)
     wrapper = importlib.util.module_from_spec(spec); spec.loader.exec_module(wrapper)
-    binding = {'source': SOURCE, 'compiled_head': LEGACY_HEAD, 'runtime_binary': str(binary),
+    binding = {'source': runtime['source'], 'compiled_head': runtime['head'], 'runtime_binary': str(binary),
                'runtime_binary_sha256': runtime['binary_sha256'],
-               'runtime_manifest_sha256': MANIFEST_SHA,
+               'runtime_manifest_sha256': manifest_sha,
                'canonical_wrapper_sha256': runtime['source_pins']['scripts/run-native-tests.py'],
-               'native_writer_source_pins': {str(root / path): digest for path, digest in WRITER_PINS.items()}}
-    proof = run(wrapper, native, args.audit_dir, root / runtime['test_bundle'], binding)
+               'native_writer_source_pins': {str(root / path): digest for path, digest in {**WRITER_PINS, **runtime['native_writer_source_pins']}.items()}}
+    assert args.private_plan.resolve().parent == args.audit_dir.resolve()
+    plan = wrapper.read_private_json(args.private_plan)
+    proof = run(wrapper, native, args.audit_dir, root / runtime['test_bundle'], binding, private_plan=plan)
     return proof['qualification_exit']
 
 

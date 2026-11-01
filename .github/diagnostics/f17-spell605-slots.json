@@ -1,5 +1,5 @@
 {
-  "source": "605caadc1f8c8df99fc833cd7dfd191c702dbd9a",
+  "source": "NATIVE_WRITER_SOURCE_PENDING",
   "controls": [
     {
       "attempt": 1,
@@ -19,7 +19,8 @@
       },
       "unset_environment": [
         "VANE_F17_CANDIDATE_LATENCY_TRACE_V1"
-      ]
+      ],
+      "private_exports": []
     },
     {
       "attempt": 2,
@@ -39,7 +40,13 @@
         "VANE_F17_SPELL_TRACE_CONTROLS_V1": "1",
         "VANE_F17_CANDIDATE_LATENCY_TRACE_V1": "1"
       },
-      "unset_environment": []
+      "unset_environment": [],
+      "private_exports": [
+        [
+          "VaneTests.F17SpellTraceTests/testFirstObservedFactoryAndCandidateForwardRealSDKResults",
+          "spell"
+        ]
+      ]
     },
     {
       "attempt": 3,
@@ -59,7 +66,13 @@
         "VANE_F17_SPELL_TRACE_CONTROLS_V1": "1",
         "VANE_F17_CANDIDATE_LATENCY_TRACE_V1": "1"
       },
-      "unset_environment": []
+      "unset_environment": [],
+      "private_exports": [
+        [
+          "VaneTests.F17SpellTraceTests/testWarmReceiverPreservesNullableCompletionTypesAndRanges",
+          "spell"
+        ]
+      ]
     },
     {
       "attempt": 4,
@@ -78,7 +91,13 @@
         "VANE_F17_SPELL_TRACE_CONTROLS_V1": "1",
         "VANE_F17_CANDIDATE_LATENCY_TRACE_V1": "1"
       },
-      "unset_environment": []
+      "unset_environment": [],
+      "private_exports": [
+        [
+          "VaneTests.F17SpellTraceTests/testRestoredMethodsAndLateFetchedStaticIMPsStillForward",
+          "spell"
+        ]
+      ]
     },
     {
       "attempt": 5,
@@ -98,7 +117,17 @@
         "VANE_F17_SPELL_TRACE_CONTROLS_V1": "1",
         "VANE_F17_CANDIDATE_LATENCY_TRACE_V1": "1"
       },
-      "unset_environment": []
+      "unset_environment": [],
+      "private_exports": [
+        [
+          "VaneTests.PasswordAutofillTests/testF17SpellTraceWaitOutcomePrecedesDiagnosticExit",
+          "spell"
+        ],
+        [
+          "VaneTests.PasswordAutofillTests/testF17SpellTraceWaitOutcomePrecedesDiagnosticExit",
+          "continuation"
+        ]
+      ]
     }
   ],
   "observation": {
@@ -151,6 +180,24 @@
     },
     "unset_environment": [
       "VANE_F17_SPELL_TRACE_CONTROLS_V1"
+    ],
+    "private_exports": [
+      [
+        "VaneTests.PasswordAutofillTests/testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep",
+        "continuation"
+      ],
+      [
+        "VaneTests.PasswordAutofillTests/testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep",
+        "spell"
+      ],
+      [
+        "VaneTests.PasswordAutofillTests/testFullFormSelectionCannotAuthorizeUnrelatedUsernameStep",
+        "continuation"
+      ],
+      [
+        "VaneTests.PasswordAutofillTests/testSelectedAccountContinuesAcrossUsernameNavigation",
+        "continuation"
+      ]
     ]
   },
   "cohorts": {
@@ -222,12 +269,16 @@
     "VANE_F17_CANDIDATE_LATENCY_TRACE_V1",
     "VANE_NATIVE_FIXTURE_MANIFEST_DIR",
     "VANE_NATIVE_FIXTURE_MANIFEST_TOKEN",
-    "VANE_NATIVE_FIXTURE_RETIREMENT_PHASE"
+    "VANE_NATIVE_FIXTURE_RETIREMENT_PHASE",
+    "VANE_F17_PRIVATE_TRACE_V1",
+    "VANE_F17_TRACE_SOURCE_HEAD"
   ],
   "primary_timeout_seconds": 180,
   "original_source_runtime_identity_claimed": false,
   "inventory": {
     "count": 2358,
     "sha256": "b4fdd901d796ed2f55022bf7cfbfc0c6859dd1729c740e8e714e9888647734e8"
-  }
+  },
+  "private_file_contract_sha256": "f8e9d63ea16e51cfccb6b0ce20d3c64b8875332fb54f146846e4a2a988cab469",
+  "expected_channel_matrix_sha256": "6a540446e4801e71b502fbb3f7a1529e06d805bd9143935d70a253763a3a3cd2"
 }

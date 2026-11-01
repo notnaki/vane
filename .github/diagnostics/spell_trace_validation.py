@@ -1,9 +1,8 @@
 """Validate only the scoped buffered trace; this never executes SDK/test code."""
-import hashlib
 import re
 
 
-def validate(text, slot):
+def validate(text, slot, control_context=None):
     errors, events, footer = [], [], None
     lines = [line for line in text.splitlines() if line.startswith('F17_SPELL ')]
     if not slot['trace_enabled']:
@@ -98,93 +97,14 @@ def validate(text, slot):
         if slot['require_wait_outcomes']:
             assert any(w[1]['kind'] == 8 for w in completed_waits), 'actual wait success missing'
             assert any(w[1]['kind'] == 9 for w in completed_waits), 'actual wait failure missing'
-            assert 'real-sdk-spell-trace-control' in text, 'real SDK diagnostic control record missing'
+            assert 'real-sdk-spell-trace-control' in (text if control_context is None else control_context), 'real SDK diagnostic control record missing'
     except (AssertionError, KeyError, TypeError, ValueError) as error:
         errors.append('spell trace uncertainty: ' + (str(error) or type(error).__name__))
     return {'events': events, 'footer': footer, 'validation_errors': errors,
             'interpretation': 'Wrapper brackets only; no exclusive server time, DOM attribution or F17 cause proof'}
 
 
-# The immutable C writer emits these exact complete LF-terminated records. A record
-# may begin inside another stream's line; no arbitrary text is a removable record.
-_EVENT_RECORD = re.compile(
-    rb'F17_SPELL event=[0-9]+ kind=[0-9]+ phase=[0-9]+ tick=[0-9]+ call=[0-9]+ '
-    rb'receiver=[0-9a-f]+ class=[0-9a-f]+ tag=-?[0-9]+ sequence=-?[0-9]+ '
-    rb'range=[0-9]+,[0-9]+ checkingTypes=[0-9]+ thread=[0-9]+ mainThread=[01]\n')
-_FOOTER_RECORD = re.compile(
-    b'F17_SPELL footer ' + b' '.join(key.encode() + rb'=[0-9]+' for key in (
-        'problems', 'recorded', 'dropped', 'unpublished', 'closeInFlight', 'currentInFlight',
-        'factoryInstalled', 'factoryRestored', 'factoryOriginalNow', 'candidateInstalled',
-        'candidateRestored', 'candidateOriginalNow', 'bindingTicks', 'nonmatching')) +
-    rb' clock=mach_continuous_time timebase=[1-9][0-9]*/[1-9][0-9]* '
-    rb'tagAttribution=page-not-field preFactoryInitialization=UNOBSERVED preBindingCalls=UNKNOWN '
-    rb'indefiniteHangBuffer=NOT-PERSISTENT waitEntry=after-original-5s-deadline-construction '
-    rb'functionExit=may-follow-diagnostics longSpanBlockingCause=UNKNOWN\n')
-
-
-def demultiplex(raw, slot, original18=False):
-    """Separate only complete validated C records; preserve/reconstruct every byte."""
-    records, pieces, continuation, spell, cursor = [], [], bytearray(), bytearray(), 0
-    digest = lambda value: hashlib.sha256(value).hexdigest()
-    try:
-        for marker in re.finditer(rb'F17_SPELL', raw):
-            start = marker.start()
-            match = _EVENT_RECORD.match(raw, start) or _FOOTER_RECORD.match(raw, start)
-            assert match is not None, 'partial/unrecognized/ambiguous spell marker at byte ' + str(start)
-            assert start >= cursor, 'overlapping spell records'
-            if start > cursor:
-                offset = len(continuation); continuation.extend(raw[cursor:start])
-                pieces.append(dict(channel='continuation', raw_start=cursor, raw_end=start,
-                                   channel_start=offset, channel_end=len(continuation)))
-            offset = len(spell); spell.extend(match[0])
-            records.append(dict(raw_start=start, raw_end=match.end(), continuation_offset=len(continuation),
-                                spell_start=offset, spell_end=len(spell), sha256=digest(match[0]),
-                                record_type='footer' if match[0].startswith(b'F17_SPELL footer ') else 'event'))
-            pieces.append(dict(channel='spell', raw_start=start, raw_end=match.end(),
-                               channel_start=offset, channel_end=len(spell)))
-            cursor = match.end()
-        if cursor < len(raw):
-            offset = len(continuation); continuation.extend(raw[cursor:])
-            pieces.append(dict(channel='continuation', raw_start=cursor, raw_end=len(raw),
-                               channel_start=offset, channel_end=len(continuation)))
-        continuation, spell = bytes(continuation), bytes(spell)
-        assert b'F17_SPELL' not in continuation, 'unaccounted spell marker'
-        if records:
-            assert [r['record_type'] for r in records] == ['event'] * (len(records) - 1) + ['footer'], 'footer must follow every event exactly once'
-        checked = validate((spell + b'\n' + continuation).decode('utf-8'), slot)
-        assert not checked['validation_errors'], '; '.join(checked['validation_errors'])
-        scope_verified = False
-        if original18:
-            target = b'VaneTests.PasswordAutofillTests testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep'
-            start = b"Test Case '-[" + target + b"]' started."
-            end = b"Test Case '-[" + target + b"]' "
-            blocks = list(re.finditer(re.escape(start) + rb'(.*?)' + re.escape(end) +
-                                     rb'(passed|failed|skipped) \(', continuation, re.S))
-            assert continuation.count(start) == 1 and len(blocks) == 1, 'ambiguous original F17 case scope'
-            assert records and all(blocks[0].start(1) <= r['continuation_offset'] <= blocks[0].end(1)
-                                   for r in records), 'spell record outside original F17 body'
-            scope_verified = True
-            checked = validate_original18(continuation.decode('utf-8'), slot,
-                spell_text=spell.decode('utf-8'), spell_scope_verified=True)
-            assert not checked['validation_errors'], '; '.join(checked['validation_errors'])
-        channels = dict(continuation=continuation, spell=spell)
-        rebuilt = b''.join(channels[p['channel']][p['channel_start']:p['channel_end']] for p in pieces)
-        assert rebuilt == raw, 'byte reconstruction mismatch'
-        return dict(**channels, records=records, pieces=pieces, raw_sha256=digest(raw),
-                    continuation_sha256=digest(continuation), spell_sha256=digest(spell),
-                    reconstruction_verified=True, original18_scope_verified=scope_verified,
-                    validation_errors=[], offset_basis='original raw bytes before warning normalization',
-                    historical_failed_runs_unchanged=True)
-    except (AssertionError, KeyError, TypeError, ValueError, UnicodeError) as error:
-        return dict(continuation=raw, spell=b'', records=[], candidate_raw_spans=records,
-                    pieces=[dict(channel='continuation', raw_start=0, raw_end=len(raw),
-                                 channel_start=0, channel_end=len(raw))], raw_sha256=digest(raw),
-                    reconstruction_verified=False, original18_scope_verified=False,
-                    validation_errors=['spell demultiplex uncertainty: ' + str(error)],
-                    historical_failed_runs_unchanged=True)
-
-
-def validate_original18(text, slot, spell_text=None, spell_scope_verified=False):
+def validate_original18(text, slot, spell_text=None, spell_scope_verified=False, continuation_text=None):
     """One original F17 observation, including explicit absent natural coverage."""
     result = validate(text if spell_text is None else spell_text, slot)
     events, footer, errors = result['events'], result['footer'], result['validation_errors']
@@ -218,7 +138,7 @@ def validate_original18(text, slot, spell_text=None, spell_scope_verified=False)
         'cold_state': 'UNPROVEN; original13-case focused history may naturally initialize services before F17.',
         'DOM_field_or_document_generation': 'UNKNOWN; shared receiver/page tag cannot establish it.',
         'completion_latency': 'NOT OBSERVED; original completion pointers/results remain untouched.'}
-    versions = [line for line in text.splitlines() if 'phase=spell-trace-engine-runtime ' in line]
+    versions = [line for line in (text if continuation_text is None else continuation_text).splitlines() if 'phase=spell-trace-engine-runtime ' in line]
     result['runtime_bundle_records'] = versions
     if len(versions) != 1 or 'provenance=current-runtime-only-not-historical' not in versions[0]:
         errors.append('actual current-runtime bundle metadata record missing/ambiguous')
