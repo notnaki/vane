@@ -1,0 +1,233 @@
+{
+  "source": "605caadc1f8c8df99fc833cd7dfd191c702dbd9a",
+  "controls": [
+    {
+      "attempt": 1,
+      "cohort": "case1",
+      "selected": [
+        "VaneTests.F17SpellTraceTests/testFlagOffLeavesFactoryUntouchedUntilRealSDKAction"
+      ],
+      "trace_enabled": false,
+      "allowed_phases": [
+        0
+      ],
+      "required_phase": null,
+      "minimum_candidate_pairs": 0,
+      "require_wait_outcomes": false,
+      "environment": {
+        "VANE_F17_SPELL_TRACE_CONTROLS_V1": "1"
+      },
+      "unset_environment": [
+        "VANE_F17_CANDIDATE_LATENCY_TRACE_V1"
+      ]
+    },
+    {
+      "attempt": 2,
+      "cohort": "case2",
+      "selected": [
+        "VaneTests.F17SpellTraceTests/testFirstObservedFactoryAndCandidateForwardRealSDKResults"
+      ],
+      "trace_enabled": true,
+      "allowed_phases": [
+        0,
+        100
+      ],
+      "required_phase": 100,
+      "minimum_candidate_pairs": 1,
+      "require_wait_outcomes": false,
+      "environment": {
+        "VANE_F17_SPELL_TRACE_CONTROLS_V1": "1",
+        "VANE_F17_CANDIDATE_LATENCY_TRACE_V1": "1"
+      },
+      "unset_environment": []
+    },
+    {
+      "attempt": 3,
+      "cohort": "case3",
+      "selected": [
+        "VaneTests.F17SpellTraceTests/testWarmReceiverPreservesNullableCompletionTypesAndRanges"
+      ],
+      "trace_enabled": true,
+      "allowed_phases": [
+        0,
+        101
+      ],
+      "required_phase": 101,
+      "minimum_candidate_pairs": 2,
+      "require_wait_outcomes": false,
+      "environment": {
+        "VANE_F17_SPELL_TRACE_CONTROLS_V1": "1",
+        "VANE_F17_CANDIDATE_LATENCY_TRACE_V1": "1"
+      },
+      "unset_environment": []
+    },
+    {
+      "attempt": 4,
+      "cohort": "case4",
+      "selected": [
+        "VaneTests.F17SpellTraceTests/testRestoredMethodsAndLateFetchedStaticIMPsStillForward"
+      ],
+      "trace_enabled": true,
+      "allowed_phases": [
+        0
+      ],
+      "required_phase": null,
+      "minimum_candidate_pairs": 1,
+      "require_wait_outcomes": false,
+      "environment": {
+        "VANE_F17_SPELL_TRACE_CONTROLS_V1": "1",
+        "VANE_F17_CANDIDATE_LATENCY_TRACE_V1": "1"
+      },
+      "unset_environment": []
+    },
+    {
+      "attempt": 5,
+      "cohort": "case5",
+      "selected": [
+        "VaneTests.PasswordAutofillTests/testF17SpellTraceWaitOutcomePrecedesDiagnosticExit"
+      ],
+      "trace_enabled": true,
+      "allowed_phases": [
+        0,
+        102
+      ],
+      "required_phase": 102,
+      "minimum_candidate_pairs": 0,
+      "require_wait_outcomes": true,
+      "environment": {
+        "VANE_F17_SPELL_TRACE_CONTROLS_V1": "1",
+        "VANE_F17_CANDIDATE_LATENCY_TRACE_V1": "1"
+      },
+      "unset_environment": []
+    }
+  ],
+  "observation": {
+    "attempt": 1,
+    "cohort": "original18",
+    "selected": [
+      "VaneTests.PasswordAutofillTests/testAbandoningFilledFormDoesNotOfferToSave",
+      "VaneTests.PasswordAutofillTests/testAmbiguousUnmarkedPasswordFieldsDoNotAutofill",
+      "VaneTests.PasswordAutofillTests/testAutomaticFillRespectsAutocompleteOffButExplicitChoiceIsAllowed",
+      "VaneTests.PasswordAutofillTests/testChooserTargetIncludesItsUsernameNode",
+      "VaneTests.PasswordAutofillTests/testClearingUsernameCancelsItsAccountContinuity",
+      "VaneTests.PasswordAutofillTests/testCrossOriginAndDowngradedFormActionsDoNotReceiveCredentials",
+      "VaneTests.PasswordAutofillTests/testCurrentPasswordAutocompleteOnTextFieldDoesNotReceiveSecret",
+      "VaneTests.PasswordAutofillTests/testDetachedUsernameCannotChangeIdentityBeforeSecretWrite",
+      "VaneTests.PasswordAutofillTests/testDocumentNotificationFixtureOwnsAnActiveAppKitContext",
+      "VaneTests.PasswordAutofillTests/testDomainRelaxationCannotShareCredentialsAcrossPorts",
+      "VaneTests.PasswordAutofillTests/testEditedAccountReplacesEarlierChoiceBeforeUsernameRemoval",
+      "VaneTests.PasswordAutofillTests/testEmbeddedGeneratorRechecksFrameFocusBetweenFields",
+      "VaneTests.PasswordAutofillTests/testEmbeddedSameOriginLoginFillsAndCapturesItsOwnFields",
+      "VaneTests.PasswordAutofillTests/testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep",
+      "VaneTests.PasswordAutofillTests/testEmbeddedUsernameHandlerCannotMoveFocusBeforePasswordWrite",
+      "VaneTests.PasswordAutofillTests/testExistingFieldBecomesLoginThroughAttributeAndVisibilityChanges",
+      "VaneTests.PasswordAutofillTests/testFullFormSelectionCannotAuthorizeUnrelatedUsernameStep",
+      "VaneTests.PasswordAutofillTests/testSelectedAccountContinuesAcrossUsernameNavigation"
+    ],
+    "trace_enabled": true,
+    "allowed_phases": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "required_phase": null,
+    "minimum_candidate_pairs": 0,
+    "require_wait_outcomes": false,
+    "environment": {
+      "VANE_F17_CANDIDATE_LATENCY_TRACE_V1": "1"
+    },
+    "unset_environment": [
+      "VANE_F17_SPELL_TRACE_CONTROLS_V1"
+    ]
+  },
+  "cohorts": {
+    "case1": {
+      "trace_cases": {}
+    },
+    "case2": {
+      "trace_cases": {}
+    },
+    "case3": {
+      "trace_cases": {}
+    },
+    "case4": {
+      "trace_cases": {}
+    },
+    "case5": {
+      "trace_cases": {}
+    },
+    "original18": {
+      "selected": [
+        "VaneTests.PasswordAutofillTests/testAbandoningFilledFormDoesNotOfferToSave",
+        "VaneTests.PasswordAutofillTests/testAmbiguousUnmarkedPasswordFieldsDoNotAutofill",
+        "VaneTests.PasswordAutofillTests/testAutomaticFillRespectsAutocompleteOffButExplicitChoiceIsAllowed",
+        "VaneTests.PasswordAutofillTests/testChooserTargetIncludesItsUsernameNode",
+        "VaneTests.PasswordAutofillTests/testClearingUsernameCancelsItsAccountContinuity",
+        "VaneTests.PasswordAutofillTests/testCrossOriginAndDowngradedFormActionsDoNotReceiveCredentials",
+        "VaneTests.PasswordAutofillTests/testCurrentPasswordAutocompleteOnTextFieldDoesNotReceiveSecret",
+        "VaneTests.PasswordAutofillTests/testDetachedUsernameCannotChangeIdentityBeforeSecretWrite",
+        "VaneTests.PasswordAutofillTests/testDocumentNotificationFixtureOwnsAnActiveAppKitContext",
+        "VaneTests.PasswordAutofillTests/testDomainRelaxationCannotShareCredentialsAcrossPorts",
+        "VaneTests.PasswordAutofillTests/testEditedAccountReplacesEarlierChoiceBeforeUsernameRemoval",
+        "VaneTests.PasswordAutofillTests/testEmbeddedGeneratorRechecksFrameFocusBetweenFields",
+        "VaneTests.PasswordAutofillTests/testEmbeddedSameOriginLoginFillsAndCapturesItsOwnFields",
+        "VaneTests.PasswordAutofillTests/testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep",
+        "VaneTests.PasswordAutofillTests/testEmbeddedUsernameHandlerCannotMoveFocusBeforePasswordWrite",
+        "VaneTests.PasswordAutofillTests/testExistingFieldBecomesLoginThroughAttributeAndVisibilityChanges",
+        "VaneTests.PasswordAutofillTests/testFullFormSelectionCannotAuthorizeUnrelatedUsernameStep",
+        "VaneTests.PasswordAutofillTests/testSelectedAccountContinuesAcrossUsernameNavigation"
+      ],
+      "count": 18,
+      "canonical": "/Users/nuh/.codex/artifacts/vane-coordination/F17-password-continuation/native-fill-receipt/policy-admission-repair/original18.canonical.txt",
+      "canonical_sha256": "711addca6dbfe4dfaa0e2e0d6081c9a5aaf0d1335bcb0bec8a16c5fc251ce104",
+      "filter": "/Users/nuh/.codex/artifacts/vane-coordination/F17-password-continuation/native-fill-receipt/policy-admission-repair/original18.filter",
+      "filter_sha256": "3ebc60791ba8fa274148584ff0ae56b82d12e0bbc949e6e18a1a0667e47071a6",
+      "trace_cases": {
+        "testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep": {
+          "paths": [
+            "login",
+            "password"
+          ],
+          "username_acks": 1
+        },
+        "testFullFormSelectionCannotAuthorizeUnrelatedUsernameStep": {
+          "paths": [
+            "login",
+            "password"
+          ],
+          "username_acks": 1
+        },
+        "testSelectedAccountContinuesAcrossUsernameNavigation": {
+          "paths": [],
+          "username_acks": 1
+        }
+      }
+    }
+  },
+  "clear_environment": [
+    "VANE_F17_SPELL_TRACE_CONTROLS_V1",
+    "VANE_F17_CANDIDATE_LATENCY_TRACE_V1",
+    "VANE_NATIVE_FIXTURE_MANIFEST_DIR",
+    "VANE_NATIVE_FIXTURE_MANIFEST_TOKEN",
+    "VANE_NATIVE_FIXTURE_RETIREMENT_PHASE"
+  ],
+  "primary_timeout_seconds": 180,
+  "original_source_runtime_identity_claimed": false,
+  "inventory": {
+    "count": 2358,
+    "sha256": "b4fdd901d796ed2f55022bf7cfbfc0c6859dd1729c740e8e714e9888647734e8"
+  }
+}
