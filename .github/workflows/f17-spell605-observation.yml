@@ -1,109 +1,24 @@
-name: F17 scoped spell605 hosted observation
+name: F17 spell605 canonical boundary observation
 on:
   push:
-    branches: [codex/f17-spell-hosted-observation]
+    branches: [codex/f17-spell605-boundary-audit]
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: f17-spell605-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  build:
-    runs-on: macos-26
-    timeout-minutes: 35
-    env:
-      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"08170a4bf392be9b7d876354c10bcd0031c27d77554d4d13875134bcfcee9c78\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"66745bbdc5c2ef06e95103729ed014a2be5c9efaffc8b28587b76dbddc49f946\"}"
-    outputs:
-      archive_sha: ${{ steps.freeze.outputs.archive_sha }}
-      manifest_sha: ${{ steps.freeze.outputs.manifest_sha }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: Set task-owned runtime and evidence paths
-        run: |
-          printf '%s\n' "VANE_DIAGNOSTIC_DIR=$RUNNER_TEMP/f17-spell605-$GITHUB_JOB" "VANE_RUNTIME_ARCHIVE=$RUNNER_TEMP/f17-spell605-runtime/f17-spell605-runtime.tar.gz" "VANE_BUILD_MANIFEST=$RUNNER_TEMP/f17-spell605-build/build-runtime-manifest.json" >> "$GITHUB_ENV"
-      - name: Guard exact605c sources and empty private build paths
-        run: |
-          python3 - <<'PYCODE'
-          import hashlib,json,os,subprocess
-          from pathlib import Path
-          e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);e.mkdir(exist_ok=False)
-          head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip();base='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
-          assert head==os.environ['GITHUB_SHA'] and subprocess.check_output(['git','merge-base',base,head],text=True).strip()==base
-          assert subprocess.check_output(['git','status','--porcelain'],text=True)==''
-          expected={'.github/workflows/f17-spell605-observation.yml','.github/diagnostics/f17-spell605-slots.json','.github/diagnostics/spell_trace_validation.py','.github/diagnostics/f17_spell_hosted_controller.py'}
-          assert set(subprocess.check_output(['git','diff','--name-only',base,head],text=True).splitlines())==expected
-          assert subprocess.check_output(['git','diff',base,head,'--','Sources','Tests','scripts','Package.swift','Package.resolved'])==b''
-          for path,digest in json.loads(os.environ['VANE_DIAGNOSTIC_SOURCE_PINS']).items():assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,path
-          for path in ['.build','Vane.app','.vane-ci-build.json']:assert not Path(path).exists() and not Path(path).is_symlink()
-          subprocess.run(['git','diff','--check',base,head],check=True)
-          (e/'source.json').write_text(json.dumps({'head':head,'source':base,'source_tree':subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip(),'source_tests_package_unchanged':True,'current_runtime_only_not_historical':True,'F17_fixed':False},indent=2)+'\n')
-          (e/'source.patch').write_bytes(subprocess.check_output(['git','diff','--binary','--full-index',base,head]))
-          PYCODE
-      - name: Build exact605c native tests once and bundle existing app binary
-        run: |
-          set -euo pipefail
-          swift build --build-system native -c debug --build-tests 2>&1 | tee "$VANE_DIAGNOSTIC_DIR/build.log"
-          ./make-app.sh debug --skip-app-build 2>&1 | tee "$VANE_DIAGNOSTIC_DIR/bundle.log"
-          VANE_BIN=$(swift build --build-system native -c debug --show-bin-path)
-          mkdir -p "$(dirname "$VANE_RUNTIME_ARCHIVE")"
-          python3 scripts/ci-build-artifact.py pack --bin-path "$VANE_BIN" --revision "$GITHUB_SHA" --archive "$VANE_RUNTIME_ARCHIVE" 2>&1 | tee "$VANE_DIAGNOSTIC_DIR/pack.log"
-      - name: Freeze all actual runtime bytes before bundle execution
-        id: freeze
-        run: |
-          python3 - <<'PYCODE'
-          import hashlib,json,os,subprocess,tarfile
-          from pathlib import Path
-          e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);root=Path.cwd().resolve();archive=Path(os.environ['VANE_RUNTIME_ARCHIVE']);sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
-          files={};modes={};links={}
-          with tarfile.open(archive) as tar:
-              members=tar.getmembers();assert len(members)==len({m.name for m in members})
-              metadata=json.load(tar.extractfile('.vane-ci-build.json'));assert metadata['revision']==os.environ['GITHUB_SHA'] and metadata['root']==str(root)
-              for member in members:
-                  if member.isfile():files[member.name]=hashlib.sha256(tar.extractfile(member).read()).hexdigest();modes[member.name]=member.mode
-                  elif member.issym():links[member.name]=member.linkname
-                  else:assert member.isdir()
-              description=metadata['binary']+'/description.json';desc=json.load(tar.extractfile(description));assert len(desc['builtTestProducts'])==1
-              binary=Path(desc['builtTestProducts'][0]['binaryPath']);test_binary=str(binary.relative_to(root));bundle=next(p for p in binary.parents if p.suffix=='.xctest');test_bundle=str(bundle.relative_to(root))
-          assert links=={'.build/debug':str(Path(metadata['binary']).relative_to('.build'))}
-          for path,digest in files.items():
-              if path=='.vane-ci-build.json':continue
-              live=root/path;assert live.is_file() and not live.is_symlink() and live.resolve()==live and sha(live)==digest,path
-          assert not (root/'.build').is_symlink()
-          components=[metadata['binary']+'/vane',metadata['binary']+'/NativeLeaseHolder',description,test_bundle,'Vane.app','.vane-ci-build.json']+[str(p.relative_to(root)) for p in sorted((root/metadata['binary']).glob('*.bundle'))]
-          source_pins={p:sha(p) for p in ['scripts/run-native-tests.py','scripts/ci-build-artifact.py',*json.loads(os.environ['VANE_DIAGNOSTIC_SOURCE_PINS'])]}
-          manifest={'head':os.environ['GITHUB_SHA'],'source':'605caadc1f8c8df99fc833cd7dfd191c702dbd9a','archive_sha256':sha(archive),'metadata':metadata,'files':files,'file_modes':modes,'links':links,'components':components,'description':description,'test_binary':test_binary,'test_bundle':test_bundle,'binary_sha256':files[test_binary],'source_pins':source_pins,'current_runtime_only_not_historical':True,'F17_fixed':False}
-          path=e/'build-runtime-manifest.json';path.write_text(json.dumps(manifest,indent=2)+'\n')
-          assert subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],text=True)==''
-          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:output.write('archive_sha='+sha(archive)+'\nmanifest_sha='+sha(path)+'\n')
-          PYCODE
-      - name: Share exact built runtime
-        uses: actions/upload-artifact@v6
-        with:
-          name: f17-spell605-runtime
-          path: ${{ env.VANE_RUNTIME_ARCHIVE }}
-          compression-level: 0
-          retention-days: 14
-      - name: Preserve build source runtime manifest and logs
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: f17-spell605-build-evidence
-          path: ${{ env.VANE_DIAGNOSTIC_DIR }}
-          if-no-files-found: warn
-          retention-days: 14
   controls:
-    needs: build
     runs-on: macos-26
     timeout-minutes: 35
     env:
       VANE_JOB_KIND: controls
       VANE_OBSERVATION_INDEX: '0'
-      VANE_RUNTIME_ARCHIVE_SHA: ${{ needs.build.outputs.archive_sha }}
-      VANE_BUILD_MANIFEST_SHA: ${{ needs.build.outputs.manifest_sha }}
+      VANE_RUNTIME_ARCHIVE_SHA: '477f9510a5250dc6ae499ec3395421659b78eb044f50020e28bb0420c44f9651'
+      VANE_BUILD_MANIFEST_SHA: 'c77c7af65c2bfd41e5c77b6e8dbd7584a4bcc9268f22cecf7685afec04a4e357'
       SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
-      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"08170a4bf392be9b7d876354c10bcd0031c27d77554d4d13875134bcfcee9c78\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"66745bbdc5c2ef06e95103729ed014a2be5c9efaffc8b28587b76dbddc49f946\"}"
+      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"08170a4bf392be9b7d876354c10bcd0031c27d77554d4d13875134bcfcee9c78\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"6181c0d2a4b5d767c7837dae2a172922f20cfc14e9ec4b03d4a98316d79fb29f\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -120,24 +35,30 @@ jobs:
           head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip();base='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
           assert head==os.environ['GITHUB_SHA'] and subprocess.check_output(['git','merge-base',base,head],text=True).strip()==base
           assert subprocess.check_output(['git','status','--porcelain'],text=True)==''
-          expected={'.github/workflows/f17-spell605-observation.yml','.github/diagnostics/f17-spell605-slots.json','.github/diagnostics/spell_trace_validation.py','.github/diagnostics/f17_spell_hosted_controller.py'}
+          expected={'.github/workflows/f17-spell605-observation.yml','.github/diagnostics/f17-spell605-slots.json','.github/diagnostics/spell_trace_validation.py','.github/diagnostics/f17_spell_hosted_controller.py','.github/diagnostics/f17_canonical_boundary_audit.py'}
           assert set(subprocess.check_output(['git','diff','--name-only',base,head],text=True).splitlines())==expected
           assert subprocess.check_output(['git','diff',base,head,'--','Sources','Tests','scripts','Package.swift','Package.resolved'])==b''
           for path,digest in json.loads(os.environ['VANE_DIAGNOSTIC_SOURCE_PINS']).items():assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,path
           for path in ['.build','Vane.app','.vane-ci-build.json']:assert not Path(path).exists() and not Path(path).is_symlink()
           subprocess.run(['git','diff','--check',base,head],check=True)
-          (e/'source.json').write_text(json.dumps({'head':head,'source':base,'source_tree':subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip(),'source_tests_package_unchanged':True,'current_runtime_only_not_historical':True,'F17_fixed':False},indent=2)+'\n')
+          (e/'source.json').write_text(json.dumps({'head':head,'compiled_legacy_head':'8ed979de0242990c23ab955b4b866bc78e32f737','source':base,'source_tree':subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip(),'source_tests_package_unchanged':True,'current_runtime_only_not_historical':True,'F17_fixed':False},indent=2)+'\n')
           (e/'source.patch').write_bytes(subprocess.check_output(['git','diff','--binary','--full-index',base,head]))
           PYCODE
       - name: Download exact shared native runtime
         uses: actions/download-artifact@v5
         with:
-          name: f17-spell605-runtime
+          artifact-ids: 13071912023
+          run-id: 41277387985
+          github-token: ${{ github.token }}
+          merge-multiple: true
           path: ${{ runner.temp }}/f17-spell605-runtime
       - name: Download frozen build manifest and provenance
         uses: actions/download-artifact@v5
         with:
-          name: f17-spell605-build-evidence
+          artifact-ids: 13071623035
+          run-id: 41277387985
+          github-token: ${{ github.token }}
+          merge-multiple: true
           path: ${{ runner.temp }}/f17-spell605-build
       - name: Restore byte-pinned current runtime with canonical compatibility guards
         run: |
@@ -146,11 +67,11 @@ jobs:
           from pathlib import Path
           e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);root=Path.cwd().resolve();archive=Path(os.environ['VANE_RUNTIME_ARCHIVE']);manifest=Path(os.environ['VANE_BUILD_MANIFEST']);sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
           assert sha(manifest)==os.environ['VANE_BUILD_MANIFEST_SHA'];m=json.loads(manifest.read_text())
-          assert m['head']==os.environ['GITHUB_SHA'] and m['source']=='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
+          assert m['head']=='8ed979de0242990c23ab955b4b866bc78e32f737' and m['source']=='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
           assert sha(archive)==m['archive_sha256']==os.environ['VANE_RUNTIME_ARCHIVE_SHA']
-          assert m['metadata']['root']==str(root) and m['metadata']['revision']==os.environ['GITHUB_SHA']
+          assert m['metadata']['root']==str(root) and m['metadata']['revision']=='8ed979de0242990c23ab955b4b866bc78e32f737'
           assert not (root/'.build').exists() and not (root/'.build').is_symlink()
-          with (e/'restore.log').open('wb') as log:restored=subprocess.run(['python3','scripts/ci-build-artifact.py','restore','--revision',os.environ['GITHUB_SHA'],'--archive',str(archive)],stdout=log,stderr=subprocess.STDOUT)
+          with (e/'restore.log').open('wb') as log:restored=subprocess.run(['python3','scripts/ci-build-artifact.py','restore','--revision','8ed979de0242990c23ab955b4b866bc78e32f737','--archive',str(archive)],stdout=log,stderr=subprocess.STDOUT)
           assert restored.returncode==0,'Exact root/revision/live toolchain restore rejected; no execution'
           for path,digest in m['files'].items():
               live=root/path;assert live.is_file() and not live.is_symlink() and live.resolve()==live and sha(live)==digest,path
@@ -185,16 +106,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   observe_1:
-    needs: [build, controls]
+    needs: controls
     runs-on: macos-26
     timeout-minutes: 35
     env:
       VANE_JOB_KIND: observation
       VANE_OBSERVATION_INDEX: '1'
-      VANE_RUNTIME_ARCHIVE_SHA: ${{ needs.build.outputs.archive_sha }}
-      VANE_BUILD_MANIFEST_SHA: ${{ needs.build.outputs.manifest_sha }}
+      VANE_RUNTIME_ARCHIVE_SHA: '477f9510a5250dc6ae499ec3395421659b78eb044f50020e28bb0420c44f9651'
+      VANE_BUILD_MANIFEST_SHA: 'c77c7af65c2bfd41e5c77b6e8dbd7584a4bcc9268f22cecf7685afec04a4e357'
       SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
-      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"08170a4bf392be9b7d876354c10bcd0031c27d77554d4d13875134bcfcee9c78\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"66745bbdc5c2ef06e95103729ed014a2be5c9efaffc8b28587b76dbddc49f946\"}"
+      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"08170a4bf392be9b7d876354c10bcd0031c27d77554d4d13875134bcfcee9c78\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"6181c0d2a4b5d767c7837dae2a172922f20cfc14e9ec4b03d4a98316d79fb29f\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -211,24 +132,30 @@ jobs:
           head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip();base='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
           assert head==os.environ['GITHUB_SHA'] and subprocess.check_output(['git','merge-base',base,head],text=True).strip()==base
           assert subprocess.check_output(['git','status','--porcelain'],text=True)==''
-          expected={'.github/workflows/f17-spell605-observation.yml','.github/diagnostics/f17-spell605-slots.json','.github/diagnostics/spell_trace_validation.py','.github/diagnostics/f17_spell_hosted_controller.py'}
+          expected={'.github/workflows/f17-spell605-observation.yml','.github/diagnostics/f17-spell605-slots.json','.github/diagnostics/spell_trace_validation.py','.github/diagnostics/f17_spell_hosted_controller.py','.github/diagnostics/f17_canonical_boundary_audit.py'}
           assert set(subprocess.check_output(['git','diff','--name-only',base,head],text=True).splitlines())==expected
           assert subprocess.check_output(['git','diff',base,head,'--','Sources','Tests','scripts','Package.swift','Package.resolved'])==b''
           for path,digest in json.loads(os.environ['VANE_DIAGNOSTIC_SOURCE_PINS']).items():assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,path
           for path in ['.build','Vane.app','.vane-ci-build.json']:assert not Path(path).exists() and not Path(path).is_symlink()
           subprocess.run(['git','diff','--check',base,head],check=True)
-          (e/'source.json').write_text(json.dumps({'head':head,'source':base,'source_tree':subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip(),'source_tests_package_unchanged':True,'current_runtime_only_not_historical':True,'F17_fixed':False},indent=2)+'\n')
+          (e/'source.json').write_text(json.dumps({'head':head,'compiled_legacy_head':'8ed979de0242990c23ab955b4b866bc78e32f737','source':base,'source_tree':subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip(),'source_tests_package_unchanged':True,'current_runtime_only_not_historical':True,'F17_fixed':False},indent=2)+'\n')
           (e/'source.patch').write_bytes(subprocess.check_output(['git','diff','--binary','--full-index',base,head]))
           PYCODE
       - name: Download exact shared native runtime
         uses: actions/download-artifact@v5
         with:
-          name: f17-spell605-runtime
+          artifact-ids: 13071912023
+          run-id: 41277387985
+          github-token: ${{ github.token }}
+          merge-multiple: true
           path: ${{ runner.temp }}/f17-spell605-runtime
       - name: Download frozen build manifest and provenance
         uses: actions/download-artifact@v5
         with:
-          name: f17-spell605-build-evidence
+          artifact-ids: 13071623035
+          run-id: 41277387985
+          github-token: ${{ github.token }}
+          merge-multiple: true
           path: ${{ runner.temp }}/f17-spell605-build
       - name: Restore byte-pinned current runtime with canonical compatibility guards
         run: |
@@ -237,11 +164,11 @@ jobs:
           from pathlib import Path
           e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);root=Path.cwd().resolve();archive=Path(os.environ['VANE_RUNTIME_ARCHIVE']);manifest=Path(os.environ['VANE_BUILD_MANIFEST']);sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
           assert sha(manifest)==os.environ['VANE_BUILD_MANIFEST_SHA'];m=json.loads(manifest.read_text())
-          assert m['head']==os.environ['GITHUB_SHA'] and m['source']=='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
+          assert m['head']=='8ed979de0242990c23ab955b4b866bc78e32f737' and m['source']=='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
           assert sha(archive)==m['archive_sha256']==os.environ['VANE_RUNTIME_ARCHIVE_SHA']
-          assert m['metadata']['root']==str(root) and m['metadata']['revision']==os.environ['GITHUB_SHA']
+          assert m['metadata']['root']==str(root) and m['metadata']['revision']=='8ed979de0242990c23ab955b4b866bc78e32f737'
           assert not (root/'.build').exists() and not (root/'.build').is_symlink()
-          with (e/'restore.log').open('wb') as log:restored=subprocess.run(['python3','scripts/ci-build-artifact.py','restore','--revision',os.environ['GITHUB_SHA'],'--archive',str(archive)],stdout=log,stderr=subprocess.STDOUT)
+          with (e/'restore.log').open('wb') as log:restored=subprocess.run(['python3','scripts/ci-build-artifact.py','restore','--revision','8ed979de0242990c23ab955b4b866bc78e32f737','--archive',str(archive)],stdout=log,stderr=subprocess.STDOUT)
           assert restored.returncode==0,'Exact root/revision/live toolchain restore rejected; no execution'
           for path,digest in m['files'].items():
               live=root/path;assert live.is_file() and not live.is_symlink() and live.resolve()==live and sha(live)==digest,path
@@ -276,16 +203,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   observe_2:
-    needs: [build, observe_1]
+    needs: observe_1
     runs-on: macos-26
     timeout-minutes: 35
     env:
       VANE_JOB_KIND: observation
       VANE_OBSERVATION_INDEX: '2'
-      VANE_RUNTIME_ARCHIVE_SHA: ${{ needs.build.outputs.archive_sha }}
-      VANE_BUILD_MANIFEST_SHA: ${{ needs.build.outputs.manifest_sha }}
+      VANE_RUNTIME_ARCHIVE_SHA: '477f9510a5250dc6ae499ec3395421659b78eb044f50020e28bb0420c44f9651'
+      VANE_BUILD_MANIFEST_SHA: 'c77c7af65c2bfd41e5c77b6e8dbd7584a4bcc9268f22cecf7685afec04a4e357'
       SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
-      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"08170a4bf392be9b7d876354c10bcd0031c27d77554d4d13875134bcfcee9c78\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"66745bbdc5c2ef06e95103729ed014a2be5c9efaffc8b28587b76dbddc49f946\"}"
+      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"08170a4bf392be9b7d876354c10bcd0031c27d77554d4d13875134bcfcee9c78\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"6181c0d2a4b5d767c7837dae2a172922f20cfc14e9ec4b03d4a98316d79fb29f\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -302,24 +229,30 @@ jobs:
           head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip();base='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
           assert head==os.environ['GITHUB_SHA'] and subprocess.check_output(['git','merge-base',base,head],text=True).strip()==base
           assert subprocess.check_output(['git','status','--porcelain'],text=True)==''
-          expected={'.github/workflows/f17-spell605-observation.yml','.github/diagnostics/f17-spell605-slots.json','.github/diagnostics/spell_trace_validation.py','.github/diagnostics/f17_spell_hosted_controller.py'}
+          expected={'.github/workflows/f17-spell605-observation.yml','.github/diagnostics/f17-spell605-slots.json','.github/diagnostics/spell_trace_validation.py','.github/diagnostics/f17_spell_hosted_controller.py','.github/diagnostics/f17_canonical_boundary_audit.py'}
           assert set(subprocess.check_output(['git','diff','--name-only',base,head],text=True).splitlines())==expected
           assert subprocess.check_output(['git','diff',base,head,'--','Sources','Tests','scripts','Package.swift','Package.resolved'])==b''
           for path,digest in json.loads(os.environ['VANE_DIAGNOSTIC_SOURCE_PINS']).items():assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,path
           for path in ['.build','Vane.app','.vane-ci-build.json']:assert not Path(path).exists() and not Path(path).is_symlink()
           subprocess.run(['git','diff','--check',base,head],check=True)
-          (e/'source.json').write_text(json.dumps({'head':head,'source':base,'source_tree':subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip(),'source_tests_package_unchanged':True,'current_runtime_only_not_historical':True,'F17_fixed':False},indent=2)+'\n')
+          (e/'source.json').write_text(json.dumps({'head':head,'compiled_legacy_head':'8ed979de0242990c23ab955b4b866bc78e32f737','source':base,'source_tree':subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip(),'source_tests_package_unchanged':True,'current_runtime_only_not_historical':True,'F17_fixed':False},indent=2)+'\n')
           (e/'source.patch').write_bytes(subprocess.check_output(['git','diff','--binary','--full-index',base,head]))
           PYCODE
       - name: Download exact shared native runtime
         uses: actions/download-artifact@v5
         with:
-          name: f17-spell605-runtime
+          artifact-ids: 13071912023
+          run-id: 41277387985
+          github-token: ${{ github.token }}
+          merge-multiple: true
           path: ${{ runner.temp }}/f17-spell605-runtime
       - name: Download frozen build manifest and provenance
         uses: actions/download-artifact@v5
         with:
-          name: f17-spell605-build-evidence
+          artifact-ids: 13071623035
+          run-id: 41277387985
+          github-token: ${{ github.token }}
+          merge-multiple: true
           path: ${{ runner.temp }}/f17-spell605-build
       - name: Restore byte-pinned current runtime with canonical compatibility guards
         run: |
@@ -328,11 +261,11 @@ jobs:
           from pathlib import Path
           e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);root=Path.cwd().resolve();archive=Path(os.environ['VANE_RUNTIME_ARCHIVE']);manifest=Path(os.environ['VANE_BUILD_MANIFEST']);sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
           assert sha(manifest)==os.environ['VANE_BUILD_MANIFEST_SHA'];m=json.loads(manifest.read_text())
-          assert m['head']==os.environ['GITHUB_SHA'] and m['source']=='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
+          assert m['head']=='8ed979de0242990c23ab955b4b866bc78e32f737' and m['source']=='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
           assert sha(archive)==m['archive_sha256']==os.environ['VANE_RUNTIME_ARCHIVE_SHA']
-          assert m['metadata']['root']==str(root) and m['metadata']['revision']==os.environ['GITHUB_SHA']
+          assert m['metadata']['root']==str(root) and m['metadata']['revision']=='8ed979de0242990c23ab955b4b866bc78e32f737'
           assert not (root/'.build').exists() and not (root/'.build').is_symlink()
-          with (e/'restore.log').open('wb') as log:restored=subprocess.run(['python3','scripts/ci-build-artifact.py','restore','--revision',os.environ['GITHUB_SHA'],'--archive',str(archive)],stdout=log,stderr=subprocess.STDOUT)
+          with (e/'restore.log').open('wb') as log:restored=subprocess.run(['python3','scripts/ci-build-artifact.py','restore','--revision','8ed979de0242990c23ab955b4b866bc78e32f737','--archive',str(archive)],stdout=log,stderr=subprocess.STDOUT)
           assert restored.returncode==0,'Exact root/revision/live toolchain restore rejected; no execution'
           for path,digest in m['files'].items():
               live=root/path;assert live.is_file() and not live.is_symlink() and live.resolve()==live and sha(live)==digest,path
@@ -367,16 +300,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   observe_3:
-    needs: [build, observe_2]
+    needs: observe_2
     runs-on: macos-26
     timeout-minutes: 35
     env:
       VANE_JOB_KIND: observation
       VANE_OBSERVATION_INDEX: '3'
-      VANE_RUNTIME_ARCHIVE_SHA: ${{ needs.build.outputs.archive_sha }}
-      VANE_BUILD_MANIFEST_SHA: ${{ needs.build.outputs.manifest_sha }}
+      VANE_RUNTIME_ARCHIVE_SHA: '477f9510a5250dc6ae499ec3395421659b78eb044f50020e28bb0420c44f9651'
+      VANE_BUILD_MANIFEST_SHA: 'c77c7af65c2bfd41e5c77b6e8dbd7584a4bcc9268f22cecf7685afec04a4e357'
       SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
-      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"08170a4bf392be9b7d876354c10bcd0031c27d77554d4d13875134bcfcee9c78\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"66745bbdc5c2ef06e95103729ed014a2be5c9efaffc8b28587b76dbddc49f946\"}"
+      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"08170a4bf392be9b7d876354c10bcd0031c27d77554d4d13875134bcfcee9c78\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"6181c0d2a4b5d767c7837dae2a172922f20cfc14e9ec4b03d4a98316d79fb29f\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -393,24 +326,30 @@ jobs:
           head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip();base='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
           assert head==os.environ['GITHUB_SHA'] and subprocess.check_output(['git','merge-base',base,head],text=True).strip()==base
           assert subprocess.check_output(['git','status','--porcelain'],text=True)==''
-          expected={'.github/workflows/f17-spell605-observation.yml','.github/diagnostics/f17-spell605-slots.json','.github/diagnostics/spell_trace_validation.py','.github/diagnostics/f17_spell_hosted_controller.py'}
+          expected={'.github/workflows/f17-spell605-observation.yml','.github/diagnostics/f17-spell605-slots.json','.github/diagnostics/spell_trace_validation.py','.github/diagnostics/f17_spell_hosted_controller.py','.github/diagnostics/f17_canonical_boundary_audit.py'}
           assert set(subprocess.check_output(['git','diff','--name-only',base,head],text=True).splitlines())==expected
           assert subprocess.check_output(['git','diff',base,head,'--','Sources','Tests','scripts','Package.swift','Package.resolved'])==b''
           for path,digest in json.loads(os.environ['VANE_DIAGNOSTIC_SOURCE_PINS']).items():assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,path
           for path in ['.build','Vane.app','.vane-ci-build.json']:assert not Path(path).exists() and not Path(path).is_symlink()
           subprocess.run(['git','diff','--check',base,head],check=True)
-          (e/'source.json').write_text(json.dumps({'head':head,'source':base,'source_tree':subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip(),'source_tests_package_unchanged':True,'current_runtime_only_not_historical':True,'F17_fixed':False},indent=2)+'\n')
+          (e/'source.json').write_text(json.dumps({'head':head,'compiled_legacy_head':'8ed979de0242990c23ab955b4b866bc78e32f737','source':base,'source_tree':subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip(),'source_tests_package_unchanged':True,'current_runtime_only_not_historical':True,'F17_fixed':False},indent=2)+'\n')
           (e/'source.patch').write_bytes(subprocess.check_output(['git','diff','--binary','--full-index',base,head]))
           PYCODE
       - name: Download exact shared native runtime
         uses: actions/download-artifact@v5
         with:
-          name: f17-spell605-runtime
+          artifact-ids: 13071912023
+          run-id: 41277387985
+          github-token: ${{ github.token }}
+          merge-multiple: true
           path: ${{ runner.temp }}/f17-spell605-runtime
       - name: Download frozen build manifest and provenance
         uses: actions/download-artifact@v5
         with:
-          name: f17-spell605-build-evidence
+          artifact-ids: 13071623035
+          run-id: 41277387985
+          github-token: ${{ github.token }}
+          merge-multiple: true
           path: ${{ runner.temp }}/f17-spell605-build
       - name: Restore byte-pinned current runtime with canonical compatibility guards
         run: |
@@ -419,11 +358,11 @@ jobs:
           from pathlib import Path
           e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);root=Path.cwd().resolve();archive=Path(os.environ['VANE_RUNTIME_ARCHIVE']);manifest=Path(os.environ['VANE_BUILD_MANIFEST']);sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
           assert sha(manifest)==os.environ['VANE_BUILD_MANIFEST_SHA'];m=json.loads(manifest.read_text())
-          assert m['head']==os.environ['GITHUB_SHA'] and m['source']=='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
+          assert m['head']=='8ed979de0242990c23ab955b4b866bc78e32f737' and m['source']=='605caadc1f8c8df99fc833cd7dfd191c702dbd9a'
           assert sha(archive)==m['archive_sha256']==os.environ['VANE_RUNTIME_ARCHIVE_SHA']
-          assert m['metadata']['root']==str(root) and m['metadata']['revision']==os.environ['GITHUB_SHA']
+          assert m['metadata']['root']==str(root) and m['metadata']['revision']=='8ed979de0242990c23ab955b4b866bc78e32f737'
           assert not (root/'.build').exists() and not (root/'.build').is_symlink()
-          with (e/'restore.log').open('wb') as log:restored=subprocess.run(['python3','scripts/ci-build-artifact.py','restore','--revision',os.environ['GITHUB_SHA'],'--archive',str(archive)],stdout=log,stderr=subprocess.STDOUT)
+          with (e/'restore.log').open('wb') as log:restored=subprocess.run(['python3','scripts/ci-build-artifact.py','restore','--revision','8ed979de0242990c23ab955b4b866bc78e32f737','--archive',str(archive)],stdout=log,stderr=subprocess.STDOUT)
           assert restored.returncode==0,'Exact root/revision/live toolchain restore rejected; no execution'
           for path,digest in m['files'].items():
               live=root/path;assert live.is_file() and not live.is_symlink() and live.resolve()==live and sha(live)==digest,path
