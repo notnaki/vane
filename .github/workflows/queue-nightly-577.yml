@@ -1,0 +1,20 @@
+name: Queue nightly after main CI (PR 577)
+on:
+  push:
+    branches: [codex/queue-nightly-577]
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: queue-nightly-pr-577
+  cancel-in-progress: false
+jobs:
+  queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Wait for checked main and queue its nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/queue-nightly-577.py
