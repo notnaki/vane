@@ -161,6 +161,49 @@ import XCTest
         }
     }
 
+    #if DEBUG
+    func testActionResizeWaitsUntilLayoutCompletesAndCoalescesTargets() async throws {
+        try await withNativeWindowLoop {
+            let (_, tab, parent) = try await browser()
+            let (host, context) = try await installed()
+            let (_, web, window) = try await open(context, host: host, tab: tab, parent: parent)
+            try await wait("exact action owner foreground before resize") {
+                NSApp.isActive && window.isKeyWindow && web.window === window
+            }
+            struct Receipt { let size: CGSize; let inLayout: Bool }
+            var receipts: [Receipt] = []
+            let previous = ExtensionWindowPresentation.actionResizeWillApplyForTesting
+            ExtensionWindowPresentation.actionResizeWillApplyForTesting = { owner, size, inLayout in
+                previous?(owner, size, inLayout)
+                guard owner === window else { return }
+                if receipts.count < 32 { receipts.append(Receipt(size: size, inLayout: inLayout)) }
+            }
+            defer { ExtensionWindowPresentation.actionResizeWillApplyForTesting = previous }
+            print("Popup resize owner: id=\(window.windowNumber), frame=\(window.frame), intrinsic=\(web.intrinsicContentSize)")
+            let desired = web.intrinsicContentSize
+            // Recreate the initial provisional-frame -> intrinsic-frame fit,
+            // using the exact visible SDK popup and its unchanged document.
+            window.setContentSize(CGSize(width: desired.width + 100, height: desired.height + 100))
+            window.contentView?.needsLayout = true
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await wait("native popup frame request") { !receipts.isEmpty }
+            // Drive another real content layout while the same destination is
+            // pending; it must not restart the window animation.
+            window.contentView?.needsLayout = true
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await wait("popup frame converges to its native intrinsic size") {
+                abs(window.contentLayoutRect.width - desired.width) <= 1 &&
+                    abs(window.contentLayoutRect.height - desired.height) <= 1
+            }
+            print("Popup resize receipts: " + receipts.map { "size=\($0.size), inLayout=\($0.inLayout)" }.joined(separator: "; "))
+            XCTAssertFalse(receipts.contains { $0.inLayout }, "A content layout must not resize its owning native window inline")
+            XCTAssertEqual(receipts.filter { $0.size == desired }.count, 1,
+                           "Repeated layout must coalesce an unchanged destination")
+            XCTAssertTrue(web.window === window && window.isVisible)
+        }
+    }
+    #endif
+
     func testMovedOriginPopupSurvivesOldParentCloseAndClosesWithCurrentParent() async throws {
         try await withNativeWindowLoop {
             let (source, tab, originalParent) = try await browser()
@@ -280,6 +323,7 @@ import XCTest
                 let text = Self.text(in: modal.contentView)
                 guard text.contains("Compact Window Fixture"), text.contains(originURL.absoluteString) else { return }
                 deniedPrompts.count += 1
+                print("Extension URL denial owners: popupID=\(window.windowNumber), popupFrame=\(window.frame), modalID=\(modal.windowNumber), modalFrame=\(modal.frame), modalVisible=\(modal.isVisible), modalKey=\(modal.isKeyWindow)")
                 print("Extension window fixture: denied additional synthetic-origin URL prompt \(deniedPrompts.count)")
                 NSApp.stopModal(withCode: .alertSecondButtonReturn)
             }

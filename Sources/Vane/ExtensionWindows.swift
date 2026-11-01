@@ -4,6 +4,9 @@ import WebKit
 /// Owns presentation, never extension identity or permissions. An action keeps its
 /// exact WebKit popup view; a requested popup has a separate truthful window adapter.
 @MainActor final class ExtensionWindowPresentation: NSObject, NSWindowDelegate {
+    #if DEBUG
+    static var actionResizeWillApplyForTesting: ((NSWindow, CGSize, Bool) -> Void)?
+    #endif
     let context: WKWebExtensionContext
     let action: WKWebExtension.Action?
     let web: WKWebView
@@ -128,6 +131,10 @@ import WebKit
         var frame = window.frameRect(forContentRect: CGRect(origin: .zero, size: size))
         frame.origin = CGPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
         frame = Self.contained(frame, in: window.screen?.visibleFrame)
+        #if DEBUG
+        Self.actionResizeWillApplyForTesting?(window, size,
+            (window.contentView as? ExtensionPopupContentView)?.layoutInProgressForTesting ?? false)
+        #endif
         window.setFrame(frame, display: true, animate: window.isVisible && !Motion.reduced)
     }
 
@@ -261,7 +268,17 @@ import WebKit
 
 @MainActor private final class ExtensionPopupContentView: NSView {
     var didLayout: (() -> Void)?
-    override func layout() { super.layout(); didLayout?() }
+    #if DEBUG
+    private(set) var layoutInProgressForTesting = false
+    #endif
+    override func layout() {
+        #if DEBUG
+        layoutInProgressForTesting = true
+        defer { layoutInProgressForTesting = false }
+        #endif
+        super.layout()
+        didLayout?()
+    }
 }
 
 /// Preserve all SDK behavior, including selectors added by a newer system WebKit.
