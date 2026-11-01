@@ -772,6 +772,8 @@ enum Look {
     /// The bar's ground: Arc's is #141414 and all but opaque (20 over a black page, 23 over
     /// a (22,22,24) one). Always dark, whatever the appearance — the bar forces its colour
     /// scheme — so these are plain white alphas, not `ink`.
+    /// The omnibox is Liquid Glass; its tint defaults to white.
+    static let omniboxTint = Color.white.opacity(0.55)
     static let barFill = Color(white: 0.08).opacity(0.96)
     /// The one blur allowed on a floating surface, *under* `barFill`. Arc's bar is flat —
     /// no Liquid Glass, no specular rim, no refraction — but the page behind it is still
@@ -979,10 +981,10 @@ extension Look {
         out.append(("the footer glyphs sit 24pt above the window's bottom edge",
                     footer / 2 + footerInset == 24))
         out.append(("rows and the bar share one radius", pillRadius == barRadius))
-        // The bar with nothing typed: a few recent tabs and one row to report a problem.
+        // The bar with nothing typed: a few recent tabs.
         out.append(("the bar at rest is a glance at the recent tabs, not the whole strip",
                     barEmptyTabs >= 4 && barEmptyTabs < tidyThreshold))
-        out.append(("…and it never opens scrolling: those tabs and the row under them fit",
+        out.append(("…and it never opens scrolling: those tabs fit",
                     barEmptyTabs + 1 <= barVisibleRowsRange.lowerBound
                         && barVisibleRowsRange.contains(barVisibleRows)
                         && clampedVisibleRows(0) == barEmptyTabs + 1
