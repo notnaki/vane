@@ -95,6 +95,9 @@ import WebKit
     var backgroundCreationObserver: ((WKWebView, WKWebExtensionContext) -> Void)?
     // Test-only suspension after genuine signed discovery, before adoption.
     var safariDiscoveryDidVerify: (() async -> Void)?
+    // Suspend a real identity restart at its existing asynchronous load boundary.
+    var workerIdentityRestartWillLoad: ((WKWebExtensionContext) async -> Void)?
+    var workerIdentityUpdatePendingForTesting: Bool { workerIdentityUpdate != nil }
     #endif
 
     static func applyUserAgent() {
@@ -1087,6 +1090,11 @@ import WebKit
                 guard !stale.isEmpty else { return }
                 var busy = false
                 for item in stale {
+                    // Earlier restarts yield. A later path may already have a new
+                    // context and different access decisions when this turn resumes.
+                    guard loaded.first(where: { $0.path == item.path })?.context === item.context,
+                          let identity = ExtensionWorkerIdentity.identity(of: item.context.webExtension),
+                          identity != userAgent.effective else { continue }
                     guard operations[item.path] == nil, restoring[item.path] == nil else { busy = true; continue }
                     guard let record = records[item.path], !disabled.contains(item.path) else { failed.insert(item.path); continue }
                     let token = UUID(), generation = installationGenerations()[item.path]
@@ -1095,6 +1103,9 @@ import WebKit
                     defer { if operations[item.path] == token { operations[item.path] = nil }; rebuild() }
                     do {
                         try deactivate(item.path)
+                        #if DEBUG
+                        if let workerIdentityRestartWillLoad { await workerIdentityRestartWillLoad(item.context) }
+                        #endif
                         let replacement = try await context(for: record, path: item.path, inheritingAccess: access) {
                             try Task.checkCancellation()
                             guard !self.invalidated, self.operations[item.path] == token,

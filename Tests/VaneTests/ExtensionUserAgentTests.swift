@@ -153,7 +153,7 @@ import XCTest
         #endif
         let accepted = try await host.load(folder, installing: true) { _ in true }
         XCTAssertTrue(accepted)
-        let context = try XCTUnwrap(host.installed.first)
+        let context = try XCTUnwrap(host.loaded.first { $0.path == folder.path }?.context)
         #if DEBUG
         assertBackgroundOwnership(for: context)
         #endif
@@ -548,6 +548,78 @@ import XCTest
         let saved = try await newWeb.evaluateJavaScript("window.backgroundIdentity.saved") as? String
         XCTAssertEqual(saved, "kept across identity change")
     }
+
+    #if DEBUG
+    @MainActor private final class IdentityRestartGate {
+        private(set) var entered = false
+        private var continuation: CheckedContinuation<Void, Never>?
+        func hold() async {
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                entered = true
+            }
+        }
+        func release() {
+            let pending = continuation
+            continuation = nil
+            pending?.resume()
+        }
+    }
+
+    func testIdentityRestartDoesNotReplaceANewerContextOrItsAccess() async throws {
+        Settings.userAgent = "Vane Original Workers/1.0"
+        let root = try XCTUnwrap(folder)
+        defer { folder = root }
+        folder = root.appendingPathComponent("first")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let first = try await install(version: 3)
+        folder = root.appendingPathComponent("second")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let secondPath = folder.path
+        let second = try await install(version: 3)
+        let host = ExtensionHost.host(for: profile)
+        let alarms = WKWebExtension.Permission(rawValue: "alarms")
+        let notifications = WKWebExtension.Permission(rawValue: "notifications")
+        second.setPermissionStatus(.grantedExplicitly, for: alarms)
+        second.setPermissionStatus(.deniedExplicitly, for: notifications)
+        let gate = IdentityRestartGate(), previous = host.workerIdentityRestartWillLoad
+        host.workerIdentityRestartWillLoad = { context in
+            if context === first { await gate.hold() }
+        }
+        defer { gate.release(); host.workerIdentityRestartWillLoad = previous }
+
+        Settings.userAgent = "Vane Current Workers/2.0"
+        let admissionDeadline = ContinuousClock.now + .seconds(10)
+        while !gate.entered, ContinuousClock.now < admissionDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(gate.entered, "The first real restart must suspend before replacing the second worker")
+        guard gate.entered else { return }
+        try host.disable(secondPath)
+        try await host.setEnabled(true, for: secondPath, review: { _ in true })
+        let current = try XCTUnwrap(host.loaded.first { $0.path == secondPath }?.context)
+        XCTAssertFalse(current === second)
+        current.setPermissionStatus(.deniedExplicitly, for: alarms)
+        current.setPermissionStatus(.grantedExplicitly, for: notifications)
+        let grants = current.grantedPermissions, denials = current.deniedPermissions
+        let grantedSites = current.grantedPermissionMatchPatterns, deniedSites = current.deniedPermissionMatchPatterns
+        gate.release()
+
+        let outcomeDeadline = ContinuousClock.now + .seconds(10)
+        while host.workerIdentityUpdatePendingForTesting, ContinuousClock.now < outcomeDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(host.workerIdentityUpdatePendingForTesting, "The complete identity update must finish within its original startup budget")
+        let after = try XCTUnwrap(host.loaded.first { $0.path == secondPath }?.context)
+        XCTAssertTrue(after === current, "A completed replacement cannot be deactivated by an earlier stale snapshot")
+        XCTAssertEqual(after.grantedPermissions, grants, "Do not restore grants from the retired context")
+        XCTAssertEqual(after.deniedPermissions, denials, "Do not restore denials from the retired context")
+        XCTAssertEqual(after.grantedPermissionMatchPatterns, grantedSites)
+        XCTAssertEqual(after.deniedPermissionMatchPatterns, deniedSites)
+        XCTAssertEqual(ExtensionWorkerIdentity.identity(of: after.webExtension), "Vane Current Workers/2.0")
+        XCTAssertTrue(host.loaded.contains { $0.context !== first && $0.path != secondPath })
+    }
+    #endif
 
     func testRapidDevelopSelectionsSettleOnLatestWorkerIdentity() async throws {
         Settings.userAgent = "Vane Initial Worker/1.0"
