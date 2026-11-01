@@ -38,14 +38,20 @@ import XCTest
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         let scope = SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID)
-        try await compatibilityWait {
-            if !window.isKeyWindow {
-                window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
+        do {
+            try await compatibilityWait {
+                if !window.isKeyWindow || !window.occlusionState.contains(.visible) {
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    window.orderFrontRegardless()
+                }
+                return NativeFixtureMountAdmission.surfaceReady(host, in: window)
+                    && window.isKeyWindow && window.occlusionState.contains(.visible)
+                    && SidebarNativeReadinessCoordinator.shared.isReady(scope)
             }
-            return NativeFixtureMountAdmission.surfaceReady(host, in: window)
-                && window.isKeyWindow && window.occlusionState.contains(.visible)
-                && SidebarNativeReadinessCoordinator.shared.isReady(scope)
+        } catch {
+            print("TAB_CLOSE_ADMISSION_TIMEOUT count=\(count) key=\(window.isKeyWindow) visible=\(window.isVisible) occluded=\(!window.occlusionState.contains(.visible)) appActive=\(NSApp.isActive) ready=\(SidebarNativeReadinessCoordinator.shared.isReady(scope)) rootWindow=\(host.window === window) bounds=\(host.bounds)")
+            throw error
         }
         try await body(store, tabs, window, host)
     }
@@ -65,9 +71,10 @@ import XCTest
     private func select(_ tab: vane.Tab, in store: TabStore, window: NSWindow, host: NSView) async throws {
         store.current = tab.id
         try await compatibilityWait {
-            if !window.isKeyWindow {
+            if !window.isKeyWindow || !window.occlusionState.contains(.visible) {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
+                window.orderFrontRegardless()
             }
             host.layoutSubtreeIfNeeded()
             return window.isKeyWindow && window.occlusionState.contains(.visible)
