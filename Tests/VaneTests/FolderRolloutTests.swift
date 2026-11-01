@@ -38,8 +38,22 @@ import XCTest
         try await checkRollout(reduceDuringMotion: false, startWithSaver: true)
     }
 
+    func testBatterySaverFinishesAnActiveFolderClosing() async throws {
+        try await checkRollout(reduceDuringMotion: false, reduceDuringClose: true)
+    }
+
+    func testUnrelatedRefreshPreservesTheClosingStrip() async throws {
+        try await checkRollout(reduceDuringMotion: false, refreshDuringClose: true)
+    }
+
+    func testProtectionRevocationRemovesAnActiveClosingStripImmediately() async throws {
+        try await checkRollout(reduceDuringMotion: false, revokeDuringClose: true)
+    }
+
     private func checkRollout(reduceDuringMotion: Bool, detachDuringStart: Bool = false,
-                              largeFolder: Bool = false, startWithSaver: Bool = false) async throws {
+                              largeFolder: Bool = false, startWithSaver: Bool = false,
+                              reduceDuringClose: Bool = false, refreshDuringClose: Bool = false,
+                              revokeDuringClose: Bool = false) async throws {
         TestEnvironment.prepare()
         let saver = BatterySaver.shared.mode
         BatterySaver.shared.setMode(startWithSaver ? .alwaysOn : .off)
@@ -47,6 +61,13 @@ import XCTest
         let reduced = Motion.reduced || EnvironmentValues().accessibilityReduceMotion
         print("FOLDER_ROLLOUT_POLICY reduced=\(reduced) system=\(Motion.spaceReduced) saver=\(BatterySaver.shared.isActive)")
         let markers = Markers()
+        let owner = revokeDuringClose ? TabStore(profileID: UUID(), session: []) : nil
+        defer {
+            if let owner {
+                TabStore.all.removeAll { $0 === owner }
+                Store.forget(owner.profileID)
+            }
+        }
         let folder = Folder(name: "Rollout", collapsed: true)
         let childCount = largeFolder ? 300 : 12
         let tabs = (0..<(childCount + 12)).map { _ in Tab(isPrivate: true) }
@@ -61,9 +82,10 @@ import XCTest
         window.orderFront(nil)
         defer { view.detach(); window.contentView = nil; window.close(); SharedTabs.release(tabs) }
         func configure(_ shape: Pins, animation: Animation?) {
+            owner?.pins = shape
             let rows = SidebarRows(tabs: tabs, splits: [], shape: shape).rows
             view.configure(rows: rows, modelIDs: modelIDs, environment: EnvironmentValues(),
-                           transaction: Transaction(animation: animation)) { row, _, _ in
+                           transaction: Transaction(animation: animation), owner: owner) { row, _, _ in
                 Marker(id: row.id, markers: markers)
             }
             view.reconcile(visible: view.bounds)
@@ -140,8 +162,47 @@ import XCTest
         XCTAssertEqual(child.convert(child.bounds, to: view).minY, destination, accuracy: 1)
         XCTAssertGreaterThan(view.attachedGraphCount, 1)
         if !reduceDuringMotion {
+            // All visible owners and the destination pose are admitted above.
+            // Sample immediately after closing; waiting for hidden children would
+            // make this regression incapable of catching an instant disappearance.
             configure(shape, animation: .linear(duration: 1))
+            try await Task.sleep(for: .milliseconds(120))
+            if !reduced {
+                XCTAssertTrue(child.window === window, "Closing children must remain visible while folding under their header")
+                let closingY = child.convert(child.bounds, to: view).minY
+                XCTAssertLessThan(closingY, destination - 10, "Closing must slide the strip upward")
+                XCTAssertGreaterThan(closingY, destination - 12 * (Look.rowHeight + Look.rowGap) + 10,
+                                     "Closing must not jump straight to its folded pose")
+                XCTAssertEqual(closingY - firstChild.convert(firstChild.bounds, to: view).minY,
+                               11 * (Look.rowHeight + Look.rowGap), accuracy: 1,
+                               "Closing rows must retain their spacing across native owners")
+                let point = child.convert(NSPoint(x: child.bounds.midX, y: child.bounds.midY), to: view.superview)
+                let hit = view.hitTest(point)
+                XCTAssertFalse(hit === child || hit?.isDescendant(of: child) == true,
+                               "Closing rows must stop accepting clicks immediately")
+            }
+            if revokeDuringClose {
+                owner?.lockFolder(folder.id)
+                try await Task.sleep(for: .milliseconds(60))
+                XCTAssertNil(child.window, "Locking must revoke closing visuals without waiting for another configure or animation completion")
+                return
+            }
+            if reduceDuringClose {
+                BatterySaver.shared.setMode(.alwaysOn)
+                try await Task.sleep(for: .milliseconds(60))
+                XCTAssertNil(child.window, "Battery Saver must finish an active closing immediately")
+                return
+            }
+            if refreshDuringClose {
+                configure(shape, animation: nil)
+                try await Task.sleep(for: .milliseconds(120))
+                if !reduced {
+                    XCTAssertTrue(child.window === window, "An unrelated refresh must not remove a closing strip early")
+                    XCTAssertGreaterThan(child.convert(child.bounds, to: view).minY, 10)
+                }
+            }
             try await Task.sleep(for: reduced ? .milliseconds(40) : .milliseconds(1100))
+            XCTAssertNil(child.window, "Closing must release its visual rows after the animation")
             configure(expanded, animation: .linear(duration: 1))
             try await compatibilityWait { markers.views[tabs[11].id.uuidString]?.window != nil }
             try await Task.sleep(for: .milliseconds(120))
