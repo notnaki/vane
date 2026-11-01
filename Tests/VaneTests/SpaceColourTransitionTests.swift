@@ -54,54 +54,86 @@ extension SpaceColourTransitionTests {
 
     @MainActor private func checkRenderedLanding(gradient: Bool) async throws {
         TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        if policy == .prohibited { app.setActivationPolicy(.accessory) }
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do { try await exerciseRenderedLanding(gradient: gradient) } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Colour transition loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    @MainActor private func exerciseRenderedLanding(gradient: Bool) async throws {
         try XCTSkipIf(Motion.spaceReduced, "Requires animated Space navigation")
         let saver = BatterySaver.shared, previousMode = BatterySaver.shared.mode
         saver.setMode(.off)
         defer { saver.setMode(previousMode) }
-        let profile = ProfileManager.shared.create(name: "Colour transition fixture").id
-        let first = Space(name: "Dim red", profileID: profile, colorHex: "#FF0000", appearance: "dark", tint: 0.2)
-        let second = Space(name: "Full blue", profileID: profile, colorHex: "#0000FF",
+        let manager = ProfileManager.shared, previous = ProfileManager.shared.active
+        let profile = manager.create(name: "Colour transition fixture")
+        let first = Space(name: "Dim red", profileID: profile.id, colorHex: "#FF0000", appearance: "dark", tint: 0.2)
+        let second = Space(name: "Full blue", profileID: profile.id, colorHex: "#0000FF",
                            appearance: gradient ? "light" : "dark", tint: 1,
                            colors: gradient ? ["#0000FF", "#00FF00"] : nil)
-        XCTAssertTrue(ProfileManager.shared.saveSpaces([first, second], for: profile))
-        let store = TabStore(profileID: profile, space: first, session: [])
-        let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 128, height: 128),
-                              styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: SpaceGround().environmentObject(store)
-            .environmentObject(store.spaceGesture).environmentObject(ProfileManager.shared)
-            .environment(\.colorScheme, .dark).vaneMotionPolicy())
-        window.contentView = host
-        store.window = window
-        let monitor = SwipeMonitor()
+        XCTAssertTrue(manager.saveSpaces([first, second], for: profile.id))
+        let store = Windows.open(profile: profile, space: first, focus: false)
+        store.palette = nil
+        let window = try XCTUnwrap(store.window)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let monitor = store.spaceGesture.monitor
         defer {
-            monitor.abort(); window.orderOut(nil); window.contentView = nil; store.window = nil
-            store.dropStashes()
-            TabStore.all.removeAll { $0 === store }
-            SharedTabs.release(store.tabs)
-            Store.forget(profile)
-            _ = ProfileManager.shared.delete(profile)
+            monitor.abort(); window.close()
+            _ = manager.delete(profile.id)
+            manager.active = previous
         }
-        window.orderBack(nil)
-        try await Task.sleep(for: .milliseconds(80))
-        func pixel() throws -> NSColor {
+        try await LibraryFocusFixture.admitForeground(window)
+        try await compatibilityWait {
             host.layoutSubtreeIfNeeded()
-            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            window.displayIfNeeded()
+            CATransaction.flush()
+            guard let surface = store.spaceGesture.groundSurface,
+                  let presented = surface.layer?.presentation(),
+                  let root = host.layer?.presentation() else { return false }
+            let visible = presented.convert(presented.bounds, to: root).intersection(root.bounds)
+            return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+                && window.isKeyWindow && window.occlusionState.contains(.visible)
+                && window.contentView === host && surface.window === window
+                && surface.isDescendant(of: host) && !surface.isHiddenOrHasHiddenAncestor
+                && store.spaceGesture.sectionsView?.window === window
+                && SidebarNativeReadinessCoordinator.shared.isReady(
+                    SidebarNativeReadinessScope(store: store, spaceID: first.id))
+                && visible.width > 1 && visible.height > 1
+        }
+        let surface = try XCTUnwrap(store.spaceGesture.groundSurface)
+        func pixel() throws -> NSColor {
+            // Sample the exposed sidebar, not the ground covered by the page card.
+            let sample = CGRect(x: min(Look.sidebarWidth / 2, surface.bounds.width / 2),
+                                y: surface.bounds.height / 2, width: 1, height: 1)
+            let bitmap = try XCTUnwrap(surface.bitmapImageRepForCachingDisplay(in: sample))
             // AppKit's cacheDisplay snapshots model-layer endpoints. Native gradients
             // interpolate on the compositor; sample their presentation tree instead.
             let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
-            context.cgContext.scaleBy(x: CGFloat(bitmap.pixelsWide) / host.bounds.width,
-                                      y: CGFloat(bitmap.pixelsHigh) / host.bounds.height)
-            try XCTUnwrap(host.layer?.presentation()).render(in: context.cgContext)
+            context.cgContext.scaleBy(x: CGFloat(bitmap.pixelsWide), y: CGFloat(bitmap.pixelsHigh))
+            context.cgContext.translateBy(x: -sample.minX, y: -sample.minY)
+            try XCTUnwrap(surface.layer?.presentation()).render(in: context.cgContext)
             return try XCTUnwrap(bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.displayP3))
         }
         let start = try pixel()
+        let initialGradient = "model=\(String(describing: surface.base.colors)) presented=\(String(describing: surface.base.presentation()?.colors)) tint=\(String(describing: surface.base.superlayer?.presentation()?.opacity)) start=\(start)"
+        let began = ProcessInfo.processInfo.systemUptime
+        var sampleTimes: [Double] = []
         monitor.select(second, in: store)
         var samples: [NSColor] = []
         let deadline = ProcessInfo.processInfo.systemUptime + 2
         repeat {
             try await Task.sleep(for: .milliseconds(16))
             samples.append(try pixel())
+            sampleTimes.append(ProcessInfo.processInfo.systemUptime - began)
         } while (store.currentSpaceID != second.id || store.spaceSwiping)
                     && ProcessInfo.processInfo.systemUptime < deadline
         XCTAssertEqual(store.currentSpaceID, second.id)
@@ -116,6 +148,8 @@ extension SpaceColourTransitionTests {
         let reds = [start.redComponent] + samples.map(\.redComponent) + [resting.redComponent]
         let largestStep = zip(reds, reds.dropFirst()).map { abs($0 - $1) }.max() ?? 0
         print("COLOUR_TRANSITION_FRAMES: \(samples.count); largest red step: \(largestStep)")
+        print("COLOUR_TRANSITION_SAMPLES: \(sampleTimes)")
+        print("COLOUR_TRANSITION_REDS: \(reds); INITIAL: \(initialGradient)")
         XCTAssertLessThan(largestStep, abs(start.redComponent - resting.redComponent) * 0.6,
                           "A smooth transition must not replace most of the wash in one frame")
     }

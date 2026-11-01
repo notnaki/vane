@@ -479,6 +479,12 @@ import QuartzCore
         observe("target-before-return", store: target, viewport: targetViewport)
         try admitOwnerAtAction(returning, viewport: sourceViewport)
         _ = try XCTUnwrap(Windows.hop(returning, to: second))
+        // Submit the arriving host's layout before the early-frame deadline.
+        // Otherwise the first explicit layout happens immediately before sampling,
+        // while the compositor can still expose the parked host's previous frame.
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        CATransaction.flush()
         try await Task.sleep(for: .milliseconds(30))
         host.layoutSubtreeIfNeeded()
         let viewport = try XCTUnwrap(sidebarViewport(in: host))

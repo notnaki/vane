@@ -552,16 +552,17 @@ struct BrowserWindow: View {
         // the reveal transaction stalls the slide partway through its first frames.
         let visible = store.sidebarShown || peeking
         let floating = store.sidebarFloatingChrome
-        let theme = SpaceChromeTheme(space: store.chromeSpace, fallback: store.profile.colorHex)
         return Sidebar()
             .disabled(!visible || store.palette != nil || store.libraryOpen)
             .accessibilityHidden(!visible || store.palette != nil || store.libraryOpen)
             .frame(width: sidebar.width)
             .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
             .background {
-                RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
-                    .fill(theme.bubble.opacity(store.isPrivate ? 1 : Look.floatingSidebarOpacity))
-                    .background(Look.floatingSidebarMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
+                ZStack {
+                    WindowGlass()
+                    NativeThemeWashCopy(gesture: store.spaceGesture)
+                }
+                    .clipShape(.rect(cornerRadius: Look.floatingSidebarRadius))
                     .overlay {
                         RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
                             .strokeBorder(Look.floatingSidebarStroke,
