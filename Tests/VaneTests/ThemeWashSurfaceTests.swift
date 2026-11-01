@@ -26,6 +26,21 @@ import XCTest
         XCTAssertEqual(floating.base.colors as? [CGColor], source.base.colors as? [CGColor])
     }
 
+    func testReplacingSourceWithSameDestinationClearsThePreviousSourcesAnimation() {
+        let old = ThemeWashSurface(), replacement = ThemeWashSurface(), copy = ThemeWashSurface()
+        old.apply(wash("#FF0000"), duration: 0)
+        old.addCopy(copy)
+        old.apply(wash("#0000FF"), duration: 0.4)
+        XCTAssertNotNil(copy.base.animation(forKey: "colors"))
+        replacement.apply(wash("#0000FF"), duration: 0)
+        replacement.addCopy(copy)
+        XCTAssertNil(copy.base.animation(forKey: "colors"),
+                     "A static new owner must not retain the old owner's transition to the same endpoint")
+        old.apply(wash("#00FF00"), duration: 0)
+        XCTAssertEqual(copy.base.colors as? [CGColor], replacement.base.colors as? [CGColor],
+                       "The former owner must no longer update a reattached copy")
+    }
+
     func testFloatingGradientSamplesTheWindowInsteadOfRestartingInsideThePanel() throws {
         TestEnvironment.prepare()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),

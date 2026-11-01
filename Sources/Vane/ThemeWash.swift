@@ -193,6 +193,7 @@ struct NativeThemeWashCopy: NSViewRepresentable {
     func addCopy(_ copy: ThemeWashSurface) {
         guard copy !== self, copy.copySource !== self else { return }
         copy.copySource?.copies.remove(copy)
+        copy.finishAnimations()
         copy.copySource = self
         copies.add(copy)
         if let target { copy.apply(target, duration: 0) }
