@@ -2,6 +2,7 @@ import AppKit
 import CoreGraphics
 import WebKit
 import Network
+import NativeTestHostBootstrap
 import XCTest
 @testable import vane
 
@@ -224,13 +225,14 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
 
     /// Close the native loop inside the test body: XCTest cannot start teardown
     /// while NSApplication.run is still nested inside its test invocation.
-    private func withDocumentFixture(_ html: String, _ body: (WKWebView, Capture) async throws -> Void) async throws {
+    private func withDocumentFixture(_ html: String, activationPolicy: NSApplication.ActivationPolicy? = nil,
+                                     _ body: (WKWebView, Capture) async throws -> Void) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
         if policy == .prohibited { app.setActivationPolicy(.accessory) }
         defer { app.setActivationPolicy(policy) }
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: activationPolicy)
         var failure: (any Error)?
         do {
             let (web, capture) = try await fixture(html, foreground: true)
@@ -282,6 +284,63 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             XCTAssertEqual(failure.diagnostics, "native diagnostic")
             XCTAssertEqual(String(describing: failure.file), "fixture.swift")
             XCTAssertEqual(failure.line, 17)
+        }
+    }
+
+    func testF17SpellTraceWaitOutcomePrecedesDiagnosticExit() async throws {
+        guard ProcessInfo.processInfo.environment["VANE_F17_SPELL_TRACE_CONTROLS_V1"] == "1" else {
+            throw XCTSkip("Opt-in spell-trace wait control; requires its own native host")
+        }
+        guard ProcessInfo.processInfo.environment["VANE_F17_CANDIDATE_LATENCY_TRACE_V1"] == "1",
+              !VaneF17SpellTraceReadStatus().requested else {
+            return XCTFail("The wait control needs the exact trace flag and a fresh host")
+        }
+        XCTAssertTrue(VaneF17SpellTraceBegin())
+        defer {
+            VaneF17SpellTraceEnd()
+            let status = VaneF17SpellTraceReadStatus()
+            XCTAssertEqual(status.problems, 0)
+            XCTAssertEqual(status.inFlight, 0)
+            XCTAssertEqual(status.closeInFlight, 0)
+            XCTAssertEqual(status.dropped, 0)
+            XCTAssertEqual(status.unpublished, 0)
+            XCTAssertTrue(status.factoryRestored && status.factoryOriginalNow)
+            if status.candidateInstalled { XCTAssertTrue(status.candidateRestored && status.candidateOriginalNow) }
+            VaneF17SpellTraceEmit()
+        }
+        VaneF17SpellTracePhase(102)
+        try await withDocumentFixture("<p>Real SDK wait outcome control</p>", activationPolicy: .accessory) { web, _ in
+            let window = try XCTUnwrap(web.window)
+            XCTAssertTrue(nativeContinuationReady(window, document: web))
+            // First exercise the original helper's successful return.
+            let initial = VaneF17SpellTraceReadStatus()
+            try await wait { true }
+            let successful = VaneF17SpellTraceReadStatus()
+            XCTAssertEqual(successful.waitSuccesses, initial.waitSuccesses + 1)
+            XCTAssertEqual(successful.waitExits, initial.waitExits + 1)
+            do {
+                try await wait(for: "real SDK JavaScript error", diagnostics: {
+                    let duringDiagnostics = VaneF17SpellTraceReadStatus()
+                    XCTAssertEqual(duringDiagnostics.waitFailures, successful.waitFailures + 1)
+                    XCTAssertEqual(duringDiagnostics.waitExits, successful.waitExits,
+                                   "Function exit must not be reported before actual diagnostics")
+                    return "real-sdk-spell-trace-control"
+                }) {
+                    guard nativeContinuationReady(window, document: web) else {
+                        throw FixtureTimeout(stage: "spell-trace SDK-error document owner changed")
+                    }
+                    _ = try await js(web, "throw new Error('F17 wait-outcome control')")
+                    return false
+                }
+                XCTFail("The actual SDK JavaScript error must propagate")
+            } catch {
+                let failure = try XCTUnwrap(error as? FixtureFailure)
+                XCTAssertEqual((failure.cause as? WKError)?.code, .javaScriptExceptionOccurred)
+                XCTAssertEqual(failure.diagnostics, "real-sdk-spell-trace-control")
+            }
+            let exited = VaneF17SpellTraceReadStatus()
+            XCTAssertEqual(exited.waitFailures, successful.waitFailures + 1)
+            XCTAssertEqual(exited.waitExits, successful.waitExits + 1)
         }
     }
 
@@ -400,6 +459,8 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                       _ condition: () async throws -> Bool) async throws {
         let clock = ContinuousClock(), started = clock.now
         let deadline = started.advanced(by: .seconds(5))
+        VaneF17SpellTraceWaitBoundary(true)
+        defer { VaneF17SpellTraceWaitBoundary(false) }
         let wallStarted = fixtureWallNow()
         do {
             while true {
@@ -408,10 +469,14 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 let ready = try await condition()
                 try Task.checkCancellation()
                 guard clock.now < deadline else { throw FixtureTimeout(stage: stage) }
-                if ready { return }
+                if ready {
+                    VaneF17SpellTraceWaitOutcome(true)
+                    return
+                }
                 try await Task.sleep(for: .milliseconds(20))
             }
         } catch {
+            VaneF17SpellTraceWaitOutcome(false)
             NativeFixtureDiagnostics.emit("\(file):\(line): Failed waiting for \(stage): \(error); " +
                 "elapsedMonotonic=\(started.duration(to: clock.now)), " +
                 "elapsedWallMetadata=\(fixtureWallNow().timeIntervalSince(wallStarted)); collecting native diagnostics")
@@ -626,7 +691,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
                                   styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            defer { tab.tearDown(); window.close() }
+            defer { VaneF17SpellTracePhase(15); tab.tearDown(); window.close() }
             window.contentView = tab.web
             let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first, "A native account-selection fixture needs a display")
             let available = screen.visibleFrame.insetBy(dx: 20, dy: 20)
@@ -784,6 +849,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             bufferContinuationDiagnostic(phase: "owner-sdk-request-before-guard",
                 "path=\(path) web=\(ObjectIdentifier(web)) window=nil ready=false")
         }
+        if path == "password" { VaneF17SpellTracePhase(12) }
         try beforeRequest?()
         let navigationID = ObjectIdentifier(web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html))
         let after = continuationLoadState(tab, web: web, requestedURL: url)
@@ -1162,16 +1228,37 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     }
 
     func testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep() async throws {
+        let traceRequested = VaneF17SpellTraceBegin()
+        defer {
+            if traceRequested {
+                VaneF17SpellTraceEnd()
+                VaneF17SpellTraceEmit()
+            }
+        }
+        VaneF17SpellTracePhase(1)
         try await withNativeContinuationFixture { tab, origin in
+            if traceRequested {
+                // A real view already exists. Metadata is buffered before the
+                // first timed navigation, never queried from an SDK trampoline.
+                let bundle = Bundle(for: WKWebView.self)
+                bufferContinuationDiagnostic(phase: "spell-trace-engine-runtime",
+                    "bundle=\(bundle.bundleIdentifier ?? "unknown") path=\(bundle.bundlePath) " +
+                    "CFBundleVersion=\(bundle.object(forInfoDictionaryKey: "CFBundleVersion") ?? "unknown") " +
+                    "provenance=current-runtime-only-not-historical")
+            }
+            VaneF17SpellTracePhase(2)
             try await loadContinuationPage(tab, origin: origin, path: "login", html:
                 "<iframe id=embedded srcdoc='<form><input id=user autocomplete=username></form>'></iframe>")
+            VaneF17SpellTracePhase(3)
             try await wait(for: "embedded username DOM") {
                 try await js(tab.web, "!!embedded.contentDocument.getElementById('user')") as? Bool == true
             }
+            VaneF17SpellTracePhase(4)
             _ = try await js(tab.web, "embedded.contentDocument.getElementById('user').focus()")
             // The child DOM can exist before discovery installs its isolated-world context.
             // A native row cannot be picked until the bridge and its account list are ready.
             var embeddedTarget = ""
+            VaneF17SpellTracePhase(5)
             try await wait(for: "isolated-world embedded username target") {
                 embeddedTarget = try await js(tab.web, """
                     (function () {
@@ -1184,20 +1271,28 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             }
             // Request a fresh chooser after discovery, including when the original focus
             // happened before its listener existed. Await metadata before choosing the row.
+            VaneF17SpellTracePhase(6)
             tab.closeChooser(.escape)
             _ = try await js(tab.web, "embedded.contentDocument.getElementById('user').click()")
+            VaneF17SpellTracePhase(7)
             try await wait(for: "native embedded-account chooser") {
                 tab.passwordChoice?.target == embeddedTarget && tab.passwordChoice?.accounts.contains("bob") == true
             }
             let choice = try XCTUnwrap(tab.passwordChoice)
             let target = try XCTUnwrap(choice.target)
+            VaneF17SpellTracePhase(8)
             tab.fillChosen(host: choice.host, account: "bob", port: choice.port, target: target)
+            VaneF17SpellTracePhase(9)
             try await wait(for: "explicitly chosen account to fill the embedded username") {
                 try await js(tab.web, "embedded.contentDocument.getElementById('user').value") as? String == "bob"
             }
+            VaneF17SpellTracePhase(10)
             _ = try await js(tab.web, "document.body.innerHTML='<form><input autocomplete=username value=bob></form>'")
+            VaneF17SpellTracePhase(11)
             try await submitUsernameAndLoadPassword(tab, origin: origin)
+            VaneF17SpellTracePhase(13)
             try await Task.sleep(for: .milliseconds(250))
+            VaneF17SpellTracePhase(14)
             expectEqual(try await js(tab.web, "password.value") as? String, "")
         }
     }
