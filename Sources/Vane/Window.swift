@@ -114,9 +114,9 @@ final class VaneWindow: NSWindow {
     /// deliberately does not use `isMovableByWindowBackground`, which cannot tell the
     /// difference and moved the window from a drag on a tab row.
     override func sendEvent(_ event: NSEvent) {
-        // The quit scrim owns input while its modal loop is running. In particular,
+        // Setup and the quit scrim own their input. In particular,
         // stale sidebar hover must never turn its buttons into window drags.
-        if MainActor.assumeIsolated({ QuitDialog.isUp }) {
+        if MainActor.assumeIsolated({ FirstLaunch.isPresenting || QuitDialog.isUp }) {
             super.sendEvent(event)
             return
         }

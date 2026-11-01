@@ -1,62 +1,53 @@
 import AppKit
 import SwiftUI
 
-/// Covers the host's display without creating a macOS Space or animating the user
-/// away from their desktop. The browser retains every incoming link underneath.
-@MainActor final class FirstLaunchPresentation: NSWindowController {
+/// Uses the browser's existing window without changing its frame or macOS presentation.
+/// Retain the browser view so incoming links and its SwiftUI state survive setup.
+@MainActor final class FirstLaunchPresentation: NSObject {
     private weak var host: NSWindow?
-    private var savedOptions: NSApplication.PresentationOptions?
+    private let welcome: NSHostingView<AnyView>
+    private let onHostClose: () -> Void
+    private var browser: NSView?
+    private weak var previousResponder: NSResponder?
 
-    init(host: NSWindow, content: AnyView) {
+    init(host: NSWindow, content: AnyView, onHostClose: @escaping () -> Void = {}) {
         self.host = host
-        let frame = host.screen?.frame ?? NSScreen.main?.frame ?? host.frame
-        let welcome = WelcomeWindow(contentRect: frame, styleMask: [.borderless],
-                                    backing: .buffered, defer: false)
-        welcome.title = "Welcome to Vane"
-        welcome.isReleasedWhenClosed = false
-        welcome.isMovable = false
-        welcome.hasShadow = false
-        welcome.animationBehavior = .none
-        welcome.collectionBehavior = [.fullScreenAuxiliary]
-        welcome.contentView = NSHostingView(rootView: content)
-        super.init(window: welcome)
+        self.onHostClose = onHostClose
+        welcome = NSHostingView(rootView: content)
+        // Setup adapts to the saved browser size rather than imposing its ideal size.
+        welcome.sizingOptions = []
+        super.init()
     }
-
-    required init?(coder: NSCoder) { nil }
 
     func show() {
-        guard savedOptions == nil, let window, let host else { return }
-        savedOptions = NSApp.presentationOptions
-        var options = NSApp.presentationOptions
-        options.subtract([.hideDock, .hideMenuBar])
-        options.formUnion([.autoHideDock, .autoHideMenuBar])
-        NSApp.presentationOptions = options
-        fitScreen()
-        NotificationCenter.default.addObserver(self, selector: #selector(fitScreen),
-                                               name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        host.addChildWindow(window, ordered: .above)
-        window.makeKeyAndOrderFront(nil)
-    }
-
-    @objc private func fitScreen() {
-        guard let frame = (host?.screen ?? window?.screen ?? NSScreen.main)?.frame else { return }
-        window?.setFrame(frame, display: true)
-    }
-
-    override func close() {
-        guard let options = savedOptions else { return }
-        savedOptions = nil
-        NotificationCenter.default.removeObserver(self)
-        if let window {
-            host?.removeChildWindow(window)
-            window.orderOut(nil)
+        guard browser == nil, let host, let content = host.contentView else { return }
+        browser = content
+        if let editor = host.firstResponder as? NSTextView, editor.isFieldEditor {
+            previousResponder = editor.delegate as? NSResponder
+        } else {
+            previousResponder = host.firstResponder
         }
-        NSApp.presentationOptions = options
-        super.close()
+        host.makeFirstResponder(nil)
+        host.contentView = welcome
+        host.makeFirstResponder(welcome)
+        NotificationCenter.default.addObserver(self, selector: #selector(hostWillClose),
+                                               name: NSWindow.willCloseNotification, object: host)
     }
-}
 
-@MainActor private final class WelcomeWindow: NSWindow {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    func close() {
+        guard let browser else { return }
+        self.browser = nil
+        NotificationCenter.default.removeObserver(self)
+        defer { previousResponder = nil }
+        guard let host, host.contentView === welcome else { return }
+        host.contentView = browser
+        if let view = previousResponder as? NSView, view.window === host {
+            host.makeFirstResponder(view)
+        }
+    }
+
+    @objc private func hostWillClose() {
+        close()
+        onHostClose()
+    }
 }
