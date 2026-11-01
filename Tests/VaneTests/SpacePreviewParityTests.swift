@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WebKit
 import XCTest
 @testable import vane
 
@@ -455,8 +456,16 @@ import XCTest
 
     private func checkColdWanderedPinMarkerMatchesTheRestoredRow() async throws {
         let profile = UUID()
-        let home = URL(string: "https://invalid.test/pinned")!
-        let away = URL(string: "https://invalid.test/elsewhere")!
+        let server = try CompatibilityServer()
+        defer { server.stop() }
+        try await compatibilityWait { server.port != nil }
+        let home = try server.url("/pinned")
+        let away = try server.url("/elsewhere")
+        // Selection genuinely resumes this parked tab. Keep its network response
+        // under fixture control so DNS timing cannot replace the saved row title.
+        server.pages["/elsewhere"] = "<title>Pinned document</title><p>Pinned document</p>"
+        // Loopback defaults to Developer Mode, which would add unrelated row ink.
+        DeveloperMode.set(false, for: away, profile: profile)
         let outgoing = Space(name: "Outgoing", profileID: profile)
         let incoming = Space(name: "Incoming", profileID: profile, pinnedTabURLs: [home])
         XCTAssertTrue(ProfileManager.shared.saveSpaces([outgoing, incoming], for: profile))
@@ -469,6 +478,7 @@ import XCTest
             TabStore.all.removeAll { $0 === store }
             SharedTabs.release(tabs)
             Store.forget(profile)
+            UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey("developerSites", profile))
             try? FileManager.default.removeItem(at: Suspension.SpaceState.url(for: profile, in: Store.directory))
             try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: profile, in: Store.directory))
         }
@@ -479,6 +489,12 @@ import XCTest
         store.switchTo(space: incoming)
         let tab = try XCTUnwrap(store.tabs.first)
         XCTAssertFalse(tab.atHome)
+        let web = try XCTUnwrap(tab.existingWeb, "Selecting the restored row must resume its real page")
+        try await compatibilityWait {
+            web.url == away && !web.isLoading && !tab.loading && web.estimatedProgress == 1
+                && web.title == "Pinned document"
+        }
+        XCTAssertEqual(tab.title, "Pinned document", "The fixture page and saved metadata must describe the same content")
         func anchors(in root: NSView) -> [NativeSidebarRowLayoutView] {
             ((root as? NativeSidebarRowLayoutView).map { [$0] } ?? []) + root.subviews.flatMap { anchors(in: $0) }
         }
