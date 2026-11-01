@@ -4,6 +4,28 @@ import XCTest
 @testable import vane
 
 @MainActor final class SidebarSnapshotReadinessTests: XCTestCase {
+    func testVisibleSnapshotPlacementExcludesPointerAtEveryCorner() throws {
+        let screen = NSRect(x: -1200, y: 100, width: 1000, height: 800)
+        let size = NSSize(width: 250, height: 400)
+        let points = [NSPoint(x: screen.minX + 20, y: screen.minY + 337),
+                      NSPoint(x: screen.maxX - 20, y: screen.minY + 337),
+                      NSPoint(x: screen.minX + 20, y: screen.maxY - 20),
+                      NSPoint(x: screen.maxX - 20, y: screen.maxY - 20),
+                      NSPoint(x: screen.midX, y: screen.midY)]
+        for point in points {
+            let frame = try XCTUnwrap(SidebarSnapshot.frame(avoiding: point, size: size, within: screen))
+            XCTAssertTrue(screen.contains(frame), "The exact snapshot owner must stay on screen")
+            XCTAssertFalse(frame.contains(point), "The live return control must not acquire physical-pointer hover")
+            XCTAssertEqual(frame.size, size)
+        }
+    }
+
+    func testVisibleSnapshotPlacementRejectsScreensWithoutAnUnhoveredPosition() {
+        let screen = NSRect(x: 100, y: 100, width: 250, height: 400)
+        XCTAssertNil(SidebarSnapshot.frame(avoiding: NSPoint(x: 120, y: 437), size: screen.size, within: screen))
+        XCTAssertNil(SidebarSnapshot.frame(avoiding: .zero, size: NSSize(width: 251, height: 400), within: screen))
+    }
+
     func testSnapshotDoesNotSampleBeforeItsCurrentNativeRowsCommit() throws {
         TestEnvironment.prepare()
         let owner = NSObject()

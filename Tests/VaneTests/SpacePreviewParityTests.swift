@@ -438,6 +438,22 @@ import XCTest
 
     func testColdWanderedPinMarkerMatchesTheRestoredRow() async throws {
         TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await checkColdWanderedPinMarkerMatchesTheRestoredRow() }
+        catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Sidebar snapshot loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkColdWanderedPinMarkerMatchesTheRestoredRow() async throws {
         let profile = UUID()
         let home = URL(string: "https://invalid.test/pinned")!
         let away = URL(string: "https://invalid.test/elsewhere")!
