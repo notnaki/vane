@@ -327,6 +327,22 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         }
     }
 
+    /// Poll only inside a bounded pre-action prerequisite. A launch/owner
+    /// readiness withdrawal is pending; cancellation and lifecycle loss are fatal.
+    func isReadyForInteraction() throws -> Bool {
+        if Task.isCancelled { record(.cancelled) }
+        if let firstFailure { throw firstFailure }
+        guard admissionSucceeded, isCurrent, enteredRun, !runReturned, NSApplication.shared.isRunning else {
+            record(.loopNotRunning)
+            throw firstFailure!
+        }
+        guard NSApplication.shared.activationPolicy() == requiredPolicy else {
+            record(.policyChanged)
+            throw firstFailure!
+        }
+        return NSRunningApplication.current.isFinishedLaunching && launchReadiness()
+    }
+
     private func observeAdmission(_ admission: inout NativeFixtureLaunchAdmission,
                                   finished: Bool) -> NativeFixtureLaunchAdmission.Observation {
         let observation = admission.observe(finished: finished, at: .now)
