@@ -1,0 +1,43 @@
+name: F17 synchronous text checking diagnostic
+on:
+  push:
+    branches: [codex/ci-reliability-f17-repair]
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: macos-26
+    timeout-minutes: 12
+    env:
+      VANE_TRACE_SYNC_CHECKING: '1'
+      VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Record platform
+        run: |
+          sw_vers
+          xcodebuild -version
+          /usr/libexec/PlistBuddy -c 'Print CFBundleVersion' /System/Library/Frameworks/WebKit.framework/Resources/Info.plist
+      - name: Build diagnostic tests
+        run: swift build --build-system native --build-tests
+      - name: Verify real synchronous calls are traced
+        run: |
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter '^VaneTests[.]SyncCheckingTraceControlTests/' 2>&1 | tee "$RUNNER_TEMP/sync-control.log"
+          for selector in checkString checkSpelling; do
+            grep -Fq "Vane sync checking start: selector=$selector " "$RUNNER_TEMP/sync-control.log"
+            grep -Fq "Vane sync checking end: selector=$selector " "$RUNNER_TEMP/sync-control.log"
+          done
+      - name: Observe original focused password cases once
+        run: |
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter "$(cat scripts/f17-sync-original18.filter)" 2>&1 | tee "$RUNNER_TEMP/sync-original18.log"
+          grep -Fq 'Executed 18 tests, with 0 failures' "$RUNNER_TEMP/sync-original18.log"
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/sync-original18.log"
+      - name: Preserve every diagnostic attempt
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: f17-sync-checking
+          path: ${{ runner.temp }}/sync-*.log
+          retention-days: 7
