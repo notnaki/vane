@@ -23,6 +23,27 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
 @MainActor final class PasswordAutofillTests: XCTestCase {
     private var nativeFixtureProfiles: Set<UUID> = []
     private var fixtureWallNow: () -> Date = { .now }
+    private var continuationDiagnosticRecords: [String] = []
+    private var continuationDiagnosticDropped = 0
+
+    private func bufferContinuationDiagnostic(phase: String, _ state: String) {
+        guard continuationDiagnosticRecords.count < 96 else {
+            continuationDiagnosticDropped += 1
+            return
+        }
+        continuationDiagnosticRecords.append("F17_CONTINUATION case=\(String(reflecting: name)) " +
+            "phase=\(phase) uptime=\(ProcessInfo.processInfo.systemUptime) \(state)")
+    }
+
+    private func flushContinuationDiagnostics() {
+        for record in continuationDiagnosticRecords { NativeFixtureDiagnostics.emit(record) }
+        if continuationDiagnosticDropped > 0 {
+            NativeFixtureDiagnostics.emit("F17_CONTINUATION case=\(String(reflecting: name)) " +
+                "phase=diagnostic-overflow dropped=\(continuationDiagnosticDropped)")
+        }
+        continuationDiagnosticRecords.removeAll(keepingCapacity: true)
+        continuationDiagnosticDropped = 0
+    }
     override func tearDown() async throws {
         try await releaseNativeFixtureProfiles()
     }
@@ -563,7 +584,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     /// One bounded scalar record per admission/idle sample; no WindowServer probes.
     private func emitNativeContinuationReadiness(_ window: NSWindow, document: NSView, stage: StaticString) {
         let app = NSApplication.shared, running = NSRunningApplication.current
-        print("Native continuation readiness: stage=\(stage), ready=\(nativeContinuationReady(window, document: document)), " +
+        bufferContinuationDiagnostic(phase: "owner-\(stage)",
+              "window=\(ObjectIdentifier(window)), document=\(ObjectIdentifier(document)), " +
+              "stage=\(stage), ready=\(nativeContinuationReady(window, document: document)), " +
               "appRunning=\(app.isRunning), finishedLaunching=\(running.isFinishedLaunching), active=\(app.isActive), " +
               "appHidden=\(app.isHidden), runningHidden=\(running.isHidden), exactKey=\(app.keyWindow === window), " +
               "windowKey=\(window.isKeyWindow), windowVisible=\(window.isVisible), miniaturized=\(window.isMiniaturized), " +
@@ -577,6 +600,11 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
 
     private func withNativeContinuationFixture(origin: PasswordOrigin = PasswordOrigin(host: "continuation.example.test"),
                                                 _ body: (Tab, PasswordOrigin) async throws -> Void) async throws {
+        continuationDiagnosticRecords.removeAll(keepingCapacity: true)
+        continuationDiagnosticDropped = 0
+        // Emit only after body assertions, document teardown and loop join. Keep
+        // diagnostic I/O outside username admission and the navigation outcome.
+        defer { flushContinuationDiagnostics() }
         TestEnvironment.prepare()
         let profile = UUID()
         defer { Passwords.deleteAll(profileID: profile) }
@@ -731,16 +759,34 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         #if DEBUG
         let stages = NavigationStages()
         let previousObserver = tab.navigationStageObserver
-        tab.navigationStageObserver = { [weak stages] event in
+        tab.navigationStageObserver = { [weak self, weak stages] event in
             previousObserver?(event)
             stages?.append(event)
+            self?.bufferContinuationDiagnostic(phase: "navigation-\(event.stage)",
+                "path=\(path) identity=\(String(describing: event.identity)) \(event.detail)")
         }
         defer { tab.navigationStageObserver = previousObserver }
         #endif
         let before = continuationLoadState(tab, web: web, requestedURL: url)
+        #if DEBUG
+        let documentScope = Tab.UsernameStepScope(tab: tab, web: web).document.uuidString
+        #else
+        let documentScope = "unavailable"
+        #endif
+        bufferContinuationDiagnostic(phase: "sdk-request-document-before-guard",
+            "path=\(path) tab=\(tab.id) web=\(ObjectIdentifier(web)) " +
+                "documentScope=\(documentScope) state={\(before)}")
+        if let window = web.window {
+            emitNativeContinuationReadiness(window, document: web, stage: "sdk-request-before-guard")
+        } else {
+            bufferContinuationDiagnostic(phase: "owner-sdk-request-before-guard",
+                "path=\(path) web=\(ObjectIdentifier(web)) window=nil ready=false")
+        }
         try beforeRequest?()
         let navigationID = ObjectIdentifier(web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html))
         let after = continuationLoadState(tab, web: web, requestedURL: url)
+        bufferContinuationDiagnostic(phase: "sdk-request-returned",
+            "path=\(path) navigation=\(navigationID) state={\(after)}")
         try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
             #if DEBUG
             NativeFixtureDiagnostics.emit("continuation callback stages: " + stages.snapshot(expected: navigationID))
@@ -930,6 +976,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             // `false` is a genuine processed denial, never the initial absent ACK.
             if receipt.evaluation != nil, receipt.processed != nil,
                nativeContinuationReady(window, document: web) {
+                bufferContinuationDiagnostic(phase: "username-processing-admitted",
+                    "tab=\(tab.id) web=\(ObjectIdentifier(web)) documentScope=\(scope.document) " +
+                        receipt.diagnostics)
                 // Recheck at the actual SDK request, across the async return and
                 // failure-state getters, without starting another prerequisite budget.
                 return {
