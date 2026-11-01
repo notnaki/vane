@@ -493,7 +493,9 @@ enum Spaces {
         /// A few fast pixels at the edge are noise, not a deliberate flick.
         static let flickFraction: CGFloat = 0.1
         /// Creating a Space keeps its more deliberate pull even when switching is lighter.
-        static let createFraction: CGFloat = 0.3
+        static let createFraction: CGFloat = 0.45
+        /// A quick overswipe must not open a form, even if its distance fills the circle.
+        static let createDuration: Double = 0.25
         /// How much of the travel past the first or last Space actually shows: the strip
         /// gives, so the gesture is answered, but it plainly does not want to go.
         static let bandGive: CGFloat = 0.3
@@ -515,6 +517,7 @@ enum Spaces {
         /// Smoothed points per second, for the flick commit. Smoothed because the last event
         /// before fingers-up is often a near-zero straggler that would read as a dead stop.
         private(set) var speed: CGFloat = 0
+        private var creationDuration: Double = 0
         /// False once this gesture has committed, so one swipe is one Space. A gesture can
         /// end twice (`.ended` after `.cancelled`), and both would otherwise commit.
         private(set) var armed = true
@@ -532,9 +535,9 @@ enum Spaces {
         /// for "previous", nil for "spring back".
         /// `create`: past the last Space there is one more thing to pull for — the Space
         /// that does not exist yet. The strip bands as it always did, but `pull` reports how
-        /// far towards the line the fingers have got, and reaching it commits `+1` from the
-        /// last index *while the fingers are still down*: Arc's plus fills up and then you
-        /// are on the form, no fingers-up wanted. Off by default so the band checks hold.
+        /// far towards the line the fingers have got. A full, sustained pull commits `+1`
+        /// from the last index only on release, so it can still be reversed or cancelled.
+        /// Off by default so the band checks hold.
         mutating func feed(dx: CGFloat, dt: Double, phase: Phase,
                            width: CGFloat, count: Int, index: Int,
                            create: Bool = false) -> (offset: CGFloat?, commit: Int?, pull: CGFloat) {
@@ -544,11 +547,13 @@ enum Spaces {
             case .cancelled:
                 travel = 0
                 speed = 0
+                creationDuration = 0
                 armed = false
                 return (nil, nil, 0)
             case .began:
                 travel = initialTravel
                 speed = 0
+                creationDuration = 0
                 armed = true
                 return (initialTravel, nil, 0)
             case .changed:
@@ -559,19 +564,19 @@ enum Spaces {
                     speed = Self.speedSmoothing * (dx / step) + (1 - Self.speedSmoothing) * speed
                 }
                 let offset = Self.offset(travel, width: width, count: count, index: index)
-                let pull = Self.pull(travel, width: width, count: count, index: index, create: create)
-                if pull >= Self.pullFull {
-                    armed = false
-                    return (offset, 1, Self.pullFull)
-                }
+                let distancePull = Self.pull(travel, width: width, count: count, index: index, create: create)
+                if distancePull > 0 { creationDuration += max(0, dt) }
+                else { creationDuration = 0 }
+                // The visible circle reflects both deliberate travel and time. Waiting
+                // for fingers-up or receiving momentum cannot turn a fast flick into intent.
+                let pull = min(distancePull, Self.pullFull * CGFloat(creationDuration / Self.createDuration))
                 return (offset, nil, pull)
             case .ended:
-                defer { travel = 0; speed = 0 }
+                defer { travel = 0; speed = 0; creationDuration = 0 }
                 guard armed else { return (nil, nil, 0) }
                 armed = false
-                // A filled ring can be released to open the form; continuing the pull
-                // still opens it while the fingers are down at the solid-circle threshold.
-                if Self.pull(travel, width: width, count: count, index: index, create: create) >= 1 {
+                if creationDuration >= Self.createDuration,
+                   Self.pull(travel, width: width, count: count, index: index, create: create) >= Self.pullFull {
                     return (nil, 1, 0)
                 }
                 let direction = Self.commit(travel: travel, speed: speed, width: width,
@@ -581,15 +586,14 @@ enum Spaces {
         }
 
         /// A pull past the last Space is two stages of the same motion: the ring fills to
-        /// 1, then the circle behind it fills solid to `pullFull`. Continuing to the
-        /// solid circle opens the form immediately. Releasing at a
-        /// filled ring opens it too; a shorter pull springs back.
+        /// 1, then the circle behind it fills solid to `pullFull`. Releasing a sustained
+        /// pull with a solid circle opens the form; a shorter or quick pull springs back.
         static let pullFull: CGFloat = 2
 
         /// How far the pull has got, 0…`pullFull` — zero anywhere but past the last Space.
         static func pull(_ travel: CGFloat, width: CGFloat, count: Int, index: Int,
                          create: Bool) -> CGFloat {
-            guard create, travel < 0, index >= count - 1 else { return 0 }
+            guard create, width > 0, count > 0, travel < 0, index == count - 1 else { return 0 }
             return min(pullFull, -travel / (width * createFraction))
         }
 
@@ -877,21 +881,23 @@ enum Spaces {
         do {
             var s = Swipe()
             _ = s.feed(dx: 0, dt: 0, phase: .began, width: w, count: 2, index: 1, create: true)
-            let half = s.feed(dx: -w * 0.15, dt: 0.02, phase: .changed, width: w, count: 2, index: 1,
+            let half = s.feed(dx: -w * 0.225, dt: 0.1, phase: .changed, width: w, count: 2, index: 1,
                               create: true)
-            let ring = s.feed(dx: -w * 0.15, dt: 0.02, phase: .changed, width: w, count: 2, index: 1,
+            let ring = s.feed(dx: -w * 0.225, dt: 0.1, phase: .changed, width: w, count: 2, index: 1,
                               create: true)
-            let solid = s.feed(dx: -w * 0.3, dt: 0.02, phase: .changed, width: w, count: 2, index: 1,
+            let solid = s.feed(dx: -w * 0.45, dt: 0.1, phase: .changed, width: w, count: 2, index: 1,
                                create: true)
-            let after = s.feed(dx: -w * 0.15, dt: 0.02, phase: .changed, width: w, count: 2, index: 1,
+            let released = s.feed(dx: 0, dt: 0.01, phase: .ended, width: w, count: 2, index: 1,
+                                  create: true)
+            let after = s.feed(dx: -w, dt: 0.1, phase: .momentum, width: w, count: 2, index: 1,
                                create: true)
             assert("a pull past the last space keeps the deliberate creation threshold",
                    half.commit == nil && abs(half.pull - 0.5) < 0.001
                        && abs(half.offset ?? 0) <= w * Swipe.bandCap)
             assert("…a full ring is not yet a space: the circle still has to fill",
                    ring.commit == nil && abs(ring.pull - 1) < 0.001)
-            assert("…and a solid circle commits the new space while the fingers are still down",
-                   solid.commit == 1 && solid.pull == Swipe.pullFull && after.commit == nil)
+            assert("…a solid circle waits for release and ignores the momentum tail",
+                   solid.commit == nil && solid.pull == Swipe.pullFull && released.commit == 1 && after.commit == nil)
             assert("…while the same pull with nothing to create only bands",
                    Swipe.pull(-w * 0.5, width: w, count: 2, index: 1, create: false) == 0
                        && Swipe.pull(-w * 0.5, width: w, count: 2, index: 0, create: true) == 0)

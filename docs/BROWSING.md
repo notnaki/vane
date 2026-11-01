@@ -103,6 +103,9 @@ Hover the Space card to reveal its chevron and `…` menu. Click the card to col
 expand its pinned tabs; Today stays visible. Double-click its name to rename the Space.
 Each window remembers the collapsed state for each Space while open. Swipe horizontally
 over the sidebar to move between Spaces, including while the search bar (`⌘T`) is open.
+To open the creation form from the last Space, pull left deliberately until the ring and
+circle fill, then release. Short or quick swipes spring back; pull back before releasing
+to cancel. A Space is saved only after pressing **Create Space**.
 Click the Space buttons in the sidebar footer for the same sliding change, including
 between profiles. Each button shows a square, rounded highlight on hover. In
 **Settings → General**, turn **Show Space icons in the footer** off to use dots for
