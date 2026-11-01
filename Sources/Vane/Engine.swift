@@ -4247,8 +4247,8 @@ struct Stash {
         if let live = previewSpace, live.id == currentSpaceID { return live }
         return swipeStrip.first { $0.id == currentSpaceID }
     }
-    /// How far a pull past the last Space has got, 0…1: the plus at the sidebar's edge fills
-    /// with it, and 1 is the moment the Create a Space form takes the sidebar.
+    /// Pull-to-create progress, 0…2: the ring fills first, then its centre.
+    /// Releasing a full, sustained pull opens the Create a Space form.
     var spacePull: CGFloat {
         get { spaceGesture.pull }
         set { if newValue != spaceGesture.pull { spaceGesture.pull = newValue } }
@@ -4260,6 +4260,7 @@ struct Stash {
     /// Opening it does not create a Space or leave the current one.
     func beginCreatingSpace() {
         guard !isPrivate, !isLittle else { return }
+        spaceGesture.monitor.prepareForCreation(in: self)
         palette = nil
         editingSpace = nil
         Motion.space(Look.spaceSlide) {

@@ -26,6 +26,22 @@ import XCTest
 
     private func checkCommittedSwipe(saving: Bool, empty: Bool = false, clicking: Bool = false) async throws {
         TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await exerciseCommittedSwipe(saving: saving, empty: empty, clicking: clicking) }
+        catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Landing fixture AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func exerciseCommittedSwipe(saving: Bool, empty: Bool, clicking: Bool) async throws {
         try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
                       "Focus timing requires the animated landing path")
         let saver = BatterySaver.shared
@@ -83,15 +99,32 @@ import XCTest
             }
         }
         defer { observation.cancel() }
-        window.orderFront(nil)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        try await compatibilityWait {
+            window.contentView?.layoutSubtreeIfNeeded()
+            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
+                  window.isVisible, window.occlusionState.contains(.visible),
+                  NSApp.modalWindow == nil, window.attachedSheet == nil,
+                  let marker = position.marker, marker.window === window,
+                  marker.bounds.width == 250, let model = marker.layer,
+                  let presented = model.presentation(), let root = window.contentView?.layer,
+                  let presentedRoot = root.presentation() else { return false }
+            return abs(presented.convert(.zero, to: presentedRoot).x - model.convert(.zero, to: root).x) < 0.125
+        }
+        nativeOrigin = try XCTUnwrap(position.marker?.layer).convert(.zero,
+            to: window.contentView?.layer).x
         if !clicking {
             store.spaceSwiping = true
             store.spaceDrag = -90
         }
-        // Mount the actual sliding modifier before measuring its completion.
-        try await Task.sleep(for: .milliseconds(50))
-        nativeOrigin = try XCTUnwrap(position.marker?.layer?.presentation()).convert(.zero,
-            to: window.contentView?.layer?.presentation()).x - store.spaceDrag
+        // Admit the exact held presentation, rather than any non-nil layer. This
+        // is setup; the landing action and its unchanged outcome clock start below.
+        try await compatibilityWait {
+            guard let layer = position.marker?.layer?.presentation(),
+                  let root = window.contentView?.layer?.presentation() else { return false }
+            return abs(layer.convert(.zero, to: root).x - nativeOrigin - store.spaceDrag) < 0.125
+        }
 
         let start = ProcessInfo.processInfo.systemUptime
         if clicking { monitor.select(second, in: store) }

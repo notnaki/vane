@@ -55,18 +55,45 @@ final class SpaceSwipeCommitTests: XCTestCase {
         XCTAssertEqual(Spaces.Swipe.commit(travel: -40, speed: -1100, width: 250, count: 3, index: 1), 1)
     }
 
-    func testReleasingAFullRingAtTheLastSpaceOpensCreate() {
+    func testDeliberatePullAtTheLastSpaceOpensCreateOnRelease() {
         var swipe = Spaces.Swipe()
         _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: 2, create: true)
-        _ = swipe.feed(dx: -100, dt: 0.5, phase: .changed, width: 250, count: 3, index: 2, create: true)
+        _ = swipe.feed(dx: -230, dt: 0.5, phase: .changed, width: 250, count: 3, index: 2, create: true)
         XCTAssertEqual(swipe.feed(dx: 0, dt: 0.01, phase: .ended, width: 250, count: 3, index: 2, create: true).commit, 1)
         XCTAssertNil(swipe.feed(dx: -100, dt: 0.01, phase: .momentum, width: 250, count: 3, index: 2, create: true).commit)
     }
+    func testQuickLongPullNeverOpensCreationEvenOnRelease() {
+        for count in [1, 3] {
+            var swipe = Spaces.Swipe()
+            _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: count, index: count - 1, create: true)
+            let held = swipe.feed(dx: -300, dt: 0.04, phase: .changed, width: 250, count: count, index: count - 1, create: true)
+            XCTAssertNil(held.commit, "A fast overswipe must not open the form under the fingers")
+            XCTAssertNil(swipe.feed(dx: 0, dt: 0.01, phase: .ended, width: 250, count: count, index: count - 1, create: true).commit)
+        }
+    }
+
+    func testFullDeliberatePullCanReverseBeforeRelease() {
+        var swipe = Spaces.Swipe()
+        _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: 2, create: true)
+        XCTAssertNil(swipe.feed(dx: -230, dt: 0.5, phase: .changed, width: 250, count: 3, index: 2, create: true).commit)
+        _ = swipe.feed(dx: 170, dt: 0.3, phase: .changed, width: 250, count: 3, index: 2, create: true)
+        XCTAssertNil(swipe.feed(dx: 0, dt: 0.01, phase: .ended, width: 250, count: 3, index: 2, create: true).commit)
+    }
+
+    func testOldCreationDistanceAndFullRingOnlySpringBack() {
+        for distance: CGFloat in [80, 100, 150] {
+            var swipe = Spaces.Swipe()
+            _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: 2, create: true)
+            XCTAssertNil(swipe.feed(dx: -distance, dt: 0.5, phase: .changed, width: 250, count: 3, index: 2, create: true).commit)
+            XCTAssertNil(swipe.feed(dx: 0, dt: 0.01, phase: .ended, width: 250, count: 3, index: 2, create: true).commit)
+        }
+    }
+
     func testCancelledSwipeDoesNotSwitchOrOpenCreate() {
         for index in [1, 2] {
             var swipe = Spaces.Swipe()
             _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: index, create: true)
-            _ = swipe.feed(dx: index == 1 ? -50 : -100, dt: 0.5, phase: .changed,
+            _ = swipe.feed(dx: index == 1 ? -50 : -230, dt: 0.5, phase: .changed,
                            width: 250, count: 3, index: index, create: true)
             XCTAssertNil(swipe.feed(dx: 0, dt: 0.01, phase: .cancelled, width: 250, count: 3, index: index, create: true).commit)
             XCTAssertNil(swipe.feed(dx: 0, dt: 0.01, phase: .ended, width: 250, count: 3, index: index, create: true).commit)
@@ -80,7 +107,7 @@ final class SpaceSwipeCommitTests: XCTestCase {
             _ = swipe.feed(dx: -20, dt: 0.01, phase: .changed, width: 250, count: count, index: count - 1, create: true)
             XCTAssertNil(swipe.feed(dx: 0, dt: 0.01, phase: .ended, width: 250, count: count, index: count - 1, create: true).commit)
             _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: count, index: count - 1, create: true)
-            _ = swipe.feed(dx: -80, dt: 0.5, phase: .changed, width: 250, count: count, index: count - 1, create: true)
+            _ = swipe.feed(dx: -230, dt: 0.5, phase: .changed, width: 250, count: count, index: count - 1, create: true)
             XCTAssertEqual(swipe.feed(dx: 0, dt: 0.01, phase: .ended, width: 250, count: count, index: count - 1, create: true).commit, 1)
         }
     }
