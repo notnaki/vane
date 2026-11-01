@@ -23,6 +23,27 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
 @MainActor final class PasswordAutofillTests: XCTestCase {
     private var nativeFixtureProfiles: Set<UUID> = []
     private var fixtureWallNow: () -> Date = { .now }
+    private var continuationDiagnosticRecords: [String] = []
+    private var continuationDiagnosticDropped = 0
+
+    private func bufferContinuationDiagnostic(phase: String, _ state: String) {
+        guard continuationDiagnosticRecords.count < 96 else {
+            continuationDiagnosticDropped += 1
+            return
+        }
+        continuationDiagnosticRecords.append("F17_CONTINUATION case=\(String(reflecting: name)) " +
+            "phase=\(phase) uptime=\(ProcessInfo.processInfo.systemUptime) \(state)")
+    }
+
+    private func flushContinuationDiagnostics() {
+        for record in continuationDiagnosticRecords { NativeFixtureDiagnostics.emit(record) }
+        if continuationDiagnosticDropped > 0 {
+            NativeFixtureDiagnostics.emit("F17_CONTINUATION case=\(String(reflecting: name)) " +
+                "phase=diagnostic-overflow dropped=\(continuationDiagnosticDropped)")
+        }
+        continuationDiagnosticRecords.removeAll(keepingCapacity: true)
+        continuationDiagnosticDropped = 0
+    }
     override func tearDown() async throws {
         try await releaseNativeFixtureProfiles()
     }
@@ -57,6 +78,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             let web = tab.web
             let window = try XCTUnwrap(web.window)
             @MainActor func assertReady(file: StaticString = #filePath, line: UInt = #line) {
+                XCTAssertEqual(NSApplication.shared.activationPolicy(), .accessory, file: file, line: line)
                 XCTAssertTrue(NSRunningApplication.current.isFinishedLaunching, "The native fixture host must complete AppKit launch", file: file, line: line)
                 XCTAssertTrue(NSApplication.shared.isRunning, "The native fixture must retain its real AppKit loop", file: file, line: line)
                 XCTAssertTrue(NSApplication.shared.isActive, "The native account-selection fixture needs an active test host", file: file, line: line)
@@ -207,9 +229,10 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
-        if policy == .prohibited { app.setActivationPolicy(.accessory) }
         defer { app.setActivationPolicy(policy) }
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        // Bind admission to the intended policy, not a transient getter after
+        // an earlier fixture's asynchronous restoration/request.
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do {
             let (web, capture) = try await fixture(html, foreground: true)
@@ -220,6 +243,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 window.contentView = nil
                 window.close()
             }
+            try loop.verifyRunning()
             try await body(web, capture)
         } catch { failure = error }
         do { try await loop.close() }
@@ -422,6 +446,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
 
     func testDocumentNotificationFixtureOwnsAnActiveAppKitContext() async throws {
         try await withDocumentFixture("<form><input autocomplete=username></form>") { web, _ in
+            XCTAssertEqual(NSApplication.shared.activationPolicy(), .accessory)
             let window = try XCTUnwrap(web.window)
             XCTAssertTrue(NSApplication.shared.isRunning, "Live WebKit notifications require an owned AppKit loop")
             XCTAssertTrue(nativeContinuationReady(window, document: web),
@@ -563,7 +588,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     /// One bounded scalar record per admission/idle sample; no WindowServer probes.
     private func emitNativeContinuationReadiness(_ window: NSWindow, document: NSView, stage: StaticString) {
         let app = NSApplication.shared, running = NSRunningApplication.current
-        print("Native continuation readiness: stage=\(stage), ready=\(nativeContinuationReady(window, document: document)), " +
+        bufferContinuationDiagnostic(phase: "owner-\(stage)",
+              "window=\(ObjectIdentifier(window)), document=\(ObjectIdentifier(document)), " +
+              "stage=\(stage), ready=\(nativeContinuationReady(window, document: document)), " +
               "appRunning=\(app.isRunning), finishedLaunching=\(running.isFinishedLaunching), active=\(app.isActive), " +
               "appHidden=\(app.isHidden), runningHidden=\(running.isHidden), exactKey=\(app.keyWindow === window), " +
               "windowKey=\(window.isKeyWindow), windowVisible=\(window.isVisible), miniaturized=\(window.isMiniaturized), " +
@@ -577,6 +604,11 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
 
     private func withNativeContinuationFixture(origin: PasswordOrigin = PasswordOrigin(host: "continuation.example.test"),
                                                 _ body: (Tab, PasswordOrigin) async throws -> Void) async throws {
+        continuationDiagnosticRecords.removeAll(keepingCapacity: true)
+        continuationDiagnosticDropped = 0
+        // Emit only after body assertions, document teardown and loop join. Keep
+        // diagnostic I/O outside username admission and the navigation outcome.
+        defer { flushContinuationDiagnostics() }
         TestEnvironment.prepare()
         let profile = UUID()
         defer { Passwords.deleteAll(profileID: profile) }
@@ -587,10 +619,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         let app = NSApplication.shared
         let previousPolicy = app.activationPolicy()
         defer { app.setActivationPolicy(previousPolicy) }
-        let policyRequestAccepted: Bool?
-        if previousPolicy == .prohibited { policyRequestAccepted = app.setActivationPolicy(.accessory) }
-        else { policyRequestAccepted = nil }
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var fixtureError: (any Error)?
         do {
             let tab = Tab(profileID: profile)
@@ -618,7 +647,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                     (openValue as? [Any])?.isEmpty == true
                 return "appActive=\(app.isActive), windowKey=\(window.isKeyWindow), windowVisible=\(window.isVisible), " +
                     "windowOcclusion=\(window.occlusionState.rawValue), onScreen=\(NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) }), " +
-                    "priorPolicy=\(previousPolicy.rawValue), policyRequestAccepted=\(policyRequestAccepted.map(String.init) ?? "not-requested"), " +
+                    "priorPolicy=\(previousPolicy.rawValue), requestedPolicy=\(NSApplication.ActivationPolicy.accessory.rawValue), " +
                     "appPolicy=\(app.activationPolicy().rawValue), runningPolicy=\(running.activationPolicy.rawValue), " +
                     "runningActive=\(running.isActive), finishedLaunching=\(running.isFinishedLaunching), appRunning=\(app.isRunning), " +
                     "appDelegateNil=\(app.delegate == nil), NSOpenAbsentOrEmpty=\(openAbsentOrEmpty), " +
@@ -628,9 +657,11 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                     self.nativeWindowVisibilityState(window)
             }) {
                 // The owned AppKit loop supplies event dispatch and deferred drawing.
+                try loop.verifyRunning()
                 return nativeContinuationReady(window, document: web)
             }
             emitNativeContinuationReadiness(window, document: web, stage: "admission")
+            try loop.verifyRunning()
             try await body(tab, origin)
         } catch { fixtureError = error }
         do { try await loop.close() }
@@ -731,16 +762,34 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         #if DEBUG
         let stages = NavigationStages()
         let previousObserver = tab.navigationStageObserver
-        tab.navigationStageObserver = { [weak stages] event in
+        tab.navigationStageObserver = { [weak self, weak stages] event in
             previousObserver?(event)
             stages?.append(event)
+            self?.bufferContinuationDiagnostic(phase: "navigation-\(event.stage)",
+                "path=\(path) identity=\(String(describing: event.identity)) \(event.detail)")
         }
         defer { tab.navigationStageObserver = previousObserver }
         #endif
         let before = continuationLoadState(tab, web: web, requestedURL: url)
+        #if DEBUG
+        let documentScope = Tab.UsernameStepScope(tab: tab, web: web).document.uuidString
+        #else
+        let documentScope = "unavailable"
+        #endif
+        bufferContinuationDiagnostic(phase: "sdk-request-document-before-guard",
+            "path=\(path) tab=\(tab.id) web=\(ObjectIdentifier(web)) " +
+                "documentScope=\(documentScope) state={\(before)}")
+        if let window = web.window {
+            emitNativeContinuationReadiness(window, document: web, stage: "sdk-request-before-guard")
+        } else {
+            bufferContinuationDiagnostic(phase: "owner-sdk-request-before-guard",
+                "path=\(path) web=\(ObjectIdentifier(web)) window=nil ready=false")
+        }
         try beforeRequest?()
         let navigationID = ObjectIdentifier(web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html))
         let after = continuationLoadState(tab, web: web, requestedURL: url)
+        bufferContinuationDiagnostic(phase: "sdk-request-returned",
+            "path=\(path) navigation=\(navigationID) state={\(after)}")
         try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
             #if DEBUG
             NativeFixtureDiagnostics.emit("continuation callback stages: " + stages.snapshot(expected: navigationID))
@@ -930,6 +979,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             // `false` is a genuine processed denial, never the initial absent ACK.
             if receipt.evaluation != nil, receipt.processed != nil,
                nativeContinuationReady(window, document: web) {
+                bufferContinuationDiagnostic(phase: "username-processing-admitted",
+                    "tab=\(tab.id) web=\(ObjectIdentifier(web)) documentScope=\(scope.document) " +
+                        receipt.diagnostics)
                 // Recheck at the actual SDK request, across the async return and
                 // failure-state getters, without starting another prerequisite budget.
                 return {
@@ -1111,6 +1163,172 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     }
 
     func testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep() async throws {
+        try await exerciseEmbeddedSelection(control: .none)
+    }
+
+    func testEmbeddedSelectionAwaitsRealNativeFillCompletion() async throws {
+        try await exerciseEmbeddedSelection(control: .heldReply)
+    }
+
+    func testEmbeddedDOMOnlyAdmissionFailsWithRealFillReplyHeld() async throws {
+        do {
+            try await exerciseEmbeddedSelection(control: .domOnlyMutation)
+            XCTFail("DOM-only admission must fail while the real native completion is held")
+        } catch let failure as FixtureFailure {
+            XCTAssertTrue(failure.cause is PrematureFillAdmission)
+        }
+    }
+
+    private enum EmbeddedFillControl { case none, heldReply, domOnlyMutation }
+    private struct PrematureFillAdmission: Error {}
+
+    @MainActor private final class FillHoldFrame: NSObject, WKScriptMessageHandler {
+        var frame: WKFrameInfo?
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            if !message.frameInfo.isMainFrame { frame = message.frameInfo }
+        }
+    }
+
+    func testFillReplyHoldForwardsOtherReceiversScriptsFramesWorldsAndNilCompletion() async throws {
+        try await withDocumentFixture("<iframe id=embedded srcdoc='<p>child</p>'></iframe>") { web, _ in
+            let capture = FillHoldFrame(), controller = web.configuration.userContentController
+            controller.add(capture, contentWorld: .page, name: "fillHoldFrame")
+            defer { controller.removeScriptMessageHandler(forName: "fillHoldFrame", contentWorld: .page) }
+            try await wait {
+                try await js(web, "embedded.contentDocument.URL === 'about:srcdoc' && embedded.contentDocument.readyState === 'complete'") as? Bool == true
+            }
+            _ = try await js(web, "embedded.contentWindow.eval('webkit.messageHandlers.fillHoldFrame.postMessage(1)'); true")
+            try await wait { capture.frame != nil }
+            let frame = try XCTUnwrap(capture.frame)
+            let config = WKWebViewConfiguration()
+            config.websiteDataStore = .nonPersistent()
+            let other = WKWebView(frame: CGRect(x: 0, y: 0, width: 120, height: 120), configuration: config)
+            let window = NSWindow(contentRect: try XCTUnwrap(web.window).frame,
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = other
+            window.orderFront(nil)
+            defer { other.stopLoading(); window.contentView = nil; window.close() }
+            other.loadSimulatedRequest(URLRequest(url: URL(string: "https://login.example.test/other")!),
+                                       responseHTML: "<p>other</p>")
+            try await wait { !other.isLoading }
+            let script = "globalThis.__fillHoldProbe = (globalThis.__fillHoldProbe || 0) + 1; true"
+            let hold = try PasswordFillCompletionHold(web: web, script: script)
+            defer {
+                do { try hold.close(); try hold.dispose() }
+                catch { XCTFail("Pass-through gate cleanup failed: \(error)") }
+            }
+            var replies = 0
+            let reply: @MainActor @Sendable (Result<Any, Error>) -> Void = { result in
+                if case .failure(let error) = result { XCTFail("Real pass-through SDK evaluation failed: \(error)") }
+                replies += 1
+            }
+            other.evaluateJavaScript(script, in: nil, in: Autofill.world, completionHandler: reply)
+            web.evaluateJavaScript("true", in: nil, in: Autofill.world, completionHandler: reply)
+            web.evaluateJavaScript(script, in: nil, in: .page, completionHandler: reply)
+            web.evaluateJavaScript(script, in: frame, in: Autofill.world, completionHandler: reply)
+            web.__evaluateJavaScript(script, inFrame: nil, in: Autofill.world, completionHandler: nil)
+            try await wait { replies == 4 }
+            XCTAssertEqual(hold.matchedCalls, 0, "No nonmatching or nullable consumer may be held")
+            expectEqual(try await js(web, "globalThis.__fillHoldProbe", world: Autofill.world) as? Int, 1)
+            expectEqual(try await js(web, "globalThis.__fillHoldProbe", world: .page) as? Int, 1)
+            expectEqual(try await js(other, "globalThis.__fillHoldProbe", world: Autofill.world) as? Int, 1)
+            var childValue: Int?
+            web.evaluateJavaScript("globalThis.__fillHoldProbe", in: frame, in: Autofill.world) { result in
+                childValue = try? result.get() as? Int
+            }
+            try await wait { childValue != nil }
+            XCTAssertEqual(childValue, 1)
+        }
+    }
+
+    func testFillReplyHoldForwardsRealSDKError() async throws {
+        try await withDocumentFixture("<p>error control</p>") { web, _ in
+            let script = "throw new Error('explicit-fill control')"
+            let hold = try PasswordFillCompletionHold(web: web, script: script)
+            defer {
+                do { try hold.close(); try hold.dispose() }
+                catch { XCTFail("Error gate cleanup failed: \(error)") }
+            }
+            var actualError: Error?
+            web.evaluateJavaScript(script, in: nil, in: Autofill.world) { result in
+                if case .failure(let error) = result { actualError = error }
+            }
+            try await wait { actualError != nil }
+            XCTAssertEqual((actualError as? WKError)?.code, .javaScriptExceptionOccurred)
+            XCTAssertEqual(hold.capturedReplies, 0)
+            XCTAssertEqual(hold.deliveredReplies, 1)
+            XCTAssertThrowsError(try hold.check())
+        }
+    }
+
+    func testFillReplyHoldRestoresAndReleasesOnEarlyThrow() async throws {
+        enum EarlyExit: Error { case injected }
+        try await withDocumentFixture("<p>throw control</p>") { web, _ in
+            let hold = try PasswordFillCompletionHold(web: web, script: "true")
+            defer {
+                do { try hold.close(); try hold.dispose() }
+                catch { XCTFail("Throw gate cleanup failed: \(error)") }
+            }
+            var replies = 0
+            @MainActor func throwingBody() async throws {
+                defer {
+                    do { try hold.close() }
+                    catch { XCTFail("Early throw failed to restore its owned IMP: \(error)") }
+                }
+                web.evaluateJavaScript("true", in: nil, in: Autofill.world) { result in
+                    self.expectTrue((try? result.get() as? Bool) == true)
+                    replies += 1
+                    hold.release()
+                    do { try hold.close() }
+                    catch { XCTFail("Reentrant close failed: \(error)") }
+                }
+                try await wait { hold.isHoldingReply }
+                throw EarlyExit.injected
+            }
+            do { try await throwingBody(); XCTFail("Expected early throw") }
+            catch EarlyExit.injected {}
+            XCTAssertTrue(hold.restored)
+            XCTAssertEqual(replies, 1)
+            XCTAssertEqual(hold.deliveredReplies, 1)
+            hold.release()
+            XCTAssertEqual(replies, 1, "Reentrant and repeated release must not redeliver")
+        }
+    }
+
+    func testFillReplyHoldCancellationRestoresBeforeLateSDKReply() async throws {
+        try await withDocumentFixture("<p>cancellation control</p>") { web, _ in
+            let hold = try PasswordFillCompletionHold(web: web, script: "true")
+            defer {
+                do { try hold.close(); try hold.dispose() }
+                catch { XCTFail("Cancellation gate cleanup failed: \(error)") }
+            }
+            var replies = 0, pendingAtCancellation = 0
+            let worker = Task { @MainActor in
+                defer {
+                    do { try hold.close() }
+                    catch { XCTFail("Cancellation failed to restore its owned IMP: \(error)") }
+                }
+                web.evaluateJavaScript("true", in: nil, in: Autofill.world) { result in
+                    self.expectTrue((try? result.get() as? Bool) == true)
+                    replies += 1
+                }
+                pendingAtCancellation = hold.pendingReplies
+                withUnsafeCurrentTask { $0?.cancel() }
+                try Task.checkCancellation()
+            }
+            do { try await worker.value; XCTFail("Expected cancellation") }
+            catch is CancellationError {}
+            XCTAssertEqual(pendingAtCancellation, 1, "Cancel before WebKit delivers its real reply")
+            XCTAssertTrue(hold.restored)
+            try await wait { replies == 1 }
+            XCTAssertEqual(hold.capturedReplies, 0, "A reply arriving after close must pass through")
+            XCTAssertEqual(hold.deliveredReplies, 1)
+            XCTAssertEqual(hold.pendingReplies, 0)
+        }
+    }
+
+    private func exerciseEmbeddedSelection(control: EmbeddedFillControl) async throws {
         try await withNativeContinuationFixture { tab, origin in
             try await loadContinuationPage(tab, origin: origin, path: "login", html:
                 "<iframe id=embedded srcdoc='<form><input id=user autocomplete=username></form>'></iframe>")
@@ -1140,9 +1358,63 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             }
             let choice = try XCTUnwrap(tab.passwordChoice)
             let target = try XCTUnwrap(choice.target)
+            let web = tab.web, profile = tab.profileID, outgoingURL = web.url
+            #if DEBUG
+            let scope = Tab.UsernameStepScope(tab: tab, web: web)
+            #endif
+            let useKey = origin.key(account: "bob")
+            XCTAssertNil(Passwords.lastUsed(profileID: profile)[useKey],
+                         "A fresh profile must have no receipt before its only explicit fill")
+            let hold = control == .none ? nil : try PasswordFillCompletionHold(web: web,
+                script: Autofill.fillJS(account: "bob", password: "bob-secret", automatic: false,
+                                       target: target, continuation: false))
+            defer {
+                do { try hold?.close(); try hold?.dispose() }
+                catch { XCTFail("Explicit-fill callback cleanup failed: \(error)") }
+            }
+            var observedHeldBoundary = false
             tab.fillChosen(host: choice.host, account: "bob", port: choice.port, target: target)
             try await wait(for: "explicitly chosen account to fill the embedded username") {
-                try await js(tab.web, "embedded.contentDocument.getElementById('user').value") as? String == "bob"
+                let snapshot = try await js(web, """
+                    (() => {
+                        const frame = document.getElementById('embedded');
+                        const child = frame && frame.contentDocument;
+                        const user = child && child.getElementById('user');
+                        const raw = window.__vaneAnchor && window.__vaneAnchor();
+                        const anchor = raw && JSON.parse(raw);
+                        return {filled: !!(frame && frame.isConnected && user && user.isConnected &&
+                            user.ownerDocument === child && user.value === 'bob'),
+                            target: anchor && anchor.target || ''};
+                    })()
+                    """, world: Autofill.world) as? [String: Any]
+                var sameDocument = tab.existingWeb === web && tab.profileID == profile &&
+                    web.url == outgoingURL && tab.currentURL == outgoingURL
+                #if DEBUG
+                sameDocument = sameDocument && Tab.UsernameStepScope(tab: tab, web: web) == scope
+                #endif
+                guard sameDocument else { throw FixtureTimeout(stage: "explicit fill outgoing scope changed") }
+                try hold?.check()
+                let domAndTarget = snapshot?["filled"] as? Bool == true && snapshot?["target"] as? String == target
+                let receipt = Passwords.lastUsed(profileID: profile)[useKey] != nil
+                // This is the actual shared admission predicate. The mutation case
+                // removes only its native receipt requirement, not the held check.
+                let ready = domAndTarget && (control == .domOnlyMutation || receipt)
+                if let hold, hold.isHoldingReply, domAndTarget {
+                    observedHeldBoundary = true
+                    guard !ready else { throw PrematureFillAdmission() }
+                    hold.release()
+                    // Return the sampled predicate, not a forced false. A later
+                    // sample must observe the actual native completion receipt.
+                }
+                return ready
+            }
+            if let hold {
+                XCTAssertTrue(observedHeldBoundary)
+                XCTAssertEqual(hold.matchedCalls, 1)
+                XCTAssertEqual(hold.capturedReplies, 1)
+                XCTAssertEqual(hold.deliveredReplies, 1)
+                try hold.close()
+                try hold.dispose()
             }
             _ = try await js(tab.web, "document.body.innerHTML='<form><input autocomplete=username value=bob></form>'")
             try await submitUsernameAndLoadPassword(tab, origin: origin)
