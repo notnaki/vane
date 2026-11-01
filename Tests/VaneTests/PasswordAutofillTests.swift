@@ -758,6 +758,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String,
                                       beforeRequest: (@MainActor () throws -> Void)? = nil) async throws {
         let web = tab.web, url = origin.url.appendingPathComponent(path)
+        let lagProbe = NativeNavigationLagProbe(label: path)
         let started = Date.now
         #if DEBUG
         let stages = NavigationStages()
@@ -790,7 +791,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         let after = continuationLoadState(tab, web: web, requestedURL: url)
         bufferContinuationDiagnostic(phase: "sdk-request-returned",
             "path=\(path) navigation=\(navigationID) state={\(after)}")
-        try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
+        do { try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
             #if DEBUG
             NativeFixtureDiagnostics.emit("continuation callback stages: " + stages.snapshot(expected: navigationID))
             NativeFixtureDiagnostics.emit("continuation observer ownership: delegateIsTab=\(web.navigationDelegate === tab), currentView=\(tab.existingWeb === web), observerInstalled=\(tab.navigationStageObserver != nil)")
@@ -801,7 +802,8 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             return state + "; " + (await NativeFixtureDiagnostics.failureReport(for: web))
         }) {
             return !web.isLoading
-        }
+        } } catch { await lagProbe?.close(); throw error }
+        await lagProbe?.close()
         if Date.now.timeIntervalSince(started) >= 0.5 {
             print("Continuation fixture \(path) loaded in \(Date.now.timeIntervalSince(started))s")
         }
