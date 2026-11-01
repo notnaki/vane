@@ -60,9 +60,13 @@ for slot in attempt_slots:
     slot.update(argv=['python3','scripts/run-native-tests.py','--build-system','native','--skip-build','--jobs','1','--filter',pattern],raw_log=str(OUT/(('control-' if mode=='controls' else 'original18-')+str(slot['attempt'])+'.log')),result_json=str(OUT/(('control-' if mode=='controls' else 'original18-')+str(slot['attempt'])+'.result.json')))
 schedule=[{'attempt':slot['attempt'],'cohort':slot['cohort'],'status':'NOT RUN'} for slot in attempt_slots];(OUT/'execution-plan.json').write_text(json.dumps(schedule,indent=2)+'\n')
 smoke_env=dict(clean_env,VANE_APPKIT_LOOP_SMOKE='1',VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT='90')
+smoke_audit=OUT/'smoke-audit';smoke_audit.mkdir(mode=0o700,exist_ok=False)
 with (OUT/'smoke.log').open('xb') as stream:
-    smoke=subprocess.run(['python3','scripts/run-native-tests.py','--build-system','native','--skip-build','--jobs','1','--filter','^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$'],env=smoke_env,stdout=stream,stderr=subprocess.STDOUT)
+    smoke=subprocess.run(['python3',str(HELPERS/'f17_canonical_boundary_audit.py'),'--audit-dir',str(smoke_audit),'--','--build-system','native','--skip-build','--jobs','1','--filter','^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$'],env=smoke_env,stdout=stream,stderr=subprocess.STDOUT)
 checkpoint('after-smoke');smoke_text=(OUT/'smoke.log').read_text();assert smoke.returncode==0 and 'AppKit loop smoke: delayedHeartbeat=true, completed=true' in smoke_text and 'Native suite primary status=0; cleanup status=0' in smoke_text
+smoke_proof=json.loads((smoke_audit/'boundary-proof.json').read_text())
+assert smoke_proof['proof_complete'] is True and smoke_proof['canonical_status']==0 and smoke_proof['qualification_exit']==0
+assert smoke_proof['protocol']=='native-self-kernel-and-canonical-boundary-v1' and smoke_proof['external_initial_live_observation_performed'] is False
 assert not re.search(r'^\*\*\* Signal [0-9]+:',smoke_text,re.M)
 assert all(not Path(slot['raw_log']).exists() and not Path(slot['result_json']).exists() for slot in attempt_slots)
 sys.path.insert(0,str(HELPERS));from spell_trace_validation import validate,validate_original18
