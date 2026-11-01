@@ -80,6 +80,70 @@ import XCTest
                        "Icon size must follow the fingers before the page selection commits")
     }
 
+    func testCompactHoverCannotReviveTheOutgoingIconAfterLanding() async throws {
+        TestEnvironment.prepare()
+        let policy = NSApplication.shared.activationPolicy()
+        defer { NSApp.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do {
+            let (presentation, stores, ids, window, views) = try fixture()
+            window.styleMask = [.titled]
+            let view = views[0]
+            let layout = SpaceStripLayout(count: 2, availableWidth: 64, showIcons: false)
+            func mount(hovered: Bool) {
+                presentation.mount(view, owner: stores[0], id: ids[0], icon: "square.fill",
+                    layout: layout, hovered: hovered, scheme: .dark, reduced: false)
+            }
+            mount(hovered: true)
+            try await LibraryFocusFixture.admitForeground(window)
+            let marker = try XCTUnwrap(view.marker)
+            try await compatibilityWait {
+                window.contentView?.layoutSubtreeIfNeeded()
+                return NSApp.isRunning && window.isKeyWindow && window.occlusionState.contains(.visible)
+                    && view.window === window && marker.view === view
+                    && marker.layer.superlayer === view.layer && marker.symbol.presentation() != nil
+            }
+            presentation.track(origin: ids[0], target: ids[1], fraction: 0.5)
+            CATransaction.flush()
+            // Establish a presented finger position before completing the landing.
+            try await compatibilityWait { abs((marker.symbol.presentation()?.opacity ?? -1) - 0.5) < 0.02 }
+            let timing = CABasicAnimation(keyPath: "position")
+            timing.duration = 0.8
+            timing.timingFunction = CAMediaTimingFunction(name: .linear)
+            presentation.animate(origin: ids[0], target: ids[1], from: 0.5, to: 1, timing: timing)
+            CATransaction.flush()
+            // Sample early travel directly; do not wait for an opacity outcome.
+            try await Task.sleep(for: .milliseconds(30))
+            let earlyOpacity = try XCTUnwrap(marker.symbol.presentation()).opacity
+            XCTAssertGreaterThan(earlyOpacity, 0.1)
+            XCTAssertLessThan(earlyOpacity, 0.5)
+            mount(hovered: false)
+            XCTAssertEqual(marker.symbol.animation(forKey: "space-emphasis")?.duration, 0.8,
+                           "Compact hover must preserve the landing's original compositor clock")
+            presentation.activate(stores[1])
+            presentation.finishProgress()
+            XCTAssertEqual(marker.symbol.opacity, 0)
+            XCTAssertNil(marker.symbol.animation(forKey: "space-emphasis"))
+            // SwiftUI can deliver a hover update in the same landing commit.
+            // Its presentation layer still contains the pre-landing ink.
+            presentation.mount(view, owner: stores[1], id: ids[0], icon: "square.fill",
+                layout: layout, hovered: true, scheme: .dark, reduced: false)
+            XCTAssertNil(marker.symbol.animation(forKey: "space-emphasis"),
+                         "A compact hover change must not fade an already hidden icon out a second time")
+            CATransaction.flush()
+            try await Task.sleep(for: .milliseconds(30))
+            XCTAssertEqual(try XCTUnwrap(marker.symbol.presentation()).opacity, 0, accuracy: 0.02,
+                           "The outgoing icon must remain hidden in the first frame after landing")
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Footer regression AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
     func testBatterySaverLandingKeepsSpaceProgressOnTheCompositorClock() throws {
         let (presentation, _, ids, _, views) = try fixture()
         let previous = BatterySaver.shared.mode
