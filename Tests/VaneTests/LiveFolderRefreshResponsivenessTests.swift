@@ -40,6 +40,20 @@ private actor LiveRefreshEpochGate {
     }
 }
 
+@MainActor private final class LiveRefreshResponseGate {
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 @MainActor final class LiveFolderRefreshResponsivenessTests: XCTestCase {
     private func fixture() -> (TabStore, Folder) {
         TestEnvironment.prepare()
@@ -61,12 +75,17 @@ private actor LiveRefreshEpochGate {
     func testBlockedCredentialLaneLeavesFocusResponsiveAndCoalescesRefreshes() async throws {
         let (store, folder) = fixture()
         let gate = LiveRefreshReadGate()
-        defer { gate.release() }
+        let response = LiveRefreshResponseGate()
+        defer { gate.release(); response.release() }
         var fetches = 0
         let live = LiveFolders(profileID: store.profileID,
             readCredential: { XCTFail("Automatic refresh must not use the synchronous reader"); return .missing },
             readCredentialAsync: { (try? await Passwords.perform { gate.read() }) ?? .unavailable(-25308) },
-            fetchPullRequests: { _, _ in fetches += 1; return .success([]) })
+            fetchPullRequests: { _, _ in
+                fetches += 1
+                if fetches == 1 { await response.wait() }
+                return .success([])
+            })
         let began = ContinuousClock.now
         live.refreshAll()
         XCTAssertLessThan(began.duration(to: .now), .milliseconds(250))
@@ -78,6 +97,12 @@ private actor LiveRefreshEpochGate {
         XCTAssertEqual(fetches, 0, "The main actor can run while Keychain is held")
         gate.release()
         try await compatibilityWait { fetches == 1 }
+        XCTAssertNil(live.rows[folder.id], "Entering the fetch callback is not refresh completion")
+        response.release()
+        // Refresh Now bypasses the rate floor, not an in-flight request. Admit
+        // the applied response before checking either trigger's idle behavior.
+        try await compatibilityWait { live.rows[folder.id] != nil }
+        XCTAssertEqual(live.rows[folder.id]?.count, 0)
         XCTAssertEqual(live.signIn?.login, "fixture")
         live.refreshAll()
         XCTAssertEqual(fetches, 1, "Ordinary refresh keeps its rate floor")
