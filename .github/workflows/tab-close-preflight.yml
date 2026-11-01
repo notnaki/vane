@@ -1,0 +1,83 @@
+name: Tab close focused preflight
+on:
+  push:
+    branches: [codex/tab-close-latency-preflight]
+permissions:
+  contents: read
+concurrency:
+  group: tab-close-focused-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  focused:
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+      - name: Identify Swift toolchain
+        id: toolchain
+        run: echo "key=$(python3 scripts/ci-build-artifact.py toolchain)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
+          restore-keys: |
+            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - name: Restore unchanged source timestamps
+        run: python3 scripts/ci-source-state.py restore
+      - name: Build focused native runtime
+        run: swift build --build-system native -c debug --build-tests
+      - name: Admit owned AppKit loop
+        env:
+          VANE_APPKIT_LOOP_SMOKE: '1'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tab-close-preflight"
+          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/tab-close-preflight/appkit-loop.log"
+          grep -Fq 'AppKit loop smoke: delayedHeartbeat=true, completed=true' "$RUNNER_TEMP/tab-close-preflight/appkit-loop.log"
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/tab-close-preflight/appkit-loop.log"
+      - name: Three preserved focused attempts
+        env:
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '240'
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'tab-close-preflight'
+          root.mkdir(exist_ok=True)
+          selected = 'SpaceSwipePaletteTests|TabCloseLatencyTests|TabClosePublicationTests|SidebarObservationTests|PinnedTabReturnTests|SharedPresentationTests|NativeSidebarMotionTests|WebHostFocusTests|NativeFixtureRetirementManifestTests|NativeFixtureRetirementTests|ThemeWashSurfaceTests|SidebarVisibilityTests'
+          command = ['python3', 'scripts/run-native-tests.py', '--build-system', 'native', '--skip-build', '--jobs', '1', '--filter', selected]
+          results = []
+          for attempt in range(1, 4):
+              path = root / f'attempt-{attempt}.log'
+              with path.open('w') as log:
+                  process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                  for line in process.stdout:
+                      print(line, end='', flush=True)
+                      log.write(line)
+                  status = process.wait()
+              output = path.read_text()
+              required = [
+                  'TabCloseLatencyTests testActiveCloseCommitsPrunedOutlineAndNeighbourPage',
+                  'TabCloseLatencyTests testActivePinnedUnloadKeepsRowWithoutRecreatingPage',
+                  'TabCloseLatencyTests testActiveSplitPaneCloseDoesNotRecreateRetiredPage',
+                  'TabClosePublicationTests testRetiredParkedTabCannotResumeFromALateCallback',
+                  'TabClosePublicationTests testCloseInvalidatesSidebarOnceWithCompletedState',
+                  'NativeFixtureRetirementManifestTests testEmptyRetirementDoesNotAttributeAmbientRegistryChangesToItsOwnRequest',
+                  'NativeFixtureRetirementManifestTests testUnrelatedDisappearanceStillFailsWhenRetirementRemovesAnOwnedBackend',
+                  'NativeFixtureRetirementTests testDeferredRetirementKeepsOwnedBackendUntilHostExit',
+              ]
+              missing = [case for case in required if f"Test Case '-[VaneTests.{case}]' passed" not in output]
+              admissions = output.count('SPLIT_CLOSE_ADMITTED')
+              passed = status == 0 and not missing and admissions == 4 and 'Native suite primary status=0; cleanup status=0' in output and '*** Signal ' not in output
+              results.append({'attempt': attempt, 'status': status, 'passed': passed, 'missing': missing, 'splitAdmissions': admissions})
+              print(json.dumps(results[-1]), flush=True)
+          (root / 'results.json').write_text(json.dumps({'revision': os.environ['GITHUB_SHA'], 'sourceParent': subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip(), 'results': results}, indent=2))
+          sys.exit(0 if all(result['passed'] for result in results) else 1)
+          PYCODE
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: tab-close-focused-attempts
+          path: ${{ runner.temp }}/tab-close-preflight/
+          retention-days: 14
