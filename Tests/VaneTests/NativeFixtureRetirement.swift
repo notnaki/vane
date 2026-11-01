@@ -159,6 +159,9 @@ import XCTest
     /// The deletion plan is explicit ownership intersected with the existing registry.
     /// A fresh registry read verifies absence and preservation after every removal.
     static func retireOwned(_ identifiers: Set<UUID>, registered: () async throws -> Set<UUID>, remove: (UUID) async throws -> Void) async throws {
+        // An empty manifest cannot delete anything. Comparing global registry
+        // snapshots here would attribute another host's retirement to this no-op.
+        guard !identifiers.isEmpty else { return }
         let before = try await registered()
         for identifier in identifiers.intersection(before).sorted(by: { $0.uuidString < $1.uuidString }) {
             try await remove(identifier)

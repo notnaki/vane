@@ -279,8 +279,9 @@ database, keyboard selection, live history changes, and private windows.
 The native tab-close regression mounts the full browser window, closes the active
 page, and verifies that its web view stays released while the neighbour and pruned
 Today outline reach their actual native presentation. Related regressions cover
-pinned-page unload, two- and three-pane split closure, and late resume callbacks
-on retired tabs. The timing fixture is opt-in:
+pinned-page unload, two- and three-pane split closure under normal and Battery
+Saver motion policies, and late resume callbacks on retired tabs. Split fixtures
+verify the actual surviving native owner after the handoff. The timing fixture is opt-in:
 
 ```sh
 VANE_UI_PERFORMANCE=1 python3 scripts/run-native-tests.py --jobs 1 --filter TabCloseLatencyTests

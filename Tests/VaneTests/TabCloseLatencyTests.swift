@@ -140,26 +140,62 @@ import XCTest
         }
     }
 
+    @MainActor private final class WeakPageHost {
+        weak var value: WebHost?
+        init(_ value: WebHost?) { self.value = value }
+    }
+
     func testActiveSplitPaneCloseDoesNotRecreateRetiredPage() async throws {
         try await withLoop {
-            for paneCount in [2, 3] {
-                try await withWindow(count: 10) { store, tabs, window, host in
-                    for index in 2...paneCount { store.addPane(tabs[index].id, beside: tabs[1].id) }
-                    let closing = tabs[paneCount]
-                    try await select(closing, in: store, window: window, host: host)
-                    let visibleIDs = [tabs[0].id, tabs[1].id] + tabs.dropFirst(paneCount + 1).map(\.id)
-                    try await waitForOutline(visibleIDs.map(\.uuidString), in: store, host: host, window: window)
-                    store.close(closing.id)
-                    XCTAssertFalse(store.tabs.contains { $0 === closing })
-                    XCTAssertNil(closing.existingWeb)
-                    XCTAssertEqual(store.splits.count, paneCount == 2 ? 0 : 1)
-                    XCTAssertTrue(tabs[1..<paneCount].contains { $0.id == store.current })
-                    try await compatibilityWait {
-                        host.layoutSubtreeIfNeeded()
-                        return store.active?.existingWeb?.window === window
+            let saver = BatterySaver.shared
+            let oldMode = saver.mode
+            defer { saver.setMode(oldMode) }
+            for mode in [BatterySaver.Mode.off, .alwaysOn] {
+                saver.setMode(mode)
+                for paneCount in [2, 3] {
+                    try await withWindow(count: 10) { store, tabs, window, host in
+                        for index in 2...paneCount { store.addPane(tabs[index].id, beside: tabs[1].id) }
+                        let closing = tabs[paneCount]
+                        try await select(closing, in: store, window: window, host: host)
+                        try await compatibilityWait {
+                            host.layoutSubtreeIfNeeded()
+                            return tabs[1...paneCount].allSatisfy { tab in
+                                guard let page = tab.existingWeb, let owner = page.superview as? WebHost else { return false }
+                                return !tab.suspended && !tab.loading && page.window === window
+                                    && owner.window === window && owner.web === page
+                                    && !page.isHiddenOrHasHiddenAncestor && page.visibleRect.width > 1 && page.visibleRect.height > 1
+                            }
+                        }
+                        let owners = Dictionary(uniqueKeysWithValues: tabs[1..<paneCount].map {
+                            ($0.id, WeakPageHost($0.existingWeb?.superview as? WebHost))
+                        })
+                        let visibleIDs = [tabs[0].id, tabs[1].id] + tabs.dropFirst(paneCount + 1).map(\.id)
+                        try await waitForOutline(visibleIDs.map(\.uuidString), in: store, host: host, window: window)
+                        print("SPLIT_CLOSE_ADMITTED panes=\(paneCount) batterySaver=\(mode.rawValue) systemReduced=\(Motion.spaceReduced)")
+                        store.close(closing.id)
+                        XCTAssertFalse(store.tabs.contains { $0 === closing })
+                        XCTAssertNil(closing.existingWeb)
+                        XCTAssertEqual(store.splits.count, paneCount == 2 ? 0 : 1)
+                        XCTAssertTrue(tabs[1..<paneCount].contains { $0.id == store.current })
+                        do {
+                            try await compatibilityWait {
+                                host.layoutSubtreeIfNeeded()
+                                guard let active = store.active, let page = active.existingWeb,
+                                      let owner = page.superview as? WebHost,
+                                      owner.window === window, owner.web === page,
+                                      page.window === window, !page.isHiddenOrHasHiddenAncestor else { return false }
+                                let previous = owners[active.id]?.value
+                                // A collapse hands the page to the card, while a larger
+                                // split keeps its surviving pane's actual native owner.
+                                return paneCount == 2 ? owner !== previous : owner === previous
+                            }
+                        } catch {
+                            print("SPLIT_CLOSE_TIMEOUT panes=\(paneCount) batterySaver=\(mode.rawValue) current=\(String(describing: store.current)) mounted=\(store.active?.existingWeb?.window === window) parent=\(String(describing: store.active?.existingWeb?.superview))")
+                            throw error
+                        }
+                        try await waitForOutline(visibleIDs.map(\.uuidString), in: store, host: host, window: window)
+                        XCTAssertNil(closing.existingWeb, "A departing split pane must not recreate its retired page")
                     }
-                    try await waitForOutline(visibleIDs.map(\.uuidString), in: store, host: host, window: window)
-                    XCTAssertNil(closing.existingWeb, "A departing split pane must not recreate its retired page")
                 }
             }
         }
