@@ -46,9 +46,14 @@ import XCTest
         try await checkRollout(reduceDuringMotion: false, refreshDuringClose: true)
     }
 
+    func testProtectionRevocationRemovesAnActiveClosingStripImmediately() async throws {
+        try await checkRollout(reduceDuringMotion: false, revokeDuringClose: true)
+    }
+
     private func checkRollout(reduceDuringMotion: Bool, detachDuringStart: Bool = false,
                               largeFolder: Bool = false, startWithSaver: Bool = false,
-                              reduceDuringClose: Bool = false, refreshDuringClose: Bool = false) async throws {
+                              reduceDuringClose: Bool = false, refreshDuringClose: Bool = false,
+                              revokeDuringClose: Bool = false) async throws {
         TestEnvironment.prepare()
         let saver = BatterySaver.shared.mode
         BatterySaver.shared.setMode(startWithSaver ? .alwaysOn : .off)
@@ -56,6 +61,13 @@ import XCTest
         let reduced = Motion.reduced || EnvironmentValues().accessibilityReduceMotion
         print("FOLDER_ROLLOUT_POLICY reduced=\(reduced) system=\(Motion.spaceReduced) saver=\(BatterySaver.shared.isActive)")
         let markers = Markers()
+        let owner = revokeDuringClose ? TabStore(profileID: UUID(), session: []) : nil
+        defer {
+            if let owner {
+                TabStore.all.removeAll { $0 === owner }
+                Store.forget(owner.profileID)
+            }
+        }
         let folder = Folder(name: "Rollout", collapsed: true)
         let childCount = largeFolder ? 300 : 12
         let tabs = (0..<(childCount + 12)).map { _ in Tab(isPrivate: true) }
@@ -70,9 +82,10 @@ import XCTest
         window.orderFront(nil)
         defer { view.detach(); window.contentView = nil; window.close(); SharedTabs.release(tabs) }
         func configure(_ shape: Pins, animation: Animation?) {
+            owner?.pins = shape
             let rows = SidebarRows(tabs: tabs, splits: [], shape: shape).rows
             view.configure(rows: rows, modelIDs: modelIDs, environment: EnvironmentValues(),
-                           transaction: Transaction(animation: animation)) { row, _, _ in
+                           transaction: Transaction(animation: animation), owner: owner) { row, _, _ in
                 Marker(id: row.id, markers: markers)
             }
             view.reconcile(visible: view.bounds)
@@ -167,6 +180,12 @@ import XCTest
                 let hit = view.hitTest(point)
                 XCTAssertFalse(hit === child || hit?.isDescendant(of: child) == true,
                                "Closing rows must stop accepting clicks immediately")
+            }
+            if revokeDuringClose {
+                owner?.lockFolder(folder.id)
+                try await Task.sleep(for: .milliseconds(60))
+                XCTAssertNil(child.window, "Locking must revoke closing visuals without waiting for another configure or animation completion")
+                return
             }
             if reduceDuringClose {
                 BatterySaver.shared.setMode(.alwaysOn)

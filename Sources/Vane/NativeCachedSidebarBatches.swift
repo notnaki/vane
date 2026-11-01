@@ -627,6 +627,20 @@ private final class NativeBatchMouseObservation {
         for retained in inactiveOwners.values { SidebarWarmOwnerBudget.release(retained.budget) }
         inactiveOwners.removeAll()
         inactiveOrder.removeAll()
+        // Authentication can change beneath an already-collapsed outer folder
+        // without changing the section's visible IDs. Revoke its old visuals at
+        // the protection signal, before another configure can carry them forward.
+        for key in Array(groups.keys) {
+            guard let slots = groups[key], slots.contains(where: { $0.rollout?.closing == true }) else { continue }
+            let remaining = slots.filter { $0.rollout?.closing != true }
+            groups[key] = remaining
+            if let entry = cache[key] {
+                entry.host.rootView = makeRoot(slots: remaining, animate: false)
+                batchCounts.rootUpdates += 1
+            }
+            needsReconcile = true
+        }
+        reconcileLastGeometry()
     }
 
     private func mayRetain(_ scope: SidebarNativeReadinessScope?) -> Bool {
