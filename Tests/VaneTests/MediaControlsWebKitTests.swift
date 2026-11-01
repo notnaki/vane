@@ -386,7 +386,24 @@ import XCTest
     }
 
     func testLandingOnSourceTabKeepsTheMinimizedPlayerUntilExplicitlyOpened() async throws {
-        let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        TestEnvironment.prepare()
+        let app = NSApplication.shared, policy = NSApplication.shared.activationPolicy()
+        if policy == .prohibited { app.setActivationPolicy(.accessory) }
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do { try await exerciseLandingOnSourceTab() } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Media fixture loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func exerciseLandingOnSourceTab() async throws {
+        let (tab, sourceWindow) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        defer { tab.tearDown(); sourceWindow.close() }
         let store = TabStore(isPrivate: true)
         let trayWindow = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 250, height: 150),
                                   styleMask: [.titled], backing: .buffered, defer: false)
@@ -399,12 +416,30 @@ import XCTest
             trayWindow.close()
             TabStore.all.removeAll { $0 === store }
         }
+        try await LibraryFocusFixture.admitForeground(sourceWindow)
         try await wait { MediaState.shared.info(for: tab.id)?.playing == true }
         PictureInPicture.toggle(tab)
         try await wait { tab.pictureInPicture }
+        try await wait {
+            guard let presentation = PiPMinimizeControls.presentationWindow(for: tab),
+                  let content = presentation.contentView else { return false }
+            let videoReady = (presentation as? CustomPiPWindow).map {
+                $0.videoView.window === $0 && $0.videoView.bounds.width > 0 && $0.videoView.bounds.height > 0
+            } ?? true
+            return NSApp.isRunning && NSApp.isActive && sourceWindow.isKeyWindow
+                && sourceWindow.contentView === tab.existingWeb && tab.web.window === sourceWindow
+                && presentation.isVisible && presentation.occlusionState.contains(.visible)
+                && content.window === presentation && videoReady
+        }
         var collapsed = false
-        MediaState.shared.minimize(tab) { collapsed = $0 }
-        try await wait { collapsed && !tab.pictureInPicture }
+        var minimizeReply: Bool?
+        MediaState.shared.minimize(tab) { collapsed = $0; minimizeReply = $0 }
+        do { try await wait { collapsed && !tab.pictureInPicture } }
+        catch {
+            let mode = try? await tab.web.evaluateJavaScript("document.getElementById('player').webkitPresentationMode")
+            print("MEDIA_MINIMIZE_FAILURE reply=\(String(describing: minimizeReply)) pip=\(tab.pictureInPicture) mode=\(String(describing: mode)) owner=\(String(describing: PiPMinimizeControls.presentationWindow(for: tab))) loop=\(NSApp.isRunning) active=\(NSApp.isActive) sourceKey=\(sourceWindow.isKeyWindow)")
+            throw error
+        }
         store.current = nil
         try await Task.sleep(for: .milliseconds(100))
         store.current = tab.id
