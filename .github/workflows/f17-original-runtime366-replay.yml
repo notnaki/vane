@@ -109,6 +109,23 @@ jobs:
           runtime={'archive':str(archive),'archive_sha256':sha(archive),'root':str(root),'binary':str(binary),'binary_sha256':sha(binary),'description':str(root/metadata['binary']/'description.json'),'files':files,'links':links,'original_metadata':metadata,'source_pins':{str(Path(p).resolve()):sha(p) for p in ['scripts/run-native-tests.py','scripts/ci-build-artifact.py','scripts/native-test-shards.py']}}
           (e/'runtime.json').write_text(json.dumps(runtime,indent=2)+'\n')
           PYCODE
+      - name: Read runner OS image and WebKit versions without bundle execution
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,plistlib
+          from pathlib import Path
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR'])
+          metadata={'runner_environment':{key:os.environ.get(key) for key in ['RUNNER_OS','RUNNER_ARCH','RUNNER_NAME','ImageOS','ImageVersion']},'kernel':dict(zip(['sysname','nodename','release','version','machine'],os.uname())),'bundle_execution':False,'original_version_equivalence_asserted':False,'plists':[]}
+          paths=['/System/Library/CoreServices/SystemVersion.plist','/System/Library/Frameworks/WebKit.framework/Versions/A/Resources/Info.plist','/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/Info.plist','/System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Versions/A/Resources/Info.plist','/System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/Info.plist']
+          for path in paths:
+              record={'requested_path':path}
+              try:
+                  file=Path(path);data=file.read_bytes();info=plistlib.loads(data)
+                  record.update(resolved_path=str(file.resolve()),sha256=hashlib.sha256(data).hexdigest(),values={key:info.get(key) for key in ['ProductName','ProductVersion','ProductBuildVersion','CFBundleIdentifier','CFBundleVersion','CFBundleShortVersionString','BuildMachineOSBuild']})
+              except (OSError,ValueError,plistlib.InvalidFileException) as error:record['unavailable']=str(error)
+              metadata['plists'].append(record)
+          (e/'runner-system-webkit-metadata.json').write_text(json.dumps(metadata,indent=2)+'\n')
+          PYCODE
       - name: Original discovery and smoke then ONE366 invocation
         run: |
           python3 - <<'PYCODE'
@@ -331,6 +348,23 @@ jobs:
           runtime={'archive':str(archive),'archive_sha256':sha(archive),'root':str(root),'binary':str(binary),'binary_sha256':sha(binary),'description':str(root/metadata['binary']/'description.json'),'files':files,'links':links,'original_metadata':metadata,'source_pins':{str(Path(p).resolve()):sha(p) for p in ['scripts/run-native-tests.py','scripts/ci-build-artifact.py','scripts/native-test-shards.py']}}
           (e/'runtime.json').write_text(json.dumps(runtime,indent=2)+'\n')
           PYCODE
+      - name: Read runner OS image and WebKit versions without bundle execution
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,plistlib
+          from pathlib import Path
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR'])
+          metadata={'runner_environment':{key:os.environ.get(key) for key in ['RUNNER_OS','RUNNER_ARCH','RUNNER_NAME','ImageOS','ImageVersion']},'kernel':dict(zip(['sysname','nodename','release','version','machine'],os.uname())),'bundle_execution':False,'original_version_equivalence_asserted':False,'plists':[]}
+          paths=['/System/Library/CoreServices/SystemVersion.plist','/System/Library/Frameworks/WebKit.framework/Versions/A/Resources/Info.plist','/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/Info.plist','/System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Versions/A/Resources/Info.plist','/System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/Info.plist']
+          for path in paths:
+              record={'requested_path':path}
+              try:
+                  file=Path(path);data=file.read_bytes();info=plistlib.loads(data)
+                  record.update(resolved_path=str(file.resolve()),sha256=hashlib.sha256(data).hexdigest(),values={key:info.get(key) for key in ['ProductName','ProductVersion','ProductBuildVersion','CFBundleIdentifier','CFBundleVersion','CFBundleShortVersionString','BuildMachineOSBuild']})
+              except (OSError,ValueError,plistlib.InvalidFileException) as error:record['unavailable']=str(error)
+              metadata['plists'].append(record)
+          (e/'runner-system-webkit-metadata.json').write_text(json.dumps(metadata,indent=2)+'\n')
+          PYCODE
       - name: Original discovery and smoke then ONE366 invocation
         run: |
           python3 - <<'PYCODE'
@@ -552,6 +586,23 @@ jobs:
               live=root/path;assert live.is_symlink() and os.readlink(live)==target and live.resolve().is_relative_to(root/'.build')
           runtime={'archive':str(archive),'archive_sha256':sha(archive),'root':str(root),'binary':str(binary),'binary_sha256':sha(binary),'description':str(root/metadata['binary']/'description.json'),'files':files,'links':links,'original_metadata':metadata,'source_pins':{str(Path(p).resolve()):sha(p) for p in ['scripts/run-native-tests.py','scripts/ci-build-artifact.py','scripts/native-test-shards.py']}}
           (e/'runtime.json').write_text(json.dumps(runtime,indent=2)+'\n')
+          PYCODE
+      - name: Read runner OS image and WebKit versions without bundle execution
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,plistlib
+          from pathlib import Path
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR'])
+          metadata={'runner_environment':{key:os.environ.get(key) for key in ['RUNNER_OS','RUNNER_ARCH','RUNNER_NAME','ImageOS','ImageVersion']},'kernel':dict(zip(['sysname','nodename','release','version','machine'],os.uname())),'bundle_execution':False,'original_version_equivalence_asserted':False,'plists':[]}
+          paths=['/System/Library/CoreServices/SystemVersion.plist','/System/Library/Frameworks/WebKit.framework/Versions/A/Resources/Info.plist','/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/Info.plist','/System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Versions/A/Resources/Info.plist','/System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/Info.plist']
+          for path in paths:
+              record={'requested_path':path}
+              try:
+                  file=Path(path);data=file.read_bytes();info=plistlib.loads(data)
+                  record.update(resolved_path=str(file.resolve()),sha256=hashlib.sha256(data).hexdigest(),values={key:info.get(key) for key in ['ProductName','ProductVersion','ProductBuildVersion','CFBundleIdentifier','CFBundleVersion','CFBundleShortVersionString','BuildMachineOSBuild']})
+              except (OSError,ValueError,plistlib.InvalidFileException) as error:record['unavailable']=str(error)
+              metadata['plists'].append(record)
+          (e/'runner-system-webkit-metadata.json').write_text(json.dumps(metadata,indent=2)+'\n')
           PYCODE
       - name: Original discovery and smoke then ONE366 invocation
         run: |
