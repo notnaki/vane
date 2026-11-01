@@ -25,6 +25,30 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
 @MainActor final class SidebarObservation: @MainActor ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
     private var subscription: AnyCancellable?
+    private var mutationDepth = 0
+    private var pendingChange = false
+
+    /// This object is a rendering bridge, not the store's model publisher. A close
+    /// changes several model properties; invalidate its hosting roots once with the
+    /// completed state, before returning to the caller. Sending at the first write
+    /// lets another hosting root flush and retain an intermediate outline instead.
+    /// The original model and snapshot/protection publishers still send immediately.
+    func withCompletedChanges<T>(_ body: () throws -> T) rethrows -> T {
+        mutationDepth += 1
+        defer {
+            mutationDepth -= 1
+            if mutationDepth == 0, pendingChange {
+                pendingChange = false
+                objectWillChange.send()
+            }
+        }
+        return try body()
+    }
+
+    private func changed() {
+        if mutationDepth > 0 { pendingChange = true }
+        else { objectWillChange.send() }
+    }
 
     init(store: TabStore) {
         subscription = Publishers.MergeMany([
@@ -33,7 +57,7 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
             sidebarChange(store.$renamingTab), sidebarChange(store.$renamingFolder),
             sidebarChange(store.$renamingSpace), sidebarChange(store.$announcing),
             sidebarChange(store.$creatingSpace)
-        ]).sink { [weak self] _ in self?.objectWillChange.send() }
+        ]).sink { [weak self] _ in self?.changed() }
     }
 }
 
