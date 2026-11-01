@@ -101,6 +101,29 @@ import XCTest
         let mixed = NativeFixtureRetirement.Manifest(schema: 1, token: "owned", host: owner, profiles: [entry(), entry(store: UUID())])
         XCTAssertThrowsError(try NativeFixtureRetirement.validate(mixed, token: "owned", matching: owner))
     }
+    func testEmptyRetirementDoesNotAttributeAmbientRegistryChangesToItsOwnRequest() async throws {
+        let unrelated = UUID()
+        var observations = 0
+        var removed: [UUID] = []
+        try await NativeFixtureRetirement.retireOwned([], registered: {
+            observations += 1
+            // Another test host can retire its own backend between registry reads.
+            return observations == 1 ? [unrelated] : []
+        }, remove: { removed.append($0) })
+        XCTAssertTrue(removed.isEmpty, "An empty ownership manifest must perform no native deletions")
+    }
+
+    func testUnrelatedDisappearanceStillFailsWhenRetirementRemovesAnOwnedBackend() async throws {
+        let owned = UUID(), unrelated = UUID()
+        var registry: Set<UUID> = [owned, unrelated]
+        do {
+            try await NativeFixtureRetirement.retireOwned([owned], registered: { registry }, remove: { _ in
+                registry.removeAll()
+            })
+            XCTFail("Real retirement must still verify preservation of unrelated backends")
+        } catch { XCTAssertTrue(String(describing: error).contains("Unrelated registered backends disappeared")) }
+    }
+
     func testRetirementDeletesOnlyOwnedExistingBackendAndPreservesUnrelatedStore() async throws {
         let owned = UUID(), neverOpened = UUID(), unrelated = UUID()
         var registry: Set<UUID> = [owned, unrelated]

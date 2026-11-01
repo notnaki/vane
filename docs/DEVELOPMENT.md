@@ -274,6 +274,23 @@ lifetimes, requesting-frame ownership and synthetic capture revocation, Easels, 
 capture, and other browser UI behavior. Search fixtures include a large history
 database, keyboard selection, live history changes, and private windows.
 
+### Active tab close diagnostics
+
+The native tab-close regression mounts the full browser window, closes the active
+page, and verifies that its web view stays released while the neighbour and pruned
+Today outline reach their actual native presentation. Related regressions cover
+pinned-page unload, two- and three-pane split closure under normal and Battery
+Saver motion policies, and late resume callbacks on retired tabs. Split fixtures
+verify the actual surviving native owner after the handoff. The timing fixture is opt-in:
+
+```sh
+VANE_UI_PERFORMANCE=1 python3 scripts/run-native-tests.py --jobs 1 --filter TabCloseLatencyTests
+```
+
+It records three closes each with 10, 40, and 300 tabs, reporting synchronous handler
+and first forced layout costs. These are main-thread work measurements, not displayed
+frame rates or machine-independent timing limits.
+
 ### History performance budget
 
 The native History rendering performance budget is a separate, opt-in release benchmark

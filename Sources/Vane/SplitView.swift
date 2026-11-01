@@ -531,12 +531,14 @@ private struct Pane: View {
     let focus: () -> Void
 
     var body: some View {
-        TabPage(tab: tab).id(tab.id)
+        TabPage(tab: tab, pane: true).id(tab.id)
             // A pane is on screen whether or not the keyboard is in it, so a pane that comes
             // back from the session parked has to wake up rather than sit there blank.
             .onAppear { tab.resume() }
             .background {
-                if tab.easelID == nil && !tab.needsRecovery { PaneFocus(web: tab.web, focus: focus) }
+                if !tab.tornDown && !tab.suspended && tab.easelID == nil && !tab.needsRecovery {
+                    PaneFocus(web: tab.web, focus: focus)
+                }
             }
             .simultaneousGesture(TapGesture().onEnded { if tab.easelID != nil { focus() } })
             .clipShape(.rect(cornerRadius: Look.paneRadius))

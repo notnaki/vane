@@ -27,6 +27,52 @@ import XCTest
         return (store, tabs)
     }
 
+    func testRetiredParkedTabCannotResumeFromALateCallback() {
+        let (_, tabs) = fixture()
+        let tab = tabs[1]
+        XCTAssertTrue(tab.suspended)
+        tab.tearDown()
+        tab.resume()
+        XCTAssertTrue(tab.suspended, "A retired tab must ignore a late resume callback")
+        XCTAssertNil(tab.existingWeb, "Late presentation callbacks must not recreate a retired page")
+    }
+
+    func testCloseInvalidatesSidebarOnceWithCompletedState() {
+        let (store, tabs) = fixture()
+        store.selection.selectAll(in: .init(kind: .today, ids: tabs.map(\.id)))
+        var receivedTabs: [[UUID]] = []
+        var receivedShapes: [Pins] = []
+        var receivedSelections: [Selection] = []
+        let observation = store.sidebarObservation.objectWillChange.sink {
+            receivedTabs.append(store.tabs.map(\.id))
+            receivedShapes.append(store.todayShape)
+            receivedSelections.append(store.selection)
+        }
+        defer { observation.cancel() }
+
+        store.close(tabs[1].id)
+
+        XCTAssertEqual(receivedTabs, [[tabs[0].id, tabs[2].id]],
+                       "The rendering bridge must invalidate once with the completed close, without flushing intermediate outlines")
+        XCTAssertEqual(receivedShapes, [store.todayShape])
+        XCTAssertEqual(receivedSelections, [store.selection])
+    }
+
+    func testEachCloseAndLaterSidebarEditStillInvalidate() {
+        let (store, tabs) = fixture()
+        var changes = 0
+        let observation = store.sidebarObservation.objectWillChange.sink { changes += 1 }
+        defer { observation.cancel() }
+        store.close(UUID())
+        XCTAssertEqual(changes, 0, "An unknown tab must not invalidate the sidebar")
+        store.close(tabs[0].id)
+        XCTAssertEqual(changes, 1)
+        store.close(tabs[1].id)
+        XCTAssertEqual(changes, 2)
+        store.announcing = UUID()
+        XCTAssertEqual(changes, 3, "Close batching must end before unrelated sidebar edits")
+    }
+
     func testBackgroundTodayCloseDoesNotInvalidateUnchangedPinsOrSelection() {
         let (store, tabs) = fixture()
         var folder = Folder(name: "Keep empty protected pin")

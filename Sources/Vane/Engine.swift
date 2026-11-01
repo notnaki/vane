@@ -685,7 +685,7 @@ struct TitleReveal: Equatable, Sendable {
     private var parkedState: Data?
     private let navigationState = NavigationState()
     @Published private(set) var displayingNavigationError = false
-    private var tornDown = false
+    private(set) var tornDown = false
     /// Set when a page is being edited in the URL field, so KVO doesn't fight the user.
     var editing = false
     private var obs: [NSKeyValueObservation] = []
@@ -1272,7 +1272,7 @@ struct TitleReveal: Equatable, Sendable {
     /// Rebuild the page. `interactionState` sets url and the back/forward list
     /// synchronously, so the url check below is a genuine "that state was no good".
     func resume() {
-        guard suspended, !needsRecovery else { return }
+        guard !tornDown, suspended, !needsRecovery else { return }
         if easelSession != nil { suspended = false; return }
         Trace.span("resume") {
             suspended = false
@@ -3637,6 +3637,14 @@ struct Stash {
     /// `asPane` is the caller insisting this is a pane close whatever `splits` currently says
     /// — see `closeSplit` and `TabRowGlyph.isPane`.
     func close(_ id: Tab.ID, byScript: Bool = false, asPane: Bool = false) {
+        Motion.animate(Look.tabClose) {
+            sidebarObservation.withCompletedChanges {
+                closeNow(id, byScript: byScript, asPane: asPane)
+            }
+        }
+    }
+
+    private func closeNow(_ id: Tab.ID, byScript: Bool, asPane: Bool) {
         SharedTabs.flush()
         guard !isTabLocked(id), let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = tabs[i]
@@ -3706,7 +3714,7 @@ struct Stash {
                                         isPrivate: isPrivate) { ClosedTabs.push(tab) }
             SharedTabs.remove(id, from: self)
             tab.tearDown()
-            Motion.animate(Look.tabClose) { _ = tabs.remove(at: i) }
+            _ = tabs.remove(at: i)
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
             // Mutating @Published values also publishes when the mutation is a
             // no-op. Closing Today must not invalidate the unchanged pinned outline.
