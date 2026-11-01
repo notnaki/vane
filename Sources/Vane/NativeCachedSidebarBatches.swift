@@ -65,6 +65,7 @@ private struct SidebarFolderRolloutGeometry {
     let headerID: String
     let animation: Animation
     let clipTop: CGFloat
+    var closing = false
 }
 
 /// Folder contents roll as one strip beneath their header, keeping row spacing.
@@ -103,9 +104,12 @@ private struct SidebarFolderRolloutRow<Content: View>: View {
     @ObservedObject private var saver = BatterySaver.shared
     let requested: SidebarFolderRolloutGeometry?
     let content: Content
-    init(geometry: SidebarFolderRolloutGeometry?, @ViewBuilder content: () -> Content) {
+    let finished: (UUID) -> Void
+    init(geometry: SidebarFolderRolloutGeometry?, finished: @escaping (UUID) -> Void,
+         @ViewBuilder content: () -> Content) {
         _geometry = State(initialValue: geometry)
         requested = geometry
+        self.finished = finished
         self.content = content()
     }
     var body: some View {
@@ -121,13 +125,17 @@ private struct SidebarFolderRolloutRow<Content: View>: View {
                 // A cancelled yielded start must not leave a cached row folded
                 // forever, or replay that old disclosure when it returns.
                 Motion.instant { suppressed = true; progress = 1 }
+                if let geometry, geometry.closing { finished(geometry.id) }
             }
             .onChange(of: requested?.id) {
                 guard requested != nil else { return }
                 attached = true; begin()
             }
             .onChange(of: reduceMotion || saver.isActive) { _, reduced in
-                if reduced { suppressed = true }
+                if reduced {
+                    suppressed = true
+                    if let geometry, geometry.closing { finished(geometry.id) }
+                }
             }
     }
     private func begin() {
@@ -137,15 +145,18 @@ private struct SidebarFolderRolloutRow<Content: View>: View {
             geometry = requested
             requestID = requested.id
             suppressed = reduced
-            progress = reduced ? 1 : 0
+            progress = reduced || requested.closing ? 1 : 0
         }
         // A detached root may have retained its old displayed membership. Let
         // this update install the new folded pose before starting its rollout.
         Task { @MainActor in
             await Task.yield()
             guard attached, requestID == requested.id else { return }
-            withAnimation(suppressed || reduceMotion || saver.isActive ? nil : requested.animation) {
-                progress = 1
+            withAnimation(suppressed || reduceMotion || saver.isActive ? nil : requested.animation,
+                          completionCriteria: .removed) {
+                progress = requested.closing ? 0 : 1
+            } completion: {
+                if requested.closing { finished(requested.id) }
             }
         }
     }
@@ -265,16 +276,20 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
     let navigation: NativeSidebarNavigation
     weak var interactionOwner: (any NativeSidebarInteractionRetaining)?
     let committed: (NativeSidebarRowLayoutView) -> Void
+    let finishedClosing: (String, UUID) -> Void
     let content: (SidebarRows.Row, Int, Int) -> Content
     var body: some View {
         ZStack(alignment: .topLeading) {
             ForEach(slots) { slot in
-                SidebarFolderRolloutRow(geometry: slot.rollout) {
+                SidebarFolderRolloutRow(geometry: slot.rollout, finished: { finishedClosing(slot.id, $0) }) {
                     content(slot.row, slot.index, total)
                         .frame(maxWidth: .infinity)
                         .frame(height: Look.rowHeight)
                         .background(NativeSidebarRowLayoutAnchor(row: slot.id, generation: generation, committed: committed))
                 }
+                    .allowsHitTesting(slot.rollout?.closing != true)
+                    .disabled(slot.rollout?.closing == true)
+                    .accessibilityHidden(slot.rollout?.closing == true)
                     .environment(\.bufferedSidebarFocus, BufferedSidebarFocus(row: slot.id, viewport: viewport))
                     .environment(\.nativeSidebarNavigationRow, NativeSidebarNavigationRow(row: slot.id, navigation: navigation))
                     .environment(\.nativeSidebarInteraction, NativeSidebarInteraction(row: slot.id, owner: interactionOwner))
@@ -311,7 +326,7 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
         rowAnchors[anchor.rowID] = WeakRow(anchor)
     }
     func occupy(_ slots: [NativeSidebarOwnedSlot], width: CGFloat) {
-        occupiedRows = Dictionary(uniqueKeysWithValues: slots.map {
+        occupiedRows = Dictionary(uniqueKeysWithValues: slots.filter { $0.rollout?.closing != true }.map {
             ($0.id, NSRect(x: 0, y: CGFloat($0.index) * (Look.rowHeight + Look.rowGap),
                           width: width, height: Look.rowHeight))
         })
@@ -612,6 +627,20 @@ private final class NativeBatchMouseObservation {
         for retained in inactiveOwners.values { SidebarWarmOwnerBudget.release(retained.budget) }
         inactiveOwners.removeAll()
         inactiveOrder.removeAll()
+        // Authentication can change beneath an already-collapsed outer folder
+        // without changing the section's visible IDs. Revoke its old visuals at
+        // the protection signal, before another configure can carry them forward.
+        for key in Array(groups.keys) {
+            guard let slots = groups[key], slots.contains(where: { $0.rollout?.closing == true }) else { continue }
+            let remaining = slots.filter { $0.rollout?.closing != true }
+            groups[key] = remaining
+            if let entry = cache[key] {
+                entry.host.rootView = makeRoot(slots: remaining, animate: false)
+                batchCounts.rootUpdates += 1
+            }
+            needsReconcile = true
+        }
+        reconcileLastGeometry()
     }
 
     private func mayRetain(_ scope: SidebarNativeReadinessScope?) -> Bool {
@@ -686,6 +715,8 @@ private final class NativeBatchMouseObservation {
         guard !disposed else { return }
         let oldHeight = sectionHeight
         let sameScope = activeScope == environment.sidebarNativeReadinessScope
+        let previousOrder = rows
+        let previousGroups = groups
         let previousRows = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         if retainsInactiveOwners { observeOwner(owner) }
         changeScope(environment.sidebarNativeReadinessScope)
@@ -745,6 +776,50 @@ private final class NativeBatchMouseObservation {
                     min(CGFloat(revealedCount) * pitch, visibleTravel)))
             }
         }
+        if animatesDisclosure {
+            var closingFolders: [(depth: Int, index: Int, id: String, distance: CGFloat)] = []
+            for (index, row) in previousOrder.enumerated() {
+                closingFolders.removeAll { $0.depth >= row.visible.depth }
+                if let ancestor = closingFolders.last, !authorizedRowIDs.contains(row.id), modelIDs.contains(row.id),
+                   let owner = ownership[row.id], mounted.contains(owner),
+                   previousGroups[owner]?.contains(where: { $0.id == row.id && $0.rollout?.closing != true }) == true,
+                   disclosureViewport.intersects(CGRect(x: 0, y: CGFloat(index) * pitch,
+                                                       width: bounds.width, height: Look.rowHeight)) {
+                    let geometry = SidebarFolderRolloutGeometry(distance: ancestor.distance,
+                        headerID: ancestor.id, animation: transaction.animation!,
+                        clipTop: CGFloat(ancestor.index + 1 - index) * pitch, closing: true)
+                    groups[owner, default: []].append(NativeSidebarOwnedSlot(row: row, index: index, rollout: geometry))
+                }
+                if let folder = row.visible.entry.folder, !folder.collapsed,
+                   let current = rowIndexByID[row.id].map({ rows[$0] }),
+                   let folded = current.visible.entry.folder, folded.collapsed,
+                   folded.requiresAuthentication != true {
+                    let end = previousOrder[(index + 1)...].firstIndex {
+                        $0.visible.depth <= row.visible.depth
+                    } ?? previousOrder.endIndex
+                    let hiddenCount = previousOrder[(index + 1)..<end].filter { !authorizedRowIDs.contains($0.id) }.count
+                    let visibleTravel = max(pitch, disclosureViewport.maxY - CGFloat(index + 1) * pitch)
+                    closingFolders.append((row.visible.depth, index, row.id,
+                        min(CGFloat(hiddenCount) * pitch, visibleTravel)))
+                }
+            }
+        }
+        // A content/environment refresh can arrive during disclosure. Preserve
+        // the same closing request while its visible layout and authority agree;
+        // a reopen, deletion, lock, scope change or immediate transaction revokes it.
+        if sameScope && !transaction.disablesAnimations && !environment.accessibilityReduceMotion && !Motion.reduced,
+           previousOrder.map(\.id) == rows.map(\.id) {
+            for (key, slots) in previousGroups where mounted.contains(key) {
+                for slot in slots {
+                    guard let geometry = slot.rollout, geometry.closing, modelIDs.contains(slot.id),
+                          let headerIndex = rowIndexByID[geometry.headerID],
+                          let folder = rows[headerIndex].visible.entry.folder,
+                          folder.collapsed, folder.requiresAuthentication != true else { continue }
+                    groups[key, default: []].append(slot)
+                }
+            }
+        }
+        for key in Array(groups.keys) { groups[key]?.sort { $0.index < $1.index } }
         let currentOwners = Set(ownership.values)
         for key in Array(cache.keys) where !currentOwners.contains(key) {
             cache.removeValue(forKey: key)?.host.removeFromSuperview()
@@ -760,8 +835,8 @@ private final class NativeBatchMouseObservation {
         navigation.configure(rows: rows.map(\.id), container: self,
             prepareRow: { [weak self] row in self?.prepareNavigation(row) },
             nativeRows: { [weak self] in self?.nativeRowsInAuthoritativeOrder() ?? [] })
-        // Submit all authoritative membership/content updates now, including
-        // detached cached roots, so no cached root retains a removed control.
+        // Submit authoritative membership/content updates now, including detached
+        // cached roots. Only explicitly disabled closing visuals may outlive it.
         for (key, entry) in cache { update(entry, slots: groups[key, default: []], animate: mounted.contains(key)) }
         if oldHeight != sectionHeight { invalidateIntrinsicContentSize() }
         if rows.isEmpty { SidebarNativeReadinessCoordinator.shared.complete(readiness) }
@@ -877,6 +952,11 @@ private final class NativeBatchMouseObservation {
                 if let owner = ownership[row] { wanted.insert(owner) }
             }
         }
+        // Closing controls have lost model authority. Keep only their already
+        // mounted owners until the visual strip has passed beneath its header.
+        for key in mounted where groups[key]?.contains(where: { $0.rollout?.closing == true }) == true {
+            wanted.insert(key)
+        }
         let wantedGroups = wanted.compactMap { key -> (key: UUID, value: [NativeSidebarOwnedSlot])? in
             guard let slots = groups[key], !slots.isEmpty else { return nil }
             return (key, slots)
@@ -904,7 +984,9 @@ private final class NativeBatchMouseObservation {
             // Every permanent owner uses the same document origin. Structural
             // movement is wholly inside SwiftUI; an immediate native-parent jump
             // must never cancel or double a child's animated absolute offset.
-            let target = NSRect(x: 0, y: 0, width: bounds.width, height: sectionHeight)
+            let closingHeight = slots.filter { $0.rollout?.closing == true }
+                .map { CGFloat($0.index + 1) * pitch }.max() ?? 0
+            let target = NSRect(x: 0, y: 0, width: bounds.width, height: max(sectionHeight, closingHeight))
             entry.host.occupy(slots, width: bounds.width)
             entry.host.revealEdge = { [weak self] header in
                 guard let self, self.authorizedRowIDs.contains(header),
@@ -934,13 +1016,29 @@ private final class NativeBatchMouseObservation {
         return Root(slots: slots, total: rows.count, generation: generation,
              inherited: inherited, transaction: placementTransaction, viewport: viewport, navigation: navigation,
              interactionOwner: (interactionLease as (any NativeSidebarInteractionRetaining)?) ?? self,
-             committed: { [weak self] anchor in self?.rowDidLayout(anchor) }, content: content!)
+             committed: { [weak self] anchor in self?.rowDidLayout(anchor) },
+             finishedClosing: { [weak self] row, request in
+                 // Finish outside SwiftUI's update/disappearance callbacks.
+                 DispatchQueue.main.async { [weak self] in self?.finishClosing(row: row, request: request) }
+             }, content: content!)
     }
     private func update(_ entry: Entry, slots: [NativeSidebarOwnedSlot], animate: Bool = true) {
         guard entry.generation != generation else { return }
         entry.host.rootView = makeRoot(slots: slots, animate: animate)
         entry.generation = generation
         batchCounts.rootUpdates += 1
+    }
+    private func finishClosing(row: String, request: UUID) {
+        guard !disposed, let owner = ownership[row], let slots = groups[owner],
+              slots.contains(where: { $0.id == row && $0.rollout?.id == request && $0.rollout?.closing == true }) else { return }
+        let remaining = slots.filter { $0.id != row }
+        groups[owner] = remaining
+        if let entry = cache[owner] {
+            entry.host.rootView = makeRoot(slots: remaining, animate: false)
+            batchCounts.rootUpdates += 1
+        }
+        needsReconcile = true
+        reconcileLastGeometry()
     }
     private func rowDidLayout(_ anchor: NativeSidebarRowLayoutView) {
         guard !disposed, anchor.generation == generation, anchor.committedGeneration == generation,
