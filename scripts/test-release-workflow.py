@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise release credential and tag steps against a disposable Git remote."""
+"""Exercise release credentials, tags, and publication with disposable fixtures."""
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -33,7 +34,50 @@ def command(args, cwd, env=None, succeeds=True):
 def run_step(name, cwd, environment, succeeds=True, event="workflow_dispatch"):
     _, body = step(name)
     body = body.replace("${{ github.event_name }}", event)
-    return command(["bash", "-c", body], cwd, environment, succeeds)
+    return command(["/bin/bash", "-c", body], cwd, environment, succeeds)
+
+
+def test_publication(temporary):
+    # Run the real publish step; replace only the GitHub network boundary.
+    binaries = temporary / "bin"
+    binaries.mkdir()
+    gh = binaries / "gh"
+    gh.write_text('''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+with Path(os.environ["GH_CALLS"]).open("a") as calls:
+    calls.write(json.dumps(args) + "\\n")
+if args[:2] == ["release", "view"]:
+    sys.exit(0 if os.environ["GH_RELEASE_EXISTS"] == "true" else 1)
+sys.exit(1 if args[1] == os.environ.get("GH_FAIL_COMMAND") else 0)
+''')
+    gh.chmod(0o755)
+    for tag, prerelease, latest in (
+        ("v0.0.38", "false", []),
+        ("v0.0.39-nightly.20261101.9001", "true", ["--latest=false"]),
+    ):
+        for exists in (False, True):
+            for failure in (None, "upload", "edit") if exists else (None, "create"):
+                calls = temporary / "gh-calls.jsonl"
+                calls.write_text("")
+                environment = {**os.environ, "PATH": f"{binaries}:{os.environ['PATH']}",
+                               "TAG": tag, "GH_CALLS": str(calls),
+                               "GH_RELEASE_EXISTS": str(exists).lower(),
+                               "GH_FAIL_COMMAND": failure or ""}
+                run_step("Publish", temporary, environment, succeeds=failure is None)
+                expected = [["release", "view", tag]]
+                if exists:
+                    expected.append(["release", "upload", tag, "Vane.dmg", "Vane.zip", "--clobber"])
+                    if failure != "upload":
+                        expected.append(["release", "edit", tag, f"--prerelease={prerelease}", *latest])
+                else:
+                    expected.append(["release", "create", tag, "Vane.dmg", "Vane.zip",
+                                     "--verify-tag", "--generate-notes", f"--prerelease={prerelease}", *latest])
+                assert [json.loads(line) for line in calls.read_text().splitlines()] == expected
 
 
 def tag_from_environment(path):
@@ -62,6 +106,7 @@ def main():
     keys = ("CERT_B64", "CERT_PW", "KEY_ID", "ISSUER_ID", "KEY_B64")
     with tempfile.TemporaryDirectory(prefix="vane-release-test-") as directory:
         temporary = Path(directory)
+        test_publication(temporary)
         remote = temporary / "remote.git"
         source = temporary / "source"
         command(["git", "init", "--bare", str(remote)], temporary)
@@ -122,7 +167,7 @@ def main():
         command(["git", "tag", "-f", "-a", nightly, "-m", "wrong source"], source)
         run_step("Pick the tag", source, nightly_env, event="schedule", succeeds=False)
 
-    print("PASS: credentials fail closed; stable/nightly tags publish after packaging; reruns preserve version/source")
+    print("PASS: credentials fail closed; stable/nightly publication arguments and failures; tags publish after packaging; reruns preserve version/source")
 
 
 if __name__ == "__main__":
