@@ -37,6 +37,8 @@ import WebKit
     private var loadingOwner: UUID?
     private var backgroundLoad = false
     private var preparing = false
+    private var foregroundIntent = false
+    private var initialSessionPending = false
     private var preparedState: FavouritePreviewState?
     private var promotionTask: Task<Void, Never>?
     private var accountHint: String?
@@ -92,12 +94,16 @@ import WebKit
                 self.owner = owner; backgroundLoad = false; loadingOwner = owner; preparing = preparing || preparation; state = .loading
             }
             // A promotion must not restart WebKit or consume the failed-refresh cooldown.
-            if !preparation && preparing { promote(context, source: source) }
+            if !preparation {
+                foregroundIntent = true
+                if preparing { promote(context, source: source) }
+            }
             return
         }
         stop()
         backgroundLoad = background
-        preparing = preparation; accountHint = account; requestSource = source
+        preparing = preparation; foregroundIntent = !preparation && !background
+        accountHint = account; requestSource = source
         self.sessionRetries = sessionRetries
         self.owner = background ? nil : owner; self.context = context; state = .loading
         guard Self.enabled(context.service), !privateSession, blocked[context.profileID] == nil else {
@@ -110,11 +116,13 @@ import WebKit
             observers[context.profileID] = sessionObserverFactory(context.profileID, self)
         }
         let ticket = generation
+        initialSessionPending = preparation
         task = Task(priority: preparation ? .background : .utility) { [weak self, weak source] in
             guard let self else { return }
             // Establish the session baseline before the hidden page can write cookies.
             let session = await self.observers[context.profileID]?.synchronize()
             guard !Task.isCancelled, self.generation == ticket else { return }
+            self.initialSessionPending = false
             // Speculative work is useful only for an already authenticated session.
             if self.backgroundLoad && self.observeSessions && session?.hasAuthentication(for: context.service) != true { return }
             var identity = account
@@ -195,7 +203,7 @@ import WebKit
         if loading && !BatterySaver.shared.isActive {
             // Let this one user-initiated request fill the cache. The loader's existing
             // deadline still retires WebKit; no closed-card refresh or polling begins.
-            self.owner = nil; state = .loading; preparing = false; preparedState = nil
+            self.owner = nil; state = .loading; preparing = false; foregroundIntent = false; preparedState = nil
             promotionTask?.cancel(); promotionTask = nil
             return
         }
@@ -215,7 +223,7 @@ import WebKit
         attempts = attempts.filter { $0.key.profileID != profileID }
         guard let context, context.profileID == profileID else { return }
         guard let owner else { stop(); return }
-        if loading && !preparing && sessionRetries < 1 {
+        if loading && foregroundIntent && sessionRetries < 1 {
             request(context, owner: owner, account: accountHint, source: requestSource,
                     sessionRetries: sessionRetries + 1)
         } else {
@@ -244,20 +252,44 @@ import WebKit
         // Cancellation is not a failed refresh. A deliberate return may retry immediately.
         if loading, let context { attempts[context] = nil }
         generation += 1; task?.cancel(); task = nil; loading = false; loadingOwner = nil; backgroundLoad = false; loader.cancel()
-        preparing = false; preparedState = nil; accountHint = nil; requestSource = nil
+        preparing = false; foregroundIntent = false; initialSessionPending = false; preparedState = nil; accountHint = nil; requestSource = nil
         promotionTask?.cancel(); promotionTask = nil
     }
     private func promote(_ context: FavouritePreviewContext, source: WKWebView?) {
-        preparing = false
-        guard let prepared = preparedState else { return }
-        preparedState = nil
+        guard promotionTask == nil else { return }
+        if initialSessionPending, preparedState == nil {
+            // No identity or cached data has been read yet. Adopt the ordinary
+            // foreground pipeline, retaining its final account/session checks.
+            preparing = false
+            return
+        }
+        // Loading/verification can still be finishing. Keep account data behind
+        // the preparation barrier and promote its result through a fresh proof.
+        guard let prepared = preparedState else {
+            let ticket = generation, pendingLoad = task
+            promotionTask = Task { [weak self, weak source] in
+                await pendingLoad?.value
+                guard !Task.isCancelled, let self, self.generation == ticket else { return }
+                self.promotionTask = nil
+                guard self.preparedState != nil else {
+                    self.preparing = false; self.setState(.unavailable); return
+                }
+                self.promote(context, source: source)
+            }
+            return
+        }
         let snapshot: FavouritePreviewSnapshot
         switch prepared {
         case .ready(let value), .stale(let value): snapshot = value
-        default: setState(prepared); return
+        default:
+            preparing = false; preparedState = nil
+            setState(prepared); return
         }
         // Proof collected during the earlier dwell must still hold when the card opens.
-        if source == nil && !observeSessions { setState(prepared); return }
+        if source == nil && !observeSessions {
+            preparing = false; preparedState = nil
+            setState(prepared); return
+        }
         let ticket = generation
         promotionTask = Task { [weak self, weak source] in
             guard !Task.isCancelled, let self, self.generation == ticket else { return }
@@ -273,8 +305,19 @@ import WebKit
                 self.stop(); self.cache.invalidate(profileID: context.profileID)
                 self.setState(.unavailable); return
             }
-            // A refresh may have finished during the probe; don't replace it with stale data.
-            if self.state == .loading { self.setState(prepared) }
+            // A refresh can finish while presentation proof is in flight. Keep
+            // that result hidden too, and never replace it with an older snapshot.
+            let latest = self.preparedState ?? prepared
+            switch latest {
+            case .ready(let value), .stale(let value):
+                guard value.account == snapshot.account else {
+                    self.stop(); self.cache.invalidate(profileID: context.profileID)
+                    self.setState(.unavailable); return
+                }
+            default: break
+            }
+            self.preparing = false; self.preparedState = nil; self.promotionTask = nil
+            self.setState(latest)
         }
     }
 

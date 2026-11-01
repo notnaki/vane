@@ -20,6 +20,12 @@ enum ChromeMenuLayout {
     static let groupHeight: CGFloat = 9
     static let pointerHeight: CGFloat = 8
 
+    /// The highlight lives in the scrolling content, with the same separator pitch
+    /// as the rows it follows. Keep this independent of presentation animation.
+    static func highlightOffset(index: Int, groupStarts: [Int]) -> CGFloat {
+        CGFloat(index) * rowHeight + CGFloat(groupStarts.filter { $0 <= index }.count) * groupHeight
+    }
+
     /// Keep the entire surface inside both the owner's content and the visible screen.
     static func frame(anchor: CGRect, size: CGSize, window: CGRect, screen: CGRect, above: Bool) -> CGRect {
         let bounds = window.intersection(screen)
@@ -63,7 +69,15 @@ struct ChromeMenuTypeahead {
 }
 
 @MainActor private final class ChromeMenuSelection: ObservableObject {
-    @Published var index: Int?
+    @Published private(set) var index: Int?
+    private(set) var highlightIndex = 0
+    private(set) var fromPointer = false
+
+    func select(_ index: Int?, fromPointer: Bool = false) {
+        if let index { highlightIndex = index }
+        self.fromPointer = fromPointer
+        self.index = index
+    }
 }
 
 /// One transient panel at a time. Every exit removes monitors and releases its actions.
@@ -117,6 +131,8 @@ struct ChromeMenuTypeahead {
         panel.title = title
         panel.contentView = NSHostingView(rootView: ChromeMenuSurface(
             items: items, theme: source?.theme ?? SpaceChromeTheme(), selection: selection, title: title,
+            revealAnchor: UnitPoint(x: min(max((anchor.midX - frame.minX) / frame.width, 0), 1),
+                                    y: frame.minY >= anchor.maxY ? 1 : 0),
             pointerX: showsPointer ? min(max(anchor.midX - frame.minX, 24), frame.width - 24) : nil,
             pointerBelow: frame.minY >= anchor.maxY,
             choose: { [weak self] in self?.choose($0) }))
@@ -197,9 +213,9 @@ struct ChromeMenuTypeahead {
             typeahead = ChromeMenuTypeahead()
             let backwards = event.keyCode == 126 || event.modifierFlags.contains(.shift)
             let first = backwards ? items.count - 1 : 0
-            selection.index = selection.index.map {
+            selection.select(selection.index.map {
                 ($0 + (backwards ? -1 : 1) + items.count) % items.count
-            } ?? first
+            } ?? first)
         case 36, 76:
             choose(selection.index ?? 0)
         case 49 where !typeahead.isActive(at: event.timestamp):
@@ -209,8 +225,8 @@ struct ChromeMenuTypeahead {
             guard text.unicodeScalars.allSatisfy({
                 !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value)
             }) else { return false }
-            selection.index = typeahead.match(text, at: event.timestamp,
-                                              titles: items.map(\.title), current: selection.index)
+            selection.select(typeahead.match(text, at: event.timestamp,
+                                              titles: items.map(\.title), current: selection.index))
         }
         return true
     }
@@ -226,12 +242,14 @@ private struct ChromeMenuSurface: View {
     var theme: SpaceChromeTheme
     @ObservedObject var selection: ChromeMenuSelection
     let title: String
+    let revealAnchor: UnitPoint
     let pointerX: CGFloat?
     let pointerBelow: Bool
     let choose: (Int) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var appeared = false
+    @State private var motionSuppressed = false
 
     private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
@@ -243,12 +261,16 @@ private struct ChromeMenuSurface: View {
         }
         .environment(\.colorScheme, .dark)
         .animation(reduced ? nil : Look.quick, value: theme)
-        .scaleEffect(appeared || reduced ? 1 : Look.appearScale,
-                     anchor: pointerBelow ? .bottom : .top)
-        .opacity(appeared || reduced ? 1 : 0)
-        .onAppear { withAnimation(reduced ? nil : Look.appear) { appeared = true } }
+        .modifier(ChromeMenuReveal(progress: appeared ? 1 : 0,
+            anchor: revealAnchor,
+            reduced: reduced || motionSuppressed))
+        .onAppear { withAnimation(reduced ? nil : Look.feedback) { appeared = true } }
+        .onChange(of: reduced) { _, reduced in
+            if reduced { Motion.instant { motionSuppressed = true; appeared = true } }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
+        .vaneMotionPolicy()
     }
 
     private var pointer: some View {
@@ -271,6 +293,20 @@ private struct ChromeMenuSurface: View {
                         row(index).id(index)
                     }
                 }
+                .background(alignment: .top) {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(theme.bubbleHover)
+                        .frame(height: ChromeMenuLayout.rowHeight)
+                        .offset(y: ChromeMenuLayout.highlightOffset(index: selection.highlightIndex,
+                            groupStarts: items.indices.filter { items[$0].startsGroup }))
+                        .opacity(selection.index == nil ? 0 : 1)
+                        .animation(reduced || !selection.fromPointer ? nil : Look.feedback, value: selection.index)
+                        // Only paint is replaced on keyboard handoff or policy changes;
+                        // menu buttons, focus, and scroll ownership remain mounted.
+                        .id(reduced || !selection.fromPointer)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
             }
             .scrollIndicators(.hidden)
             .onChange(of: selection.index) { _, index in
@@ -288,7 +324,8 @@ private struct ChromeMenuSurface: View {
             HStack(spacing: 8) {
                 SpaceIcon(item.symbol).font(.system(size: 16, weight: .medium))
                     .frame(width: 20).accessibilityHidden(true)
-                    .scaleEffect(selection.index == index && !reduced ? 1.08 : 1)
+                    .scaleEffect(selection.index == index && selection.fromPointer && !reduced ? 1.08 : 1)
+                    .id(reduced || !selection.fromPointer)
                 Text(item.title).font(.system(size: 13, weight: .medium))
                     .lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 8)
@@ -305,18 +342,35 @@ private struct ChromeMenuSurface: View {
             .padding(.horizontal, 10)
             .frame(height: ChromeMenuLayout.rowHeight)
             .contentShape(.rect)
-            .background(selection.index == index ? theme.bubbleHover : .clear,
-                        in: .rect(cornerRadius: 6))
         }
-        .buttonStyle(TactileButtonStyle())
-        .animation(reduced ? nil : Look.quick, value: selection.index == index)
+        .buttonStyle(TactileButtonStyle(scales: false))
+        .animation(reduced || !selection.fromPointer ? nil : Look.feedback, value: selection.index == index)
         .onHover { over in
-            if over { selection.index = index }
-            else if selection.index == index { selection.index = nil }
+            if over { selection.select(index, fromPointer: true) }
+            else if selection.fromPointer && selection.index == index { selection.select(nil, fromPointer: true) }
         }
         .accessibilityLabel(item.title)
         .accessibilityValue(item.checked ? "Selected" : "")
         .accessibilityAddTraits(item.checked ? [.isSelected] : [])
+    }
+}
+
+/// The policy gate is read outside interpolated progress so it can finish an
+/// already-running entrance, even when the animation's target was already 1.
+private struct ChromeMenuReveal: ViewModifier, Animatable {
+    nonisolated var progress: Double
+    let anchor: UnitPoint
+    let reduced: Bool
+
+    nonisolated var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        let progress = reduced ? 1 : progress
+        content.scaleEffect(Look.appearScale + (1 - Look.appearScale) * progress, anchor: anchor)
+            .opacity(progress)
     }
 }
 
