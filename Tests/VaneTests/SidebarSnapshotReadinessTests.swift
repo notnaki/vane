@@ -57,10 +57,10 @@ import XCTest
                 }
                 XCTAssertFalse(host === previousHost, "Relocation must discard the old interaction and its animation graph")
                 XCTAssertFalse(probe.hovered, "The replacement surface must start in its idle state")
+                XCTAssertNil(previousHost?.window, "The previous presentation owner must be detached before capture")
                 return true
             }
             XCTAssertEqual(phase, 2)
-            XCTAssertNil(previousHost?.window, "The previous presentation owner must be detached before capture")
         } catch { failure = error }
         do { try await loop.close() }
         catch {
