@@ -1,0 +1,676 @@
+name: F17 immutable original runtime366 diagnostic
+on:
+  push:
+    branches: [codex/f17-original-runtime366-replay]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: f17-original-binary366-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  replay_1:
+    runs-on: macos-26
+    timeout-minutes: 35
+    env:
+      VANE_REPLAY_ATTEMPT: '1'
+      VANE_ORIGINAL_SOURCE: 204b0c10c7649b40ffc36c873c541be400643159
+      VANE_ORIGINAL_TREE: f50b4850b60d61d87060725e65cfc9b7b20ba7da
+      VANE_TESTED_MERGE: 9b64503245240de207940ecb9c3a834d81124f09
+      VANE_ORIGINAL_TOOLCHAIN: 043bfce380e0dc108723588936efa50a3796de79d5b77af9542265f322718266
+      VANE_ARCHIVE_SHA: 6f4fb00d0cbeed27758ab116cc435ff663c7a2b37345f5a628c43d93f0266a24
+      VANE_ORIGINAL_BINARY_SHA: 34866265f2d3bb0fddca784255a3b78673a412adc713bae2d9c7f3bf98251ff1
+      VANE_SELECTED_HISTORY_SHA: 397b6662f0c98b9250fbeb92dd7ff2b91f78c70d6b2d7d16197c2deabf7d20ac
+      VANE_INVENTORY_SHA: ca2520d3305a5a72005f22157fc99b69168f4133c4ee0ce26d884edca04f5fe0
+      VANE_ORIGINAL_SHARD_SHA: e807e65f2a7c0628dbb5aa3f02b028f698a976b7d8b19c17f9bc2063b4bb13a7
+      SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set isolated evidence and original artifact paths
+        run: |
+          echo "VANE_DIAGNOSTIC_DIR=$RUNNER_TEMP/f17-original-binary366-$VANE_REPLAY_ATTEMPT" >> "$GITHUB_ENV"
+          echo "VANE_ORIGINAL_ARCHIVE=$RUNNER_TEMP/f17-original-runtime/vane-debug-runtime.tar.gz" >> "$GITHUB_ENV"
+      - name: Guard exact original source and private empty runtime paths
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);e.mkdir(exist_ok=False)
+          head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          base=os.environ['VANE_ORIGINAL_SOURCE']
+          assert head==os.environ['GITHUB_SHA']
+          assert subprocess.check_output(['git','status','--porcelain','--untracked-files=normal'])==b''
+          assert subprocess.check_output(['git','merge-base',base,head],text=True).strip()==base
+          assert subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip()==os.environ['VANE_ORIGINAL_TREE']
+          assert set(subprocess.check_output(['git','diff','--name-only',base,head],text=True).splitlines())=={'.github/workflows/f17-original-runtime366-replay.yml','.github/diagnostics/f17-original366-selection.json'}
+          assert subprocess.check_output(['git','diff',base,head,'--','Sources','Tests','scripts','Package.swift','Package.resolved'])==b''
+          assert hashlib.sha256(Path('.github/diagnostics/f17-original366-selection.json').read_bytes()).hexdigest()==os.environ['VANE_SELECTED_HISTORY_SHA']
+          assert not Path('.build').exists() and not Path('.build').is_symlink()
+          assert not Path('Vane.app').exists() and not Path('Vane.app').is_symlink()
+          assert not Path('.vane-ci-build.json').exists() and not Path('.vane-ci-build.json').is_symlink()
+          subprocess.run(['git','diff','--check',base,head],check=True)
+          source={'head':head,'source':base,'source_tree':os.environ['VANE_ORIGINAL_TREE'],'tested_merge':os.environ['VANE_TESTED_MERGE'],'attempt':int(os.environ['VANE_REPLAY_ATTEMPT']),'source_tests_scripts_unchanged':True,'preexisting_build_or_app':False,'buildless':True,'F17_cleared':False}
+          (e/'source.json').write_text(json.dumps(source,indent=2)+'\n')
+          (e/'source.patch').write_bytes(subprocess.check_output(['git','diff','--binary','--full-index',base,head]))
+          PYCODE
+      - name: Download exact original artifact by immutable ID
+        uses: actions/download-artifact@v5
+        with:
+          artifact-ids: '13064278938'
+          run-id: '41259741148'
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/f17-original-runtime
+      - name: Verify original archive and restore without compiling
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,subprocess,tarfile
+          from pathlib import Path,PurePosixPath
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);root=Path.cwd().resolve();archive=Path(os.environ['VANE_ORIGINAL_ARCHIVE'])
+          sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          assert sha(archive)==os.environ['VANE_ARCHIVE_SHA']
+          assert not (root/'.build').exists() and not (root/'.build').is_symlink()
+          assert not (root/'Vane.app').exists() and not (root/'Vane.app').is_symlink()
+          expected_meta={'schema':1,'revision':os.environ['VANE_TESTED_MERGE'],'toolchain':os.environ['VANE_ORIGINAL_TOOLCHAIN'],'root':'/Users/runner/work/vane/vane','binary':'.build/arm64-apple-macosx/debug'}
+          assert str(root)==expected_meta['root']
+          files={};links={}
+          with tarfile.open(archive) as tar:
+              members=tar.getmembers();assert len({x.name for x in members})==len(members)
+              metadata=json.load(tar.extractfile('.vane-ci-build.json'));assert metadata==expected_meta
+              for member in members:
+                  path=PurePosixPath(member.name)
+                  assert not path.is_absolute() and '..' not in path.parts
+                  assert member.name in ('.vane-ci-build.json','.build/debug') or path.is_relative_to(metadata['binary']) or path.is_relative_to('Vane.app')
+                  if member.isfile():files[member.name]=hashlib.sha256(tar.extractfile(member).read()).hexdigest()
+                  elif member.issym():links[member.name]=member.linkname
+                  else:assert member.isdir()
+              assert links=={'.build/debug':'arm64-apple-macosx/debug'}
+              assert len(files)==47
+              desc=json.load(tar.extractfile(metadata['binary']+'/description.json'))
+              assert len(desc['builtTestProducts'])==1
+              binary=Path(desc['builtTestProducts'][0]['binaryPath']);assert binary.is_absolute()
+              relative=str(binary.relative_to(root));assert files[relative]==os.environ['VANE_ORIGINAL_BINARY_SHA']
+          (e/'original-archive-manifest.json').write_text(json.dumps({'metadata':metadata,'files_sha256':files,'links':links,'archive_sha256':sha(archive)},indent=2)+'\n')
+          # Original restore enforces the same absolute root, revision and exact live toolchain key.
+          with (e/'restore.log').open('wb') as log:
+              restored=subprocess.run(['python3','scripts/ci-build-artifact.py','restore','--revision',os.environ['VANE_TESTED_MERGE'],'--archive',str(archive)],stdout=log,stderr=subprocess.STDOUT)
+          assert restored.returncode==0,'Original restore rejected path/revision/toolchain or archive; no execution permitted'
+          assert (root/'.build').is_dir() and not (root/'.build').is_symlink()
+          assert (root/'.build').resolve()==root/'.build'
+          for path,digest in files.items():
+              live=root/path
+              assert live.is_file() and not live.is_symlink() and live.resolve()==live and live.stat().st_uid==os.geteuid()
+              assert sha(live)==digest
+          for path,target in links.items():
+              live=root/path;assert live.is_symlink() and os.readlink(live)==target and live.resolve().is_relative_to(root/'.build')
+          runtime={'archive':str(archive),'archive_sha256':sha(archive),'root':str(root),'binary':str(binary),'binary_sha256':sha(binary),'description':str(root/metadata['binary']/'description.json'),'files':files,'links':links,'original_metadata':metadata,'source_pins':{str(Path(p).resolve()):sha(p) for p in ['scripts/run-native-tests.py','scripts/ci-build-artifact.py','scripts/native-test-shards.py']}}
+          (e/'runtime.json').write_text(json.dumps(runtime,indent=2)+'\n')
+          PYCODE
+      - name: Original discovery and smoke then ONE366 invocation
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,re,subprocess,sys
+          from pathlib import Path
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);attempt=int(os.environ['VANE_REPLAY_ATTEMPT']);assert attempt in (1,2,3)
+          runtime_path=e/'runtime.json';runtime=json.loads(runtime_path.read_text());root=Path(runtime['root']);runtime_sha=hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+          sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          selection=Path('.github/diagnostics/f17-original366-selection.json');assert sha(selection)==os.environ['VANE_SELECTED_HISTORY_SHA']
+          cohort=json.loads(selection.read_text())['original366'];tests=cohort['tests'];order=cohort['expected_order'];skips=cohort['existing_skips']
+          assert len(tests)==366 and tests==sorted(set(tests)) and len(order)==366 and set(order)==set(tests) and len(skips)==7
+          target='VaneTests.PasswordAutofillTests/testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep'
+          retirement='VaneTests.NativeFixtureRetirementTests/testRetireManifest'
+          warning=b"warning: '--build-system native' has been deprecated and will be removed in a future release; please report an issue at https://github.com/swiftlang/swift-package-manager/issues if you are unable to adopt the default build system.\n"
+          state={'attempt':attempt,'status':'NOT RUN','other_attempts':'Separate success-dependent fresh runner jobs; skipped jobs are NOT RUN, never replacement attempts','F17_cleared':False}
+          def save_state(): (e/'execution-plan.json').write_text(json.dumps(state,indent=2)+'\n')
+          save_state()
+          def check_runtime(stage):
+              errors=[];observed={}
+              try:
+                  assert sha(runtime_path)==runtime_sha
+                  assert sha(runtime['archive'])==os.environ['VANE_ARCHIVE_SHA']==runtime['archive_sha256']
+                  assert sha(selection)==os.environ['VANE_SELECTED_HISTORY_SHA']
+                  assert all(sha(path)==digest for path,digest in runtime['source_pins'].items())
+                  assert (root/'.build').is_dir() and not (root/'.build').is_symlink() and (root/'.build').resolve()==root/'.build'
+                  for path,digest in runtime['files'].items():
+                      live=root/path
+                      assert live.is_file() and not live.is_symlink() and live.resolve()==live
+                      observed[path]=sha(live)
+                      if observed[path]!=digest:errors.append('original runtime file changed: '+path)
+                  for path,target in runtime['links'].items():
+                      live=root/path
+                      assert live.is_symlink() and os.readlink(live)==target and live.resolve().is_relative_to(root/'.build')
+                  assert sha(runtime['binary'])==os.environ['VANE_ORIGINAL_BINARY_SHA']
+              except (AssertionError,OSError,ValueError) as error:errors.append('runtime integrity uncertainty: '+repr(error))
+              description=Path(runtime['description'])
+              if description.is_file():(e/('description.'+stage+'.json')).write_bytes(description.read_bytes())
+              (e/('runtime.'+stage+'.json')).write_text(json.dumps({'files_sha256':observed,'errors':errors},indent=2)+'\n')
+              assert not errors,errors
+          def run_logged(argv,name,environment=None):
+              path=e/name;assert not path.exists()
+              with path.open('xb') as log:result=subprocess.run(argv,stdout=log,stderr=subprocess.STDOUT,env=environment,check=False)
+              return result,path
+          check_runtime('before-discovery')
+          # Preserve original native-job setup: discovery+shard planning, THEN smoke, THEN primary.
+          inventory=e/'inventory.raw.txt'
+          with inventory.open('xb') as stdout,(e/'inventory.stderr.txt').open('xb') as stderr:
+              listed=subprocess.run(['swift','test','--build-system','native','list','--skip-build'],stdout=stdout,stderr=stderr,check=False)
+          check_runtime('after-discovery');assert listed.returncode==0
+          items=[x.strip() for x in inventory.read_text().splitlines() if x.strip() and x.strip()!='Native test host bootstrap: beforeAppKit=true, configured=true']
+          assert len(items)==2353 and len(set(items))==2353
+          assert all(re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/[^\s/]+',x) for x in items)
+          canonical='\n'.join(sorted(items));assert hashlib.sha256(canonical.encode()).hexdigest()==os.environ['VANE_INVENTORY_SHA']
+          (e/'inventory.canonical.txt').write_text(canonical)
+          planned,_=run_logged(['python3','scripts/native-test-shards.py','plan','--inventory',str(inventory),'--suite','required','--index','3','--count','4','--manifest',str(e/'original-shard3.json'),'--filter-output',str(e/'original-shard3.filter')],'original-shard-plan.log')
+          assert planned.returncode==0
+          planned_tests=json.loads((e/'original-shard3.json').read_text())['tests']
+          assert sha(e/'original-shard3.json')==os.environ['VANE_ORIGINAL_SHARD_SHA']
+          assert len(planned_tests)==651 and planned_tests[:planned_tests.index(target)+1]==tests
+          pattern='^(?:'+'|'.join(re.escape(x) for x in tests)+')$'
+          assert sorted(x for x in items if re.search(pattern,x))==tests
+          (e/'original366.filter').write_text(pattern+'\n')
+          smoke_env=dict(os.environ,VANE_APPKIT_LOOP_SMOKE='1',VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT='90')
+          smoke,smoke_log=run_logged(['python3','scripts/run-native-tests.py','--build-system','native','--skip-build','--jobs','1','--filter','^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$'],'smoke.raw.log',smoke_env)
+          check_runtime('after-smoke');smoke_text=smoke_log.read_bytes().replace(warning,b'').decode('utf-8',errors='replace')
+          assert smoke.returncode==0 and "Test Case '-[VaneTests.NativeApplicationLoopSmokeTests testOwnedLoopAdmitsAsyncWorkAndStops]' passed" in smoke_text
+          assert 'AppKit loop smoke: delayedHeartbeat=true, completed=true' in smoke_text
+          assert 'Native suite primary status=0; cleanup status=0' in smoke_text and not re.search(r'^\*\*\* Signal [0-9]+:',smoke_text,re.M)
+          state.update(status='RUNNING',raw_log='original366.raw.log');save_state()
+          check_runtime('before-primary')
+          primary_env=dict(os.environ,VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT='1200');primary_env.pop('VANE_APPKIT_LOOP_SMOKE',None)
+          run,raw=run_logged(['python3','scripts/run-native-tests.py','--build-system','native','--skip-build','--jobs','1','--filter',pattern],'original366.raw.log',primary_env)
+          # Save original outcomes BEFORE evaluating post-run integrity, retaining both on failure.
+          raw_bytes=raw.read_bytes();normalized=raw_bytes.replace(warning,b'');norm=e/'original366.normalized.log';norm.write_bytes(normalized);text=normalized.decode('utf-8',errors='replace')
+          started=[a+'/'+b for a,b in re.findall(r"Test Case '-\[([^ ]+) ([^ ]+)\]' started\.",text)]
+          finished=re.findall(r"Test Case '-\[([^ ]+) ([^ ]+)\]' (passed|failed|skipped) \(",text);outcomes={}
+          for a,b,outcome in finished:outcomes.setdefault(a+'/'+b,[]).append(outcome)
+          errors=[];skip_records={}
+          for cls,method,reason in re.findall(r'^.*?: -\[([^ ]+) ([^ ]+)\] : Test skipped - (.*)$',text,re.M):skip_records.setdefault(cls+'/'+method,[]).append(reason)
+          for case in skip_records:
+              if case not in skips or outcomes.get(case)!=['skipped']:errors.append('unexpected skip record '+case)
+          for case in tests:
+              if started.count(case)!=1 or len(outcomes.get(case,[]))!=1:errors.append('missing or duplicate selected case '+case)
+              elif outcomes[case]==['skipped']:
+                  if case not in skips or skip_records.get(case)!=[skips.get(case)]:errors.append('new/target/changed-reason skip '+case)
+              elif outcomes[case]!=['passed']:errors.append('native failure '+case)
+          if started!=order+[retirement] or [a+'/'+b for a,b,_ in finished]!=order+[retirement]:errors.append('exact original case order or fresh retirement mismatch')
+          summary=re.findall(r'Native suite primary status=(-?\d+); cleanup status=(-?\d+)',text)
+          primary,cleanup=map(int,summary[0]) if len(summary)==1 else (-999,-999)
+          if len(summary)!=1 or primary!=0 or cleanup!=0 or run.returncode!=0 or outcomes.get(retirement)!=['passed']:errors.append('native driver or canonical cleanup failure/uncertainty')
+          assertions=[line for line in text.splitlines() if re.search(r'error: -\[',line)]
+          fatal=[line for line in text.splitlines() if re.search(r'^(?:NATIVE PRIMARY TIMEOUT\b|Primary command timed out:|Primary command failed:|Cleanup refused/failed:|UNVERIFIED native fixture retirement\b|\*\*\* Signal [0-9]+:|(?:[^\n]*: )?Fatal error:|Vane fixture diagnostic: [^\n]*Password fixture timed out waiting for )',line)]
+          if assertions or fatal:errors.append('native assertion/fixture timeout/fatal/cleanup record')
+          platform=[line for line in text.splitlines() if re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ xctest\[\d+:\d+\] NSSpellServer dataFromGeneratingCandidatesForSelectedRange timed out, index is 0',line)]
+          differences=[{'case':case,'original':'failed' if case==target else 'skipped' if case in skips else 'passed','observed':outcomes.get(case,[])} for case in order if outcomes.get(case)!=['failed' if case==target else 'skipped' if case in skips else 'passed']]
+          result={'attempt':attempt,'exit':run.returncode,'primary':primary,'cleanup':cleanup,'outcomes':outcomes,'selected_started_order':[x for x in started if x in tests],'selected_completed_order':[a+'/'+b for a,b,_ in finished if a+'/'+b in tests],'validation_errors':errors,'skip_reason_records':skip_records,'assertion_records':assertions,'fatal_records':fatal,'platform_warnings':platform,'raw_log_sha256':sha(raw),'normalized_log_sha256':sha(norm),'exact_tool_warning_removals':raw_bytes.count(warning),'history_outcome_differences':differences,'original_binary_sha256':runtime['binary_sha256'],'runtime_integrity_after':'PENDING','original_failure_sampler_seconds':6,'F17_cleared':False}
+          result_path=e/'result.json';result_path.write_text(json.dumps(result,indent=2)+'\n')
+          try:check_runtime('after-primary')
+          except (AssertionError,OSError,ValueError) as error:errors.append('post-primary immutable runtime uncertainty: '+repr(error))
+          result['runtime_integrity_after']='FAILED/INCONCLUSIVE' if any('immutable runtime uncertainty' in x for x in errors) else 'VERIFIED';result_path.write_text(json.dumps(result,indent=2)+'\n')
+          state.update(status='FAILED/INCONCLUSIVE' if errors else 'PASSED',result=str(result_path),primary=primary,cleanup=cleanup);save_state()
+          print('attempt='+str(attempt)+' primary='+str(primary)+' cleanup='+str(cleanup)+' errors='+repr(errors),flush=True)
+          if errors:sys.exit('Original immutable-binary diagnostic failed/uncertain; dependent attempts NOT RUN. No retry or advisory conversion.')
+          PYCODE
+      - name: Preserve attempt evidence regardless of outcome
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: f17-original-binary366-evidence-${{ env.VANE_REPLAY_ATTEMPT }}
+          path: ${{ env.VANE_DIAGNOSTIC_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Preserve one exact original runtime archive
+        if: ${{ always() && env.VANE_REPLAY_ATTEMPT == '1' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: f17-original-binary366-runtime
+          path: ${{ env.VANE_ORIGINAL_ARCHIVE }}
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+  replay_2:
+    needs: replay_1
+    runs-on: macos-26
+    timeout-minutes: 35
+    env:
+      VANE_REPLAY_ATTEMPT: '2'
+      VANE_ORIGINAL_SOURCE: 204b0c10c7649b40ffc36c873c541be400643159
+      VANE_ORIGINAL_TREE: f50b4850b60d61d87060725e65cfc9b7b20ba7da
+      VANE_TESTED_MERGE: 9b64503245240de207940ecb9c3a834d81124f09
+      VANE_ORIGINAL_TOOLCHAIN: 043bfce380e0dc108723588936efa50a3796de79d5b77af9542265f322718266
+      VANE_ARCHIVE_SHA: 6f4fb00d0cbeed27758ab116cc435ff663c7a2b37345f5a628c43d93f0266a24
+      VANE_ORIGINAL_BINARY_SHA: 34866265f2d3bb0fddca784255a3b78673a412adc713bae2d9c7f3bf98251ff1
+      VANE_SELECTED_HISTORY_SHA: 397b6662f0c98b9250fbeb92dd7ff2b91f78c70d6b2d7d16197c2deabf7d20ac
+      VANE_INVENTORY_SHA: ca2520d3305a5a72005f22157fc99b69168f4133c4ee0ce26d884edca04f5fe0
+      VANE_ORIGINAL_SHARD_SHA: e807e65f2a7c0628dbb5aa3f02b028f698a976b7d8b19c17f9bc2063b4bb13a7
+      SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set isolated evidence and original artifact paths
+        run: |
+          echo "VANE_DIAGNOSTIC_DIR=$RUNNER_TEMP/f17-original-binary366-$VANE_REPLAY_ATTEMPT" >> "$GITHUB_ENV"
+          echo "VANE_ORIGINAL_ARCHIVE=$RUNNER_TEMP/f17-original-runtime/vane-debug-runtime.tar.gz" >> "$GITHUB_ENV"
+      - name: Guard exact original source and private empty runtime paths
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);e.mkdir(exist_ok=False)
+          head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          base=os.environ['VANE_ORIGINAL_SOURCE']
+          assert head==os.environ['GITHUB_SHA']
+          assert subprocess.check_output(['git','status','--porcelain','--untracked-files=normal'])==b''
+          assert subprocess.check_output(['git','merge-base',base,head],text=True).strip()==base
+          assert subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip()==os.environ['VANE_ORIGINAL_TREE']
+          assert set(subprocess.check_output(['git','diff','--name-only',base,head],text=True).splitlines())=={'.github/workflows/f17-original-runtime366-replay.yml','.github/diagnostics/f17-original366-selection.json'}
+          assert subprocess.check_output(['git','diff',base,head,'--','Sources','Tests','scripts','Package.swift','Package.resolved'])==b''
+          assert hashlib.sha256(Path('.github/diagnostics/f17-original366-selection.json').read_bytes()).hexdigest()==os.environ['VANE_SELECTED_HISTORY_SHA']
+          assert not Path('.build').exists() and not Path('.build').is_symlink()
+          assert not Path('Vane.app').exists() and not Path('Vane.app').is_symlink()
+          assert not Path('.vane-ci-build.json').exists() and not Path('.vane-ci-build.json').is_symlink()
+          subprocess.run(['git','diff','--check',base,head],check=True)
+          source={'head':head,'source':base,'source_tree':os.environ['VANE_ORIGINAL_TREE'],'tested_merge':os.environ['VANE_TESTED_MERGE'],'attempt':int(os.environ['VANE_REPLAY_ATTEMPT']),'source_tests_scripts_unchanged':True,'preexisting_build_or_app':False,'buildless':True,'F17_cleared':False}
+          (e/'source.json').write_text(json.dumps(source,indent=2)+'\n')
+          (e/'source.patch').write_bytes(subprocess.check_output(['git','diff','--binary','--full-index',base,head]))
+          PYCODE
+      - name: Download exact original artifact by immutable ID
+        uses: actions/download-artifact@v5
+        with:
+          artifact-ids: '13064278938'
+          run-id: '41259741148'
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/f17-original-runtime
+      - name: Verify original archive and restore without compiling
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,subprocess,tarfile
+          from pathlib import Path,PurePosixPath
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);root=Path.cwd().resolve();archive=Path(os.environ['VANE_ORIGINAL_ARCHIVE'])
+          sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          assert sha(archive)==os.environ['VANE_ARCHIVE_SHA']
+          assert not (root/'.build').exists() and not (root/'.build').is_symlink()
+          assert not (root/'Vane.app').exists() and not (root/'Vane.app').is_symlink()
+          expected_meta={'schema':1,'revision':os.environ['VANE_TESTED_MERGE'],'toolchain':os.environ['VANE_ORIGINAL_TOOLCHAIN'],'root':'/Users/runner/work/vane/vane','binary':'.build/arm64-apple-macosx/debug'}
+          assert str(root)==expected_meta['root']
+          files={};links={}
+          with tarfile.open(archive) as tar:
+              members=tar.getmembers();assert len({x.name for x in members})==len(members)
+              metadata=json.load(tar.extractfile('.vane-ci-build.json'));assert metadata==expected_meta
+              for member in members:
+                  path=PurePosixPath(member.name)
+                  assert not path.is_absolute() and '..' not in path.parts
+                  assert member.name in ('.vane-ci-build.json','.build/debug') or path.is_relative_to(metadata['binary']) or path.is_relative_to('Vane.app')
+                  if member.isfile():files[member.name]=hashlib.sha256(tar.extractfile(member).read()).hexdigest()
+                  elif member.issym():links[member.name]=member.linkname
+                  else:assert member.isdir()
+              assert links=={'.build/debug':'arm64-apple-macosx/debug'}
+              assert len(files)==47
+              desc=json.load(tar.extractfile(metadata['binary']+'/description.json'))
+              assert len(desc['builtTestProducts'])==1
+              binary=Path(desc['builtTestProducts'][0]['binaryPath']);assert binary.is_absolute()
+              relative=str(binary.relative_to(root));assert files[relative]==os.environ['VANE_ORIGINAL_BINARY_SHA']
+          (e/'original-archive-manifest.json').write_text(json.dumps({'metadata':metadata,'files_sha256':files,'links':links,'archive_sha256':sha(archive)},indent=2)+'\n')
+          # Original restore enforces the same absolute root, revision and exact live toolchain key.
+          with (e/'restore.log').open('wb') as log:
+              restored=subprocess.run(['python3','scripts/ci-build-artifact.py','restore','--revision',os.environ['VANE_TESTED_MERGE'],'--archive',str(archive)],stdout=log,stderr=subprocess.STDOUT)
+          assert restored.returncode==0,'Original restore rejected path/revision/toolchain or archive; no execution permitted'
+          assert (root/'.build').is_dir() and not (root/'.build').is_symlink()
+          assert (root/'.build').resolve()==root/'.build'
+          for path,digest in files.items():
+              live=root/path
+              assert live.is_file() and not live.is_symlink() and live.resolve()==live and live.stat().st_uid==os.geteuid()
+              assert sha(live)==digest
+          for path,target in links.items():
+              live=root/path;assert live.is_symlink() and os.readlink(live)==target and live.resolve().is_relative_to(root/'.build')
+          runtime={'archive':str(archive),'archive_sha256':sha(archive),'root':str(root),'binary':str(binary),'binary_sha256':sha(binary),'description':str(root/metadata['binary']/'description.json'),'files':files,'links':links,'original_metadata':metadata,'source_pins':{str(Path(p).resolve()):sha(p) for p in ['scripts/run-native-tests.py','scripts/ci-build-artifact.py','scripts/native-test-shards.py']}}
+          (e/'runtime.json').write_text(json.dumps(runtime,indent=2)+'\n')
+          PYCODE
+      - name: Original discovery and smoke then ONE366 invocation
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,re,subprocess,sys
+          from pathlib import Path
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);attempt=int(os.environ['VANE_REPLAY_ATTEMPT']);assert attempt in (1,2,3)
+          runtime_path=e/'runtime.json';runtime=json.loads(runtime_path.read_text());root=Path(runtime['root']);runtime_sha=hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+          sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          selection=Path('.github/diagnostics/f17-original366-selection.json');assert sha(selection)==os.environ['VANE_SELECTED_HISTORY_SHA']
+          cohort=json.loads(selection.read_text())['original366'];tests=cohort['tests'];order=cohort['expected_order'];skips=cohort['existing_skips']
+          assert len(tests)==366 and tests==sorted(set(tests)) and len(order)==366 and set(order)==set(tests) and len(skips)==7
+          target='VaneTests.PasswordAutofillTests/testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep'
+          retirement='VaneTests.NativeFixtureRetirementTests/testRetireManifest'
+          warning=b"warning: '--build-system native' has been deprecated and will be removed in a future release; please report an issue at https://github.com/swiftlang/swift-package-manager/issues if you are unable to adopt the default build system.\n"
+          state={'attempt':attempt,'status':'NOT RUN','other_attempts':'Separate success-dependent fresh runner jobs; skipped jobs are NOT RUN, never replacement attempts','F17_cleared':False}
+          def save_state(): (e/'execution-plan.json').write_text(json.dumps(state,indent=2)+'\n')
+          save_state()
+          def check_runtime(stage):
+              errors=[];observed={}
+              try:
+                  assert sha(runtime_path)==runtime_sha
+                  assert sha(runtime['archive'])==os.environ['VANE_ARCHIVE_SHA']==runtime['archive_sha256']
+                  assert sha(selection)==os.environ['VANE_SELECTED_HISTORY_SHA']
+                  assert all(sha(path)==digest for path,digest in runtime['source_pins'].items())
+                  assert (root/'.build').is_dir() and not (root/'.build').is_symlink() and (root/'.build').resolve()==root/'.build'
+                  for path,digest in runtime['files'].items():
+                      live=root/path
+                      assert live.is_file() and not live.is_symlink() and live.resolve()==live
+                      observed[path]=sha(live)
+                      if observed[path]!=digest:errors.append('original runtime file changed: '+path)
+                  for path,target in runtime['links'].items():
+                      live=root/path
+                      assert live.is_symlink() and os.readlink(live)==target and live.resolve().is_relative_to(root/'.build')
+                  assert sha(runtime['binary'])==os.environ['VANE_ORIGINAL_BINARY_SHA']
+              except (AssertionError,OSError,ValueError) as error:errors.append('runtime integrity uncertainty: '+repr(error))
+              description=Path(runtime['description'])
+              if description.is_file():(e/('description.'+stage+'.json')).write_bytes(description.read_bytes())
+              (e/('runtime.'+stage+'.json')).write_text(json.dumps({'files_sha256':observed,'errors':errors},indent=2)+'\n')
+              assert not errors,errors
+          def run_logged(argv,name,environment=None):
+              path=e/name;assert not path.exists()
+              with path.open('xb') as log:result=subprocess.run(argv,stdout=log,stderr=subprocess.STDOUT,env=environment,check=False)
+              return result,path
+          check_runtime('before-discovery')
+          # Preserve original native-job setup: discovery+shard planning, THEN smoke, THEN primary.
+          inventory=e/'inventory.raw.txt'
+          with inventory.open('xb') as stdout,(e/'inventory.stderr.txt').open('xb') as stderr:
+              listed=subprocess.run(['swift','test','--build-system','native','list','--skip-build'],stdout=stdout,stderr=stderr,check=False)
+          check_runtime('after-discovery');assert listed.returncode==0
+          items=[x.strip() for x in inventory.read_text().splitlines() if x.strip() and x.strip()!='Native test host bootstrap: beforeAppKit=true, configured=true']
+          assert len(items)==2353 and len(set(items))==2353
+          assert all(re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/[^\s/]+',x) for x in items)
+          canonical='\n'.join(sorted(items));assert hashlib.sha256(canonical.encode()).hexdigest()==os.environ['VANE_INVENTORY_SHA']
+          (e/'inventory.canonical.txt').write_text(canonical)
+          planned,_=run_logged(['python3','scripts/native-test-shards.py','plan','--inventory',str(inventory),'--suite','required','--index','3','--count','4','--manifest',str(e/'original-shard3.json'),'--filter-output',str(e/'original-shard3.filter')],'original-shard-plan.log')
+          assert planned.returncode==0
+          planned_tests=json.loads((e/'original-shard3.json').read_text())['tests']
+          assert sha(e/'original-shard3.json')==os.environ['VANE_ORIGINAL_SHARD_SHA']
+          assert len(planned_tests)==651 and planned_tests[:planned_tests.index(target)+1]==tests
+          pattern='^(?:'+'|'.join(re.escape(x) for x in tests)+')$'
+          assert sorted(x for x in items if re.search(pattern,x))==tests
+          (e/'original366.filter').write_text(pattern+'\n')
+          smoke_env=dict(os.environ,VANE_APPKIT_LOOP_SMOKE='1',VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT='90')
+          smoke,smoke_log=run_logged(['python3','scripts/run-native-tests.py','--build-system','native','--skip-build','--jobs','1','--filter','^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$'],'smoke.raw.log',smoke_env)
+          check_runtime('after-smoke');smoke_text=smoke_log.read_bytes().replace(warning,b'').decode('utf-8',errors='replace')
+          assert smoke.returncode==0 and "Test Case '-[VaneTests.NativeApplicationLoopSmokeTests testOwnedLoopAdmitsAsyncWorkAndStops]' passed" in smoke_text
+          assert 'AppKit loop smoke: delayedHeartbeat=true, completed=true' in smoke_text
+          assert 'Native suite primary status=0; cleanup status=0' in smoke_text and not re.search(r'^\*\*\* Signal [0-9]+:',smoke_text,re.M)
+          state.update(status='RUNNING',raw_log='original366.raw.log');save_state()
+          check_runtime('before-primary')
+          primary_env=dict(os.environ,VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT='1200');primary_env.pop('VANE_APPKIT_LOOP_SMOKE',None)
+          run,raw=run_logged(['python3','scripts/run-native-tests.py','--build-system','native','--skip-build','--jobs','1','--filter',pattern],'original366.raw.log',primary_env)
+          # Save original outcomes BEFORE evaluating post-run integrity, retaining both on failure.
+          raw_bytes=raw.read_bytes();normalized=raw_bytes.replace(warning,b'');norm=e/'original366.normalized.log';norm.write_bytes(normalized);text=normalized.decode('utf-8',errors='replace')
+          started=[a+'/'+b for a,b in re.findall(r"Test Case '-\[([^ ]+) ([^ ]+)\]' started\.",text)]
+          finished=re.findall(r"Test Case '-\[([^ ]+) ([^ ]+)\]' (passed|failed|skipped) \(",text);outcomes={}
+          for a,b,outcome in finished:outcomes.setdefault(a+'/'+b,[]).append(outcome)
+          errors=[];skip_records={}
+          for cls,method,reason in re.findall(r'^.*?: -\[([^ ]+) ([^ ]+)\] : Test skipped - (.*)$',text,re.M):skip_records.setdefault(cls+'/'+method,[]).append(reason)
+          for case in skip_records:
+              if case not in skips or outcomes.get(case)!=['skipped']:errors.append('unexpected skip record '+case)
+          for case in tests:
+              if started.count(case)!=1 or len(outcomes.get(case,[]))!=1:errors.append('missing or duplicate selected case '+case)
+              elif outcomes[case]==['skipped']:
+                  if case not in skips or skip_records.get(case)!=[skips.get(case)]:errors.append('new/target/changed-reason skip '+case)
+              elif outcomes[case]!=['passed']:errors.append('native failure '+case)
+          if started!=order+[retirement] or [a+'/'+b for a,b,_ in finished]!=order+[retirement]:errors.append('exact original case order or fresh retirement mismatch')
+          summary=re.findall(r'Native suite primary status=(-?\d+); cleanup status=(-?\d+)',text)
+          primary,cleanup=map(int,summary[0]) if len(summary)==1 else (-999,-999)
+          if len(summary)!=1 or primary!=0 or cleanup!=0 or run.returncode!=0 or outcomes.get(retirement)!=['passed']:errors.append('native driver or canonical cleanup failure/uncertainty')
+          assertions=[line for line in text.splitlines() if re.search(r'error: -\[',line)]
+          fatal=[line for line in text.splitlines() if re.search(r'^(?:NATIVE PRIMARY TIMEOUT\b|Primary command timed out:|Primary command failed:|Cleanup refused/failed:|UNVERIFIED native fixture retirement\b|\*\*\* Signal [0-9]+:|(?:[^\n]*: )?Fatal error:|Vane fixture diagnostic: [^\n]*Password fixture timed out waiting for )',line)]
+          if assertions or fatal:errors.append('native assertion/fixture timeout/fatal/cleanup record')
+          platform=[line for line in text.splitlines() if re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ xctest\[\d+:\d+\] NSSpellServer dataFromGeneratingCandidatesForSelectedRange timed out, index is 0',line)]
+          differences=[{'case':case,'original':'failed' if case==target else 'skipped' if case in skips else 'passed','observed':outcomes.get(case,[])} for case in order if outcomes.get(case)!=['failed' if case==target else 'skipped' if case in skips else 'passed']]
+          result={'attempt':attempt,'exit':run.returncode,'primary':primary,'cleanup':cleanup,'outcomes':outcomes,'selected_started_order':[x for x in started if x in tests],'selected_completed_order':[a+'/'+b for a,b,_ in finished if a+'/'+b in tests],'validation_errors':errors,'skip_reason_records':skip_records,'assertion_records':assertions,'fatal_records':fatal,'platform_warnings':platform,'raw_log_sha256':sha(raw),'normalized_log_sha256':sha(norm),'exact_tool_warning_removals':raw_bytes.count(warning),'history_outcome_differences':differences,'original_binary_sha256':runtime['binary_sha256'],'runtime_integrity_after':'PENDING','original_failure_sampler_seconds':6,'F17_cleared':False}
+          result_path=e/'result.json';result_path.write_text(json.dumps(result,indent=2)+'\n')
+          try:check_runtime('after-primary')
+          except (AssertionError,OSError,ValueError) as error:errors.append('post-primary immutable runtime uncertainty: '+repr(error))
+          result['runtime_integrity_after']='FAILED/INCONCLUSIVE' if any('immutable runtime uncertainty' in x for x in errors) else 'VERIFIED';result_path.write_text(json.dumps(result,indent=2)+'\n')
+          state.update(status='FAILED/INCONCLUSIVE' if errors else 'PASSED',result=str(result_path),primary=primary,cleanup=cleanup);save_state()
+          print('attempt='+str(attempt)+' primary='+str(primary)+' cleanup='+str(cleanup)+' errors='+repr(errors),flush=True)
+          if errors:sys.exit('Original immutable-binary diagnostic failed/uncertain; dependent attempts NOT RUN. No retry or advisory conversion.')
+          PYCODE
+      - name: Preserve attempt evidence regardless of outcome
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: f17-original-binary366-evidence-${{ env.VANE_REPLAY_ATTEMPT }}
+          path: ${{ env.VANE_DIAGNOSTIC_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Preserve one exact original runtime archive
+        if: ${{ always() && env.VANE_REPLAY_ATTEMPT == '1' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: f17-original-binary366-runtime
+          path: ${{ env.VANE_ORIGINAL_ARCHIVE }}
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+  replay_3:
+    needs: replay_2
+    runs-on: macos-26
+    timeout-minutes: 35
+    env:
+      VANE_REPLAY_ATTEMPT: '3'
+      VANE_ORIGINAL_SOURCE: 204b0c10c7649b40ffc36c873c541be400643159
+      VANE_ORIGINAL_TREE: f50b4850b60d61d87060725e65cfc9b7b20ba7da
+      VANE_TESTED_MERGE: 9b64503245240de207940ecb9c3a834d81124f09
+      VANE_ORIGINAL_TOOLCHAIN: 043bfce380e0dc108723588936efa50a3796de79d5b77af9542265f322718266
+      VANE_ARCHIVE_SHA: 6f4fb00d0cbeed27758ab116cc435ff663c7a2b37345f5a628c43d93f0266a24
+      VANE_ORIGINAL_BINARY_SHA: 34866265f2d3bb0fddca784255a3b78673a412adc713bae2d9c7f3bf98251ff1
+      VANE_SELECTED_HISTORY_SHA: 397b6662f0c98b9250fbeb92dd7ff2b91f78c70d6b2d7d16197c2deabf7d20ac
+      VANE_INVENTORY_SHA: ca2520d3305a5a72005f22157fc99b69168f4133c4ee0ce26d884edca04f5fe0
+      VANE_ORIGINAL_SHARD_SHA: e807e65f2a7c0628dbb5aa3f02b028f698a976b7d8b19c17f9bc2063b4bb13a7
+      SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set isolated evidence and original artifact paths
+        run: |
+          echo "VANE_DIAGNOSTIC_DIR=$RUNNER_TEMP/f17-original-binary366-$VANE_REPLAY_ATTEMPT" >> "$GITHUB_ENV"
+          echo "VANE_ORIGINAL_ARCHIVE=$RUNNER_TEMP/f17-original-runtime/vane-debug-runtime.tar.gz" >> "$GITHUB_ENV"
+      - name: Guard exact original source and private empty runtime paths
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);e.mkdir(exist_ok=False)
+          head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          base=os.environ['VANE_ORIGINAL_SOURCE']
+          assert head==os.environ['GITHUB_SHA']
+          assert subprocess.check_output(['git','status','--porcelain','--untracked-files=normal'])==b''
+          assert subprocess.check_output(['git','merge-base',base,head],text=True).strip()==base
+          assert subprocess.check_output(['git','rev-parse',base+'^{tree}'],text=True).strip()==os.environ['VANE_ORIGINAL_TREE']
+          assert set(subprocess.check_output(['git','diff','--name-only',base,head],text=True).splitlines())=={'.github/workflows/f17-original-runtime366-replay.yml','.github/diagnostics/f17-original366-selection.json'}
+          assert subprocess.check_output(['git','diff',base,head,'--','Sources','Tests','scripts','Package.swift','Package.resolved'])==b''
+          assert hashlib.sha256(Path('.github/diagnostics/f17-original366-selection.json').read_bytes()).hexdigest()==os.environ['VANE_SELECTED_HISTORY_SHA']
+          assert not Path('.build').exists() and not Path('.build').is_symlink()
+          assert not Path('Vane.app').exists() and not Path('Vane.app').is_symlink()
+          assert not Path('.vane-ci-build.json').exists() and not Path('.vane-ci-build.json').is_symlink()
+          subprocess.run(['git','diff','--check',base,head],check=True)
+          source={'head':head,'source':base,'source_tree':os.environ['VANE_ORIGINAL_TREE'],'tested_merge':os.environ['VANE_TESTED_MERGE'],'attempt':int(os.environ['VANE_REPLAY_ATTEMPT']),'source_tests_scripts_unchanged':True,'preexisting_build_or_app':False,'buildless':True,'F17_cleared':False}
+          (e/'source.json').write_text(json.dumps(source,indent=2)+'\n')
+          (e/'source.patch').write_bytes(subprocess.check_output(['git','diff','--binary','--full-index',base,head]))
+          PYCODE
+      - name: Download exact original artifact by immutable ID
+        uses: actions/download-artifact@v5
+        with:
+          artifact-ids: '13064278938'
+          run-id: '41259741148'
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/f17-original-runtime
+      - name: Verify original archive and restore without compiling
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,subprocess,tarfile
+          from pathlib import Path,PurePosixPath
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);root=Path.cwd().resolve();archive=Path(os.environ['VANE_ORIGINAL_ARCHIVE'])
+          sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          assert sha(archive)==os.environ['VANE_ARCHIVE_SHA']
+          assert not (root/'.build').exists() and not (root/'.build').is_symlink()
+          assert not (root/'Vane.app').exists() and not (root/'Vane.app').is_symlink()
+          expected_meta={'schema':1,'revision':os.environ['VANE_TESTED_MERGE'],'toolchain':os.environ['VANE_ORIGINAL_TOOLCHAIN'],'root':'/Users/runner/work/vane/vane','binary':'.build/arm64-apple-macosx/debug'}
+          assert str(root)==expected_meta['root']
+          files={};links={}
+          with tarfile.open(archive) as tar:
+              members=tar.getmembers();assert len({x.name for x in members})==len(members)
+              metadata=json.load(tar.extractfile('.vane-ci-build.json'));assert metadata==expected_meta
+              for member in members:
+                  path=PurePosixPath(member.name)
+                  assert not path.is_absolute() and '..' not in path.parts
+                  assert member.name in ('.vane-ci-build.json','.build/debug') or path.is_relative_to(metadata['binary']) or path.is_relative_to('Vane.app')
+                  if member.isfile():files[member.name]=hashlib.sha256(tar.extractfile(member).read()).hexdigest()
+                  elif member.issym():links[member.name]=member.linkname
+                  else:assert member.isdir()
+              assert links=={'.build/debug':'arm64-apple-macosx/debug'}
+              assert len(files)==47
+              desc=json.load(tar.extractfile(metadata['binary']+'/description.json'))
+              assert len(desc['builtTestProducts'])==1
+              binary=Path(desc['builtTestProducts'][0]['binaryPath']);assert binary.is_absolute()
+              relative=str(binary.relative_to(root));assert files[relative]==os.environ['VANE_ORIGINAL_BINARY_SHA']
+          (e/'original-archive-manifest.json').write_text(json.dumps({'metadata':metadata,'files_sha256':files,'links':links,'archive_sha256':sha(archive)},indent=2)+'\n')
+          # Original restore enforces the same absolute root, revision and exact live toolchain key.
+          with (e/'restore.log').open('wb') as log:
+              restored=subprocess.run(['python3','scripts/ci-build-artifact.py','restore','--revision',os.environ['VANE_TESTED_MERGE'],'--archive',str(archive)],stdout=log,stderr=subprocess.STDOUT)
+          assert restored.returncode==0,'Original restore rejected path/revision/toolchain or archive; no execution permitted'
+          assert (root/'.build').is_dir() and not (root/'.build').is_symlink()
+          assert (root/'.build').resolve()==root/'.build'
+          for path,digest in files.items():
+              live=root/path
+              assert live.is_file() and not live.is_symlink() and live.resolve()==live and live.stat().st_uid==os.geteuid()
+              assert sha(live)==digest
+          for path,target in links.items():
+              live=root/path;assert live.is_symlink() and os.readlink(live)==target and live.resolve().is_relative_to(root/'.build')
+          runtime={'archive':str(archive),'archive_sha256':sha(archive),'root':str(root),'binary':str(binary),'binary_sha256':sha(binary),'description':str(root/metadata['binary']/'description.json'),'files':files,'links':links,'original_metadata':metadata,'source_pins':{str(Path(p).resolve()):sha(p) for p in ['scripts/run-native-tests.py','scripts/ci-build-artifact.py','scripts/native-test-shards.py']}}
+          (e/'runtime.json').write_text(json.dumps(runtime,indent=2)+'\n')
+          PYCODE
+      - name: Original discovery and smoke then ONE366 invocation
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,re,subprocess,sys
+          from pathlib import Path
+          e=Path(os.environ['VANE_DIAGNOSTIC_DIR']);attempt=int(os.environ['VANE_REPLAY_ATTEMPT']);assert attempt in (1,2,3)
+          runtime_path=e/'runtime.json';runtime=json.loads(runtime_path.read_text());root=Path(runtime['root']);runtime_sha=hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+          sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          selection=Path('.github/diagnostics/f17-original366-selection.json');assert sha(selection)==os.environ['VANE_SELECTED_HISTORY_SHA']
+          cohort=json.loads(selection.read_text())['original366'];tests=cohort['tests'];order=cohort['expected_order'];skips=cohort['existing_skips']
+          assert len(tests)==366 and tests==sorted(set(tests)) and len(order)==366 and set(order)==set(tests) and len(skips)==7
+          target='VaneTests.PasswordAutofillTests/testEmbeddedSelectionCannotAuthorizeMainDocumentUsernameStep'
+          retirement='VaneTests.NativeFixtureRetirementTests/testRetireManifest'
+          warning=b"warning: '--build-system native' has been deprecated and will be removed in a future release; please report an issue at https://github.com/swiftlang/swift-package-manager/issues if you are unable to adopt the default build system.\n"
+          state={'attempt':attempt,'status':'NOT RUN','other_attempts':'Separate success-dependent fresh runner jobs; skipped jobs are NOT RUN, never replacement attempts','F17_cleared':False}
+          def save_state(): (e/'execution-plan.json').write_text(json.dumps(state,indent=2)+'\n')
+          save_state()
+          def check_runtime(stage):
+              errors=[];observed={}
+              try:
+                  assert sha(runtime_path)==runtime_sha
+                  assert sha(runtime['archive'])==os.environ['VANE_ARCHIVE_SHA']==runtime['archive_sha256']
+                  assert sha(selection)==os.environ['VANE_SELECTED_HISTORY_SHA']
+                  assert all(sha(path)==digest for path,digest in runtime['source_pins'].items())
+                  assert (root/'.build').is_dir() and not (root/'.build').is_symlink() and (root/'.build').resolve()==root/'.build'
+                  for path,digest in runtime['files'].items():
+                      live=root/path
+                      assert live.is_file() and not live.is_symlink() and live.resolve()==live
+                      observed[path]=sha(live)
+                      if observed[path]!=digest:errors.append('original runtime file changed: '+path)
+                  for path,target in runtime['links'].items():
+                      live=root/path
+                      assert live.is_symlink() and os.readlink(live)==target and live.resolve().is_relative_to(root/'.build')
+                  assert sha(runtime['binary'])==os.environ['VANE_ORIGINAL_BINARY_SHA']
+              except (AssertionError,OSError,ValueError) as error:errors.append('runtime integrity uncertainty: '+repr(error))
+              description=Path(runtime['description'])
+              if description.is_file():(e/('description.'+stage+'.json')).write_bytes(description.read_bytes())
+              (e/('runtime.'+stage+'.json')).write_text(json.dumps({'files_sha256':observed,'errors':errors},indent=2)+'\n')
+              assert not errors,errors
+          def run_logged(argv,name,environment=None):
+              path=e/name;assert not path.exists()
+              with path.open('xb') as log:result=subprocess.run(argv,stdout=log,stderr=subprocess.STDOUT,env=environment,check=False)
+              return result,path
+          check_runtime('before-discovery')
+          # Preserve original native-job setup: discovery+shard planning, THEN smoke, THEN primary.
+          inventory=e/'inventory.raw.txt'
+          with inventory.open('xb') as stdout,(e/'inventory.stderr.txt').open('xb') as stderr:
+              listed=subprocess.run(['swift','test','--build-system','native','list','--skip-build'],stdout=stdout,stderr=stderr,check=False)
+          check_runtime('after-discovery');assert listed.returncode==0
+          items=[x.strip() for x in inventory.read_text().splitlines() if x.strip() and x.strip()!='Native test host bootstrap: beforeAppKit=true, configured=true']
+          assert len(items)==2353 and len(set(items))==2353
+          assert all(re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/[^\s/]+',x) for x in items)
+          canonical='\n'.join(sorted(items));assert hashlib.sha256(canonical.encode()).hexdigest()==os.environ['VANE_INVENTORY_SHA']
+          (e/'inventory.canonical.txt').write_text(canonical)
+          planned,_=run_logged(['python3','scripts/native-test-shards.py','plan','--inventory',str(inventory),'--suite','required','--index','3','--count','4','--manifest',str(e/'original-shard3.json'),'--filter-output',str(e/'original-shard3.filter')],'original-shard-plan.log')
+          assert planned.returncode==0
+          planned_tests=json.loads((e/'original-shard3.json').read_text())['tests']
+          assert sha(e/'original-shard3.json')==os.environ['VANE_ORIGINAL_SHARD_SHA']
+          assert len(planned_tests)==651 and planned_tests[:planned_tests.index(target)+1]==tests
+          pattern='^(?:'+'|'.join(re.escape(x) for x in tests)+')$'
+          assert sorted(x for x in items if re.search(pattern,x))==tests
+          (e/'original366.filter').write_text(pattern+'\n')
+          smoke_env=dict(os.environ,VANE_APPKIT_LOOP_SMOKE='1',VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT='90')
+          smoke,smoke_log=run_logged(['python3','scripts/run-native-tests.py','--build-system','native','--skip-build','--jobs','1','--filter','^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$'],'smoke.raw.log',smoke_env)
+          check_runtime('after-smoke');smoke_text=smoke_log.read_bytes().replace(warning,b'').decode('utf-8',errors='replace')
+          assert smoke.returncode==0 and "Test Case '-[VaneTests.NativeApplicationLoopSmokeTests testOwnedLoopAdmitsAsyncWorkAndStops]' passed" in smoke_text
+          assert 'AppKit loop smoke: delayedHeartbeat=true, completed=true' in smoke_text
+          assert 'Native suite primary status=0; cleanup status=0' in smoke_text and not re.search(r'^\*\*\* Signal [0-9]+:',smoke_text,re.M)
+          state.update(status='RUNNING',raw_log='original366.raw.log');save_state()
+          check_runtime('before-primary')
+          primary_env=dict(os.environ,VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT='1200');primary_env.pop('VANE_APPKIT_LOOP_SMOKE',None)
+          run,raw=run_logged(['python3','scripts/run-native-tests.py','--build-system','native','--skip-build','--jobs','1','--filter',pattern],'original366.raw.log',primary_env)
+          # Save original outcomes BEFORE evaluating post-run integrity, retaining both on failure.
+          raw_bytes=raw.read_bytes();normalized=raw_bytes.replace(warning,b'');norm=e/'original366.normalized.log';norm.write_bytes(normalized);text=normalized.decode('utf-8',errors='replace')
+          started=[a+'/'+b for a,b in re.findall(r"Test Case '-\[([^ ]+) ([^ ]+)\]' started\.",text)]
+          finished=re.findall(r"Test Case '-\[([^ ]+) ([^ ]+)\]' (passed|failed|skipped) \(",text);outcomes={}
+          for a,b,outcome in finished:outcomes.setdefault(a+'/'+b,[]).append(outcome)
+          errors=[];skip_records={}
+          for cls,method,reason in re.findall(r'^.*?: -\[([^ ]+) ([^ ]+)\] : Test skipped - (.*)$',text,re.M):skip_records.setdefault(cls+'/'+method,[]).append(reason)
+          for case in skip_records:
+              if case not in skips or outcomes.get(case)!=['skipped']:errors.append('unexpected skip record '+case)
+          for case in tests:
+              if started.count(case)!=1 or len(outcomes.get(case,[]))!=1:errors.append('missing or duplicate selected case '+case)
+              elif outcomes[case]==['skipped']:
+                  if case not in skips or skip_records.get(case)!=[skips.get(case)]:errors.append('new/target/changed-reason skip '+case)
+              elif outcomes[case]!=['passed']:errors.append('native failure '+case)
+          if started!=order+[retirement] or [a+'/'+b for a,b,_ in finished]!=order+[retirement]:errors.append('exact original case order or fresh retirement mismatch')
+          summary=re.findall(r'Native suite primary status=(-?\d+); cleanup status=(-?\d+)',text)
+          primary,cleanup=map(int,summary[0]) if len(summary)==1 else (-999,-999)
+          if len(summary)!=1 or primary!=0 or cleanup!=0 or run.returncode!=0 or outcomes.get(retirement)!=['passed']:errors.append('native driver or canonical cleanup failure/uncertainty')
+          assertions=[line for line in text.splitlines() if re.search(r'error: -\[',line)]
+          fatal=[line for line in text.splitlines() if re.search(r'^(?:NATIVE PRIMARY TIMEOUT\b|Primary command timed out:|Primary command failed:|Cleanup refused/failed:|UNVERIFIED native fixture retirement\b|\*\*\* Signal [0-9]+:|(?:[^\n]*: )?Fatal error:|Vane fixture diagnostic: [^\n]*Password fixture timed out waiting for )',line)]
+          if assertions or fatal:errors.append('native assertion/fixture timeout/fatal/cleanup record')
+          platform=[line for line in text.splitlines() if re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ xctest\[\d+:\d+\] NSSpellServer dataFromGeneratingCandidatesForSelectedRange timed out, index is 0',line)]
+          differences=[{'case':case,'original':'failed' if case==target else 'skipped' if case in skips else 'passed','observed':outcomes.get(case,[])} for case in order if outcomes.get(case)!=['failed' if case==target else 'skipped' if case in skips else 'passed']]
+          result={'attempt':attempt,'exit':run.returncode,'primary':primary,'cleanup':cleanup,'outcomes':outcomes,'selected_started_order':[x for x in started if x in tests],'selected_completed_order':[a+'/'+b for a,b,_ in finished if a+'/'+b in tests],'validation_errors':errors,'skip_reason_records':skip_records,'assertion_records':assertions,'fatal_records':fatal,'platform_warnings':platform,'raw_log_sha256':sha(raw),'normalized_log_sha256':sha(norm),'exact_tool_warning_removals':raw_bytes.count(warning),'history_outcome_differences':differences,'original_binary_sha256':runtime['binary_sha256'],'runtime_integrity_after':'PENDING','original_failure_sampler_seconds':6,'F17_cleared':False}
+          result_path=e/'result.json';result_path.write_text(json.dumps(result,indent=2)+'\n')
+          try:check_runtime('after-primary')
+          except (AssertionError,OSError,ValueError) as error:errors.append('post-primary immutable runtime uncertainty: '+repr(error))
+          result['runtime_integrity_after']='FAILED/INCONCLUSIVE' if any('immutable runtime uncertainty' in x for x in errors) else 'VERIFIED';result_path.write_text(json.dumps(result,indent=2)+'\n')
+          state.update(status='FAILED/INCONCLUSIVE' if errors else 'PASSED',result=str(result_path),primary=primary,cleanup=cleanup);save_state()
+          print('attempt='+str(attempt)+' primary='+str(primary)+' cleanup='+str(cleanup)+' errors='+repr(errors),flush=True)
+          if errors:sys.exit('Original immutable-binary diagnostic failed/uncertain; dependent attempts NOT RUN. No retry or advisory conversion.')
+          PYCODE
+      - name: Preserve attempt evidence regardless of outcome
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: f17-original-binary366-evidence-${{ env.VANE_REPLAY_ATTEMPT }}
+          path: ${{ env.VANE_DIAGNOSTIC_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Preserve one exact original runtime archive
+        if: ${{ always() && env.VANE_REPLAY_ATTEMPT == '1' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: f17-original-binary366-runtime
+          path: ${{ env.VANE_ORIGINAL_ARCHIVE }}
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
