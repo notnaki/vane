@@ -365,15 +365,16 @@ jobs:
           set -euo pipefail
           # Stable stays on releases/latest. Nightly opt-ins inspect the prerelease list.
           case "$TAG" in *-*) PRE=true ;; *) PRE=false ;; esac
-          LATEST=()
-          if [ "$PRE" = true ]; then LATEST=(--latest=false); fi
+          # Empty positional arguments are safe with macOS Bash 3.2 and nounset.
+          set --
+          if [ "$PRE" = true ]; then set -- --latest=false; fi
           # Idempotent, because the expensive half of this workflow is notarization and a
           # re-run that has already paid for it must be able to finish. A release left over
           # from an earlier attempt gets its assets replaced rather than a failed create.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG exists — replacing its assets"
             gh release upload "$TAG" Vane.dmg Vane.zip --clobber
-            gh release edit "$TAG" --prerelease="$PRE" "${LATEST[@]}"
+            gh release edit "$TAG" --prerelease="$PRE" "$@"
           else
-            gh release create "$TAG" Vane.dmg Vane.zip --verify-tag --generate-notes --prerelease="$PRE" "${LATEST[@]}"
+            gh release create "$TAG" Vane.dmg Vane.zip --verify-tag --generate-notes --prerelease="$PRE" "$@"
           fi

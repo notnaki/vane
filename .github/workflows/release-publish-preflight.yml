@@ -1,0 +1,18 @@
+name: release publish preflight
+on:
+  push:
+    branches: [codex/fix-stable-release-publish]
+    paths: [.github/workflows/release-publish-preflight.yml]
+permissions:
+  contents: read
+jobs:
+  publish-fixtures:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check macOS Bash and release publication
+        run: |
+          /bin/bash --version
+          python3 scripts/test-release-workflow.py
+          python3 scripts/test-prepare-nightly.py
+          python3 scripts/test-update-channel.py
