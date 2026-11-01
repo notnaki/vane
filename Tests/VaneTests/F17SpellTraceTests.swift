@@ -27,6 +27,7 @@ private final class F17CandidateReceipt: @unchecked Sendable {
             XCTFail("Each diagnostic control requires a fresh process")
             throw ControlFailure.reusedHost
         }
+        NativeFixtureRetirement.registerHostIfEnabled()
     }
 
     private func withLoop(_ body: () async throws -> Void) async throws {
