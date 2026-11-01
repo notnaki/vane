@@ -591,13 +591,28 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     /// https://github.com/flutter/flutter/commit/272fe23e0e32d63fa6c34dbf9659411dcfabb970
     private func nativeContinuationReady(_ window: NSWindow, document: NSView) -> Bool {
         let app = NSApplication.shared, running = NSRunningApplication.current
-        return app.isRunning && running.isFinishedLaunching && app.isActive &&
-            !app.isHidden && !running.isHidden && app.keyWindow === window &&
-            window.isKeyWindow && window.isVisible && !window.isMiniaturized &&
-            window.isOnActiveSpace && window.alphaValue > 0 &&
-            NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) } &&
-            window.contentView === document && document.window === window &&
-            !document.isHiddenOrHasHiddenAncestor && document.bounds.width > 0 && document.bounds.height > 0
+        let reason: String?
+        if !app.isRunning { reason = "loop-not-running" }
+        else if !running.isFinishedLaunching { reason = "launch-getter-withdrew" }
+        else if !app.isActive { reason = "app-inactive" }
+        else if app.isHidden { reason = "app-hidden" }
+        else if running.isHidden { reason = "running-app-hidden" }
+        else if app.keyWindow !== window { reason = "key-owner-changed" }
+        else if !window.isKeyWindow { reason = "window-not-key" }
+        else if !window.isVisible { reason = "window-not-visible" }
+        else if window.isMiniaturized { reason = "window-miniaturized" }
+        else if !window.isOnActiveSpace { reason = "window-off-space" }
+        else if !(window.alphaValue > 0) { reason = "window-transparent" }
+        else if !NSScreen.screens.contains(where: { $0.visibleFrame.contains(window.frame) }) { reason = "window-off-screen" }
+        else if window.contentView !== document { reason = "content-owner-changed" }
+        else if document.window !== window { reason = "document-detached" }
+        else if document.isHiddenOrHasHiddenAncestor { reason = "document-hidden" }
+        else if !(document.bounds.width > 0 && document.bounds.height > 0) { reason = "document-empty" }
+        else { reason = nil }
+        if let reason {
+            bufferContinuationDiagnostic(phase: "readiness-denied", "reason=\(reason)")
+        }
+        return reason == nil
     }
 
     /// One bounded scalar record per admission/idle sample; no WindowServer probes.
@@ -777,6 +792,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     private func loadContinuationPage(_ tab: Tab, origin: PasswordOrigin, path: String, html: String,
                                       beforeRequest: (@MainActor () throws -> Void)? = nil) async throws {
         let web = tab.web, url = origin.url.appendingPathComponent(path)
+        let lagProbe = NativeNavigationLagProbe(label: path)
         let started = Date.now
         #if DEBUG
         let stages = NavigationStages()
@@ -809,7 +825,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         let after = continuationLoadState(tab, web: web, requestedURL: url)
         bufferContinuationDiagnostic(phase: "sdk-request-returned",
             "path=\(path) navigation=\(navigationID) state={\(after)}")
-        try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
+        do { try await wait(for: "continuation document \(path) to finish loading", diagnostics: {
             #if DEBUG
             NativeFixtureDiagnostics.emit("continuation callback stages: " + stages.snapshot(expected: navigationID))
             NativeFixtureDiagnostics.emit("continuation observer ownership: delegateIsTab=\(web.navigationDelegate === tab), currentView=\(tab.existingWeb === web), observerInstalled=\(tab.navigationStageObserver != nil)")
@@ -820,7 +836,8 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             return state + "; " + (await NativeFixtureDiagnostics.failureReport(for: web))
         }) {
             return !web.isLoading
-        }
+        } } catch { await lagProbe?.close(); throw error }
+        await lagProbe?.close()
         if Date.now.timeIntervalSince(started) >= 0.5 {
             print("Continuation fixture \(path) loaded in \(Date.now.timeIntervalSince(started))s")
         }

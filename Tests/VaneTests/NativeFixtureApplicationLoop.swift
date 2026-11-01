@@ -313,7 +313,14 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     private func runningFailure() -> NativeApplicationLoopFailure? {
         if let firstFailure { return firstFailure }
         guard isCurrent, enteredRun, !runReturned, NSApplication.shared.isRunning else { return .loopNotRunning }
-        guard NSRunningApplication.current.isFinishedLaunching && launchReadiness() else { return .incompleteHeartbeat }
+        guard NSRunningApplication.current.isFinishedLaunching else {
+            if admissionSucceeded { NativeFixtureDiagnostics.emit("running fixture readiness denied: isFinishedLaunching=false") }
+            return .incompleteHeartbeat
+        }
+        guard launchReadiness() else {
+            if admissionSucceeded { NativeFixtureDiagnostics.emit("running fixture readiness denied: launchReadiness=false") }
+            return .incompleteHeartbeat
+        }
         guard NSApplication.shared.activationPolicy() == requiredPolicy else {
             return requestedPolicy != nil && !admissionSucceeded ? .incompleteHeartbeat : .policyChanged
         }
