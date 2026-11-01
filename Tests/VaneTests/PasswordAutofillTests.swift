@@ -588,6 +588,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
               "window=\(ObjectIdentifier(window)), document=\(ObjectIdentifier(document)), " +
               "stage=\(stage), ready=\(nativeContinuationReady(window, document: document)), " +
               "appRunning=\(app.isRunning), finishedLaunching=\(running.isFinishedLaunching), active=\(app.isActive), " +
+              "appPolicy=\(app.activationPolicy().rawValue), runningPolicy=\(running.activationPolicy.rawValue), " +
               "appHidden=\(app.isHidden), runningHidden=\(running.isHidden), exactKey=\(app.keyWindow === window), " +
               "windowKey=\(window.isKeyWindow), windowVisible=\(window.isVisible), miniaturized=\(window.isMiniaturized), " +
               "activeSpace=\(window.isOnActiveSpace), alphaPositive=\(window.alphaValue > 0), " +
@@ -721,6 +722,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             "contentPID=\($0.pid), contentStart=\($0.start), contentPath=\($0.path), contentState=\($0.state)"
         } ?? "contentIdentity=unavailable"
         return "requested=\(requestedURL.absoluteString), webURL=\(web.url?.absoluteString ?? "nil"), " +
+            "appPolicy=\(NSApplication.shared.activationPolicy().rawValue), runningPolicy=\(NSRunningApplication.current.activationPolicy.rawValue), " +
             "tabCurrentURL=\(tab.currentURL?.absoluteString ?? "nil"), " +
             "historyURL=\(web.backForwardList.currentItem?.url.absoluteString ?? "nil"), " +
             "loading=\(web.isLoading), progress=\(web.estimatedProgress), tabLoading=\(tab.loading), " +
