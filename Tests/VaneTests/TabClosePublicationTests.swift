@@ -27,6 +27,16 @@ import XCTest
         return (store, tabs)
     }
 
+    func testRetiredParkedTabCannotResumeFromALateCallback() {
+        let (_, tabs) = fixture()
+        let tab = tabs[1]
+        XCTAssertTrue(tab.suspended)
+        tab.tearDown()
+        tab.resume()
+        XCTAssertTrue(tab.suspended, "A retired tab must ignore a late resume callback")
+        XCTAssertNil(tab.existingWeb, "Late presentation callbacks must not recreate a retired page")
+    }
+
     func testCloseInvalidatesSidebarOnceWithCompletedState() {
         let (store, tabs) = fixture()
         store.selection.selectAll(in: .init(kind: .today, ids: tabs.map(\.id)))

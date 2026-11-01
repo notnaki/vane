@@ -1272,7 +1272,7 @@ struct TitleReveal: Equatable, Sendable {
     /// Rebuild the page. `interactionState` sets url and the back/forward list
     /// synchronously, so the url check below is a genuine "that state was no good".
     func resume() {
-        guard suspended, !needsRecovery else { return }
+        guard !tornDown, suspended, !needsRecovery else { return }
         if easelSession != nil { suspended = false; return }
         Trace.span("resume") {
             suspended = false

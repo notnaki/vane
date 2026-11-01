@@ -46,7 +46,7 @@ struct WebView: NSViewRepresentable {
     var store: TabStore?
     private var mayMount: Bool {
         guard let tab, let store else { return true }
-        return !tab.tornDown && !store.isTabLocked(tab.id) && store.ownsPage(tab)
+        return !tab.tornDown && !tab.suspended && !store.isTabLocked(tab.id) && store.ownsPage(tab)
     }
 
     func makeNSView(context: Context) -> WebHost { WebHost(mayMount ? web : nil, offscreen: offscreen) }
@@ -296,15 +296,17 @@ struct TabPage: View {
             Color.clear.accessibilityHidden(true)
         } else if tab.needsRecovery {
             if !offscreen { PageRecoveryView(tab: tab) }
+        } else if tab.suspended {
+            Color.clear.accessibilityHidden(true)
         } else if store.ownsPage(tab) {
             if let session = tab.easelSession {
                 EaselTabPage(session: session, store: store).id(tab.id)
             } else {
                 DeveloperFrame(tab: tab) {
                     // SwiftUI may evaluate an already-mounted child's content closure
-                    // once more while removing it after a close or termination
-                    // publication. A closed tab must never create a replacement page.
-                    if !tab.tornDown && !tab.needsRecovery {
+                    // once more while removing it after a close, unload or termination
+                    // publication. Retired pages must never create a replacement view.
+                    if !tab.tornDown && !tab.suspended && !tab.needsRecovery {
                         WebView(web: tab.web,
                             live: keepPages ? store.everyTab.filter {
                                 $0.existingWeb != nil && store.ownsPage($0) && !store.isTabLocked($0.id)

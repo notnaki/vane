@@ -76,9 +76,9 @@ import XCTest
         }
     }
 
-    private func waitForToday(_ ids: [String], in store: TabStore, host: NSView, window: NSWindow) async throws {
+    private func waitForOutline(_ ids: [String], section: String = "today", in store: TabStore, host: NSView, window: NSWindow) async throws {
 #if DEBUG
-        let expected = NativeFixtureSnapshotMarker.Snapshot(store: ObjectIdentifier(store), section: "today", ids: ids)
+        let expected = NativeFixtureSnapshotMarker.Snapshot(store: ObjectIdentifier(store), section: section, ids: ids)
         func committed(_ view: NSView) -> Bool {
             if let marker = view as? NativeFixtureSnapshotMarker,
                marker.acknowledges(expected, root: host, window: window) { return true }
@@ -100,7 +100,7 @@ import XCTest
                         .init(row: .tab($0.id.uuidString))
                     })
                 try await select(tabs[1], in: store, window: window, host: host)
-                try await waitForToday(store.todayShape.entries.map(\.id), in: store, host: host, window: window)
+                try await waitForOutline(store.todayShape.entries.map(\.id), in: store, host: host, window: window)
                 store.close(tabs[1].id)
                 XCTAssertNil(tabs[1].existingWeb)
                 XCTAssertEqual(store.current, tabs[2].id)
@@ -109,9 +109,58 @@ import XCTest
                     host.layoutSubtreeIfNeeded()
                     return tabs[2].existingWeb?.window === window
                 }
-                try await waitForToday(tabs.filter { $0 !== tabs[1] }.map { $0.id.uuidString },
+                try await waitForOutline(tabs.filter { $0 !== tabs[1] }.map { $0.id.uuidString },
                                        in: store, host: host, window: window)
                 XCTAssertNil(tabs[1].existingWeb, "Later native layout must not resurrect the retired page")
+            }
+        }
+    }
+
+    func testActivePinnedUnloadKeepsRowWithoutRecreatingPage() async throws {
+        try await withLoop {
+            try await withWindow(count: 10) { store, tabs, window, host in
+                let pin = tabs[1]
+                pin.kind = .pinned
+                store.normaliseSections()
+                store.syncShapes()
+                try await select(pin, in: store, window: window, host: host)
+                try await waitForOutline([pin.id.uuidString], section: "pinned",
+                                         in: store, host: host, window: window)
+                store.close(pin.id)
+                XCTAssertNil(store.current)
+                XCTAssertTrue(store.tabs.contains { $0 === pin })
+                XCTAssertTrue(pin.suspended)
+                XCTAssertFalse(pin.tornDown)
+                XCTAssertNil(pin.existingWeb)
+                host.layoutSubtreeIfNeeded()
+                try await waitForOutline(store.tabs.filter { $0.kind == .today }.map { $0.id.uuidString },
+                                       in: store, host: host, window: window)
+                XCTAssertNil(pin.existingWeb, "Native layout must not recreate an unloaded pinned page")
+            }
+        }
+    }
+
+    func testActiveSplitPaneCloseDoesNotRecreateRetiredPage() async throws {
+        try await withLoop {
+            for paneCount in [2, 3] {
+                try await withWindow(count: 10) { store, tabs, window, host in
+                    for index in 2...paneCount { store.addPane(tabs[index].id, beside: tabs[1].id) }
+                    let closing = tabs[paneCount]
+                    try await select(closing, in: store, window: window, host: host)
+                    let visibleIDs = [tabs[0].id, tabs[1].id] + tabs.dropFirst(paneCount + 1).map(\.id)
+                    try await waitForOutline(visibleIDs.map(\.uuidString), in: store, host: host, window: window)
+                    store.close(closing.id)
+                    XCTAssertFalse(store.tabs.contains { $0 === closing })
+                    XCTAssertNil(closing.existingWeb)
+                    XCTAssertEqual(store.splits.count, paneCount == 2 ? 0 : 1)
+                    XCTAssertTrue(tabs[1..<paneCount].contains { $0.id == store.current })
+                    try await compatibilityWait {
+                        host.layoutSubtreeIfNeeded()
+                        return store.active?.existingWeb?.window === window
+                    }
+                    try await waitForOutline(visibleIDs.map(\.uuidString), in: store, host: host, window: window)
+                    XCTAssertNil(closing.existingWeb, "A departing split pane must not recreate its retired page")
+                }
             }
         }
     }
