@@ -69,8 +69,7 @@ assert smoke_proof['proof_complete'] is True and smoke_proof['canonical_status']
 assert smoke_proof['protocol']=='native-self-kernel-and-canonical-boundary-v1' and smoke_proof['external_initial_live_observation_performed'] is False
 assert not re.search(r'^\*\*\* Signal [0-9]+:',smoke_text,re.M)
 assert all(not Path(slot['raw_log']).exists() and not Path(slot['result_json']).exists() for slot in attempt_slots)
-sys.path.insert(0,str(HELPERS));from spell_trace_validation import validate,validate_original18
-validate_spell_trace=validate if mode=='controls' else validate_original18
+sys.path.insert(0,str(HELPERS));from spell_trace_validation import validate,validate_original18,demultiplex
 all_results=[]
 for slot in attempt_slots:
  n=slot['attempt'];entry=next(x for x in schedule if x['attempt']==n);entry['status']='RUNNING';(OUT/'execution-plan.json').write_text(json.dumps(schedule,indent=2)+'\n');log=Path(slot['raw_log']);result_path=Path(slot['result_json']);audit=OUT/f'attempt-{n}-audit';audit.mkdir(mode=0o700,exist_ok=False);before=integrity();(audit/'description.before.json').write_bytes(Path(before['description_path']).read_bytes())
@@ -82,6 +81,10 @@ for slot in attempt_slots:
  with log.open('xb') as stream:completed=subprocess.run(command,env=environment,stdout=stream,stderr=subprocess.STDOUT,check=False)
  code=completed.returncode
  raw_bytes=log.read_bytes();warning=b"warning: '--build-system native' has been deprecated and will be removed in a future release; please report an issue at https://github.com/swiftlang/swift-package-manager/issues if you are unable to adopt the default build system.\n";normalized=raw_bytes.replace(warning,b'');normalized_log=log.with_suffix('.normalized.log');assert not normalized_log.exists();normalized_log.write_bytes(normalized);text=normalized.decode('utf-8',errors='replace');errors=[]
+ raw_text=text;channels=demultiplex(raw_bytes,slot,original18=mode=='observation');errors.extend(channels['validation_errors'])
+ continuation_log=log.with_suffix('.continuation.log');spell_log=log.with_suffix('.spell.log');demux_path=log.with_suffix('.demux.json')
+ continuation_log.write_bytes(channels['continuation']);spell_log.write_bytes(channels['spell']);demux_path.write_text(json.dumps({k:v for k,v in channels.items() if k not in ('continuation','spell')},indent=2)+'\n')
+ text=channels['continuation'].replace(warning,b'').decode('utf-8',errors='replace');spell_text=channels['spell'].decode('utf-8',errors='replace')
  try:
   (audit/'description.after.json').write_bytes(Path(before['description_path']).read_bytes());after=integrity()
  except Exception as error:after={'error':str(error)};errors.append('postrun integrity '+str(error))
@@ -92,11 +95,11 @@ for slot in attempt_slots:
  if completed!=expected:errors.append('case completion list/order/duplicates differ from frozen cohort plusfreshretirement')
  for case in expected:
   if outcomes.get(case)!=['passed']:errors.append('case not passed once '+case)
- assertions=[line for line in text.splitlines() if re.search(r'error: -\[',line)]
+ assertions=list(dict.fromkeys(line for stream in (raw_text,text) for line in stream.splitlines() if re.search(r'error: -\[',line)))
  if assertions:errors.append('native assertion records present')
  summary=re.findall(r'Native suite primary status=(-?\d+); cleanup status=(-?\d+)',text);primary,cleanup=map(int,summary[0]) if len(summary)==1 else (-999,-999)
  if (primary,cleanup,code)!=(0,0,0):errors.append('primary/cleanup/wrapper not0/0/0')
- if re.search(r'^\*\*\* Signal|^Fatal error:|^UNVERIFIED native fixture retirement|^NATIVE PRIMARY TIMEOUT',text,re.I|re.M):errors.append('fatal/timeout/unverified marker')
+ if any(re.search(r'^\*\*\* Signal|^Fatal error:|^UNVERIFIED native fixture retirement|^NATIVE PRIMARY TIMEOUT',stream,re.I|re.M) for stream in (raw_text,text)):errors.append('fatal/timeout/unverified marker')
  trace=[];samples={};context=[]
  for match in re.finditer(r'F17_CONTINUATION case=("(?:[^"\\]|\\.)*") phase=(\S+) uptime=([\d.]+) ([^\n]*)',text):
   try:case_name=json.loads(match[1])
@@ -127,7 +130,8 @@ for slot in attempt_slots:
     block=re.search(re.escape("Test Case '-["+tag+"]' started.")+r'(.*?)'+re.escape("Test Case '-["+tag+"]' passed ("),text,re.S)
     if block is None or 'PrematureFillAdmission()' not in block[1]:errors.append('Missing actual caught premature-admission counterexample '+method)
  context=[r for r in trace if r['phase'].startswith('owner-')]
- spell_trace=validate_spell_trace(text,slot);errors.extend(spell_trace['validation_errors'])
+ spell_trace=validate(spell_text+'\n'+text,slot) if mode=='controls' else validate_original18(text,slot,spell_text=spell_text,spell_scope_verified=channels['original18_scope_verified']);errors.extend(spell_trace['validation_errors'])
+ spell_trace['demultiplex_proof']=str(demux_path);spell_trace['derived_channels']={'continuation':str(continuation_log),'spell':str(spell_log)}
  proof_path=audit/'boundary-proof.json'
  proof=json.loads(proof_path.read_text()) if proof_path.exists() else {'proof_complete':False,'audit_errors':['Boundary proof missing'],'canonical_status':None}
  if proof.get('proof_complete') is not True:errors.append('Canonical boundary proof incomplete: '+repr(proof.get('audit_errors')))
