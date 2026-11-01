@@ -253,11 +253,63 @@ import XCTest
     }
 }
 
+/// Execute the real identity script, mutate the same real DOM after its read, then
+/// promote before delivering that earlier reply. Only this source owns the gate.
+@MainActor private final class Feel04AccountProofSource: WKWebView {
+    var gateNextIdentity = false
+    var changesAccount = true
+    var captured: ((String?, String?, Duration) -> Void)?
+    private(set) var gated = false
+    private(set) var identityReplies: [String] = []
+
+    override func __evaluateJavaScript(_ script: String, inFrame frame: WKFrameInfo?, in world: WKContentWorld,
+                                      completionHandler: (@MainActor @Sendable (Any?, (any Error)?) -> Void)? = nil) {
+        guard gateNextIdentity, script == DOMFavouritePreviewAdapter(service: .github).identityScript else {
+            super.__evaluateJavaScript(script, inFrame: frame, in: world) { [weak self] value, error in
+                if script == DOMFavouritePreviewAdapter(service: .github).identityScript {
+                    self?.identityReplies.append(value as? String ?? "<missing>")
+                }
+                completionHandler?(value, error)
+            }
+            return
+        }
+        gateNextIdentity = false
+        let started = ContinuousClock.now
+        let mutation = """
+        (() => {
+          const proof = (\(script));
+          const meta = document.querySelector('meta[name="user-login"]');
+          \(changesAccount ? "meta.content = 'other';" : "")
+          return {proof, current: meta.content};
+        })()
+        """
+        super.__evaluateJavaScript(mutation, inFrame: frame, in: world) { [weak self] value, error in
+            guard let self else { completionHandler?(nil, error); return }
+            let values = value as? [String: String]
+            self.gated = true
+            self.identityReplies.append(values?["proof"] ?? "<missing>")
+            self.captured?(values?["proof"], values?["current"], ContinuousClock.now - started)
+            completionHandler?(values?["proof"], error)
+        }
+    }
+}
+
 @MainActor final class Feel04AccountProofTests: XCTestCase {
-    private func settle(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+    private func settle(_ condition: () -> Bool, diagnostics: () -> String = { "" },
+                        file: StaticString = #filePath, line: UInt = #line) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
         while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertTrue(condition(), file: file, line: line)
+        XCTAssertTrue(condition(), diagnostics(), file: file, line: line)
+    }
+    private func diagnostics(_ previews: FavouritePreviews, source: WKWebView, loader: Feel04Loader) -> String {
+        let fields = Set(["generation", "loading", "loadingOwner", "preparing", "foregroundIntent", "preparedState", "accountHint"])
+        let internals = Mirror(reflecting: previews).children.compactMap { child -> String? in
+            guard let label = child.label, fields.contains(label) else { return nil }
+            return "\(label)=\(String(describing: child.value))"
+        }.joined(separator: ", ")
+        return "state=\(previews.state), owner=\(String(describing: previews.owner)), \(internals), "
+            + "loader=\(loader.contexts.count)/\(loader.completed), source=\(String(describing: source.url)), "
+            + "loading=\(source.isLoading), mounted=\(source.window != nil), appRunning=\(NSApp.isRunning)"
     }
     func testPreparedSnapshotRechecksLiveAccountBeforePresentation() async throws {
         TestEnvironment.prepare()
@@ -275,10 +327,128 @@ import XCTest
         try await settle { loader.completed == 1 }
         try await Task.sleep(for: .milliseconds(30))
         XCTAssertEqual(previews.state, .loading, "Preparation must not expose account content before the card opens")
-        _ = try await source.evaluateJavaScript("document.querySelector('meta').content = 'other'")
+        let changedAccount = try await source.evaluateJavaScript("document.querySelector('meta').content = 'other'") as? String
+        print("ACCOUNT PROOF before promotion: changed=\(String(describing: changedAccount)), \(diagnostics(previews, source: source, loader: loader))")
         previews.request(target, owner: owner, source: source)
-        try await settle { previews.state == .unavailable }
+        try await settle({ previews.state == .unavailable }, diagnostics: {
+            "changed=\(String(describing: changedAccount)), \(self.diagnostics(previews, source: source, loader: loader))"
+        })
+        print("ACCOUNT PROOF after promotion: \(diagnostics(previews, source: source, loader: loader))")
         XCTAssertEqual(loader.contexts.count, 1)
+    }
+
+    func testPromotionDuringAccountVerificationRechecksBeforePublishing() async throws {
+        try await exercisePromotionDuringAccountVerification(changingAccount: true)
+    }
+
+    func testPromotionDuringAccountVerificationStillPublishesTheSameLiveAccount() async throws {
+        try await exercisePromotionDuringAccountVerification(changingAccount: false)
+    }
+
+    private func exercisePromotionDuringAccountVerification(changingAccount: Bool) async throws {
+        try await withMountedSource { source in
+            source.changesAccount = changingAccount
+            let loader = Feel04Loader(), previews = FavouritePreviews(loader: loader)
+            let target = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://github.com/")!)!, owner = UUID()
+            defer { previews.dismiss(owner: owner); loader.finish(); source.captured = nil }
+            previews.prepare(target, owner: owner, source: source)
+            try await settle { loader.contexts.count == 1 }
+            source.captured = { old, current, elapsed in
+                XCTAssertEqual(old, "fixture", "The gated proof must come from the actual earlier identity read")
+                XCTAssertEqual(current, changingAccount ? "other" : "fixture", "The actual document supplies the current account")
+                XCTAssertLessThan(elapsed, .milliseconds(400), "Admit this reply before the unchanged identity-probe deadline")
+                XCTAssertEqual(previews.state, .loading, "Prepared account content must remain hidden")
+                guard old == "fixture", current == (changingAccount ? "other" : "fixture"),
+                      elapsed < .milliseconds(400), previews.state == .loading else { return }
+                print("ACCOUNT PROOF captured before delivery: old=\(String(describing: old)), current=\(String(describing: current)), elapsed=\(elapsed), \(self.diagnostics(previews, source: source, loader: loader))")
+                previews.request(target, owner: owner, source: source)
+            }
+            source.gateNextIdentity = true
+            loader.finish()
+            try await settle { source.gated }
+            let expected: FavouritePreviewState = changingAccount ? .unavailable : .ready(.init(account: "fixture", items: []))
+            try await settle({ previews.state == expected }, diagnostics: {
+                self.diagnostics(previews, source: source, loader: loader)
+            })
+            print("ACCOUNT PROOF gated final: changing=\(changingAccount), reads=\(source.identityReplies), \(diagnostics(previews, source: source, loader: loader))")
+            XCTAssertEqual(loader.contexts.count, 1, "Promotion must recheck proof without restarting the loader")
+            XCTAssertEqual(previews.owner, owner)
+        }
+    }
+
+    func testPromotedPreparationRetriesSessionAndRetainsLiveSourceProof() async throws {
+        try await withMountedSource { source in
+            let loader = Feel04Loader(), previews = FavouritePreviews(loader: loader)
+            let target = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://github.com/")!)!, owner = UUID()
+            defer { previews.dismiss(owner: owner); loader.finish() }
+            previews.prepare(target, owner: owner, source: source)
+            try await settle { loader.contexts.count == 1 }
+            previews.request(target, owner: owner, source: source)
+            XCTAssertEqual(previews.state, .loading, "Opening must not bypass the account-proof barrier")
+            print("ACCOUNT RETRY before session change: \(diagnostics(previews, source: source, loader: loader))")
+            previews.sessionChanged(profileID: target.profileID)
+            try await settle({ loader.contexts.count == 2 }, diagnostics: {
+                "Explicitly opened preparation requires its one foreground retry: \(self.diagnostics(previews, source: source, loader: loader))"
+            })
+            guard loader.contexts.count == 2 else { return }
+            let account = try await source.evaluateJavaScript("document.querySelector('meta').content = 'other'") as? String
+            XCTAssertEqual(account, "other")
+            loader.finish()
+            try await settle { loader.completed == 2 }
+            try await settle({ previews.state == .unavailable }, diagnostics: {
+                "The retry must retain the live source proof: \(self.diagnostics(previews, source: source, loader: loader))"
+            })
+            print("ACCOUNT RETRY final: reads=\(source.identityReplies), \(diagnostics(previews, source: source, loader: loader))")
+            XCTAssertEqual(loader.contexts.count, 2, "Only the single bounded foreground retry may load")
+            XCTAssertEqual(previews.owner, owner)
+        }
+    }
+
+    private func withMountedSource(_ body: (Feel04AccountProofSource) async throws -> Void) async throws {
+        TestEnvironment.prepare()
+        let policy = NSApplication.shared.activationPolicy(), mode = BatterySaver.shared.mode
+        defer { NSApp.setActivationPolicy(policy); BatterySaver.shared.setMode(mode) }
+        BatterySaver.shared.setMode(.off)
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let source = Feel04AccountProofSource(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
+        let window = NSWindow(contentRect: source.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = source
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let url = URL(string: "https://github.com/")!
+        var failure: (any Error)?
+        do {
+            let ready = {
+                NSApp.isRunning && NSApp.isActive && NSRunningApplication.current.isFinishedLaunching
+                    && window.isKeyWindow && NSApp.keyWindow === window
+                    && NativeFixtureMountAdmission.surfaceReady(source, in: window)
+            }
+            try await settle(ready)
+            guard ready() else { throw NSError(domain: "AccountProofFixtureAdmission", code: 1) }
+            source.loadHTMLString("<meta name='user-login' content='fixture'><body>Fixture</body>", baseURL: url)
+            try await settle { source.url == url && !source.isLoading }
+            let document = try await source.evaluateJavaScript("({ready: document.readyState, account: document.querySelector('meta').content})") as? [String: String]
+            XCTAssertEqual(document?["ready"], "complete")
+            XCTAssertEqual(document?["account"], "fixture")
+            guard document?["ready"] == "complete", document?["account"] == "fixture" else {
+                throw NSError(domain: "AccountProofFixtureAdmission", code: 2)
+            }
+            try await body(source)
+        } catch { failure = error }
+        source.captured = nil
+        source.stopLoading()
+        window.orderOut(nil)
+        window.contentView = nil
+        window.close()
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Account proof fixture loop cleanup failed: \(error)") }
+        }
+        if let failure { throw failure }
     }
 
     func testInflightAccountChangeFailsClosed() async throws {

@@ -309,36 +309,151 @@ extension ExtensionNativeMessagingErrorTests {
         XCTAssertFalse(unmanaged.nativeMessagingErrorCompatibilityEnabled)
     }
 
+    func testRetryFixtureAdmitsRegularPolicyAndRestoresOnlyAfterLoopJoin() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        enum DeliberateFailure: Error { case body }
+        let previous = app.activationPolicy()
+        defer { app.setActivationPolicy(previous) }
+        for throwFromBody in [false, true] {
+            let requestAccepted = app.setActivationPolicy(.accessory)
+            print("Native retry fixture baseline: setterAccepted=\(requestAccepted), observed=\(app.activationPolicy().rawValue)")
+            try await waitNativeModePage("observable nonregular policy baseline") { app.activationPolicy() == .accessory }
+            do {
+                try await withNativeModeFixture(retryPage: true) { fixture in
+                    try fixture.verifyRunning()
+                    XCTAssertEqual(app.activationPolicy(), .regular,
+                                   "A retry window must be created inside a lease that already admits regular policy")
+                    if throwFromBody { throw DeliberateFailure.body }
+                }
+                XCTAssertFalse(throwFromBody, "The deliberate body error must propagate after cleanup")
+            } catch DeliberateFailure.body { XCTAssertTrue(throwFromBody) }
+            XCTAssertFalse(app.isRunning, "The owned AppKit loop joins before restoring policy")
+            try await waitNativeModePage("observed original policy after joined cleanup") { app.activationPolicy() == .accessory }
+            XCTAssertEqual(app.activationPolicy(), .accessory,
+                           "Success and body-error paths restore the observed baseline after teardown and join")
+        }
+    }
+
     func testReviewedSequentialRetriesYieldToTheExtensionPageTimer() async throws {
-        for approved in [false, true] {
-            try await withNativeModeFixture(retryPage: true) { fixture in
+        try await exerciseSequentialRetries(approvedModes: [false, true], injectObservedHide: false)
+    }
+
+    func testRetryPageReadmitsObservedOwnedApplicationHideBeforeAction() async throws {
+        try await exerciseSequentialRetries(approvedModes: [true], injectObservedHide: true)
+    }
+
+    private func exerciseSequentialRetries(approvedModes: [Bool], injectObservedHide: Bool) async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let lifecycleTrace = NativeModePageTrace(window: nil)
+        defer { lifecycleTrace.close() }
+        for approved in approvedModes {
+            lifecycleTrace.record("before fixture approved=\(approved)")
+            try await withNativeModeFixture(retryPage: true, lifecycleTrace: lifecycleTrace) { fixture in
                 if approved { _ = try await fixture.host.setNativeMessagingErrorCompatibility(true, for: fixture.folder.path) { _ in true } }
+                try fixture.verifyRunning()
                 let context = try XCTUnwrap(fixture.host.installed.first)
                 let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 360, height: 240),
                                     configuration: try XCTUnwrap(context.webViewConfiguration))
                 let window = NSWindow(contentRect: web.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
-                let oldPolicy = NSApp.activationPolicy()
-                defer { web.stopLoading(); window.contentView = nil; window.close(); NSApp.setActivationPolicy(oldPolicy) }
+                let trace = NativeModePageTrace(window: window)
+                let oldDelegate = web.navigationDelegate
+                if oldDelegate == nil { web.navigationDelegate = trace }
+                defer {
+                    trace.close()
+                    if web.navigationDelegate === trace { web.navigationDelegate = oldDelegate }
+                    web.stopLoading(); window.contentView = nil; window.close()
+                }
                 window.contentView = web
-                NSApp.setActivationPolicy(.regular)
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
                 try await waitNativeModePage("retry page foreground") { NSApp.isActive && window.isKeyWindow && web.window === window }
                 web.load(URLRequest(url: try XCTUnwrap(context.optionsPageURL)))
-                try await waitNativeModePage("retry page loaded in exact owner") {
+                var actionInvoked = false
+                let ready = {
                     !web.isLoading && web.title == "Sequential retry fixture" && web.window === window && window.isVisible
                         && NSApp.isActive && window.isKeyWindow
                 }
+                let diagnostics = {
+                    "approved=\(approved), hidden=\(NSApp.isHidden), actionInvoked=\(actionInvoked), policy=\(NSApp.activationPolicy().rawValue), background=\(context.webExtension.hasBackgroundContent), loading=\(web.isLoading), title=\(web.title ?? "nil"), url=\(web.url?.absoluteString ?? "nil"), owner=\(web.window === window), visible=\(window.isVisible), active=\(NSApp.isActive), key=\(window.isKeyWindow), keyWindow=\(NSApp.keyWindow?.windowNumber ?? -1), frontmostPID=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1), titleGate=\(web.title == "Sequential retry fixture"), trace=\(trace.events.joined(separator: " | "))"
+                }
+                if injectObservedHide {
+                    // Inject only after the original exact-owner foreground gate.
+                    let hiddenBeforeInjection = NSApp.isHidden
+                    guard !hiddenBeforeInjection else { throw ExtensionHost.Failure("Controlled hide requires an initially unhidden owner") }
+                    fixture.cleanupInjectedHide = {
+                        guard web.window == nil && !window.isVisible else {
+                            throw ExtensionHost.Failure("Injected-hide cleanup requires the owned presentation to be closed")
+                        }
+                        if !hiddenBeforeInjection && NSApp.isHidden {
+                            NSApp.unhideWithoutActivation()
+                            try await self.waitNativeModePage("controlled injected hide restored during teardown") { !NSApp.isHidden }
+                            print("NATIVE_MODE_HIDE_CLEANUP restored=true windowClosed=true loopRunning=\(NSApp.isRunning)")
+                        }
+                    }
+                    NSApp.hide(nil)
+                    try await waitNativeModePage("observable injected application hide") {
+                        NSApp.isHidden && !window.isVisible && web.window === window
+                    }
+                    try await waitNativeModePage("hidden control document loaded") {
+                        !web.isLoading && web.title == "Sequential retry fixture" && web.window === window
+                    }
+                    let count = NativeModeRetryResult()
+                    web.callAsyncJavaScript("return window.nativeRetryActionStarts;", arguments: [:], in: nil, in: .page) {
+                        count.value = $0
+                    }
+                    try await waitNativeModePage("hidden control action count") { count.value != nil }
+                    let initialActionStarts = try count.value?.get() as? Int
+                    XCTAssertEqual(initialActionStarts, 0)
+                    guard initialActionStarts == 0 else { throw ExtensionHost.Failure("Hidden control action already started") }
+                    print("NATIVE_MODE_HIDE_CONTROL observedHidden=\(NSApp.isHidden) visible=\(window.isVisible) owner=\(web.window === window) actionInvoked=\(actionInvoked) actionStarts=\(initialActionStarts ?? -1)")
+                    var oldPreparationTimedOut = false
+                    do {
+                        try await waitNativeModePage("old preparation after observed hide", diagnostics: diagnostics, ready)
+                    } catch {
+                        guard error.localizedDescription.hasPrefix("Timed out: old preparation after observed hide") else { throw error }
+                        oldPreparationTimedOut = true
+                    }
+                    XCTAssertTrue(oldPreparationTimedOut, "The original preparation must reject a hidden owner without starting the action")
+                    guard oldPreparationTimedOut else { throw ExtensionHost.Failure("Old preparation unexpectedly admitted the hidden control") }
+                    XCTAssertFalse(actionInvoked)
+                    XCTAssertTrue(NSApp.isHidden && !window.isVisible && web.window === window)
+                    count.value = nil
+                    web.callAsyncJavaScript("return window.nativeRetryActionStarts;", arguments: [:], in: nil, in: .page) {
+                        count.value = $0
+                    }
+                    try await waitNativeModePage("action count after old preparation timeout") { count.value != nil }
+                    let actionStartsAfterOldPreparation = try count.value?.get() as? Int
+                    XCTAssertEqual(actionStartsAfterOldPreparation, 0)
+                    guard actionStartsAfterOldPreparation == 0 else { throw ExtensionHost.Failure("Old preparation started the hidden control action") }
+                    print("NATIVE_MODE_OLD_PREPARATION timeout=true actionInvoked=\(actionInvoked) actionStarts=\(actionStartsAfterOldPreparation ?? -1)")
+                }
                 #if DEBUG
-                let before = fixture.host.nativeMessagingDeniedRequestCount
+                var before = 0
                 #endif
                 let result = NativeModeRetryResult()
-                web.callAsyncJavaScript("return await window.exerciseNativeRetries();", arguments: [:], in: nil, in: .page) {
-                    result.value = $0
+                let readmissions = try await withAdmittedNativeModeRetryPage(web, window: window, context: context,
+                    fixture: fixture, trace: trace, diagnostics: diagnostics, ready: ready) { deadline in
+                    try Task.checkCancellation()
+                    try fixture.verifyRunning()
+                    guard ready() && !NSApp.isHidden else { throw ExtensionHost.Failure("Retry owner withdrew before action") }
+                    #if DEBUG
+                    before = fixture.host.nativeMessagingDeniedRequestCount
+                    #endif
+                    guard ContinuousClock.now < deadline else {
+                        throw ExtensionHost.Failure("Timed out: retry page loaded in exact owner " + diagnostics())
+                    }
+                    actionInvoked = true
+                    web.callAsyncJavaScript("return await window.exerciseNativeRetries();", arguments: [:], in: nil, in: .page) {
+                        result.value = $0
+                    }
                 }
+                if injectObservedHide { XCTAssertEqual(readmissions, 1, "One observed application hide requires exactly one owned readmission") }
                 try await waitNativeModePage("bounded retries and page timer") { result.value != nil }
                 let values = try XCTUnwrap(try result.value?.get() as? [String: Any])
+                if injectObservedHide { XCTAssertEqual(values["actionStarts"] as? Int, 1) }
                 XCTAssertEqual(values["attempts"] as? Int, 3)
                 XCTAssertEqual(values["errors"] as? Int, 3)
                 XCTAssertEqual(values["replies"] as? Int, 0)
@@ -364,21 +479,137 @@ extension ExtensionNativeMessagingErrorTests {
         }
     }
 
-    private func waitNativeModePage(_ description: String, _ ready: () -> Bool) async throws {
+    /// Preparation owns a single recovery from an observed application hide.
+    /// The original five-second budget covers document and presentation admission;
+    /// the retry action starts synchronously in the accepted owner sample.
+    private func withAdmittedNativeModeRetryPage(_ web: WKWebView, window: NSWindow,
+        context: WKWebExtensionContext, fixture: NativeModeFixture, trace: NativeModePageTrace,
+        diagnostics: () -> String, ready: () -> Bool, action: (ContinuousClock.Instant) throws -> Void) async throws -> Int {
+        let application = NSApplication.shared
+        let deadline = ContinuousClock.now + .seconds(5)
+        var readmissions = 0
+        while true {
+            try Task.checkCancellation()
+            try fixture.verifyRunning()
+            guard ContinuousClock.now < deadline else {
+                throw ExtensionHost.Failure("Timed out: retry page loaded in exact owner " + diagnostics())
+            }
+            guard trace.owns(window), web.window === window, context.isLoaded,
+                  fixture.host.installed.contains(where: { $0 === context }),
+                  web.configuration.webExtensionController === fixture.host.controller else {
+                throw ExtensionHost.Failure("Retry presentation owner closed or was superseded " + diagnostics())
+            }
+            guard trace.applicationHideCount <= 1 else {
+                throw ExtensionHost.Failure("Retry application hid a second time before action " + diagnostics())
+            }
+            if !application.isHidden && ready() && web.url == context.optionsPageURL {
+                guard ContinuousClock.now < deadline else {
+                    throw ExtensionHost.Failure("Timed out: retry page loaded in exact owner " + diagnostics())
+                }
+                try action(deadline)
+                return readmissions
+            }
+            if application.isHidden && trace.applicationHideCount == 1 && readmissions == 0 {
+                readmissions = 1
+                trace.record("readmit observed application hide once")
+                application.unhideWithoutActivation()
+                window.makeKeyAndOrderFront(nil)
+                application.activate(ignoringOtherApps: true)
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    @MainActor private final class NativeModePageTrace: NSObject, WKNavigationDelegate {
+        private(set) var events: [String] = []
+        private(set) var applicationHideCount = 0
+        private var ownerIsClosing = false
+        private var isRecording = true
+        private weak var owner: NSWindow?
+        private var observers: [NSObjectProtocol] = []
+        private let start = ContinuousClock.now
+        init(window: NSWindow?) {
+            owner = window
+            super.init()
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                         NSWindow.willCloseNotification, NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
+                         NSApplication.willHideNotification, NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
+                let windowEvent = [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, NSWindow.willCloseNotification].contains(name)
+                if windowEvent && window == nil { continue }
+                let owner: Any? = windowEvent ? window : nil
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: owner, queue: .main) { [weak self] note in
+                    let event = note.name.rawValue
+                    let willHide = note.name == NSApplication.willHideNotification
+                    let didHide = note.name == NSApplication.didHideNotification
+                    let ownerClosing = note.name == NSWindow.willCloseNotification
+                    MainActor.assumeIsolated {
+                        if didHide { self?.applicationHideCount += 1 }
+                        if ownerClosing { self?.ownerIsClosing = true }
+                        self?.record(event)
+                        if willHide {
+                            self?.record("willHide stack=" + Thread.callStackSymbols.joined(separator: " | "))
+                        }
+                    }
+                })
+            }
+        }
+        func owns(_ window: NSWindow) -> Bool { isRecording && !ownerIsClosing && owner === window }
+        func close() {
+            isRecording = false
+            observers.forEach { NotificationCenter.default.removeObserver($0) }
+            observers.removeAll()
+        }
+        func record(_ text: String) {
+            note(text)
+            print("NATIVE_MODE_LIFECYCLE " + (events.last ?? text))
+        }
+        private func note(_ text: String) {
+            let elapsed = start.duration(to: .now).components
+            events.append("\(elapsed.seconds)s+\(elapsed.attoseconds / 1_000_000_000_000_000)ms hidden=\(NSApp.isHidden) policy=\(NSApp.activationPolicy().rawValue) active=\(NSApp.isActive) " + text)
+            if events.count > 32 { events.removeFirst() }
+        }
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { note("navigation start") }
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { note("navigation commit") }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { note("navigation finish") }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            let error = error as NSError; note("provisional failure \(error.domain):\(error.code)")
+        }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            let error = error as NSError; note("navigation failure \(error.domain):\(error.code)")
+        }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { note("content process terminated") }
+    }
+
+    private func waitNativeModePage(_ description: String, diagnostics: () -> String = { "" }, _ ready: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
         while !ready() {
-            guard ContinuousClock.now < deadline else { throw ExtensionHost.Failure("Timed out: " + description) }
+            guard ContinuousClock.now < deadline else { throw ExtensionHost.Failure("Timed out: " + description + " " + diagnostics()) }
             try await Task.sleep(for: .milliseconds(10))
         }
     }
 
     private static let nativePermission = WKWebExtension.Permission(rawValue: "nativeMessaging")
 
-    private func withNativeModeFixture(required: [String] = ["storage", "nativeMessaging"], optional: [String] = ["cookies"], hasBackground: Bool = false, retryPage: Bool = false,
+    private func withNativeModeFixture(required: [String] = ["storage", "nativeMessaging"], optional: [String] = ["cookies"], hasBackground: Bool = false, retryPage: Bool = false, lifecycleTrace: NativeModePageTrace? = nil,
         _ body: @MainActor (NativeModeFixture) async throws -> Void) async throws {
         TestEnvironment.prepare()
-        let loop = try await NativeFixtureApplicationLoop.acquire()
-        let fixture = NativeModeFixture(hasBackground: hasBackground, retryPage: retryPage)
+        let application = NSApplication.shared
+        let originalPolicy = application.activationPolicy()
+        lifecycleTrace?.record("fixture capture originalPolicy=\(originalPolicy.rawValue)")
+        defer {
+            // Covers acquisition failures too; successful acquisitions are closed
+            // and joined below before this caller-owned policy is restored.
+            if application.activationPolicy() != originalPolicy {
+                lifecycleTrace?.record("restore policy request=\(originalPolicy.rawValue)")
+                application.setActivationPolicy(originalPolicy)
+                lifecycleTrace?.record("restore policy returned")
+            }
+        }
+        lifecycleTrace?.record("before acquire requestedPolicy=\(retryPage ? "regular" : "current")")
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: retryPage ? .regular : nil)
+        lifecycleTrace?.record("after acquire")
+        let fixture = NativeModeFixture(hasBackground: hasBackground, retryPage: retryPage,
+                                        verifyRunning: { try loop.verifyRunning() })
         var failure: (any Error)?
         do {
             try FileManager.default.createDirectory(at: fixture.folder, withIntermediateDirectories: true)
@@ -387,6 +618,12 @@ extension ExtensionNativeMessagingErrorTests {
             XCTAssertTrue(accepted)
             try await body(fixture)
         } catch { failure = error }
+        // Body defers close the exact presentation before restoring its injected
+        // hidden state. Keep the admitted loop alive for this observable cleanup.
+        do { try await fixture.cleanupInjectedHide?() }
+        catch { if failure == nil { failure = error } else { XCTFail("Injected-hide cleanup: \(error)") } }
+        // Release captured presentation objects before retiring their backend.
+        fixture.cleanupInjectedHide = nil
         // Invalidation tests can have forgotten the first host. Retire any new
         // restoration before releasing the exact profile and its scoped backend.
         for profile in fixture.profiles {
@@ -401,8 +638,10 @@ extension ExtensionNativeMessagingErrorTests {
         try? FileManager.default.removeItem(at: fixture.folder)
         do { try await NativeFixtureProfileCleanup.release(fixture.profiles) }
         catch { if failure == nil { failure = error } else { XCTFail("Mode fixture profile cleanup: \(error)") } }
+        lifecycleTrace?.record("before loop close")
         do { try await loop.close() }
         catch { if failure == nil { failure = error } else { XCTFail("Mode fixture loop cleanup: \(error)") } }
+        lifecycleTrace?.record("after loop join running=\(application.isRunning)")
         if let failure { throw failure }
     }
 }
@@ -415,7 +654,11 @@ extension ExtensionNativeMessagingErrorTests {
     lazy var host = ExtensionHost.host(for: profile)
     private let hasBackground: Bool
     private let retryPage: Bool
-    init(hasBackground: Bool, retryPage: Bool) { self.hasBackground = hasBackground; self.retryPage = retryPage }
+    let verifyRunning: @MainActor () throws -> Void
+    var cleanupInjectedHide: (@MainActor () async throws -> Void)?
+    init(hasBackground: Bool, retryPage: Bool, verifyRunning: @escaping @MainActor () throws -> Void) {
+        self.hasBackground = hasBackground; self.retryPage = retryPage; self.verifyRunning = verifyRunning
+    }
     var store: ExtensionCodeStore { ExtensionCodeStore(profileID: profile) }
     func otherHost() -> ExtensionHost {
         let other = UUID()
@@ -447,7 +690,9 @@ extension ExtensionNativeMessagingErrorTests {
         try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
     }
     private static let retryScript = #"""
+    window.nativeRetryActionStarts = 0;
     window.exerciseNativeRetries = async () => {
+      window.nativeRetryActionStarts++;
       let ticks = 0, attempts = 0, errors = 0, replies = 0, unavailableErrors = 0, microtasks = 0;
       const nativeType = typeof browser.runtime.sendNativeMessage;
       const timer = setInterval(() => ticks++, 0);
@@ -466,7 +711,7 @@ extension ExtensionNativeMessagingErrorTests {
       const ticksAtCompletion = ticks;
       await new Promise(resolve => setTimeout(resolve, 0));
       clearInterval(timer);
-      return {nativeType,attempts,errors,replies,unavailableErrors,microtasks,ticksAtCompletion,finalTicks:ticks};
+      return {nativeType,attempts,errors,replies,unavailableErrors,microtasks,ticksAtCompletion,finalTicks:ticks,actionStarts:window.nativeRetryActionStarts};
     };
     """#
     func restart() async throws {

@@ -41,7 +41,7 @@ import SwiftUI
         let stamp = copyStamp
         InteractionSounds.play(.copy)
         copyReset = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(1.2)) } catch { return }
+            do { try await Task.sleep(for: .seconds(0.9)) } catch { return }
             guard let self, !Task.isCancelled, copyStamp == stamp else { return }
             copiedURL = nil
             copyReset = nil
@@ -176,6 +176,29 @@ extension InteractionSounds {
     }
 }
 
+/// A prompt acknowledgement that keeps the copy button and its focus owner stable.
+struct CopyLinkGlyph: View {
+    let copied: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
+
+    var body: some View {
+        ZStack {
+            Image(systemName: "link")
+                .foregroundStyle(Look.inkSecondary)
+                .opacity(copied ? 0 : 1)
+            Image(systemName: "checkmark")
+                .foregroundStyle(Look.inkPrimary)
+                .opacity(copied ? 1 : 0)
+        }
+            // Keep both glyphs mounted so the confirmation starts on the next frame,
+            // instead of waiting for the outgoing phase of a system replacement effect.
+            .animation(reduced ? nil : Look.feedback, value: copied)
+            .id(reduced)
+    }
+}
+
 /// Pointer feedback uses the button's own pressed state, preserving native activation.
 struct TactileButtonStyle: ButtonStyle {
     var scales = true
@@ -241,9 +264,9 @@ private struct TactileButtonBody: View {
                 scales: scales, pressed: configuration.isPressed && enabled))
             // The shape follows layout bounds, so pressing never shrinks the hit target.
             .contentShape(.rect)
-            .animation(configuration.isPressed || reduced ? nil : .spring(duration: 0.2, bounce: 0.12),
+            .animation(configuration.isPressed || reduced ? nil : .spring(duration: 0.16, bounce: 0.08),
                        value: configuration.isPressed)
-            .animation(reduced ? nil : Look.quick, value: hovered)
+            .animation(reduced ? nil : Look.feedback, value: hovered)
             .transaction {
                 if reduced || motionSuppressed || configuration.isPressed || !enabled {
                     $0.animation = nil

@@ -3,11 +3,13 @@ import SwiftUI
 /// An upright closed folder whose front flap leans forward as it opens.
 struct FolderIcon: View {
     var open: Bool
+    var previewing = false
 
     var body: some View {
-        FolderOutline(openness: open ? 1 : 0)
+        FolderOutline(openness: open ? 1 : previewing ? 0.22 : 0)
             .stroke(style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
             .animation(Motion.reduced ? nil : Look.quick, value: open)
+            .animation(Motion.reduced ? nil : Look.feedback, value: previewing)
             .transaction { if Motion.reduced { $0.disablesAnimations = true } }
             .accessibilityHidden(true)
     }
