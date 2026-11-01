@@ -107,6 +107,21 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         XCTAssertFalse(NSApplication.shared.isRunning, "The native fixture must join its AppKit loop before returning")
     }
 
+    func testNativeContinuationFixturePreservesHistoryWithoutSwipeSnapshots() async throws {
+        try await withNativeContinuationFixture { tab, origin in
+            let web = tab.web
+            XCTAssertFalse(web.allowsBackForwardNavigationGestures,
+                           "Password fixtures must not synchronously capture WindowServer swipe-history images")
+            try await loadContinuationPage(tab, origin: origin, path: "first",
+                                           html: "<p id=fixture>First document</p>")
+            try await loadContinuationPage(tab, origin: origin, path: "second",
+                                           html: "<p id=fixture>Second document</p>")
+            XCTAssertEqual(web.backForwardList.backItem?.url, origin.url.appendingPathComponent("first"))
+            XCTAssertEqual(web.backForwardList.currentItem?.url, origin.url.appendingPathComponent("second"))
+            expectEqual(try await js(web, "fixture.textContent") as? String, "Second document")
+        }
+    }
+
     func testNativeContinuationReadinessRejectsHiddenAndDetachedOwnedDocument() async throws {
         try await withNativeContinuationFixture { tab, origin in
             let web = tab.web
@@ -623,6 +638,10 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         var fixtureError: (any Error)?
         do {
             let tab = Tab(profileID: profile)
+            // These fixtures exercise credential documents, not trackpad history.
+            // The normal browser enables swipe snapshots; WebKit takes those
+            // synchronously through WindowServer when adding a history item.
+            tab.web.allowsBackForwardNavigationGestures = false
             let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
                                   styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
