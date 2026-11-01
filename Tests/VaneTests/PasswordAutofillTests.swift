@@ -37,11 +37,14 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     }
 
     private func flushContinuationDiagnostics() {
-        for record in continuationDiagnosticRecords { NativeFixtureDiagnostics.emit(record) }
+        var records = continuationDiagnosticRecords
         if continuationDiagnosticDropped > 0 {
-            NativeFixtureDiagnostics.emit("F17_CONTINUATION case=\(String(reflecting: name)) " +
+            records.append("F17_CONTINUATION case=\(String(reflecting: name)) " +
                 "phase=diagnostic-overflow dropped=\(continuationDiagnosticDropped)")
         }
+        for record in records { NativeFixtureDiagnostics.emit(record) }
+        do { _ = try F17PrivateTraceSink.continuation(caseName: name, records: records) }
+        catch { XCTFail("Private continuation trace export failed: \(error)") }
         continuationDiagnosticRecords.removeAll(keepingCapacity: true)
         continuationDiagnosticDropped = 0
     }
@@ -292,6 +295,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             throw XCTSkip("Opt-in spell-trace wait control; requires its own native host")
         }
         guard ProcessInfo.processInfo.environment["VANE_F17_CANDIDATE_LATENCY_TRACE_V1"] == "1",
+              F17PrivateTraceSink.fileMode,
               !VaneF17SpellTraceReadStatus().requested else {
             return XCTFail("The wait control needs the exact trace flag and a fresh host")
         }
@@ -306,7 +310,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             XCTAssertEqual(status.unpublished, 0)
             XCTAssertTrue(status.factoryRestored && status.factoryOriginalNow)
             if status.candidateInstalled { XCTAssertTrue(status.candidateRestored && status.candidateOriginalNow) }
-            VaneF17SpellTraceEmit()
+            flushContinuationDiagnostics()
+            do { _ = try F17PrivateTraceSink.spell(caseName: name) }
+            catch { XCTFail("Private spell trace export failed: \(error)") }
         }
         VaneF17SpellTracePhase(102)
         try await withDocumentFixture("<p>Real SDK wait outcome control</p>", activationPolicy: .accessory) { web, _ in
@@ -341,6 +347,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             let exited = VaneF17SpellTraceReadStatus()
             XCTAssertEqual(exited.waitFailures, successful.waitFailures + 1)
             XCTAssertEqual(exited.waitExits, successful.waitExits + 1)
+            bufferContinuationDiagnostic(phase: "private-file-wait-control",
+                "actualWaitSuccesses=\(exited.waitSuccesses) actualWaitFailures=\(exited.waitFailures) " +
+                    "actualWaitFunctionExits=\(exited.waitExits)")
         }
     }
 
@@ -1232,7 +1241,8 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         defer {
             if traceRequested {
                 VaneF17SpellTraceEnd()
-                VaneF17SpellTraceEmit()
+                do { _ = try F17PrivateTraceSink.spell(caseName: name) }
+                catch { XCTFail("Private spell trace export failed: \(error)") }
             }
         }
         VaneF17SpellTracePhase(1)

@@ -19,6 +19,10 @@ private final class F17CandidateReceipt: @unchecked Sendable {
         guard ProcessInfo.processInfo.environment["VANE_F17_SPELL_TRACE_CONTROLS_V1"] == "1" else {
             throw XCTSkip("Opt-in real-SDK spell-trace control; requires its own native host")
         }
+        guard F17PrivateTraceSink.fileMode else {
+            XCTFail("Private-file controls require VANE_F17_PRIVATE_TRACE_V1=1")
+            throw ControlFailure.wrongEnvironment
+        }
         guard (ProcessInfo.processInfo.environment["VANE_F17_CANDIDATE_LATENCY_TRACE_V1"] == "1") == traceEnabled else {
             XCTFail("The controller must set the declared trace mode")
             throw ControlFailure.wrongEnvironment
@@ -82,7 +86,38 @@ private final class F17CandidateReceipt: @unchecked Sendable {
         assertClean(status)
         XCTAssertTrue(status.factoryRestored && status.factoryOriginalNow)
         XCTAssertTrue(status.candidateRestored && status.candidateOriginalNow)
-        VaneF17SpellTraceEmit()
+        // Actual OS descriptor failures must fail closed without closing the
+        // caller's descriptor. All checks are after SDK work and loop join.
+        XCTAssertFalse(VaneF17SpellTraceEmitToDescriptor(-1))
+        let readOnly = open("/dev/null", O_RDONLY | O_CLOEXEC)
+        if readOnly >= 0 {
+            XCTAssertFalse(VaneF17SpellTraceEmitToDescriptor(readOnly))
+            XCTAssertNotEqual(fcntl(readOnly, F_GETFD), -1)
+            _ = close(readOnly)
+        } else { XCTFail("Cannot create owned readonly-descriptor control") }
+        var invalid = ProcessInfo.processInfo.environment
+        invalid["VANE_F17_TRACE_SOURCE_HEAD"] = "invalid"
+        XCTAssertThrowsError(try F17PrivateTraceSink.spell(caseName: name, environment: invalid))
+        invalid = ProcessInfo.processInfo.environment
+        invalid["VANE_F17_TRACE_SOURCE_HEAD", default: String(repeating: "0", count: 40)] += "\n"
+        XCTAssertThrowsError(try F17PrivateTraceSink.spell(caseName: name, environment: invalid))
+        invalid = ProcessInfo.processInfo.environment
+        invalid["VANE_NATIVE_FIXTURE_MANIFEST_TOKEN", default: String(repeating: "0", count: 32)] += "\n"
+        XCTAssertThrowsError(try F17PrivateTraceSink.spell(caseName: name, environment: invalid))
+        do {
+            let file = try XCTUnwrap(try F17PrivateTraceSink.spell(caseName: name))
+            let data = try Data(contentsOf: file)
+            let rows = String(decoding: data, as: UTF8.self).split(separator: "\n")
+            let first = try XCTUnwrap(rows.first), last = try XCTUnwrap(rows.last)
+            let header = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(first.utf8)) as? [String: Any])
+            XCTAssertEqual(header["channel"] as? String, "spell")
+            XCTAssertEqual(header["case"] as? String, name)
+            XCTAssertEqual(header["sourceRevision"] as? String, ProcessInfo.processInfo.environment["VANE_F17_TRACE_SOURCE_HEAD"])
+            XCTAssertEqual((header["host"] as? [String: Any])?["pid"] as? Int, Int(getpid()))
+            XCTAssertEqual(rows.filter { $0.hasPrefix("F17_SPELL footer ") }.count, 1)
+            let end = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(last.utf8)) as? [String: Any])
+            XCTAssertEqual(end["kind"] as? String, "F17_PRIVATE_TRACE_END")
+        } catch { XCTFail("Private spell trace export/verification failed: \(error)") }
     }
 
     func testFlagOffLeavesFactoryUntouchedUntilRealSDKAction() async throws {
@@ -99,7 +134,8 @@ private final class F17CandidateReceipt: @unchecked Sendable {
             _ = try await request(checker, tag: tag, range: NSRange(location: 0, length: 4), types: spelling)
         }
         VaneF17SpellTraceEnd()
-        VaneF17SpellTraceEmit()
+        XCTAssertTrue(VaneF17SpellTraceEmitToDescriptor(-1), "Flag-off must not touch even an invalid descriptor")
+        XCTAssertNil(try F17PrivateTraceSink.spell(caseName: name))
         XCTAssertEqual(VaneF17SpellTraceReadStatus().eventCount, 0)
         XCTAssertEqual(VaneF17SpellTraceFactoryCurrentIMP(), before)
     }
