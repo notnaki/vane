@@ -18,7 +18,7 @@ jobs:
       VANE_RUNTIME_ARCHIVE_SHA: '477f9510a5250dc6ae499ec3395421659b78eb044f50020e28bb0420c44f9651'
       VANE_BUILD_MANIFEST_SHA: 'c77c7af65c2bfd41e5c77b6e8dbd7584a4bcc9268f22cecf7685afec04a4e357'
       SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
-      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"519248581708352f80ac4c5fc8cf7cbe1b2f33c137b72b14f91b24b5fb361e32\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"f4b721806fdf2ef40ae1a3a878a78d47e2e3c968a805e80faa99cbb12278309b\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
+      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"3146fed33f74e05bd5b15a9981b989378931dae3d1fa91132ebac721a058c14b\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"f4b721806fdf2ef40ae1a3a878a78d47e2e3c968a805e80faa99cbb12278309b\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -115,7 +115,7 @@ jobs:
       VANE_RUNTIME_ARCHIVE_SHA: '477f9510a5250dc6ae499ec3395421659b78eb044f50020e28bb0420c44f9651'
       VANE_BUILD_MANIFEST_SHA: 'c77c7af65c2bfd41e5c77b6e8dbd7584a4bcc9268f22cecf7685afec04a4e357'
       SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
-      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"519248581708352f80ac4c5fc8cf7cbe1b2f33c137b72b14f91b24b5fb361e32\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"f4b721806fdf2ef40ae1a3a878a78d47e2e3c968a805e80faa99cbb12278309b\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
+      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"3146fed33f74e05bd5b15a9981b989378931dae3d1fa91132ebac721a058c14b\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"f4b721806fdf2ef40ae1a3a878a78d47e2e3c968a805e80faa99cbb12278309b\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -212,7 +212,7 @@ jobs:
       VANE_RUNTIME_ARCHIVE_SHA: '477f9510a5250dc6ae499ec3395421659b78eb044f50020e28bb0420c44f9651'
       VANE_BUILD_MANIFEST_SHA: 'c77c7af65c2bfd41e5c77b6e8dbd7584a4bcc9268f22cecf7685afec04a4e357'
       SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
-      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"519248581708352f80ac4c5fc8cf7cbe1b2f33c137b72b14f91b24b5fb361e32\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"f4b721806fdf2ef40ae1a3a878a78d47e2e3c968a805e80faa99cbb12278309b\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
+      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"3146fed33f74e05bd5b15a9981b989378931dae3d1fa91132ebac721a058c14b\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"f4b721806fdf2ef40ae1a3a878a78d47e2e3c968a805e80faa99cbb12278309b\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -309,7 +309,7 @@ jobs:
       VANE_RUNTIME_ARCHIVE_SHA: '477f9510a5250dc6ae499ec3395421659b78eb044f50020e28bb0420c44f9651'
       VANE_BUILD_MANIFEST_SHA: 'c77c7af65c2bfd41e5c77b6e8dbd7584a4bcc9268f22cecf7685afec04a4e357'
       SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
-      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"519248581708352f80ac4c5fc8cf7cbe1b2f33c137b72b14f91b24b5fb361e32\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"f4b721806fdf2ef40ae1a3a878a78d47e2e3c968a805e80faa99cbb12278309b\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
+      VANE_DIAGNOSTIC_SOURCE_PINS: "{\".github/diagnostics/f17-spell605-slots.json\":\"2608a382d6ab7cf5358cd82580751223e30fac7eb716ca7a07159d3dbc6f7af3\",\".github/diagnostics/spell_trace_validation.py\":\"3146fed33f74e05bd5b15a9981b989378931dae3d1fa91132ebac721a058c14b\",\".github/diagnostics/f17_spell_hosted_controller.py\":\"f4b721806fdf2ef40ae1a3a878a78d47e2e3c968a805e80faa99cbb12278309b\",\".github/diagnostics/f17_canonical_boundary_audit.py\":\"4c840fded5519de9685ec80641f2e472f44c87ec231f69361460d43a472343f5\"}"
     steps:
       - uses: actions/checkout@v7
         with:

@@ -109,7 +109,7 @@ def validate(text, slot):
 # may begin inside another stream's line; no arbitrary text is a removable record.
 _EVENT_RECORD = re.compile(
     rb'F17_SPELL event=[0-9]+ kind=[0-9]+ phase=[0-9]+ tick=[0-9]+ call=[0-9]+ '
-    rb'receiver=[0-9a-f]+ class=[0-9a-f]+ tag=[0-9]+ sequence=[0-9]+ '
+    rb'receiver=[0-9a-f]+ class=[0-9a-f]+ tag=-?[0-9]+ sequence=-?[0-9]+ '
     rb'range=[0-9]+,[0-9]+ checkingTypes=[0-9]+ thread=[0-9]+ mainThread=[01]\n')
 _FOOTER_RECORD = re.compile(
     b'F17_SPELL footer ' + b' '.join(key.encode() + rb'=[0-9]+' for key in (
