@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 // Diagnostic only. No Objective-C message is sent while installing the factory
 // observer. In particular, setup must not fetch/create the spell-checker singleton.
@@ -397,9 +400,9 @@ bool VaneF17SpellTraceHasCandidateResult(NSRange range, NSTextCheckingTypes type
     return false;
 }
 
-void VaneF17SpellTraceEmit(void)
+static bool emitToStream(FILE *stream)
 {
-    if (!atomic_load(&requested)) return;
+    if (!atomic_load(&requested)) return true;
     // Caller must finish fixture assertions, window teardown and actual loop join
     // before End/Emit. Never log synchronously from an observed SDK entrypoint.
     mach_timebase_info_data_t timebase;
@@ -417,18 +420,45 @@ void VaneF17SpellTraceEmit(void)
     for (uint64_t i = 0; i < count && i < Capacity; ++i) {
         Event *event = &events[i];
         if (!atomic_load_explicit(&event->published, memory_order_acquire)) { ++unpublished; continue; }
-        fprintf(stderr, "F17_SPELL event=%llu kind=%u phase=%u tick=%llu call=%llu receiver=%llx class=%llx tag=%ld sequence=%ld range=%llu,%llu checkingTypes=%llu thread=%llu mainThread=%d\n",
+        fprintf(stream, "F17_SPELL event=%llu kind=%u phase=%u tick=%llu call=%llu receiver=%llx class=%llx tag=%ld sequence=%ld range=%llu,%llu checkingTypes=%llu thread=%llu mainThread=%d\n",
                 (unsigned long long)i, event->kind, event->phase, (unsigned long long)event->tick,
                 (unsigned long long)event->call, (unsigned long long)event->receiver,
                 (unsigned long long)event->dynamicClass, (long)event->tag, (long)event->sequence,
                 (unsigned long long)event->range.location, (unsigned long long)event->range.length,
                 (unsigned long long)event->checkingTypes, (unsigned long long)event->threadID, event->mainThread);
     }
-    fprintf(stderr, "F17_SPELL footer problems=%u recorded=%llu dropped=%llu unpublished=%llu closeInFlight=%u currentInFlight=%u factoryInstalled=%d factoryRestored=%d factoryOriginalNow=%d candidateInstalled=%d candidateRestored=%d candidateOriginalNow=%d bindingTicks=%llu nonmatching=%llu clock=mach_continuous_time timebase=%u/%u tagAttribution=page-not-field preFactoryInitialization=UNOBSERVED preBindingCalls=UNKNOWN indefiniteHangBuffer=NOT-PERSISTENT waitEntry=after-original-5s-deadline-construction functionExit=may-follow-diagnostics longSpanBlockingCause=UNKNOWN\n",
+    fprintf(stream, "F17_SPELL footer problems=%u recorded=%llu dropped=%llu unpublished=%llu closeInFlight=%u currentInFlight=%u factoryInstalled=%d factoryRestored=%d factoryOriginalNow=%d candidateInstalled=%d candidateRestored=%d candidateOriginalNow=%d bindingTicks=%llu nonmatching=%llu clock=mach_continuous_time timebase=%u/%u tagAttribution=page-not-field preFactoryInitialization=UNOBSERVED preBindingCalls=UNKNOWN indefiniteHangBuffer=NOT-PERSISTENT waitEntry=after-original-5s-deadline-construction functionExit=may-follow-diagnostics longSpanBlockingCause=UNKNOWN\n",
             atomic_load(&problems), (unsigned long long)(count < Capacity ? count : Capacity),
             (unsigned long long)(count > Capacity ? count - Capacity : 0), (unsigned long long)unpublished,
             closeInFlight, atomic_load(&inFlight), factoryHook.installed, factoryHook.restored, factoryOriginalNow,
             candidateHook.installed, candidateHook.restored, candidateOriginalNow,
             (unsigned long long)bindingTicks, (unsigned long long)atomic_load(&nonmatching),
             timebase.numer, timebase.denom);
+    return !ferror(stream);
+}
+
+void VaneF17SpellTraceEmit(void)
+{
+    (void)emitToStream(stderr);
+}
+
+bool VaneF17SpellTraceEmitToDescriptor(int descriptor)
+{
+    if (!atomic_load(&requested)) return true;
+    if (atomic_load(&recording)) { errno = EBUSY; return false; }
+    int owned = fcntl(descriptor, F_DUPFD_CLOEXEC, 3);
+    if (owned < 0) return false;
+    FILE *stream = fdopen(owned, "w");
+    if (!stream) {
+        int failure = errno;
+        close(owned);
+        errno = failure;
+        return false;
+    }
+    bool complete = emitToStream(stream);
+    int failure = complete ? 0 : (errno ? errno : EIO);
+    if (fflush(stream) != 0) { complete = false; if (!failure) failure = errno ? errno : EIO; }
+    if (fclose(stream) != 0) { complete = false; if (!failure) failure = errno ? errno : EIO; }
+    if (failure) errno = failure;
+    return complete;
 }

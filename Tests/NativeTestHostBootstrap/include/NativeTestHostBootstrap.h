@@ -16,6 +16,9 @@ void VaneF17SpellTraceWaitBoundary(bool entering);
 void VaneF17SpellTraceWaitOutcome(bool success);
 void VaneF17SpellTraceEnd(void);
 void VaneF17SpellTraceEmit(void);
+// Post-outcome only. Duplicates/closes its own descriptor; caller retains theirs.
+// False means incomplete export; flag-off performs no descriptor I/O.
+bool VaneF17SpellTraceEmitToDescriptor(int descriptor);
 
 // Focused source-only control support; no SDK accessor is invoked by inspection.
 typedef struct {
