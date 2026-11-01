@@ -17,12 +17,9 @@ enum Look {
     static let floatingSidebarRadius: CGFloat = pageRadius
     /// Equal clearance from the window edges, independent of the page card spacing.
     static let floatingSidebarGap: CGFloat = 5
-    /// Let the page show through the floating sidebar while its controls stay opaque.
-    static let floatingSidebarOpacity: Double = 0.55
-    static let floatingSidebarMaterial = AnyShapeStyle(Material.thin)
-    /// A one-pixel rim on Retina displays, visible over the translucent material.
-    static let floatingSidebarStroke = Color.white.opacity(0.25)
-    static let floatingSidebarStrokeWidth: CGFloat = 0.5
+    /// A defined rim separates the floating Space surface from the page beneath it.
+    static let floatingSidebarStroke = Color.white.opacity(0.4)
+    static let floatingSidebarStrokeWidth: CGFloat = 1
     /// The page card — the sheet a page is drawn on, and the outline standing where one will
     /// go. Its own number, and a generous one: it is the only corner in the window that is
     /// read *against* the window's own, which macOS 26 rounds hard, and a settings card's
@@ -1232,8 +1229,8 @@ extension Color {
     }
 }
 
-/// Behind-window blur for the window itself — the desktop shows through the sidebar, which
-/// is the "transparent glass" of the design. This is the *only* blur in the window chrome:
+/// Behind-window blur for the window and floating sidebar — the desktop shows through
+/// either sidebar presentation. This is the only blur treatment in the window chrome:
 /// every control on top of it is a flat fill from `Look`, the way Arc's are. Floating
 /// surfaces add `Look.barMaterial` under `Look.barFill`, never Liquid Glass.
 /// `.fullScreenUI` because it is the most transparent material AppKit has (44 % opaque in a

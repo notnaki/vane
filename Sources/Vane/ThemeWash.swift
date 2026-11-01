@@ -112,6 +112,7 @@ struct NativeThemeWash: NSViewRepresentable {
 
     func makeNSView(context: Context) -> ThemeWashSurface { ThemeWashSurface() }
     func updateNSView(_ view: ThemeWashSurface, context: Context) {
+        gesture.groundSurface = view
         let from = origin, to = destination
         let fallback = fallback, profiles = profiles, systemDark = systemDark
         let gesture = gesture
@@ -146,6 +147,19 @@ struct NativeThemeWash: NSViewRepresentable {
     }
 }
 
+/// Repaint the same wash over the page, with the window's gradient coordinates.
+/// The original surface remains the sole owner of native Space transitions.
+struct NativeThemeWashCopy: NSViewRepresentable {
+    let gesture: SpaceGesture
+    func makeNSView(context: Context) -> ThemeWashSurface {
+        ThemeWashSurface(copyOrigin: CGPoint(x: -Look.floatingSidebarGap, y: -Look.floatingSidebarGap))
+    }
+    func updateNSView(_ view: ThemeWashSurface, context: Context) {
+        gesture.groundCopies.add(view)
+        gesture.groundSurface?.addCopy(view)
+    }
+}
+
 @MainActor final class ThemeWashSurface: NSView {
     let base = CAGradientLayer()
     private let overlay = CAGradientLayer()
@@ -153,10 +167,14 @@ struct NativeThemeWash: NSViewRepresentable {
     private let grain = ThemeGrainSurface()
     private var target: ThemeWash?
     private var nativeToken: UUID?
+    private let copies = NSHashTable<ThemeWashSurface>.weakObjects()
+    private weak var copySource: ThemeWashSurface?
+    private let copyOrigin: CGPoint
     var nativeAnimating: Bool { nativeToken != nil }
     override var isFlipped: Bool { true }
 
-    init() {
+    init(copyOrigin: CGPoint = .zero) {
+        self.copyOrigin = copyOrigin
         super.init(frame: .zero)
         wantsLayer = true
         layer?.addSublayer(tint)
@@ -171,20 +189,44 @@ struct NativeThemeWash: NSViewRepresentable {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func addCopy(_ copy: ThemeWashSurface) {
+        guard copy !== self, copy.copySource !== self else { return }
+        copy.copySource?.copies.remove(copy)
+        copy.copySource = self
+        copies.add(copy)
+        if let target { copy.apply(target, duration: 0) }
+        // A newly mounted copy can join a transition already on the compositor.
+        for (source, destination) in zip([base, overlay, tint, grain.layer],
+                                         [copy.base, copy.overlay, copy.tint, copy.grain.layer]) {
+            guard let source, let destination else { continue }
+            for key in source.animationKeys() ?? [] {
+                if let animation = source.animation(forKey: key) { destination.add(animation, forKey: key) }
+            }
+        }
+        copy.needsLayout = true
+    }
+
     override func layout() {
         super.layout()
+        // Sample the resting panel's crop even while its retained host is parked
+        // offscreen. A translation alone need not trigger an AppKit layout pass.
+        let frame = copySource.map { CGRect(origin: copyOrigin, size: $0.bounds.size) } ?? bounds
+        let canvas = CGRect(origin: .zero, size: frame.size)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        tint.frame = bounds
-        base.frame = bounds
-        overlay.frame = bounds
-        grain.frame = bounds
+        tint.frame = frame
+        base.frame = canvas
+        overlay.frame = canvas
+        grain.frame = frame
         CATransaction.commit()
+        for copy in copies.allObjects { copy.needsLayout = true }
     }
 
     func finishAnimations() {
         nativeToken = nil
         for layer in [base, overlay, tint, grain.layer].compactMap({ $0 }) { layer.removeAllAnimations() }
+        for copy in copies.allObjects { copy.finishAnimations() }
     }
 
     func capturePresentation() -> ThemeWashPresentation {
@@ -245,6 +287,9 @@ struct NativeThemeWash: NSViewRepresentable {
         set(overlay, "opacity", "overlay", Float(wash.overlay), start.map { Float($0.overlay) })
         set(tint, "opacity", "tint", Float(wash.opacity), start.map { Float($0.opacity) })
         if let layer = grain.layer { set(layer, "opacity", "grain", Float(wash.grain * Look.grainMax), start.map { Float($0.grain * Look.grainMax) }) }
+        for copy in copies.allObjects {
+            copy.apply(wash, duration: duration, native: native, start: start, presentedStart: presentedStart)
+        }
     }
 }
 
