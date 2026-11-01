@@ -23,7 +23,8 @@ import WebKit
               Bundle.main.bundleURL.pathExtension == "app", sandboxedSignature() else {
             refuse("Requires a signed sandboxed .app and an existing isolated VANE_DATA_DIR under Downloads.")
         }
-        for name in ["darkreader-mv3", "ubolite-safari", "bitwarden-firefox"] {
+        let syntheticOnly = ProcessInfo.processInfo.arguments.contains("--synthetic-only")
+        for name in (syntheticOnly ? [] : ["darkreader-mv3", "ubolite-safari", "bitwarden-firefox"]) {
             let fixture = directory.appendingPathComponent("fixtures/" + name)
             guard fixture.resolvingSymlinksInPath().path.hasPrefix(directory.path + "/"),
                   manager.fileExists(atPath: fixture.appendingPathComponent("manifest.json").path) else {
@@ -52,7 +53,7 @@ import WebKit
                 try JSONEncoder().encode(identity).write(to: marker, options: .withoutOverwriting)
             } catch { refuse("Could not mint the isolated fixture-directory marker.") }
         }
-        let check = Runner(directory: directory)
+        let check = Runner(directory: directory, syntheticOnly: syntheticOnly)
         runner = check
         DispatchQueue.main.asyncAfter(deadline: .now() + 240) {
             check.record("overall deadline", .failed, "Exceeded 240 seconds; a platform callback did not finish.")
@@ -91,6 +92,7 @@ import WebKit
 
     @MainActor private final class Runner {
         let directory: URL
+        let syntheticOnly: Bool
         var profileID: UUID?
         var store: TabStore?
         var server: Server?
@@ -98,7 +100,7 @@ import WebKit
         var permissionTimer: Timer?
         var popupAnchors: [NSView] = []
 
-        init(directory: URL) { self.directory = directory }
+        init(directory: URL, syntheticOnly: Bool) { self.directory = directory; self.syntheticOnly = syntheticOnly }
 
         func record(_ workflow: String, _ result: Result, _ detail: String) {
             findings.append(Finding(workflow: workflow, result: result, detail: detail))
@@ -140,9 +142,11 @@ import WebKit
                 let restoredStyle = try await tab.web.evaluateJavaScript("document.querySelectorAll('style.darkreader').length > 0") as? Bool == true
                 record("controlled ordinary browser page", baseline == "rgb(255, 255, 255)" || restoredStyle ? .verified : .failed,
                        "Real Vane window and loopback page; background \(baseline ?? "unavailable"), restored Dark Reader styles present=\(restoredStyle). A restart may restore styling before the first page loads.")
-                await darkReader(tab: tab, base: base)
-                await blocker(tab: tab, base: base)
-                await passwordManager(tab: tab)
+                if !syntheticOnly {
+                    await darkReader(tab: tab, base: base)
+                    await blocker(tab: tab, base: base)
+                    await passwordManager(tab: tab)
+                }
                 await syntheticRuntime(tab: tab)
             } catch {
                 record("harness setup", .failed, error.localizedDescription)
@@ -293,17 +297,41 @@ import WebKit
             let folder = directory.appendingPathComponent("fixtures/vane-smoke-mv3")
             do {
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                try Data(#"{"manifest_version":3,"name":"Vane Assembled Runtime Fixture","version":"1.0","description":"Synthetic assembled-app runtime checks","permissions":["storage"],"action":{"default_popup":"popup.html"},"options_page":"options.html","commands":{"fixture":{"suggested_key":{"mac":"Command+Shift+Y"},"description":"Assembled check command"}}}"#.utf8)
+                try Data(#"{"manifest_version":3,"name":"Vane Assembled Runtime Fixture","version":"1.0","description":"Synthetic assembled-app runtime checks","background":{"service_worker":"worker.js","type":"module"},"permissions":["storage"],"action":{"default_popup":"popup.html"},"options_page":"options.html","commands":{"fixture":{"suggested_key":{"mac":"Command+Shift+Y"},"description":"Assembled check command"}}}"#.utf8)
                     .write(to: folder.appendingPathComponent("manifest.json"))
                 try Data("<title>Vane runtime fixture</title><p>Runtime fixture ready</p><script src='fixture.js'></script>".utf8).write(to: folder.appendingPathComponent("options.html"))
                 try Data("<title>Vane popup fixture</title><p>Popup fixture ready</p>".utf8).write(to: folder.appendingPathComponent("popup.html"))
                 try Data("window.fixtureCommands=[];browser.commands.onCommand.addListener(name=>window.fixtureCommands.push(name));".utf8).write(to: folder.appendingPathComponent("fixture.js"))
+                try Data("export const startup = navigator.userAgent;".utf8).write(to: folder.appendingPathComponent("worker-first.js"))
+                try Data("""
+                    import {startup} from './worker-first.js';
+                    browser.runtime.onMessage.addListener(message => {
+                      if (message !== 'vane-worker-identity') return;
+                      return (async () => {
+                        await chrome.storage.local.set({vaneWorkerSmoke:'saved'});
+                        const {vaneWorkerSmoke} = await browser.storage.local.get('vaneWorkerSmoke');
+                        return {startup, current:navigator.userAgent, saved:vaneWorkerSmoke,
+                                aliases:chrome.runtime.id === browser.runtime.id};
+                      })();
+                    });
+                    """.utf8).write(to: folder.appendingPathComponent("worker.js"))
                 let context = try await install("vane-smoke-mv3")
                 defer { try? host.remove(folder: folder.path) }
                 _ = await popup(context, tab: tab, label: "Synthetic actual action window", expected: "document.body.innerText.includes('Popup fixture ready')")
                 guard let options = await options(context, label: "Synthetic actual options window",
                                                   expected: "document.body.innerText.includes('Runtime fixture ready')"),
-                      let window = store?.window else { return }
+                      let window = store?.window else {
+                    record("Synthetic MV3 navigator identity", .failed, "The native options owner was unavailable.")
+                    return
+                }
+                let identity = try await options.callAsyncJavaScript("return await chrome.runtime.sendMessage('vane-worker-identity');",
+                                                                     arguments: [:], in: nil, contentWorld: .page) as? [String: Any]
+                let selected = try await options.evaluateJavaScript("navigator.userAgent") as? String
+                let valid = selected != nil && identity?["startup"] as? String == selected
+                    && identity?["current"] as? String == selected && identity?["saved"] as? String == "saved"
+                    && identity?["aliases"] as? Bool == true && context.webExtensionController === host.controller
+                record("Synthetic MV3 navigator identity", valid ? .verified : .failed,
+                       "First module dependency and current worker navigator agree with the selected page identity; native chrome/browser messaging and storage retain the owning controller.")
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate()
                 window.makeFirstResponder(nil)

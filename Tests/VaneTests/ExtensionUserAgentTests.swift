@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import WebKit
 import XCTest
 @testable import vane
@@ -8,6 +9,7 @@ import XCTest
     private var ownedProfiles: Set<UUID> = []
     private var folder: URL!
     private var previousUserAgent: Any?
+    private var forcedBackgroundUserAgent: String?
     #if DEBUG
     private var backgroundObservations: [ObjectIdentifier: BackgroundObservation] = [:]
     private var backgroundObservers: [BackgroundObserver] = []
@@ -36,6 +38,7 @@ import XCTest
             guard let self else { return }
             let identity = ObjectIdentifier(context)
             self.backgroundObservations[identity] = BackgroundObservation(web, context: context, expectedStore: expectedStore)
+            if let forced = self.forcedBackgroundUserAgent { web.customUserAgent = forced }
         }
     }
 
@@ -101,21 +104,43 @@ import XCTest
         try await NativeFixtureProfileCleanup.release(released)
     }
 
-    private func install(version: Int, in targetProfile: UUID? = nil) async throws -> WKWebExtensionContext {
+    private func install(version: Int, in targetProfile: UUID? = nil, module: Bool = false, generated: Bool = false, workerPath: String = "background.js", hashbang: Bool = false, strict: Bool = false, reusePage: Bool = false, cycle: Bool = false, importsDependency: Bool = false) async throws -> WKWebExtensionContext {
         #if DEBUG
         backgroundObservations.removeAll()
         #endif
         var manifest: [String: Any] = ["manifest_version": version, "name": "User Agent Fixture",
-            "version": "1.0", "permissions": ["storage"]]
+            "version": "1.0", "permissions": ["storage"], "optional_permissions": ["alarms", "notifications"]]
         manifest[version == 2 ? "browser_action" : "action"] = ["default_popup": "popup.html"]
         manifest["background"] = version == 2
             ? ["scripts": ["background.js"], "persistent": true] as [String: Any]
-            : ["service_worker": "background.js"]
+            : (module ? ["service_worker": workerPath, "type": "module"] : ["service_worker": workerPath])
+        if generated {
+            var background: [String: Any] = ["scripts": [workerPath], "preferred_environment": ["service_worker"]]
+            if module { background["type"] = "module" }
+            manifest["background"] = background
+        }
+        if reusePage { manifest["options_ui"] = ["page": "reused.html"] }
         try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
-        try Data("""
-            const startupUserAgent = navigator.userAgent;
-            browser.runtime.onMessage.addListener(async () => ({startup: startupUserAgent, current: navigator.userAgent}));
-            """.utf8).write(to: folder.appendingPathComponent("background.js"))
+        let workerURL = folder.appendingPathComponent(workerPath)
+        try FileManager.default.createDirectory(at: workerURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let dependencySource = (module && cycle ? "import './\(workerURL.lastPathComponent)';\n" : "") + "globalThis.dependencyStartupIdentity = navigator.userAgent;" + (module ? " globalThis.dependencyURL = import.meta.url;" : "")
+        let dependencyDirectory = generated && !module && importsDependency ? folder! : workerURL.deletingLastPathComponent()
+        try Data(dependencySource.utf8).write(to: dependencyDirectory.appendingPathComponent("dependency.js"))
+        try Data("<title>Reused worker source</title><script \(module ? "type='module'" : "") src='/\(workerPath)'></script>".utf8)
+            .write(to: folder.appendingPathComponent("reused.html"))
+        let dependency = (hashbang ? "#!/usr/bin/env javascript\n" : "") + (strict ? "'use strict';\n" : "") + (module ? "import './dependency.js';\n" : importsDependency ? "importScripts('./dependency.js');\n" : "")
+        let cycleCounter = cycle ? "globalThis.vendorEntryExecutions = (globalThis.vendorEntryExecutions ?? 0) + 1;\n" : ""
+        try Data((dependency + cycleCounter + """
+            const startupUserAgent = globalThis.dependencyStartupIdentity ?? navigator.userAgent;
+            globalThis.entryStartupIdentity = startupUserAgent;
+            const birthNonce = crypto.randomUUID();
+            const sourceURL = \(module ? "import.meta.url" : "self.location.href");
+            const strictAtStartup = (function() { return this === undefined; })();
+            browser.runtime.onMessage.addListener(async () => ({startup: startupUserAgent, current: navigator.userAgent,
+              nonce: birthNonce, saved: (await chrome.storage.local.get('workerSaved')).workerSaved ?? 'missing',
+              aliases: String(chrome.runtime.id === browser.runtime.id), strict: String(strictAtStartup),
+              url: sourceURL, workerURL: self.location.href, entryRuns: String(globalThis.vendorEntryExecutions ?? 1), revision: globalThis.packageRevision ?? 'initial', cache: self.registration?.updateViaCache ?? 'none', scope: self.registration?.scope ?? 'none', activeURL: self.registration?.active?.scriptURL ?? 'none', dependencyURL: globalThis.dependencyURL ?? 'none'}));
+            """).utf8).write(to: workerURL)
         try Data("<title>UA fixture</title><script src='popup.js'></script>".utf8)
             .write(to: folder.appendingPathComponent("popup.html"))
         try Data("""
@@ -128,7 +153,7 @@ import XCTest
         #endif
         let accepted = try await host.load(folder, installing: true) { _ in true }
         XCTAssertTrue(accepted)
-        let context = try XCTUnwrap(host.installed.first)
+        let context = try XCTUnwrap(host.loaded.first { $0.path == folder.path }?.context)
         #if DEBUG
         assertBackgroundOwnership(for: context)
         #endif
@@ -318,10 +343,476 @@ import XCTest
         }
     }
 
-    /// WebKit can give manifest-v3 workers its engine UA instead of the selected
-    /// page UA. Keep the desired worker behavior visible in the advisory job;
-    /// popup identity, storage ownership and manifest-v2 identity remain required.
-    func testKnownServiceWorkerUserAgentLimitation() async throws {
+    func testClassicWorkerNavigatorIdentityAtFirstInstruction() async throws {
+        Settings.userAgent = "Vane MV3 Navigator Probe/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: Settings.userAgent)
+        let aliases = try await web.evaluateJavaScript("window.backgroundIdentity.aliases") as? String
+        XCTAssertEqual(aliases, "true", "WebKit must retain its real chrome/browser API aliases")
+    }
+
+    func testModuleWorkerNavigatorIdentityInFirstDependency() async throws {
+        Settings.userAgent = "Vane MV3 Module Probe/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        // A module dependency executes before the entry body. Capture in that
+        // dependency, before messaging or any later diagnostic can repair it.
+        let context = try await install(version: 3, module: true)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: Settings.userAgent)
+    }
+
+    func testNestedClassicImportsRetainTheWorkerBaseDirectory() async throws {
+        Settings.userAgent = "Vane Nested Classic/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3, workerPath: "nested/background.js", hashbang: true, strict: true, importsDependency: true)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: "Vane Nested Classic/1.0")
+        let identity = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+        XCTAssertEqual(identity?["strict"], "true")
+        let creationURL = try XCTUnwrap(identity?["workerURL"].flatMap(URL.init(string:)))
+        XCTAssertEqual(creationURL.deletingLastPathComponent().path, "/nested")
+    }
+
+    func testGeneratedClassicImportsRetainTheVirtualWorkerRoot() async throws {
+        Settings.userAgent = "Vane Generated Nested Classic/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3, generated: true, workerPath: "nested/background.js", importsDependency: true)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: "Vane Generated Nested Classic/1.0")
+        let identity = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+        let creationURL = try XCTUnwrap(identity?["workerURL"].flatMap(URL.init(string:)))
+        XCTAssertEqual(creationURL.deletingLastPathComponent(), context.baseURL)
+    }
+
+    func testModuleCycleUsesSingleCanonicalVendorEntry() async throws {
+        Settings.userAgent = "Vane Cyclic Worker/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3, module: true, cycle: true)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: "Vane Cyclic Worker/1.0")
+        let identity = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+        XCTAssertEqual(identity?["entryRuns"], "1", "A module back-reference must not evaluate a query-distinct copy of the vendor entry")
+        XCTAssertEqual(identity?["url"], context.baseURL.appendingPathComponent("background.js").absoluteString)
+    }
+
+    func testModuleResourceUpdateRefreshesCanonicalDependency() async throws {
+        try await checkCanonicalDependencyUpdate(version: "1.0")
+    }
+
+    func testModuleVersionBumpedResourceUpdateRefreshesCanonicalDependency() async throws {
+        try await checkCanonicalDependencyUpdate(version: "2.0")
+    }
+
+    private func checkCanonicalDependencyUpdate(version: String) async throws {
+        Settings.userAgent = "Vane Updated Module/1.0"
+        print("MV3_CACHE_POLICY alwaysRevalidatesExtensionResources=\(WebKitStartup.revalidatesExtensionResources)")
+        XCTAssertTrue(WebKitStartup.revalidatesExtensionResources)
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let before = try await install(version: 3, module: true)
+        let (action, web) = try await popup(before)
+        let original = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+        XCTAssertEqual(original?["revision"], "initial")
+        action.closePopup()
+        let dependency = folder.appendingPathComponent("dependency.js")
+        let originalBytes = try String(contentsOf: dependency, encoding: .utf8)
+        try Data((originalBytes + "\nglobalThis.packageRevision = 'updated';").utf8).write(to: dependency)
+        if version != "1.0" {
+            let manifestURL = folder.appendingPathComponent("manifest.json")
+            var manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+            manifest["version"] = version
+            try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL)
+        }
+        let host = ExtensionHost.host(for: profile)
+        let accepted = try await host.load(folder, installing: false, replacing: true) { _ in true }
+        XCTAssertTrue(accepted)
+        let after = try XCTUnwrap(host.installed.first)
+        let (newAction, newWeb) = try await popup(after)
+        defer { newAction.closePopup() }
+        try await assertIdentity(in: newWeb, context: after, expected: "Vane Updated Module/1.0")
+        let updated = try await newWeb.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+        XCTAssertEqual(updated?["revision"], "updated", "A new wrapper must not reuse cached canonical vendor imports")
+        let codeStore = ExtensionCodeStore(profileID: profile)
+        let record = try XCTUnwrap(try codeStore.records()[folder.path])
+        let sourceBytes = try Data(contentsOf: dependency)
+        let acceptedBytes = try Data(contentsOf: codeStore.code(for: record).appendingPathComponent("dependency.js"))
+        XCTAssertEqual(acceptedBytes, sourceBytes, "The replacement snapshot must contain the actual changed dependency")
+        XCTAssertFalse(after === before)
+        print("MV3_CACHE_DIAGNOSTIC version=\(version), sourceSHA=\(SHA256.hash(data: sourceBytes)), acceptedSHA=\(SHA256.hash(data: acceptedBytes)), beforeLoaded=\(before.isLoaded), afterLoaded=\(after.isLoaded), original=\(original ?? [:]), updated=\(updated ?? [:])")
+        if updated?["revision"] != "updated" {
+            // Observe fresh bytes AFTER the original failed response/assertion.
+            // This never turns that failed outcome into an acceptance verdict.
+            let box = CacheDiagnosticResult()
+            do {
+                try await ExtensionBackgroundStartup.wait(timeout: .seconds(5), start: { complete in
+                    newWeb.callAsyncJavaScript("""
+                        const url = browser.runtime.getURL('dependency.js');
+                        const body = await (await fetch(url, {cache:'no-store'})).text();
+                        let registrations;
+                        try { registrations = await navigator.serviceWorker.getRegistrations().then(items => items.map(r => ({scope:r.scope, active:r.active?.scriptURL, cache:r.updateViaCache}))); }
+                        catch(error) { registrations = {unavailable:String(error)}; }
+                        return {url, body, registrations};
+                        """, arguments: [:], in: nil, in: .page) { value in
+                            MainActor.assumeIsolated { box.value = value; complete(nil) }
+                        }
+                }, check: {})
+                print("MV3_CACHE_AFTER_FAILURE_FETCH \(try box.value?.get() as Any)")
+            } catch { print("MV3_CACHE_AFTER_FAILURE_FETCH unavailable: \(error)") }
+        }
+        XCTAssertEqual(updated?["url"], original?["url"], "Vendor module identity remains canonical")
+        XCTAssertNotEqual(updated?["workerURL"], original?["workerURL"], "Changed dependency bytes require a new worker registration URL")
+        XCTAssertEqual(after.uniqueIdentifier, before.uniqueIdentifier)
+        XCTAssertEqual(after.baseURL, before.baseURL)
+    }
+
+    @MainActor private final class CacheDiagnosticResult { var value: Result<Any, Error>? }
+
+    func testWorkerRecreationRetainsNavigatorIdentityAndStorage() async throws {
+        Settings.userAgent = "Vane Recreated Worker/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3)
+        let host = ExtensionHost.host(for: profile)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        _ = try await web.callAsyncJavaScript("await browser.storage.local.set({workerSaved:'persisted worker value'}); return true;",
+                                             arguments: [:], in: nil, contentWorld: .page)
+        let beforeValue = try await web.evaluateJavaScript("window.backgroundIdentity.nonce") as? String
+        let before = try XCTUnwrap(beforeValue)
+        let identity = context.uniqueIdentifier, origin = context.baseURL
+        let selector = NSSelectorFromString("_reloadBackgroundContentForTesting")
+        if context.responds(to: selector) { _ = context.perform(selector) }
+        else {
+            // Reusing the exact same native context also exercises a fresh worker
+            // birth on SDKs without the idle-timeout testing selector.
+            try host.controller.unload(context)
+            try host.controller.load(context)
+        }
+        try await ExtensionBackgroundStartup.load(context, checkLifetime: {})
+        let deadline = ContinuousClock.now + .seconds(10)
+        var reply: [String: String]?
+        repeat {
+            reply = try await web.callAsyncJavaScript("return await chrome.runtime.sendMessage('identity');",
+                                                     arguments: [:], in: nil, contentWorld: .page) as? [String: String]
+            if reply?["nonce"] != before { break }
+            try await Task.sleep(for: .milliseconds(20))
+        } while ContinuousClock.now < deadline
+        XCTAssertNotEqual(reply?["nonce"], before)
+        XCTAssertNotNil(reply?["nonce"])
+        XCTAssertEqual(reply?["startup"], "Vane Recreated Worker/1.0")
+        XCTAssertEqual(reply?["saved"], "persisted worker value")
+        XCTAssertEqual(context.uniqueIdentifier, identity)
+        XCTAssertEqual(context.baseURL, origin)
+        #if DEBUG
+        assertBackgroundOwnership(for: context)
+        #endif
+    }
+
+    func testDevelopChangeRecreatesMV3ContextWithoutLosingAccessOrStorage() async throws {
+        Settings.userAgent = "Vane Worker Before Change/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let before = try await install(version: 3)
+        let host = ExtensionHost.host(for: profile)
+        let controller = host.controller
+        let (action, web) = try await popup(before)
+        _ = try await web.callAsyncJavaScript("await chrome.storage.local.set({workerSaved:'kept across identity change'}); return true;",
+                                             arguments: [:], in: nil, contentWorld: .page)
+        before.setPermissionStatus(.grantedExplicitly, for: WKWebExtension.Permission(rawValue: "alarms"))
+        before.setPermissionStatus(.deniedExplicitly, for: WKWebExtension.Permission(rawValue: "notifications"))
+        let grants = before.grantedPermissions, denials = before.deniedPermissions
+        let grantedSites = before.grantedPermissionMatchPatterns, deniedSites = before.deniedPermissionMatchPatterns
+        let identifier = before.uniqueIdentifier, origin = before.baseURL
+        action.closePopup()
+        Settings.userAgent = "Vane Worker After Change/2.0"
+        let deadline = ContinuousClock.now + .seconds(10)
+        while (host.installed.first.map { $0 === before } ?? true), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let after = try XCTUnwrap(host.installed.first, "Identity restart: " + host.entries.map { $0.status + " " + ($0.failure ?? "no failure") }.joined(separator: "; "))
+        XCTAssertFalse(after === before, "Develop changes must rebuild the worker bootstrap")
+        let (newAction, newWeb) = try await popup(after)
+        defer { newAction.closePopup() }
+        try await assertIdentity(in: newWeb, context: after, expected: "Vane Worker After Change/2.0")
+        XCTAssertTrue(host.controller === controller)
+        XCTAssertEqual(after.uniqueIdentifier, identifier)
+        XCTAssertEqual(after.baseURL, origin)
+        XCTAssertEqual(after.grantedPermissions, grants)
+        XCTAssertEqual(after.deniedPermissions, denials)
+        XCTAssertEqual(after.grantedPermissionMatchPatterns, grantedSites)
+        XCTAssertEqual(after.deniedPermissionMatchPatterns, deniedSites)
+        let saved = try await newWeb.evaluateJavaScript("window.backgroundIdentity.saved") as? String
+        XCTAssertEqual(saved, "kept across identity change")
+    }
+
+    #if DEBUG
+    @MainActor private final class IdentityRestartGate {
+        private(set) var entered = false
+        private var continuation: CheckedContinuation<Void, Never>?
+        func hold() async {
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                entered = true
+            }
+        }
+        func release() {
+            let pending = continuation
+            continuation = nil
+            pending?.resume()
+        }
+    }
+
+    func testIdentityRestartDoesNotReplaceANewerContextOrItsAccess() async throws {
+        Settings.userAgent = "Vane Original Workers/1.0"
+        let root = try XCTUnwrap(folder)
+        defer { folder = root }
+        folder = root.appendingPathComponent("first")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let first = try await install(version: 3)
+        folder = root.appendingPathComponent("second")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let secondPath = folder.path
+        let second = try await install(version: 3)
+        let host = ExtensionHost.host(for: profile)
+        let alarms = WKWebExtension.Permission(rawValue: "alarms")
+        let notifications = WKWebExtension.Permission(rawValue: "notifications")
+        second.setPermissionStatus(.grantedExplicitly, for: alarms)
+        second.setPermissionStatus(.deniedExplicitly, for: notifications)
+        let gate = IdentityRestartGate(), previous = host.workerIdentityRestartWillLoad
+        host.workerIdentityRestartWillLoad = { context in
+            if context === first { await gate.hold() }
+        }
+        defer { gate.release(); host.workerIdentityRestartWillLoad = previous }
+
+        Settings.userAgent = "Vane Current Workers/2.0"
+        let admissionDeadline = ContinuousClock.now + .seconds(10)
+        while !gate.entered, ContinuousClock.now < admissionDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(gate.entered, "The first real restart must suspend before replacing the second worker")
+        guard gate.entered else { return }
+        try host.disable(secondPath)
+        try await host.setEnabled(true, for: secondPath, review: { _ in true })
+        let current = try XCTUnwrap(host.loaded.first { $0.path == secondPath }?.context)
+        XCTAssertFalse(current === second)
+        current.setPermissionStatus(.deniedExplicitly, for: alarms)
+        current.setPermissionStatus(.grantedExplicitly, for: notifications)
+        let grants = current.grantedPermissions, denials = current.deniedPermissions
+        let grantedSites = current.grantedPermissionMatchPatterns, deniedSites = current.deniedPermissionMatchPatterns
+        gate.release()
+
+        let outcomeDeadline = ContinuousClock.now + .seconds(10)
+        while host.workerIdentityUpdatePendingForTesting, ContinuousClock.now < outcomeDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(host.workerIdentityUpdatePendingForTesting, "The complete identity update must finish within its original startup budget")
+        let after = try XCTUnwrap(host.loaded.first { $0.path == secondPath }?.context)
+        XCTAssertTrue(after === current, "A completed replacement cannot be deactivated by an earlier stale snapshot")
+        XCTAssertEqual(after.grantedPermissions, grants, "Do not restore grants from the retired context")
+        XCTAssertEqual(after.deniedPermissions, denials, "Do not restore denials from the retired context")
+        XCTAssertEqual(after.grantedPermissionMatchPatterns, grantedSites)
+        XCTAssertEqual(after.deniedPermissionMatchPatterns, deniedSites)
+        XCTAssertEqual(ExtensionWorkerIdentity.identity(of: after.webExtension), "Vane Current Workers/2.0")
+        XCTAssertTrue(host.loaded.contains { $0.context !== first && $0.path != secondPath })
+    }
+    #endif
+
+    func testRapidDevelopSelectionsSettleOnLatestWorkerIdentity() async throws {
+        Settings.userAgent = "Vane Initial Worker/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let before = try await install(version: 3)
+        let host = ExtensionHost.host(for: profile)
+        for value in ["Vane Intermediate/2.0", "Vane Intermediate/3.0", "Vane Latest Worker/4.0"] {
+            Settings.userAgent = value
+        }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ExtensionWorkerIdentity.identity(of: host.installed.first?.webExtension ?? before.webExtension) != "Vane Latest Worker/4.0",
+              ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        let after = try XCTUnwrap(host.installed.first)
+        XCTAssertFalse(after === before)
+        let (action, web) = try await popup(after)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: after, expected: "Vane Latest Worker/4.0")
+        XCTAssertEqual(after.uniqueIdentifier, before.uniqueIdentifier)
+        XCTAssertEqual(after.baseURL, before.baseURL)
+        XCTAssertEqual(host.controller.extensionContexts.count, 1)
+    }
+
+    #if DEBUG
+    func testRemovalDuringIdentityRestartCannotRepublishTheWorker() async throws {
+        Settings.userAgent = "Vane Before Removal/1.0"
+        let before = try await install(version: 3)
+        let host = ExtensionHost.host(for: profile)
+        let previous = host.backgroundCreationObserver
+        var replacement: WKWebExtensionContext?
+        var removal: Task<Void, Error>?
+        host.backgroundCreationObserver = { web, context in
+            previous?(web, context)
+            if context !== before, removal == nil {
+                replacement = context
+                removal = Task { @MainActor in try host.remove(folder: self.folder.path) }
+            }
+        }
+        defer { host.backgroundCreationObserver = previous }
+        Settings.userAgent = "Vane During Removal/2.0"
+        let deadline = ContinuousClock.now + .seconds(10)
+        while removal == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        let task = try XCTUnwrap(removal)
+        try await task.value
+        let retired = try XCTUnwrap(replacement)
+        while retired.isLoaded, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertFalse(retired.isLoaded, "Cancelled restart must unload its provisional native context")
+        XCTAssertTrue(host.installed.isEmpty)
+        XCTAssertTrue(host.controller.extensionContexts.isEmpty)
+        XCTAssertTrue(host.entries.isEmpty)
+        XCTAssertNil(try ExtensionCodeStore(profileID: profile).records()[folder.path])
+    }
+    #endif
+
+    func testGeneratedMV3WorkerStartsWithSelectedNavigatorIdentity() async throws {
+        Settings.userAgent = "Vane Generated Worker/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3, generated: true)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: "Vane Generated Worker/1.0")
+        let accepted = try XCTUnwrap(try ExtensionCodeStore(profileID: profile).records()[folder.path])
+        let acceptedURL = ExtensionCodeStore(profileID: profile).code(for: accepted)
+        XCTAssertEqual(try Data(contentsOf: acceptedURL.appendingPathComponent("background.js")),
+                       try Data(contentsOf: folder.appendingPathComponent("background.js")))
+        XCTAssertEqual(try Data(contentsOf: acceptedURL.appendingPathComponent("manifest.json")),
+                       try Data(contentsOf: folder.appendingPathComponent("manifest.json")))
+    }
+
+    func testNestedModuleImportsAndHashbangRetainURLsAndFirstIdentity() async throws {
+        Settings.userAgent = "Vane Nested Module/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3, module: true, workerPath: "nested/background.js", hashbang: true)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: "Vane Nested Module/1.0")
+        let reply = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
+        let workerURL = try XCTUnwrap(reply?["url"].flatMap(URL.init(string:)))
+        XCTAssertEqual(workerURL.path, "/nested/background.js")
+        XCTAssertEqual(workerURL.host, context.baseURL.host)
+        XCTAssertNil(workerURL.query, "Vendor module identity must remain canonical")
+        let creationURL = try XCTUnwrap(reply?["workerURL"].flatMap(URL.init(string:)))
+        XCTAssertEqual(creationURL.deletingLastPathComponent().path, "/nested")
+        XCTAssertTrue(creationURL.lastPathComponent.hasPrefix("__vane_worker_entry_"))
+        XCTAssertEqual(reply?["dependencyURL"], context.baseURL.appendingPathComponent("nested/dependency.js").absoluteString)
+        XCTAssertEqual(reply?["strict"], "true")
+    }
+
+    func testClassicWorkerRetainsHashbangAndStrictMode() async throws {
+        Settings.userAgent = "Vane Strict Worker/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3, hashbang: true, strict: true)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: "Vane Strict Worker/1.0")
+        let strict = try await web.evaluateJavaScript("window.backgroundIdentity.strict") as? String
+        XCTAssertEqual(strict, "true")
+    }
+
+    func testWorkerSourceReusedInExtensionPagesKeepsPageNavigator() async throws {
+        Settings.userAgent = "Vane Worker Scope/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        for module in [false, true] {
+            let context = try await install(version: 3, module: module, reusePage: true)
+            let config = try XCTUnwrap(context.webViewConfiguration)
+            config.defaultWebpagePreferences = WKWebpagePreferences()
+            let view = WKWebView(frame: .zero, configuration: config)
+            view.customUserAgent = "Vane Reused Page/1.0"
+            view.load(URLRequest(url: try XCTUnwrap(context.optionsPageURL)))
+            let deadline = ContinuousClock.now + .seconds(10)
+            var identity: String?
+            repeat {
+                identity = try? await view.evaluateJavaScript("globalThis.entryStartupIdentity") as? String
+                if identity != nil { break }
+                try await Task.sleep(for: .milliseconds(20))
+            } while ContinuousClock.now < deadline
+            XCTAssertEqual(identity, "Vane Reused Page/1.0", "Reusing a worker resource must not spoof page navigators")
+            view.stopLoading(); view.removeFromSuperview()
+            ExtensionHost.host(for: profile).remove(context)
+        }
+    }
+
+    func testMV3HostRestorationRetainsIdentityStorageAndContentVersion() async throws {
+        Settings.userAgent = "Vane Restored Worker/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let before = try await install(version: 3)
+        let beforeURL = (before.webExtension.manifest["background"] as? [String: Any])?["service_worker"] as? String
+        let (action, web) = try await popup(before)
+        _ = try await web.callAsyncJavaScript("await browser.storage.local.set({workerSaved:'restored worker value'}); return true;",
+                                             arguments: [:], in: nil, contentWorld: .page)
+        action.closePopup()
+        ExtensionHost.forget(profile)
+        let host = ExtensionHost.host(for: profile)
+        #if DEBUG
+        try observeBackgroundCreation(of: host)
+        #endif
+        let deadline = ContinuousClock.now + .seconds(10)
+        while host.installed.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        let restored = try XCTUnwrap(host.installed.first, host.entries.compactMap(\.failure).joined(separator: "; "))
+        let (newAction, newWeb) = try await popup(restored)
+        defer { newAction.closePopup() }
+        try await assertIdentity(in: newWeb, context: restored, expected: "Vane Restored Worker/1.0")
+        XCTAssertEqual(restored.uniqueIdentifier, before.uniqueIdentifier)
+        XCTAssertEqual(restored.baseURL, before.baseURL)
+        let afterURL = (restored.webExtension.manifest["background"] as? [String: Any])?["service_worker"] as? String
+        XCTAssertEqual(afterURL, beforeURL, "Identical inputs should retain the same worker content version")
+        let saved = try await newWeb.evaluateJavaScript("window.backgroundIdentity.saved") as? String
+        XCTAssertEqual(saved, "restored worker value")
+    }
+
+    func testGeneratedModuleWorkerDependenciesUseSelectedIdentity() async throws {
+        Settings.userAgent = "Vane Generated Module/1.0"
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let context = try await install(version: 3, module: true, generated: true)
+        let (action, web) = try await popup(context)
+        defer { action.closePopup() }
+        try await assertIdentity(in: web, context: context, expected: "Vane Generated Module/1.0")
+        let dependency = try await web.evaluateJavaScript("window.backgroundIdentity.dependencyURL") as? String
+        XCTAssertEqual(dependency, context.baseURL.appendingPathComponent("dependency.js").absoluteString)
+    }
+
+    func testUnmodifiedBitwardenMV3PackageStartsWithNavigatorCompatibilityWhenRequested() async throws {
+        guard let path = ProcessInfo.processInfo.environment["VANE_MV3_BITWARDEN_PACKAGE"] else {
+            throw XCTSkip("Set VANE_MV3_BITWARDEN_PACKAGE to the verified upstream Chrome fixture")
+        }
+        let source = URL(fileURLWithPath: path)
+        let manifest = try ExtensionHost.validate(source)
+        XCTAssertEqual(manifest["manifest_version"] as? Int, 3)
+        XCTAssertEqual(manifest["version"] as? String, "2026.10.0")
+        XCTAssertNotNil((manifest["background"] as? [String: Any])?["service_worker"] as? String)
+        Settings.userAgent = safariUA
+        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
+        let store = ExtensionCodeStore(profileID: profile)
+        let original = try store.resources(in: source)
+        let host = ExtensionHost.host(for: profile)
+        #if DEBUG
+        try observeBackgroundCreation(of: host)
+        #endif
+        let accepted = try await host.load(source, installing: true) { _ in true }
+        XCTAssertTrue(accepted)
+        let context = try XCTUnwrap(host.installed.first)
+        XCTAssertEqual(ExtensionWorkerIdentity.identity(of: context.webExtension), safariUA)
+        #if DEBUG
+        assertBackgroundOwnership(for: context)
+        #endif
+        XCTAssertEqual(try store.resources(in: source), original, "Do not patch the upstream package on disk")
+        // The native synthetic and signed-worker fixtures capture the first
+        // vendor instruction. This package check covers normal SDK startup with
+        // the original bytes; no authentication or vault workflow is inferred.
+    }
+
+    /// The former advisory is required coverage for the selected worker identity
+    /// at startup and after a custom-to-Safari selection change.
+    func testServiceWorkerNavigatorIdentityAcrossSelections() async throws {
         for (identity, stage) in [(safariUA, "default Safari worker"),
                                   ("Vane Prior Worker Identity/1.0 (no Safari token)", "custom worker"),
                                   (safariUA, "Safari worker after custom worker")] {
@@ -329,8 +820,8 @@ import XCTest
             let context = try await install(version: 3)
             let (action, web) = try await popup(context)
             let result = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
-            XCTAssertEqual(result?["startup"], identity, "Known WebKit worker UA limitation: \(stage) startup")
-            XCTAssertEqual(result?["current"], identity, "Known WebKit worker UA limitation: \(stage) current")
+            XCTAssertEqual(result?["startup"], identity, "MV3 navigator identity: \(stage) startup")
+            XCTAssertEqual(result?["current"], identity, "MV3 navigator identity: \(stage) current")
             action.closePopup()
             ExtensionHost.host(for: profile).remove(context)
         }

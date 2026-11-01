@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Allow only the named bare-engine worker-UA discrepancy; fail everything else."""
+"""Historical replay only; current worker identity failures block native CI.
+
+Allow only the named bare-engine worker-UA discrepancy; fail everything else."""
 import argparse
 import json
 import math

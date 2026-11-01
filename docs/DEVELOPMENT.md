@@ -67,7 +67,7 @@ the service, account, license exchange, and playback still need a real-site test
 
 ## Testing
 
-The project has one Swift executable target, an XCTest target, and inline checks run
+The project has a Swift executable, native bridge targets, an XCTest target, and inline checks run
 through `selfcheck`. Use the [contributor guide](../CONTRIBUTING.md) to choose focused
 local validation. Required PR CI still applies before merging.
 
@@ -84,8 +84,8 @@ artifact, verifying its revision, checkout path, and Swift toolchain before exec
 Object files and compiler caches are excluded from that transfer. Source fixtures
 and shared runtime checks each run once; separate desktops keep packaging work away
 from native UI tests. The required `checks` gate requires every applicable required
-job to succeed, including strict classification of the named worker-UA advisory
-probe. Jobs intentionally skipped for documentation-only changes are handled by
+job to succeed. Worker navigator identity is blocking coverage in the normal
+native shards. Jobs intentionally skipped for documentation-only changes are handled by
 the gate's documentation path.
 
 Main requires GitHub Actions' `checks` status with strict current-base validation,
@@ -130,8 +130,8 @@ CI runs four groups on separate macOS runners, keeping each test class together
 and each runner's UI tests sequential. `swift test list --skip-build` supplies the
 complete inventory; `scripts/native-test-shards.py` balances classes using advisory
 durations in `scripts/native-test-durations.json`, assigns new classes automatically,
-and verifies every selected required test completed. The single known worker-UA
-probe runs on a separate advisory runner. Each required group runs its own startup
+and verifies every selected required test completed. The worker navigator identity
+probe is included, and missing required identity coverage fails planning. Each group runs its own startup
 preflight and cleanup, and all four must pass the required `checks` gate.
 The preflight's outer 90-second process limit includes SwiftPM planning before
 XCTest starts; the owned AppKit loop retains its separate 12-second lifecycle
@@ -196,23 +196,12 @@ continue to export only allowlisted domain/code metadata, excluding the runtime 
 
 ### Routine CI commands
 
-The `Extension worker UA compatibility (advisory)` job separately runs
-`ExtensionUserAgentTests.testKnownServiceWorkerUserAgentLimitation`. Manifest-v3
-workers can expose WebKit's engine UA instead of the selected page UA; this known
-fault currently does not block merges when the classifier verifies only the named
-probe's nonnil bare-engine startup/current comparisons failed. The job itself is
-required: unrelated assertions, crashes, timeouts, skipped/incomplete execution,
-fixture/cleanup failures, missing evidence, and upload failures block merges.
-The probe keeps its desired-behavior assertions and uploads its exact selection,
-result, and cleanup log together in one validated evidence archive. Required shards still cover
-popup UA, manifest-v2 background UA, profile storage isolation, and controller
-ownership. The planner checks that the exact advisory probe exists and that the
-required/advisory test sets partition the discovered inventory without overlap.
-An unfiltered local native run includes the probe and can fail on this known fault.
-A passing probe is one sample, not proof that worker identity is reliable or that
-the limitation is fixed. Its signed-app reproductions and platform-limitation disposition are retained in [#513](https://github.com/notnaki/vane/issues/513). See [the worker identity boundary](EXTENSION-WORKER-IDENTITY.md).
-The advisory exception does not apply to other extension assertions or native
-fixture failures.
+The MV3 navigator override is covered by the normal required native shards,
+including first-instruction classic/module identity, lifecycle, storage and ownership
+assertions. No advisory worker-UA job or current-failure classification exemption
+remains. Historical bare-engine failure fixtures are replayed only to preserve the
+original evidence; they do not permit a current test failure. See [worker navigator
+identity](EXTENSION-WORKER-IDENTITY.md) for the bootstrap and its scope.
 
 These commands cover the app checks used in CI. For routine changes, select only
 the checks relevant to the affected behavior:

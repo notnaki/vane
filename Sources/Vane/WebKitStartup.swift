@@ -1,4 +1,5 @@
 import WebKit
+import ExtensionResourceBridge
 
 /// Registry class methods need WebKit's main run loop initialized even when no window
 /// has opened yet. A nonpersistent store does this without a page or a disk-backed store.
@@ -6,8 +7,13 @@ import WebKit
     // Legacy WebKit can retain extension IPC receivers after controller retirement.
     // Keep both browser and extension pool owners at application lifetime instead of
     // destroying one per host. Stores and controllers still provide profile isolation.
-    static let processPool = WKProcessPool()
-    static let extensionProcessPool = WKProcessPool()
+    static let processPool = VaneCreateExtensionResourceProcessPool()
+    static let extensionProcessPool = VaneCreateExtensionResourceProcessPool()
+
+    static var revalidatesExtensionResources: Bool {
+        VaneProcessPoolRevalidatesExtensionResources(processPool)
+            && VaneProcessPoolRevalidatesExtensionResources(extensionProcessPool)
+    }
 
     private static let initialized: Void = { _ = WKWebsiteDataStore.nonPersistent() }()
 

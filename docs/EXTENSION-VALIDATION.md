@@ -4,12 +4,18 @@
 
 This record separates implementation, automated regressions, metadata parsing, and assembled-app observations. A successful manifest parse does not establish that background code, website injection, blocking, autofill, or every declared API works. No Chrome Web Store installation or full Chromium compatibility is claimed.
 
+## MV3 navigator repair — 2026-10-31
+
+The selected worker navigator identity now comes from a synchronous resource bootstrap on system WebKit. Controlled native fixtures set the actual background WebView's native UA to a deliberately wrong value and verify the first vendor classic instruction and first module dependency see the selected value. Lifecycle coverage includes generated workers, worker recreation, setting changes and host restoration with storage, grants and profile ownership intact. A signed MV3 fixture rejects altered resource Data against the original seal. The unmodified official Bitwarden Chrome **2026.10.0** package passed the local SDK startup check with the bootstrap and unchanged source bytes; no authentication/vault/popup acceptance is inferred.
+
+The former worker-UA advisory is replaced by blocking native coverage. Historical native-UA failures below retain their original verdicts and predate this explicitly authorized JavaScript repair. See [worker navigator identity](EXTENSION-WORKER-IDENTITY.md) for resource URLs, signature handling, API scope and CI gates. Required latest-target CI and actual-main verification remain delivery gates.
+
 ## Focused regression scope
 
 Run from the repository root:
 
 ```sh
-swift test --filter 'Extension.*Tests'
+python3 scripts/run-native-tests.py --filter 'Extension|SafariAppSignatureTests'
 ./.build/debug/vane selfcheck --pure
 ```
 
@@ -48,7 +54,7 @@ VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT=300 python3 scripts/run-native-tests.py \
 Issues [484](https://github.com/notnaki/vane/issues/484) and [513](https://github.com/notnaki/vane/issues/513) remain open. This activation repair establishes neither real-package acceptance nor an MV3 worker identity repair:
 
 - **Bitwarden:** The official Developer ID 2026.10.0 package was copied without resource changes and checked against its per-file SHA-256 inventory. The source archive SHA-256 is `a44011745891f7aefe6bc34e8dc0feb3e3e5002630b9c084fe15be8a26c0746c`. A signed sandboxed task-only entry point linked to Vane's current debug objects exercised the production installer and an actual anchored action popup in an isolated profile. Installation succeeded; the welcome JavaScript did not reply within the original **20-second** deadline. A post-failure sample of the exact popup renderer showed JavaScriptCore draining microtasks and repeated extension namespace/runtime property lookups. The sample does not identify the executing JavaScript document or establish the loop's cause. Close/reopen and restoration acceptance were not reached. The Mac App Store download stalled on its account sheet; this vendor package is not acceptance for the reporter's exact Store package. No credentials were used. Both task app processes exited and the scoped WebKit store was positively retired.
-- **MV3 workers:** The previously captured first-start failures remain valid. Current upstream source still [establishes a remote worker context and sends its UA in separate steps](https://github.com/WebKit/WebKit/blob/da4d88f94a06e713938e0aa76943578d00626772/Source/WebKit/UIProcess/WebProcessPool.cpp#L815). The connection [initializes its fallback UA without an application name](https://github.com/WebKit/WebKit/blob/da4d88f94a06e713938e0aa76943578d00626772/Source/WebKit/WebProcess/Storage/WebSWContextManagerConnection.cpp#L103) and captures the effective value at worker installation. This audit found no supported host operation that makes those initial steps atomic. Page configuration, a later page-JavaScript reply, or a later worker UA setter is not proof of the worker's initial identity. No new worker workaround, resource rewriting, engine replacement, test exclusion, or weaker assertion is included.
+- **MV3 workers:** The previously captured first-start failures remain valid. Current upstream source still [establishes a remote worker context and sends its UA in separate steps](https://github.com/WebKit/WebKit/blob/da4d88f94a06e713938e0aa76943578d00626772/Source/WebKit/UIProcess/WebProcessPool.cpp#L815). The connection [initializes its fallback UA without an application name](https://github.com/WebKit/WebKit/blob/da4d88f94a06e713938e0aa76943578d00626772/Source/WebKit/WebProcess/Storage/WebSWContextManagerConnection.cpp#L103) and captures the effective value at worker installation. This audit found no supported host operation that makes those initial steps atomic. Page configuration, a later page-JavaScript reply, or a later worker UA setter is not proof of the worker's initial identity. This historical audit did not include a worker workaround. The later authorized navigator bootstrap and its blocking regression coverage are described above.
 
 After the initial stalled download, the user installed the exact Mac App Store **2026.10.0** package: Apple signing chain, team `LTZ2PFU5D6`, receipt present, and all **185 resource files byte-identical** to the vendor package. Vane's signed Safari-app installer also succeeds, followed by the same original **20-second** welcome-JavaScript failure. Its scoped store was retired. A separate normal-startup run of the complete Vane executable restored the accepted extension as enabled with the code7 diagnostic visible; that bounded UI experiment produced no passing popup acceptance verdict.
 

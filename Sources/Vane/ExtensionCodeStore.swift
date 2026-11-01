@@ -355,6 +355,42 @@ struct ExtensionCodeStore: Sendable {
         var bytes = 0
     }
 
+    /// Snapshot accepted resources without following replaced parents or links.
+    /// The runtime view never writes into an accepted revision or signed bundle.
+    func resources(in folder: URL) throws -> [String: Data] {
+        let rootFD = open(folder.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard rootFD >= 0 else { throw Problem("The accepted extension resources are unavailable.") }
+        defer { close(rootFD) }
+        var budget = Budget(), result: [String: Data] = [:]
+        func read(_ parent: Int32, prefix: String, depth: Int) throws {
+            guard depth <= 64 else { throw Problem("The extension has too many nested folders.") }
+            for name in try directoryNames(parent) {
+                budget.entries += 1
+                guard budget.entries <= Self.entryLimit else { throw Problem("The extension exceeds the file and folder limit.") }
+                var info = stat()
+                guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { throw Problem("An accepted extension resource disappeared.") }
+                let path = prefix + name
+                switch info.st_mode & S_IFMT {
+                case S_IFDIR:
+                    let child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    guard child >= 0 else { throw Problem("An accepted resource folder changed or became unreadable.") }
+                    defer { close(child) }
+                    try read(child, prefix: path + "/", depth: depth + 1)
+                case S_IFREG:
+                    let child = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+                    guard child >= 0 else { throw Problem("An accepted extension resource is unreadable.") }
+                    let data = try readRegular(child, limit: min(Self.fileLimit, Self.totalLimit - budget.bytes))
+                    budget.bytes += data.count
+                    result[path] = data
+                default:
+                    throw Problem("Extension runtime resources must contain only regular files and folders.")
+                }
+            }
+        }
+        try read(rootFD, prefix: "", depth: 0)
+        return result
+    }
+
     /// Walk using directory descriptors and openat(O_NOFOLLOW), rather than reopening
     /// enumerated paths. Replacing a parent with a symlink cannot redirect a later read.
     private func copyDirectory(_ sourceFD: Int32, to destination: URL, depth: Int, budget: inout Budget, bundleRoot: URL? = nil) throws {

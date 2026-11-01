@@ -26,7 +26,7 @@ import WebKit
         updatePreferences()
     }
 
-    private var effective: String { limitation == nil ? current : safariUA }
+    var effective: String { limitation == nil ? current : safariUA }
 
     func apply() {
         current = Settings.userAgent

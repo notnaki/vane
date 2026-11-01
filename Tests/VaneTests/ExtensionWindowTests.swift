@@ -52,6 +52,21 @@ import XCTest
         }
     }
 
+    private static func recordNativeWindow(_ message: String) {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
+
+    private func admitForeground(_ window: NSWindow, _ description: String) async throws {
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        do {
+            try await wait(description) { NSApp.isActive && window.isKeyWindow && window.isVisible }
+        } catch {
+            Self.recordNativeWindow("Foreground admission failed: active=\(NSApp.isActive), hidden=\(NSApp.isHidden), target=\(window.windowNumber), key=\(NSApp.keyWindow?.windowNumber ?? -1), visible=\(window.isVisible)")
+            throw error
+        }
+    }
+
     private static func text(in view: NSView?) -> String {
         guard let view else { return "" }
         let own = (view as? NSTextField)?.stringValue ?? (view as? NSTextView)?.string ?? ""
@@ -95,15 +110,16 @@ import XCTest
     }
 
     private func open(_ context: WKWebExtensionContext, host: ExtensionHost, tab: Tab, parent: NSWindow) async throws -> (WKWebExtension.Action, WKWebView, NSWindow) {
-        parent.makeKeyAndOrderFront(nil)
-        try await wait("origin browser key before invocation") { NSApp.isActive && parent.isKeyWindow }
+        try await admitForeground(parent, "origin browser key before invocation")
         host.run(context, for: tab, from: parent.contentView)
         let action = try XCTUnwrap(host.action(context, for: tab))
         let web = try XCTUnwrap(action.popupWebView)
         try await wait("exact popup document in visible owner") {
             !web.isLoading && web.title == "Compact popup" && web.window?.isVisible == true
         }
-        return (action, web, try XCTUnwrap(web.window))
+        let window = try XCTUnwrap(web.window)
+        try await admitForeground(window, "exact popup foreground before interaction")
+        return (action, web, window)
     }
 
     private func withNativeWindowLoop(_ body: () async throws -> Void) async throws {
@@ -143,9 +159,11 @@ import XCTest
             unrelated.isReleasedWhenClosed = false
             defer { unrelated.close() }
             unrelated.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
             try await wait("unrelated native key window") { NSApp.isActive && unrelated.isKeyWindow && !window.isKeyWindow }
             XCTAssertNil(context.focusedWindow, "An unrelated native window must clear the SDK's cached browser focus")
             window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
             try await wait("action regains native key focus") { NSApp.isActive && window.isKeyWindow }
             XCTAssertTrue((context.focusedWindow as? ExtWindow)?.store === store)
             let deadline = ContinuousClock.now + .seconds(5)
@@ -160,6 +178,110 @@ import XCTest
             XCTAssertTrue(web.window === window && window.isVisible)
         }
     }
+
+    #if DEBUG
+    func testActionForegroundAdmissionReactivatesItsOwnedApplication() async throws {
+        try await withNativeWindowLoop {
+            let (_, tab, parent) = try await browser()
+            let (host, context) = try await installed()
+            let (_, web, window) = try await open(context, host: host, tab: tab, parent: parent)
+            NSApp.hide(nil)
+            try await wait("owned test application actually hides and deactivates") { NSApp.isHidden && !NSApp.isActive }
+            try await admitForeground(window, "exact action owner regains foreground")
+            XCTAssertTrue(web.window === window && host.actionPopupWindow(context, for: tab) === window)
+        }
+    }
+
+    func testActionCloseCancelsQueuedIntrinsicFit() async throws {
+        try await withNativeWindowLoop {
+            let (_, tab, parent) = try await browser()
+            let (host, context) = try await installed()
+            let (_, web, window) = try await open(context, host: host, tab: tab, parent: parent)
+            try await wait("exact action owner foreground before queued fit") {
+                NSApp.isActive && window.isKeyWindow && web.window === window
+            }
+            var requests = 0
+            let previous = ExtensionWindowPresentation.actionResizeWillApplyForTesting
+            ExtensionWindowPresentation.actionResizeWillApplyForTesting = { owner, size, inLayout in
+                previous?(owner, size, inLayout)
+                if owner === window { requests += 1 }
+            }
+            defer { ExtensionWindowPresentation.actionResizeWillApplyForTesting = previous }
+            let size = web.intrinsicContentSize
+            window.setContentSize(CGSize(width: size.width + 100, height: size.height + 100))
+            window.contentView?.needsLayout = true
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.close()
+            try await wait("exact action retires before queued fitting") {
+                !window.isVisible && web.window == nil && host.actionPopupWindow(context, for: tab) == nil
+            }
+            await Task.yield()
+            XCTAssertEqual(requests, 0, "Closing the owner must cancel its deferred frame request")
+        }
+    }
+
+    func testActionResizeWaitsUntilLayoutCompletesAndCoalescesTargets() async throws {
+        try await withNativeWindowLoop {
+            let (_, tab, parent) = try await browser()
+            let (host, context) = try await installed()
+            let (_, web, window) = try await open(context, host: host, tab: tab, parent: parent)
+            try await wait("exact action owner foreground before resize") {
+                NSApp.isActive && window.isKeyWindow && web.window === window
+            }
+            struct Receipt { let size: CGSize; let inLayout: Bool; let inWindowUpdate: Bool }
+            var receipts: [Receipt] = []
+            var nativeWindowUpdateInProgress = false
+            let previous = ExtensionWindowPresentation.actionResizeWillApplyForTesting
+            ExtensionWindowPresentation.actionResizeWillApplyForTesting = { owner, size, inLayout in
+                previous?(owner, size, inLayout)
+                guard owner === window else { return }
+                if receipts.count < 32 {
+                    receipts.append(Receipt(size: size, inLayout: inLayout, inWindowUpdate: nativeWindowUpdateInProgress))
+                }
+            }
+            defer { ExtensionWindowPresentation.actionResizeWillApplyForTesting = previous }
+            Self.recordNativeWindow("Popup resize owner: id=\(window.windowNumber), frame=\(window.frame), intrinsic=\(web.intrinsicContentSize)")
+            let desired = web.intrinsicContentSize
+            // Recreate the initial provisional-frame -> intrinsic-frame fit,
+            // using the exact visible SDK popup and its unchanged document.
+            var provisional = window.frameRect(forContentRect: CGRect(x: 0, y: 0, width: 400, height: 500))
+            provisional.origin = CGPoint(x: parent.frame.midX - provisional.width / 2,
+                                         y: parent.frame.midY - provisional.height / 2)
+            var nativeFrames: [CGRect] = []
+            let resizeObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification,
+                object: window, queue: nil) { _ in
+                MainActor.assumeIsolated {
+                    if nativeFrames.count < 64 { nativeFrames.append(window.frame) }
+                }
+            }
+            defer { NotificationCenter.default.removeObserver(resizeObserver) }
+            Self.recordNativeWindow("Popup provisional fit: parent=\(parent.frame), provisional=\(provisional), desired=\(desired), reducedMotion=\(Motion.reduced)")
+            nativeWindowUpdateInProgress = true
+            window.setFrame(provisional, display: false)
+            window.contentView?.needsLayout = true
+            window.layoutIfNeeded()
+            nativeWindowUpdateInProgress = false
+            try await wait("native popup frame request") { !receipts.isEmpty }
+            // Another real content layout for the same destination must not
+            // issue a redundant native frame request.
+            nativeWindowUpdateInProgress = true
+            window.contentView?.needsLayout = true
+            window.layoutIfNeeded()
+            nativeWindowUpdateInProgress = false
+            try await wait("popup frame converges to its native intrinsic size") {
+                abs(window.contentLayoutRect.width - desired.width) <= 1 &&
+                    abs(window.contentLayoutRect.height - desired.height) <= 1
+            }
+            Self.recordNativeWindow("Popup resize receipts: " + receipts.map { "size=\($0.size), inLayout=\($0.inLayout), inWindowUpdate=\($0.inWindowUpdate)" }.joined(separator: "; "))
+            Self.recordNativeWindow("Popup native resize trajectory: \(nativeFrames)")
+            XCTAssertFalse(receipts.contains { $0.inLayout }, "A content layout must not resize its owning native window inline")
+            XCTAssertFalse(receipts.contains { $0.inWindowUpdate }, "The native window/layout operation must unwind before fitting")
+            XCTAssertEqual(receipts.filter { $0.size == desired }.count, 1,
+                           "Repeated layout must coalesce an unchanged destination")
+            XCTAssertTrue(web.window === window && window.isVisible)
+        }
+    }
+    #endif
 
     func testMovedOriginPopupSurvivesOldParentCloseAndClosesWithCurrentParent() async throws {
         try await withNativeWindowLoop {
@@ -267,8 +389,7 @@ import XCTest
         XCTAssertTrue((action.associatedTab as? ExtTab)?.tab === tab)
         XCTAssertLessThanOrEqual(window.contentLayoutRect.width, 800)
         XCTAssertLessThanOrEqual(window.contentLayoutRect.height, 600)
-        window.makeKeyAndOrderFront(nil)
-        try await wait("extension window foreground") { window.isKeyWindow && NSApp.isActive }
+        try await admitForeground(window, "extension window foreground")
         XCTAssertTrue((host.webExtensionController(host.controller, focusedWindowFor: context) as? ExtWindow)?.store === store)
         // WebKit may ask for global URL access while serving tabs.query, even
         // though activeTab already grants this exact tab. This fixture approves
@@ -280,6 +401,7 @@ import XCTest
                 let text = Self.text(in: modal.contentView)
                 guard text.contains("Compact Window Fixture"), text.contains(originURL.absoluteString) else { return }
                 deniedPrompts.count += 1
+                Self.recordNativeWindow("Extension URL denial owners: popupID=\(window.windowNumber), popupFrame=\(window.frame), modalID=\(modal.windowNumber), modalFrame=\(modal.frame), modalVisible=\(modal.isVisible), modalKey=\(modal.isKeyWindow)")
                 print("Extension window fixture: denied additional synthetic-origin URL prompt \(deniedPrompts.count)")
                 NSApp.stopModal(withCode: .alertSecondButtonReturn)
             }
@@ -408,8 +530,7 @@ import XCTest
         XCTAssertNil(adapter.activeTab(for: foreign))
         XCTAssertNil(adapter.tab.webView(for: foreign))
         XCTAssertFalse(foreign.openWindows.contains { ($0 as AnyObject) === adapter })
-        window.makeKeyAndOrderFront(nil)
-        try await wait("requested popup focus") { window.isKeyWindow && NSApp.isActive }
+        try await admitForeground(window, "requested popup focus")
         host.sync()
         XCTAssertTrue((context.focusedWindow as AnyObject?) === adapter)
         XCTAssertFalse(window === parent)

@@ -4,6 +4,9 @@ import WebKit
 /// Owns presentation, never extension identity or permissions. An action keeps its
 /// exact WebKit popup view; a requested popup has a separate truthful window adapter.
 @MainActor final class ExtensionWindowPresentation: NSObject, NSWindowDelegate {
+    #if DEBUG
+    static var actionResizeWillApplyForTesting: ((NSWindow, CGSize, Bool) -> Void)?
+    #endif
     let context: WKWebExtensionContext
     let action: WKWebExtension.Action?
     let web: WKWebView
@@ -17,6 +20,9 @@ import WebKit
     private var parentCloseObserver: NSObjectProtocol?
     private weak var observedParentWindow: NSWindow?
     private var userResized = false
+    private var actionFitTask: Task<Void, Never>?
+    private var actionFitRequestedAgain = false
+    private var actionFitTarget: CGSize?
     private(set) var isClosed = false
     var openExternal: ((URL) -> Void)?
     var focusChanged: (() -> Void)?
@@ -65,7 +71,7 @@ import WebKit
                                        y: parent.frame.midY - frame.height / 2)
                 window.setFrame(Self.contained(frame, in: parent.screen?.visibleFrame), display: false)
             }
-            content.didLayout = { [weak self] in self?.fitActionContent() }
+            content.didLayout = { [weak self] in self?.scheduleActionContentFit() }
         }
         if action != nil, let parentStore { rebindParent(to: parentStore) }
     }
@@ -120,14 +126,46 @@ import WebKit
         return result
     }
 
-    private func fitActionContent() {
+    private func scheduleActionContentFit() {
         guard action != nil, !isClosed, !userResized else { return }
+        guard actionFitTask == nil else { actionFitRequestedAgain = true; return }
+        // Changing the owning window's frame from its content layout can feed
+        // another constraint/layout pass into the pass currently in progress.
+        actionFitTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            self.actionFitRequestedAgain = false
+            self.fitActionContent()
+            self.actionFitTask = nil
+            if self.actionFitRequestedAgain { self.scheduleActionContentFit() }
+        }
+    }
+
+    private func cancelActionContentFit() {
+        actionFitTask?.cancel()
+        actionFitTask = nil
+        actionFitRequestedAgain = false
+        actionFitTarget = nil
+    }
+
+    private func fitActionContent() {
+        guard !isClosed, !userResized, context.isLoaded,
+              action?.popupWebView === web, web.window === window else { return }
         let size = Self.popupSize(web.intrinsicContentSize)
         let old = window.contentLayoutRect.size
-        guard abs(size.width - old.width) > 1 || abs(size.height - old.height) > 1 else { return }
+        guard abs(size.width - old.width) > 1 || abs(size.height - old.height) > 1 else {
+            actionFitTarget = nil
+            return
+        }
+        // Intermediate animation geometry must not restart the same request.
+        guard actionFitTarget != size else { return }
+        actionFitTarget = size
         var frame = window.frameRect(forContentRect: CGRect(origin: .zero, size: size))
         frame.origin = CGPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
         frame = Self.contained(frame, in: window.screen?.visibleFrame)
+        #if DEBUG
+        Self.actionResizeWillApplyForTesting?(window, size,
+            (window.contentView as? ExtensionPopupContentView)?.layoutInProgressForTesting ?? false)
+        #endif
         window.setFrame(frame, display: true, animate: window.isVisible && !Motion.reduced)
     }
 
@@ -139,7 +177,17 @@ import WebKit
     }
 
     func windowWillClose(_ notification: Notification) { retire(closeNativeWindow: false) }
-    func windowWillStartLiveResize(_ notification: Notification) { userResized = true }
+    func windowWillStartLiveResize(_ notification: Notification) {
+        userResized = true
+        cancelActionContentFit()
+    }
+    func windowDidResize(_ notification: Notification) {
+        guard let target = actionFitTarget else { return }
+        let actual = window.contentLayoutRect.size
+        if abs(target.width - actual.width) <= 1 && abs(target.height - actual.height) <= 1 {
+            actionFitTarget = nil
+        }
+    }
     func windowDidBecomeKey(_ notification: Notification) { focusChanged?() }
     func windowDidResignKey(_ notification: Notification) { focusChanged?() }
 
@@ -150,6 +198,7 @@ import WebKit
     private func retire(closeNativeWindow: Bool) {
         guard !isClosed else { return }
         isClosed = true
+        cancelActionContentFit()
         if let parentCloseObserver { NotificationCenter.default.removeObserver(parentCloseObserver) }
         parentCloseObserver = nil
         observedParentWindow = nil
@@ -261,7 +310,17 @@ import WebKit
 
 @MainActor private final class ExtensionPopupContentView: NSView {
     var didLayout: (() -> Void)?
-    override func layout() { super.layout(); didLayout?() }
+    #if DEBUG
+    private(set) var layoutInProgressForTesting = false
+    #endif
+    override func layout() {
+        #if DEBUG
+        layoutInProgressForTesting = true
+        defer { layoutInProgressForTesting = false }
+        #endif
+        super.layout()
+        didLayout?()
+    }
 }
 
 /// Preserve all SDK behavior, including selectors added by a newer system WebKit.

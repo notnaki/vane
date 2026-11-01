@@ -62,6 +62,25 @@ import XCTest
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: store.root.appendingPathComponent("revisions").path).isEmpty)
     }
 
+    func testEscapedIdentifierPreservesClassicStrictFailure() async throws {
+        // ASI makes this a strict directive followed by the identifier "infoo".
+        // Treating its raw "in" prefix as an operator disables strict mode.
+        try writeWorker("'use strict'\n" + #"in\u0066oo = 1;"# + "\nchrome.runtime.onInstalled.addListener(() => {});")
+        let host = ExtensionHost.host(for: profile)
+        let finished = expectation(description: "Strict vendor script reports its undeclared assignment")
+        let install = Task {
+            defer { finished.fulfill() }
+            do { _ = try await host.load(folder, installing: true) { _ in true }; XCTFail("Vendor strict mode must remain active") }
+            catch { XCTAssertTrue(error.localizedDescription.localizedCaseInsensitiveContains("background"), error.localizedDescription) }
+        }
+        await fulfillment(of: [finished], timeout: 8)
+        install.cancel()
+        XCTAssertFalse(host.isBusy)
+        XCTAssertTrue(host.installed.isEmpty)
+        XCTAssertTrue(host.controller.extensionContexts.isEmpty)
+        XCTAssertTrue(try ExtensionCodeStore(profileID: profile).records().isEmpty)
+    }
+
     func testValidWorkerInstallAndRestoreComplete() async throws {
         try writeWorker("chrome.runtime.onInstalled.addListener(() => {});")
         let host = ExtensionHost.host(for: profile)

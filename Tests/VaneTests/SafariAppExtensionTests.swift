@@ -12,6 +12,7 @@ import XCTest
     private var app: URL!
     private var appex: URL!
     private var signingIdentity: String!
+    private var previousUserAgent: Any?
     private var team: String!
     private var appID: String!
     private var extensionID: String!
@@ -25,6 +26,7 @@ import XCTest
             throw XCTSkip("Set VANE_TEST_SIGNING_IDENTITY and VANE_TEST_SIGNING_TEAM for signed Safari fixture checks")
         }
         signingIdentity = identity; team = expectedTeam
+        previousUserAgent = UserDefaults.vane.object(forKey: "userAgent")
         profile = UUID()
         ownedProfiles.insert(profile)
         appID = "test.vane.safari-" + UUID().uuidString.lowercased()
@@ -66,13 +68,17 @@ import XCTest
         }
     }
 
-    private func write(version: String, permissions: [String] = ["storage"]) throws {
+    private func write(version: String, permissions: [String] = ["storage"], worker: Bool = false) throws {
         let resources = appex.appendingPathComponent("Contents/Resources")
+        let background: [String: Any] = worker ? ["service_worker": "background.js"] : ["scripts": ["background.js"], "persistent": false]
         let manifest: [String: Any] = ["manifest_version": 3, "name": "Signed Safari Fixture", "version": version,
-            "permissions": permissions, "background": ["scripts": ["background.js"], "persistent": false],
+            "permissions": permissions, "background": background,
             "options_ui": ["page": "options.html"], "externally_connectable": ["matches": ["https://handoff.example.test/*"]]]
         try JSONSerialization.data(withJSONObject: manifest).write(to: resources.appendingPathComponent("manifest.json"))
-        try Data("browser.runtime.onMessageExternal.addListener((message, sender, reply) => { reply({received:message.nonce, id:browser.runtime.id}); });".utf8)
+        let script = worker
+            ? "const startup = navigator.userAgent; browser.runtime.onMessage.addListener(() => Promise.resolve({ua:startup, id:browser.runtime.id}));"
+            : "browser.runtime.onMessageExternal.addListener((message, sender, reply) => { reply({received:message.nonce, id:browser.runtime.id}); });"
+        try Data(script.utf8)
             .write(to: resources.appendingPathComponent("background.js"))
         try Data("<title>Signed Safari fixture</title>".utf8).write(to: resources.appendingPathComponent("options.html"))
         try run("/usr/bin/codesign", ["--force", "--sign", signingIdentity, "--timestamp=none", appex.path])
@@ -93,10 +99,40 @@ import XCTest
             ExtensionHost.forget(profile)
         }
         removeInstallations()
+        UserDefaults.vane.set(previousUserAgent, forKey: "userAgent")
+        Settings.apply()
         if let root { try? FileManager.default.removeItem(at: root) }
         let released = ownedProfiles
         ownedProfiles.removeAll()
         try await NativeFixtureProfileCleanup.release(released)
+    }
+
+    func testSignedMV3WorkerUsesSelectedNavigatorAndExactResourceSeal() async throws {
+        try write(version: "1.0", worker: true)
+        let resourceURL = appex.appendingPathComponent("Contents/Resources")
+        let store = ExtensionCodeStore(profileID: profile)
+        let resources = try store.resources(in: resourceURL)
+        let signature = try SafariExtensionSource.verify(appex)
+        try ExtensionWorkerIdentity.validateSignedResources(resources, bundleURL: appex, signatureHash: signature.hash)
+        var tampered = resources
+        tampered["background.js"] = Data("changed after verification".utf8)
+        XCTAssertThrowsError(try ExtensionWorkerIdentity.validateSignedResources(tampered, bundleURL: appex, signatureHash: signature.hash),
+                             "A valid bundle signature must not authorize different in-memory bytes")
+        Settings.userAgent = "Vane Signed Worker/1.0"
+        let host = ExtensionHost.host(for: profile)
+        #if DEBUG
+        host.backgroundCreationObserver = { web, _ in web.customUserAgent = "Vane Wrong Signed Native Worker/0" }
+        #endif
+        let accepted = try await host.load(app, installing: true) { _ in true }
+        XCTAssertTrue(accepted)
+        let context = try XCTUnwrap(host.installed.first)
+        let web = try await options(context)
+        let reply = try await web.callAsyncJavaScript("return await browser.runtime.sendMessage('identity');",
+                                                     arguments: [:], in: nil, contentWorld: .page) as? [String: String]
+        XCTAssertEqual(reply?["ua"], "Vane Signed Worker/1.0")
+        XCTAssertEqual(reply?["id"], extensionID + " (\(team!))")
+        XCTAssertEqual(try store.resources(in: resourceURL), resources, "Signed source bytes must remain unchanged")
+        XCTAssertNoThrow(try SafariExtensionSource.verify(appex))
     }
 
     func testSignedSafariAppLoadsReviewedIdentityAndRoutesExternalHandoffInRealTab() async throws {
