@@ -227,14 +227,14 @@ import WebKit
         sampler.arguments = [String(captured.pid), "1", "10", "-mayDie", "-file", output.path]
         sampler.standardOutput = FileHandle.nullDevice
         sampler.standardError = FileHandle.nullDevice
-        let deadline = ContinuousClock.now + .seconds(6)
+        let deadline = ContinuousClock.now + .seconds(20)
         emit("launching owned sampler for contentPID=\(captured.pid), contentStart=\(captured.start)")
         do { try sampler.run() } catch { return "sample unavailable: \(error.localizedDescription)" }
         let samplerIdentity = identity(sampler.processIdentifier)
         let samplerMetadata = "samplerPID=\(sampler.processIdentifier), samplerStart=\(samplerIdentity?.start ?? 0), samplerPath=\(samplerIdentity?.path ?? "unavailable")"
         emit("owned sampler launched: " + samplerMetadata)
         // Sampling starts only after the fixture's existing deadline has failed.
-        // Allow six seconds for collection and symbolication before child cleanup.
+        // Allow twenty post-failure seconds for collection and symbolication before child cleanup.
         while sampler.isRunning, ContinuousClock.now < deadline {
             do { try await Task.sleep(for: .milliseconds(20)) } catch { break }
         }
