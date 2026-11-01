@@ -104,17 +104,98 @@ import XCTest
 
     func testFailedProvisionalNavigationKeepsTheCommittedPDFFilename() async throws {
         let server = try XCTUnwrap(server), tab = try XCTUnwrap(tab)
-        try pdf(at: "/download", name: "committed.pdf")
-        try await load("/download")
-        let committed = try server.url("/download")
-        server.heldPaths.insert("/pending")
-        _ = try XCTUnwrap(tab.web.load(URLRequest(url: server.url("/pending"))))
-        try await compatibilityWait { server.requests.contains { $0.hasPrefix("GET /pending ") } }
-        XCTAssertEqual(tab.title, "committed.pdf")
-        tab.stop()
-        try await compatibilityWait { !tab.web.isLoading && !tab.loading }
-        XCTAssertEqual(tab.currentURL, committed)
-        XCTAssertEqual(tab.title, "committed.pdf")
+        let web = tab.web
+        try await withVisibleStopDocument(web) { loop, owner in
+            XCTAssertTrue(NSApp.isRunning, "A user Stop action requires the fixture's real AppKit loop")
+            XCTAssertTrue(NSApp.isActive, "A user Stop action requires an active fixture host")
+            let window = try XCTUnwrap(web.window, "A user Stop action requires its exact visible document owner")
+            XCTAssertTrue(window === owner && NSApp.keyWindow === window && window.isKeyWindow)
+            XCTAssertTrue(window.isVisible && window.contentView === web)
+            var accepted = Set<ObjectIdentifier>()
+            let previousObserver = tab.navigationStageObserver
+            tab.navigationStageObserver = { event in
+                previousObserver?(event)
+                if event.stage == "provisional-accepted", case .navigation(let identity)? = event.identity {
+                    accepted.insert(identity)
+                }
+            }
+            defer { tab.navigationStageObserver = previousObserver }
+            try pdf(at: "/download", name: "committed.pdf")
+            try await load("/download")
+            let committed = try server.url("/download")
+            let pending = try server.url("/pending")
+            server.heldPaths.insert("/pending")
+            try await compatibilityWait {
+                try loop.isReadyForInteraction() && nativeStopDocumentReady(window, document: web)
+            }
+            // Do not retain WKNavigation across Stop: production retirement keeps
+            // weak navigation identities and the fixture must preserve that lifetime.
+            let pendingID = ObjectIdentifier(try XCTUnwrap(web.load(URLRequest(url: pending))))
+            try await compatibilityWait {
+                try loop.isReadyForInteraction() && nativeStopDocumentReady(window, document: web)
+                    && accepted.contains(pendingID)
+                    && server.requests.contains { $0.hasPrefix("GET /pending ") }
+                    && web.url == pending && web.isLoading && tab.loading
+            }
+            XCTAssertEqual(tab.title, "committed.pdf")
+            tab.stop()
+            try await compatibilityWait { !tab.web.isLoading && !tab.loading }
+            XCTAssertEqual(tab.currentURL, committed)
+            XCTAssertEqual(tab.title, "committed.pdf")
+        }
+    }
+
+    private func nativeStopDocumentReady(_ window: NSWindow, document: WKWebView) -> Bool {
+        let app = NSApplication.shared, running = NSRunningApplication.current
+        return app.isRunning && running.isFinishedLaunching && app.isActive
+            && !app.isHidden && !running.isHidden && app.keyWindow === window && window.isKeyWindow
+            && window.isVisible && !window.isMiniaturized && window.isOnActiveSpace && window.alphaValue > 0
+            && NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) }
+            && app.modalWindow == nil && window.attachedSheet == nil
+            && window.contentView === document && document.window === window
+            && !document.isHiddenOrHasHiddenAncestor && document.bounds.width > 0 && document.bounds.height > 0
+    }
+
+    /// Only the user Stop fixture needs an interactive AppKit owner. Metadata-only
+    /// title controls retain their existing setup and teardown outside this loop.
+    private func withVisibleStopDocument(_ web: WKWebView,
+                                         body: (NativeFixtureApplicationLoop, NSWindow) async throws -> Void) async throws {
+        let app = NSApplication.shared
+        let previousPolicy = app.activationPolicy()
+        defer { app.setActivationPolicy(previousPolicy) }
+        var acquiredLoop: NativeFixtureApplicationLoop?
+        var failure: (any Error)?
+        do {
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            defer { window.contentView = nil; window.close() }
+            window.contentView = web
+            let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first)
+            let available = screen.visibleFrame.insetBy(dx: 20, dy: 20)
+            let size = CGSize(width: min(window.frame.width, available.width),
+                              height: min(window.frame.height, available.height))
+            window.setFrame(CGRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
+                                   width: size.width, height: size.height), display: false)
+            let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory,
+                beforeHeartbeat: {
+                    window.makeKeyAndOrderFront(nil)
+                    app.activate(ignoringOtherApps: true)
+                }, launchReadiness: { self.nativeStopDocumentReady(window, document: web) })
+            acquiredLoop = loop
+            try await compatibilityWait {
+                try loop.isReadyForInteraction() && nativeStopDocumentReady(window, document: web)
+            }
+            try await body(loop, window)
+        } catch { failure = error }
+        if let loop = acquiredLoop {
+            do { try await loop.close() }
+            catch {
+                if failure == nil { failure = error }
+                else { XCTFail("PDF Stop fixture AppKit loop cleanup also failed: \(error)") }
+            }
+        }
+        if let failure { throw failure }
     }
 
     func testRedirectUsesTheFinalPDFResponseFilename() async throws {
