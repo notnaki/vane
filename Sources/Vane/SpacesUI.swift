@@ -73,6 +73,15 @@ import UniformTypeIdentifiers
         didSet { if footer.drag != nativeDrag { footer.drag = nativeDrag } }
     }
     var trackGround: ((Double) -> Void)?
+    // The floating sidebar shares the window's wash without taking ownership of
+    // its native gesture callbacks. Both registrations may arrive in either order.
+    let groundCopies = NSHashTable<ThemeWashSurface>.weakObjects()
+    weak var groundSurface: ThemeWashSurface? {
+        didSet {
+            guard groundSurface !== oldValue else { return }
+            for copy in groundCopies.allObjects { groundSurface?.addCopy(copy) }
+        }
+    }
     var captureGround: (() -> ThemeWashPresentation?)?
     var animateGround: ((Space, Space, Double, Double, CABasicAnimation, ThemeWashPresentation?) -> ((Space?) -> Void))?
     var colourDuration = Look.spaceSlideDuration
@@ -1977,11 +1986,24 @@ private struct SpaceSwipe: ViewModifier {
                 store.spaceGesture.drag = slide.offset
                 host.cancelSpaceSlide()
             }
-            // Keep the SwiftUI track when no native sidebar surface is mounted.
-            Motion.space(animation) { store.spaceGesture.drag = -CGFloat(direction) * width }
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-                if let window = store.window { _ = SpaceLandingFrame(window: window, completion: finish) }
-                else { finish() }
+            // Retire the fallback only after its actual animation is removed. A
+            // wall-clock timer can beat SwiftUI's delayed start under main-thread load.
+            Motion.space(animation, completionCriteria: .removed) {
+                store.spaceGesture.drag = -CGFloat(direction) * width
+            } completion: {
+                guard let window = store.window else { finish(); return }
+                _ = SpaceLandingFrame(window: window, ready: { [weak self, weak store] in
+                    guard let self, self.transition == token, let store,
+                          let moving = store.spaceGesture.outgoingView,
+                          let resting = includesFavorites ? store.spaceGesture.stripView : store.spaceGesture.sectionsView,
+                          moving.window === window, resting.window === window else { return true }
+                    guard let root = window.contentView?.layer,
+                          let presentedRoot = root.presentation(),
+                          let presented = moving.layer?.presentation(),
+                          let stationary = resting.layer else { return false }
+                    let target = stationary.convert(.zero, to: root).x - CGFloat(direction) * width
+                    return abs(presented.convert(.zero, to: presentedRoot).x - target) < 0.125
+                }, completion: finish)
             }
         }
     }
@@ -1990,7 +2012,22 @@ private struct SpaceSwipe: ViewModifier {
     /// goes home underneath it. Nothing is made yet — Create Space is a button.
     private func create(_ store: TabStore) {
         store.beginCreatingSpace()
-        settle(store)
+    }
+
+    /// The form replaces the strip, so retire its gesture before removing its hosting
+    /// graph. A return animation on that disappearing graph may never complete.
+    func prepareForCreation(in store: TabStore) {
+        if store.spaceSwiping, let window = store.window { Self.committedSwipes.add(window) }
+        interruptLanding()
+        forget()
+        (store.window?.contentView as? BrowserWindowHost)?.cancelSpaceSlide()
+        Motion.spaceHandoff {
+            store.spaceGesture.withPresentationUpdate {
+                store.spaceDrag = 0
+                store.spacePull = 0
+                store.spaceSwiping = false
+            }
+        }
     }
 
     /// Not far enough, or nowhere to go: the strip goes home.
@@ -2124,8 +2161,12 @@ private struct SpaceSwipe: ViewModifier {
     private var completion: (() -> Void)?
     private var timeout: DispatchWorkItem?
     private var frames = 0
+    private weak var window: NSWindow?
+    private let ready: (() -> Bool)?
 
-    init(window: NSWindow, completion: @escaping () -> Void) {
+    init(window: NSWindow, ready: (() -> Bool)? = nil, completion: @escaping () -> Void) {
+        self.window = window
+        self.ready = ready
         self.completion = completion
         super.init()
         guard let screen = window.screen ?? NSScreen.main else {
@@ -2136,17 +2177,28 @@ private struct SpaceSwipe: ViewModifier {
         let link = screen.displayLink(target: self, selector: #selector(frame(_:)))
         self.link = link
         link.add(to: .main, forMode: .common)
-        let timeout = DispatchWorkItem { [weak self] in self?.finish() }
+        scheduleTimeout()
+    }
+
+    private func scheduleTimeout() {
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            // A visible fallback must acknowledge its actual endpoint. Only a lost
+            // display/owner can use the bounded liveness fallback instead.
+            if let ready = self.ready, let window = self.window,
+               window.isVisible, window.screen != nil, !ready() {
+                self.scheduleTimeout()
+            } else { self.finish() }
+        }
         self.timeout = timeout
-        // A disconnected display must not leave a committed Space selection owned forever.
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100), execute: timeout)
     }
 
     @objc private func frame(_ link: CADisplayLink) {
-        // A callback runs before presentation. Cross one complete display interval so
-        // neither a final sidebar offset nor its replacement can still be one frame old.
         frames += 1
-        if frames >= 2 { finish() }
+        // Native retirement crosses a complete display interval. SwiftUI fallback
+        // retirement instead acknowledges its exact outgoing presentation owner.
+        if ready?() ?? (frames >= 2) { finish() }
     }
 
     private func finish() {
@@ -2163,7 +2215,7 @@ private struct SpaceSwipe: ViewModifier {
 // MARK: - Pull to create
 
 /// Arc's plus at the sidebar's edge: a ring that fills as the fingers pull past the last
-/// Space, and a form the moment it is full. Overlaid on the sidebar's scroll view, trailing
+/// Space, then a solid circle ready to release. Overlaid on the sidebar's scroll view, trailing
 /// and centred, so it sits where the pull is coming from.
 struct PullPlus: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme

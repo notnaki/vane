@@ -23,6 +23,13 @@ import WebKit
         private var tracking: Task<Void, Never>?
         private var nativeSession: NativePiPHostBridge.Session?
 
+        func presentationWindow(for candidate: Tab) -> NSWindow? {
+            guard !removed, !returningToTab, tab === candidate,
+                  candidate.pictureInPicture, candidate.existingWeb === sourceWeb,
+                  candidate.pipFrame === sourceFrame else { return nil }
+            return (panel as? CustomPiPWindow) ?? window
+        }
+
         init(window: NSWindow?, tab: Tab, direct: NativePiPHostBridge.DirectCapture? = nil) {
             self.window = window
             self.tab = tab
@@ -209,6 +216,11 @@ import WebKit
     private static var attachments: [UUID: Attachment] = [:]
     private static var before: [UUID: Set<ObjectIdentifier>] = [:]
     private static var pending: [UUID: (token: UUID, task: Task<Void, Never>)] = [:]
+
+    /// Resolve a live presentation by its source, rather than guessing among PiP panels.
+    static func presentationWindow(for tab: Tab) -> NSWindow? {
+        attachments[tab.id]?.presentationWindow(for: tab)
+    }
     private enum ExitAction { case back, minimize, close }
 
     private static var panels: [NSWindow] {
