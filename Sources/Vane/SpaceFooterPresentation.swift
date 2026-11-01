@@ -102,7 +102,9 @@ extension EnvironmentValues {
         let marker = markers[id] ?? Marker()
         markers[id] = marker
         let changedMode = marker.layout.showsAllIcons != layout.showsAllIcons
-        let changedEmphasis = !fresh && (marker.hovered != hovered || changedMode)
+        // Compact hover changes the button/dot colour, not the icon's emphasis.
+        // Retargeting it can revive pre-landing presentation ink after finishProgress.
+        let changedEmphasis = !fresh && (changedMode || (layout.showsAllIcons && marker.hovered != hovered))
         marker.layout = layout
         marker.hovered = hovered
         marker.reduced = reduced
