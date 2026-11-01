@@ -5,7 +5,17 @@ import XCTest
 
 @MainActor final class FirstLaunchPresentationTests: XCTestCase {
     func testWelcomeFillsHostWindowWithoutChangingSystemPresentation() async throws {
+        let policy = NSApplication.shared.activationPolicy()
+        try await checkWelcomeFillsHostWindowWithoutChangingSystemPresentation()
+        XCTAssertEqual(NSApplication.shared.activationPolicy(), policy,
+                       "The welcome fixture must restore its caller's activation policy")
+    }
+
+    private func checkWelcomeFillsHostWindowWithoutChangingSystemPresentation() async throws {
         TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .regular)
         var failure: (any Error)?
         do {

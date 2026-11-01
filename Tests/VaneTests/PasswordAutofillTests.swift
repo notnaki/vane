@@ -122,6 +122,69 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         }
     }
 
+    func testNativeContinuationFixtureReadmitsLaunchAfterWindowPresentation() async throws {
+        @MainActor final class PresentationReadiness {
+            var presented = false
+            var withdrew = false
+            var recovered = false
+            func observe() -> Bool {
+                guard presented else { return true }
+                if !withdrew { withdrew = true; return false }
+                recovered = true
+                return true
+            }
+        }
+        let readiness = PresentationReadiness()
+        try await withNativeContinuationFixture(launchReadiness: { readiness.observe() },
+                                                 afterPresentation: { readiness.presented = true }) { tab, _ in
+            XCTAssertTrue(readiness.withdrew, "Window presentation must withdraw the controlled launch prerequisite")
+            XCTAssertTrue(readiness.recovered, "The fixture must observe recovery before admitting its body")
+            let window = try XCTUnwrap(tab.web.window)
+            XCTAssertTrue(nativeContinuationReady(window, document: tab.web))
+        }
+        XCTAssertFalse(NSApplication.shared.isRunning)
+    }
+
+    func testNativeContinuationFixtureReadmitsReadinessAtInteractionHandoff() async throws {
+        @MainActor final class HandoffReadiness {
+            var pending = false
+            var withdrew = false
+            var recovered = false
+            func observe() -> Bool {
+                guard pending else { return true }
+                if !withdrew { withdrew = true; return false }
+                recovered = true
+                return true
+            }
+        }
+        let readiness = HandoffReadiness()
+        try await withNativeContinuationFixture(launchReadiness: { readiness.observe() },
+                                                 afterLoopAdmission: { readiness.pending = true }) { _, _ in
+            XCTAssertTrue(readiness.withdrew)
+            XCTAssertTrue(readiness.recovered, "Interaction must observe actual recovery before starting the body")
+        }
+        XCTAssertFalse(NSApplication.shared.isRunning)
+    }
+
+    func testNativeContinuationFixtureRejectsPermanentInteractionWithdrawal() async throws {
+        @MainActor final class HandoffReadiness { var ready = true }
+        let readiness = HandoffReadiness()
+        var enteredBody = false
+        do {
+            try await withNativeContinuationFixture(launchReadiness: { readiness.ready },
+                                                     afterLoopAdmission: { readiness.ready = false }) { _, _ in
+                enteredBody = true
+            }
+            XCTFail("A permanently withdrawn prerequisite must not admit interaction")
+        } catch {
+            let failure = try XCTUnwrap(error as? FixtureFailure)
+            XCTAssertEqual(failure.stage, "native continuation fixture to receive user interaction")
+            XCTAssertTrue(failure.cause is FixtureTimeout, "The existing bounded prerequisite must expire")
+        }
+        XCTAssertFalse(enteredBody)
+        XCTAssertFalse(NSApplication.shared.isRunning, "Failed admission must join its owned loop")
+    }
+
     func testNativeContinuationReadinessRejectsHiddenAndDetachedOwnedDocument() async throws {
         try await withNativeContinuationFixture { tab, origin in
             let web = tab.web
@@ -189,7 +252,8 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     }
 
     private func fixture(_ html: String, url: URL = URL(string: "https://login.example.test/signin")!,
-                         foreground: Bool = false) async throws -> (WKWebView, Capture) {
+                         foreground: Bool = false,
+                         present: (@MainActor (NSWindow, WKWebView) async throws -> NativeFixtureApplicationLoop)? = nil) async throws -> (WKWebView, Capture) {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         WebKitStartup.prepare()
@@ -210,6 +274,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             window.close()
         }
         var returned = false
+        var presentationLoop: NativeFixtureApplicationLoop?
         defer { if !returned { cleanup() } }
         if foreground {
             let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first)
@@ -218,11 +283,17 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                               height: min(window.frame.height, available.height))
             window.setFrame(CGRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
                                    width: size.width, height: size.height), display: false)
-            window.makeKeyAndOrderFront(nil)
-            app.activate(ignoringOtherApps: true)
+            if let present {
+                presentationLoop = try await present(window, web)
+            } else {
+                window.makeKeyAndOrderFront(nil)
+                app.activate(ignoringOtherApps: true)
+            }
             try await wait(for: "document fixture to receive user interaction", diagnostics: {
                 self.nativeWindowVisibilityState(window)
-            }) { self.nativeContinuationReady(window, document: web) }
+            }) {
+                try (presentationLoop?.isReadyForInteraction() ?? true) && self.nativeContinuationReady(window, document: web)
+            }
         } else {
             window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
             window.orderFront(nil)
@@ -231,7 +302,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                                  responseHTML: "<!doctype html><body>" + html + "</body>")
         try await wait { !web.isLoading }
         try await wait(for: "autofill bridge installation") {
-            try await self.js(web, "typeof window.__vaneFill === 'function'", world: Autofill.world) as? Bool == true
+            guard try await self.js(web, "typeof window.__vaneFill === 'function'", world: Autofill.world) as? Bool == true else { return false }
+            guard foreground else { return true }
+            return try (presentationLoop?.isReadyForInteraction() ?? true) && self.nativeContinuationReady(window, document: web)
         }
         if !foreground { addTeardownBlock { @MainActor in cleanup() } }
         returned = true
@@ -245,12 +318,15 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         let app = NSApplication.shared
         let policy = app.activationPolicy()
         defer { app.setActivationPolicy(policy) }
-        // Bind admission to the intended policy, not a transient getter after
-        // an earlier fixture's asynchronous restoration/request.
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var acquiredLoop: NativeFixtureApplicationLoop?
         var failure: (any Error)?
         do {
-            let (web, capture) = try await fixture(html, foreground: true)
+            let (web, capture) = try await fixture(html, foreground: true, present: { window, web in
+                let loop = try await self.admitNativePresentation(window, document: web)
+                acquiredLoop = loop
+                return loop
+            })
+            _ = try XCTUnwrap(acquiredLoop)
             let window = try XCTUnwrap(web.window)
             defer {
                 web.stopLoading()
@@ -258,13 +334,14 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 window.contentView = nil
                 window.close()
             }
-            try loop.verifyRunning()
             try await body(web, capture)
         } catch { failure = error }
-        do { try await loop.close() }
-        catch {
-            if failure == nil { failure = error }
-            else { XCTFail("Document fixture AppKit loop cleanup also failed: \(error)") }
+        if let loop = acquiredLoop {
+            do { try await loop.close() }
+            catch {
+                if failure == nil { failure = error }
+                else { XCTFail("Document fixture AppKit loop cleanup also failed: \(error)") }
+            }
         }
         if let failure { throw failure }
     }
@@ -600,6 +677,21 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             !document.isHiddenOrHasHiddenAncestor && document.bounds.width > 0 && document.bounds.height > 0
     }
 
+    private func admitNativePresentation(_ window: NSWindow, document: NSView,
+                                         launchReadiness: @escaping @MainActor @Sendable () -> Bool = { true },
+                                         afterPresentation: @escaping @MainActor @Sendable () -> Void = {}) async throws -> NativeFixtureApplicationLoop {
+        // Activation is asynchronous. Bind the existing launch admission to the
+        // exact visible owner, including recovery after window presentation.
+        try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory,
+            beforeHeartbeat: {
+                window.makeKeyAndOrderFront(nil)
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                afterPresentation()
+            }, launchReadiness: {
+                self.nativeContinuationReady(window, document: document) && launchReadiness()
+            })
+    }
+
     /// One bounded scalar record per admission/idle sample; no WindowServer probes.
     private func emitNativeContinuationReadiness(_ window: NSWindow, document: NSView, stage: StaticString) {
         let app = NSApplication.shared, running = NSRunningApplication.current
@@ -618,6 +710,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     }
 
     private func withNativeContinuationFixture(origin: PasswordOrigin = PasswordOrigin(host: "continuation.example.test"),
+                                                launchReadiness: @escaping @MainActor @Sendable () -> Bool = { true },
+                                                afterPresentation: @escaping @MainActor @Sendable () -> Void = {},
+                                                afterLoopAdmission: @escaping @MainActor @Sendable () -> Void = {},
                                                 _ body: (Tab, PasswordOrigin) async throws -> Void) async throws {
         continuationDiagnosticRecords.removeAll(keepingCapacity: true)
         continuationDiagnosticDropped = 0
@@ -634,7 +729,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         let app = NSApplication.shared
         let previousPolicy = app.activationPolicy()
         defer { app.setActivationPolicy(previousPolicy) }
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var acquiredLoop: NativeFixtureApplicationLoop?
         var fixtureError: (any Error)?
         do {
             let tab = Tab(profileID: profile)
@@ -654,8 +749,10 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             // Fit the complete decorated window, not just its content rectangle.
             window.setFrame(CGRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
                                    width: size.width, height: size.height), display: false)
-            window.makeKeyAndOrderFront(nil)
-            app.activate(ignoringOtherApps: true)
+            let loop = try await admitNativePresentation(window, document: tab.web,
+                launchReadiness: launchReadiness, afterPresentation: afterPresentation)
+            acquiredLoop = loop
+            afterLoopAdmission()
             // These fixtures choose native account rows. Establish that user-facing
             // context once, before loading; individual navigations must stand alone.
             let web = tab.web
@@ -676,17 +773,17 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                     self.nativeWindowVisibilityState(window)
             }) {
                 // The owned AppKit loop supplies event dispatch and deferred drawing.
-                try loop.verifyRunning()
-                return nativeContinuationReady(window, document: web)
+                try loop.isReadyForInteraction() && nativeContinuationReady(window, document: web)
             }
             emitNativeContinuationReadiness(window, document: web, stage: "admission")
-            try loop.verifyRunning()
             try await body(tab, origin)
         } catch { fixtureError = error }
-        do { try await loop.close() }
-        catch {
-            if fixtureError == nil { fixtureError = error }
-            else { XCTFail("Native continuation AppKit loop join also failed: \(error)") }
+        if let loop = acquiredLoop {
+            do { try await loop.close() }
+            catch {
+                if fixtureError == nil { fixtureError = error }
+                else { XCTFail("Native continuation AppKit loop join also failed: \(error)") }
+            }
         }
         if let fixtureError { throw fixtureError }
     }
