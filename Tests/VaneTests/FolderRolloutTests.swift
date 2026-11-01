@@ -38,8 +38,17 @@ import XCTest
         try await checkRollout(reduceDuringMotion: false, startWithSaver: true)
     }
 
+    func testBatterySaverFinishesAnActiveFolderClosing() async throws {
+        try await checkRollout(reduceDuringMotion: false, reduceDuringClose: true)
+    }
+
+    func testUnrelatedRefreshPreservesTheClosingStrip() async throws {
+        try await checkRollout(reduceDuringMotion: false, refreshDuringClose: true)
+    }
+
     private func checkRollout(reduceDuringMotion: Bool, detachDuringStart: Bool = false,
-                              largeFolder: Bool = false, startWithSaver: Bool = false) async throws {
+                              largeFolder: Bool = false, startWithSaver: Bool = false,
+                              reduceDuringClose: Bool = false, refreshDuringClose: Bool = false) async throws {
         TestEnvironment.prepare()
         let saver = BatterySaver.shared.mode
         BatterySaver.shared.setMode(startWithSaver ? .alwaysOn : .off)
@@ -140,8 +149,41 @@ import XCTest
         XCTAssertEqual(child.convert(child.bounds, to: view).minY, destination, accuracy: 1)
         XCTAssertGreaterThan(view.attachedGraphCount, 1)
         if !reduceDuringMotion {
+            // All visible owners and the destination pose are admitted above.
+            // Sample immediately after closing; waiting for hidden children would
+            // make this regression incapable of catching an instant disappearance.
             configure(shape, animation: .linear(duration: 1))
+            try await Task.sleep(for: .milliseconds(120))
+            if !reduced {
+                XCTAssertTrue(child.window === window, "Closing children must remain visible while folding under their header")
+                let closingY = child.convert(child.bounds, to: view).minY
+                XCTAssertLessThan(closingY, destination - 10, "Closing must slide the strip upward")
+                XCTAssertGreaterThan(closingY, destination - 12 * (Look.rowHeight + Look.rowGap) + 10,
+                                     "Closing must not jump straight to its folded pose")
+                XCTAssertEqual(closingY - firstChild.convert(firstChild.bounds, to: view).minY,
+                               11 * (Look.rowHeight + Look.rowGap), accuracy: 1,
+                               "Closing rows must retain their spacing across native owners")
+                let point = child.convert(NSPoint(x: child.bounds.midX, y: child.bounds.midY), to: view.superview)
+                let hit = view.hitTest(point)
+                XCTAssertFalse(hit === child || hit?.isDescendant(of: child) == true,
+                               "Closing rows must stop accepting clicks immediately")
+            }
+            if reduceDuringClose {
+                BatterySaver.shared.setMode(.alwaysOn)
+                try await Task.sleep(for: .milliseconds(60))
+                XCTAssertNil(child.window, "Battery Saver must finish an active closing immediately")
+                return
+            }
+            if refreshDuringClose {
+                configure(shape, animation: nil)
+                try await Task.sleep(for: .milliseconds(120))
+                if !reduced {
+                    XCTAssertTrue(child.window === window, "An unrelated refresh must not remove a closing strip early")
+                    XCTAssertGreaterThan(child.convert(child.bounds, to: view).minY, 10)
+                }
+            }
             try await Task.sleep(for: reduced ? .milliseconds(40) : .milliseconds(1100))
+            XCTAssertNil(child.window, "Closing must release its visual rows after the animation")
             configure(expanded, animation: .linear(duration: 1))
             try await compatibilityWait { markers.views[tabs[11].id.uuidString]?.window != nil }
             try await Task.sleep(for: .milliseconds(120))
