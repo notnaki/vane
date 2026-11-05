@@ -1,0 +1,45 @@
+name: Palette metadata preflight
+on:
+  push:
+    branches: [codex/palette-metadata-wait]
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        id: toolchain
+        run: echo "key=$(python3 scripts/ci-build-artifact.py toolchain)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: palette-preflight-${{ github.sha }}
+          restore-keys: |
+            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - name: Restore matching timestamps
+        run: python3 scripts/ci-source-state.py restore
+      - name: Build focused fixtures
+        run: swift build --build-system native -c debug --build-tests
+      - name: Repeat affected and adjacent catalog fixtures twenty times
+        env:
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/palette-preflight"
+          failed=0
+          for attempt in $(seq 1 20); do
+            python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 \
+              --filter 'PaletteMetadataObservationTests|PaletteSpaceCatalogTests' \
+              2>&1 | tee "$RUNNER_TEMP/palette-preflight/attempt-$attempt.log" || failed=1
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: palette-preflight-every-attempt
+          path: ${{ runner.temp }}/palette-preflight
+          if-no-files-found: ignore
+          retention-days: 7

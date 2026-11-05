@@ -36,6 +36,17 @@ import XCTest
             }
         }
     }
+    private func waitForMetadata(_ condition: () -> Bool,
+                                 file: StaticString = #filePath, line: UInt = #line) async throws {
+        // Queue turns do not fence Combine's DispatchQueue debounce timer. Await the
+        // actual delivered snapshot, preserving the exact emission-count assertions.
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertTrue(condition(), "The completed metadata snapshot must arrive within two seconds",
+                      file: file, line: line)
+    }
     func testMountedSubscriptionIgnoresUnrelatedManagerActivityAndBodyUpdates() async throws {
         _ = NSApplication.shared
         let manager = try manager()
@@ -44,6 +55,7 @@ import XCTest
         let host = NSHostingView(rootView: Mounted(tick: tick, catalog: catalog, manager: manager, calls: calls))
         host.frame = NSRect(x: 0, y: 0, width: 300, height: 100)
         host.layoutSubtreeIfNeeded()
+        try await waitForMetadata { calls.values.last == PaletteSpaceCatalog.Metadata(manager) }
         await drain()
         XCTAssertEqual(calls.values.count, 1)
         let bodies = calls.bodies
@@ -65,7 +77,7 @@ import XCTest
         let manager = try manager(), catalog = PaletteSpaceCatalog()
         var values: [PaletteSpaceCatalog.Metadata] = []
         let subscription = catalog.metadataChanges(manager: manager).sink { values.append($0) }
-        await drain()
+        try await waitForMetadata { values.last == PaletteSpaceCatalog.Metadata(manager) }
         values.removeAll()
         let own = manager.active.id
         manager.rename(own, to: "Renamed profile")
@@ -73,6 +85,7 @@ import XCTest
         space.name = "Saved Space"
         XCTAssertTrue(manager.updateSpace(space))
         XCTAssertTrue(values.isEmpty, "Published willSet must not synchronously expose incomplete manager state")
+        try await waitForMetadata { values.last == PaletteSpaceCatalog.Metadata(manager) }
         await drain()
         XCTAssertEqual(values.count, 1)
         XCTAssertEqual(values.last?.profiles, manager.profiles)
@@ -83,15 +96,18 @@ import XCTest
         await drain()
         XCTAssertEqual(values.count, 1, "An equal Published assignment must not refresh the palette")
         XCTAssertTrue(manager.deleteSpace(space.id, in: own))
+        try await waitForMetadata { values.last == PaletteSpaceCatalog.Metadata(manager) }
         await drain()
         XCTAssertEqual(values.count, 2)
         await catalog.prepare(manager: manager)?.value
         XCTAssertTrue(catalog.spaces(for: own, manager: manager).isEmpty)
         let other = manager.create(name: "Removable profile")
+        try await waitForMetadata { values.last == PaletteSpaceCatalog.Metadata(manager) }
         await drain()
         XCTAssertEqual(values.count, 3)
         XCTAssertEqual(values.last?.profiles, manager.profiles)
         XCTAssertTrue(manager.delete(other.id))
+        try await waitForMetadata { values.last == PaletteSpaceCatalog.Metadata(manager) }
         await drain()
         XCTAssertEqual(values.count, 4)
         XCTAssertEqual(values.last?.profiles, manager.profiles)
