@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise documentation scope against real Git diffs, including renames."""
+"""Exercise cheap-check scope against real Git diffs, including renames."""
 from pathlib import Path
 import subprocess
 import sys
@@ -48,6 +48,36 @@ class ChangeScopeTests(unittest.TestCase):
         self.commit()
         self.scope(True)
 
+    def test_root_gitignore_add_edit_and_delete_skip_app_work(self):
+        ignore = self.root / ".gitignore"
+        for content in ("cache/\n", "cache/\nlocal/\n", None):
+            with self.subTest(content=content):
+                base = self.git("rev-parse", "HEAD")
+                if content is None:
+                    ignore.unlink()
+                else:
+                    ignore.write_text(content)
+                self.commit()
+                self.scope(False, base)
+
+    def test_root_gitignore_with_documentation_skips_app_work(self):
+        (self.root / ".gitignore").write_text("cache/\n")
+        (self.root / "README.md").write_text("Updated\n")
+        self.commit()
+        self.scope(False)
+
+    def test_root_gitignore_with_source_requires_app_work(self):
+        (self.root / ".gitignore").write_text("cache/\n")
+        (self.root / "App.swift").write_text("changed\n")
+        self.commit()
+        self.scope(True)
+
+    def test_nested_gitignore_requires_app_work(self):
+        (self.root / "Sources").mkdir()
+        (self.root / "Sources/.gitignore").write_text("cache/\n")
+        self.commit()
+        self.scope(True)
+
     def test_workflows_scripts_resources_and_unknown_paths_require_app_work(self):
         for name in (".github/workflows/checks.yml", "scripts/check.py", "Sources/Welcome.md", "docs/index.html"):
             with self.subTest(name=name):
@@ -62,6 +92,11 @@ class ChangeScopeTests(unittest.TestCase):
         self.commit()
         self.scope(True)
 
+    def test_renaming_source_to_root_gitignore_keeps_app_checks(self):
+        self.git("mv", "App.swift", ".gitignore")
+        self.commit()
+        self.scope(True)
+
     def test_deleted_documentation_is_docs_only(self):
         (self.root / "README.md").unlink()
         self.commit()
@@ -72,12 +107,15 @@ class ChangeScopeTests(unittest.TestCase):
             with self.subTest(base=base):
                 self.scope(True, base)
 
-    def test_documentation_whitespace_failure_fails_the_scope_job(self):
-        (self.root / "README.md").write_text("bad whitespace \n")
-        self.commit()
-        result = subprocess.run([sys.executable, str(SCRIPT), "--base", self.base, "--head", "HEAD"],
-                                cwd=self.root, capture_output=True)
-        self.assertNotEqual(result.returncode, 0)
+    def test_cheap_path_whitespace_failure_fails_the_scope_job(self):
+        for name in ("README.md", ".gitignore"):
+            with self.subTest(name=name):
+                base = self.git("rev-parse", "HEAD")
+                (self.root / name).write_text("bad whitespace \n")
+                self.commit()
+                result = subprocess.run([sys.executable, str(SCRIPT), "--base", base, "--head", "HEAD"],
+                                        cwd=self.root, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":
