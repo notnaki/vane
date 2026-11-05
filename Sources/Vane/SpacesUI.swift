@@ -1656,7 +1656,7 @@ private struct SpaceSwipe: ViewModifier {
     private func installInput(in store: TabStore) {
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseDown,
             .leftMouseUp, .leftMouseDragged, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self, weak store] event in
-            guard let self, let store else { return event }
+            guard !FirstLaunch.isPresenting, let self, let store else { return event }
             // This runs before actions and Library routing. Extend the deadline on
             // every input packet without discarding valid first-swipe surfaces.
             if event.window === store.window {

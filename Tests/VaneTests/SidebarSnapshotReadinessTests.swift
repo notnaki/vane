@@ -4,6 +4,72 @@ import XCTest
 @testable import vane
 
 @MainActor final class SidebarSnapshotReadinessTests: XCTestCase {
+    func testVisibleSnapshotPlacementExcludesPointerAtEveryCorner() throws {
+        let screen = NSRect(x: -1200, y: 100, width: 1000, height: 800)
+        let size = NSSize(width: 250, height: 400)
+        let points = [NSPoint(x: screen.minX + 20, y: screen.minY + 337),
+                      NSPoint(x: screen.maxX - 20, y: screen.minY + 337),
+                      NSPoint(x: screen.minX + 20, y: screen.maxY - 20),
+                      NSPoint(x: screen.maxX - 20, y: screen.maxY - 20),
+                      NSPoint(x: screen.midX, y: screen.midY)]
+        for point in points {
+            let frame = try XCTUnwrap(SidebarSnapshot.frame(avoiding: point, size: size, within: screen))
+            XCTAssertTrue(screen.contains(frame), "The exact snapshot owner must stay on screen")
+            XCTAssertFalse(frame.contains(point), "The live return control must not acquire physical-pointer hover")
+            XCTAssertEqual(frame.size, size)
+        }
+    }
+
+    func testVisibleSnapshotPlacementRejectsScreensWithoutAnUnhoveredPosition() {
+        let screen = NSRect(x: 100, y: 100, width: 250, height: 400)
+        XCTAssertNil(SidebarSnapshot.frame(avoiding: NSPoint(x: 120, y: 437), size: screen.size, within: screen))
+        XCTAssertNil(SidebarSnapshot.frame(avoiding: .zero, size: NSSize(width: 251, height: 400), within: screen))
+    }
+
+    func testPointerIntrusionDiscardsThePreviousInteractivePresentation() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do {
+            let state = SnapshotInteractiveState()
+            var pointer = NSEvent.mouseLocation
+            var previousHost: NSView?
+            var phase = 0
+            _ = try await SidebarSnapshot.imageWhenReady(SnapshotInteractiveSurface(state: state),
+                                                         pointerLocation: { pointer }) { host in
+                guard let probe = state.probe, probe.window === host.window, let setHovered = state.setHovered else { return false }
+                if phase == 0 {
+                    // Enter a real SwiftUI interaction state before introducing the
+                    // pointer. The fixture never changes the user's system cursor.
+                    setHovered(true)
+                    phase = 1
+                    return false
+                }
+                if phase == 1 {
+                    guard probe.hovered, let window = host.window else { return false }
+                    previousHost = host
+                    pointer = NSPoint(x: window.frame.midX, y: window.frame.midY)
+                    phase = 2
+                    return false
+                }
+                XCTAssertFalse(host === previousHost, "Relocation must discard the old interaction and its animation graph")
+                XCTAssertFalse(probe.hovered, "The replacement surface must start in its idle state")
+                XCTAssertNil(previousHost?.window, "The previous presentation owner must be detached before capture")
+                return true
+            }
+            XCTAssertEqual(phase, 2)
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Snapshot intrusion loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
     func testSnapshotDoesNotSampleBeforeItsCurrentNativeRowsCommit() throws {
         TestEnvironment.prepare()
         let owner = NSObject()
@@ -47,6 +113,33 @@ import XCTest
         })
         XCTAssertEqual(population.native?.attachedLogicalRows, 1,
                        "A snapshot must include the current native row, not its empty shell")
+    }
+}
+
+@MainActor private final class SnapshotInteractiveState {
+    weak var probe: SnapshotInteractiveProbe.Native?
+    var setHovered: ((Bool) -> Void)?
+}
+
+private struct SnapshotInteractiveSurface: View {
+    let state: SnapshotInteractiveState
+    @State private var hovered = false
+    var body: some View {
+        Color(white: hovered ? 0.8 : 0.2)
+            .animation(.easeOut(duration: 0.15), value: hovered)
+            .background(SnapshotInteractiveProbe(state: state, hovered: hovered))
+            .onAppear { state.setHovered = { hovered = $0 } }
+    }
+}
+
+private struct SnapshotInteractiveProbe: NSViewRepresentable {
+    final class Native: NSView { var hovered = false }
+    let state: SnapshotInteractiveState
+    let hovered: Bool
+    func makeNSView(context: Context) -> Native { Native() }
+    func updateNSView(_ view: Native, context: Context) {
+        state.probe = view
+        view.hovered = hovered
     }
 }
 

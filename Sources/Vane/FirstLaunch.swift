@@ -33,7 +33,7 @@ import SwiftUI
     }
 }
 
-/// Keep incoming links in the real browser while a separate welcome covers its screen.
+/// Keep incoming links in the real browser while setup fills its window.
 @MainActor enum FirstLaunch {
     private static let state = FirstLaunchState(defaults: .vane)
     private(set) static var needed = false
@@ -51,18 +51,19 @@ import SwiftUI
         guard let host = store.window else { return false }
         let welcome = FirstLaunchPresentation(host: host, content: AnyView(
             FirstLaunchView(store: store) { finish(store: store, host: host) }
-        ))
+        ), onHostClose: { finish(store: store, host: host, showBrowser: false) })
         presentation = welcome
         welcome.show()
         return true
     }
 
-    private static func finish(store: TabStore, host: NSWindow) {
+    private static func finish(store: TabStore, host: NSWindow, showBrowser: Bool = true) {
         guard let welcome = presentation else { return }
         state.complete()
         needed = false
         welcome.close()
         presentation = nil
+        guard showBrowser else { return }
         host.makeKeyAndOrderFront(nil)
         // Leave the dismissal event behind before offering another dialog.
         Task { @MainActor in

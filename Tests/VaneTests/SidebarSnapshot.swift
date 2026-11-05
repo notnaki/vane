@@ -10,24 +10,67 @@ import XCTest
 
     static func imageWhenReady<V: View>(_ view: V, width: CGFloat = 250, height: CGFloat = 400,
                                         sidebarScope: SidebarNativeReadinessScope? = nil,
+                                        pointerLocation: () -> NSPoint = { NSEvent.mouseLocation },
                                         ready: (NSView) -> Bool) async throws -> CGImage {
         _ = NSApplication.shared
         let bounds = NSRect(x: 0, y: 0, width: width, height: height)
-        let window = NSWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        let window = SidebarSnapshotWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .darkAqua)
-        let host = NSHostingView(rootView: view.frame(width: width, height: height)
-            .environment(\.colorScheme, .dark).background(Color(white: 0.25)))
-        host.frame = bounds
+        try positionAwayFromPointer(window, pointer: pointerLocation())
+        func newHost() -> NSView {
+            let host = NSHostingView(rootView: view.frame(width: width, height: height)
+                .environment(\.colorScheme, .dark).background(Color(white: 0.25)))
+            host.frame = bounds
+            return host
+        }
+        var host = newHost()
         window.contentView = host
-        window.orderFront(nil)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         defer { window.contentView = nil; window.close() }
         try await compatibilityWait {
+            // The live return tile has its own SwiftUI hover caption. A static
+            // parity sample must not admit a pointer-hovered live presentation.
+            // Recreate the graph if the user moved into this task-owned window:
+            // moving it away alone preserves the return tile's animated hover exit.
+            if window.frame.contains(pointerLocation()) {
+                window.contentView = nil
+                try positionAwayFromPointer(window, pointer: pointerLocation())
+                host = newHost()
+                window.contentView = host
+                return false
+            }
             host.layoutSubtreeIfNeeded()
-            return (sidebarScope.map { nativePopulationIsReady(in: host, scope: $0) } ?? true) && ready(host)
+            return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
+                && window.isVisible && window.occlusionState.contains(.visible)
+                && NSApp.modalWindow == nil && window.attachedSheet == nil && host.window === window
+                && !window.frame.contains(pointerLocation())
+                && (sidebarScope.map { nativePopulationIsReady(in: host, scope: $0) } ?? true) && ready(host)
         }
         host.layoutSubtreeIfNeeded()
         return try XCTUnwrap(captureBitmap(in: host).cgImage)
+    }
+
+    /// Pick a fully visible presentation owner without moving the user's cursor.
+    /// Accept an explicit point/screen so every corner and nonzero screen origin
+    /// can be covered without depending on the machine's physical pointer.
+    static func frame(avoiding pointer: NSPoint, size: NSSize, within screen: NSRect) -> NSRect? {
+        guard size.width <= screen.width, size.height <= screen.height else { return nil }
+        let origins = [NSPoint(x: screen.minX, y: screen.minY),
+                       NSPoint(x: screen.maxX - size.width, y: screen.minY),
+                       NSPoint(x: screen.minX, y: screen.maxY - size.height),
+                       NSPoint(x: screen.maxX - size.width, y: screen.maxY - size.height)]
+        return origins.lazy.map { NSRect(origin: $0, size: size) }.first { !$0.contains(pointer) }
+    }
+
+    private static func positionAwayFromPointer(_ window: NSWindow, pointer: NSPoint) throws {
+        let screen = NSScreen.main.map { [$0] } ?? []
+        let candidates = screen + NSScreen.screens.filter { $0 !== NSScreen.main }
+        let placement = try XCTUnwrap(candidates.lazy.compactMap {
+            frame(avoiding: pointer, size: window.frame.size, within: $0.visibleFrame.insetBy(dx: 20, dy: 20))
+        }.first, "No visible snapshot placement excludes the pointer")
+        window.setFrameOrigin(placement.origin)
     }
 
     static func pixels<V: View>(_ view: V, width: CGFloat = 250, height: CGFloat = 400, appearance: NSAppearance.Name = .darkAqua,
@@ -143,4 +186,8 @@ import XCTest
         }
         return bitmap
     }
+}
+
+@MainActor private final class SidebarSnapshotWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
 }

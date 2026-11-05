@@ -14,7 +14,7 @@ private enum WelcomeStep: Int, CaseIterable {
     }
 }
 
-/// A short, screen-sized setup. Choices use the same settings as the browser.
+/// A short setup that fills the browser window. Choices use the browser's settings.
 struct FirstLaunchView: View {
     let store: TabStore
     let finish: () -> Void

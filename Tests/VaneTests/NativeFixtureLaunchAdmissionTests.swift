@@ -2,6 +2,51 @@ import AppKit
 import XCTest
 
 final class NativeFixtureLaunchAdmissionTests: XCTestCase {
+    @MainActor func testInteractionReadinessKeepsPolicyChangeFatalWhileLaunchIsPending() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared, policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let readiness = InteractionReadiness()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory,
+            launchReadiness: { readiness.ready })
+        var setupFailure: (any Error)?
+        do {
+            readiness.ready = false
+            app.setActivationPolicy(.regular)
+            try await compatibilityWait { app.activationPolicy() == .regular }
+            XCTAssertThrowsError(try loop.isReadyForInteraction()) {
+                XCTAssertEqual(String(describing: $0), "policyChanged")
+            }
+        } catch { setupFailure = error }
+        // Even a failed negative-control setup must restore and join its loop.
+        app.setActivationPolicy(.accessory)
+        do { try await compatibilityWait { app.activationPolicy() == .accessory } }
+        catch { if setupFailure == nil { setupFailure = error } }
+        var joinFailure: (any Error)?
+        do { try await loop.close() } catch { joinFailure = error }
+        XCTAssertFalse(app.isRunning)
+        if let setupFailure { throw setupFailure }
+        XCTAssertEqual(joinFailure.map { String(describing: $0) }, "policyChanged",
+                       "The recorded policy failure must remain visible after joining")
+    }
+
+    @MainActor func testInteractionReadinessKeepsCancellationFatalWhileLaunchIsPending() async throws {
+        TestEnvironment.prepare()
+        let readiness = InteractionReadiness()
+        let loop = try await NativeFixtureApplicationLoop.acquire(launchReadiness: { readiness.ready })
+        readiness.ready = false
+        let check = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            do { _ = try loop.isReadyForInteraction(); return "admitted" }
+            catch { return String(describing: error) }
+        }
+        let failure = await check.value
+        XCTAssertEqual(failure, "cancelled")
+        do { try await loop.close(); XCTFail("The recorded cancellation must remain visible") }
+        catch { XCTAssertEqual(String(describing: error), "cancelled") }
+        XCTAssertFalse(NSApplication.shared.isRunning)
+    }
+
     @MainActor func testReadinessWithdrawnAtFinalVerificationIsReadmitted() async throws {
         try await exerciseFinalWithdrawal(at: 3)
     }
@@ -158,6 +203,8 @@ final class NativeFixtureLaunchAdmissionTests: XCTestCase {
                        "A completed initial sample cannot extend a later genuinely unfinished launch")
     }
 }
+
+@MainActor private final class InteractionReadiness { var ready = true }
 
 @MainActor private final class LaunchReadinessSequence {
     private let withdrawAt: Int

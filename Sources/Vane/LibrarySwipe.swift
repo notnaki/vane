@@ -320,6 +320,7 @@ private struct LibrarySwipe: ViewModifier {
     /// Both local monitors consult this shared owner. An undecided event can pass
     /// through both, so classify and accumulate each native event exactly once.
     func handle(_ event: NSEvent, in store: TabStore) -> NSEvent? {
+        guard !FirstLaunch.isPresenting else { return event }
         self.store = store
         if lastEvent === event { return lastWasConsumed ? nil : event }
         let result = process(event, in: store)
