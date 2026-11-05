@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the diff and conservatively select documentation-only CI."""
+"""Validate the diff and conservatively select cheap CI checks."""
 import argparse
 import os
 from pathlib import PurePosixPath
@@ -7,9 +7,9 @@ import subprocess
 import sys
 
 
-def documentation(path):
+def cheap_checks_only(path):
     parts = PurePosixPath(path).parts
-    return path.endswith(".md") and (
+    return path == ".gitignore" or path.endswith(".md") and (
         len(parts) == 1 or parts[0] == "docs" or
         path.startswith(".github/ISSUE_TEMPLATE/") or path == ".github/pull_request_template.md"
     )
@@ -26,11 +26,11 @@ def main():
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0 for ref in refs)
     app_required = True
     if known:
-        # Disable rename detection so both old source and new Markdown paths count.
+        # Disable rename detection so both old and new paths count.
         result = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", *refs, "--"],
                                 check=True, capture_output=True)
         paths = [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
-        app_required = not paths or not all(documentation(path) for path in paths)
+        app_required = not paths or not all(cheap_checks_only(path) for path in paths)
         subprocess.run(["git", "diff", "--check", *refs, "--"], check=True)
         print(f"Validated {len(paths)} changed paths", file=sys.stderr)
     else:

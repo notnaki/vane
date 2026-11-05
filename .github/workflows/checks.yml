@@ -51,6 +51,9 @@ jobs:
           python3 scripts/test-prepare-nightly.py
           python3 scripts/test-update-channel.py
 
+      - name: Packaged resource regression
+        run: python3 scripts/test-packaged-resources.py
+
       - name: Default browser prompt build policy
         run: python3 scripts/test-default-browser-prompt.py
 
@@ -283,7 +286,7 @@ jobs:
         run: bash scripts/test-update-installer.sh Vane.app --unsigned
 
   checks:
-    # A docs-only run skips all app jobs intentionally; unexpected skips still fail.
+    # A cheap-check run skips all app jobs intentionally; unexpected skips still fail.
     if: ${{ always() }}
     needs: [changes, source, build, native, packaging]
     runs-on: ubuntu-latest

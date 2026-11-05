@@ -56,7 +56,7 @@ enum SpaceEmojiCatalog {
     }
 
     static let entries: [Entry] = {
-        guard let url = Bundle.module.url(forResource: "emoji", withExtension: "json", subdirectory: "SpaceEmoji"),
+        guard let url = AppResources.bundle.url(forResource: "emoji", withExtension: "json", subdirectory: "SpaceEmoji"),
               let data = try? Data(contentsOf: url), let entries = try? JSONDecoder().decode([Entry].self, from: data)
         else { return [] }
         return entries
