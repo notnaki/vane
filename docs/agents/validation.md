@@ -1,0 +1,5 @@
+# Local validation and CI
+
+- Choose focused local builds/tests/checks from `README.md` for the affected behavior. Trivial changes need no full suite; docs generally need only a diff check. Run the full local suite for broad/high-risk changes, unresolved failures, or explicit requests. Required CI still applies.
+- Run full required CI directly unless investigating a CI failure (including runner-dependent failures). Then use a focused preflight covering affected cases and related fixtures, preserving assertions, outcome deadlines, and cleanup checks. Predetermine intermittent-case repetitions and retain every attempt. Proceed to full CI only after the preflight passes and earlier failures are explained and repaired.
+- A passing retry on unchanged code does not resolve a native assertion failure: preserve the original evidence, investigate, reproduce, repair, and validate. Evidenced runner outages before tests execute may be retried and must be reported separately. Only explicitly accepted, narrowly named limitations may be advisory; passing advisory samples do not prove a fix.

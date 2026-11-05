@@ -1,0 +1,7 @@
+# PR, review, and squash-merge cycle
+
+- Unless the user specifies another stopping point, implement, validate, open/update a PR, review, fix findings, and squash-merge. Use a `codex/` branch, never commit directly to `main`; preserve unrelated local work and include only task changes.
+- After validation, push and open/update the PR with a clear description and results. Obtain independent review of its current diff through a PR reviewer or review subagent; fix actionable findings, push, and repeat review and relevant validation until none remain.
+- Merge only when the latest PR commit is reviewed, required CI passes on its integration with the latest target branch, required approvals are satisfied, and the PR is mergeable. If the target advances, update the PR and validate the combined tree. Keep `main`'s strict required `checks` protection and administrator enforcement enabled. Report pending/unavailable reviews or checks as blockers; never bypass them.
+- Immediately before merging, recheck `main`'s HEAD and CI status and all merge requirements above. Wait for every unfinished `main` CI run; never cancel one to unblock a merge or let a merge cancel/supersede it.
+- Squash-merge into the target branch without further confirmation unless later user instructions or repository policy require it. Verify the merge; report the PR link, squash commit, and validation results. Sync the local target only if existing local work is preserved.
