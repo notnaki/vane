@@ -26,7 +26,7 @@ class NightlyTests(unittest.TestCase):
         return self.module.prepare(**options)
 
     def test_changed_checked_main_uses_next_patch(self):
-        self.assertEqual(self.prepare(), "v1.2.4-nightly.20261031.100")
+        self.assertEqual(self.prepare(), "v1.2.4-nightly.20261031.1")
 
     def test_non_main_rejected_even_when_checks_pass(self):
         with self.assertRaisesRegex(ValueError, "main"):
@@ -52,7 +52,7 @@ class NightlyTests(unittest.TestCase):
 
     def test_nightly_and_rc_tags_do_not_bump_stable_core(self):
         self.assertEqual(self.prepare(tags=["v1.9.9", "v1.10.0", "v9.0.0-nightly.20261031.99", "v8.0.0-rc.1"]),
-                         "v1.10.1-nightly.20261031.100")
+                         "v1.10.1-nightly.20261031.1")
 
     def test_publication_retry_reuses_original_tag(self):
         tag = "v1.2.4-nightly.20261030.100"
@@ -60,12 +60,32 @@ class NightlyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different commit"):
             self.prepare(markers={tag: "vane-release-run:100"})
 
-    def test_existing_tag_from_other_run_cannot_be_overwritten(self):
-        with self.assertRaisesRegex(ValueError, "already exists"):
-            self.prepare(tags=["v1.2.3", "v1.2.4-nightly.20261031.100"])
+    def test_same_day_tags_advance_counter_without_overwriting(self):
+        self.assertEqual(self.prepare(tags=["v1.2.3", "v1.2.4-nightly.20261031.1",
+                                            "v1.2.4-nightly.20261031.9"]),
+                         "v1.2.4-nightly.20261031.10")
+
+    def test_counter_resets_each_day_and_stable_core(self):
+        self.assertEqual(self.prepare(tags=["v1.2.3", "v1.2.4-nightly.20261030.90",
+                                            "v1.2.3-nightly.20261031.99"]),
+                         "v1.2.4-nightly.20261031.1")
+
+    def test_same_day_legacy_run_id_still_orders_before_new_release(self):
+        self.assertEqual(self.prepare(tags=["v1.2.3", "v1.2.4-nightly.20261031.123456789"]),
+                         "v1.2.4-nightly.20261031.123456790")
+
+    def test_compact_publication_retry_reuses_tag(self):
+        tag = "v1.2.4-nightly.20261031.2"
+        self.assertEqual(self.prepare(tags=["v1.2.3", tag],
+                                     markers={tag: "vane-release-run:100"},
+                                     tag_commit=lambda tag: "abc"), tag)
+
+    def test_compact_published_revision_is_not_republished(self):
+        release = dict(tag_name="v1.2.4-nightly.20261031.1", draft=False, prerelease=True)
+        self.assertIsNone(self.prepare(releases=[release], tag_commit=lambda tag: "abc"))
 
     def test_missing_stable_tag_starts_at_first_patch(self):
-        self.assertEqual(self.prepare(tags=[]), "v0.0.1-nightly.20261031.100")
+        self.assertEqual(self.prepare(tags=[]), "v0.0.1-nightly.20261031.1")
 
 
 if __name__ == "__main__":

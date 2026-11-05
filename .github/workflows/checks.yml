@@ -51,6 +51,9 @@ jobs:
           python3 scripts/test-prepare-nightly.py
           python3 scripts/test-update-channel.py
 
+      - name: Packaged resource regression
+        run: python3 scripts/test-packaged-resources.py
+
       - name: Default browser prompt build policy
         run: python3 scripts/test-default-browser-prompt.py
 

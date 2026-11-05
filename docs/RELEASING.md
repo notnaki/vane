@@ -56,8 +56,12 @@ To request the same checked-main path manually:
 gh workflow run release.yml --ref main -f channel=nightly
 ```
 
-Nightly tags have the form `v1.2.4-nightly.20261031.123456789`: the next patch after
-the highest stable tag, the workflow's original UTC creation date, and its run ID.
+Nightly tags have the compact form `v1.2.4-nightly.20261031.1`: the next patch after
+the highest stable tag, the workflow's original UTC creation date, and a daily
+counter starting at 1. Additional releases that day increment the counter; the next
+day starts at 1 again. Existing tags are never overwritten. If a legacy run-ID tag
+exists for the same version and day, the counter advances past it to preserve
+update ordering. The workflow run ID remains in the annotated tag for retries.
 The final `v1.2.4` outranks all of its nightlies; the next nightly after that stable
 tag uses `v1.2.5-nightly.…`. Reruns reuse their version and verify its source commit.
 Tags push only after packaging succeeds, and nightlies are GitHub prereleases with

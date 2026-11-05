@@ -37,10 +37,12 @@ def prepare(*, sha, ref, run_id, date, runs, releases, tags, markers, tag_commit
     major, minor, patch = max(versions, default=(0, 0, 0))
     if not re.fullmatch(r"\d{8}", date) or not re.fullmatch(r"[1-9]\d*", run_id):
         raise ValueError("Invalid nightly date or workflow run ID")
-    tag = f"v{major}.{minor}.{patch + 1}-nightly.{date}.{run_id}"
-    if tag in tags:
-        raise ValueError("The prepared nightly tag already exists")
-    return tag
+    prefix = f"v{major}.{minor}.{patch + 1}-nightly.{date}."
+    # Release runs are serialized. Count published/reserved tags for this core/date,
+    # retaining numeric ordering even if a legacy run-ID tag exists on the same day.
+    counters = [int(tag[len(prefix):]) for tag in tags
+                if tag.startswith(prefix) and NIGHTLY.fullmatch(tag)]
+    return f"{prefix}{max(counters, default=0) + 1}"
 
 
 def command(*args):
