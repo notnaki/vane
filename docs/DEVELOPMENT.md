@@ -216,6 +216,7 @@ scripts/check-cloud-ai.sh
 bash scripts/test-cli-import.sh .build/debug/vane
 python3 scripts/test-ci-source-state.py
 python3 scripts/test-release-workflow.py
+python3 scripts/test-packaged-resources.py
 ./make-app.sh debug
 python3 scripts/test-default-browser-prompt.py
 ./scripts/test-build-dmg.sh

@@ -38,6 +38,10 @@ let promoted = try UpdateChannel.nightly.release(from: data(mixed + [payload("v1
 expect(promoted?.tag == "v1.2.4", "Stable must outrank its preceding nightlies")
 let next = try UpdateChannel.nightly.release(from: data(mixed + [payload("v1.2.4"), payload("v1.2.5-nightly.20261101.11", prerelease: true)]))
 expect(next?.tag == "v1.2.5-nightly.20261101.11", "A new nightly must upgrade the current stable")
+let compact = try UpdateChannel.nightly.release(from: data([
+    payload("v1.2.4-nightly.20261031.41351878095", prerelease: true),
+    payload("v1.2.4-nightly.20261101.1", prerelease: true)]))
+expect(compact?.tag == "v1.2.4-nightly.20261101.1", "Compact next-day nightly must upgrade legacy run-ID versions")
 let empty = try UpdateChannel.nightly.release(from: data([]))
 expect(empty == nil, "No nightlies is an empty successful check")
 for malformed in [Data("invalid".utf8), try data(["message": "API error"])] {
