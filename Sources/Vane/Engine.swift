@@ -410,6 +410,7 @@ struct TitleReveal: Equatable, Sendable {
     var presentationGeneration = 0
     var permissionGeneration: UInt = 0
     let draftProtection = DraftProtection()
+    var dialogPolicy = PageDialogPolicy()
     var readingDocumentGeneration = UUID()
     var sharedSpaceID: UUID?
     /// Parked rows need only metadata. Reading `web` is an explicit demand for a page;
@@ -1214,6 +1215,7 @@ struct TitleReveal: Equatable, Sendable {
         passwordOfferExpiry?.cancel()
         SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
+        PageDialogs.cancel(tabID: id)
         endPermissionDocument()
         certificateDestinationURL = nil
         certificateNavigation = nil
@@ -1793,6 +1795,7 @@ struct TitleReveal: Equatable, Sendable {
         editableFrames.removeAll()
         SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
+        PageDialogs.cancel(tabID: id)
         endPermissionDocument()
         pictureInPicture = false
         pipFrame = nil
@@ -1820,6 +1823,7 @@ struct TitleReveal: Equatable, Sendable {
         if w === existingWeb { SiteBoosts.beginNavigation(tab: self) }
         if w === existingWeb {
             FileUploads.cancel(tabID: id)
+            PageDialogs.cancel(tabID: id)
             endPermissionDocument(navigationStarted: true)
             certificateNavigation = navigation
         }
@@ -1969,6 +1973,7 @@ struct TitleReveal: Equatable, Sendable {
         if w === existingWeb {
             Reader.navigationCommitted(self)
             FileUploads.cancel(tabID: id)
+            PageDialogs.cancel(tabID: id)
             endPermissionDocument()
         }
         finishCertificateNavigation(navigation, in: w)
