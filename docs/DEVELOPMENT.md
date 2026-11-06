@@ -73,22 +73,29 @@ local validation. Required PR CI still applies before merging.
 
 ### CI overview
 
-CI first checks the diff. The root `.gitignore`, root Markdown files, Markdown under
-`docs/`, and Markdown issue/PR templates take the cheap path: diff checks and the
-final `checks` gate, without macOS builds or native tests. Changes combining only
-these files also take the cheap path. Any other path (including nested `.gitignore`
-files), empty diffs, or missing comparison history requires the full path. The
-classifier is [`scripts/ci-change-scope.py`](../scripts/ci-change-scope.py).
+CI first checks the diff and runs the website scene and CI routing regression tests
+on Linux. The root `.gitignore`, root Markdown files, Markdown under `docs/`,
+Markdown issue/PR templates, and website HTML, CSS, JavaScript, images, and fonts
+under `docs/` take this fast path and the final `checks` gate, without macOS builds
+or native tests. The routing classifier and its two regression scripts also use
+the fast path. Edits to `checks.yml` qualify only when the job inventory and all
+jobs except change detection and the final gate, plus workflow-wide settings, are unchanged; edits to native
+build/test jobs still require the full path. Changes combining only these files
+also take the fast path. Any other path (including nested `.gitignore` files),
+empty diffs, or missing comparison history requires the full path. The classifier
+is [`scripts/ci-change-scope.py`](../scripts/ci-change-scope.py). The same routing
+runs on PRs and pushes to `main`, so a website-only merge produces a passing required
+`checks` result while native jobs intentionally skip.
 
 For app changes, one debug build compiles the app and test bundle and assembles
 `Vane.app`. Four native runners and a separate packaging runner reuse a runtime-only
 artifact, verifying its revision, checkout path, and Swift toolchain before execution.
-Object files and compiler caches are excluded from that transfer. Source fixtures
-and shared runtime checks each run once; separate desktops keep packaging work away
+Object files and compiler caches are excluded from that transfer. Native-specific
+source fixtures and shared runtime checks each run once; separate desktops keep packaging work away
 from native UI tests. The required `checks` gate requires every applicable required
 job to succeed. Worker navigator identity is blocking coverage in the normal
-native shards. Jobs intentionally skipped for documentation-only changes are handled by
-the gate's documentation path.
+native shards. Jobs intentionally skipped for fast-path changes are handled by
+the gate's fast path.
 
 Main requires GitHub Actions' `checks` status with strict current-base validation,
 including for administrators. Update a PR when main advances and validate the new

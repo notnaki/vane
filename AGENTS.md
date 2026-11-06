@@ -2,6 +2,8 @@
 
 Read the linked instructions before the relevant phase; load only what applies to the task.
 
+- **Before changing code:** Open a new task worktree.
+- **Before waiting or yielding:** Refresh each blocker's status and continue immediately if it is resolved. Ensure completion monitoring covers the actual dependency; a PR-only watch does not cover a separate `main` run.
 - **Any project change:** [PR workflow](docs/agents/workflow.md). Default to implementation, validation, independent review, and squash-merge unless the user specifies another stopping point.
 - **Choosing/running validation, investigating failures, or assessing CI:** [Validation and CI](docs/agents/validation.md).
 - **Changing UI interactions or state:** [UI motion](docs/agents/ui-motion.md).
