@@ -23,6 +23,8 @@ unpin a page.
 
 Showing or hiding the sidebar applies across all Spaces in that window, including Spaces
 in other profiles. Each window keeps its own sidebar visibility.
+**Toggle Sidebar** (`⌘S` by default) also closes Library when it is open. Showing the
+sidebar again returns to your tabs.
 
 Hover a sidebar tab to see a compact name tooltip and a **Double-click to rename** hint.
 The tab's close button appears at the end of the row while you hover; otherwise the

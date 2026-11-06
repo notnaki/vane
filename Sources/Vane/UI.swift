@@ -1114,7 +1114,7 @@ struct TopRow: View {
     }
 
     private var toggle: some View {
-        Button { store.sidebarShown.toggle() } label: { Image(systemName: "sidebar.left") }
+        Button { store.toggleSidebar() } label: { Image(systemName: "sidebar.left") }
             .frame(width: compact ? 22 : nil)
             .vaneTooltip("Toggle Sidebar", shortcut: Keybindings.binding(for: .toggleSidebar).display)
             .accessibilityLabel("Toggle Sidebar")
