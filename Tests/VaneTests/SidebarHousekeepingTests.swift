@@ -144,6 +144,17 @@ import XCTest
         XCTAssertEqual(doomedResumes, 0)
     }
 
+    func testBulkArchivePreservesCallerOrderInsteadOfTemporaryStripOrder() {
+        let (store, tabs) = fixture(count: 4)
+        let requested = [tabs[3], tabs[1], tabs[2], tabs[0]]
+        let expected = requested.reversed().map { $0.currentURL!.absoluteString }
+        store.archiveToday(requested.map(\.id))
+        XCTAssertEqual(Archive.shared(for: store.profileID).entries.map(\.url), expected)
+        var reopened: [String] = []
+        while let entry = ClosedTabs.pop() { reopened.append(entry.url.absoluteString) }
+        XCTAssertEqual(reopened, expected)
+    }
+
     func testBulkArchiveKeepsTheSurvivingPinnedSplitPane() {
         let (store, tabs) = fixture(count: 4)
         tabs[3].kind = .pinned

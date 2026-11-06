@@ -5,8 +5,15 @@ extension TabStore {
     /// model changes or select (and resume) a neighbour that is also being archived.
     @discardableResult func archiveToday(_ ids: [Tab.ID]) -> Int {
         SharedTabs.flush()
-        let requested = Set(ids)
-        let doomed = accessibleTabs.filter { $0.kind == .today && requested.contains($0.id) }
+        let eligible = Dictionary(accessibleTabs.filter { $0.kind == .today }.map { ($0.id, $0) },
+                                  uniquingKeysWith: { first, _ in first })
+        var seen = Set<Tab.ID>()
+        // Folder archive can temporarily reverse the strip while unpinning its
+        // members. Archive and Reopen Closed Tab must retain the caller's order.
+        let doomed = ids.compactMap { id -> Tab? in
+            guard seen.insert(id).inserted else { return nil }
+            return eligible[id]
+        }
         guard !doomed.isEmpty else { return 0 }
         let removing = Set(doomed.map(\.id))
         if !isPrivate {

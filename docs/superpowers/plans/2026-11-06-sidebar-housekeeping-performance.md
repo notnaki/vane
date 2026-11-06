@@ -36,6 +36,8 @@
 ## Validation evidence
 
 - Baseline: 8 focused tests passed. New tests reproduced delayed Clear, doomed-neighbour resumes, repeated Tidy publications and no-op shape publications.
-- Final focused run: 57 tests, 1 opt-in timing test skipped, no failures; native retirement verified. Clear covers normal and Battery Saver motion policies.
+- Final focused run: 58 tests, 1 opt-in timing test skipped, no failures; native retirement verified. Clear covers normal and Battery Saver motion policies.
 - Pure selfcheck: PASS.
 - Fixture corrections: shared windows need an explicit Space; a committed empty Today section has zero height, so the new receipt path explicitly requires zero height while preserving the ordinary positive-height rule.
+
+- Independent review found a caller-order regression for pinned-folder archive. A new regression failed, then passed after preserving unique eligible IDs in caller order. The focused 58-test suite and pure selfcheck passed after the correction.
