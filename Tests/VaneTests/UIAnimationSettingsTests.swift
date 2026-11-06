@@ -60,7 +60,7 @@ import XCTest
         XCTAssertEqual(UIAnimation.search(" \n ").count, 6)
     }
 
-    func testListAndSweepTimingsFollowTheirOwnSpeeds() {
+    func testListAndClosingTimingsFollowTheirOwnSpeeds() {
         TestEnvironment.prepare()
         let keys = [UIAnimation.tabList.key, UIAnimation.tabClosing.key, UIAnimation.surfaces.key]
         let old = keys.map { UserDefaults.vane.object(forKey: $0) }
@@ -74,12 +74,41 @@ import XCTest
         UserDefaults.vane.set(2.0, forKey: UIAnimation.tabClosing.key)
         UserDefaults.vane.set(0.5, forKey: UIAnimation.surfaces.key)
         XCTAssertEqual(Look.listSeconds, 1.12, accuracy: 0.0001)
-        XCTAssertEqual(Motion.sweepDelay(1), 0.0225, accuracy: 0.0001)
-        XCTAssertEqual(Motion.sweepDelay(400), 0.2, accuracy: 0.0001)
-        XCTAssertEqual(Motion.sweepDelay(3, reduced: true), 0)
+        XCTAssertEqual(Look.tabClose, .easeOut(duration: 0.07))
+        XCTAssertEqual(Look.tabRemovalFade, .easeOut(duration: 0.04))
         XCTAssertEqual(Look.peekAppear, .spring(duration: 0.56, bounce: 0.12),
                        "Peek follows floating panels, independently of tab-list speed")
         XCTAssertEqual(Look.statusDelay, 1.5, "Speed must not shorten the hover wait")
+    }
+
+    func testSlowClosingStillRemovesBulkTabsOnTheInputTurn() {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let key = UIAnimation.tabClosing.key
+        let old = UserDefaults.vane.object(forKey: key)
+        let store = TabStore(isPrivate: true, profileID: UUID(), session: [])
+        store.sharingReady = false
+        let tabs = (0..<12).map { index in
+            let tab = vane.Tab(isPrivate: true, profileID: store.profileID)
+            tab.park(url: URL(string: "https://example.test/animation/\(index)")!,
+                     Parked(title: "Animation tab \(index)"))
+            return tab
+        }
+        defer {
+            if let old { UserDefaults.vane.set(old, forKey: key) }
+            else { UserDefaults.vane.removeObject(forKey: key) }
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+            tabs.forEach { $0.tearDown() }
+            SharedTabs.release(tabs)
+        }
+        store.tabs = tabs
+        store.syncShapes()
+        store.current = nil
+        UserDefaults.vane.set(0.25, forKey: key)
+        XCTAssertEqual(store.archiveToday(tabs.map(\.id)), 12)
+        XCTAssertTrue(store.tabs.isEmpty, "Slower fades must not delay Clear’s model mutation")
+        XCTAssertTrue(tabs.allSatisfy(\.tornDown))
     }
 
     func testDetailPageStaysUnderAdvancedToolbarItem() throws {

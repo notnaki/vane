@@ -834,11 +834,6 @@ enum Look {
     static var tabClose: Animation { .easeOut(duration: UIAnimation.tabClosing.duration(0.14)) }
     /// Today rows fade away before their neighbours finish sliding into the gap.
     static var tabRemovalFade: Animation { .easeOut(duration: UIAnimation.tabClosing.duration(0.08)) }
-    /// Clear sweeps Today's rows out one after another: each row leaves this much after the
-    /// one above it, and a long list stops staggering past `sweepCap` so forty tabs do not
-    /// take two seconds to go.
-    static var sweepStagger: Double { UIAnimation.tabClosing.duration(0.045) }
-    static var sweepCap: Double { UIAnimation.tabClosing.duration(0.4) }
     /// The status bar: how long a link is hovered before its url appears, and how fast the
     /// capsule fades either way.
     static let statusDelay: Double = 1.5

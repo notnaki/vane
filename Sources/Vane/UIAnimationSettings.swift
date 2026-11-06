@@ -24,7 +24,7 @@ enum UIAnimation: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .sidebar: "Show, hide, and reveal the floating sidebar."
         case .tabList: "Move tabs, expand folders, and rearrange lists."
-        case .tabClosing: "Fade out closed tabs and sweep Today’s tabs away."
+        case .tabClosing: "Fade out closed tabs, including bulk tab removal."
         case .surfaces: "Show and dismiss search, Peek, tooltips, and Library."
         case .feedback: "Highlight buttons, menus, and selected items."
         case .status: "Fade the hovered link’s address in and out."
