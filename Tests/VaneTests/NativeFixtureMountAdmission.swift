@@ -199,11 +199,13 @@ struct NativeFixtureGeometryProbe: NSViewRepresentable {
     func belongs(to store: ObjectIdentifier, section: String) -> Bool {
         declared?.store == store && declared?.section == section
     }
-    func acknowledges(_ expected: Snapshot, root: NSView, window: NSWindow) -> Bool {
+    func acknowledges(_ expected: Snapshot, root: NSView, window: NSWindow,
+                      allowsEmptyHeight: Bool = false) -> Bool {
         committed == expected && declared == expected && committedWindow === window
             && self.window === window && isDescendant(of: root) && !isHiddenOrHasHiddenAncestor
             && committedBounds == bounds && committedFrame == frame
-            && bounds.width > 1 && bounds.height > 1
+            && bounds.width > 1
+            && (allowsEmptyHeight && expected.ids.isEmpty ? bounds.height == 0 : bounds.height > 1)
     }
 }
 
