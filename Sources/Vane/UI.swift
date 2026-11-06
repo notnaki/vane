@@ -3242,7 +3242,8 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
                     .background(SidebarSectionsViewport(tracesLiveInput: tracesLiveInput))
             }
             .scrollIndicators(.never)
-            .modifier(ScrollViewportPosition(initialOffset: initialOffset, resetIdentity: resetIdentity))
+            .modifier(ScrollViewportPosition(initialOffset: initialOffset, resetIdentity: resetIdentity,
+                offersScrollToTop: true, animatesScrollToTop: animatesCutoffs))
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
                 reportOffset(offset)
             }
