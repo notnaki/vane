@@ -79,13 +79,70 @@ class ChangeScopeTests(unittest.TestCase):
         self.scope(True)
 
     def test_workflows_scripts_resources_and_unknown_paths_require_app_work(self):
-        for name in (".github/workflows/checks.yml", "scripts/check.py", "Sources/Welcome.md", "docs/index.html"):
+        for name in (".github/workflows/checks.yml", "scripts/check.py", "Sources/Welcome.md", "docs/probe.swift", "docs/unknown.bin"):
             with self.subTest(name=name):
                 p = self.root / name
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text("fixture\n")
                 self.commit()
                 self.scope(True)
+
+    def test_website_assets_and_routing_tools_skip_app_work(self):
+        for name in ("docs/index.html", "docs/styles.css", "docs/space.js", "docs/tests/galaxy.test.cjs",
+                     "docs/media/logo.svg", "docs/media/screenshot.png", "docs/.nojekyll",
+                     "scripts/ci-change-scope.py", "scripts/test-ci-change-scope.py",
+                     "scripts/test-checks-workflow.py"):
+            with self.subTest(name=name):
+                p = self.root / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("fixture\n")
+                base = self.git("rev-parse", "HEAD")
+                self.commit()
+                self.scope(False, base)
+
+    def test_website_mixed_with_source_requires_app_work(self):
+        (self.root / "docs").mkdir()
+        (self.root / "docs/styles.css").write_text("body {}\n")
+        (self.root / "App.swift").write_text("changed\n")
+        self.commit()
+        self.scope(True)
+
+    def test_workflow_routing_edits_skip_but_native_edits_require_app_work(self):
+        workflow = self.root / ".github/workflows/checks.yml"
+        workflow.parent.mkdir(parents=True)
+        original = Path(__file__).resolve().parents[1].joinpath(".github/workflows/checks.yml").read_text()
+        workflow.write_text(original)
+        self.base = self.commit()
+        workflow.write_text(original.replace("name: Change scope and diff checks", "name: Fast routing checks"))
+        self.commit()
+        self.scope(False)
+        for changed in (
+            original.replace("-c debug --build-tests", "-c release --build-tests"),
+            original.replace("timeout-minutes: 24", "timeout-minutes: 25"),
+            original.replace("contents: read", "contents: write", 1),
+            original + "\n  extra:\n    runs-on: ubuntu-latest\n",
+        ):
+            with self.subTest(changed=changed[-80:]):
+                workflow.write_text(changed)
+                self.commit()
+                self.scope(True)
+
+    def test_workflow_added_or_deleted_requires_app_work(self):
+        workflow = self.root / ".github/workflows/checks.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("jobs:\n  build:\n    runs-on: macos-26\n")
+        self.commit()
+        self.scope(True)
+        self.base = self.git("rev-parse", "HEAD")
+        workflow.unlink()
+        self.commit()
+        self.scope(True)
+
+    def test_renaming_app_source_to_website_keeps_app_checks(self):
+        (self.root / "docs").mkdir()
+        self.git("mv", "App.swift", "docs/app.js")
+        self.commit()
+        self.scope(True)
 
     def test_renaming_source_to_documentation_keeps_app_checks(self):
         self.git("mv", "App.swift", "guide.md")

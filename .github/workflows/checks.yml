@@ -31,6 +31,14 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
         run: python3 scripts/ci-change-scope.py --base "$BASE_SHA" --head "$HEAD_SHA"
 
+      # These fixtures validate routing and website changes on both PRs and main.
+      # Keep the required aggregate green when native jobs intentionally skip.
+      - name: Fast path regressions
+        run: |
+          python3 scripts/test-ci-change-scope.py
+          python3 scripts/test-checks-workflow.py
+          node docs/tests/galaxy.test.cjs
+
   source:
     needs: [changes]
     if: needs.changes.outputs.app_required == 'true'
