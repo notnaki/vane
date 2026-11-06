@@ -143,6 +143,10 @@ with a read-only website address and native close controls. They have no Little 
 branding, Open in Space action, sidebar row, or saved session entry. Closing the dialog
 leaves its originating tab open; ordinary `target="_blank"` links still open tabs.
 
+A page's `alert()`, `confirm()`, and `prompt()` open as sheets on its window, naming the
+site that asked. A background tab can't open one and gets the Cancel answer. If a site
+repeats them quickly, the sheet offers to silence that site until the tab closes.
+
 ## Search and history
 
 **Instant Links** uses **Shift+Return** in the address or new-tab bar to open the

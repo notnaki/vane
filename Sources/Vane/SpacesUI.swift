@@ -897,7 +897,7 @@ struct SpacePreviewList: View, Equatable {
                 ProgressView().controlSize(.small).scaleEffect(Look.tidySpinnerScale)
                     .frame(height: Look.tidyRow)
             }
-            if TidyTabs.offersHousekeeping(today: todayCount, threshold: Look.tidyThreshold) {
+            if TidyTabs.offersClear(today: todayCount) {
                 if control != .hidden { Text("|").foregroundStyle(Look.inkQuiet) }
                 Button("Clear", action: {})
             }

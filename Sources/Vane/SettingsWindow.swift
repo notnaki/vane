@@ -218,7 +218,9 @@ enum LinkTarget {
         .init(id: "icon", title: "Icon", icon: "v.square",
               pane: { _ in AnyView(IconPane()) }),
         .init(id: "advanced", title: "Advanced", icon: "slider.horizontal.3",
-              pane: { _ in AnyView(AdvancedPane()) }),
+              pane: { AnyView(AdvancedPane(selection: $0)) }),
+        .init(id: "animations", title: "UI Animations", icon: "waveform.path", parent: "advanced",
+              pane: { _ in AnyView(UIAnimationsPane()) }),
         .init(id: "passwords", title: "Passwords", icon: "key", parent: "profiles",
               pane: { AnyView(PasswordsPane(settingsProfileID: $0.profileID)) }),
         .init(id: "privacy", title: "Privacy and Security", icon: "lock", parent: "profiles",
@@ -279,7 +281,7 @@ private struct SettingsView: View {
 
     var body: some View {
         Group {
-            if ["shortcuts", "passwords"].contains(current.id) {
+            if ["shortcuts", "passwords", "animations"].contains(current.id) {
                 // This pane owns a bounded scrolling list, so its search and guidance
                 // stay in place while the rows scroll.
                 pane
@@ -1289,7 +1291,96 @@ private struct IconPane: View {
 
 // MARK: - Advanced
 
+/// A bounded detail page: search and reset stay visible while the animation rows scroll.
+struct UIAnimationsPane: View {
+    @State private var query = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Look.inset * 1.5) {
+            HStack(spacing: Look.inset) {
+                HStack(spacing: Look.inset) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search animations", text: $query).textFieldStyle(.plain)
+                        .accessibilityLabel("Search animations")
+                    if !query.isEmpty {
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).foregroundStyle(.secondary)
+                            .accessibilityLabel("Clear animation search")
+                    }
+                }
+                .padding(.horizontal, Look.inset)
+                .frame(height: Look.control)
+                .background(.quaternary, in: .rect(cornerRadius: Look.chipRadius))
+                Button("Reset All") { UIAnimation.resetAll() }
+                    .help("Restore every animation speed, including hidden search results")
+            }
+            Text("Below 1× is slower; above 1× is faster. Changes apply to the next animation.")
+                .font(Look.footnote).foregroundStyle(Look.inkQuiet)
+                .fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                let matches = UIAnimation.search(query)
+                if matches.isEmpty {
+                    SettingsCard {
+                        Footnote("No animations found. Try “sidebar”, “tabs”, or “panels”.")
+                    }
+                } else {
+                    SettingsSection("Animation Speeds") {
+                        SettingsCard {
+                            ForEach(matches) { UIAnimationSpeedRow(animation: $0) }
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: .infinity)
+            .animation(Motion.reduced ? nil : Look.quick, value: UIAnimation.search(query))
+            Text("System Reduce Motion and Battery Saver still take priority. These settings affect Vane’s interface, not animations on websites.")
+                .font(Look.footnote).foregroundStyle(Look.inkQuiet)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, Look.inset * 2)
+    }
+}
+
+private struct UIAnimationSpeedRow: View {
+    let animation: UIAnimation
+    @AppStorage private var storedSpeed: Double
+
+    init(animation: UIAnimation) {
+        self.animation = animation
+        _storedSpeed = AppStorage(wrappedValue: 1, animation.key, store: .vane)
+    }
+
+    private var speed: Double { UIAnimation.normalized(storedSpeed) }
+
+    var body: some View {
+        HStack(spacing: Look.inset) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(animation.title).font(Look.text).foregroundStyle(Look.inkPrimary)
+                Text(animation.detail).font(Look.footnote).foregroundStyle(Look.inkQuiet)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Picker("\(animation.title) speed", selection: Binding(
+                get: { speed }, set: { storedSpeed = $0 }
+            )) {
+                ForEach(UIAnimation.speeds, id: \.self) { value in
+                    Text(UIAnimation.speedLabel(value)).tag(value)
+                }
+            }
+            .labelsHidden().frame(width: 126)
+            Button("Reset") { animation.reset() }
+                .disabled(speed == 1)
+                .accessibilityLabel("Reset \(animation.title) speed")
+        }
+        .padding(.horizontal, Look.cardInset)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(animation.title)
+    }
+}
+
 private struct AdvancedPane: View {
+    @ObservedObject var selection: SettingsSelection
     @ObservedObject private var batterySaver = BatterySaver.shared
     @AppStorage("userAgent") private var userAgent = ""
     @AppStorage("inspector") private var inspector = true
@@ -1303,6 +1394,14 @@ private struct AdvancedPane: View {
 
     var body: some View {
         Pane {
+            SettingsSection("Interface") {
+                SettingsCard {
+                    SettingsRow("UI Animations") {
+                        Button("Animation Settings…") { selection.id = "animations" }
+                    }
+                    Footnote("Adjust animation speeds for the sidebar, tabs, panels, and more.")
+                }
+            }
             SettingsSection("Performance") {
                 SettingsCard {
                     SettingsRow("Battery Saver") {

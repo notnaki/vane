@@ -256,7 +256,7 @@ import WebKit
             },
         ]
 
-        withAnimation(Motion.reduced ? nil : Look.list) { session.shown.on = true }
+        withAnimation(Motion.reduced ? nil : Look.peekAppear) { session.shown.on = true }
         axAnnounce("Peeking \(url.host() ?? url.absoluteString). Press Escape to close, "
                    + "\u{2318}O to open it as a tab.")
     }
@@ -291,9 +291,10 @@ import WebKit
                                 parent: session.parent, at: .now)
         }
         guard animated, !Motion.reduced else { return dismantle(session) }
-        withAnimation(Look.appear) { session.shown.on = false }
+        let duration = Look.appearDuration
+        withAnimation(.easeOut(duration: duration)) { session.shown.on = false }
         Task {
-            try? await Task.sleep(for: .seconds(Look.appearDuration))
+            try? await Task.sleep(for: .seconds(duration))
             dismantle(session)
         }
     }

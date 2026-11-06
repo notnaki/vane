@@ -119,6 +119,126 @@ import XCTest
             "Search reset must keep the list's top padding inside the viewport")
     }
 
+    func testSidebarScrollToTopButtonReturnsTheViewportAndCanBeUsedAgain() async throws {
+        try await checkScrollToTop(saver: .off)
+    }
+
+    func testSidebarScrollToTopWorksInBatterySaver() async throws {
+        try await checkScrollToTop(saver: .alwaysOn)
+    }
+
+    private func checkScrollToTop(saver: BatterySaver.Mode) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let previousPolicy = app.activationPolicy()
+        let previousSaver = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(saver)
+        defer { BatterySaver.shared.setMode(previousSaver); app.setActivationPolicy(previousPolicy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await checkScrollToTopViewport() }
+        catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Scroll-to-top fixture loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkScrollToTopViewport() async throws {
+        let offset = OffsetValue()
+        let geometry = NativeFixtureGeometry()
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 250, height: 300),
+            styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: SpaceSectionsLayout(retainsRows: true,
+            reportOffset: { offset.value = $0 }) {
+                Text("Space header").frame(maxWidth: .infinity).frame(height: 30)
+            } rows: {
+                ForEach(0..<48) { index in
+                    Text("Row \(index)").frame(height: 30)
+                        .background(NativeFixtureGeometryProbe(id: String(index), geometry: geometry))
+                }
+            }.background(Color(white: 0.12)))
+        host.sizingOptions = []
+        let attachment = NativeFixtureMountAdmission.attach(host, to: window)
+        defer { attachment?.cancel(); window.contentView = nil; window.close() }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        try await compatibilityWait {
+            NSApp.isRunning && NSApp.isActive && window.isKeyWindow
+                && window.occlusionState.contains(.visible)
+        }
+        let viewport = try await admitViewport(root: host, window: window, geometry: geometry,
+            minimumHeight: 48 * 30 + 47 * Look.rowGap, spacing: Look.rowGap)
+        let point = scrollToTopPoint(in: viewport)
+        XCTAssertFalse(returnButtonReceivesInput(at: point, host: host, viewport: viewport),
+            "The top of the list needs no return control")
+        defer {
+            if ProcessInfo.processInfo.environment["VANE_SIDEBAR_SNAPSHOT_DIR"] != nil {
+                _ = try? SidebarSnapshot.pixels(in: host)
+            }
+        }
+        viewport.contentView.scroll(to: NSPoint(x: 0, y: 60))
+        viewport.reflectScrolledClipView(viewport.contentView)
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            return abs(offset.value - 60) < 1
+        }
+        XCTAssertFalse(returnButtonReceivesInput(at: point, host: host, viewport: viewport),
+            "A small scroll near the top must not summon the return control")
+        let extent = try XCTUnwrap(viewport.documentView).bounds.height
+        for y: CGFloat in [150, 400] {
+            viewport.contentView.scroll(to: NSPoint(x: 0, y: y))
+            viewport.reflectScrolledClipView(viewport.contentView)
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                return abs(offset.value - y) < 1
+                    && self.returnButtonReceivesInput(at: point, host: host, viewport: viewport)
+            }
+            if ProcessInfo.processInfo.environment["VANE_SIDEBAR_SNAPSHOT_DIR"] != nil {
+                _ = try SidebarSnapshot.pixels(in: host)
+            }
+            for type: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
+                NSApp.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point,
+                    modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                    clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)))
+            }
+            // Sample travel early, without waiting for its desired intermediate value.
+            try await Task.sleep(for: .milliseconds(30))
+            if Motion.reduced {
+                XCTAssertEqual(viewport.contentView.bounds.minY, 0, accuracy: 1,
+                    "Reduced motion must return immediately")
+            } else {
+                XCTAssertGreaterThan(viewport.contentView.bounds.minY, 1,
+                    "Returning must visibly interpolate rather than jump")
+                XCTAssertLessThan(viewport.contentView.bounds.minY, y - 1,
+                    "The return animation must start promptly")
+            }
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                return abs(viewport.contentView.bounds.minY) < 1 && abs(offset.value) < 1
+                    && !self.returnButtonReceivesInput(at: point, host: host, viewport: viewport)
+            }
+            XCTAssertEqual(try XCTUnwrap(viewport.documentView).bounds.height, extent, accuracy: 1,
+                "Returning to the top must not change the list's content extent")
+        }
+    }
+
+    private func scrollToTopPoint(in viewport: NSScrollView) -> NSPoint {
+        let clip = viewport.contentView
+        return clip.convert(NSPoint(x: clip.bounds.midX,
+            y: clip.isFlipped ? clip.bounds.minY + 18 : clip.bounds.maxY - 18), to: nil)
+    }
+
+    private func returnButtonReceivesInput(at point: NSPoint, host: NSView, viewport: NSScrollView) -> Bool {
+        let local = host.superview?.convert(point, from: nil) ?? point
+        guard let recipient = host.hitTest(local) else { return false }
+        return recipient !== viewport && recipient.enclosingScrollView !== viewport
+    }
+
     private func admitViewport(root: NSView, window: NSWindow, geometry: NativeFixtureGeometry,
                                minimumHeight: CGFloat, spacing: CGFloat?, topInset: CGFloat = 0) async throws -> NSScrollView {
         func scroll(in view: NSView) -> NSScrollView? {

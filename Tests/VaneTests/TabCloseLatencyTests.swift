@@ -88,12 +88,25 @@ import XCTest
         let expected = NativeFixtureSnapshotMarker.Snapshot(store: ObjectIdentifier(store), section: section, ids: ids)
         func committed(_ view: NSView) -> Bool {
             if let marker = view as? NativeFixtureSnapshotMarker,
-               marker.acknowledges(expected, root: host, window: window) { return true }
+               marker.acknowledges(expected, root: host, window: window,
+                                   allowsEmptyHeight: ids.isEmpty) { return true }
             return view.subviews.contains { committed($0) }
         }
-        try await compatibilityWait {
-            host.layoutSubtreeIfNeeded()
-            return committed(host)
+        do {
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                return committed(host)
+            }
+        } catch {
+            func diagnostics(_ view: NSView) {
+                if let marker = view as? NativeFixtureSnapshotMarker,
+                   marker.belongs(to: ObjectIdentifier(store), section: section) {
+                    print("TAB_CLOSE_OUTLINE_TIMEOUT expected=\(ids) model=\(store.todayShape.entries.map(\.id)) frame=\(marker.frame) bounds=\(marker.bounds) hidden=\(marker.isHiddenOrHasHiddenAncestor)")
+                }
+                view.subviews.forEach(diagnostics)
+            }
+            diagnostics(host)
+            throw error
         }
 #endif
     }
@@ -119,6 +132,33 @@ import XCTest
                 try await waitForOutline(tabs.filter { $0 !== tabs[1] }.map { $0.id.uuidString },
                                        in: store, host: host, window: window)
                 XCTAssertNil(tabs[1].existingWeb, "Later native layout must not resurrect the retired page")
+            }
+        }
+    }
+
+    func testClearCommitsEmptyTodayWithoutResumingParkedNeighbours() async throws {
+        try await withLoop {
+            let saver = BatterySaver.shared
+            let oldMode = saver.mode
+            defer { saver.setMode(oldMode) }
+            for mode in [BatterySaver.Mode.off, .alwaysOn] {
+                saver.setMode(mode)
+                try await withWindow(count: 10) { store, tabs, window, host in
+                    tabs[0].kind = .pinned
+                    store.syncShapes()
+                    try await select(tabs[1], in: store, window: window, host: host)
+                    try await waitForOutline(tabs.dropFirst().map { $0.id.uuidString },
+                                            in: store, host: host, window: window)
+                    store.archiveToday(tabs.dropFirst().map(\.id))
+                    XCTAssertEqual(store.tabs.map(\.id), [tabs[0].id])
+                    XCTAssertNil(store.current)
+                    XCTAssertTrue(tabs.dropFirst().allSatisfy(\.tornDown))
+                    try await waitForOutline([], in: store, host: host, window: window)
+                    try await waitForOutline([tabs[0].id.uuidString], section: "pinned",
+                                             in: store, host: host, window: window)
+                    XCTAssertTrue(tabs.allSatisfy { $0.existingWeb == nil },
+                                  "Clearing Today must not wake parked neighbours or the surviving pin during layout")
+                }
             }
         }
     }

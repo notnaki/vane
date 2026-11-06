@@ -804,37 +804,43 @@ enum Look {
     static let lifted: Double = 0.3
     // Motion. Short and easing out: a fill should arrive under the pointer, never chase it.
     /// Hover and selection fills.
-    static let quick = Animation.easeOut(duration: 0.15)
+    static var quick: Animation { .easeOut(duration: UIAnimation.feedback.duration(0.15)) }
+    /// The address pill crossfades its host while the search prompt slides in from the left.
+    static var pillChange: Animation { .easeOut(duration: UIAnimation.feedback.duration(0.18)) }
+    static let pillPromptTravel: CGFloat = 16
     /// Frequent pointer feedback should finish before the next action begins.
-    static let feedback = Animation.easeOut(duration: 0.12)
+    static var feedback: Animation { .easeOut(duration: UIAnimation.feedback.duration(0.12)) }
     /// A floating surface appearing: scale from `appearScale` and fade, together. The
     /// duration is spelled out because a surface that is a *window* of its own — a Peek —
     /// has to stay alive for exactly as long as its own fade, and `Animation` will not say.
-    static let appearDuration: Double = 0.15
-    static let appear = Animation.easeOut(duration: appearDuration)
+    static var appearDuration: Double { UIAnimation.surfaces.duration(0.15) }
+    static var appear: Animation { .easeOut(duration: appearDuration) }
+    /// Peek keeps its opening spring while following the floating-panel speed.
+    static var peekAppear: Animation {
+        .spring(duration: UIAnimation.surfaces.duration(0.28), bounce: 0.12)
+    }
+    static var sidebarAnimation: Animation { .easeOut(duration: UIAnimation.sidebar.duration(0.2)) }
     /// Keep a small spring on reveal and dismissal without the pronounced edge rebound.
-    static let floatingSidebarAnimation = Animation.spring(duration: 0.18, bounce: 0.08)
+    static var floatingSidebarAnimation: Animation {
+        .spring(duration: UIAnimation.sidebar.duration(0.18), bounce: 0.08)
+    }
     static let appearScale: CGFloat = 0.97
     /// The tab list changing shape: a row arriving, leaving, or moving between sections. A
     /// touch of spring, the way Arc's rows settle, but short enough that ⌘W ⌘W ⌘W never
     /// queues up behind itself.
     /// The duration is spelled out because the row you are dragging glides into its slot
     /// when you let go, and the real row can only come back once it has arrived.
-    static let listSeconds: Double = 0.28
-    static let list = Animation.spring(duration: listSeconds, bounce: 0.12)
+    static let defaultListSeconds: Double = 0.28
+    static var listSeconds: Double { UIAnimation.tabList.duration(defaultListSeconds) }
+    static var list: Animation { .spring(duration: listSeconds, bounce: 0.12) }
     /// Closing should finish near the departing row's fade, without a reorder spring's tail.
-    static let tabClose = Animation.easeOut(duration: 0.14)
+    static var tabClose: Animation { .easeOut(duration: UIAnimation.tabClosing.duration(0.14)) }
     /// Today rows fade away before their neighbours finish sliding into the gap.
-    static let tabRemovalFade = Animation.easeOut(duration: 0.08)
-    /// Clear sweeps Today's rows out one after another: each row leaves this much after the
-    /// one above it, and a long list stops staggering past `sweepCap` so forty tabs do not
-    /// take two seconds to go.
-    static let sweepStagger: Double = 0.045
-    static let sweepCap: Double = 0.4
+    static var tabRemovalFade: Animation { .easeOut(duration: UIAnimation.tabClosing.duration(0.08)) }
     /// The status bar: how long a link is hovered before its url appears, and how fast the
     /// capsule fades either way.
     static let statusDelay: Double = 1.5
-    static let statusFade = Animation.easeOut(duration: 0.18)
+    static var statusFade: Animation { .easeOut(duration: UIAnimation.status.duration(0.18)) }
     /// The status capsule's inset from the card's corner, its height, and the longest url it
     /// shows before the middle is elided.
     static let statusInset: CGFloat = 8
@@ -1097,8 +1103,8 @@ extension Look {
                     oneRow < sidebarWidth - inset * 2))
         out.append(("a held back button opens its history well after an ordinary click ends",
                     holdDelay > switcherDelay && holdDelay <= 0.5))
-        out.append(("a dragged row settles in about the time the list takes to reshape",
-                    listSeconds > 0 && listSeconds <= 0.4))
+        out.append(("a dragged row’s default settling time stays brief",
+                    defaultListSeconds > 0 && defaultListSeconds <= 0.4))
         out.append(("the slot it left is dimmed, not emptied — the list keeps its shape",
                     lifted > 0 && lifted < 0.5))
         out.append(("the command bar's rows keep Arc's 50pt pitch", barRowHeight + barRowGap == 50))
