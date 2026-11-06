@@ -50,10 +50,10 @@ struct PageDialogPolicy {
 
     /// Long enough to read, but short enough that a page can't push the buttons off screen.
     static func clipped(_ message: String) -> String {
-        let lines = message.split(separator: "\n", omittingEmptySubsequences: false)
+        let lines = message.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
         let kept = lines.prefix(maxMessageLines).joined(separator: "\n")
         let clipped = String(kept.prefix(maxMessageCharacters))
-        return clipped.count < message.count ? clipped + "…" : clipped
+        return clipped.count < message.count ? clipped + "…" : message
     }
 
     /// Calls back exactly once. It answers false without a sheet when the tab can't show
