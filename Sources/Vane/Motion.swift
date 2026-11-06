@@ -3,8 +3,8 @@ import SwiftUI
 
 /// How the tab list moves. A Today row fades out while its neighbours slide up into the
 /// gap, a new one grows in under New Tab, a pin lifts a row out
-/// of Today and settles it under the space's name, and Clear sweeps Today away a row at a
-/// time. Rearrangements use `Look.list`; closing uses the shorter `Look.tabClose`,
+/// of Today and settles it under the space's name. Clear removes Today as one batch.
+/// Rearrangements use `Look.list`; closing uses the shorter `Look.tabClose`,
 /// plus the transitions below on the rows themselves.
 ///
 /// ponytail: `withAnimation` at the mutation, not `.animation(value:)` on the list. The
@@ -66,36 +66,7 @@ import SwiftUI
         return try withTransaction(transaction, body)
     }
 
-    // MARK: Sweeping
 
-    /// How long the `n`th row of a bulk archive waits before it goes. The first goes at
-    /// once; the rest follow at `Look.sweepStagger` each, and the tail is clamped so a
-    /// long list ends together rather than dribbling out. Zero for everything under Reduce
-    /// Motion — the sweep is decoration, and the tabs still leave.
-    nonisolated static func sweepDelay(_ n: Int, reduced: Bool = false) -> Double {
-        guard !reduced, n > 0 else { return 0 }
-        return min(Double(n) * Look.sweepStagger, Look.sweepCap)
-    }
-
-    /// Counts the archives that arrive in one synchronous burst — Clear, Archive Tabs
-    /// Below, Close Other Tabs, the auto-archive sweep — so each can be handed a place in
-    /// the queue without any of those callers knowing there is one. The count resets on the
-    /// next turn of the run loop: the next ⌘W is a fresh burst of one.
-    @MainActor final class Burst {
-        private var count = 0
-        private var armed = false
-
-        /// This call's index in the current burst: 0 for the first, then 1, 2, …
-        func next() -> Int {
-            defer { count += 1 }
-            if !armed {
-                armed = true
-                // Resets once the synchronous burst that armed it has run to the end.
-                Task { @MainActor [weak self] in self?.count = 0; self?.armed = false }
-            }
-            return count
-        }
-    }
 }
 
 extension Transaction {
@@ -161,23 +132,9 @@ private struct RowCollapse: ViewModifier {
 // MARK: - check
 
 extension Motion {
-    /// The sweep's arithmetic, and the rename and status-bar rules that live beside it,
-    /// proved offline. Grouped under one label so `SelfCheck` needs one line for the lot.
+    /// Layout, rename and status-bar rules proved offline.
     nonisolated static func check() -> [(String, Bool)] {
         var out: [(String, Bool)] = [
-            ("the first row of a sweep goes at once", sweepDelay(0) == 0),
-            ("the second waits one stagger", sweepDelay(1) == Look.sweepStagger),
-            ("each row waits one more than the last",
-             abs(sweepDelay(3) - sweepDelay(2) - Look.sweepStagger) < 1e-9),
-            ("a long sweep is capped, so forty tabs do not take two seconds",
-             sweepDelay(40) == Look.sweepCap && sweepDelay(400) == Look.sweepCap),
-            ("the cap is a handful of staggers, not a cut-off after two",
-             Look.sweepCap / Look.sweepStagger >= 6),
-            ("Reduce Motion drops the stagger altogether",
-             sweepDelay(5, reduced: true) == 0 && sweepDelay(0, reduced: true) == 0),
-            ("a negative index is nonsense and waits nothing", sweepDelay(-1) == 0),
-            ("the list animation is short enough to chain ⌘W under",
-             Look.sweepStagger < 0.1 && Look.sweepCap <= 0.5),
             ("a collapsed row eats the list's gap as well as its own height",
              Look.rowGap > 0 && Look.rowHeight > 0),
         ]
