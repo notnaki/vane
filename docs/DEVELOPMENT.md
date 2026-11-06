@@ -121,11 +121,14 @@ branch/main differences; the branch name alone is not the cause.
 
 Only the build job restores the Swift debug cache; successful `main` builds save it.
 The cache is keyed by macOS architecture, Swift/Xcode/SDK versions, and package/source
-hashes. Content-matching timestamps allow unchanged files to stay incremental, while
+hashes (all files under `Sources/` and `Tests/`, including native bridges and resources).
+The v3 key also includes the timestamp and bundling policies; v2 caches remain a migration
+fallback. Content-matching timestamps for every regular input allow unchanged files to stay incremental, while
 SwiftPM still validates the build. Successful aggregate checks retain the two newest
 Swift debug caches. Superseded runs on the same branch or PR are cancelled. The release
 workflow builds and smoke-tests the optimized app separately; its products are never
-cached because they can contain the OAuth secret.
+cached because they can contain the OAuth secret. The [November CI analysis](CI-PERFORMANCE.md)
+records measured bottlenecks, shard rebalancing and cache migration limits.
 
 ### Native fixture execution
 

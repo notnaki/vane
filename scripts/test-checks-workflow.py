@@ -84,6 +84,12 @@ def main():
     assert 'run: ./make-app.sh debug --skip-app-build\n' in build
     assert 'uses: actions/cache/restore@v6' in build and 'uses: actions/cache/save@v6' in build
     assert "github.event_name == 'push' && github.ref == 'refs/heads/main'" in build
+    assert "hashFiles('Sources/**', 'Tests/**', 'scripts/ci-source-state.py', 'make-app.sh')" in build
+    assert 'key: swift-debug-v3-' in build
+    assert '            swift-debug-v2-' in build, 'old caches remain a migration fallback'
+    for command in ('python3 scripts/test-ci-change-scope.py', 'python3 scripts/test-checks-workflow.py',
+                    'node docs/tests/galaxy.test.cjs'):
+        assert text.count(command) == 1, command + ' must run once before app jobs'
     assert 'scripts/ci-build-artifact.py pack' in build
     assert 'name: debug-runtime' in build and 'compression-level: 0' in build
     for section in (native, packaging):
@@ -108,13 +114,14 @@ def main():
     assert 'Native suite primary status=0; cleanup status=0' in native
     assert native.index('Owned AppKit loop preflight') < native.index('Native regression tests')
     assert 'Preserve native loop failure evidence\n        if: ${{ always() }}' in native
-    for command in ('node docs/tests/galaxy.test.cjs', 'python3 scripts/test-ci-source-state.py',
+    for command in ('python3 scripts/test-ci-source-state.py',
                     'python3 scripts/test-native-fixture-runner.py', './.build/debug/vane selfcheck --pure',
                     'scripts/check-webkit-startup.sh', 'scripts/check-app-icons.sh'):
         assert text.count('run: ' + command) == 1, command + ' must run once in app jobs'
-    for fixture in ('test-checks-workflow.py', 'test-native-test-shards.py', 'test-ci-build-artifact.py', 'test-ci-change-scope.py',
+    for fixture in ('test-native-test-shards.py', 'test-ci-build-artifact.py',
                     'test-classify-worker-ua.py'):
         assert fixture in sections['source']
+    assert '--key swift-debug- ' in sections['prune-caches'], 'prune old cache generations too'
     assert dependencies(sections['prune-caches']) == {'changes', 'checks'}
     assert "needs.changes.outputs.app_required == 'true'" in sections['prune-caches']
     print(f'PASS: {trials} gate cases; docs skips and one-build fan-out preserve failures and native coverage')

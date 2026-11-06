@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep unchanged Swift inputs incremental across fresh CI checkouts."""
+"""Keep unchanged build inputs incremental across fresh CI checkouts."""
 
 import hashlib
 import json
@@ -11,9 +11,9 @@ import sys
 def inputs(root):
     return [path for path in (
         root / "Package.swift", root / "Package.resolved",
-        *sorted((root / "Sources").rglob("*.swift")),
-        *sorted((root / "Tests").rglob("*.swift")),
-    ) if path.is_file()]
+        *sorted((root / "Sources").rglob("*")),
+        *sorted((root / "Tests").rglob("*")),
+    ) if path.is_file() and not path.is_symlink()]
 
 
 def digest(path):
@@ -49,7 +49,7 @@ def restore(root):
         if entry.get("sha256") == digest(path):
             os.utime(path, ns=(path.stat().st_atime_ns, mtime))
             restored += 1
-    print(f"Restored timestamps for {restored} unchanged Swift/package inputs")
+    print(f"Restored timestamps for {restored} unchanged build inputs")
 
 
 if __name__ == "__main__":

@@ -22,18 +22,42 @@ with tempfile.TemporaryDirectory() as directory:
     test.write_text("func fixture() {}\n")
     source.write_text("let value = 1\n")
     manifest.write_text("// package\n")
+    native = []
+    for name in ("Sources/Bridge/Bridge.m", "Sources/Bridge/include/Bridge.h",
+                 "Sources/Bridge/include/module.modulemap", "Tests/Helper/main.c",
+                 "Sources/Vane/Resources/catalog.json"):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("original input\n")
+        native.append(path)
     old = 1_700_000_000_000_000_000
     fresh = old + 10_000_000_000
-    for path in (source, manifest, test):
+    for path in (source, manifest, test, *native):
         os.utime(path, ns=(old, old))
     state.save(root)
 
-    for path in (source, manifest, test):
+    for path in (source, manifest, test, *native):
         os.utime(path, ns=(fresh, fresh))
     state.restore(root)
     assert source.stat().st_mtime_ns == old
     assert manifest.stat().st_mtime_ns == old
     assert test.stat().st_mtime_ns == old
+
+    for path in native:
+        assert path.stat().st_mtime_ns == old, f"unchanged native/resource input rebuilt: {path}"
+        path.write_text("modified input\n")
+        os.utime(path, ns=(fresh, fresh))
+    state.restore(root)
+    for path in native:
+        assert path.stat().st_mtime_ns == fresh, f"changed native/resource input hidden: {path}"
+    removed = native.pop()
+    removed.unlink()
+    added_native = root / "Tests/Helper/Added.h"
+    added_native.write_text("added header\n")
+    os.utime(added_native, ns=(fresh, fresh))
+    state.restore(root)
+    assert not removed.exists()
+    assert added_native.stat().st_mtime_ns == fresh
 
     test.write_text("func changedFixture() {}\n")
     os.utime(test, ns=(fresh, fresh))
