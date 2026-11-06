@@ -25,6 +25,22 @@ import XCTest
         XCTAssertEqual(Look.appearDuration, 0.15, accuracy: 0.0001)
     }
 
+    func testAddressPillTransitionReadsFeedbackSpeedAtEachInteraction() {
+        TestEnvironment.prepare()
+        let key = UIAnimation.feedback.key
+        let old = UserDefaults.vane.object(forKey: key)
+        defer {
+            if let old { UserDefaults.vane.set(old, forKey: key) }
+            else { UserDefaults.vane.removeObject(forKey: key) }
+        }
+        UserDefaults.vane.set(2.0, forKey: key)
+        XCTAssertEqual(Look.pillChange, .easeOut(duration: 0.09))
+        UserDefaults.vane.set(0.5, forKey: key)
+        XCTAssertEqual(Look.pillChange, .easeOut(duration: 0.36))
+        UserDefaults.vane.removeObject(forKey: key)
+        XCTAssertEqual(Look.pillChange, .easeOut(duration: 0.18))
+    }
+
     func testInvalidStoredSpeedsFallBackToDefault() throws {
         let name = "vane-animation-tests-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))

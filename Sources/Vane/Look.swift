@@ -805,6 +805,9 @@ enum Look {
     // Motion. Short and easing out: a fill should arrive under the pointer, never chase it.
     /// Hover and selection fills.
     static var quick: Animation { .easeOut(duration: UIAnimation.feedback.duration(0.15)) }
+    /// The address pill crossfades its host while the search prompt slides in from the left.
+    static var pillChange: Animation { .easeOut(duration: UIAnimation.feedback.duration(0.18)) }
+    static let pillPromptTravel: CGFloat = 16
     /// Frequent pointer feedback should finish before the next action begins.
     static var feedback: Animation { .easeOut(duration: UIAnimation.feedback.duration(0.12)) }
     /// A floating surface appearing: scale from `appearScale` and fade, together. The
