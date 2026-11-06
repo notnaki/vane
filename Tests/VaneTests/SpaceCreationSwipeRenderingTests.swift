@@ -11,7 +11,8 @@ import XCTest
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do {
-            try await exerciseCreation()
+            try await exerciseCreation(holdingStill: false)
+            try await exerciseCreation(holdingStill: true)
         } catch { failure = error }
         do { try await loop.close() }
         catch {
@@ -21,7 +22,7 @@ import XCTest
         if let failure { throw failure }
     }
 
-    private func exerciseCreation() async throws {
+    private func exerciseCreation(holdingStill: Bool) async throws {
         let profile = ProfileManager.shared.create(name: "Creation swipe rendering")
         let space = ProfileManager.shared.createSpace(name: "Last Space", in: profile.id)
         let store = TabStore(profileID: profile.id, space: space, session: [])
@@ -74,11 +75,16 @@ import XCTest
         try await compatibilityWait { !store.spaceSwiping && store.spaceDrag == 0 }
         send(phase: .began, at: 2)
         send(-width * 0.1, at: 2.01)
-        send(-width * 0.3, at: 2.11)
-        send(-width * 0.3, at: 2.21)
-        send(-width * 0.3, at: 2.31)
+        if holdingStill {
+            send(-width * 0.9, at: 2.11)
+        } else {
+            send(-width * 0.3, at: 2.11)
+            send(-width * 0.3, at: 2.21)
+            send(-width * 0.3, at: 2.31)
+        }
         XCTAssertFalse(store.creatingSpace, "Even a full deliberate pull waits for release")
-        send(phase: .ended, at: 2.32)
+        // Hold still, with no intermediate movement packets, then lift the fingers.
+        send(phase: .ended, at: 2.42)
         XCTAssertTrue(store.creatingSpace)
         XCTAssertFalse(store.spaceSwiping)
         XCTAssertEqual(store.spaceDrag, 0)
@@ -88,7 +94,7 @@ import XCTest
         }
         try await compatibilityWait { formField(in: host)?.window === window }
         XCTAssertNil(host.spaceSlide, "An outgoing native sidebar must not cover the creation form")
-        send(-width, phase: [], at: 2.34) // remaining gesture packets cannot dismiss the form
+        send(-width, phase: [], at: 2.44) // remaining gesture packets cannot dismiss the form
         XCTAssertTrue(store.creatingSpace)
         store.cancelCreatingSpace()
         try await compatibilityWait {
