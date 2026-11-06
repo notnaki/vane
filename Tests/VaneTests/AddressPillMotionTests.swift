@@ -51,9 +51,6 @@ private struct AddressPillFixtureView: View {
             let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 340, height: 76),
                                   styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            window.contentView = host
-            window.appearance = NSAppearance(named: .darkAqua)
-            store.window = window
             defer {
                 window.contentView = nil
                 store.window = nil
@@ -63,6 +60,23 @@ private struct AddressPillFixtureView: View {
                 saver.setMode(previousMode)
                 SidebarWidth.shared.width = previousWidth
             }
+            // Hover reveals the same glyphs as focus. Keep the owned window clear
+            // of the physical pointer so the keyboard assertions cannot pass on hover.
+            let screen = try XCTUnwrap(NSScreen.main)
+            let visible = screen.visibleFrame.insetBy(dx: 20, dy: 20)
+            let size = window.frame.size
+            let origins = [NSPoint(x: visible.minX, y: visible.minY),
+                           NSPoint(x: visible.maxX - size.width, y: visible.minY),
+                           NSPoint(x: visible.minX, y: visible.maxY - size.height),
+                           NSPoint(x: visible.maxX - size.width, y: visible.maxY - size.height)]
+            let origin = try XCTUnwrap(origins.first {
+                !NSRect(origin: $0, size: size).insetBy(dx: -12, dy: -12).contains(NSEvent.mouseLocation)
+            })
+            window.setFrameOrigin(origin)
+            window.contentView = host
+            window.appearance = NSAppearance(named: .darkAqua)
+            store.window = window
+
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             try await compatibilityWait {
@@ -71,7 +85,7 @@ private struct AddressPillFixtureView: View {
                     && NSApp.keyWindow === window && window.isVisible
                     && window.occlusionState.contains(.visible) && host.window === window
                     && host.bounds.width == 340 && NSApp.modalWindow == nil
-                    && window.attachedSheet == nil
+                    && window.attachedSheet == nil && !window.frame.contains(NSEvent.mouseLocation)
             }
             // Move focus away from the pill before establishing its resting render.
             window.makeFirstResponder(nil)
