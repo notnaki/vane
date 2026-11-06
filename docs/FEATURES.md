@@ -180,6 +180,14 @@ Icon asset maintenance is documented in [AppIcons](../AppIcons/README.md).
 
 ## Battery Saver and motion
 
+**Settings → Advanced → UI Animations** adjusts the speed of sidebar reveals,
+tab and folder movement, tab closing, floating panels, hover feedback, and link-status
+fades. Search by animation name or description. Speeds below **1×** slow animations
+down; speeds above **1×** make them faster. Each row has **Reset**, and **Reset All**
+restores every animation, including rows hidden by search. Changes apply to the next
+animation and persist across launches. Website animations and gesture tracking are
+unaffected; system Reduce Motion and Battery Saver still take priority.
+
 Battery Saver lives in **Settings → Advanced → Performance**. Choose **Off**,
 **Automatic** (below 20% battery while unplugged), or **Always On**. While active,
 eligible idle tabs sleep after five minutes, hover link previews pause, and sidebar
