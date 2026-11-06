@@ -121,7 +121,9 @@ the full benefit. Main-only saves and release-secret isolation remain unchanged.
 **Refresh advisory shard weights.** The old table covered 96 classes; the new table
 covers 344 observed classes, using median per-class totals from three successful
 required suites. For each run, only methods selected in its shard manifests enter
-the totals; separate preflights and cleanup executions are excluded. Skipped methods
+the totals. The first primary-phase completion per selected method supplies the
+parent elapsed duration, including isolated child-host overhead. Later buffered
+child duplicates, separate preflights and cleanup executions are excluded. Skipped methods
 retain their reported duration. Weights affect placement only; discovery, exact-once
 partitioning and completion verification still define coverage.
 
@@ -130,9 +132,9 @@ durations gives the following counterfactual maximum test time per shard:
 
 | Successful source run | Old weights | New weights | Reduction |
 | --- | ---: | ---: | ---: |
-| 42194913597 | 340.8 s | 273.1 s | 19.9% |
-| 42110187620 | 348.0 s | 287.1 s | 17.5% |
-| 42090704406 | 272.9 s | 267.7 s | 1.9% |
+| 42194913597 | 341.7 s | 270.5 s | 20.8% |
+| 42110187620 | 348.0 s | 277.7 s | 20.2% |
+| 42090704406 | 272.9 s | 264.2 s | 3.2% |
 
 These are replay estimates, not measured new CI runtimes. They exclude startup,
 preflight, cleanup, queue delays and effects of changed test order. Updated weights
@@ -145,6 +147,12 @@ macOS copies consumed roughly 45–80 s per app run, mostly website and gate fix
 This saves runner work; because source fixtures already ran alongside the longer
 build, it does not directly remove 45–80 s from the critical path. No tests or
 assertions were removed.
+
+Using these same inventories and corrected timings, median longest-shard test time
+is 1,030.7 s with one runner, 534.3 s with two, and 270.5 s with four. Fewer runners
+reduce setup work but serialize far more tests. Keep four for end-to-end latency;
+these estimates exclude setup and queueing, so severe capacity constraints should
+be assessed separately.
 
 ## Additional work toward the requested 2× target
 
@@ -194,6 +202,6 @@ content against the baseline above. Inspect actual compiled targets and cache ke
 then compare the maximum of all four native jobs. Track queue delay separately.
 A source-heavy PR or cold/toolchain-mismatched build is not a valid warm-cache
 comparison. Refresh the advisory table periodically using the listed runs' downloadable
-`native-loop-logs-*` artifacts: sum selected methods by class per run, take the
-median across successful runs, and retain provenance in the JSON. Do not derive
+`native-loop-logs-*` artifacts: take the first completion of each selected method before the primary/cleanup
+boundary, sum by class per run, take the median across successful runs, and retain provenance in the JSON. Do not derive
 weights from failed or incomplete suites.

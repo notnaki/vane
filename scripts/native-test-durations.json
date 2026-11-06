@@ -4,7 +4,7 @@
     "https://github.com/notnaki/vane/actions/runs/42110187620",
     "https://github.com/notnaki/vane/actions/runs/42090704406"
   ],
-  "description": "Advisory seconds by class: median total duration of selected required methods across three successful macos-26 runs. Includes skipped methods at their reported duration. Discovery alone defines coverage; new classes use the discovery-count fallback.",
+  "description": "Advisory seconds by class: median total of first primary-phase completions for selected required methods across three successful macos-26 runs. Parent completions include child-host overhead; later buffered duplicates and separate cleanup are excluded. Skipped methods use reported duration. Discovery alone defines coverage; new classes use the discovery-count fallback.",
   "classes": {
     "VaneTests.AppLifecycleTests": 12.678,
     "VaneTests.AppResourcesTests": 0.012,
@@ -204,7 +204,7 @@
     "VaneTests.NativeFixturePolicySettlementTests": 25.414,
     "VaneTests.NativeFixtureProfileCleanupTests": 0.036,
     "VaneTests.NativeFixtureRetirementManifestTests": 0.008,
-    "VaneTests.NativeFixtureRetirementTests": 6.724,
+    "VaneTests.NativeFixtureRetirementTests": 0.157,
     "VaneTests.NativePageInputBoundsTests": 0.358,
     "VaneTests.NativePageWorkTests": 8.902,
     "VaneTests.NativeResidentBatchGeometryTests": 15.071,
@@ -341,12 +341,12 @@
     "VaneTests.UpdateChannelSettingsTests": 0.144,
     "VaneTests.UpdaterChannelTests": 0.023,
     "VaneTests.UpdaterFailureTests": 0.082,
-    "VaneTests.UploadSubmissionTests": 3.189,
+    "VaneTests.UploadSubmissionTests": 3.909,
     "VaneTests.WebDocumentTitleTests": 5.014,
     "VaneTests.WebHostFocusTests": 0.068,
     "VaneTests.WebKeyboardFallbackTests": 0.023,
     "VaneTests.WebsiteDataTests": 0.184,
-    "VaneTests.WebsiteDataWebKitTests": 2.199,
+    "VaneTests.WebsiteDataWebKitTests": 3.107,
     "VaneTests.WebsitePopupTests": 1.963,
     "VaneTests.WebsitePopupWebKitTests": 10.207,
     "VaneTests.WindowDragGroundTests": 0.016
