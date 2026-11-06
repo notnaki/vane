@@ -769,7 +769,7 @@ struct SpacePreviewList: View, Equatable {
                     sectionRows(rows.pinned, section: "pinned")
                     .padding(.bottom, pinnedCollapsed ? -Look.rowGap : 0)
                 }
-                tidy
+                if todayCount > 0 { tidy }
                 newTab
                 sectionRows(rows.today, section: "today")
                 Color.clear.frame(maxWidth: .infinity, minHeight: Look.rowHeight)

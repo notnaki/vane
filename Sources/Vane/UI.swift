@@ -3322,7 +3322,10 @@ private struct SidebarSpaceSectionContent: View {
             SpaceRow().id(store.currentSpaceID)
         } rows: {
             PinnedTabs(store: store, snapshot: pinned)
-            TidyRow().id(store.currentSpaceID)
+            if TidyTabs.todayCount(store) > 0 {
+                TidyRow().id(store.currentSpaceID)
+                    .transition(.opacity)
+            }
             NewTabRow()
                 .id(store.currentSpaceID)
                 .background(alignment: .topLeading) {
@@ -4007,9 +4010,10 @@ struct SidebarTidySurface<Actions: View>: View {
     }
 }
 
-/// The pinned divider keeps Clear visible for a pile of Today tabs and reveals it on
-/// hover for any nonempty Today section. Tidy follows its own threshold and preference.
-/// The line shortens as controls appear without moving the rows above or below it.
+/// The divider is absent when Today is empty. Otherwise, it keeps Clear visible for
+/// a pile of Today tabs and reveals it on hover for any nonempty Today section.
+/// Tidy follows its own threshold and preference. The line shortens as controls appear
+/// without moving the rows above or below it.
 private struct TidyRow: View {
     @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
