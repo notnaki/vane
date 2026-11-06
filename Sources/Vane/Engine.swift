@@ -1816,7 +1816,6 @@ struct TitleReveal: Equatable, Sendable {
         #endif
         guard w === existingWeb, !tornDown, !suspended else { return }
         guard navigationState.begin(navigation) else { return }
-        MeetCall.reset(self)
         #if DEBUG
         recordNavigationStage("provisional-accepted", navigation: navigation)
         #endif
@@ -1960,6 +1959,9 @@ struct TitleReveal: Equatable, Sendable {
                               detail: "owned=\(ownsNavigation(navigation, in: w))")
         #endif
         guard ownsNavigation(navigation, in: w) else { return }
+        // A canceled provisional load/download leaves the old call document alive.
+        // Release its status and floating host only when a document replaces it.
+        MeetCall.reset(self)
         #if DEBUG
         recordNavigationStage("commit-accepted", navigation: navigation)
         #endif

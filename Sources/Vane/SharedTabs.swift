@@ -275,6 +275,9 @@ import WebKit
             guard let owner else { continue }
             claim(tab, in: stores[owner])
         }
+        for tab in ordered where tab.inMeetCall || MeetCall.supports(tab.currentURL) {
+            CallPopout.presentationChanged(tab)
+        }
     }
 
     private static func claim(_ tab: Tab, in store: TabStore) {

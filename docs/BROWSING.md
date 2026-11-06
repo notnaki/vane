@@ -263,6 +263,8 @@ window as a fallback.
 Google Meet calls use a floating window containing the existing live page, keeping
 participants, shared screens, and Meet's own call controls together. Leaving the tab
 or minimizing its browser window opens it when automatic Picture in Picture is enabled.
+Calls also follow you out of a split, Space, or profile; a call still visible in another
+browser window stays there.
 Returning to the tab, or choosing **Back to Tab**, puts the page back. **Close** hides
 the floating window without leaving the call; automatic pop-out stays suppressed until
 you return to that tab. The sidebar shows a yellow camera and a pulsing red call-status

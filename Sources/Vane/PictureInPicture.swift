@@ -349,7 +349,7 @@ import WebKit
     /// what keeps it mounted (`OffscreenPages`), and unmarked the moment it replies.
     static func enterIfPlaying(_ tab: Tab?, minimizingWindow: NSWindow? = nil) {
         guard autoEnabled, let tab, !tab.suspended, !PiPMinimizeControls.isReturningToTab(tab) else { return }
-        if MeetCall.supports(tab.existingWeb?.url) {
+        if tab.inMeetCall || MeetCall.supports(tab.currentURL) {
             CallPopout.enterIfCalling(tab, minimizingWindow: minimizingWindow)
             return
         }

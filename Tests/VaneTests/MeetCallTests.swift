@@ -42,7 +42,6 @@ import XCTest
 
     private func owner(_ tab: Tab, window: NSWindow) -> TabStore {
         let store = TabStore(isPrivate: true, session: [])
-        store.sharingReady = false
         store.tabs = [tab]
         store.window = window
         store.current = tab.id
@@ -325,6 +324,75 @@ import XCTest
             try await compatibilityWait { !tab.inMeetCall }
             await Suspension.suspendIfEligible(tab, underPressure: true, draftCheck: { _ in false })
             XCTAssertTrue(tab.suspended, "Ending the call must release the suspension exemption")
+        }
+    }
+
+    func testCanceledOrDownloadedNavigationKeepsTheOriginalCall() async throws {
+        try await withLoop {
+            let (tab, _, _) = try await fixture("<title>Call fixture</title><button><span>call_end</span></button>")
+            try await compatibilityWait { tab.inMeetCall }
+            PictureInPicture.enterIfPlaying(tab)
+            let panel = try XCTUnwrap(CallPopout.window(for: tab))
+            let carrier = WKWebView()
+            for error in [URLError(.cancelled) as NSError, NSError(domain: "WebKitErrorDomain", code: 102)] {
+                // Real WebKit navigation identities, replayed without replacing the
+                // source document: the canceled/download navigation never commits.
+                let navigation = try XCTUnwrap(carrier.loadHTMLString("<title>Provisional</title>", baseURL: nil))
+                carrier.stopLoading()
+                tab.webView(tab.web, didStartProvisionalNavigation: navigation)
+                XCTAssertTrue(tab.inMeetCall, "A pending load has not replaced the live call")
+                tab.webView(tab.web, didFailProvisionalNavigation: navigation, withError: error)
+                XCTAssertTrue(tab.inMeetCall)
+                XCTAssertTrue(MediaState.shared.keepsRunning(tab))
+                XCTAssertTrue(CallPopout.window(for: tab) === panel)
+            }
+        }
+    }
+
+    func testLeavingSplitPopsOutCallFromUnfocusedPane() async throws {
+        try await withLoop {
+            let (tab, window, _) = try await fixture("<title>Call fixture</title><button><span>call_end</span></button>")
+            try await compatibilityWait { tab.inMeetCall }
+            let store = owner(tab, window: window)
+            let second = Tab(isPrivate: true), unrelated = Tab(isPrivate: true)
+            store.tabs += [second, unrelated]
+            store.splits = [try XCTUnwrap(Split(tabs: [tab.id, second.id]))]
+            store.current = second.id
+            XCTAssertNil(CallPopout.window(for: tab))
+            store.current = unrelated.id
+            XCTAssertNotNil(CallPopout.window(for: tab), "Every departing pane must be considered, not just the focused tab")
+            store.current = second.id
+            XCTAssertNil(CallPopout.window(for: tab), "Returning to either pane reveals the whole split and returns its call")
+        }
+    }
+
+    func testCallFollowsSpaceAndProfileChanges() async throws {
+        try await withLoop {
+            let manager = ProfileManager.shared
+            let previous = manager.active
+            let profile = manager.create(name: "Call source"), otherProfile = manager.create(name: "Call destination")
+            let source = manager.createSpace(name: "Call", in: profile.id)
+            let second = manager.createSpace(name: "Other", in: profile.id)
+            let destination = manager.createSpace(name: "Destination", in: otherProfile.id)
+            let store = Windows.open(profile: profile, space: source, focus: true)
+            let window = try XCTUnwrap(store.window)
+            defer {
+                window.close()
+                _ = manager.delete(profile.id); _ = manager.delete(otherProfile.id)
+                manager.active = previous
+            }
+            let tab = store.newBlankTab(focus: true)
+            tab.web.loadHTMLString("<title>Call fixture</title><button><span>call_end</span></button>", baseURL: URL(string: "https://meet.google.com/abc-defg-hij"))
+            try await compatibilityWait { tab.inMeetCall && tab.web.window === window && !tab.web.isHiddenOrHasHiddenAncestor }
+            store.switchTo(space: second)
+            XCTAssertNotNil(CallPopout.window(for: tab))
+            store.switchTo(space: source)
+            XCTAssertNil(CallPopout.window(for: tab))
+            let arriving = try XCTUnwrap(Windows.hop(store, to: destination))
+            XCTAssertNotNil(CallPopout.window(for: tab))
+            XCTAssertTrue(Windows.hop(arriving, to: source) === store)
+            XCTAssertNil(CallPopout.window(for: tab))
+            XCTAssertTrue(tab.inMeetCall)
         }
     }
 }

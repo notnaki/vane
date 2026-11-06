@@ -48,6 +48,15 @@ import WebKit
         present(tab)
     }
 
+    /// Reconcile every affected Meet page after the browser has finalized its visible
+    /// panes. The focused tab alone misses calls in another pane or a stashed Space.
+    static func presentationChanged(_ tab: Tab) {
+        guard !tab.tornDown, !tab.suspended, tab.existingWeb != nil,
+              tab.inMeetCall || MeetCall.supports(tab.currentURL) else { return }
+        if visibleInBrowser(tab) { returnInline(tab) }
+        else if PictureInPicture.autoEnabled { enterIfCalling(tab) }
+    }
+
     static func toggle(_ tab: Tab) {
         if sessions[tab.id] != nil { dismiss(tab, suppress: true) }
         else { suppressed.remove(tab.id); present(tab) }

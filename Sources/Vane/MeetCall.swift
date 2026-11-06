@@ -57,7 +57,7 @@ import WebKit
         guard message.frameInfo.isMainFrame,
               message.frameInfo.securityOrigin.protocol == "https",
               message.frameInfo.securityOrigin.host == "meet.google.com",
-              supports(tab.existingWeb?.url),
+              supports(tab.currentURL),
               let body = message.body as? [String: Any], let token = body["token"] as? String,
               token.count <= 80 else { return }
         // Re-read in the current document, rather than trusting a queued report from
@@ -66,14 +66,14 @@ import WebKit
     }
 
     static func refresh(_ tab: Tab, expectedToken: String? = nil) {
-        guard let web = tab.existingWeb, !tab.tornDown, !tab.suspended, supports(web.url) else { return }
+        guard let web = tab.existingWeb, !tab.tornDown, !tab.suspended, supports(tab.currentURL) else { return }
         let request = UUID()
         tab.meetCallRead = request
         let generation = tab.permissionGeneration
         web.evaluateJavaScript("window.__vaneMeetCallState && window.__vaneMeetCallState()", in: nil, in: world) { [weak tab] result in
             guard let tab, tab.existingWeb === web, !tab.tornDown, !tab.suspended,
                   tab.meetCallRead == request, tab.permissionGeneration == generation,
-                  supports(web.url), case .success(let value) = result,
+                  supports(tab.currentURL), case .success(let value) = result,
                   let state = value as? [String: Any],
                   let token = state["token"] as? String,
                   expectedToken == nil || token == expectedToken,
