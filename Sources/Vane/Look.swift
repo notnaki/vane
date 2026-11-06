@@ -812,6 +812,10 @@ enum Look {
     /// has to stay alive for exactly as long as its own fade, and `Animation` will not say.
     static var appearDuration: Double { UIAnimation.surfaces.duration(0.15) }
     static var appear: Animation { .easeOut(duration: appearDuration) }
+    /// Peek keeps its opening spring while following the floating-panel speed.
+    static var peekAppear: Animation {
+        .spring(duration: UIAnimation.surfaces.duration(0.28), bounce: 0.12)
+    }
     static var sidebarAnimation: Animation { .easeOut(duration: UIAnimation.sidebar.duration(0.2)) }
     /// Keep a small spring on reveal and dismissal without the pronounced edge rebound.
     static var floatingSidebarAnimation: Animation {

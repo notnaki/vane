@@ -16,9 +16,11 @@ import XCTest
         UserDefaults.vane.set(2.0, forKey: key)
         XCTAssertEqual(Look.appearDuration, 0.075, accuracy: 0.0001)
         XCTAssertEqual(Look.appear, .easeOut(duration: 0.075))
+        XCTAssertEqual(Look.peekAppear, .spring(duration: 0.14, bounce: 0.12))
         UserDefaults.vane.set(0.5, forKey: key)
         XCTAssertEqual(Look.appearDuration, 0.3, accuracy: 0.0001)
         XCTAssertEqual(Look.appear, .easeOut(duration: 0.3))
+        XCTAssertEqual(Look.peekAppear, .spring(duration: 0.56, bounce: 0.12))
         UserDefaults.vane.removeObject(forKey: key)
         XCTAssertEqual(Look.appearDuration, 0.15, accuracy: 0.0001)
     }
@@ -60,7 +62,7 @@ import XCTest
 
     func testListAndSweepTimingsFollowTheirOwnSpeeds() {
         TestEnvironment.prepare()
-        let keys = [UIAnimation.tabList.key, UIAnimation.tabClosing.key]
+        let keys = [UIAnimation.tabList.key, UIAnimation.tabClosing.key, UIAnimation.surfaces.key]
         let old = keys.map { UserDefaults.vane.object(forKey: $0) }
         defer {
             for (key, value) in zip(keys, old) {
@@ -70,10 +72,13 @@ import XCTest
         }
         UserDefaults.vane.set(0.25, forKey: UIAnimation.tabList.key)
         UserDefaults.vane.set(2.0, forKey: UIAnimation.tabClosing.key)
+        UserDefaults.vane.set(0.5, forKey: UIAnimation.surfaces.key)
         XCTAssertEqual(Look.listSeconds, 1.12, accuracy: 0.0001)
         XCTAssertEqual(Motion.sweepDelay(1), 0.0225, accuracy: 0.0001)
         XCTAssertEqual(Motion.sweepDelay(400), 0.2, accuracy: 0.0001)
         XCTAssertEqual(Motion.sweepDelay(3, reduced: true), 0)
+        XCTAssertEqual(Look.peekAppear, .spring(duration: 0.56, bounce: 0.12),
+                       "Peek follows floating panels, independently of tab-list speed")
         XCTAssertEqual(Look.statusDelay, 1.5, "Speed must not shorten the hover wait")
     }
 

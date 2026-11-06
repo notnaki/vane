@@ -256,7 +256,7 @@ import WebKit
             },
         ]
 
-        withAnimation(Motion.reduced ? nil : Look.list) { session.shown.on = true }
+        withAnimation(Motion.reduced ? nil : Look.peekAppear) { session.shown.on = true }
         axAnnounce("Peeking \(url.host() ?? url.absoluteString). Press Escape to close, "
                    + "\u{2318}O to open it as a tab.")
     }
