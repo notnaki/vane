@@ -317,6 +317,12 @@ you send them, including in private windows. See the [privacy policy](../PRIVACY
 Page summaries continue to use Apple's on-device model. Cloud requests are bounded,
 cancellable, and fall back to ordinary title cleanup and grouping on errors or quotas.
 
+When AI and **Rename favorite and pinned tab titles** are enabled, right-click a pinned
+tab and choose **Regenerate Title** to request a fresh name. A successful result replaces
+the current name, including a manual rename, with the usual AI title reveal animation.
+If generation fails, the current name stays. Tabs browsed away from their pinned page
+are named from that pinned page's saved title.
+
 The cloud transport checks use an offline HTTP fixture:
 
 ```sh
