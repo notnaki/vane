@@ -72,6 +72,35 @@ final class SpaceSwipeCommitTests: XCTestCase {
         }
     }
 
+    func testFullPullHeldStillBeforeReleaseOpensCreation() {
+        for count in [1, 3] {
+            var swipe = Spaces.Swipe()
+            _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: count, index: count - 1, create: true)
+            let pulled = swipe.feed(dx: -230, dt: 0.04, phase: .changed,
+                                    width: 250, count: count, index: count - 1, create: true)
+            XCTAssertNil(pulled.commit)
+            // Stationary fingers produce no changed events. The release timestamp is
+            // the next observation of how long the full pull has been held.
+            XCTAssertEqual(swipe.feed(dx: 0, dt: 0.3, phase: .ended,
+                                     width: 250, count: count, index: count - 1, create: true).commit, 1)
+            XCTAssertNil(swipe.feed(dx: -100, dt: 1, phase: .momentum,
+                                   width: 250, count: count, index: count - 1, create: true).commit)
+            XCTAssertNil(swipe.feed(dx: 0, dt: 1, phase: .ended,
+                                   width: 250, count: count, index: count - 1, create: true).commit)
+        }
+    }
+
+    func testHoldingAShortOrIneligiblePullCannotOpenCreation() {
+        for (distance, create, index) in [(100.0, true, 2), (230.0, false, 2), (0.0, true, 2)] {
+            var swipe = Spaces.Swipe()
+            _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: index, create: create)
+            _ = swipe.feed(dx: -distance, dt: 0.04, phase: .changed,
+                           width: 250, count: 3, index: index, create: create)
+            XCTAssertNil(swipe.feed(dx: 0, dt: 1, phase: .ended,
+                                   width: 250, count: 3, index: index, create: create).commit)
+        }
+    }
+
     func testFullDeliberatePullCanReverseBeforeRelease() {
         var swipe = Spaces.Swipe()
         _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: 2, create: true)
