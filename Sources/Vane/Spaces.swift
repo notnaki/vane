@@ -567,15 +567,18 @@ enum Spaces {
                 let distancePull = Self.pull(travel, width: width, count: count, index: index, create: create)
                 if distancePull > 0 { creationDuration += max(0, dt) }
                 else { creationDuration = 0 }
-                // The visible circle reflects both deliberate travel and time. Waiting
-                // for fingers-up or receiving momentum cannot turn a fast flick into intent.
+                // Movement samples reflect both deliberate travel and time. A stationary
+                // hold is accounted for by the next sample, including fingers-up.
                 let pull = min(distancePull, Self.pullFull * CGFloat(creationDuration / Self.createDuration))
                 return (offset, nil, pull)
             case .ended:
                 defer { travel = 0; speed = 0; creationDuration = 0 }
                 guard armed else { return (nil, nil, 0) }
                 armed = false
-                if creationDuration >= Self.createDuration,
+                // AppKit sends no changed packets while the fingers are stationary.
+                // The interval before release still belongs to the held pull; momentum
+                // never reaches this check and cannot turn a released flick into intent.
+                if creationDuration + max(0, dt) >= Self.createDuration,
                    Self.pull(travel, width: width, count: count, index: index, create: create) >= Self.pullFull {
                     return (nil, 1, 0)
                 }
