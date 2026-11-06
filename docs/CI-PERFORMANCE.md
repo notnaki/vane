@@ -14,17 +14,23 @@ only the post-validation cache-pruning job receives cache deletion permission.
    and conservatively determines `app_required`. PRs compare the base with the tested
    merge revision; pushes compare the previous and current revisions. Missing history,
    empty diffs, app/mixed/unknown paths, and native workflow edits select full checks.
-   PR #589 adds website and routing regression fixtures here, even on the fast path.
-2. **Source fixtures** (macOS 26) and **Shared debug build** (macOS 26) depend on scope
+   The separate routing job validates the fast path as well.
+2. **Website and routing fixtures** (Ubuntu) runs independently of scope detection.
+   It retains all website configurations and routing/aggregate-gate assertions.
+   App compilation can start when scope detection finishes instead of waiting for
+   these fixtures. Their success is mandatory in the final gate for both paths.
+3. **Source fixtures** (macOS 26) and **Shared debug build** (macOS 26) depend on scope
    and run independently for app changes. Source fixtures exercise release policy,
    resources, cache safety, native shard coverage, runner safety and related scripts.
-3. **Shared debug build** fingerprints Swift, Xcode and SDK, restores `.build`, restores
+4. **Shared debug build** fingerprints Swift, Xcode and SDK, restores `.build`, restores
    content-matching input timestamps, and always runs native SwiftPM debug compilation
-   with `--build-tests`. It bundles without invoking a second SwiftPM build engine,
-   including compiling the two standalone XPC helpers. A gzip level-1 runtime archive
+   with `--build-tests --disable-index-store`. IDE indexing is unnecessary in CI;
+   debug symbols and testability remain enabled. It bundles without invoking a second
+   SwiftPM build engine. The two standalone XPC helpers compile on a cache miss and
+   reuse only content/arguments/policy/toolchain-matching CI debug products. A gzip level-1 runtime archive
    contains executable/test/resource products, provenance and the native lease holder.
    Artifact upload uses compression level 0 to avoid recompressing that archive.
-4. **Native regressions (1–4)** and **Packaging and integrations** start after the
+5. **Native regressions (1–4)** and **Packaging and integrations** start after the
    shared build. Consumers validate revision, toolchain and checkout path before
    extracting the runtime; none rebuild or restore compiler caches. Each native runner
    discovers the full test inventory, assigns whole classes using advisory weights,
@@ -33,7 +39,7 @@ only the post-validation cache-pruning job receives cache deletion permission.
    Every shard uploads its manifests and logs even on failure. Packaging separately
    validates selfchecks, cold WebKit startup, icons, CLI import, cloud transport,
    DMG lifecycle and updater rollback/transport/relaunch/installer behavior.
-5. **checks** (Ubuntu) always evaluates all required results. Intentional app-job
+6. **checks** (Ubuntu) always evaluates all required results. Intentional app-job
    skips pass only when scope selected the fast path; failures and unexpected skips
    fail closed. Strict current-base branch protection, including administrators,
    remains required. After successful main checks, **prune-caches** retains two
@@ -41,7 +47,7 @@ only the post-validation cache-pruning job receives cache deletion permission.
 
 Only main builds save compiler caches. PRs can restore matching main caches but
 cannot populate a per-revision cache. The exact v3 key includes OS, architecture,
-toolchain, package manifests, every file under Sources/Tests, and timestamp/bundling
+toolchain, package manifests, every file under Sources/Tests, and timestamp/bundling/workflow
 policy. Prefix fallback permits incremental reuse across source revisions with the
 same package/toolchain. A v2 fallback avoids throwing away the existing cache during
 migration. Files are restored only when their current content hash matches the
@@ -134,11 +140,43 @@ suggest roughly one minute off the native critical path in two samples, with muc
 less benefit in the third. The full required hosted suite validates the new grouping.
 
 **Remove duplicate source fixtures after #589.** Website scenes, routing and the
-aggregate-gate fixture now execute once on Linux before app jobs. Their former
+aggregate-gate fixture now execute once on Linux alongside scope detection and app jobs. Their former
 macOS copies consumed roughly 45–80 s per app run, mostly website and gate fixtures.
 This saves runner work; because source fixtures already ran alongside the longer
 build, it does not directly remove 45–80 s from the critical path. No tests or
 assertions were removed.
+
+## Additional work toward the requested 2× target
+
+The first PR run measured 49 s in universal fixtures after a 9 s checkout, before
+any app compilation could start. These now run in a parallel Ubuntu job. The new
+routing result is required on every path; the expanded gate fixture evaluates
+8,227 combinations, including missing/invalid values. It batches real Bash execution
+with a fresh subshell per case, retaining errexit and nounset; all previous cases
+remain. This avoids launching thousands of new Bash interpreters. No extra macOS
+runner or test desktop was added.
+
+The CI debug compiler now disables IDE indexing. A real SwiftPM/XCTest probe
+built without any index store, then discovered and ran its tests with the same
+skip-build commands used by the consumers. Debug symbols, testability, compiler
+checks and runtime assertions remain enabled. A workflow-policy hash in the cache
+key ensures compiler-policy changes get a fresh immutable snapshot.
+
+CI debug assembly can also reuse the two standalone helpers. Their cache stamp
+includes the trusted Swift/Xcode/SDK fingerprint, all compiler arguments, input
+contents and the packaging script itself. Missing/non-executable products or
+missing/mismatched stamps rebuild. Source changes invalidate the affected helper;
+toolchain or policy changes invalidate both. Ordinary local and release packaging
+always compile. The bundled copies still receive fresh signing and validation. A real local compile
+of both production helper source sets took 11.31 s; a matching repeated invocation
+took 0.36 s. These local timings establish reuse, not a hosted end-to-end speedup.
+
+A 2× target means roughly 7–8 minutes instead of the observed 14–16 minute full
+runs without major queue delays. It is plausible for a warm, small-change build
+if shared-build work drops below about 100 s and the slowest native job stays
+near 300 s. This is a performance budget, not a measured result. Cold/full-source
+recompilation, platform changes and hosted queue delays can prevent that target.
+Required hosted CI and a subsequent warm v3 run must establish the actual result.
 
 ## Boundaries and follow-up measurement
 

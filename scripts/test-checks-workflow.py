@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Exercise docs-aware gating, one-build fan-out, and isolated native coverage."""
 import itertools
-import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +30,24 @@ def dependencies(section):
     return set(match[1].replace(' ', '').split(',')) if match else set()
 
 
+def verify_gate_cases(script, cases, keys):
+    # Keep each invocation in a fresh subshell, including its own errexit state.
+    # Feed Bash on stdin so thousands of cases do not hit argv size limits.
+    commands = ["set +e", "gate() (", script, ")"]
+    for environment, _ in cases:
+        commands.extend(f"export {key}={shlex.quote(environment[key])}" if key in environment
+                        else f"unset {key}" for key in keys)
+        # Calling outside an if/|| is essential: those contexts disable errexit.
+        commands.extend(["gate >/dev/null 2>&1", "printf '%s\\n' \"$?\""])
+    result = subprocess.run(["bash"], input="\n".join(commands) + "\n",
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    statuses = result.stdout.splitlines()
+    assert len(statuses) == len(cases), (len(statuses), len(cases), result.stderr)
+    for status, (environment, wanted) in zip(statuses, cases):
+        assert (status == "0") == wanted, (environment, status, wanted)
+
+
 def main():
     text = WORKFLOW.read_text()
     sections = jobs(text)
@@ -48,48 +66,53 @@ def main():
     assert 'AppKit loop smoke: delayedHeartbeat=true, completed=true' in preflight
     assert 'APP_REQUIRED: ${{ needs.changes.outputs.app_required }}' in gate
     script = block(gate)
-    trials = 0
+    verify_gate_cases("set -euo pipefail\nfalse\nexit 0", [({}, False)], [])
+    verify_gate_cases('set -euo pipefail\n[ "$VALUE" = expected ]', [
+        ({'VALUE': 'expected'}, True), ({'VALUE': '$(exit 0)'}, False), ({}, False),
+    ], ['VALUE'])
+    cases = []
     for app in ('true', 'false'):
         for states in itertools.product(('success', 'failure', 'cancelled', 'skipped'), repeat=len(bindings)):
             results = dict(zip(bindings.values(), states))
-            wanted = results['changes'] == 'success' and all(
+            wanted = results['changes'] == results['routing'] == 'success' and all(
                 value == ('success' if app == 'true' else 'skipped')
-                for name, value in results.items() if name != 'changes')
-            env = {**os.environ, **dict(zip(bindings, states)), 'APP_REQUIRED': app}
-            actual = subprocess.run(['bash', '-c', script], env=env, capture_output=True)
-            assert (actual.returncode == 0) == wanted, (app, results, actual.stdout)
-            trials += 1
+                for name, value in results.items() if name not in ('changes', 'routing'))
+            env = {**dict(zip(bindings, states)), 'APP_REQUIRED': app}
+            cases.append((env, wanted))
     for key in [*bindings, 'APP_REQUIRED']:
         for value in ('', 'unknown', 'success\nsuccess', '$(exit 0)'):
-            env = {**os.environ, **dict.fromkeys(bindings, 'success'), 'APP_REQUIRED': 'true', key: value}
-            assert subprocess.run(['bash', '-c', script], env=env, capture_output=True).returncode != 0
-            trials += 1
-        env = {**os.environ, **dict.fromkeys(bindings, 'success'), 'APP_REQUIRED': 'true'}
+            env = {**dict.fromkeys(bindings, 'success'), 'APP_REQUIRED': 'true', key: value}
+            cases.append((env, False))
+        env = {**dict.fromkeys(bindings, 'success'), 'APP_REQUIRED': 'true'}
         env.pop(key)
-        assert subprocess.run(['bash', '-c', script], env=env, capture_output=True).returncode != 0
-        trials += 1
+        cases.append((env, False))
+    verify_gate_cases(script, cases, [*bindings, 'APP_REQUIRED'])
+    trials = len(cases)
 
     assert 'runs-on: ubuntu-latest' in sections['changes']
     assert 'fetch-depth: 0' in sections['changes']
     assert 'scripts/ci-change-scope.py' in sections['changes']
+    assert 'runs-on: ubuntu-latest' in sections['routing']
+    assert not dependencies(sections['routing']), 'routing fixtures run alongside scope detection'
     for command in ('python3 scripts/test-ci-change-scope.py', 'python3 scripts/test-checks-workflow.py',
                     'node docs/tests/galaxy.test.cjs'):
-        assert command in sections['changes'], command + ' must also validate the fast path'
+        assert command in sections['routing'], command + ' must also validate the fast path'
     for name in ('source', 'build', 'native', 'packaging'):
         section = sections[name]
         assert "if: needs.changes.outputs.app_required == 'true'" in section
         assert dependencies(section) == ({'changes', 'build'} if name in ('native', 'packaging') else {'changes'})
     build, native, packaging = (sections[name] for name in ('build', 'native', 'packaging'))
-    assert 'swift build --build-system native -c debug --build-tests' in build
+    assert 'swift build --build-system native -c debug --build-tests --disable-index-store' in build
     assert 'run: ./make-app.sh debug --skip-app-build\n' in build
+    assert 'VANE_CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}' in build
     assert 'uses: actions/cache/restore@v6' in build and 'uses: actions/cache/save@v6' in build
     assert "github.event_name == 'push' && github.ref == 'refs/heads/main'" in build
-    assert "hashFiles('Sources/**', 'Tests/**', 'scripts/ci-source-state.py', 'make-app.sh')" in build
+    assert "hashFiles('Sources/**', 'Tests/**', 'scripts/ci-source-state.py', 'make-app.sh', '.github/workflows/checks.yml')" in build
     assert 'key: swift-debug-v3-' in build
     assert '            swift-debug-v2-' in build, 'old caches remain a migration fallback'
     for command in ('python3 scripts/test-ci-change-scope.py', 'python3 scripts/test-checks-workflow.py',
                     'node docs/tests/galaxy.test.cjs'):
-        assert text.count(command) == 1, command + ' must run once before app jobs'
+        assert text.count(command) == 1, command + ' must run once for every scope'
     assert 'scripts/ci-build-artifact.py pack' in build
     assert 'name: debug-runtime' in build and 'compression-level: 0' in build
     for section in (native, packaging):

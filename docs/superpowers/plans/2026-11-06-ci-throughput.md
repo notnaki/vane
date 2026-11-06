@@ -8,7 +8,7 @@ essential check preserved. Work from the existing single-build/four-desktop desi
 Keep source fixtures, complete discovered native coverage, class isolation, lifecycle
 preflights, cleanup, failure artifacts, packaging checks, strict aggregate gate and
 main-only cache writes. Release products contain an OAuth secret and remain uncached;
-signing, two notarizations and delayed publication remain mandatory. Do not add runners.
+signing, two notarizations and delayed publication remain mandatory. Do not add macOS runners.
 
 ## Task 1: Restore all build inputs safely
 
@@ -48,3 +48,20 @@ signing, two notarizations and delayed publication remain mandatory. Do not add 
 
 Content changes, added/removed native inputs, tests-only cache revisions, cache
 migration/pruning, release-secret separation, and complete native inventory coverage.
+
+## Follow-up target: 2× faster where possible
+
+The user asked for a 2× target after the initial implementation. Prioritize the
+warm-cache path without promising a universal cold-build or queue-time speedup.
+
+- Run mandatory website/routing fixtures in a separate Ubuntu job alongside scope
+  detection; require its success for both fast/full paths. Preserve exhaustive gate
+  cases with a batched Bash harness (fresh subshell and errexit per case).
+- Disable IDE index-store generation in the CI debug build; retain debug symbols,
+  testability, complete test discovery and runtime validation. Include workflow
+  build policy in the immutable cache key.
+- Reuse the two CI debug helper executables only when source contents, arguments,
+  packaging policy and trusted toolchain match. Fresh release/local builds continue
+  compiling. Test source/toolchain/policy changes, missing outputs and missing key.
+- Revalidate and obtain independent review of the expanded final diff. Compare
+  hosted cold migration and warm builds separately; measure rather than claim 2×.
