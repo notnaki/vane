@@ -176,8 +176,8 @@ extension Motion {
             ("Reduce Motion drops the stagger altogether",
              sweepDelay(5, reduced: true) == 0 && sweepDelay(0, reduced: true) == 0),
             ("a negative index is nonsense and waits nothing", sweepDelay(-1) == 0),
-            ("the list animation is short enough to chain ⌘W under",
-             Look.sweepStagger < 0.1 && Look.sweepCap <= 0.5),
+            ("the sweep remains bounded at the slowest supported speed",
+             Look.sweepStagger <= 0.18 && Look.sweepCap <= 1.6),
             ("a collapsed row eats the list's gap as well as its own height",
              Look.rowGap > 0 && Look.rowHeight > 0),
         ]

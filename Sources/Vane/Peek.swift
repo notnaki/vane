@@ -291,9 +291,10 @@ import WebKit
                                 parent: session.parent, at: .now)
         }
         guard animated, !Motion.reduced else { return dismantle(session) }
-        withAnimation(Look.appear) { session.shown.on = false }
+        let duration = Look.appearDuration
+        withAnimation(.easeOut(duration: duration)) { session.shown.on = false }
         Task {
-            try? await Task.sleep(for: .seconds(Look.appearDuration))
+            try? await Task.sleep(for: .seconds(duration))
             dismantle(session)
         }
     }
