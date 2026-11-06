@@ -201,6 +201,7 @@ import Combine
               state.today.lockedFolders(for: record.id.uuidString, unlocked: []).isEmpty else { return nil }
         let split = state.splits.contains { $0.contains(record.id) }
         let active = TabStore.all.contains { $0.profileID == profileID && $0.current == record.id }
+            || record.tab?.inMeetCall == true
             || record.tab.map(TabAudio.isPlaying) == true
         return Row(id: record.id, spaceID: state.space.id, spaceName: state.space.name, url: url,
                    title: record.tab.map { TidyTitles.title(for: $0) }

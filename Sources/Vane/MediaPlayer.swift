@@ -379,7 +379,7 @@ enum MediaTray {
     func isDismissed(_ id: UUID) -> Bool { dismissed.contains(id) }
 
     func keepsRunning(_ tab: Tab) -> Bool {
-        isPlaying(tab) || tab.pictureInPicture || asking.contains(tab.id) || held.contains(tab.id)
+        tab.inMeetCall || isPlaying(tab) || tab.pictureInPicture || asking.contains(tab.id) || held.contains(tab.id)
     }
 
     func handle(_ body: Any, for tab: Tab, from frame: WKFrameInfo) {

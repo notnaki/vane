@@ -572,6 +572,9 @@ struct TitleReveal: Equatable, Sendable {
     /// Playing in a detached window. Kept so suspension leaves it alone even when the tab
     /// is in the background — which is exactly when a PiP video is being watched.
     @Published var pictureInPicture = false
+    @Published var inMeetCall = false
+    @Published var callPoppedOut = false
+    var meetCallRead = UUID()
     /// The frame of this page that last said it holds a video, and so the frame ⌥⌘P and
     /// auto-PiP are aimed at: `evaluateJavaScript(in: nil)` only ever reaches the main
     /// frame, and an embedded player is always in an iframe. Nil until a frame speaks up,
@@ -812,6 +815,8 @@ struct TitleReveal: Equatable, Sendable {
         c.addUserScript(
             WKUserScript(source: PictureInPicture.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false, in: PictureInPicture.world))
+        c.addUserScript(WKUserScript(source: MeetCall.script, injectionTime: .atDocumentEnd,
+                                    forMainFrameOnly: true, in: MeetCall.world))
         c.addUserScript(
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
@@ -876,6 +881,8 @@ struct TitleReveal: Equatable, Sendable {
         web.configuration.userContentController.add(WeakHandler(self),
                                                     contentWorld: PictureInPicture.world,
                                                     name: PictureInPicture.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: MeetCall.world,
+                                                    name: MeetCall.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: Previews.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: MediaTray.messageName)
@@ -1197,6 +1204,7 @@ struct TitleReveal: Equatable, Sendable {
     /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
     /// "nothing was parked" must never mean "nothing was released".
     private func release() {
+        MeetCall.reset(self)
         Previews.shared.cancel(from: self)
         navigationState.invalidate()
         loading = false
@@ -1248,6 +1256,7 @@ struct TitleReveal: Equatable, Sendable {
         old.configuration.userContentController.removeScriptMessageHandler(forName: Previews.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PictureInPicture.messageName, contentWorld: PictureInPicture.world)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: MeetCall.messageName, contentWorld: MeetCall.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(forName: MediaTray.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName)
@@ -1807,6 +1816,7 @@ struct TitleReveal: Equatable, Sendable {
         #endif
         guard w === existingWeb, !tornDown, !suspended else { return }
         guard navigationState.begin(navigation) else { return }
+        MeetCall.reset(self)
         #if DEBUG
         recordNavigationStage("provisional-accepted", navigation: navigation)
         #endif
@@ -2265,6 +2275,7 @@ struct TitleReveal: Equatable, Sendable {
             return
         }
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
+        if m.name == MeetCall.messageName { MeetCall.receive(m, tab: self); return }
         if m.name == MediaTray.messageName {
             MediaState.shared.handle(m.body, for: self, from: m.frameInfo)
             return

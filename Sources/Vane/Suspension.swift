@@ -238,7 +238,7 @@ extension Prefs {
     /// far, because both cost a round trip into WebKit.
     private static func facts(_ tab: Tab, now: Date) -> Facts {
         Facts(active: isActive(tab), pinned: tab.stays, stashed: isStashed(tab),
-              isPrivate: tab.isPrivate, loading: tab.loading, suspended: tab.suspended,
+              isPrivate: tab.isPrivate, playing: tab.inMeetCall, loading: tab.loading, suspended: tab.suspended,
               loaded: tab.existingWeb?.url != nil, idle: now.timeIntervalSince(tab.lastActive))
     }
 
@@ -303,7 +303,7 @@ extension Prefs {
               tab.readingDocumentGeneration == document, tab.lastActive == lastActive,
               tab.presentationOwner == owner, allTabs.contains(where: { $0 === tab }) else { return }
         var fresh = facts(tab, now: .now)
-        fresh.playing = playing || tab.pictureInPicture
+        fresh.playing = playing || tab.pictureInPicture || tab.inMeetCall
             || (MediaState.shared.isPlaying(tab) && !TabAudio.isMuted(tab))
         fresh.hasInput = hasInput
         let currentLimit = underPressure ? 0 : BatterySaver.idleLimit(normal: Prefs.suspendAfter,

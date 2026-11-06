@@ -759,7 +759,7 @@ extension VaneWindow {
         /// Every pane of a split, not just the focused one — the other pane is just as much
         /// what the user was watching.
         func windowWillMiniaturize(_ n: Notification) {
-            MainActor.assumeIsolated { store.onScreenTabs.forEach(PictureInPicture.enterIfPlaying) }
+            MainActor.assumeIsolated { store.onScreenTabs.forEach { PictureInPicture.enterIfPlaying($0, minimizingWindow: store.window) } }
         }
         func windowDidDeminiaturize(_ n: Notification) {
             MainActor.assumeIsolated { store.onScreenTabs.forEach(PictureInPicture.exitIfAuto) }
