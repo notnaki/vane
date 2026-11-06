@@ -73,8 +73,9 @@ local validation. Required PR CI still applies before merging.
 
 ### CI overview
 
-CI first checks the diff and runs the website scene and CI routing regression tests
-on Linux. The root `.gitignore`, root Markdown files, Markdown under `docs/`,
+CI checks the diff and runs the website scene and CI routing regression tests
+in separate Linux jobs. The fixtures run alongside scope detection so app compilation
+can begin early; both jobs must pass the final gate. The root `.gitignore`, root Markdown files, Markdown under `docs/`,
 Markdown issue/PR templates, and website HTML, CSS, JavaScript, images, and fonts
 under `docs/` take this fast path and the final `checks` gate, without macOS builds
 or native tests. The routing classifier and its two regression scripts also use
@@ -121,11 +122,16 @@ branch/main differences; the branch name alone is not the cause.
 
 Only the build job restores the Swift debug cache; successful `main` builds save it.
 The cache is keyed by macOS architecture, Swift/Xcode/SDK versions, and package/source
-hashes. Content-matching timestamps allow unchanged files to stay incremental, while
-SwiftPM still validates the build. Successful aggregate checks retain the two newest
+hashes (all files under `Sources/` and `Tests/`, including native bridges and resources).
+The v3 key also includes the timestamp, bundling and workflow policies; v2 caches remain a migration
+fallback. Content-matching timestamps for every regular input allow unchanged files to stay incremental, while
+SwiftPM still validates the build. CI skips IDE index generation and reuses debug XPC
+helpers only when their contents, flags, packaging policy and toolchain match; release
+and normal local packaging always compile them. Successful aggregate checks retain the two newest
 Swift debug caches. Superseded runs on the same branch or PR are cancelled. The release
 workflow builds and smoke-tests the optimized app separately; its products are never
-cached because they can contain the OAuth secret.
+cached because they can contain the OAuth secret. The [November CI analysis](CI-PERFORMANCE.md)
+records measured bottlenecks, shard rebalancing and cache migration limits.
 
 ### Native fixture execution
 

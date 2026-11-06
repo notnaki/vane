@@ -70,7 +70,7 @@ import Foundation
     /// `Look.tidyThreshold`.
     ///
     /// Clear is not on this number. It is not an AI feature, it has no setting of its own,
-    /// and it appears on the fixed `Look.tidyThreshold` — see `offersHousekeeping(_:)`.
+    /// and it appears at the fixed `Look.tidyThreshold` or on hover — see `offersClear`.
     static var threshold: Int {
         get {
             let v = UserDefaults.vane.object(forKey: "tidyTabsThreshold") as? Int ?? Look.tidyThreshold
@@ -139,16 +139,19 @@ import Foundation
         today >= threshold
     }
 
-    /// The same, asked of a window — which in practice is asking it about **Clear**, the
-    /// only control left that this alone decides.
-    ///
-    /// `Look.tidyThreshold`, deliberately, and not `TidyTabs.threshold`: that one is Tidy's
-    /// setting, and Clear is not an AI feature and has no setting. Reading it here meant a
-    /// stray `tidyTabsThreshold` in defaults — a number the user set for Tidy, or one left
-    /// behind by a Tidy they have since switched off — quietly moved or hid a control that
-    /// has nothing to do with tidying.
+    /// The fixed threshold used by the command bar, independent of Tidy's preference.
     static func offersHousekeeping(_ store: TabStore) -> Bool {
         offersHousekeeping(today: todayCount(store), threshold: Look.tidyThreshold)
+    }
+
+    /// Clear stays visible for a pile and is revealed on hover for any nonempty Today.
+    /// Its availability is independent of Tidy's preference and threshold.
+    nonisolated static func offersClear(today: Int, hovering: Bool = false) -> Bool {
+        today > 0 && (hovering || offersHousekeeping(today: today, threshold: Look.tidyThreshold))
+    }
+
+    static func offersClear(_ store: TabStore, hovering: Bool = false) -> Bool {
+        offersClear(today: todayCount(store), hovering: hovering)
     }
 
     /// Tidy specifically: the pile, plus the preference being on. Clear does not ask the
@@ -819,6 +822,16 @@ import Foundation
                !offersHousekeeping(today: 0, threshold: 6))
         assert("nor does one holding a handful of tabs you can already see",
                (1..<6).allSatisfy { !offersHousekeeping(today: $0, threshold: 6) })
+        assert("hover reveals Clear even for a single Today tab",
+               (1..<Look.tidyThreshold).allSatisfy { offersClear(today: $0, hovering: true) })
+        assert("hover never offers Clear for an empty Today",
+               !offersClear(today: 0, hovering: true) && !offersClear(today: 0))
+        assert("Clear stays quiet below the threshold until hover",
+               (1..<Look.tidyThreshold).allSatisfy { !offersClear(today: $0) })
+        assert("Clear stays visible for a pile with or without hover",
+               [false, true].allSatisfy { hover in
+                   (Look.tidyThreshold...50).allSatisfy { offersClear(today: $0, hovering: hover) }
+               })
         assert("the sixth Today tab is what brings Tidy and Clear out",
                offersHousekeeping(today: 6, threshold: 6))
         assert("…and they stay out as the pile grows",

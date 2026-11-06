@@ -34,16 +34,39 @@ echo ">> building ($CONF)..."
 if [ "$SKIP_APP_BUILD" = false ]; then swift build -c "$CONF" >/dev/null; fi
 [ -x "$BIN" ] || { echo "no binary at $BIN"; exit 1; }
 
+# Only shared debug CI assembly may reuse helper products. A trusted fingerprint
+# covers the compiler/SDK; content hashes cover sources, flags and this policy.
+# Release and ordinary local builds always compile, even if a CI stamp exists.
+build_helper() {
+  local output="$1"; shift
+  local stamp="$output.inputs.sha256" key="" input
+  if [ "$SKIP_APP_BUILD" = true ] && [ -n "${VANE_CI_TOOLCHAIN_KEY:-}" ]; then
+    key=$({
+      printf '%s\0' "$VANE_CI_TOOLCHAIN_KEY" "$@"
+      shasum -a 256 make-app.sh
+      for input in "$@"; do
+        if [ -f "$input" ]; then shasum -a 256 "$input"; fi
+      done
+    } | shasum -a 256 | cut -d ' ' -f 1)
+    if [ -f "$output" ] && [ -x "$output" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$key" ]; then
+      echo ">> reusing $(basename "$output") (matching inputs/toolchain)"
+      return
+    fi
+  fi
+  rm -f "$stamp"
+  xcrun swiftc "$@" -o "$output"
+  if [ -n "$key" ]; then printf '%s\n' "$key" > "$stamp"; fi
+}
+
 echo ">> building update installer..."
 INSTALLER_BIN=".build/$CONF/VaneUpdateInstaller"
-xcrun swiftc -O Sources/Vane/BundleReplacement.swift Sources/Vane/UpdateVersion.swift Sources/Vane/UpdateInstaller.swift \
+build_helper "$INSTALLER_BIN" -O Sources/Vane/BundleReplacement.swift Sources/Vane/UpdateVersion.swift Sources/Vane/UpdateInstaller.swift \
   Sources/UpdateInstaller/UpdateInstallation.swift Sources/UpdateInstaller/InstallerService.swift Sources/UpdateInstaller/InstallerRelaunch.swift Sources/Vane/UpdateRelaunch.swift \
-  Sources/UpdateInstaller/main.swift -o "$INSTALLER_BIN"
+  Sources/UpdateInstaller/main.swift
 
 echo ">> building icon persistence service..."
 ICON_SERVICE_BIN=".build/$CONF/VaneIconService"
-xcrun swiftc -swift-version 6 -O Sources/Vane/AppIconPersistence.swift Sources/IconService/main.swift \
-  -o "$ICON_SERVICE_BIN"
+build_helper "$ICON_SERVICE_BIN" -swift-version 6 -O Sources/Vane/AppIconPersistence.swift Sources/IconService/main.swift
 
 echo ">> compiling app icon..."
 ICONOUT="$(mktemp -d)"

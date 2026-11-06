@@ -236,13 +236,25 @@ private final class Feel04WaitingServer: @unchecked Sendable {
         let persisted = await cookies.allCookies()
         XCTAssertFalse(persisted.contains { $0.name == "feel04" }, "Speculative destination writes must stay in the renderer")
         if inactiveChange { previews.cancel() }
+        let invalidationDeadline = ContinuousClock.now + .seconds(5)
         if policyChange {
             properties[.sameSitePolicy] = "Lax"
             await cookies.setCookie(try XCTUnwrap(HTTPCookie(properties: properties)))
         } else {
             _ = try await source.evaluateJavaScript("document.cookie = 'source=; Max-Age=0; Path=/'")
         }
-        let sourceCookies = await cookies.allCookies()
+        var sourceCookies = await cookies.allCookies()
+        // The page setter and the UI-process cookie read use separate WebKit IPC.
+        // Admit the source mutation before judging its preview observation, within
+        // the same five-second invalidation budget rather than extending it.
+        if !policyChange {
+            let initiallyStale = sourceCookies.contains { $0.name == "source" }
+            while sourceCookies.contains(where: { $0.name == "source" }), ContinuousClock.now < invalidationDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+                sourceCookies = await cookies.allCookies()
+            }
+            print("FEEL04_COOKIE_PROPAGATION initiallyStale=\(initiallyStale) deletionConfirmed=\(!sourceCookies.contains(where: { $0.name == "source" }))")
+        }
         if policyChange {
             let replaced = try XCTUnwrap(sourceCookies.first { $0.name == "source" })
             XCTAssertEqual(replaced.value, "signed-in")
@@ -275,7 +287,6 @@ private final class Feel04WaitingServer: @unchecked Sendable {
             }
             return XCTFail("The revalidated preview did not reload")
         }
-        let invalidationDeadline = ContinuousClock.now + .seconds(5)
         while previews.current != nil, ContinuousClock.now < invalidationDeadline {
             try await Task.sleep(for: .milliseconds(20))
         }
