@@ -4631,7 +4631,7 @@ private struct TabRow: View {
 
     private func closeOthers() {
         // Favourites and pinned tabs are not "other tabs" — they stay whatever happens.
-        for t in store.tabs where t.id != tab.id && t.kind == .today { store.archive(t.id) }
+        store.archiveToday(store.tabs.filter { $0.id != tab.id && $0.kind == .today }.map(\.id))
     }
 }
 
@@ -4743,7 +4743,7 @@ struct TabMenu: View {
     private func archiveBelow() {
         guard let i = store.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
         let below = store.tabs[(i + 1)...].filter { $0.kind == .today }
-        below.forEach { store.archive($0.id) }
+        store.archiveToday(below.map(\.id))
         axAnnounce("Archived \(below.count) tab\(below.count == 1 ? "" : "s").")
     }
 }

@@ -623,8 +623,8 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     guard let s = Windows.main else { return }
     let doomed = s.tabs.filter { $0.kind == .today }
     guard !doomed.isEmpty else { return }
-    doomed.forEach { s.archive($0.id) }
-    axAnnounce("Archived \(doomed.count) tab\(doomed.count == 1 ? "" : "s").")
+    let count = s.archiveToday(doomed.map(\.id))
+    axAnnounce("Archived \(count) tab\(count == 1 ? "" : "s").")
 }
 
 /// The window a Space menu item acts on: the frontmost *ordinary* browser window. A Little
