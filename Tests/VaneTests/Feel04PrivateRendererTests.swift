@@ -242,12 +242,21 @@ private final class Feel04WaitingServer: @unchecked Sendable {
         } else {
             _ = try await source.evaluateJavaScript("document.cookie = 'source=; Max-Age=0; Path=/'")
         }
-        let sourceCookies = await cookies.allCookies()
+        // Page-script completion can precede the deletion reaching the native cookie
+        // store. Admit that source mutation before checking its consumer, within the
+        // same five-second retirement budget rather than starting a fresh deadline.
+        let invalidationDeadline = ContinuousClock.now + .seconds(5)
+        var sourceCookies = await cookies.allCookies()
         if policyChange {
             let replaced = try XCTUnwrap(sourceCookies.first { $0.name == "source" })
             XCTAssertEqual(replaced.value, "signed-in")
             XCTAssertEqual(replaced.sameSitePolicy?.rawValue.lowercased(), "lax")
         } else {
+            while sourceCookies.contains(where: { $0.name == "source" }),
+                  ContinuousClock.now < invalidationDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+                sourceCookies = await cookies.allCookies()
+            }
             XCTAssertFalse(sourceCookies.contains { $0.name == "source" }, "Verify the source mutation before awaiting its observation")
         }
         if inactiveChange {
@@ -275,7 +284,6 @@ private final class Feel04WaitingServer: @unchecked Sendable {
             }
             return XCTFail("The revalidated preview did not reload")
         }
-        let invalidationDeadline = ContinuousClock.now + .seconds(5)
         while previews.current != nil, ContinuousClock.now < invalidationDeadline {
             try await Task.sleep(for: .milliseconds(20))
         }
