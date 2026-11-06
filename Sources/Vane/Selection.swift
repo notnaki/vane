@@ -208,14 +208,19 @@ extension TabStore {
 
     // MARK: Bulk actions
 
-    /// ⌘W with a selection, and "Archive N Tabs". The existing archive path, one tab at a
-    /// time, so a pinned tab parks and a Today tab is written down — the section's own
-    /// rules, not a second set of them.
+    /// ⌘W with a selection, and "Archive N Tabs". Today leaves as one batch;
+    /// pinned rows retain their individual unload/unpin behavior.
     func archiveSelection() {
         let ids = selectedTabs.map(\.id)
         guard !ids.isEmpty else { return }
-        selection.clear()
-        ids.forEach { archive($0) }
+        let today = selectedTabs.allSatisfy { $0.kind == .today }
+        Motion.animate(Look.tabClose) {
+            sidebarObservation.withCompletedChanges {
+                selection.clear()
+                if today { archiveToday(ids) }
+                else { ids.forEach { archive($0) } }
+            }
+        }
         axAnnounce("Archived \(ids.count) tab\(ids.count == 1 ? "" : "s").")
     }
 

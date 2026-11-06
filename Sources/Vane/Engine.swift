@@ -410,6 +410,7 @@ struct TitleReveal: Equatable, Sendable {
     var presentationGeneration = 0
     var permissionGeneration: UInt = 0
     let draftProtection = DraftProtection()
+    var dialogPolicy = PageDialogPolicy()
     var readingDocumentGeneration = UUID()
     var sharedSpaceID: UUID?
     /// Parked rows need only metadata. Reading `web` is an explicit demand for a page;
@@ -1214,6 +1215,7 @@ struct TitleReveal: Equatable, Sendable {
         passwordOfferExpiry?.cancel()
         SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
+        PageDialogs.cancel(tabID: id)
         endPermissionDocument()
         certificateDestinationURL = nil
         certificateNavigation = nil
@@ -1793,6 +1795,7 @@ struct TitleReveal: Equatable, Sendable {
         editableFrames.removeAll()
         SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
+        PageDialogs.cancel(tabID: id)
         endPermissionDocument()
         pictureInPicture = false
         pipFrame = nil
@@ -1820,6 +1823,7 @@ struct TitleReveal: Equatable, Sendable {
         if w === existingWeb { SiteBoosts.beginNavigation(tab: self) }
         if w === existingWeb {
             FileUploads.cancel(tabID: id)
+            PageDialogs.cancel(tabID: id)
             endPermissionDocument(navigationStarted: true)
             certificateNavigation = navigation
         }
@@ -1969,6 +1973,7 @@ struct TitleReveal: Equatable, Sendable {
         if w === existingWeb {
             Reader.navigationCommitted(self)
             FileUploads.cancel(tabID: id)
+            PageDialogs.cancel(tabID: id)
             endPermissionDocument()
         }
         finishCertificateNavigation(navigation, in: w)
@@ -2821,9 +2826,6 @@ struct Stash {
     /// and as one sidebar row. Ids, not tabs, so a split survives its panes moving section,
     /// being renamed or being suspended. Everything done to them is in SplitView.swift.
     @Published var splits: [Split] = [] { didSet { SharedTabs.schedule(from: self) } }
-    /// Counts the archives that land in one burst, so Clear can sweep rows out one after
-    /// another. See `archive`.
-    private let bursts = Motion.Burst()
     var folderAuthentication = FolderAuthentication.shared
     @Published var lockedFolderBackdrop: NSImage?
     @Published var folderUnlockRequest: FolderUnlockRequest?
@@ -3523,15 +3525,7 @@ struct Stash {
     /// so — see `closeSplit`, which takes a whole split down one tab at a time and so asks
     /// for the last one after the split has already collapsed under it.
     func archive(_ id: Tab.ID, asPane: Bool = false) {
-        // Several archives in one synchronous burst — Clear, Archive Tabs Below, the
-        // auto-archive sweep — leave one after another, the way Arc sweeps Today away,
-        // rather than all in the same frame. A lone ⌘W is a burst of one and goes at once.
-        let delay = Motion.sweepDelay(bursts.next(), reduced: Motion.reduced)
-        guard delay > 0 else { archiveNow(id, asPane: asPane); return }
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            self?.archiveNow(id, asPane: asPane)   // a no-op if the tab has gone meanwhile
-        }
+        archiveNow(id, asPane: asPane)
     }
 
     private func archiveNow(_ id: Tab.ID, asPane: Bool = false) {

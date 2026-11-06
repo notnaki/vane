@@ -1095,10 +1095,13 @@ extension TabStore {
     /// left one. Called after every move, drop and close, so neither shape ever names a tab
     /// that is not in its section any more.
     func syncShapes() {
-        pins.sync(tabs: tabs.filter { $0.kind == .pinned }.map(\.id.uuidString))
-        todayShape.sync(tabs: tabs.filter { $0.kind == .today }.map(\.id.uuidString))
+        var nextPins = pins, nextToday = todayShape
+        nextPins.sync(tabs: tabs.filter { $0.kind == .pinned }.map(\.id.uuidString))
+        nextToday.sync(tabs: tabs.filter { $0.kind == .today }.map(\.id.uuidString))
         // Today only. See `Pins.removeEmptyFolders`.
-        todayShape.removeEmptyFolders()
+        nextToday.removeEmptyFolders()
+        if nextPins != pins { pins = nextPins }
+        if nextToday != todayShape { todayShape = nextToday }
     }
 
     /// Put a section's run of the strip in the order the sidebar draws it. The section is
@@ -1109,7 +1112,11 @@ extension TabStore {
         // Every Today mutation ends here — a drop, a drag out of a folder, a tidy — so this
         // is where Today's own rule is settled: a folder with nothing left in it goes.
         // `syncShapes` says the same thing for the moves that do not come through here.
-        if kind == .today { todayShape.removeEmptyFolders() }
+        if kind == .today {
+            var pruned = todayShape
+            pruned.removeEmptyFolders()
+            if pruned != todayShape { todayShape = pruned }
+        }
         // `uniquingKeysWith`, not `uniqueKeysWithValues`: an id the section somehow names
         // twice is a bug to survive, not one to trap the whole app on.
         let order = Dictionary(self[keyPath: shape].tabs.enumerated().map { ($0.element, $0.offset) },
@@ -1493,8 +1500,7 @@ extension TabStore {
             applyOrder(.today)
         }
         savePins()
-        // `archive` counts its own burst, so the rows sweep out one after another.
-        live.forEach { archive($0) }
+        archiveToday(live)
         axAnnounce("Archived \(live.count) tab\(live.count == 1 ? "" : "s").")
     }
 

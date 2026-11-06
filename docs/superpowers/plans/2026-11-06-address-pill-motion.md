@@ -2,7 +2,7 @@
 
 **Goal:** Match the supplied 6.375-second address-pill recording.
 
-**Architecture:** Keep one pill across optional-tab changes. Observe the selected tab without replacing the pill's focus or hover state. Crossfade the host and slide/fade the search prompt over 0.18 seconds; fade page actions on hover or keyboard focus while keeping their layout slots stable.
+**Architecture:** Keep one pill across optional-tab changes. Observe the selected tab without replacing the pill's focus or hover state. Crossfade the host and slide/fade the search prompt over 0.18 seconds at the default feedback speed; fade page actions on hover or keyboard focus while keeping their layout slots stable.
 
 **Tech stack:** SwiftUI, Combine, AppKit, XCTest.
 
@@ -11,6 +11,7 @@
 ## Constraints
 
 - Reduce Motion and Battery Saver apply state changes immediately.
+- Follow the Hover and selection speed preference while retaining the reference timing at 1×.
 - Preserve compact and Little Vane layouts, pinned extensions, page actions, and accessibility actions.
 - Preserve the original checkout's unrelated edits.
 
