@@ -4011,28 +4011,10 @@ struct SidebarTidySurface<Actions: View>: View {
     }
 }
 
-/// A hairline, then the two housekeeping actions Arc puts here — once there is housekeeping
-/// to do. Under `Look.tidyThreshold` Today tabs the line is on its own: five tabs are not a
-/// pile, and two actions offering to sort them out are two things to read past on every new
-/// Space and in every new window.
-///
-/// The row is absent when Today has no tabs, so New Tab follows Pinned at the ordinary
-/// row spacing. Once Today has tabs, the hairline separates the sections and runs the full
-/// width until the actions arrive. Then it shortens to make way for them, with the one
-/// animation the list already uses, so the sixth tab reads as the words fading in over
-/// the end of the line.
-///
-/// Below the threshold the actions are out of the layout altogether, so the sidebar offers
-/// exactly what it shows. Neither is *lost* there: Tidy Tabs and Clear Tabs keep their menu
-/// items and their shortcuts at any number of tabs, which is the route a keyboard or a
-/// screen reader would take to them anyway.
-///
-/// **Nothing here is ever drawn and disabled.** Tidy used to be: it appeared at six Today
-/// tabs and only started working at nine, because two different counts answered "show it"
-/// and "let them press it". One count answers both now (`TidyTabs.control`), and a Tidy that
-/// has been switched off in preferences is not drawn at all rather than greyed out. The one
-/// state where the row does not answer a click is while a tidy is actually running, and it
-/// says so with a spinner in the label's own place.
+/// The divider is absent when Today is empty. Otherwise, it keeps Clear visible for
+/// a pile of Today tabs and reveals it on hover for any nonempty Today section.
+/// Tidy follows its own threshold and preference. The line shortens as controls appear
+/// without moving the rows above or below it.
 private struct TidyRow: View {
     @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
@@ -4040,15 +4022,13 @@ private struct TidyRow: View {
     @ObservedObject private var progress = TidyProgress.shared
     /// Set while a tab that this would actually move is over the divider. See below.
     @State private var lit: Landing.Band?
+    @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let offering = TidyTabs.offersHousekeeping(store)
+        let offering = TidyTabs.offersClear(store, hovering: hovering)
         let tidy = TidyTabs.control(store)
         SidebarTidySurface {
-            // Two questions, one count: Clear is offered as soon as the section is a pile,
-            // Tidy the same — unless it has been switched off, in which case it is not drawn
-            // at all rather than drawn and refusing to work. See `TidyTabs.control`.
             switch tidy {
             case .hidden:
                 EmptyView()
@@ -4082,6 +4062,7 @@ private struct TidyRow: View {
         }
         .animation(reduceMotion ? nil : Look.list, value: offering)
         .animation(reduceMotion ? nil : Look.list, value: tidy)
+        .vaneMotionPolicy()
         // The divider is the end of the Pinned list, so a tab let go on it pins, at the end
         // — otherwise the band between the last pinned row and the New Tab row is a hole a
         // drag can be released into and have nothing happen. It is also the whole of an
@@ -4092,6 +4073,7 @@ private struct TidyRow: View {
         // Its own state, per row and per window: `Dragging` is process-wide, and a drag in
         // one window must not light the divider in another.
         .contentShape(.rect)
+        .onHover { hovering = $0 }
         .overlay(alignment: .top) { DropLine(on: lit != nil, axis: .vertical, target: "pinned-end") }
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: nil, into: .pinned,
