@@ -3347,7 +3347,10 @@ private struct SidebarSpaceSectionContent: View {
             SpaceRow().id(store.currentSpaceID)
         } rows: {
             PinnedTabs(store: store, snapshot: pinned)
-            TidyRow().id(store.currentSpaceID)
+            if TidyTabs.todayCount(store) > 0 {
+                TidyRow().id(store.currentSpaceID)
+                    .transition(.opacity)
+            }
             NewTabRow()
                 .id(store.currentSpaceID)
                 .background(alignment: .topLeading) {
@@ -4037,10 +4040,11 @@ struct SidebarTidySurface<Actions: View>: View {
 /// pile, and two actions offering to sort them out are two things to read past on every new
 /// Space and in every new window.
 ///
-/// The hairline stays either way — it is the end of the pinned section, not a decoration on
-/// the buttons — and until the actions arrive it runs the full width, across the room they
-/// will take. Then it shortens to make way for them, with the one animation the list
-/// already uses, so the sixth tab reads as the words fading in over the end of the line.
+/// The row is absent when Today has no tabs, so New Tab follows Pinned at the ordinary
+/// row spacing. Once Today has tabs, the hairline separates the sections and runs the full
+/// width until the actions arrive. Then it shortens to make way for them, with the one
+/// animation the list already uses, so the sixth tab reads as the words fading in over
+/// the end of the line.
 ///
 /// Below the threshold the actions are out of the layout altogether, so the sidebar offers
 /// exactly what it shows. Neither is *lost* there: Tidy Tabs and Clear Tabs keep their menu
