@@ -2,13 +2,49 @@
 """Validate the diff and conservatively select cheap CI checks."""
 import argparse
 import os
+import re
 from pathlib import PurePosixPath
 import subprocess
 import sys
 
 
+ROUTING_FILES = {"scripts/ci-change-scope.py", "scripts/test-ci-change-scope.py",
+                 "scripts/test-checks-workflow.py"}
+WORKFLOW = ".github/workflows/checks.yml"
+WEBSITE_SUFFIXES = {".html", ".css", ".js", ".cjs", ".svg", ".png", ".jpg", ".jpeg",
+                    ".webp", ".gif", ".ico", ".woff", ".woff2"}
+
+
+def routing_only_workflow_change(base, head):
+    """Routing can use its own fixtures; changes to app jobs still build the app."""
+    versions = []
+    headers = []
+    for ref in (base, head):
+        result = subprocess.run(["git", "show", f"{ref}:{WORKFLOW}"], capture_output=True)
+        if result.returncode != 0:
+            return False
+        text = result.stdout.decode("utf-8")
+        if "\njobs:\n" not in text:
+            return False
+        header, body = text.split("\njobs:\n", 1)
+        headers.append(header)
+        starts = list(re.finditer(r"^  ([a-z][a-z0-9-]*):\n", body, re.MULTILINE))
+        jobs = {match[1]: body[match.end():starts[i + 1].start() if i + 1 < len(starts) else len(body)]
+                for i, match in enumerate(starts)}
+        if not {"changes", "checks", "source", "build", "native", "packaging", "prune-caches"} <= jobs.keys():
+            return False
+        versions.append(jobs)
+    before, after = versions
+    return headers[0] == headers[1] and before.keys() == after.keys() and all(
+        before[name] == after[name] for name in before if name not in {"changes", "checks"})
+
+
 def cheap_checks_only(path):
     parts = PurePosixPath(path).parts
+    if path in ROUTING_FILES or path == "docs/.nojekyll":
+        return True
+    if parts and parts[0] == "docs" and PurePosixPath(path).suffix in WEBSITE_SUFFIXES:
+        return True
     return path == ".gitignore" or path.endswith(".md") and (
         len(parts) == 1 or parts[0] == "docs" or
         path.startswith(".github/ISSUE_TEMPLATE/") or path == ".github/pull_request_template.md"
@@ -30,7 +66,9 @@ def main():
         result = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", *refs, "--"],
                                 check=True, capture_output=True)
         paths = [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
-        app_required = not paths or not all(cheap_checks_only(path) for path in paths)
+        app_required = not paths or not all(
+            cheap_checks_only(path) or path == WORKFLOW and routing_only_workflow_change(*refs)
+            for path in paths)
         subprocess.run(["git", "diff", "--check", *refs, "--"], check=True)
         print(f"Validated {len(paths)} changed paths", file=sys.stderr)
     else:

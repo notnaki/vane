@@ -72,6 +72,9 @@ def main():
     assert 'runs-on: ubuntu-latest' in sections['changes']
     assert 'fetch-depth: 0' in sections['changes']
     assert 'scripts/ci-change-scope.py' in sections['changes']
+    for command in ('python3 scripts/test-ci-change-scope.py', 'python3 scripts/test-checks-workflow.py',
+                    'node docs/tests/galaxy.test.cjs'):
+        assert command in sections['changes'], command + ' must also validate the fast path'
     for name in ('source', 'build', 'native', 'packaging'):
         section = sections[name]
         assert "if: needs.changes.outputs.app_required == 'true'" in section
@@ -108,7 +111,7 @@ def main():
     for command in ('node docs/tests/galaxy.test.cjs', 'python3 scripts/test-ci-source-state.py',
                     'python3 scripts/test-native-fixture-runner.py', './.build/debug/vane selfcheck --pure',
                     'scripts/check-webkit-startup.sh', 'scripts/check-app-icons.sh'):
-        assert text.count('run: ' + command) == 1, command + ' must run once'
+        assert text.count('run: ' + command) == 1, command + ' must run once in app jobs'
     for fixture in ('test-checks-workflow.py', 'test-native-test-shards.py', 'test-ci-build-artifact.py', 'test-ci-change-scope.py',
                     'test-classify-worker-ua.py'):
         assert fixture in sections['source']
