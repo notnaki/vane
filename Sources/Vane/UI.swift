@@ -1233,38 +1233,24 @@ private struct NavigationTarget: ViewModifier {
 struct AddressPill: View {
     let tab: Tab?
     var showsProfile = false
-
-    var body: some View {
-        if let tab {
-            LiveAddressPill(tab: tab, showsProfile: showsProfile)
-        } else {
-            PillBody(tab: nil, host: "", address: "", showsProfile: showsProfile)
-        }
-    }
-}
-
-/// Split from `PillBody` only so the tab can be observed; the empty pill has none.
-private struct LiveAddressPill: View {
-    @ObservedObject var tab: Tab
-    var showsProfile = false
-    /// The site-controls badge is not on the tab: it is a remembered permission, written by
-    /// a modal prompt that has no route back into this view. See `SiteChanges`.
     @ObservedObject private var changes = SiteChanges.shared
+    @State private var tabRevision: UInt = 0
 
     var body: some View {
-        // Built *here*, where the tab is observed, and handed down as a value. Built inside
-        // the controls instead, SwiftUI would be free to skip that view's body across a
-        // navigation — its one stored property, the Tab, is unchanged — and leave the lock
-        // and the badge describing the page before last.
-        let site = SiteControlModel(tab)
-        PillBody(tab: tab, host: host, address: tab.address,
-                 site: site,
-                 zoom: PillState.zoomLabel(tab.zoom), showsProfile: showsProfile)
+        // Observe the optional page without branching around the pill itself. Its hover
+        // and keyboard owner must survive a page → empty → page round trip.
+        let _ = tabRevision
+        let site = tab.map { SiteControlModel($0) } ?? SiteControlModel()
+        PillBody(tab: tab, host: host, address: tab?.address ?? "", site: site,
+                 zoom: PillState.zoomLabel(tab?.zoom ?? 1), showsProfile: showsProfile)
+            .onReceive(tab?.objectWillChange.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) {
+                tabRevision &+= 1
+            }
     }
 
-    /// The host alone, the way Arc shows it — or a local file's own name. See
-    /// `Files.pillLabel`, which is where both are decided.
+    /// Read metadata here on every page notification, including permission changes.
     private var host: String {
+        guard let tab else { return "" }
         if tab.easelID != nil { return "Local Easel" }
         if let label = Files.pillLabel(tab.currentURL) { return label }
         return tab.address.isEmpty ? "Search or Enter URL" : tab.address
@@ -1289,8 +1275,11 @@ private struct PillBody: View {
     var showsProfile = false
     @State private var hovering = false
     @State private var showingSiteControls = false
+    @State private var pillFocused = false
     @StateObject private var overflowAnchor = ActionAnchor()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
     private var field: some View {
         content
@@ -1319,16 +1308,17 @@ private struct PillBody: View {
 
     var body: some View {
         field
-        .animation(reduceMotion ? nil : Look.quick, value: hovering)
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
-                   value: compact)
+        .animation(reduced ? nil : Look.quick, value: hovering)
+        .animation(reduced ? nil : Look.quick, value: compact)
+        .vaneMotionPolicy()
         .contentShape(.rect)
         .background {
             if let dragPreview { SidebarDragAnchor(preview: dragPreview, store: store, region: .pill) }
         }
         .onHover { hovering = $0 }
         .onTapGesture { open() }
-        .vaneKeyboardAction(requestFocus: $store.chromeFocusRequested, action: open)
+        .vaneKeyboardAction(requestFocus: $store.chromeFocusRequested,
+                            focusChanged: { pillFocused = $0 }, action: open)
         // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is
         // the top of the sidebar, and it is what the empty grid used to be dropped on.
         .onDrop(of: [.plainText, .url],
@@ -1457,29 +1447,38 @@ private struct PillBody: View {
 
     private var fullContent: some View {
         HStack(spacing: Look.pillGlyphGap) {
-            if address.isEmpty {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 13))
-                    .accessibilityHidden(true)
-                Text("Search or Enter URL…").font(Look.heading).lineLimit(1)
-            } else {
-                Text(host).font(Look.text).lineLimit(1)
-                    .vaneTooltip(address)
+            ZStack(alignment: .leading) {
+                if address.isEmpty {
+                    HStack(spacing: Look.pillGlyphGap) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 13))
+                            .accessibilityHidden(true)
+                        Text("Search or Enter URL…").font(Look.heading).lineLimit(1)
+                    }
+                    .transition(.offset(x: -Look.pillPromptTravel).combined(with: .opacity))
+                } else {
+                    Text(host).font(Look.text).lineLimit(1)
+                        .vaneTooltip(address)
+                        .transition(.opacity)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // Rebuild only the label when policy changes, settling a running transition
+            // without replacing the pill's keyboard owner or its native buttons.
+            .id(reduced)
             Spacer(minLength: 4)
             if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
-            // Keep these controls mounted so Tab and VoiceOver can reach them without hover.
+            // Reserve the action slots while hidden so hover cannot move the host,
+            // zoom chip, or pinned extensions. Keyboard focus reveals the same actions.
             if !address.isEmpty, let tab, tab.easelID == nil {
                 PillHoverGlyphs(tab: tab, site: site, showingSiteControls: $showingSiteControls,
-                                feedback: store.feedback, address: address, copyLink: copyLink)
+                                feedback: store.feedback, address: address,
+                                revealed: hovering || pillFocused, copyLink: copyLink)
+                    .transition(.opacity)
             }
-            // Pinned extension actions, last: everything after the Spacer is flush right, so
-            // the *last* item is the one the hover glyphs appearing beside it cannot move —
-            // and a button that slides out from under the pointer as you reach for it is not
-            // a button. The host gives up their width once, when one is pinned, never on
-            // hover, and nothing at all is reserved while none are.
             PinnedExtensions(store: store, tab: tab)
         }
+        .animation(reduced ? nil : Look.pillChange, value: address.isEmpty)
     }
 
     /// The address, and the two things the glyph and the chip say about it.
@@ -1514,40 +1513,66 @@ private struct PillHoverGlyphs: View {
     @Binding var showingSiteControls: Bool
     @ObservedObject var feedback: InteractionFeedback
     let address: String
+    let revealed: Bool
     let copyLink: () -> Void
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @State private var copyFocused = false
+    @State private var siteFocused = false
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
+    private var visible: Bool { revealed || copyFocused || siteFocused || showingSiteControls }
     private var copied: Bool { feedback.copiedURL == address }
     var body: some View {
-        Button { copyLink() } label: {
-            CopyLinkGlyph(copied: copied)
-                .frame(width: Look.control, height: Look.control)
-                .contentShape(.rect)
-        }
-            .vaneTooltip(copied ? "Link Copied" : "Copy Link", shortcut: Keybindings.binding(for: .copyPageURL).display)
-            .accessibilityLabel("Copy Link")
-            .accessibilityValue(copied ? "Copied" : "")
-        Button { showingSiteControls.toggle() } label: {
-            Image(systemName: "slider.horizontal.3")
-                .overlay(alignment: .topTrailing) {
-                    if site.badge != nil {
-                        Circle().fill(Color.accentColor)
-                            .frame(width: Look.badge, height: Look.badge)
-                            .offset(x: Look.badgeOffset, y: -Look.badgeOffset)
+        HStack(spacing: Look.pillGlyphGap) {
+            Button { copyLink() } label: {
+                CopyLinkGlyph(copied: copied)
+                    .frame(width: Look.control, height: Look.control)
+                    .contentShape(.rect)
+                    .modifier(PillGlyphReveal(visible: visible, reduced: reduced))
+            }
+                .vaneTooltip(copied ? "Link Copied" : "Copy Link",
+                             shortcut: Keybindings.binding(for: .copyPageURL).display, enabled: visible)
+                .accessibilityLabel("Copy Link")
+                .accessibilityValue(copied ? "Copied" : "")
+                .nativeSidebarKeyboardControl(focusChanged: { copyFocused = $0 })
+            Button { showingSiteControls.toggle() } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .overlay(alignment: .topTrailing) {
+                        if site.badge != nil {
+                            Circle().fill(Color.accentColor)
+                                .frame(width: Look.badge, height: Look.badge)
+                                .offset(x: Look.badgeOffset, y: -Look.badgeOffset)
+                        }
                     }
-                }
-                .frame(width: Look.control, height: Look.control)
-                .background(showingSiteControls ? chromeTheme.hovered : .clear,
-                            in: .rect(cornerRadius: Look.pillRadius))
-                .contentShape(.rect)
+                    .frame(width: Look.control, height: Look.control)
+                    .background(showingSiteControls ? chromeTheme.hovered : .clear,
+                                in: .rect(cornerRadius: Look.pillRadius))
+                    .contentShape(.rect)
+                    .modifier(PillGlyphReveal(visible: visible, reduced: reduced))
+            }
+            .nativeSidebarKeyboardControl(focusChanged: { siteFocused = $0 })
+            .foregroundStyle(site.insecure ? Look.warning : Look.inkSecondary)
+            .background { SitePermissionAnchor(tabID: tab.id) }
+            .vaneTooltip("Site Controls", hint: site.siteless ? nil : "\(site.title) — \(site.connection)", enabled: visible && !showingSiteControls)
+            .accessibilityLabel("Site Controls")
+            .accessibilityValue([site.connection, site.badge].compactMap { $0 }.joined(separator: ", "))
+            .accessibilityHint("Shows what this site is allowed to do, and its zoom, extensions and data.")
+            .popover(isPresented: $showingSiteControls.presented(when: store.profileVisible), arrowEdge: .bottom) {
+                SiteControlPopover(tab: tab)
+            }
         }
-        .foregroundStyle(site.insecure ? Look.warning : Look.inkSecondary)
-        .background { SitePermissionAnchor(tabID: tab.id) }
-        .vaneTooltip("Site Controls", hint: site.siteless ? nil : "\(site.title) — \(site.connection)", enabled: !showingSiteControls)
-        .accessibilityLabel("Site Controls")
-        .accessibilityValue([site.connection, site.badge].compactMap { $0 }.joined(separator: ", "))
-        .accessibilityHint("Shows what this site is allowed to do, and its zoom, extensions and data.")
-        .popover(isPresented: $showingSiteControls.presented(when: store.profileVisible), arrowEdge: .bottom) {
-            SiteControlPopover(tab: tab)
-        }
+        .allowsHitTesting(visible)
+        .accessibilityHidden(!visible)
+    }
+}
+
+/// Only paint is replaced on a motion-policy change; the Button retains focus.
+private struct PillGlyphReveal: ViewModifier {
+    let visible: Bool
+    let reduced: Bool
+    func body(content: Content) -> some View {
+        content.opacity(visible ? 1 : 0)
+            .animation(reduced ? nil : Look.quick, value: visible)
+            .id(reduced)
     }
 }
 
