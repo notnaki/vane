@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import WebKit
 import Combine
+import CFNetwork
 
 @MainActor enum SavedReaderDocument {
     static func html(article: ReadingArticle) -> String {
@@ -39,7 +40,10 @@ enum SavedReaderNavigation {
         }
         for native in chain {
             let candidates = [native.userInfo[NSURLErrorFailingURLErrorKey] as? URL,
-                              (native.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:))]
+                              // Retain string-only errors from older/underlying loaders.
+                              // CFNetwork still exposes this payload key without the
+                              // deprecated Foundation symbol.
+                              (native.userInfo[kCFURLErrorFailingURLStringErrorKey as String] as? String).flatMap(URL.init(string:))]
             if let url = candidates.compactMap({ $0 }).first(where: { $0.absoluteString == document.absoluteString }) {
                 report += "; failingURL=\(String(url.absoluteString.prefix(2_048)))"
                 break

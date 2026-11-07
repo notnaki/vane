@@ -26,6 +26,19 @@ private final class FixtureProtocol: URLProtocol, @unchecked Sendable {
 @main struct CloudAIHarness {
     static func main() async {
         var results = CloudAI.check()
+        // Inspect the real serialized requests: OpenAI's replacement field must not
+        // change the contract of third-party OpenAI-compatible endpoints.
+        for provider in [AIProvider.openAI, .groq, .openRouter, .custom] {
+            let config = CloudAI.Configuration(provider: provider, baseURL: "https://fixture.example/v1", model: "fixture-model")
+            for (tokens, expected) in [(1, 64), (256, 256), (4096, 2048)] {
+                let request = CloudAI.request(config, key: "fixture-only", prompt: "test", tokens: tokens)
+                let body = request?.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                let tokenField = provider == .openAI ? "max_completion_tokens" : "max_tokens"
+                let absentField = provider == .openAI ? "max_tokens" : "max_completion_tokens"
+                results.append(("\(provider.rawValue) keeps its token budget \(expected) with its supported field",
+                                body?[tokenField] as? Int == expected && body?[absentField] == nil))
+            }
+        }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [FixtureProtocol.self]
         let session = URLSession(configuration: configuration)

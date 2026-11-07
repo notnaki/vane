@@ -77,8 +77,9 @@ class ManifestTests(unittest.TestCase):
 
     def test_cleanup_preserves_selected_backend_and_build_location(self):
         cases = (
-            ["--build-system", "native", "--scratch-path", "/tmp/owned-build", "-c", "debug"],
-            ["--build-system=native", "--scratch-path=/tmp/owned-build", "--configuration=release"],
+            [],
+            ["--build-system", "swiftbuild", "--scratch-path", "/tmp/owned-build", "-c", "debug"],
+            ["--build-system=swiftbuild", "--scratch-path=/tmp/owned-build", "--configuration=release"],
         )
         for location in cases:
             with self.subTest(location=location), tempfile.TemporaryDirectory() as temp:

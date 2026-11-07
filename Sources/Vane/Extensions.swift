@@ -1,4 +1,5 @@
 import AppKit
+import ExtensionResourceBridge
 import Combine
 import Darwin
 import SwiftUI
@@ -226,7 +227,7 @@ import WebKit
         // Older WebKit keeps the page seed separate from the controller's cookie/API
         // store. Bind both to this profile before WebKit copies the configuration.
         webConfiguration.websiteDataStore = configuration.defaultWebsiteDataStore
-        webConfiguration.processPool = WebKitStartup.extensionProcessPool
+        WebKitStartup.extensionProcessPool.configure(webConfiguration)
         userAgent.configure(webConfiguration)
         controller = WKWebExtensionController(configuration: configuration)
         super.init()

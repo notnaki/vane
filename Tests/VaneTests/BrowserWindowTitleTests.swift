@@ -165,16 +165,22 @@ import XCTest
 
     func testTitleSynchronizationReleasesClosedTab() async throws {
         let store = try browser(profile: profile("Work"))
-        var tab: Tab? = store.newBlankTab()
-        try await load("/released", in: try XCTUnwrap(tab))
-        try await title("Page /released — Vane — Work", in: store)
-        let retired = WeakTab(tab)
-        store.close(try XCTUnwrap(tab).id)
-        tab = nil
+        // The fixture's strong tab reference must leave its async frame before
+        // asserting that the window's observations released the closed page.
+        let retired = try await closeTitleFixture(in: store)
         try await title("Vane — Work", in: store)
         let deadline = Date.now.addingTimeInterval(2)
         while retired.value != nil, Date.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertNil(retired.value, "Window title observation must not retain the closed page")
+    }
+
+    private func closeTitleFixture(in store: TabStore) async throws -> WeakTab {
+        let tab = store.newBlankTab()
+        try await load("/released", in: tab)
+        try await title("Page /released — Vane — Work", in: store)
+        let retired = WeakTab(tab)
+        store.close(tab.id)
+        return retired
     }
 
     func testPrivateWindowNeverPublishesPageTitleOrURL() async throws {

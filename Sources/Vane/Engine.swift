@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import WebKit
 import Security
+import ExtensionResourceBridge
 
 /// Safari's UA string. WKWebView's own UA gets Netflix/Disney+ bounced on sight, and
 /// FairPlay is only offered to clients that look like Safari. Keep its version current
@@ -1431,7 +1432,7 @@ struct TitleReveal: Equatable, Sendable {
                               blocking: Bool = true) -> WKWebViewConfiguration {
         let profileID = isPrivate ? Profile.incognito.id : profileID
         let cfg = WKWebViewConfiguration()
-        cfg.processPool = WebKitStartup.processPool
+        WebKitStartup.processPool.configure(cfg)
         PageRendering.configure(cfg.preferences)
         // Persistent: cookies, logins, media keys — and one persistent store per profile, via
         // WKWebsiteDataStore(forIdentifier:). A private window gets a store that lives only as
@@ -1445,23 +1446,18 @@ struct TitleReveal: Equatable, Sendable {
         cfg.mediaTypesRequiringUserActionForPlayback = .audio
         cfg.allowsAirPlayForMediaPlayback = true
         cfg.preferences.isElementFullscreenEnabled = true
-        // Picture in picture is off by default in WKWebView on macOS — measured: the key is
-        // there and reads false, and with it false `webkitSetPresentationMode` is a silent
-        // no-op, which is why both the ⌥⌘P toggle and auto-PiP did nothing. The public
-        // property is iOS-only (`allowsPictureInPictureMediaPlayback` on the configuration),
-        // so this is KVC on the same preference Safari sets.
-        // ponytail: KVC on a documented-by-name preference, exactly like developerExtrasEnabled
-        // below. If the key ever goes away this throws nothing and PiP simply stays off.
-        cfg.preferences.setValue(true, forKey: "allowsPictureInPictureMediaPlayback")
+        // The public configuration PiP switch is iOS-only. This macOS preference
+        // enables webkitSetPresentationMode and both manual and automatic PiP.
+        // An absent or incompatible setter leaves WebKit's default unchanged.
+        VaneSetBooleanPreference(cfg.preferences, NSSelectorFromString("_setAllowsPictureInPictureMediaPlayback:"), true)
         // True so a popup with no click behind it reaches `createWebViewWith`, which blocks it
         // there and says so. False leaves WebKit to drop it with no trace. See Popups.swift.
         cfg.preferences.javaScriptCanOpenWindowsAutomatically = Popup.readsGesture
         // isInspectable governs remote inspection from Safari's Develop menu. The in-app
         // inspector window and the "Inspect Element" context-menu item are gated on this
         // preference instead, which has no public setter.
-        // ponytail: KVC on a documented-by-everyone WebKit preference key, wrapped so a
-        // rename degrades to "no dev tools" rather than a crash.
-        cfg.preferences.setValue(Settings.inspectorEnabled, forKey: "developerExtrasEnabled")
+        // An absent or incompatible setter leaves WebKit's default unchanged.
+        VaneSetBooleanPreference(cfg.preferences, NSSelectorFromString("_setDeveloperExtrasEnabled:"), Settings.inspectorEnabled)
         cfg.webExtensionController = ExtensionHost.host(for: profileID).controller
         if blocking { Blocker.apply(to: cfg, profileID: profileID) }
         return cfg

@@ -35,13 +35,20 @@ WKWebExtension *VaneCreateResourceExtension(NSDictionary<NSString *, NSData *> *
 - (NSArray<NSString *> *)alwaysRevalidatedURLSchemes;
 - (void)setAlwaysRevalidatedURLSchemes:(NSArray<NSString *> *)schemes;
 @end
+// WKProcessPool and WKWebViewConfiguration.processPool are deprecated, but
+// WebKit has no public replacement for alwaysRevalidatedURLSchemes. The explicit
+// contexts keep canonical MV3 module imports fresh and preserve the two app-lifetime
+// IPC owners. Removing either creation or assignment changes shipped behavior.
+// Keep the unavoidable compatibility exception confined to this typed adapter;
+// callers and the public bridge header never reference the deprecated API.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 @interface WKProcessPool (VaneExtensionCacheConfiguration)
 - (instancetype)_initWithConfiguration:(id)configuration __attribute__((objc_method_family(init)));
 - (id)_configuration;
 @end
-static char VaneExtensionCachePolicyKey;
 
-WKProcessPool *VaneCreateExtensionResourceProcessPool(void)
+static WKProcessPool *VaneCreateExtensionResourceProcessPool(BOOL *revalidates)
 {
     Class configurationClass = NSClassFromString(@"_WKProcessPoolConfiguration");
     id configuration = nil;
@@ -64,7 +71,7 @@ WKProcessPool *VaneCreateExtensionResourceProcessPool(void)
         }
     }
     if (!pool) pool = [[WKProcessPool alloc] init];
-    objc_setAssociatedObject(pool, &VaneExtensionCachePolicyKey, @(enabled), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    *revalidates = enabled;
 #if __has_feature(objc_arc)
     return pool;
 #else
@@ -73,7 +80,59 @@ WKProcessPool *VaneCreateExtensionResourceProcessPool(void)
 #endif
 }
 
-BOOL VaneProcessPoolRevalidatesExtensionResources(WKProcessPool *pool)
+@interface VaneWebProcessPoolOwner () {
+    WKProcessPool *_pool;
+    BOOL _revalidatesExtensionResources;
+}
+@end
+
+@implementation VaneWebProcessPoolOwner
+- (instancetype)initWithExtensionResourceRevalidation:(BOOL)revalidate
 {
-    return [objc_getAssociatedObject(pool, &VaneExtensionCachePolicyKey) boolValue];
+    self = [super init];
+    if (!self) return nil;
+    if (revalidate) {
+        _pool = VaneCreateExtensionResourceProcessPool(&_revalidatesExtensionResources);
+#if !__has_feature(objc_arc)
+        [_pool retain];
+#endif
+    } else {
+        _pool = [[WKProcessPool alloc] init];
+    }
+    return self;
+}
+
+- (void)configure:(WKWebViewConfiguration *)configuration { configuration.processPool = _pool; }
+- (BOOL)matches:(WKWebViewConfiguration *)configuration { return configuration.processPool == _pool; }
+- (BOOL)revalidatesExtensionResources { return _revalidatesExtensionResources; }
+- (const void *)contextHandle
+{
+#if __has_feature(objc_arc)
+    return (__bridge const void *)_pool;
+#else
+    return (const void *)_pool;
+#endif
+}
+#if !__has_feature(objc_arc)
+- (void)dealloc
+{
+    [_pool release];
+    [super dealloc];
+}
+#endif
+@end
+#pragma clang diagnostic pop
+
+BOOL VaneSetBooleanPreference(id target, SEL setter, BOOL enabled)
+{
+    if (![target respondsToSelector:setter]) return NO;
+    Method method = class_getInstanceMethod(object_getClass(target), setter);
+    if (!method) return NO;
+    NSMethodSignature *signature = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+    if (signature.numberOfArguments != 3
+        || strcmp(signature.methodReturnType, @encode(void)) != 0
+        || strcmp([signature getArgumentTypeAtIndex:2], @encode(BOOL)) != 0) return NO;
+    void (*setBoolean)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))method_getImplementation(method);
+    setBoolean(target, setter, enabled);
+    return YES;
 }

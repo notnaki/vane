@@ -124,7 +124,9 @@ def main():
     header = text.split('\njobs:\n', 1)[0]
     assert "group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}" in header
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in header
-    assert 'swift build --build-system native -c debug --build-tests --disable-index-store' in build
+    assert '--build-system' not in build + native + packaging, 'build and skip-build consumers must use the same toolchain default'
+    assert 'swift build -c debug --build-tests --disable-index-store' in build
+    assert 'BIN_PATH=$(swift build -c debug --show-bin-path)' in build
     assert 'run: ./make-app.sh debug --skip-app-build\n' in build
     assert 'VANE_CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}' in build
     assert 'uses: actions/cache/restore@v6' in build and 'uses: actions/cache/save@v6' in build
@@ -138,7 +140,8 @@ def main():
     assert 'scripts/ci-build-artifact.py pack' in build
     assert 'name: debug-runtime' in build and 'compression-level: 0' in build
     for section in (native, packaging):
-        assert 'uses: actions/download-artifact@v5' in section
+        assert 'uses: actions/download-artifact@v8' in section
+        assert 'digest-mismatch: warn' in section
         assert 'name: debug-runtime' in section
         assert 'scripts/ci-build-artifact.py restore' in section
         assert 'swift build' not in section
@@ -149,9 +152,9 @@ def main():
     assert 'shard: [1, 2, 3, 4]' in native
     assert '--index "$NATIVE_SHARD" --count 4' in native
     assert 'NATIVE_SHARD: ${{ matrix.shard }}' in native
-    assert 'swift test --build-system native list --skip-build' in native
+    assert 'swift test list --skip-build' in native
     assert 'scripts/native-test-shards.py plan' in native
-    assert 'scripts/run-native-tests.py --build-system native --skip-build --jobs 1' in native
+    assert 'scripts/run-native-tests.py --skip-build --jobs 1' in native
     assert 'scripts/native-test-shards.py verify' in native
     assert 'name: native-loop-logs-${{ matrix.shard }}' in native
     assert "VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'" in native

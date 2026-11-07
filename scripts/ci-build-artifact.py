@@ -11,6 +11,10 @@ import tarfile
 MANIFEST = ".vane-ci-build.json"
 
 
+def is_debug_products(path):
+    return path.name == "debug" or (path.name == "Debug" and path.parent.name == "Products")
+
+
 def toolchain_key():
     commands = (["swift", "--version"], ["xcodebuild", "-version"],
                 ["xcrun", "--show-sdk-path"], ["xcrun", "--show-sdk-build-version"])
@@ -19,18 +23,27 @@ def toolchain_key():
 
 def pack(root, binary, archive, revision, toolchain):
     root, binary = root.resolve(), binary.resolve()
-    if not binary.is_relative_to(root / ".build") or binary.name != "debug":
-        raise ValueError("only workspace-owned native debug products may be shared")
+    if not binary.is_relative_to(root / ".build") or not is_debug_products(binary):
+        raise ValueError("only workspace-owned debug products may be shared")
     description = binary / "description.json"
-    products = json.loads(description.read_text())["builtTestProducts"]
+    if description.exists() or binary.name == "debug":
+        # The native engine records its authoritative XCTest product paths.
+        products = [Path(product["binaryPath"]) for product in
+                    json.loads(description.read_text())["builtTestProducts"]]
+    else:
+        # Swift Build writes separate XCTest bundles directly in the public
+        # --show-bin-path directory instead of a native description.json.
+        products = [bundle / "Contents/MacOS" / bundle.stem
+                    for bundle in sorted(binary.glob("*.xctest"))]
     lease_holder = binary / "NativeLeaseHolder"
     if lease_holder.is_symlink() or not lease_holder.is_file() or not lease_holder.stat().st_mode & 0o111:
         raise ValueError("debug artifact must contain an executable native lease holder")
-    payload = [binary / "vane", lease_holder, description, *sorted(binary.glob("*.bundle")), root / "Vane.app"]
+    payload = [binary / "vane", lease_holder, *sorted(binary.glob("*.bundle")), root / "Vane.app"]
+    if description.exists():
+        payload.append(description)
     if not products:
         raise ValueError("debug artifact must contain built XCTest products")
-    for product in products:
-        executable = Path(product["binaryPath"])
+    for executable in products:
         bundle = next((path for path in executable.parents if path.suffix == ".xctest"), None)
         if bundle is None or not bundle.is_relative_to(binary) or not executable.is_file():
             raise ValueError("missing or misplaced XCTest executable")
@@ -64,7 +77,7 @@ def restore(root, archive, revision, toolchain):
         ):
             raise ValueError("shared build revision, checkout path, or toolchain does not match this runner")
         binary = PurePosixPath(metadata["binary"])
-        if binary.is_absolute() or ".." in binary.parts or binary.parts[0] != ".build" or binary.name != "debug":
+        if binary.is_absolute() or ".." in binary.parts or binary.parts[0] != ".build" or not is_debug_products(binary):
             raise ValueError("invalid debug product directory in shared build")
         for member in tar.getmembers():
             name = PurePosixPath(member.name)

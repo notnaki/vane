@@ -4,8 +4,8 @@ import XCTest
 @testable import vane
 
 @MainActor final class BrowserIdentityTests: XCTestCase {
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         TestEnvironment.prepare()
     }
 

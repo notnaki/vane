@@ -63,7 +63,7 @@ enum CloudAI {
             ],
             "stream": false,
             "response_format": ["type": "json_object"],
-            "max_tokens": min(max(tokens, 64), 2048),
+            config.provider == .openAI ? "max_completion_tokens" : "max_tokens": min(max(tokens, 64), 2048),
         ]
         if config.provider == .groq && model.hasPrefix("openai/gpt-oss-") {
             body["reasoning_effort"] = "low"

@@ -1,4 +1,5 @@
 import AppKit
+import ExtensionResourceBridge
 import CryptoKit
 import WebKit
 import XCTest
@@ -52,7 +53,7 @@ import XCTest
         init(_ web: WKWebView, context: WKWebExtensionContext, expectedStore: WKWebsiteDataStore) {
             self.context = context
             let configuration = web.configuration
-            poolMatchesApplication = configuration.processPool === WebKitStartup.extensionProcessPool
+            poolMatchesApplication = WebKitStartup.extensionProcessPool.matches(configuration)
             let actualStore = configuration.websiteDataStore
             identifiersMatch = actualStore.identifier == expectedStore.identifier
             persistenceMatches = actualStore.isPersistent == expectedStore.isPersistent
@@ -179,7 +180,7 @@ import XCTest
                                 checkingBackgroundIdentity: Bool = true,
                                 file: StaticString = #filePath, line: UInt = #line) async throws {
         let configuration = web.configuration
-        XCTAssertTrue(configuration.processPool === WebKitStartup.extensionProcessPool,
+        XCTAssertTrue(WebKitStartup.extensionProcessPool.matches(configuration),
                       "\(scenario): popup must use the application's extension pool", file: file, line: line)
         assertStore(configuration.websiteDataStore,
                     matches: expectedStore ?? ExtensionHost.host(for: profile).controller.configuration.defaultWebsiteDataStore,
@@ -219,14 +220,14 @@ import XCTest
         let otherSeed = try XCTUnwrap(otherExtensions.configuration.webViewConfiguration)
         let privateSeed = try XCTUnwrap(privateExtensions.configuration.webViewConfiguration)
 
-        XCTAssertTrue(browser.processPool === WebKitStartup.processPool)
+        XCTAssertTrue(WebKitStartup.processPool.matches(browser))
         for configuration in [otherBrowser, privateBrowser] {
-            XCTAssertTrue(configuration.processPool === browser.processPool,
+            XCTAssertTrue(WebKitStartup.processPool.matches(configuration),
                           "Browser pages must retain the application's browser pool")
         }
-        XCTAssertFalse(WebKitStartup.extensionProcessPool === browser.processPool)
+        XCTAssertFalse(WebKitStartup.extensionProcessPool.matches(browser))
         for configuration in [seed, otherSeed, privateSeed] {
-            XCTAssertTrue(configuration.processPool === WebKitStartup.extensionProcessPool,
+            XCTAssertTrue(WebKitStartup.extensionProcessPool.matches(configuration),
                           "WebKit-owned extension pages must retain the application's extension pool")
         }
         XCTAssertFalse(extensions === otherExtensions)
@@ -260,7 +261,7 @@ import XCTest
         ExtensionHost.forget(otherProfile)
         let replacement = ExtensionHost.host(for: otherProfile).controller
         XCTAssertFalse(replacement === otherExtensions)
-        XCTAssertTrue(replacement.configuration.webViewConfiguration.processPool === WebKitStartup.extensionProcessPool)
+        XCTAssertTrue(WebKitStartup.extensionProcessPool.matches(replacement.configuration.webViewConfiguration))
         XCTAssertTrue(replacement.configuration.defaultWebsiteDataStore === otherBrowser.websiteDataStore)
         assertStore(replacement.configuration.webViewConfiguration.websiteDataStore,
                     matches: otherBrowser.websiteDataStore, scenario: "Recreated other profile seed")

@@ -129,7 +129,7 @@ jobs:
         run: python3 scripts/ci-source-state.py restore
 
       - name: Build app and native tests once
-        run: swift build --build-system native -c debug --build-tests --disable-index-store
+        run: swift build -c debug --build-tests --disable-index-store
 
       - name: Bundle
         env:
@@ -139,7 +139,7 @@ jobs:
       - name: Package shared debug runtime
         run: |
           set -euo pipefail
-          BIN_PATH=$(swift build --build-system native -c debug --show-bin-path)
+          BIN_PATH=$(swift build -c debug --show-bin-path)
           python3 scripts/ci-build-artifact.py pack \
             --bin-path "$BIN_PATH" --revision "$GITHUB_SHA" \
             --archive "$RUNNER_TEMP/vane-debug-runtime.tar.gz"
@@ -179,8 +179,10 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Download compiled runtime
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
+          # Preserve v5's warning policy; the restore step verifies our archive.
+          digest-mismatch: warn
           name: debug-runtime
           path: ${{ runner.temp }}/vane-debug-runtime
 
@@ -193,7 +195,7 @@ jobs:
       - name: Discover and partition all native tests
         run: |
           set -euo pipefail
-          swift test --build-system native list --skip-build > "$RUNNER_TEMP/vane-native-tests.txt"
+          swift test list --skip-build > "$RUNNER_TEMP/vane-native-tests.txt"
           python3 scripts/native-test-shards.py plan \
             --inventory "$RUNNER_TEMP/vane-native-tests.txt" \
             --suite required \
@@ -213,7 +215,7 @@ jobs:
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
           set -euo pipefail
-          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/vane-appkit-loop-preflight.log"
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/vane-appkit-loop-preflight.log"
           if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-appkit-loop-preflight.log"; then exit 1; fi
           grep -Fq "Test Case '-[VaneTests.NativeApplicationLoopSmokeTests testOwnedLoopAdmitsAsyncWorkAndStops]' passed" "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Expected owned AppKit loop preflight did not pass.'; exit 1; }
           grep -Fq 'AppKit loop smoke: delayedHeartbeat=true, completed=true' "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Delayed AppKit heartbeat regression did not complete.'; exit 1; }
@@ -227,7 +229,7 @@ jobs:
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
           set -euo pipefail
-          python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 \
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 \
             --filter "$(cat "$RUNNER_TEMP/vane-native-shard.filter")" \
             2>&1 | tee "$RUNNER_TEMP/vane-swift-tests.log"
           # Swift's signal handler can return after a software-raised trap. A fatal
@@ -268,8 +270,10 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Download compiled runtime
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
+          # Preserve v5's warning policy; the restore step verifies our archive.
+          digest-mismatch: warn
           name: debug-runtime
           path: ${{ runner.temp }}/vane-debug-runtime
 

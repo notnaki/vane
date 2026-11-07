@@ -75,13 +75,12 @@ import XCTest
            let host = Peek.live?.window.contentView,
            let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
             host.cacheDisplay(in: host.bounds, to: bitmap)
-            let image = NSImage(size: host.bounds.size)
-            image.lockFocus()
-            NSColor(white: 0.5, alpha: 1).setFill()
-            NSRect(origin: .zero, size: image.size).fill()
-            NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size)
-                .draw(in: NSRect(origin: .zero, size: image.size))
-            image.unlockFocus()
+            let captured = NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size)
+            let image = try XCTUnwrap(RasterImage.make(size: host.bounds.size) { bounds in
+                NSColor(white: 0.5, alpha: 1).setFill()
+                bounds.fill()
+                captured.draw(in: bounds)
+            })
             let output = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
             try output.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
         }
