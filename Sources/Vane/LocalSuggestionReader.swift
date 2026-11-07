@@ -46,6 +46,7 @@ actor LocalSuggestionReader {
         let match: SearchMatch
         let engine: SearchEngine?
         let fuzzy: Bool
+        let scores = SearchScoreCache()
         init(_ query: String, engine: SearchEngine? = nil) {
             match = SearchMatch(query)
             self.engine = engine
@@ -65,12 +66,13 @@ actor LocalSuggestionReader {
                 let context = Unmanaged<Context>.fromOpaque(data).takeUnretainedValue()
                 let title = sqlite3_value_text(values[0]).map { String(cString: $0) } ?? ""
                 let url = sqlite3_value_text(values[1]).map { String(cString: $0) } ?? ""
-                if let engine = context.engine, !Bangs.contains(URL(string: url), in: engine) {
-                    sqlite3_result_int(ctx, -1)
-                    return
+                let score = context.scores.score(title: title, url: url) {
+                    if let engine = context.engine, !Bangs.contains(URL(string: url), in: engine) {
+                        return -1
+                    }
+                    return context.match.page(title: title, url: url, fuzzy: context.fuzzy) ?? -1
                 }
-                sqlite3_result_int(ctx, Int32(context.match.page(title: title, url: url,
-                    fuzzy: context.fuzzy) ?? -1))
+                sqlite3_result_int(ctx, Int32(score))
             }, nil, nil, nil)
         defer {
             sqlite3_create_function_v2(db, "vane_match", 2, SQLITE_UTF8, nil, nil, nil, nil, nil)

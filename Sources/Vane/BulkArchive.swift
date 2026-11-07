@@ -14,18 +14,54 @@ extension TabStore {
             guard seen.insert(id).inserted else { return nil }
             return eligible[id]
         }
+        return finishArchivingToday(doomed.map { (tab: $0, stashed: nil) })
+    }
+
+    /// Capture one sweep's eligibility and Space ownership before removing anything.
+    /// A peer's selection must never wake the next page the sweep intends to retire.
+    func archiveIdleToday(now: Date, after: TimeInterval) {
+        SharedTabs.flush()
+        let unlocked = unlockedFolders
+        let shapes = [pins, todayShape] + stashes.values.flatMap { [$0.pins, $0.todayShape] }
+        var owned = Set<String>(), blocked = Set<String>()
+        for shape in shapes {
+            let locked = Pins.TraversalIndex(shape.entries).lockedRows(in: shape.entries, unlocked: unlocked)
+            // Match lockedFolders(for:): the first owning shape decides protection.
+            let rows = Set(shape.entries.map(\.id))
+            blocked.formUnion(locked.subtracting(owned))
+            owned.formUnion(rows)
+        }
+        var stashedSpaces: [Tab.ID: UUID] = [:]
+        for (space, stash) in stashes {
+            for tab in stash.tabs where stashedSpaces[tab.id] == nil { stashedSpaces[tab.id] = space }
+        }
+        var seen = Set<Tab.ID>()
+        let doomed = everyTab.compactMap { tab -> (tab: Tab, stashed: UUID?)? in
+            guard seen.insert(tab.id).inserted, !blocked.contains(tab.id.uuidString),
+                  Archive.due(kind: tab.kind,
+                    idle: Archive.idle(now: now, lastActive: tab.lastActive, lastQuiet: tab.lastQuiet),
+                    after: after, active: tab.id == current, loaded: tab.currentURL != nil,
+                    playing: tab.inMeetCall || TabAudio.isPlaying(tab)) else { return nil }
+            return (tab, stashedSpaces[tab.id])
+        }
+        _ = finishArchivingToday(doomed)
+    }
+
+    private func finishArchivingToday(_ doomed: [(tab: Tab, stashed: UUID?)]) -> Int {
         guard !doomed.isEmpty else { return 0 }
-        let removing = Set(doomed.map(\.id))
+        let removing = Set(doomed.map { $0.tab.id })
         if !isPrivate {
-            let entries = doomed.compactMap { tab -> Archive.Entry? in
+            let entries = doomed.compactMap { item -> Archive.Entry? in
+                let tab = item.tab
                 guard let url = tab.currentURL, TabAddress.restorable(url) else { return nil }
                 let title = TidyTitles.title(for: tab)
                 return Archive.Entry(url: url.absoluteString,
                     title: title.isEmpty ? url.absoluteString : title, at: .now,
-                    space: currentSpaceID, littleArc: isLittle ? true : nil)
+                    space: item.stashed ?? currentSpaceID, littleArc: isLittle ? true : nil)
             }
             Archive.shared(for: profileID).add(entries)
-            for tab in doomed { ClosedTabs.push(tab) }
+            // Stashed auto-archives historically leave no Reopen Closed Tab entry.
+            for item in doomed where item.stashed == nil { ClosedTabs.push(item.tab) }
         }
         Motion.animate(Look.tabClose) {
             sidebarObservation.withCompletedChanges {
@@ -33,9 +69,17 @@ extension TabStore {
                 // retiring the pages. Each window chooses its final selection once.
                 SharedTabs.removeToday(removing, from: self)
                 removeArchivedTodayTabs(removing)
-                for tab in doomed {
-                    tab.tearDown()
-                    LiveFolders.existing(for: profileID)?.forget(authTab: tab.id)
+                var changedStash = false
+                for space in Array(stashes.keys) {
+                    if stashes[space]?.remove(removing) == true { changedStash = true }
+                }
+                if changedStash { sidebarPreviewInvalidated.send() }
+                for item in doomed {
+                    item.tab.tearDown()
+                    if item.stashed == nil {
+                        MediaState.shared.forget(item.tab.id)
+                        LiveFolders.existing(for: profileID)?.forget(authTab: item.tab.id)
+                    }
                 }
             }
         }
@@ -81,5 +125,26 @@ extension TabStore {
         if let renamingTab, ids.contains(renamingTab) { self.renamingTab = nil }
         if let selected, ids.contains(selected) { current = next }
         extensions.sync()
+    }
+}
+
+extension Stash {
+    /// Retire a set together, filtering the strip and shapes once. Stashed selection
+    /// remains empty when its page leaves; no background neighbour is resumed.
+    @MainActor @discardableResult mutating func remove(_ ids: Set<Tab.ID>) -> Bool {
+        let remaining = tabs.filter { !ids.contains($0.id) }
+        guard remaining.count != tabs.count else { return false }
+        let rows = Set(ids.map(\.uuidString))
+        tabs = remaining
+        pins.entries.removeAll { rows.contains($0.id) }
+        todayShape.entries.removeAll { rows.contains($0.id) }
+        todayShape.removeEmptyFolders()
+        splits = splits.compactMap { split in
+            var reduced: Split? = split
+            for id in split.tabs where ids.contains(id) { reduced = reduced?.removing(id) }
+            return reduced
+        }
+        if let current, ids.contains(current) { self.current = nil }
+        return true
     }
 }

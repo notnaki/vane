@@ -83,6 +83,118 @@ import XCTest
         XCTAssertNil(ClosedTabs.pop())
     }
 
+    func testAutoArchiveBatchesVisibleAndStashedPagesWithoutLosingOwnershipOrProtection() {
+        let (store, tabs) = fixture(count: 9, spaceID: UUID())
+        let oldAfter = Prefs.archiveAfter
+        Prefs.archiveAfter = 3600
+        defer { Prefs.archiveAfter = oldAfter }
+        let now = Date.now
+        tabs.forEach { $0.lastActive = now.addingTimeInterval(-7200) }
+        tabs[3].kind = .pinned
+        tabs[4].lastQuiet = now
+        tabs[8].kind = .pinned
+        store.tabs = Array(tabs.prefix(5))
+        store.syncShapes()
+        store.current = tabs[2].id
+        let hidden = UUID()
+        var protected = Folder(name: "Locked hidden pages")
+        protected.requiresAuthentication = true
+        store.stashes[hidden] = Stash(tabs: Array(tabs.suffix(4)), pins: Pins(),
+            todayShape: Pins(entries: [
+                .init(row: .tab(tabs[5].id.uuidString)),
+                .init(row: .tab(tabs[6].id.uuidString)),
+                .init(row: .folder(protected)),
+                .init(row: .tab(tabs[7].id.uuidString), parent: protected.id)
+            ]), splits: [Split(tabs: [tabs[5].id, tabs[6].id, tabs[7].id])!],
+            current: tabs[5].id, fingerprint: "")
+        let archive = Archive.shared(for: store.profileID)
+        var archives = 0, outlines: [[UUID]] = []
+        let subscriptions = [
+            archive.$entries.dropFirst().sink { _ in archives += 1 },
+            store.sidebarObservation.objectWillChange.sink { outlines.append(store.tabs.map(\.id)) }
+        ]
+        defer { subscriptions.forEach { $0.cancel() } }
+
+        Archive.sweep(now: now)
+
+        XCTAssertEqual(archives, 1, "One sweep must encode and publish this profile's removals together")
+        XCTAssertEqual(outlines, [Array(tabs[2...4]).map(\.id)])
+        XCTAssertEqual(archive.entries.map(\.url), [6, 5, 1, 0].map { "https://example.test/page/\($0)" })
+        XCTAssertEqual(archive.entries.map(\.space), [hidden, hidden, store.currentSpaceID, store.currentSpaceID])
+        XCTAssertEqual(store.current, tabs[2].id)
+        XCTAssertEqual(store.stashes[hidden]?.tabs.map(\.id), [tabs[7].id, tabs[8].id])
+        XCTAssertNil(store.stashes[hidden]?.current)
+        XCTAssertTrue(store.stashes[hidden]?.splits.isEmpty == true)
+        XCTAssertNotNil(store.stashes[hidden]?.todayShape.folder(protected.id))
+        XCTAssertTrue([0, 1, 5, 6].allSatisfy { tabs[$0].tornDown })
+        XCTAssertTrue([2, 3, 4, 7, 8].allSatisfy { !tabs[$0].tornDown })
+        var reopened: [String] = []
+        while let entry = ClosedTabs.pop() { reopened.append(entry.url.absoluteString) }
+        XCTAssertEqual(reopened, ["https://example.test/page/1", "https://example.test/page/0"],
+                       "Hidden Space retirement must retain its existing no-Reopen behavior")
+    }
+
+    func testAutoArchiveBatchesSharedPagesBeforeChoosingPeerSplitSurvivor() {
+        let (store, tabs) = fixture(count: 4, spaceID: UUID())
+        let oldAfter = Prefs.archiveAfter
+        Prefs.archiveAfter = 3600
+        defer { Prefs.archiveAfter = oldAfter }
+        let now = Date.now
+        tabs.forEach { $0.lastActive = now.addingTimeInterval(-7200) }
+        tabs[3].kind = .pinned
+        store.syncShapes()
+        let peer = TabStore(profileID: store.profileID,
+            space: Space(id: store.currentSpaceID!, name: "Peer", profileID: store.profileID), session: [])
+        peer.sharingReady = false
+        peer.tabs = tabs
+        peer.syncShapes()
+        peer.splits = [Split(tabs: [tabs[0].id, tabs[1].id, tabs[3].id])!]
+        peer.current = tabs[0].id
+        tabs[0].park(url: URL(string: "https://example.test/page/0")!, Parked(title: "Shared page"))
+        tabs[0].lastActive = now.addingTimeInterval(-7200)
+        addTeardownBlock { @MainActor in
+            peer.dropStashes()
+            TabStore.all.removeAll { $0 === peer }
+        }
+        var selected: [UUID?] = [], outlines: [[UUID]] = [], archives = 0
+        let subscriptions = [
+            peer.$current.dropFirst().sink { selected.append($0) },
+            peer.sidebarObservation.objectWillChange.sink { outlines.append(peer.tabs.map(\.id)) },
+            Archive.shared(for: store.profileID).$entries.dropFirst().sink { _ in archives += 1 }
+        ]
+        defer { subscriptions.forEach { $0.cancel() } }
+
+        Archive.sweep(now: now)
+
+        XCTAssertEqual(archives, 1, "Shared identities must be persisted only once")
+        XCTAssertEqual(outlines, [[tabs[3].id]])
+        XCTAssertEqual(selected, [tabs[3].id], "A peer must select its surviving split pane without visiting doomed neighbours")
+        XCTAssertEqual(peer.tabs.map(\.id), [tabs[3].id])
+        XCTAssertTrue(peer.splits.isEmpty)
+    }
+
+    func testDeletedSpaceArchivesRestorableTodayAndPinnedURLsInOnePublication() {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        let first = URL(string: "https://first.test/page")!
+        let last = URL(string: "https://last.test/page")!
+        let archive = Archive.shared(for: profile)
+        defer { archive.clear(); Store.forget(profile) }
+        let space = Space(name: "Deleted", profileID: profile,
+            tabURLs: [first, URL(string: "about:blank")!, last], pinnedTabURLs: [first])
+        var updates = 0
+        let subscription = archive.$entries.dropFirst().sink { _ in updates += 1 }
+        defer { subscription.cancel() }
+
+        Spaces.archiveContents(of: space)
+
+        XCTAssertEqual(updates, 1, "Deleting a Space must persist its archive as one batch")
+        XCTAssertEqual(archive.entries.map(\.url), [first.absoluteString, last.absoluteString])
+        XCTAssertEqual(archive.entries.map(\.title), ["first.test", "last.test"])
+        XCTAssertTrue(archive.entries.allSatisfy { $0.space == nil && !$0.isLittleArc },
+                      "Deleted Spaces must not leave a restore destination")
+    }
+
     func testClearRemovesSharedReferencesWithoutWakingDoomedNeighbours() {
         let (store, tabs) = fixture(count: 8, spaceID: UUID())
         let space = Space(id: store.currentSpaceID!, name: "Shared housekeeping", profileID: store.profileID)

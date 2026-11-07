@@ -228,11 +228,7 @@ import WebKit
                 store.removeArchivedTodayTabs(ids)
                 var changedStash = false
                 for space in Array(store.stashes.keys) {
-                    guard var stash = store.stashes[space],
-                          stash.tabs.contains(where: { ids.contains($0.id) }) else { continue }
-                    for id in ids { _ = stash.remove(id) }
-                    store.stashes[space] = stash
-                    changedStash = true
+                    if store.stashes[space]?.remove(ids) == true { changedStash = true }
                 }
                 if changedStash { store.sidebarPreviewInvalidated.send() }
             }

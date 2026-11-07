@@ -215,41 +215,84 @@ extension Prefs {
         pressure = src
     }
 
-    /// `everyTab`, not `tabs`: a Space a window is keeping alive behind the one it is showing
-    /// is exactly where an idle page hides, and one the sweep could not see would never be
-    /// unloaded at all. See `Stash`.
-    static var allTabs: [Tab] {
-        var seen = Set<ObjectIdentifier>()
-        return TabStore.all.flatMap(\.everyTab).filter { seen.insert(ObjectIdentifier($0)).inserted }
+    /// Ownership facts for one synchronous sweep. Shared pages are deduplicated by object,
+    /// since a restored row can reuse an id without owning the old row's document.
+    @MainActor struct Membership {
+        private(set) var tabs: [Tab] = []
+        private var members = Set<ObjectIdentifier>()
+        private var active = Set<ObjectIdentifier>()
+        private var visible = Set<ObjectIdentifier>()
+        private var stashed = Set<ObjectIdentifier>()
+
+        init<S: Sequence>(stores: S) where S.Element == TabStore {
+            for store in stores {
+                // Split lookup includes folder protection; resolve it once per window.
+                let split = store.activeSplit
+                for tab in store.tabs {
+                    let identity = ObjectIdentifier(tab)
+                    if members.insert(identity).inserted { tabs.append(tab) }
+                    visible.insert(identity)
+                    if store.current == tab.id || split?.contains(tab.id) == true {
+                        active.insert(identity)
+                    }
+                }
+                for stash in store.stashes.values {
+                    for tab in stash.tabs {
+                        let identity = ObjectIdentifier(tab)
+                        if members.insert(identity).inserted { tabs.append(tab) }
+                        stashed.insert(identity)
+                    }
+                }
+            }
+        }
+
+        func contains(_ tab: Tab) -> Bool { members.contains(ObjectIdentifier(tab)) }
+        func isActive(_ tab: Tab) -> Bool { active.contains(ObjectIdentifier(tab)) }
+        func isStashed(_ tab: Tab) -> Bool {
+            let identity = ObjectIdentifier(tab)
+            // A shared pin with a row in any window keeps its pinned exemption.
+            return stashed.contains(identity) && !visible.contains(identity)
+        }
     }
 
-    /// On screen in some window — which for a split view is every one of its panes, not just
-    /// the one the keyboard is in. Tearing down the pane beside the one being read is exactly
-    /// the blank half of a split nobody would file a bug about twice.
-    private static func isActive(_ tab: Tab) -> Bool {
-        TabStore.all.contains { store in
-            store.tabs.contains { $0 === tab }
-                && (store.current == tab.id || store.activeSplit?.contains(tab.id) == true)
+    /// Include the Spaces held behind the visible strip, without materializing each
+    /// store's concatenated `everyTab` collection first.
+    static var allTabs: [Tab] {
+        var seen = Set<ObjectIdentifier>(), result: [Tab] = []
+        for store in TabStore.all {
+            for tab in store.tabs where seen.insert(ObjectIdentifier(tab)).inserted { result.append(tab) }
+            for stash in store.stashes.values {
+                for tab in stash.tabs where seen.insert(ObjectIdentifier(tab)).inserted { result.append(tab) }
+            }
         }
+        return result
     }
 
     /// The cheap facts: everything that can be read without talking to the web content
     /// process. `playing` and `hasInput` are filled in later, only for tabs that got this
     /// far, because both cost a round trip into WebKit.
-    private static func facts(_ tab: Tab, now: Date) -> Facts {
-        Facts(active: isActive(tab), pinned: tab.stays, stashed: isStashed(tab),
+    private static func facts(_ tab: Tab, now: Date, active: Bool, stashed: Bool) -> Facts {
+        Facts(active: active, pinned: tab.stays, stashed: stashed,
               isPrivate: tab.isPrivate, playing: tab.inMeetCall, loading: tab.loading, suspended: tab.suspended,
               loaded: tab.existingWeb?.url != nil, idle: now.timeIntervalSince(tab.lastActive))
     }
 
-    /// Held for a Space no window is showing. Only the pinned exemption asks — a Today tab
-    /// is treated the same either way — so this runs over the handful of stashes a window
-    /// has rather than being carried on the tab.
-    private static func isStashed(_ tab: Tab) -> Bool {
-        // A shared pin can be stashed in one window and still have a live row in
-        // another. Only pages absent from every strip lose the pinned exemption.
-        guard !TabStore.all.contains(where: { $0.tabs.contains { $0 === tab } }) else { return false }
-        return TabStore.all.contains { $0.stashes.values.contains { $0.tabs.contains { $0 === tab } } }
+    /// Asynchronous probes must use current ownership rather than the sweep snapshot.
+    /// Search only for this object, combining membership, selection and stash checks in
+    /// one traversal instead of rebuilding the whole session's tab array for each probe.
+    private static func currentFacts(_ tab: Tab, now: Date) -> Facts? {
+        var visible = false, active = false, stashed = false
+        for store in TabStore.all {
+            if store.tabs.contains(where: { $0 === tab }) {
+                visible = true
+                if store.current == tab.id || store.activeSplit?.contains(tab.id) == true { active = true }
+            }
+            if !stashed {
+                stashed = store.stashes.values.contains { $0.tabs.contains { $0 === tab } }
+            }
+        }
+        guard visible || stashed else { return nil }
+        return facts(tab, now: now, active: active, stashed: stashed && !visible)
     }
 
     private final class PlaybackProbe {
@@ -283,11 +326,16 @@ extension Prefs {
     /// injectable so lifecycle races can be exercised without blocking a content process.
     static func suspendIfEligible(_ tab: Tab, underPressure: Bool,
                                   draftCheck: @MainActor (Tab) async -> Bool = { await $0.hasUnsubmittedInput() }) async {
+        await suspendIfEligible(tab, underPressure: underPressure, initial: nil, draftCheck: draftCheck)
+    }
+
+    private static func suspendIfEligible(_ tab: Tab, underPressure: Bool, initial: Facts?,
+                                         draftCheck: @MainActor (Tab) async -> Bool = { await $0.hasUnsubmittedInput() }) async {
         let limit = underPressure ? 0 : BatterySaver.idleLimit(normal: Prefs.suspendAfter,
                                                              saving: BatterySaver.shared.isActive)
         let identity = ObjectIdentifier(tab)
-        guard !checking.contains(identity), allTabs.contains(where: { $0 === tab }),
-              Prefs.suspendTabs, shouldSuspend(facts(tab, now: .now), after: limit),
+        guard !checking.contains(identity), Prefs.suspendTabs,
+              let initial = initial ?? currentFacts(tab, now: .now), shouldSuspend(initial, after: limit),
               let web = tab.existingWeb else { return }
         checking.insert(identity)
         defer { checking.remove(identity) }
@@ -301,8 +349,7 @@ extension Prefs {
         let hasInput = await draftCheck(tab)
         guard tab.existingWeb === web, web.url == pageURL,
               tab.readingDocumentGeneration == document, tab.lastActive == lastActive,
-              tab.presentationOwner == owner, allTabs.contains(where: { $0 === tab }) else { return }
-        var fresh = facts(tab, now: .now)
+              tab.presentationOwner == owner, var fresh = currentFacts(tab, now: .now) else { return }
         fresh.playing = playing || tab.pictureInPicture || tab.inMeetCall
             || (MediaState.shared.isPlaying(tab) && !TabAudio.isMuted(tab))
         fresh.hasInput = hasInput
@@ -314,9 +361,12 @@ extension Prefs {
     static func sweep(now: Date = .now) {
         guard Prefs.suspendTabs else { return }
         let limit = BatterySaver.idleLimit(normal: Prefs.suspendAfter, saving: BatterySaver.shared.isActive)
-        for tab in allTabs where shouldSuspend(facts(tab, now: now), after: limit) {
+        let membership = Membership(stores: TabStore.all)
+        for tab in membership.tabs {
+            let initial = facts(tab, now: now, active: membership.isActive(tab), stashed: membership.isStashed(tab))
+            guard shouldSuspend(initial, after: limit) else { continue }
             Task { @MainActor [weak tab] in
-                if let tab { await suspendIfEligible(tab, underPressure: false) }
+                if let tab { await suspendIfEligible(tab, underPressure: false, initial: initial) }
             }
         }
     }
@@ -326,12 +376,16 @@ extension Prefs {
         SidebarWarmOwnerBudget.purge()
         guard Prefs.suspendTabs else { return }
         let now = Date.now
-        let eligible = allTabs.filter { shouldSuspend(facts($0, now: now), after: 0) }
-        let ordered = lru(eligible.map { (id: $0.id, lastActive: $0.lastActive) })
+        let membership = Membership(stores: TabStore.all)
+        let eligible = membership.tabs.compactMap { tab -> (tab: Tab, facts: Facts)? in
+            let initial = facts(tab, now: now, active: membership.isActive(tab), stashed: membership.isStashed(tab))
+            return shouldSuspend(initial, after: 0) ? (tab, initial) : nil
+        }
+        let ordered = lru(eligible.map { (id: $0.tab.id, lastActive: $0.tab.lastActive) })
         let doomed = Set(victims(ordered, critical: critical))
-        for tab in eligible where doomed.contains(tab.id) {
+        for (tab, initial) in eligible where doomed.contains(tab.id) {
             Task { @MainActor [weak tab] in
-                if let tab { await suspendIfEligible(tab, underPressure: true) }
+                if let tab { await suspendIfEligible(tab, underPressure: true, initial: initial) }
             }
         }
     }

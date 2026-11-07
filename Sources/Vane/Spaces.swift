@@ -355,11 +355,11 @@ enum Spaces {
     /// Arc puts a deleted Space's tabs in the Archive rather than dropping them: the Space is
     /// gone, the pages are still findable in the Library.
     @MainActor static func archiveContents(of space: Space) {
-        let archive = Archive.shared(for: space.profileID)
-        for url in space.tabURLs + (space.pinnedTabURLs ?? []) {
-            guard TabAddress.restorable(url) else { continue }
-            archive.add(url: url, title: url.host ?? url.absoluteString)
+        let entries = (space.tabURLs + (space.pinnedTabURLs ?? [])).compactMap { url -> Archive.Entry? in
+            guard TabAddress.restorable(url) else { return nil }
+            return Archive.Entry(url: url.absoluteString, title: url.host ?? url.absoluteString, at: .now)
         }
+        Archive.shared(for: space.profileID).add(entries)
     }
 
     // MARK: - The theme
