@@ -227,7 +227,7 @@ import WebKit
         // Older WebKit keeps the page seed separate from the controller's cookie/API
         // store. Bind both to this profile before WebKit copies the configuration.
         webConfiguration.websiteDataStore = configuration.defaultWebsiteDataStore
-        WebKitStartup.extensionProcessPool.configure(webConfiguration)
+        WebKitStartup.configureExtensionPages(webConfiguration)
         userAgent.configure(webConfiguration)
         controller = WKWebExtensionController(configuration: configuration)
         super.init()
@@ -577,6 +577,25 @@ import WebKit
         restoring[path] = nil
     }
 
+    private func loadContext(_ context: WKWebExtensionContext, checkLifetime: @escaping @MainActor () throws -> Void) async throws {
+        try checkLifetime()
+        // Public data-record lookup omits custom extension origins. Clear only this
+        // profile's in-memory resources after retiring the old context, so canonical
+        // background, popup and worker imports use the accepted replacement bytes.
+        // Cookies, disk cache, registrations and persistent storage are untouched.
+        guard let store = controller.configuration.defaultWebsiteDataStore else {
+            throw Failure("The extension profile store is unavailable. Retry before starting the extension.")
+        }
+        try await ExtensionBackgroundStartup.wait(start: { completion in
+            store.removeData(ofTypes: [WKWebsiteDataTypeMemoryCache], modifiedSince: .distantPast) {
+                completion(nil)
+            }
+        }, check: checkLifetime)
+        // The callback validates before resuming us; removal can run in that gap.
+        try checkLifetime()
+        try controller.load(context)
+    }
+
     private func unloadContext(_ context: WKWebExtensionContext) throws {
         nativeMessagingDenial.cancel(contextID: ObjectIdentifier(context))
         try controller.unload(context)
@@ -788,7 +807,7 @@ import WebKit
                     }
                 }
                 try checkLifetime()
-                try controller.load(context)
+                try await loadContext(context, checkLifetime: checkLifetime)
                 if ext.hasBackgroundContent { try await ExtensionBackgroundStartup.load(context, checkLifetime: checkLifetime) }
                 try checkLifetime()
                 let errors = ExtensionDiagnostics.blockingErrors(context.errors, manifest: manifest)
@@ -1002,7 +1021,7 @@ import WebKit
                     }
                 }
                 try checkLifetime()
-                try controller.load(context)
+                try await loadContext(context, checkLifetime: checkLifetime)
                 if ext.hasBackgroundContent { try await ExtensionBackgroundStartup.load(context, checkLifetime: checkLifetime) }
                 try checkLifetime()
                 let errors = ExtensionDiagnostics.blockingErrors(context.errors, manifest: manifest)
@@ -1218,7 +1237,7 @@ import WebKit
         candidates[path] = context
         do {
             if let runtimeID = record.safari?.runtimeID ?? record.store?.id { try await waitForDataPurge(runtimeID, checkLifetime: checkLifetime) }
-            try controller.load(context)
+            try await loadContext(context, checkLifetime: checkLifetime)
             if ext.hasBackgroundContent { try await ExtensionBackgroundStartup.load(context, checkLifetime: checkLifetime) }
             try checkLifetime()
             let errors = ExtensionDiagnostics.blockingErrors(context.errors, manifest: manifest)

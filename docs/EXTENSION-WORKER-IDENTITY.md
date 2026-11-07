@@ -12,6 +12,12 @@ The runtime manifest's worker entry and `self.location` identify the wrapper. Ve
 
 The original managed files and manifest remain unchanged on disk. Traversal uses anchored descriptors, rejects links/special files, and retains the existing 64 MB per-file, 256 MB total, 20,000-entry and 64-level limits. Signed Safari sources retain their existing Apple signature and accepted-identity checks; every original resource Data is checked against the exact accepted resource seal before derivation. The guarded native resource initializer fails visibly when unavailable. A failed navigator override throws before original worker code executes.
 
+Before a managed extension context is loaded, Vane waits for WebKit's public `WKWebsiteDataStore.removeData` API to evict `WKWebsiteDataTypeMemoryCache` from that profile's store. This happens after retirement of the old context, with cancellation/lifetime checks before loading its replacement. The content-derived worker entry triggers a registration update; cache eviction makes canonical vendor imports read the accepted replacement bytes rather than an older resource retained in a WebContent process. It removes no cookies, disk cache, service-worker registrations, local storage, IndexedDB, extension storage, permissions or origin identity.
+
+WebKit's public website-data record lookup omits custom extension origins, so this evicts the profile's whole in-memory resource cache. Browsing resources may need to be read again, including from the unchanged disk cache. It runs at extension context loading rather than every request, and does not affect other profile stores. The old private `alwaysRevalidatedURLSchemes` process-pool configuration is no longer required.
+
+macOS 26 retains two application-lifetime owners through the deprecated but public `WKProcessPool` API, solely to avoid native IPC receiver retirement failures. These owners use the public default initializer and public configuration property, with no private pool configuration or revalidation policy. macOS 27 and later bypass this compatibility path. This is an explicitly accepted compatibility exception; `WKProcessPool` remains deprecated.
+
 Changing the selected identity rebuilds MV3 contexts. Reloads retain the native controller, runtime identifier, origin, profile store and explicit access decisions, including denied and expiring grants. Overlapping selections settle on the latest identity; removal invalidates a pending restart. MV2 backgrounds, popups and content scripts retain their existing loading paths.
 
 ## Chrome API scope

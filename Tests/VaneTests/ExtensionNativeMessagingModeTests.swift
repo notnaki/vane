@@ -605,8 +605,11 @@ extension ExtensionNativeMessagingErrorTests {
                 lifecycleTrace?.record("restore policy returned")
             }
         }
-        lifecycleTrace?.record("before acquire requestedPolicy=\(retryPage ? "regular" : "current")")
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: retryPage ? .regular : nil)
+        lifecycleTrace?.record("before acquire requestedPolicy=\(retryPage ? "regular" : String(originalPolicy.rawValue))")
+        // A preceding fixture's policy restoration can still be pending in AppKit.
+        // Admit an explicit target instead of inferring a policy that may change
+        // between the async loop's construction and its first main-loop turn.
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: retryPage ? .regular : originalPolicy)
         lifecycleTrace?.record("after acquire")
         let fixture = NativeModeFixture(hasBackground: hasBackground, retryPage: retryPage,
                                         verifyRunning: { try loop.verifyRunning() })
