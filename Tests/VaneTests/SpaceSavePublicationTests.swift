@@ -10,7 +10,7 @@ import XCTest
         return ProfileManager(directory: directory, sandboxed: true)
     }
 
-    func testUnchangedOwnedSnapshotWritesWithoutPublishing() throws {
+    func testUnchangedOwnedSnapshotKeepsCommittedDataWithoutPublishing() throws {
         let manager = try manager(), profile = manager.active.id
         let space = Space(name: "Work", profileID: profile)
         XCTAssertTrue(manager.saveSpaces([space], for: profile))
@@ -21,13 +21,13 @@ import XCTest
         let c = manager.objectWillChange.sink { changes += 1 }
         defer { a.cancel(); b.cancel(); c.cancel() }
         let file = ProfileManager.spacesURL(for: profile, in: manager.directory)
-        // Different encoding of identical data must still be replaced by the save.
+        // Equivalent metadata is already durable; normalizing its JSON encoding must not rewrite it.
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode([space]).write(to: file)
         let before = try Data(contentsOf: file)
         let foreign = Space(name: "Excluded", profileID: UUID())
         XCTAssertTrue(manager.saveSpaces([space, foreign], for: profile))
-        XCTAssertNotEqual(try Data(contentsOf: file), before, "No-op publication suppression must not skip durable writes")
+        XCTAssertEqual(try Data(contentsOf: file), before, "Equivalent committed metadata must not be rewritten")
         XCTAssertEqual(manager.spaces(for: profile), [space])
         XCTAssertEqual(manager.spacesRevision, revision)
         XCTAssertEqual(revisions, 0)

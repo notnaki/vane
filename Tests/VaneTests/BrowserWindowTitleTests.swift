@@ -31,6 +31,7 @@ import XCTest
             window.contentView = nil
         }
         windows = []
+        try await NativeFixtureProfileCleanup.release(Set(profiles))
         for id in profiles { _ = ProfileManager.shared.delete(id) }
         profiles = []
         server.stop()
@@ -164,9 +165,50 @@ import XCTest
     }
 
     func testTitleSynchronizationReleasesClosedTab() async throws {
+        let app = NSApplication.shared, policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await checkTitleSynchronizationReleasesClosedTab(loop: loop) }
+        catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Title fixture AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkTitleSynchronizationReleasesClosedTab(loop: NativeFixtureApplicationLoop) async throws {
         let store = try browser(profile: profile("Work"))
-        // The fixture's strong tab reference must leave its async frame before
-        // asserting that the window's observations released the closed page.
+        let window = try XCTUnwrap(store.window)
+        defer {
+            window.close()
+            window.contentView = nil
+            store.window = nil
+        }
+        window.makeKeyAndOrderFront(nil)
+        // Explicit activation matches the native fixtures; cooperative activate()
+        // may be declined for the command-line XCTest host.
+        NSApp.activate(ignoringOtherApps: true)
+        // An occluded, inactive host without an AppKit loop cannot establish
+        // whether an outgoing SwiftUI observation has finished its display work.
+        do {
+            try await compatibilityWait {
+                if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                window.contentView?.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                return try loop.isReadyForInteraction() && NSApp.isActive && NSApp.keyWindow === window
+                    && window.isVisible && window.occlusionState.contains(.visible)
+                    && window.contentView?.window === window && NSApp.modalWindow == nil
+                    && window.attachedSheet == nil
+            }
+        } catch {
+            print("TITLE_ADMISSION running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window) visible=\(window.isVisible) unoccluded=\(window.occlusionState.contains(.visible)) owner=\(window.contentView?.window === window) modal=\(NSApp.modalWindow != nil) sheet=\(window.attachedSheet != nil) loop=\(String(describing: try? loop.isReadyForInteraction())) front=\(String(describing: NSWorkspace.shared.frontmostApplication?.bundleIdentifier))")
+            throw error
+        }
+        // The async helper releases its strong Tab reference before the lifetime check.
         let retired = try await closeTitleFixture(in: store)
         try await title("Vane — Work", in: store)
         let deadline = Date.now.addingTimeInterval(2)

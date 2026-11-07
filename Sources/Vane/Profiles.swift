@@ -1000,6 +1000,13 @@ struct Space: Identifiable, Codable, Equatable {
             try? JSONDecoder().decode([Space].self, from: $0)
         }
         let target = SaveFailure.Target.spaces(profileID)
+        // The committed document has already been decoded without filtering foreign
+        // rows. Only an exact owned snapshot may skip encoding and the atomic rewrite;
+        // missing, damaged or unreconciled metadata still takes the repair path below.
+        if previous == owned {
+            clearSaveFailure(target)
+            return true
+        }
         let message = "The last saved version is safe. Check storage and folder access, then make the change again."
         do {
             let data = try JSONEncoder().encode(owned)

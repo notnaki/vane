@@ -611,6 +611,7 @@ private final class StoreConnection {
             id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', at REAL NOT NULL);
         CREATE INDEX IF NOT EXISTS visits_at ON visits(at DESC);
         CREATE INDEX IF NOT EXISTS visits_url ON visits(url);
+        CREATE INDEX IF NOT EXISTS visits_url_at ON visits(url, at);
         CREATE TABLE IF NOT EXISTS bookmarks (
             id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '', at REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS bookmark_folders (
@@ -893,8 +894,8 @@ private final class StoreConnection {
                 } else { historyFailure(rollingBack: true) }
             }
         }
-        // Imports deduplicate exact visits. A URL-only index makes many visits to one
-        // URL quadratic; create the composite index on this worker transaction.
+        // Imports deduplicate exact visits. Normal initialization supplies this index;
+        // keep the worker fallback for connections opened without schema initialization.
         if !visits.isEmpty, !exec("CREATE INDEX IF NOT EXISTS visits_url_at ON visits(url, at)") { return nil }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, """

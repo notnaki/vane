@@ -158,6 +158,82 @@ import XCTest
         XCTAssertTrue(manager.saveFailures.isEmpty)
     }
 
+    private func fileIdentity(_ url: URL) throws -> UInt64 {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return try XCTUnwrap(attributes[.systemFileNumber] as? NSNumber).uint64Value
+    }
+
+    func testIdenticalSpacesSaveKeepsTheCommittedFile() throws {
+        let manager = try manager()
+        let profile = manager.active.id
+        let space = Space(name: "Unchanged", profileID: profile)
+        XCTAssertTrue(manager.saveSpaces([space], for: profile))
+        let file = ProfileManager.spacesURL(for: profile, in: manager.directory)
+        // Keep the old inode allocated, so an atomic rewrite cannot reuse its identity.
+        let retained = manager.directory.appendingPathComponent("retained-spaces.json")
+        try FileManager.default.linkItem(at: file, to: retained)
+        let identity = try fileIdentity(file)
+        let revision = manager.spacesRevision
+        XCTAssertTrue(manager.saveSpaces([space], for: profile))
+        XCTAssertEqual(try fileIdentity(file), identity, "An identical snapshot must not replace its committed file")
+        XCTAssertEqual(manager.spacesRevision, revision)
+        XCTAssertTrue(manager.saveFailures.isEmpty)
+
+        var edited = space
+        edited.name = "Changed"
+        XCTAssertTrue(manager.saveSpaces([edited], for: profile))
+        XCTAssertNotEqual(try fileIdentity(file), identity)
+        XCTAssertEqual(manager.spaces(for: profile), [edited])
+        XCTAssertEqual(try JSONDecoder().decode([Space].self, from: Data(contentsOf: retained)), [space])
+    }
+
+    func testUnchangedSpacesClearsAnEarlierEncodingFailureWithoutRewriting() throws {
+        let manager = try manager()
+        let profile = manager.active.id
+        let space = Space(name: "Saved", profileID: profile)
+        XCTAssertTrue(manager.saveSpaces([space], for: profile))
+        let file = ProfileManager.spacesURL(for: profile, in: manager.directory)
+        try FileManager.default.linkItem(at: file, to: manager.directory.appendingPathComponent("retained-spaces.json"))
+        let identity = try fileIdentity(file)
+        var invalid = space
+        invalid.tint = .nan
+        XCTAssertFalse(manager.saveSpaces([invalid], for: profile))
+        XCTAssertFalse(manager.saveFailures.isEmpty)
+        XCTAssertTrue(manager.saveSpaces([space], for: profile))
+        XCTAssertTrue(manager.saveFailures.isEmpty)
+        XCTAssertEqual(try fileIdentity(file), identity)
+    }
+
+    func testSpacesSaveRepairsMissingCorruptAndForeignCommittedMetadata() throws {
+        let manager = try manager()
+        let profile = manager.active.id
+        let file = ProfileManager.spacesURL(for: profile, in: manager.directory)
+        XCTAssertTrue(manager.saveSpaces([], for: profile), "An absent empty snapshot still needs a committed file")
+        XCTAssertEqual(try JSONDecoder().decode([Space].self, from: Data(contentsOf: file)), [])
+        try Data("corrupt".utf8).write(to: file)
+        XCTAssertTrue(manager.saveSpaces([], for: profile))
+        XCTAssertEqual(try JSONDecoder().decode([Space].self, from: Data(contentsOf: file)), [])
+        let own = Space(name: "Owned", profileID: profile)
+        let foreign = Space(name: "Foreign", profileID: UUID())
+        try JSONEncoder().encode([own, foreign]).write(to: file)
+        XCTAssertTrue(manager.saveSpaces([own], for: profile))
+        XCTAssertEqual(try JSONDecoder().decode([Space].self, from: Data(contentsOf: file)), [own])
+
+        let pageID = UUID()
+        let oldURL = URL(string: "https://old.example/")!
+        var reconciled = Space(name: "Edited legacy URLs", profileID: profile,
+                               tabURLs: [URL(string: "https://new.example/")!])
+        reconciled.layout = SpaceLayout(tabs: [.init(id: pageID, url: oldURL, kind: .today,
+                                                   title: "Old", customName: nil)],
+            pins: Pins(), today: Pins(entries: [.init(row: .tab(pageID.uuidString))]),
+            splits: [], selected: pageID)
+        try JSONEncoder().encode([reconciled]).write(to: file)
+        XCTAssertTrue(manager.saveSpaces([reconciled], for: profile))
+        let repaired = try XCTUnwrap(manager.spaces(for: profile).first)
+        XCTAssertTrue(try XCTUnwrap(repaired.layout).matches(repaired))
+        XCTAssertEqual(repaired.layout?.tabs.map(\.url), reconciled.tabURLs)
+    }
+
     func testFailedSpacesSaveIsVisibleWithoutClearingAnUnsavedProfile() throws {
         let manager = try manager()
         let profile = manager.active.id

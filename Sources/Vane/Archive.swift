@@ -164,18 +164,9 @@ extension Prefs {
         let after = Prefs.archiveAfter
         guard after > 0 else { return }
         for store in TabStore.all where !store.isPrivate {
-            let active = store.current
             // `everyTab`, not `tabs`: a tab in a Space the window is keeping alive behind the
             // one it is showing has gone past its day like any other. See `Stash`.
-            for tab in store.everyTab where due(kind: tab.kind,
-                                            idle: idle(now: now, lastActive: tab.lastActive,
-                                                       lastQuiet: tab.lastQuiet),
-                                            after: after,
-                                            active: tab.id == active,
-                                            loaded: tab.currentURL != nil,
-                                            playing: tab.inMeetCall || TabAudio.isPlaying(tab)) {
-                store.archive(tab.id)
-            }
+            store.archiveIdleToday(now: now, after: after)
         }
     }
 
