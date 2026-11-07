@@ -5,7 +5,7 @@ on:
       native_filter:
         description: Focused cases
         required: true
-        default: 'DraftProtectionTests|ExtensionBackgroundStartupTests|ExtensionBackgroundWatchdogTests|ExtensionUserAgentTests'
+        default: 'DraftProtectionTests|ExtensionBackgroundStartupTests|ExtensionBackgroundWatchdogTests|ExtensionUserAgentTests|ExtensionConfigurationIsolationTests'
 permissions:
   contents: read
 jobs:

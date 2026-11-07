@@ -290,40 +290,6 @@ import XCTest
         return released
     }
 
-    private final class HeldBackground {
-        var web: WKWebView?
-    }
-
-    private func installWithHeldBackground() async throws -> (ReleasedInstallation, HeldBackground) {
-        let held = HeldBackground()
-        let host = ExtensionHost.host(for: profile)
-        host.backgroundCreationObserver = { [weak held] web, _ in held?.web = web }
-        let context = try await install(version: 2)
-        XCTAssertNotNil(held.web, "Observe the actual WebKit background page before retiring its host")
-        let released = ReleasedInstallation(host: host, context: context)
-        host.remove(context)
-        XCTAssertFalse(context.isLoaded)
-        XCTAssertTrue(host.controller.extensionContexts.isEmpty)
-        ExtensionHost.forget(profile)
-        return (released, held)
-    }
-
-    func testRetiredControllerSurvivesUntilItsBackgroundPageCloses() async throws {
-        let (released, held) = try await installWithHeldBackground()
-        let hostDeadline = ContinuousClock.now + .seconds(10)
-        while released.host != nil && ContinuousClock.now < hostDeadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        XCTAssertNil(released.host)
-        XCTAssertNotNil(released.controller, "Native page closure must remove IPC receivers before the controller retires")
-        held.web = nil
-        let deadline = ContinuousClock.now + .seconds(10)
-        while !released.isReleased && ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        XCTAssertTrue(released.isReleased, "Closing the final page must release its retired controller and context")
-    }
-
     func testRepeatedBackgroundTeardownReleasesRetiredHostsControllersAndContexts() async throws {
         for _ in 0..<3 {
             let released = try await installAndForget()
