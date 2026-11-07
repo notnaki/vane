@@ -503,10 +503,6 @@ extension ExtensionBackgroundWatchdogTests {
     }
 }
 
-private func traceExtensionCache(_ message: String) {
-    FileHandle.standardError.write(Data(("CACHE_EDGE " + message + "\n").utf8))
-}
-
 // Deliver WebKit's actual eviction reply, then remove the installation before the
 // suspended load task can resume. This exercises the callback/continuation gap.
 @MainActor private final class ExtensionCacheCompletionGate {
@@ -520,28 +516,21 @@ extension WKWebsiteDataStore {
     @objc(vane_removeExtensionCacheOfTypes:modifiedSince:completionHandler:)
     fileprivate dynamic func vane_removeExtensionCache(ofTypes types: Set<String>, modifiedSince date: Date,
                                                        completionHandler completion: @escaping @MainActor () -> Void) {
-        traceExtensionCache("swizzle-entry main=\(Thread.isMainThread)")
         guard let gate = ExtensionCacheCompletionGate.current, self === gate.store,
               let afterDelivery = gate.afterDelivery else {
             vane_removeExtensionCache(ofTypes: types, modifiedSince: date, completionHandler: completion); return
         }
         gate.afterDelivery = nil
-        traceExtensionCache("forward-selected-store")
         vane_removeExtensionCache(ofTypes: types, modifiedSince: date) {
-            traceExtensionCache("selected-callback main=\(Thread.isMainThread)")
             gate.deliveries += 1
-            traceExtensionCache("before-original-completion")
             completion()
-            traceExtensionCache("after-original-completion")
             afterDelivery()
-            traceExtensionCache("after-removal")
         }
     }
 }
 
 extension ExtensionBackgroundStartupTests {
     func testRemovalAfterCacheReplyCannotLeaveAnUntrackedLoadedContext() async throws {
-        traceExtensionCache("test-start running=\(NSApp.isRunning)")
         try writeWorker("chrome.runtime.onInstalled.addListener(() => {});")
         let host = ExtensionHost.host(for: profile)
         let gate = ExtensionCacheCompletionGate()
@@ -552,9 +541,7 @@ extension ExtensionBackgroundStartupTests {
             #selector(WKWebsiteDataStore.vane_removeExtensionCache(ofTypes:modifiedSince:completionHandler:))))
         ExtensionCacheCompletionGate.current = gate
         method_exchangeImplementations(original, intercepted)
-        traceExtensionCache("swizzle-installed")
         defer {
-            traceExtensionCache("defer-start")
             gate.afterDelivery = nil
             ExtensionCacheCompletionGate.current = nil
             method_exchangeImplementations(original, intercepted)
@@ -562,17 +549,13 @@ extension ExtensionBackgroundStartupTests {
             for context in host.controller.extensionContexts { try? host.controller.unload(context) }
         }
         gate.afterDelivery = {
-            traceExtensionCache("before-remove")
-            do { try host.remove(folder: self.folder.path); traceExtensionCache("remove-returned") }
+            do { try host.remove(folder: self.folder.path) }
             catch { XCTFail("Removal at the eviction boundary failed: \(error)") }
         }
         do {
-            traceExtensionCache("before-load")
             _ = try await host.load(folder, installing: true) { _ in true }
-            traceExtensionCache("load-returned")
             XCTFail("Removed installation must not finish loading")
-        } catch is CancellationError { traceExtensionCache("caught-cancellation") }
-        traceExtensionCache("before-assertions")
+        } catch is CancellationError { }
         XCTAssertEqual(gate.deliveries, 1)
         XCTAssertTrue(host.installed.isEmpty)
         XCTAssertTrue(host.controller.extensionContexts.isEmpty, "The stale continuation must not load an untracked context")

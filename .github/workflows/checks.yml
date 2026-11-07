@@ -22,7 +22,6 @@ jobs:
         env:
           NATIVE_FILTER: ${{ inputs.native_filter }}
           NSUnbufferedIO: 'YES'
-          VANE_NATIVE_LLDB_DIAGNOSTIC: '1'
         shell: bash
         run: |
           set -uo pipefail
