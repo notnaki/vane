@@ -31,6 +31,12 @@ import XCTest
             tab.tearDown()
             window.close()
         }
+        // Preserve the existing fixture retirement interval: PiPAgent completes
+        // dismissal asynchronously before another test starts a presentation.
+        if !nativeFixtures.isEmpty {
+            do { try await Task.sleep(for: .milliseconds(400)) }
+            catch { if failure == nil { failure = error } }
+        }
         nativeFixtures.removeAll()
         do { try await loop.close() }
         catch {
@@ -875,19 +881,25 @@ import XCTest
             PictureInPicture.toggle(tab)
             var old: CustomPiPWindow?
             try await wait {
-                old = NSApp.windows.first { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible } as? CustomPiPWindow
-                return old != nil
+                old = PiPMinimizeControls.presentationWindow(for: tab) as? CustomPiPWindow
+                return old?.isVisible == true && old?.videoView.window === old
             }
             let original = try XCTUnwrap(old)
             try await Task.sleep(for: .milliseconds(350))
             let placement = NSRect(x: 50, y: 50, width: 640, height: 360)
             original.setFrame(placement, display: true)
+            try await LibraryFocusFixture.admitForeground(window)
+            print("REENTRY_ADMISSION running=\(NSApp.isRunning) active=\(NSApp.isActive) sourceKey=\(window.isKeyWindow) ownerMatches=\(PiPMinimizeControls.presentationWindow(for: tab) === original) sourceOwns=\(tab.web.window === window)")
             try XCTUnwrap(restore(original.controlsView)).performClick(nil)
             // Supersede the page's pending 50ms inline confirmation.
             try await wait { !tab.pictureInPicture }
             // A stale failed async request may arrive after native exit has started.
             if TestEnvironment.supportsPiPMotion(in: [placement, window.frame]) {
-                try await wait { original.frame != placement }
+                do { try await wait { original.frame != placement } }
+                catch {
+                    print("REENTRY_RETURN_FAILURE visible=\(original.isVisible) alpha=\(original.alphaValue) frame=\(original.frame) returning=\(PiPMinimizeControls.isReturningToTab(tab)) videoMounted=\(original.videoView.superview === original.contentView) running=\(NSApp.isRunning) active=\(NSApp.isActive) sourceKey=\(window.isKeyWindow) sourceVisible=\(window.isVisible) sourceOccluded=\(!window.occlusionState.contains(.visible))")
+                    throw error
+                }
             }
             PiPMinimizeControls.resumeAfterFailedExit(tab)
             if original.isVisible {
