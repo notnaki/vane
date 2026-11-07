@@ -62,8 +62,10 @@ Use **Vane → Check for Updates…** to check manually. Updates use **Stable** 
 default. Choose **Nightly** in **Settings → General → Update channel** to try early
 builds; these may have bugs. Switching back waits for a newer stable version and
 does not downgrade the app. Both channels use the same app and browsing data.
-Nightlies publish once a day when `main` has changed and its checks have passed.
-Stable releases are published separately.
+Nightly publication is checked daily at 02:23 UTC; a build publishes only when
+`main` has a new revision with passing checks. Quiet or unready days produce no
+release. Stable releases are deliberate, with no fixed calendar. See the
+[release cadence and version-number guide](docs/RELEASING.md#release-cadence).
 
 Stable release bundles packaged with a Developer ID offer the default-browser
 prompt once. Local, debug, and prerelease builds skip it. The manual

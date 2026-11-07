@@ -5,10 +5,12 @@ name: release
 # sandboxed process cannot mount a disk image, so the dmg is only for people downloading in
 # a browser — and refuses anything not signed by team T7X84HN3W3.
 #
-# Stable releases are deliberate. Nightly opt-ins get a daily checked main build.
+# Stable releases are deliberate, with no calendar deadline. The daily Nightly
+# opportunity publishes only a new checked main revision; quiet/unready days skip.
+# Cadence, version controls, retries, and updater timing: docs/RELEASING.md.
 #
-#   gh workflow run release.yml              # next patch after the highest v* tag
-#   gh workflow run release.yml -f bump=minor
+#   gh workflow run release.yml --ref main   # next patch after highest stable tag
+#   gh workflow run release.yml --ref main -f bump=minor
 #   git tag v1.2.3 && git push origin v1.2.3 # exactly that version, no bump
 #
 # The dispatch path prepares a tag locally and pushes it only after packaging succeeds.
@@ -37,13 +39,14 @@ on:
         options: [stable, nightly]
         default: stable
       bump:
-        description: which part of the version to move
+        description: Stable only — which version number to increment (ignored for Nightly)
         type: choice
         options: [patch, minor, major]
         default: patch
   push:
     tags: ['v*']
   schedule:
+    # Daily eligibility opportunity at 02:23 UTC, not a daily publication promise.
     - cron: '23 2 * * *'
 
 permissions:

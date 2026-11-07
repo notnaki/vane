@@ -27,8 +27,9 @@ For blurry Google Docs canvases, read the [rendering investigation](GOOGLE-DOCS-
 - [Contributing](../CONTRIBUTING.md): first changes, focused validation, and pull requests.
 - [Development](DEVELOPMENT.md): setup, CLI, focused validation, graphical smoke,
   project structure, and contribution workflow.
-- [Releases and distribution](RELEASING.md): publishing, signing/notarization,
-  updater recovery checks, and unchanged candidate verification.
+- [Releases and distribution](RELEASING.md): release cadence, version numbers and
+  controls, publishing, signing/notarization, updater timing and recovery checks,
+  and unchanged candidate verification.
 - [Browser readiness](BROWSER-READINESS-TODO.md): completed work with evidence and
   remaining engineering or environment-dependent validation.
 - [App icon maintenance](../AppIcons/README.md) and
