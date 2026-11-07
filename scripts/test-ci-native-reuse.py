@@ -42,7 +42,8 @@ class ReuseTests(unittest.TestCase):
         self.env = {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/heads/main',
                     'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_SHA': self.sha,
                     'GITHUB_RUN_ID': '200', 'BASE_SHA': self.base}
-        self.pr = {'number': 7, 'state': 'closed', 'merged_at': '2026-11-07T10:00:00Z',
+        self.pr = {'number': 7, 'state': 'closed', 'created_at': '2026-11-07T08:00:00Z',
+                   'merged_at': '2026-11-07T10:00:00Z',
                    'merge_commit_sha': self.sha,
                    'base': {'ref': 'main', 'repo': {'full_name': 'owner/repo'}},
                    'head': {'sha': self.head, 'ref': 'feature',
@@ -61,6 +62,8 @@ class ReuseTests(unittest.TestCase):
                                   'Packaging and integrations', 'checks')]
         self.data = {
             f'commits/{self.sha}/pulls?per_page=100': [self.pr],
+            'pulls?state=all&head=owner%3Afeature&per_page=100': [self.pr],
+            'issues/7/timeline?per_page=100': [],
             f'commits/{self.head}': {'sha': self.head, 'commit': {'tree': {'sha': self.tree}}},
             f'compare/{self.base}...{self.head}': {
                 'status': 'ahead', 'merge_base_commit': {'sha': self.base}},
@@ -204,6 +207,42 @@ class ReuseTests(unittest.TestCase):
             return original(endpoint, paginate=paginate)
         with patch.object(self, 'api', side_effect=pages):
             self.assertEqual(self.decide(), 100)
+
+    def test_another_pr_for_the_same_branch_cannot_supply_native_results(self):
+        other = copy.deepcopy(self.pr)
+        other['number'] = 99
+        other['base']['ref'] = 'staging'
+        # GitHub discards closed-PR run associations; even an empty association
+        # cannot authorize a run when another target has used this head branch.
+        self.run['pull_requests'] = []
+        self.data['pulls?state=all&head=owner%3Afeature&per_page=100'].append(other)
+        self.assertIsNone(self.decide())
+
+    def test_retargeted_pr_or_run_before_pr_creation_cannot_supply_results(self):
+        for event in ('base_ref_changed', 'automatic_base_change_succeeded'):
+            with self.subTest(event=event):
+                self.data['issues/7/timeline?per_page=100'] = [{'event': event}]
+                self.assertIsNone(self.decide())
+        self.data['issues/7/timeline?per_page=100'] = []
+        self.run['created_at'] = '2026-11-07T07:59:59Z'
+        self.assertIsNone(self.decide())
+
+    def test_later_pages_cannot_hide_other_prs_or_retargeting(self):
+        original = self.api
+        for route in ('/pulls?state=all', '/timeline?'):
+            def pages(endpoint, *, paginate=False):
+                if route in endpoint:
+                    assert paginate
+                    if route == '/pulls?state=all':
+                        return [[self.pr], [{**self.pr, 'number': 99}]]
+                    return [[{'event': 'committed'}], [{'event': 'base_ref_changed'}]]
+                return original(endpoint, paginate=paginate)
+            with self.subTest(route=route), patch.object(self, 'api', side_effect=pages):
+                self.assertIsNone(self.decide())
+
+    def test_history_from_a_different_pr_cannot_prove_run_identity(self):
+        self.data['pulls?state=all&head=owner%3Afeature&per_page=100'] = [{**self.pr, 'number': 99}]
+        self.assertIsNone(self.decide())
 
     def test_api_errors_malformed_evidence_and_rerun_races_fall_back(self):
         original = self.api

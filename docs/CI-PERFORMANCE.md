@@ -224,6 +224,11 @@ from a fully successful PR run when `scripts/ci-native-reuse.py` verifies:
 - The push contains one squash commit whose parent is exactly the previous main.
 - Exactly one associated merged PR targets this repository's main, has that squash
   SHA, and has a head in the same repository. Forks fall back to normal validation.
+- Across all open/closed PRs, that source branch must have been used by exactly
+  this PR. Its complete timeline must contain no manual or automatic base change,
+  and the source run must have started after the PR was created. This binds the
+  run to the intended PR and target even when GitHub drops closed PRs from a run's
+  `pull_requests` metadata. Reused branches and retargeted PRs run native tests again.
 - The entire PR head tree equals the main tree, including tests, scripts, resources
   and workflow policy. The previous main is also an ancestor of that PR head, so
   the tested PR integration had the same tree; stale integrations do not qualify.

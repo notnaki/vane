@@ -10,6 +10,9 @@ required job present and successful. Any missing, invalid or unavailable evidenc
 falls back to running native tests. Main still builds, packages and exercises
 integrations, runs source/routing fixtures, and saves its normal compiler cache.
 No artifacts or code from another run are downloaded or executed.
+Source-run identity additionally requires exactly one PR ever using that branch,
+no base-change events in its complete timeline, and source-run creation after PR
+creation. Reused/retargeted branches conservatively run native tests again.
 
 **Files:** `scripts/ci-native-reuse.py`, `scripts/test-ci-native-reuse.py`,
 `.github/workflows/checks.yml`, `scripts/test-checks-workflow.py`,
@@ -48,3 +51,9 @@ No artifacts or code from another run are downloaded or executed.
 Latest attempt rather than an older passing attempt; complete job pagination;
 exact tree and current-base proof; API errors never grant reuse; intentional
 native skips never hide build, packaging, source or routing failures.
+
+Independent review found an ambiguous source-run/PR association when a branch
+targets multiple bases. The fix uses GitHub's all-state branch PR listing and
+complete base-change history (server metadata rather than a self-reported artifact).
+Regression cases first reproduced wrong-PR, retargeted-PR, old-run, and later-page
+omissions, then passed with the conservative identity checks.

@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+from urllib.parse import urlencode
 
 WORKFLOW = '.github/workflows/checks.yml'
 REQUIRED_JOBS = {
@@ -58,6 +59,16 @@ def verified_run():
     if len(candidates) != 1:
         return None
     pr = candidates[0]
+    # Closed PRs disappear from run.pull_requests. Instead, bind the source branch
+    # to exactly one PR across *all* states and reject every recorded base change.
+    # A run from another target (or before this PR existed) must never qualify.
+    query = urlencode({'state': 'all', 'head': repo.split('/')[0] + ':' + pr['head']['ref'], 'per_page': 100})
+    branch_prs = pages(prefix + 'pulls?' + query)
+    if len(branch_prs) != 1 or branch_prs[0]['number'] != pr['number']:
+        return None
+    timeline = pages(prefix + f'issues/{pr["number"]}/timeline?per_page=100')
+    if any(item['event'] in ('base_ref_changed', 'automatic_base_change_succeeded') for item in timeline):
+        return None
     head = pr['head']['sha']
     if not re.fullmatch(r'[0-9a-f]{40}', head):
         return None
@@ -83,7 +94,8 @@ def verified_run():
             or run['event'] != 'pull_request' or run['head_sha'] != head
             or run['head_branch'] != pr['head']['ref'] or run['head_repository']['full_name'] != repo
             or run['status'] != 'completed' or run['conclusion'] != 'success'
-            or not timestamp(run['created_at']) <= timestamp(run['updated_at']) <= timestamp(pr['merged_at'])):
+            or not timestamp(pr['created_at']) <= timestamp(run['created_at'])
+            <= timestamp(run['updated_at']) <= timestamp(pr['merged_at'])):
         return None
     attempt = int(run['run_attempt'])
     if attempt < 1:
