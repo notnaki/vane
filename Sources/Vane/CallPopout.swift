@@ -196,7 +196,7 @@ import WebKit
         orderFrontRegardless()
         guard !CustomPiPWindow.reducesMotion else { return }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.14
+            context.duration = Look.appearDuration
             animator().alphaValue = 1
         }
     }
