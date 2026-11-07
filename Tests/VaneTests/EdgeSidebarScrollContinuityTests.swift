@@ -9,7 +9,7 @@ import XCTest
         (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants($0, type) }
     }
 
-    private func fixture(left: Bool, activePage: Bool = false) throws -> (TabStore, NSWindow, BrowserWindowHost) {
+    private func fixture(left: Bool, activePage: Bool = false) async throws -> (TabStore, NSWindow, BrowserWindowHost) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         try XCTSkipIf(Motion.spaceReduced, "Requires animated edge navigation")
@@ -63,6 +63,14 @@ import XCTest
         }
         XCTAssertEqual(left ? store.strip.first?.id : store.strip.last?.id, space.id,
                        "Exercise the actual Library/Create boundary, not an ordinary Space neighbor")
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            guard let sections = store.spaceGesture.sectionsView else { return false }
+            return window.isVisible && window.contentView === host && host.window === window
+                && store.spaceGesture.monitor.isInstalled && sections.window === window
+                && !sections.isHiddenOrHasHiddenAncestor
+                && sections.bounds.width > 0 && sections.bounds.height > 0
+        }
         return (store, window, host)
     }
 
@@ -115,8 +123,7 @@ import XCTest
     }
 
     private func checkLibraryEdge(commit: Bool, diagonal: Bool = false, activePage: Bool = false) async throws {
-        let (store, window, host) = try fixture(left: true, activePage: activePage)
-        try await Task.sleep(for: .milliseconds(150))
+        let (store, window, host) = try await fixture(left: true, activePage: activePage)
         let live = try sidebarScroll(host)
         live.wantsLayer = true
         try await scrollDown(live, window: window)
@@ -170,7 +177,8 @@ import XCTest
                 _ = try SidebarSnapshot.pixels(in: host)
             }
         }
-        NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: commit ? .ended : .cancelled))
+        NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: commit ? .ended : .cancelled,
+                                          timestamp: gestureStart + 0.5))
         if diagonal {
             for _ in 0..<4 {
                 NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, dx: 15, dy: 10,
@@ -211,8 +219,7 @@ import XCTest
     }
 
     private func checkCreateEdgeReturn(clickCurrentSpace: Bool) async throws {
-        let (store, window, host) = try fixture(left: false)
-        try await Task.sleep(for: .milliseconds(150))
+        let (store, window, host) = try await fixture(left: false)
         let live = try sidebarScroll(host)
         live.wantsLayer = true
         let start = try presentedOrigin(live).x
@@ -250,8 +257,7 @@ import XCTest
     }
 
     private func checkCreateEdge(commit: Bool) async throws {
-        let (store, window, host) = try fixture(left: false)
-        try await Task.sleep(for: .milliseconds(150))
+        let (store, window, host) = try await fixture(left: false)
         let live = try sidebarScroll(host)
         try await scrollDown(live, window: window)
         if ProcessInfo.processInfo.environment["VANE_SIDEBAR_SNAPSHOT_DIR"] != nil {
@@ -263,9 +269,13 @@ import XCTest
         let startingRect = live.convert(live.bounds, to: host)
         var observedGhost = false
         let point = live.convert(NSPoint(x: 100, y: 80), to: nil)
-        NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: .began))
-        for dx: CGFloat in [-30, -25, 20, commit ? -50 : 0] {
-            NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, dx: dx))
+        let gestureStart = ProcessInfo.processInfo.systemUptime
+        NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: .began, timestamp: gestureStart))
+        // Preserve the reversal, then finish a full sidebar-width pull with
+        // deliberate timing. The old 85pt gesture no longer meets creation's policy.
+        for (index, dx) in [CGFloat(-30), -25, 20, commit ? -215 : 0].enumerated() {
+            NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, dx: dx,
+                                              timestamp: gestureStart + Double(index + 1) * 0.1))
             host.layoutSubtreeIfNeeded()
             XCTAssertTrue(store.spaceSwiping)
             XCTAssertNil(store.spaceGesture.neighbour, "This must exercise Create Space, not a prepared neighbor")
@@ -293,7 +303,8 @@ import XCTest
         }
         XCTAssertTrue(observedGhost || live.convert(live.bounds, to: host).minX < startingRect.minX - 5,
                       "Observe an actual outgoing surface; a model-only gesture is insufficient")
-        NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: commit ? .ended : .cancelled))
+        NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: commit ? .ended : .cancelled,
+                                          timestamp: gestureStart + 0.5))
         try await Task.sleep(for: .milliseconds(350))
         XCTAssertEqual(store.creatingSpace, commit)
         XCTAssertFalse(store.spaceSwiping)
@@ -309,11 +320,13 @@ private final class EdgeContinuityEvent: NSEvent, @unchecked Sendable {
     let dy: CGFloat
     let eventPhase: NSEvent.Phase
     let momentum: NSEvent.Phase
+    private let fixtureTimestamp: TimeInterval?
     @MainActor init(window: NSWindow, point: NSPoint, dx: CGFloat = 0, dy: CGFloat = 0,
-                    phase: NSEvent.Phase = .changed, momentum: NSEvent.Phase = []) {
+                    phase: NSEvent.Phase = .changed, momentum: NSEvent.Phase = [], timestamp: TimeInterval? = nil) {
         owner = window; number = window.windowNumber; self.point = point
         self.dx = dx; self.dy = dy; eventPhase = phase
         self.momentum = momentum
+        fixtureTimestamp = timestamp
         super.init()
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -327,5 +340,5 @@ private final class EdgeContinuityEvent: NSEvent, @unchecked Sendable {
     override var scrollingDeltaY: CGFloat { dy }
     override var phase: NSEvent.Phase { eventPhase }
     override var momentumPhase: NSEvent.Phase { momentum }
-    override var timestamp: TimeInterval { ProcessInfo.processInfo.systemUptime }
+    override var timestamp: TimeInterval { fixtureTimestamp ?? ProcessInfo.processInfo.systemUptime }
 }

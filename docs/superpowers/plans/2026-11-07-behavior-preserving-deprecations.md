@@ -68,3 +68,8 @@
 - Workflow (8,227 gate cases), dual-layout artifact (12), native-runner fixture (38), resource packaging, release workflow, shard planning, and cold WebKit startup checks passed.
 - Ruling: retain only the adapter-local process-pool deprecation exception because removing its resource-cache configuration breaks extension behavior.
 - Ruling: explicitly retain the artifact action v5 digest-warning policy under v8; independent archive restoration checks remain unchanged.
+
+- Full macOS 27 run initially reached 1,309 passes and 16 skips with two failures before stopping for diagnosis; 216 exact owned backends retired successfully.
+- Three controlled runs on unchanged bf5c8943 and three on the patch reproduced the stale Create Space input every time, and each revision reproduced the intermittent window-title lifetime assertion. Logs retained under /tmp/vane-deprecations-*-preflight-*.log.
+- Fixture-only follow-up supplies the current deliberate creation gesture and monotonic timestamps, replaces initial readiness sleeps with exact mounted-owner admission, and moves the title fixture's strong tab reference into a completed async helper frame. Outcome assertions and deadlines remain unchanged. Validation is pending serialized desktop access.
+- Initial PR CI passed all four native shards, packaging/integrations and the required checks gate on 48eeedf3. The target subsequently advanced to 599b8ede; the combined tree requires refreshed validation/review.
