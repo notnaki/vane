@@ -503,6 +503,48 @@ import Foundation
                     raw: raw, host: url.host())
     }
 
+    /// The menu and the request share this gate. A wandered row needs its home's saved
+    /// title; the current page's title must never become the pinned row's name.
+    static func canRegenerate(_ tab: Tab) -> Bool {
+        guard BrowserAI.enabled, enabled, tab.kind == .pinned, !tab.isPrivate,
+              tab.workspaceName == nil, tab.easelID == nil,
+              let url = key(for: tab), ["http", "https"].contains(url.scheme ?? "") else { return false }
+        return pinnedName(for: url, in: tab.profileID) != nil
+            || (tab.atHome && realTitle(tab.title, at: url))
+    }
+
+    private struct RegenerationKey: Hashable {
+        let profileID: UUID
+        let url: URL
+    }
+    private static var regenerations: [RegenerationKey: UUID] = [:]
+
+    /// An explicit request bypasses the cache. Keep the old name until a valid model
+    /// answer arrives, then replace any manual name and use the normal AI title reveal.
+    static func regenerate(_ tab: Tab,
+                           generate: (String, URL) async -> String? = { await BrowserAI.shortTitle(for: $0, url: $1) }) async {
+        guard canRegenerate(tab), let url = key(for: tab) else { return }
+        let profileID = tab.profileID
+        let raw = pinnedName(for: url, in: profileID) ?? tab.title
+        let typed = override(for: url, in: profileID)
+        let revision = UserDefaults.vane.integer(forKey: "aiSettingsRevision")
+        let requestKey = RegenerationKey(profileID: profileID, url: url)
+        let request = UUID()
+        regenerations[requestKey] = request
+        defer {
+            if regenerations[requestKey] == request { regenerations[requestKey] = nil }
+        }
+        guard let out = await tidy(title: raw, url: url, generate: generate), out.fromModel,
+              !Task.isCancelled, regenerations[requestKey] == request,
+              revision == UserDefaults.vane.integer(forKey: "aiSettingsRevision"),
+              canRegenerate(tab), key(for: tab) == url,
+              override(for: url, in: profileID) == typed else { return }
+        let was = title(for: tab)
+        rename(url, in: profileID, to: nil)
+        put(cacheKey, profileID, url.absoluteString, out.text)
+        tab.noteAITitle(replacing: was)
+    }
+
     /// Fill the cache for a favorite or pinned tab. Fire and forget:
     /// call it when a tab is pinned and when a pinned tab finishes retitling.
     ///
@@ -530,7 +572,8 @@ import Foundation
         let aiRevision = UserDefaults.vane.integer(forKey: "aiSettingsRevision")
         Task { @MainActor [weak tab] in
             guard let out = await tidy(title: raw, url: url),
-                  aiRevision == UserDefaults.vane.integer(forKey: "aiSettingsRevision") else { return }
+                  aiRevision == UserDefaults.vane.integer(forKey: "aiSettingsRevision"),
+                  dict(cacheKey, profileID)[key] == nil else { return }
             // Read *before* the cache is written, because `title(for:)` reads the cache: this
             // is the name the row is showing at this instant, and it is what the shimmer
             // fades out from under the new one.
@@ -553,6 +596,7 @@ import Foundation
     /// Drop everything remembered for a profile. For profile deletion and for a settings
     /// toggle that should not leave stale names behind.
     static func forget(_ profileID: UUID) {
+        regenerations = regenerations.filter { $0.key.profileID != profileID }
         for base in [cacheKey, overrideKey, pinnedKey] { drop(base, profileID) }
     }
 

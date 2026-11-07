@@ -4695,6 +4695,7 @@ struct TabMenu: View {
         if TabActions.rename(tab) != nil {
             Button("Use the Page’s Own Title") { TidyTitles.rename(tab, to: nil) }
         }
+        RegenerateTitleItem(tab: tab)
         Button("Duplicate") { TabActions.duplicate(tab, in: store) }
             .disabled(tab.currentURL == nil)
         Button("Reload") { tab.reload() }
@@ -4788,6 +4789,7 @@ private struct LivePullRequestMenu: View {
         Button("Copy Link") { copy(pr.url.absoluteString, announcement: "Link copied.") }
         Button("Copy PR #") { copy(String(pr.number), announcement: "PR number copied.") }
         ShareLink(item: pr.url) { Text("Share") }
+        RegenerateTitleItem(tab: tab)
         Divider()
         Button("Open in Split View") {
             if store.current == nil { store.current = tab.id; store.addSplit() }
@@ -4805,6 +4807,18 @@ private struct LivePullRequestMenu: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
         axAnnounce(announcement)
+    }
+}
+
+private struct RegenerateTitleItem: View {
+    @ObservedObject var tab: Tab
+    @AppStorage("appleAI", store: .vane) private var aiEnabled = true
+    @AppStorage("tidyTitles", store: .vane) private var titlesEnabled = true
+
+    var body: some View {
+        if aiEnabled && titlesEnabled && TidyTitles.canRegenerate(tab) {
+            Button("Regenerate Title") { Task { await TidyTitles.regenerate(tab) } }
+        }
     }
 }
 
