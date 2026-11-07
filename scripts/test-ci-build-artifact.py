@@ -38,6 +38,15 @@ class BuildArtifactTests(unittest.TestCase):
     def pack(self):
         self.artifact.pack(self.root, self.binary, self.archive, "revision", "toolchain")
 
+    def use_swiftbuild_products(self):
+        destination = self.root / ".build/out/Products/Debug"
+        destination.parent.mkdir(parents=True)
+        self.binary.rename(destination)
+        self.binary = destination
+        (self.binary / "description.json").unlink()
+        (self.root / ".build/debug").unlink()
+        (self.root / ".build/debug").symlink_to("out/Products/Debug")
+
     def test_roundtrip_keeps_only_runtime_resources_modes_and_symlinks(self):
         self.pack()
         with tarfile.open(self.archive) as archive:
@@ -63,6 +72,50 @@ class BuildArtifactTests(unittest.TestCase):
         self.assertTrue(helper.is_file(), "restored test runtime must include the independent lease holder")
         self.assertEqual(helper.read_text(), "fixture")
         self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
+
+    def test_swiftbuild_roundtrip_without_native_build_description(self):
+        # Swift Build uses the public --show-bin-path result and does not write
+        # the legacy native engine's description.json file.
+        self.use_swiftbuild_products()
+        self.pack()
+        (self.root / ".build").rename(self.root / "original-build")
+        (self.root / "Vane.app").rename(self.root / "original-app")
+        self.artifact.restore(self.root, self.archive, "revision", "toolchain")
+        self.assertEqual((self.root / ".build/debug").resolve(), self.binary)
+        self.assertTrue((self.binary / "VanePackageTests.xctest/Contents/MacOS/VanePackageTests").is_file())
+        self.assertFalse((self.binary / "description.json").exists())
+
+    def test_swiftbuild_includes_each_test_bundle_and_rejects_invalid_bundles(self):
+        self.use_swiftbuild_products()
+        extra = self.binary / "ExtraTests.xctest/Contents/MacOS/ExtraTests"
+        extra.parent.mkdir(parents=True)
+        extra.write_text("fixture")
+        extra.chmod(0o755)
+        self.pack()
+        with tarfile.open(self.archive) as archive:
+            self.assertIn(str(extra.relative_to(self.root)), archive.getnames())
+        extra.unlink()
+        with self.assertRaises(ValueError):
+            self.pack()
+
+    def test_swiftbuild_missing_tests_or_release_products_cannot_be_published(self):
+        self.use_swiftbuild_products()
+        with self.assertRaises(ValueError):
+            self.artifact.pack(self.root, self.binary.with_name("Release"), self.archive, "revision", "toolchain")
+        bundle = self.binary / "VanePackageTests.xctest"
+        bundle.rename(self.binary / "removed-tests")
+        with self.assertRaises(ValueError):
+            self.pack()
+
+    def test_native_description_remains_authoritative(self):
+        extra = self.binary / "IgnoredTests.xctest"
+        extra.mkdir()
+        self.pack()
+        with tarfile.open(self.archive) as archive:
+            self.assertNotIn(str(extra.relative_to(self.root)), archive.getnames())
+        (self.binary / "description.json").unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.pack()
 
     def test_missing_native_lease_holder_cannot_be_published(self):
         (self.binary / "NativeLeaseHolder").unlink()

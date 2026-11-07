@@ -1,4 +1,5 @@
 import AppKit
+import ExtensionResourceBridge
 import WebKit
 import XCTest
 @testable import vane
@@ -27,7 +28,7 @@ import XCTest
         }
         Inspector.configure()
         let web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
-        web.configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        XCTAssertTrue(VaneSetBooleanPreference(web.configuration.preferences, NSSelectorFromString("_setDeveloperExtrasEnabled:"), true))
         web.isInspectable = true
         let host = WebHost(web)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),

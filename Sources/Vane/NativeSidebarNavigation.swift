@@ -1,5 +1,80 @@
 import AppKit
+import ObjectiveC
 import SwiftUI
+
+/// SwiftUI's virtual AX objects may implement the public Objective-C methods
+/// without declaring a formal AppKit accessibility protocol. Dispatch their
+/// scalar/struct getters with the signatures from NSAccessibilityProtocols.h;
+/// NSObject.perform is only suitable for getters returning objects.
+@MainActor enum NativeSidebarAccessibility {
+    static func value(_ object: NSObject, _ getter: String) -> Any? {
+        let selector = NSSelectorFromString(getter)
+        guard object.responds(to: selector) else { return nil }
+        return object.perform(selector)?.takeUnretainedValue()
+    }
+
+    static func children(_ object: NSObject) -> [NSObject] {
+        for getter in ["accessibilityChildren", "accessibilityChildrenInNavigationOrder",
+                       "accessibilityVisibleChildren", "accessibilityContents"] {
+            if let children = value(object, getter) as? [NSObject] { return children }
+        }
+        return []
+    }
+
+    static func frame(_ object: NSObject) -> NSRect? {
+        if let element = object as? any NSAccessibilityProtocol { return element.accessibilityFrame() }
+        if let element = object as? any NSAccessibilityElementProtocol { return element.accessibilityFrame() }
+        let selector = NSSelectorFromString("accessibilityFrame")
+        guard object.responds(to: selector), let implementation = object.method(for: selector) else { return nil }
+        typealias Getter = @convention(c) (AnyObject, Selector) -> NSRect
+        return unsafeBitCast(implementation, to: Getter.self)(object, selector)
+    }
+
+    private static func boolean(_ object: NSObject, _ getter: String) -> Bool? {
+        let selector = NSSelectorFromString(getter)
+        guard object.responds(to: selector), let implementation = object.method(for: selector) else { return nil }
+        typealias Getter = @convention(c) (AnyObject, Selector) -> ObjCBool
+        return unsafeBitCast(implementation, to: Getter.self)(object, selector).boolValue
+    }
+
+    static func isExposed(_ object: NSObject) -> Bool {
+        if let element = object as? any NSAccessibilityProtocol { return element.isAccessibilityElement() }
+        if object is any NSAccessibilityElementProtocol { return true }
+        return boolean(object, "isAccessibilityElement") ?? false
+    }
+
+    static func supportsAction(_ object: NSObject, _ action: String) -> Bool {
+        let actionSelector = NSSelectorFromString(action)
+        guard object.responds(to: actionSelector), let implementation = object.method(for: actionSelector) else { return false }
+        // AppKit base classes implement every action with a default that returns
+        // false, while allowing its selector. Those inherited stubs must not turn
+        // a non-actionable group into a leaf and hide its actual child controls.
+        for base: AnyClass in [NSView.self, NSCell.self, NSAccessibilityElement.self] where object.isKind(of: base) {
+            if let defaultImplementation = class_getMethodImplementation(base, actionSelector),
+               implementation == defaultImplementation { return false }
+        }
+        if let element = object as? any NSAccessibilityProtocol {
+            return element.isAccessibilitySelectorAllowed(actionSelector)
+        }
+        let selector = NSSelectorFromString("isAccessibilitySelectorAllowed:")
+        guard object.responds(to: selector), let implementation = object.method(for: selector) else { return true }
+        typealias Allowed = @convention(c) (AnyObject, Selector, Selector) -> ObjCBool
+        return unsafeBitCast(implementation, to: Allowed.self)(object, selector, actionSelector).boolValue
+    }
+
+    static func isActionable(_ object: NSObject) -> Bool {
+        if object is any NSAccessibilityButton { return true }
+        if value(object, "accessibilityRole") as? String == NSAccessibility.Role.button.rawValue { return true }
+        // Query availability only: performing an action to discover support
+        // would mutate the sidebar during an accessibility children request.
+        return ["accessibilityPerformCancel", "accessibilityPerformConfirm", "accessibilityPerformDecrement",
+                "accessibilityPerformDelete", "accessibilityPerformIncrement", "accessibilityPerformPick",
+                "accessibilityPerformPress", "accessibilityPerformRaise", "accessibilityPerformShowAlternateUI",
+                "accessibilityPerformShowDefaultUI", "accessibilityPerformShowMenu"].contains {
+            supportsAction(object, $0)
+        }
+    }
+}
 
 /// One native hosting owner is not one logical keyboard/AX group. Owners can
 /// interleave after reorder; navigation always uses the current authorized rows.
@@ -376,34 +451,17 @@ import SwiftUI
             (index, window.convertToScreen(pair.1.convert(pair.1.bounds, to: nil)))
         }
         var seen = Set<ObjectIdentifier>(), result: [(NSObject, Int, NSRect)] = []
-        func children(_ object: NSObject) -> [NSObject] {
-            let selector = NSSelectorFromString("accessibilityChildren")
-            if object.responds(to: selector), let values = object.perform(selector)?.takeUnretainedValue() as? [NSObject] { return values }
-            return object.accessibilityAttributeValue(.children) as? [NSObject] ?? []
-        }
-        func frame(_ object: NSObject) -> NSRect? {
-            if let element = object as? any NSAccessibilityProtocol { return element.accessibilityFrame() }
-            if let element = object as? any NSAccessibilityElementProtocol { return element.accessibilityFrame() }
-            guard let position = object.accessibilityAttributeValue(.position) as? NSValue,
-                  let size = object.accessibilityAttributeValue(.size) as? NSValue else { return nil }
-            return NSRect(origin: position.pointValue, size: size.sizeValue)
-        }
         func visit(_ object: NSObject) {
             guard seen.count < 16_384, seen.insert(ObjectIdentifier(object)).inserted else { return }
-            let descendants = children(object)
-            if let rect = frame(object), rect.width > 0, rect.height > 0,
+            let descendants = NativeSidebarAccessibility.children(object)
+            if let rect = NativeSidebarAccessibility.frame(object), rect.width > 0, rect.height > 0,
                let row = rowFrames.first(where: { _, row in
                    rect.height <= row.height + 2 && row.insetBy(dx: -1, dy: -1).contains(NSPoint(x: rect.midX, y: rect.midY))
                }) {
-                let protocolElement = object as? any NSAccessibilityProtocol
                 // SwiftUI's real virtual nodes may expose only the public
-                // Element protocol. NSObject's legacy ignored fallback does
-                // not describe those nodes; preserve the host's actual leaves.
-                let button = object as? any NSAccessibilityButton
-                let exposed = protocolElement?.isAccessibilityElement()
-                    ?? (object is any NSAccessibilityElementProtocol || !object.accessibilityIsIgnored())
-                let actionable = button != nil || protocolElement?.accessibilityRole() == .button
-                    || !object.accessibilityActionNames().isEmpty
+                // Element protocol or informal methods; retain both forms.
+                let exposed = NativeSidebarAccessibility.isExposed(object)
+                let actionable = NativeSidebarAccessibility.isActionable(object)
                 if exposed && (actionable || descendants.isEmpty) {
                     result.append((object, row.0, rect))
                     return

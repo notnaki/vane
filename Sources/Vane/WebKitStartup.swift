@@ -7,12 +7,12 @@ import ExtensionResourceBridge
     // Legacy WebKit can retain extension IPC receivers after controller retirement.
     // Keep both browser and extension pool owners at application lifetime instead of
     // destroying one per host. Stores and controllers still provide profile isolation.
-    static let processPool = VaneCreateExtensionResourceProcessPool()
-    static let extensionProcessPool = VaneCreateExtensionResourceProcessPool()
+    static let processPool = VaneWebProcessPoolOwner(extensionResourceRevalidation: true)
+    static let extensionProcessPool = VaneWebProcessPoolOwner(extensionResourceRevalidation: true)
 
     static var revalidatesExtensionResources: Bool {
-        VaneProcessPoolRevalidatesExtensionResources(processPool)
-            && VaneProcessPoolRevalidatesExtensionResources(extensionProcessPool)
+        processPool.revalidatesExtensionResources
+            && extensionProcessPool.revalidatesExtensionResources
     }
 
     private static let initialized: Void = { _ = WKWebsiteDataStore.nonPersistent() }()

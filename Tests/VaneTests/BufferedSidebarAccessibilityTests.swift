@@ -26,7 +26,6 @@ import XCTest
     }
     private func label(_ object: NSObject) -> String {
         (get(object, "accessibilityLabel") as? String)
-            ?? (object.accessibilityAttributeValue(.description) as? String)
             ?? (get(object, "accessibilityValue") as? String) ?? ""
     }
     private func axObjects(_ root: NSObject) -> [NSObject] {
@@ -37,9 +36,6 @@ import XCTest
             for getter in ["accessibilityChildrenInNavigationOrder", "accessibilityChildren",
                            "accessibilityVisibleChildren", "accessibilityContents"] {
                 if let children = get(next, getter) as? [NSObject] { pending.append(contentsOf: children) }
-            }
-            if let children = next.accessibilityAttributeValue(.children) as? [NSObject] {
-                pending.append(contentsOf: children)
             }
         }
         return result
@@ -68,13 +64,15 @@ import XCTest
     private func canPress(_ object: NSObject) -> Bool {
         if let element = object as? any NSAccessibilityProtocol,
            element.isAccessibilityElement(), element.accessibilityRole() == .button { return true }
-        return object.accessibilityActionNames().contains(.press)
+        return NativeSidebarAccessibility.supportsAction(object, "accessibilityPerformPress")
     }
     private func press(_ object: NSObject) -> Bool {
         if let element = object as? any NSAccessibilityProtocol { return element.accessibilityPerformPress() }
-        guard object.accessibilityActionNames().contains(.press) else { return false }
-        object.accessibilityPerformAction(.press)
-        return true // The caller must also verify the actual resulting state.
+        guard NativeSidebarAccessibility.supportsAction(object, "accessibilityPerformPress") else { return false }
+        let selector = NSSelectorFromString("accessibilityPerformPress")
+        guard let implementation = object.method(for: selector) else { return false }
+        typealias Press = @convention(c) (AnyObject, Selector) -> ObjCBool
+        return unsafeBitCast(implementation, to: Press.self)(object, selector).boolValue
     }
     private func namedAction(_ name: String, object: NSObject) -> NSAccessibilityCustomAction? {
         (get(object, "accessibilityCustomActions") as? [NSAccessibilityCustomAction])?.first { $0.name == name }

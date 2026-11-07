@@ -1990,7 +1990,7 @@ private struct SpaceSwipe: ViewModifier {
             // wall-clock timer can beat SwiftUI's delayed start under main-thread load.
             Motion.space(animation, completionCriteria: .removed) {
                 store.spaceGesture.drag = -CGFloat(direction) * width
-            } completion: {
+            } completion: { [self, store] in
                 guard let window = store.window else { finish(); return }
                 _ = SpaceLandingFrame(window: window, ready: { [weak self, weak store] in
                     guard let self, self.transition == token, let store,

@@ -14,15 +14,14 @@ import XCTest
             bounds.fill()
         }
     }
-    private func setupIcons() {
+    private func setupIcons() throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         for (name, color) in [("AppIcon-Galaxy", blue), ("AppIcon-Candy", green)] {
-            let image = NSImage(size: NSSize(width: 128, height: 128))
-            image.lockFocus()
-            color.setFill()
-            NSRect(x: 0, y: 0, width: 128, height: 128).fill()
-            image.unlockFocus()
+            let image = try XCTUnwrap(RasterImage.make(size: NSSize(width: 128, height: 128)) { bounds in
+                color.setFill()
+                bounds.fill()
+            })
             XCTAssertTrue(image.setName(name))
             addTeardownBlock { @MainActor in image.setName(nil) }
         }
@@ -77,7 +76,7 @@ import XCTest
     }
 
     func testMinimizedTileRendersThumbnailAndSelectedBadgeThenUpdatesWithoutRestoring() async throws {
-        setupIcons()
+        try setupIcons()
         AppIcon.apply("Galaxy")
         let window = window()
         try await minimize(window)
@@ -93,7 +92,7 @@ import XCTest
     }
 
     func testFolderProtectionReplacesRetainedPixelsUntilWindowIsRestored() async throws {
-        setupIcons()
+        try setupIcons()
         AppIcon.apply("Galaxy")
         let window = window()
         try await minimize(window)
@@ -101,7 +100,10 @@ import XCTest
         MinimizedWindowIcon.protect(window)
         XCTAssertEqual(try pixels(window, matching: red), 0,
                        "Locking must discard the retained page and sidebar thumbnail")
-        XCTAssertNotNil(window.miniwindowImage)
+        let protected = try XCTUnwrap(window.miniwindowImage)
+        XCTAssertEqual(protected.size, NSSize(width: 320, height: 200))
+        let reps = NSBitmapImageRep.imageReps(with: try XCTUnwrap(protected.tiffRepresentation))
+        XCTAssertEqual(reps.count, 1, "The protected thumbnail must remain a bounded, frozen raster")
         AppIcon.apply("Candy")
         XCTAssertEqual(try pixels(window, matching: red), 0,
                        "Changing badges cannot bring protected pixels back")
@@ -114,7 +116,7 @@ import XCTest
     }
 
     func testChoosingAlternateAfterMinimizingDarkKeepsThumbnail() async throws {
-        setupIcons()
+        try setupIcons()
         let window = window()
         try await minimize(window)
         XCTAssertNil(window.dockTile.contentView)
@@ -131,14 +133,13 @@ import XCTest
     }
 
     func testPaddedBadgeKeepsNativeVisualSizeAcrossDockScalesAndWindowShapes() async throws {
-        setupIcons()
+        try setupIcons()
         // Bundled icon plates have transparent margins. The visible badge in the
         // native Dock occupies about a third of its square tile, including on wide windows.
-        let icon = NSImage(size: NSSize(width: 128, height: 128))
-        icon.lockFocus()
-        blue.setFill()
-        NSRect(x: 13, y: 13, width: 102, height: 102).fill()
-        icon.unlockFocus()
+        let icon = try XCTUnwrap(RasterImage.make(size: NSSize(width: 128, height: 128)) { _ in
+            blue.setFill()
+            NSRect(x: 13, y: 13, width: 102, height: 102).fill()
+        })
         MinimizedWindowIcon.apply(icon)
 
         for thumbnailSize in [NSSize(width: 400, height: 250), NSSize(width: 250, height: 400)] {
@@ -149,10 +150,9 @@ import XCTest
             let view = try XCTUnwrap(window.dockTile.contentView)
             for side in [64.0, 128.0, 256.0] {
                 view.setFrameSize(NSSize(width: side, height: side))
-                let rendered = NSImage(size: view.bounds.size)
-                rendered.lockFocus()
-                view.draw(view.bounds)
-                rendered.unlockFocus()
+                let rendered = try XCTUnwrap(RasterImage.make(size: view.bounds.size) { bounds in
+                    view.draw(bounds)
+                })
                 let rep = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(rendered.tiffRepresentation)))
                 var xs: [Int] = []
                 var ys: [Int] = []
@@ -177,7 +177,7 @@ import XCTest
     }
 
     func testDisabledBadgesAndExistingCustomTilesArePreserved() async throws {
-        setupIcons()
+        try setupIcons()
         AppIcon.apply("Galaxy")
         let unbadged = window()
         unbadged.dockTile.showsApplicationBadge = false
@@ -195,7 +195,7 @@ import XCTest
     }
 
     func testMinimizedWebPageKeepsItsRenderedPixels() async throws {
-        setupIcons()
+        try setupIcons()
         AppIcon.apply("Galaxy")
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 250))
         let container = NSView(frame: web.frame)

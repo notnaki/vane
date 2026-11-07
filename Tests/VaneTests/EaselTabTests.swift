@@ -285,8 +285,10 @@ import XCTest
             store.everyTab.forEach { $0.tearDown() }
             TabStore.all.removeAll { $0 === store }
         }
-        let image = NSImage(size: NSSize(width: 32, height: 32))
-        image.lockFocus(); NSColor.blue.setFill(); NSRect(x: 0, y: 0, width: 32, height: 32).fill(); image.unlockFocus()
+        let image = try XCTUnwrap(RasterImage.make(size: NSSize(width: 32, height: 32)) { bounds in
+            NSColor.blue.setFill()
+            bounds.fill()
+        })
         let captured = await EaselWindow.addCapture(image, title: "A useful passage", source: "https://example.com/research",
                                                     to: target.id, in: store)
         XCTAssertTrue(captured)

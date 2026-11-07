@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import ObjectiveC
+import ExtensionResourceBridge
 import WebKit
 import XCTest
 @testable import vane
@@ -21,8 +22,11 @@ import XCTest
         _ = NSApplication.shared
         profile = UUID()
         let configuration = Tab.configuration(profileID: profile)
-        configuration.processPool = WKProcessPool()
-        locationProvider = try PermissionLocationProvider(configuration: configuration)
+        let processOwner = VaneWebProcessPoolOwner(extensionResourceRevalidation: false)
+        processOwner.configure(configuration)
+        XCTAssertTrue(processOwner.matches(configuration))
+        XCTAssertFalse(WebKitStartup.processPool.matches(configuration))
+        locationProvider = try PermissionLocationProvider(processOwner: processOwner)
         let preferences = configuration.preferences
         // Test-only WebKit preferences select fake capture devices.
         XCTAssertTrue(preferences.responds(to: NSSelectorFromString("_setMockCaptureDevicesEnabled:")))
@@ -485,23 +489,22 @@ import XCTest
     private typealias Create = @convention(c) (Double, Double, Double, Double) -> UnsafeRawPointer
     private typealias Update = @convention(c) (UnsafeRawPointer, UnsafeRawPointer) -> Void
     private typealias Release = @convention(c) (UnsafeRawPointer) -> Void
-    private let pool: AnyObject
+    private let processOwner: VaneWebProcessPoolOwner
     private let manager: UnsafeRawPointer
     private let setProvider: SetProvider
     private let create: Create
     private let update: Update
     private let release: Release
 
-    init(configuration: WKWebViewConfiguration) throws {
-        let pool = configuration.processPool
-        self.pool = pool // Retain the manager's owner until stop() removes the callback.
+    init(processOwner: VaneWebProcessPoolOwner) throws {
+        self.processOwner = processOwner // Retain the manager's owner until stop() removes the callback.
         let symbols = UnsafeMutableRawPointer(bitPattern: -2) // RTLD_DEFAULT
         func symbol<T>(_ name: String, _: T.Type) throws -> T {
             unsafeBitCast(try XCTUnwrap(dlsym(symbols, name), "Missing WebKit test symbol: \(name)"), to: T.self)
         }
         typealias Manager = @convention(c) (UnsafeRawPointer) -> UnsafeRawPointer
         let getManager = try symbol("WKContextGetGeolocationManager", Manager.self)
-        manager = getManager(Unmanaged.passUnretained(pool).toOpaque())
+        manager = getManager(processOwner.contextHandle)
         setProvider = try symbol("WKGeolocationManagerSetProvider", SetProvider.self)
         create = try symbol("WKGeolocationPositionCreate", Create.self)
         update = try symbol("WKGeolocationManagerProviderDidChangePosition", Update.self)

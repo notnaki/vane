@@ -65,8 +65,10 @@ import SwiftUI
         return EaselStore(profileID: UUID(), directory: root)
     }
     private func imageItem() throws -> EaselItem {
-        let image = NSImage(size: NSSize(width: 32, height: 32))
-        image.lockFocus(); NSColor.red.setFill(); NSRect(x: 0, y: 0, width: 32, height: 32).fill(); image.unlockFocus()
+        let image = try XCTUnwrap(RasterImage.make(size: NSSize(width: 32, height: 32)) { bounds in
+            NSColor.red.setFill()
+            bounds.fill()
+        })
         return try EaselWindow.imageItem(image, source: "https://example.com")
     }
     func testFailedSaveReturnsFailureAndPreservesCommittedContent() throws {

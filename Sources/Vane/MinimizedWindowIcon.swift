@@ -76,14 +76,14 @@ import WebKit
         guard let entry = entries[ObjectIdentifier(window)] else { return }
         entry.protected = true
         entry.pages.removeAll()
-        let image = NSImage(size: NSSize(width: 320, height: 200))
-        image.lockFocus()
-        NSColor.windowBackgroundColor.setFill()
-        NSRect(x: 0, y: 0, width: 320, height: 200).fill()
-        if let symbol = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: nil) {
-            symbol.draw(in: NSRect(x: 142, y: 78, width: 36, height: 44))
-        }
-        image.unlockFocus()
+        let size = NSSize(width: 320, height: 200)
+        let image = RasterImage.make(size: size) { bounds in
+            NSColor.windowBackgroundColor.setFill()
+            bounds.fill()
+            if let symbol = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: nil) {
+                symbol.draw(in: NSRect(x: 142, y: 78, width: 36, height: 44))
+            }
+        } ?? NSImage(size: size)
         entry.preview.thumbnail = image
         window.miniwindowImage = image
         update(window)

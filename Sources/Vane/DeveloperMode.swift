@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WebKit
+import ExtensionResourceBridge
 
 /// Arc's Developer Mode. On by itself for anything served from this machine, and a switch
 /// per site for everything else (Site Control Center, the command bar, ⌥⌘D). A tab in it
@@ -62,7 +63,7 @@ import WebKit
         web.isInspectable = inspect
         // "Inspect Element" and the in-app inspector are gated on this preference, not on
         // `isInspectable` — see Tab.configuration.
-        web.configuration.preferences.setValue(inspect, forKey: "developerExtrasEnabled")
+        VaneSetBooleanPreference(web.configuration.preferences, NSSelectorFromString("_setDeveloperExtrasEnabled:"), inspect)
     }
 
     static func set(_ on: Bool, on tab: Tab) {

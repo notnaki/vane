@@ -225,11 +225,8 @@ private struct EmbeddedFolderAuthentication: NSViewRepresentable {
         }
         guard let source, source.size.width > 0, source.size.height > 0 else { return nil }
         let size = NSSize(width: 32, height: max(1, 32 * source.size.height / source.size.width))
-        let small = NSImage(size: size)
-        small.lockFocus()
-        source.draw(in: NSRect(origin: .zero, size: size))
-        small.unlockFocus()
-        guard let data = small.tiffRepresentation, let input = CIImage(data: data) else { return nil }
+        let small = RasterImage.make(size: size) { bounds in source.draw(in: bounds) }
+        guard let data = small?.tiffRepresentation, let input = CIImage(data: data) else { return nil }
         let blur = CIFilter.gaussianBlur()
         blur.inputImage = input.clampedToExtent()
         blur.radius = 3

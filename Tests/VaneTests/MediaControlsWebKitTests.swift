@@ -597,7 +597,7 @@ import XCTest
             PictureInPicture.toggle(tab)
             try await wait { tab.pictureInPicture }
             store.current = store.newBlankTab(focus: false).id
-            func restore(in view: NSView) -> NSButton? {
+            @MainActor func restore(in view: NSView) -> NSButton? {
                 if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
                 return view.subviews.lazy.compactMap { restore(in: $0) }.first
             }
@@ -668,7 +668,7 @@ import XCTest
             _ = try await tab.web.evaluateJavaScript("embedded.style.top='600px'; window.scrollTo(0,400); true")
             try await Task.sleep(for: .milliseconds(100))
             let destination = window.convertToScreen(tab.web.convert(NSRect(x: 120, y: 230, width: 320, height: 180), to: nil))
-            func restore(_ view: NSView) -> NSButton? {
+            @MainActor func restore(_ view: NSView) -> NSButton? {
                 if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
                 return view.subviews.lazy.compactMap(restore).first
             }
@@ -703,7 +703,7 @@ import XCTest
             PictureInPicture.toggle(tab)
             try await wait { tab.pictureInPicture }
             window.orderOut(nil)
-            func restore(in view: NSView) -> NSButton? {
+            @MainActor func restore(in view: NSView) -> NSButton? {
                 if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
                 return view.subviews.lazy.compactMap { restore(in: $0) }.first
             }
@@ -739,7 +739,7 @@ import XCTest
             PictureInPicture.toggle(tab)
             try await wait { tab.pictureInPicture }
             try await Task.sleep(for: .milliseconds(300))
-            func minimize(in view: NSView) -> NSButton? {
+            @MainActor func minimize(in view: NSView) -> NSButton? {
                 if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.minimize" { return button }
                 return view.subviews.lazy.compactMap { minimize(in: $0) }.first
             }
@@ -874,7 +874,7 @@ import XCTest
     func testImmediateReentryDuringReturnDoesNotLeaveAnEmptyPanel() async throws {
         try await withNativeMediaLoop {
             let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
-            func restore(_ view: NSView) -> NSButton? {
+            @MainActor func restore(_ view: NSView) -> NSButton? {
                 if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
                 return view.subviews.lazy.compactMap(restore).first
             }
@@ -927,7 +927,7 @@ import XCTest
             store.window = window
             defer { TabStore.all.removeAll { $0 === store } }
             PictureInPicture.toggle(tab)
-            func restore(in view: NSView) -> NSButton? {
+            @MainActor func restore(in view: NSView) -> NSButton? {
                 if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
                 return view.subviews.lazy.compactMap { restore(in: $0) }.first
             }
@@ -958,7 +958,7 @@ import XCTest
             store.window = window
             defer { TabStore.all.removeAll { $0 === store } }
             PictureInPicture.toggle(tab)
-            func restore(in view: NSView) -> NSButton? {
+            @MainActor func restore(in view: NSView) -> NSButton? {
                 if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
                 return view.subviews.lazy.compactMap { restore(in: $0) }.first
             }

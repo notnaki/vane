@@ -1,6 +1,7 @@
 import AppKit
 import WebKit
 import XCTest
+import CFNetwork
 @testable import vane
 
 @MainActor final class SavedReaderTests: XCTestCase {
@@ -17,6 +18,11 @@ import XCTest
         XCTAssertTrue(report.contains("underlying[0]={domain=kCFErrorDomainCFNetwork, code=-3001}"))
         XCTAssertTrue(report.contains("underlying[1]={domain=NSPOSIXErrorDomain, code=13}"))
         XCTAssertTrue(report.contains("failingURL=" + file.absoluteString))
+        let legacy = NSError(domain: NSURLErrorDomain, code: -3001, userInfo: [
+            kCFURLErrorFailingURLStringErrorKey as String: file.absoluteString,
+        ])
+        XCTAssertTrue(SavedReaderNavigation.failureDescription(legacy, document: file)
+            .contains("failingURL=" + file.absoluteString), "String-only loader errors must retain their owned URL diagnostic")
     }
 
     func testNativeFileFailureStopsAfterTwoUnderlyingErrors() {
@@ -35,7 +41,7 @@ import XCTest
         let document = URL(string: "vane-saved-reader://diagnostic/article.html")!
         let outside = "/tmp/OTHER-PRIVATE-PATH/article.html"
         let error = NSError(domain: NSURLErrorDomain, code: -3001, userInfo: [
-            NSLocalizedDescriptionKey: "Cannot open file", NSURLErrorFailingURLStringErrorKey: "file://" + outside,
+            NSLocalizedDescriptionKey: "Cannot open file", kCFURLErrorFailingURLStringErrorKey as String: "file://" + outside,
             NSFilePathErrorKey: outside,
         ])
         let report = SavedReaderNavigation.failureDescription(error, document: document)
