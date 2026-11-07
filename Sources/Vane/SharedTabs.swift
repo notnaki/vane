@@ -216,6 +216,29 @@ import WebKit
         }
     }
 
+    /// Bulk Today removal must not reconcile selection once per doomed neighbour.
+    static func removeToday(_ ids: Set<UUID>, from source: TabStore) {
+        guard source.sharesTabs else { return }
+        let wasUpdating = updating
+        updating = true
+        defer { updating = wasUpdating }
+        for store in TabStore.all where store !== source && store.sharesTabs
+            && store.profileID == source.profileID {
+            store.sidebarObservation.withCompletedChanges {
+                store.removeArchivedTodayTabs(ids)
+                var changedStash = false
+                for space in Array(store.stashes.keys) {
+                    guard var stash = store.stashes[space],
+                          stash.tabs.contains(where: { ids.contains($0.id) }) else { continue }
+                    for id in ids { _ = stash.remove(id) }
+                    store.stashes[space] = stash
+                    changedStash = true
+                }
+                if changedStash { store.sidebarPreviewInvalidated.send() }
+            }
+        }
+    }
+
     /// Closing a window or dropping a stash releases only pages nobody else holds.
     static func release(_ tabs: [Tab], excluding store: TabStore? = nil) {
         guard !tabs.isEmpty else { return }

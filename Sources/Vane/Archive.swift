@@ -97,6 +97,19 @@ extension Prefs {
         save()
     }
 
+    /// Equivalent to adding each entry in order, with one publication and encode.
+    func add(_ additions: [Entry]) {
+        guard !additions.isEmpty else { return }
+        var seen = Set<String>()
+        var merged: [Entry] = []
+        for entry in Array(additions.reversed()) + entries {
+            if seen.insert(entry.url).inserted { merged.append(entry) }
+            if merged.count == Self.limit { break }
+        }
+        entries = merged
+        save()
+    }
+
     /// Taking a tab back out: the entry goes, because it is open again.
     func remove(_ id: Entry.ID) {
         entries.removeAll { $0.id == id }

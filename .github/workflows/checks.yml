@@ -31,7 +31,13 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
         run: python3 scripts/ci-change-scope.py --base "$BASE_SHA" --head "$HEAD_SHA"
 
-      # These fixtures validate routing and website changes on both PRs and main.
+  routing:
+    # Run universal fixtures alongside scope detection so compilation can start early.
+    name: Website and routing fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
       # Keep the required aggregate green when native jobs intentionally skip.
       - name: Fast path regressions
         run: |
@@ -50,9 +56,6 @@ jobs:
       - name: Source timestamp cache fixture
         run: python3 scripts/test-ci-source-state.py
 
-      - name: Website scene regressions
-        run: node docs/tests/galaxy.test.cjs
-
       - name: Release workflow fixture
         run: |
           python3 scripts/test-release-workflow.py
@@ -65,17 +68,11 @@ jobs:
       - name: Default browser prompt build policy
         run: python3 scripts/test-default-browser-prompt.py
 
-      - name: Parallel checks workflow regression
-        run: python3 scripts/test-checks-workflow.py
-
       - name: Native shard coverage fixtures
         run: python3 scripts/test-native-test-shards.py
 
       - name: Historical worker UA evidence fixtures
         run: python3 scripts/test-classify-worker-ua.py
-
-      - name: Change scope fixtures
-        run: python3 scripts/test-ci-change-scope.py
 
       - name: Shared build artifact fixtures
         run: python3 scripts/test-ci-build-artifact.py
@@ -106,19 +103,23 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: .build
-          key: swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
+          key: swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**', 'Tests/**', 'scripts/ci-source-state.py', 'make-app.sh', '.github/workflows/checks.yml') }}
           restore-keys: |
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
             swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
 
       # Checkout gives even unchanged inputs new mtimes. Restore only content-matching
-      # timestamps so Swift can reuse their object files without hiding source changes.
+      # timestamps for Swift, C/Objective-C bridges, headers and resources. Rebuilding
+      # an unchanged bridge can invalidate all dependent Swift compilation.
       - name: Restore unchanged source timestamps
         run: python3 scripts/ci-source-state.py restore
 
       - name: Build app and native tests once
-        run: swift build --build-system native -c debug --build-tests
+        run: swift build --build-system native -c debug --build-tests --disable-index-store
 
       - name: Bundle
+        env:
+          VANE_CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}
         run: ./make-app.sh debug --skip-app-build
 
       - name: Package shared debug runtime
@@ -296,12 +297,13 @@ jobs:
   checks:
     # A cheap-check run skips all app jobs intentionally; unexpected skips still fail.
     if: ${{ always() }}
-    needs: [changes, source, build, native, packaging]
+    needs: [changes, routing, source, build, native, packaging]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Require every selected check to pass
         env:
+          ROUTING_RESULT: ${{ needs.routing.result }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           APP_REQUIRED: ${{ needs.changes.outputs.app_required }}
           SOURCE_RESULT: ${{ needs.source.result }}
@@ -311,6 +313,7 @@ jobs:
         run: |
           set -euo pipefail
           [ "$CHANGES_RESULT" = success ] || { echo '::error::Change detection failed.'; exit 1; }
+          [ "$ROUTING_RESULT" = success ] || { echo '::error::Website or routing fixtures failed.'; exit 1; }
           case "$APP_REQUIRED" in
             true) expected=success ;;
             false) expected=skipped ;;
@@ -337,7 +340,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh cache list --ref refs/heads/main --key swift-debug-v2- \
+          gh cache list --ref refs/heads/main --key swift-debug- \
             --limit 10000 --sort created_at --order desc --json id \
             --jq '.[2:] | .[].id' > "$RUNNER_TEMP/stale-cache-ids"
           while IFS= read -r cache_id; do

@@ -23,6 +23,8 @@ unpin a page.
 
 Showing or hiding the sidebar applies across all Spaces in that window, including Spaces
 in other profiles. Each window keeps its own sidebar visibility.
+**Toggle Sidebar** (`⌘S` by default) also closes Library when it is open. Showing the
+sidebar again returns to your tabs.
 
 Hover a sidebar tab to see a compact name tooltip and a **Double-click to rename** hint.
 The tab's close button appears at the end of the row while you hover; otherwise the
@@ -140,6 +142,10 @@ Website sign-in and other small script-opened dialogs use a separate temporary w
 with a read-only website address and native close controls. They have no Little Vane
 branding, Open in Space action, sidebar row, or saved session entry. Closing the dialog
 leaves its originating tab open; ordinary `target="_blank"` links still open tabs.
+
+A page's `alert()`, `confirm()`, and `prompt()` open as sheets on its window, naming the
+site that asked. A background tab can't open one and gets the Cancel answer. If a site
+repeats them quickly, the sheet offers to silence that site until the tab closes.
 
 ## Search and history
 

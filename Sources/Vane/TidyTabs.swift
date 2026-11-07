@@ -70,7 +70,7 @@ import Foundation
     /// `Look.tidyThreshold`.
     ///
     /// Clear is not on this number. It is not an AI feature, it has no setting of its own,
-    /// and it appears on the fixed `Look.tidyThreshold` — see `offersHousekeeping(_:)`.
+    /// and it appears at the fixed `Look.tidyThreshold` or on hover — see `offersClear`.
     static var threshold: Int {
         get {
             let v = UserDefaults.vane.object(forKey: "tidyTabsThreshold") as? Int ?? Look.tidyThreshold
@@ -139,16 +139,19 @@ import Foundation
         today >= threshold
     }
 
-    /// The same, asked of a window — which in practice is asking it about **Clear**, the
-    /// only control left that this alone decides.
-    ///
-    /// `Look.tidyThreshold`, deliberately, and not `TidyTabs.threshold`: that one is Tidy's
-    /// setting, and Clear is not an AI feature and has no setting. Reading it here meant a
-    /// stray `tidyTabsThreshold` in defaults — a number the user set for Tidy, or one left
-    /// behind by a Tidy they have since switched off — quietly moved or hid a control that
-    /// has nothing to do with tidying.
+    /// The fixed threshold used by the command bar, independent of Tidy's preference.
     static func offersHousekeeping(_ store: TabStore) -> Bool {
         offersHousekeeping(today: todayCount(store), threshold: Look.tidyThreshold)
+    }
+
+    /// Clear stays visible for a pile and is revealed on hover for any nonempty Today.
+    /// Its availability is independent of Tidy's preference and threshold.
+    nonisolated static func offersClear(today: Int, hovering: Bool = false) -> Bool {
+        today > 0 && (hovering || offersHousekeeping(today: today, threshold: Look.tidyThreshold))
+    }
+
+    static func offersClear(_ store: TabStore, hovering: Bool = false) -> Bool {
+        offersClear(today: todayCount(store), hovering: hovering)
     }
 
     /// Tidy specifically: the pile, plus the preference being on. Clear does not ask the
@@ -545,31 +548,35 @@ import Foundation
         guard !plan.isEmpty else { return 0 }
 
         var done = Done(order: before, folders: [], space: store.currentSpaceID)
-        store.syncShapes()      // every Today tab has a row before anything is put in a folder
+        // Build off-store: mutating a @Published value for each member publishes
+        // every intermediate folder, even inside a single animation transaction.
+        var shape = store.todayShape
+        shape.sync(tabs: store.tabs.filter { $0.kind == .today }.map(\.id.uuidString))
+        shape.removeEmptyFolders()
 
         // `Pins.newFolder` rather than `TabStore.newFolder`: the store's one is ⌘⇧N — it
         // opens the name field on the folder it just made and announces it — which is right
         // for one folder the user asked for and wrong for eight arriving at once, already
         // named by the plan.
-        Motion.list {
-            var arrival: [String] = []
-            for group in plan {
-                guard let folder = store.todayShape.newFolder(named: group.name) else { continue }
-                done.folders.append(folder.id)
-                arrival.append(folder.id.uuidString)
-                for id in group.tabIDs {
-                    store.todayShape.move(id.uuidString, into: folder.id)
-                    arrival.append(id.uuidString)
-                }
+        var arrival: [String] = []
+        for group in plan {
+            guard let folder = shape.newFolder(named: group.name) else { continue }
+            done.folders.append(folder.id)
+            arrival.append(folder.id.uuidString)
+            for id in group.tabIDs {
+                shape.move(id.uuidString, into: folder.id)
+                arrival.append(id.uuidString)
             }
-            // The order `order(_:pinned:groups:filed:)` decided, said to the shape: whatever
-            // the user had already filed left where it was — the folder they made by hand
-            // included, since `relay` writes a folder down at its first tab — then each new
-            // group as one run under it, then the tabs no group could take. Then the strip
-            // is put in the order the sidebar now draws.
-            store.todayShape.relay(placement.map(\.uuidString))
-            store.applyOrder(.today)
-            store.feedback.tidied(arrival)
+        }
+        // Preserve the user's existing folders, followed by the new groups and
+        // unclaimed tabs. The strip then follows the completed sidebar shape.
+        shape.relay(placement.map(\.uuidString))
+        Motion.list {
+            store.sidebarObservation.withCompletedChanges {
+                store.todayShape = shape
+                store.applyOrder(.today)
+                store.feedback.tidied(arrival)
+            }
         }
         store.savePins()
         // And the rows' names, once each and only for the tabs that have not got one — being
@@ -646,26 +653,30 @@ import Foundation
         guard canUndo(store), let done = saved[key]?.popLast() else { return }
         store.feedback.cancelTidy()
         if saved[key]?.isEmpty == true { saved[key] = nil }
+        var shape = store.todayShape
         for folder in done.folders {
             // Not `TabStore.deleteFolder`: that announces a deletion and mirrors it into
             // every other window showing this Space. These folders were made in this window
             // and have never been anywhere else.
-            store.todayShape.remove(folder: folder)
+            shape.remove(folder: folder)
         }
         let next = restore(saved: done.order, current: store.tabs.map(\.id))
         let byID = Dictionary(uniqueKeysWithValues: store.tabs.map { ($0.id, $0) })
         Motion.list {
-            store.tabs = next.compactMap { byID[$0] }
-            // A tab the user pinned by hand while the model was thinking keeps the section it
-            // now has, and the saved order puts it back among the Today tabs it was sitting
-            // in. That breaks the one strip invariant, so the sections are settled again
-            // before anything reads the strip.
-            store.normaliseSections()
-            store.syncShapes()
-            store.applyOrder(.pinned)
-            // The strip has just been handed a whole order at once, so here Today's shape
-            // follows it rather than the other way round. See `Pins.relay`.
-            store.todayShape.relay(store.tabs.map(\.id.uuidString))
+            store.sidebarObservation.withCompletedChanges {
+                store.tabs = next.compactMap { byID[$0] }
+                // Tabs pinned since the tidy keep their new section and folder.
+                store.normaliseSections()
+                var pins = store.pins
+                pins.sync(tabs: store.tabs.filter { $0.kind == .pinned }.map(\.id.uuidString))
+                if pins != store.pins { store.pins = pins }
+                store.applyOrder(.pinned)
+                // Undo restores the strip's order, so Today's shape follows it.
+                shape.sync(tabs: store.tabs.filter { $0.kind == .today }.map(\.id.uuidString))
+                shape.removeEmptyFolders()
+                shape.relay(store.tabs.map(\.id.uuidString))
+                if shape != store.todayShape { store.todayShape = shape }
+            }
         }
         store.savePins()
         axAnnounce("Undid the tidy.")
@@ -811,6 +822,16 @@ import Foundation
                !offersHousekeeping(today: 0, threshold: 6))
         assert("nor does one holding a handful of tabs you can already see",
                (1..<6).allSatisfy { !offersHousekeeping(today: $0, threshold: 6) })
+        assert("hover reveals Clear even for a single Today tab",
+               (1..<Look.tidyThreshold).allSatisfy { offersClear(today: $0, hovering: true) })
+        assert("hover never offers Clear for an empty Today",
+               !offersClear(today: 0, hovering: true) && !offersClear(today: 0))
+        assert("Clear stays quiet below the threshold until hover",
+               (1..<Look.tidyThreshold).allSatisfy { !offersClear(today: $0) })
+        assert("Clear stays visible for a pile with or without hover",
+               [false, true].allSatisfy { hover in
+                   (Look.tidyThreshold...50).allSatisfy { offersClear(today: $0, hovering: hover) }
+               })
         assert("the sixth Today tab is what brings Tidy and Clear out",
                offersHousekeeping(today: 6, threshold: 6))
         assert("…and they stay out as the pile grows",

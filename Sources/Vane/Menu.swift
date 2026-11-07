@@ -623,8 +623,8 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     guard let s = Windows.main else { return }
     let doomed = s.tabs.filter { $0.kind == .today }
     guard !doomed.isEmpty else { return }
-    doomed.forEach { s.archive($0.id) }
-    axAnnounce("Archived \(doomed.count) tab\(doomed.count == 1 ? "" : "s").")
+    let count = s.archiveToday(doomed.map(\.id))
+    axAnnounce("Archived \(count) tab\(count == 1 ? "" : "s").")
 }
 
 /// The window a Space menu item acts on: the frontmost *ordinary* browser window. A Little
@@ -835,7 +835,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     root.addItem(menu("View", [
         item(.reload) { Windows.current?.active?.reload() },
         item(.hardReload) { Windows.current?.active?.hardReload() },
-        item(.toggleSidebar) { Windows.current?.sidebarShown.toggle() },
+        item(.toggleSidebar) { Windows.current?.toggleSidebar() },
         item(.nextFocusArea) {
             guard let store = Windows.current, store.window === NSApp.keyWindow else { return }
             store.focusNextArea()
