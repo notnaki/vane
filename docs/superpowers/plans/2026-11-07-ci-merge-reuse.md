@@ -57,3 +57,20 @@ targets multiple bases. The fix uses GitHub's all-state branch PR listing and
 complete base-change history (server metadata rather than a self-reported artifact).
 Regression cases first reproduced wrong-PR, retargeted-PR, old-run, and later-page
 omissions, then passed with the conservative identity checks.
+
+## Hosted native failure repair
+
+Run [42356549050, shard 1](https://github.com/notnaki/vane/actions/runs/42356549050/job/128356428255)
+failed the existing Easel F6 focus assertions. The original local case passed once;
+that did not resolve the hosted failure. An explicit fixture prerequisite reproduced
+an unadmitted window locally: `running=false active=false policy=2 key=false`,
+while the Easel page owner and first responder were correct. The Easel case had
+neither the owned loop nor foreground admission used by neighboring fixtures.
+
+Reuse the existing owned page-fixture helper for normal profiles, then admit the
+mounted Easel/chrome owner before the action. Preserve the original 150ms outcome
+sample and both focus-direction assertions; no product code or result deadline
+changes. Predetermine three fresh-process focused runs of the entire keyboard
+class plus owned-loop smoke tests, keeping each log and verifying post-exit profile
+retirement, before another full hosted run. Original logs and local RED/attempt
+logs are retained outside the task worktree under `/tmp/vane-pr603-*`.
