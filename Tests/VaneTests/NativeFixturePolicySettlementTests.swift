@@ -24,19 +24,36 @@ import XCTest
         }
     }
 
-    private func beginPolicy() throws -> NSApplication.ActivationPolicy {
+    private func beginPolicy() async throws -> NSApplication.ActivationPolicy {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let previous = app.activationPolicy()
-        guard app.setActivationPolicy(.accessory), app.activationPolicy() == .accessory else {
+        // AppKit can return false when the requested policy is already active.
+        // Admit actual state, as NativeFixtureApplicationLoop does, without retrying
+        // the setter or weakening the shutdown transitions under test.
+        let accepted = app.setActivationPolicy(.accessory)
+        print("Native policy baseline: requested=1 accepted=\(accepted) before=\(previous.rawValue) after=\(app.activationPolicy().rawValue)")
+        do { try await compatibilityWait { app.activationPolicy() == .accessory } }
+        catch {
             _ = app.setActivationPolicy(previous)
-            throw NSError(domain: "NativePolicyControl", code: 1)
+            throw error
         }
         return previous
     }
 
+    func testAlreadyAccessoryBaselineIsAdmitted() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared, previous = app.activationPolicy()
+        defer { app.setActivationPolicy(previous) }
+        _ = app.setActivationPolicy(.accessory)
+        try await compatibilityWait { app.activationPolicy() == .accessory }
+        let baseline = try await beginPolicy()
+        XCTAssertEqual(baseline, .accessory)
+        XCTAssertEqual(app.activationPolicy(), .accessory)
+    }
+
     func testTransientRunReturnPolicyIsSettledBeforeSuccessfulJoin() async throws {
-        let previous = try beginPolicy()
+        let previous = try await beginPolicy()
         defer { NSApp.setActivationPolicy(previous) }
         let transition = Transition()
         let loop: NativeFixtureApplicationLoop
@@ -65,7 +82,7 @@ import XCTest
     }
 
     func testPolicyMatchingOnlyAfterShutdownBudgetStillFails() async throws {
-        let previous = try beginPolicy()
+        let previous = try await beginPolicy()
         defer { NSApp.setActivationPolicy(previous) }
         let transition = Transition()
         let loop = try await NativeFixtureApplicationLoop.acquire(afterRunReturn: {
@@ -83,7 +100,7 @@ import XCTest
     }
 
     func testPermanentWrongPolicyFailsAndRetiresPollTimer() async throws {
-        let previous = try beginPolicy()
+        let previous = try await beginPolicy()
         defer { NSApp.setActivationPolicy(previous) }
         let transition = Transition()
         let loop = try await NativeFixtureApplicationLoop.acquire(afterRunReturn: {
@@ -103,7 +120,7 @@ import XCTest
     }
 
     func testCancellationWhilePolicyPollIsPendingRetiresTimer() async throws {
-        let previous = try beginPolicy()
+        let previous = try await beginPolicy()
         defer { NSApp.setActivationPolicy(previous) }
         let transition = Transition()
         let loop = try await NativeFixtureApplicationLoop.acquire(afterRunReturn: {
