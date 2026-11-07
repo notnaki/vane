@@ -94,7 +94,11 @@ private actor QueuedFaviconPublicationRequests {
             // Admit the actual declaration fetch, then await completion of the cache's
             // real tasks, rather than waiting for the desired absence of publications.
             try await compatibilityWait { await requests.snapshot().contains(declaration) }
+            #if compiler(>=6.3)
             weak let finishing = cache
+            #else
+            weak var finishing = cache
+            #endif
             cache = nil
             try await waitUntil { finishing == nil }
             if changed {
@@ -162,7 +166,11 @@ private actor QueuedFaviconPublicationRequests {
         let persisted = await Self.drain(file)
         XCTAssertEqual(persisted, data, "Publication must not skip the authorized write")
         try await waitUntil { cache?.generation == 1 && tab.favicon != nil }
+        #if compiler(>=6.3)
         weak let completing = cache
+        #else
+        weak var completing = cache
+        #endif
         cache = nil
         try await waitUntil { completing == nil }
     }
@@ -181,7 +189,11 @@ private actor QueuedFaviconPublicationRequests {
         try await waitUntil { cache?.generation == 1 && tab.favicon != nil }
         // The warm task retains the cache through any authorized disk write and
         // pruning. Check privacy only once even an erroneous write would be finished.
+        #if compiler(>=6.3)
         weak let completing = cache
+        #else
+        weak var completing = cache
+        #endif
         cache = nil
         try await waitUntil { completing == nil }
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent(url.host!).path),
@@ -294,7 +306,11 @@ private actor QueuedFaviconPublicationRequests {
                            "New declarations must survive the write await; old fallback alternatives must not fetch")
             XCTAssertFalse(first.favicon === firstImage)
             XCTAssertTrue(first.favicon === second.favicon)
+            #if compiler(>=6.3)
             weak let completing = cache
+            #else
+            weak var completing = cache
+            #endif
             cache = nil
             stage = "serialized writer completion"
             try await waitUntil { completing == nil }
@@ -320,7 +336,11 @@ private actor QueuedFaviconPublicationRequests {
         tab.park(url: url, Parked(title: "Incognito fixture"))
         cache?.load(for: tab)
         try await waitUntil { cache?.generation == 1 && tab.favicon != nil }
+        #if compiler(>=6.3)
         weak let completing = cache
+        #else
+        weak var completing = cache
+        #endif
         cache = nil
         try await waitUntil { completing == nil }
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
