@@ -1467,7 +1467,7 @@ import WebKit
         }
         context.performAction(for: shim)
         if let action = context.action(for: shim), action.isEnabled, action.presentsPopup, let web = action.popupWebView {
-            userAgent.track(web)
+            trackPage(web)
         }
     }
 
@@ -1939,7 +1939,7 @@ import WebKit
             }
             let parent = myFocusedStore ?? frontmostStore
             let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 400, height: 500), configuration: cfg)
-            userAgent.track(web)
+            trackPage(web)
             let presentation = ExtensionWindowPresentation(web: web, context: context,
                 parentStore: parent, parentTab: nil, title: context.webExtension.displayName ?? "Extension",
                 requestedFrame: configuration.frame) { [weak self] closed in
@@ -2003,7 +2003,7 @@ import WebKit
         guard let web = action.popupWebView else {
             throw Failure("“\(name)” has no popup to show.")
         }
-        userAgent.track(web)
+        trackPage(web)
         let parent = tab.flatMap { store(holding: $0) }
             ?? myStores.first { $0.window === anchor?.window } ?? frontmostStore
         guard let parent else {
@@ -2117,13 +2117,24 @@ import WebKit
     func extensionController(_ controller: WKWebExtensionController, didCreateBackgroundWebView web: WKWebView,
                              for context: WKWebExtensionContext) {
         guard controller === self.controller else { return }
-        userAgent.track(web)
+        trackPage(web)
         #if DEBUG
         backgroundCreationObserver?(web, context)
         #endif
     }
 
     // MARK: Helpers
+
+    private static var pageControllerLifetime: UInt8 = 0
+
+    private func trackPage(_ web: WKWebView) {
+        // WebKit-owned pages hold a weak controller. On older engines, releasing
+        // that controller before native page closure leaves dangling IPC receivers.
+        // Keep it alive through the view's native teardown. Explicit context unload
+        // releases WebKit's page ownership and breaks the active-context cycle.
+        objc_setAssociatedObject(web, &Self.pageControllerLifetime, controller, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        userAgent.track(web)
+    }
 
     private var pages: [(context: WKWebExtensionContext, window: NSWindow)] = []
     private var actionWindows: [ActionKey: ExtensionWindowPresentation] = [:]
@@ -2235,7 +2246,7 @@ import WebKit
 
     private func present(_ url: URL, _ cfg: WKWebViewConfiguration, context: WKWebExtensionContext, title: String) {
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 780, height: 620), configuration: cfg)
-        userAgent.track(web)
+        trackPage(web)
         web.isInspectable = Settings.inspectorEnabled
         let window = NSWindow(contentRect: web.frame,
                               styleMask: [.titled, .closable, .resizable],
