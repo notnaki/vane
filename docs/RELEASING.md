@@ -5,14 +5,71 @@
 A local build, a published archive, and a verified installation are different
 milestones. Keep evidence tied to the exact candidate and environment.
 
+## Release cadence
+
+Vane is maintained by one person. Releases follow readiness and available time;
+there is no weekly stable deadline or promise of a new build every night.
+
+| Event | What happens |
+| --- | --- |
+| A PR merges to `main` | `checks.yml` runs. The merge itself does not publish a release or change a version number. |
+| Daily at **02:23 UTC** (**05:23 Türkiye time**, UTC+3) | GitHub schedules a Nightly eligibility check. This is a publication opportunity, not a guaranteed release time; scheduling, queued runs, builds, and notarization can delay it. |
+| The scheduled revision has passing checks and has not been published as a nightly | The workflow builds and publishes a signed, notarized Nightly prerelease. |
+| No new nightly revision, or the exact revision's latest checks are missing, pending, or unsuccessful | The Nightly run skips publication. There is no manual daily chore and no automatic catch-up when checks later pass; the next scheduled opportunity or a manual Nightly dispatch checks again. |
+| A change is ready for Stable | The maintainer deliberately dispatches a Stable release, choosing `patch`, `minor`, or `major`. There is no calendar-based stable release. |
+| An urgent fix is ready | Dispatch a Stable patch as soon as it is validated; there is no need to wait for a Nightly. |
+| A specific `v*` tag is pushed | The workflow publishes that exact version without calculating a bump, except that the reserved `-nightly.*` namespace is refused. |
+
+Nightly means the early-update channel, not a daily output quota. Long gaps are
+normal when there are no changes or the maintainer is away. A successful workflow
+can mean “nothing eligible to publish”; check the **Select release channel** log
+before assuming a new release exists. All release runs share one queue and do not
+cancel each other.
+
+## Version numbers and controls
+
+The public version is `MAJOR.MINOR.PATCH`, for example `0.0.39`. Use the following
+bump policy when deliberately cutting a Stable release; commit messages and PR
+labels do not choose a bump automatically.
+
+| Number or control | Meaning / when to change it |
+| --- | --- |
+| `PATCH`, the third number | Routine fixes, security fixes, polish, and small compatible improvements. This is the default release bump. `0.0.39` → `0.0.40`. |
+| `MINOR`, the second number | A meaningful feature milestone or a substantial group of compatible improvements. Resets patch to zero: `0.0.39` → `0.1.0`. |
+| `MAJOR`, the first number | A deliberately declared major milestone or incompatible change. Resets minor and patch to zero: `0.8.4` → `1.0.0`. Moving to `1.0.0` is a separate readiness decision, never a date or commit-count threshold. |
+| Leading `0` | Vane is still before its `1.0` milestone. No number of patches automatically rolls it to the next minor or major; `0.0.99` → `0.0.100` is valid. |
+| `channel=stable` / `channel=nightly` | Selects what the release workflow publishes. Defaults to Stable on manual dispatch; scheduled runs select Nightly. This does not change anyone's in-app channel preference. |
+| `bump=patch` / `minor` / `major` | Controls the next Stable version on manual dispatch. Defaults to patch and is ignored for Nightly or a pushed tag. Calculation starts from the numerically highest exact `vMAJOR.MINOR.PATCH` tag, including a tag without a published release; prerelease tags do not count. With no stable tags, patch starts at `v0.0.1`. |
+| `v` in `v0.0.40` | Git tag prefix. The release build strips it before stamping the app version. |
+| `-nightly.YYYYMMDD.N` | Marks a Nightly prerelease. The core is the next patch after the highest stable tag; the date is the workflow run's original UTC creation date, not its eventual publication date. `N` is the next available numeric counter for that core and date, normally starting at 1. |
+| Workflow run ID / attempt | GitHub execution identifiers, not the current public nightly counter. The run ID is stored in the annotated tag as `vane-release-run:ID` so a publication retry can reuse its tag and source. Legacy nightlies used the run ID as their last number. |
+| `VANE_VERSION` → `CFBundleShortVersionString` | The app's public version and the updater's ordering input. CI sets it to the selected tag without `v`. Local builds default to the nearest reachable tag (`git describe --tags --abbrev=0`), or `0.1.0` if no usable tag exists; that fallback is not a release declaration. |
+| `VANE_BUILD` → `CFBundleVersion` | Build metadata, defaulting to the count of commits reachable from `HEAD`. It is not a release counter and does not make an equal public version upgradeable. CI uses this default. |
+| `schedule.cron` in [release.yml](../.github/workflows/release.yml) | Controls when automated Nightly eligibility is checked. It does not control Stable publication or in-app update polling. |
+
+Nightly counters reset for each UTC date and version core. An existing legacy
+run-ID suffix on the same core/date is counted too, so the next counter may be
+large. A retry after its tag has been pushed reuses that tag and verifies the
+source commit; a failure before the push reserves no remote version, so a later
+retry can recalculate from the tags then present. Existing remote tags are never
+overwritten.
+
+For example, after stable `v0.0.39`, the first eligible run on 7 November 2026 can
+produce `v0.0.40-nightly.20261107.1`. A second manual Nightly with a new checked
+revision that day uses `.2`; an unchanged revision produces nothing. A new date
+starts at `.1`. A deliberate Stable patch publishes `v0.0.40`, which outranks all
+`0.0.40-nightly.…` versions; subsequent nightlies use `0.0.41-nightly.…`. Choosing
+minor instead publishes `v0.1.0` and subsequent nightlies use `0.1.1-nightly.…`.
+
 ## Publish a release
 
 Merging a PR to `main` does not publish a stable release. Start the release workflow
 for a patch bump (or choose `minor` or `major`):
 
 ```sh
-gh workflow run release.yml
-gh workflow run release.yml -f bump=minor
+gh workflow run release.yml --ref main -f channel=stable -f bump=patch
+gh workflow run release.yml --ref main -f channel=stable -f bump=minor
+gh workflow run release.yml --ref main -f channel=stable -f bump=major
 ```
 
 Alternatively, push a specific `v*` tag:
@@ -21,6 +78,10 @@ Alternatively, push a specific `v*` tag:
 git tag v1.2.3
 git push origin v1.2.3
 ```
+
+Use `--ref main` for normal releases. Stable dispatch and explicit tag pushes do
+not have the automated Nightly checked-main gate: the maintainer must confirm
+the intended revision's validation and readiness before starting them.
 
 The workflow builds `Vane.app`, packages `Vane.dmg` and `Vane.zip`, and publishes them
 to a GitHub Release. To produce a Developer ID signed and notarized build, the
@@ -42,8 +103,8 @@ Updates…** always uses the selected channel. Selecting Stable again waits for 
 stable release newer than the running and installed versions; it does not roll
 back the app or its data.
 
-The release workflow runs nightly at **02:23 UTC**, subject to GitHub scheduling
-delays. It skips publication unless the exact `main` revision has a successful,
+At each scheduled or manual Nightly opportunity, publication is skipped unless
+the exact `main` revision has a successful,
 completed latest `checks.yml` push run and has not already been published as a
 nightly. A read-only Ubuntu job performs eligibility checks before the macOS job
 receives signing credentials. The build checks out that exact revision and reuses
@@ -56,17 +117,11 @@ To request the same checked-main path manually:
 gh workflow run release.yml --ref main -f channel=nightly
 ```
 
-Nightly tags have the compact form `v1.2.4-nightly.20261031.1`: the next patch after
-the highest stable tag, the workflow's original UTC creation date, and a daily
-counter starting at 1. Additional releases that day increment the counter; the next
-day starts at 1 again. Existing tags are never overwritten. If a legacy run-ID tag
-exists for the same version and day, the counter advances past it to preserve
-update ordering. The workflow run ID remains in the annotated tag for retries.
-The final `v1.2.4` outranks all of its nightlies; the next nightly after that stable
-tag uses `v1.2.5-nightly.…`. Reruns reuse their version and verify its source commit.
-Tags push only after packaging succeeds, and nightlies are GitHub prereleases with
-`latest=false`, leaving the stable download link unchanged. The `-nightly.*` tag
-namespace is reserved for this workflow; direct tag-push releases are refused.
+The [numbering rules above](#version-numbers-and-controls) define Nightly tags and
+retry behavior. Tags push only after packaging succeeds, and nightlies are GitHub
+prereleases with `latest=false`, leaving the stable download link unchanged. The
+`-nightly.*` tag namespace is reserved for this workflow; direct tag-push releases
+are refused.
 
 New installations default to Stable even when the app was downloaded from a nightly
 release; select Nightly explicitly to continue receiving early builds. Stable and
@@ -75,6 +130,40 @@ Nightly store conditional-request headers and cached offers separately.
 Focused fixtures: `python3 scripts/test-update-channel.py`,
 `python3 scripts/test-prepare-nightly.py`, `python3 scripts/test-release-workflow.py`,
 and `swift test --filter UpdaterChannelTests`.
+
+### When a published release reaches the app
+
+Publication and update discovery have separate schedules. Stable queries GitHub's
+`releases/latest`; Nightly queries the latest 100 releases and selects the highest
+eligible Stable or Nightly version. Neither channel accepts draft, beta, or RC
+releases. The updater compares public version numbers numerically, including
+Nightly date/counter components; a newer publication timestamp or build number
+alone does not win. An update must be newer than both the running app and any
+existing installation at the destination.
+
+With automatic checks enabled, Vane checks about five seconds after launch, when
+returning to the app if at least five minutes have elapsed since the last check,
+and on its minute timer once at least 30 minutes have elapsed. After a network or
+rate-limit error, automatic activation/timer checks back off to one hour. These
+intervals live in `Release.activationFloor`, `Release.period`, and
+`Release.backoffPeriod` in [Updater.swift](../Sources/Vane/Updater.swift); launch
+delay and timer tick are in `Updater.begin()`. **Check for Updates…** bypasses the
+automatic toggle and timing floors. Active downloads/installations and updates
+awaiting relaunch keep their existing transaction rather than starting another.
+
+### Publication order and failures
+
+The pipeline checks credentials, selects a local version tag, builds and signs the
+app, runs the packaged pure smoke check, notarizes/staples the app, and packages
+the ZIP and signed/notarized/stapled DMG. Only then does it push a prepared tag and
+create the GitHub Release. A manually pushed tag already exists before the build;
+it does not prove packaging or publication succeeded. The updater needs the
+published release and its `Vane.zip` asset, not just a tag or a green prepare job.
+
+If building, signing, notarization, or packaging fails, a dispatch does not push
+its prepared tag. If publication fails after the tag push, rerun that workflow
+run to retry its reserved version. An existing release's assets are replaced on
+retry. A new manual dispatch is a new run and can allocate another version.
 
 ### Local signing
 
