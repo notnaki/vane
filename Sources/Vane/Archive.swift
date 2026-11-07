@@ -173,7 +173,7 @@ extension Prefs {
                                             after: after,
                                             active: tab.id == active,
                                             loaded: tab.currentURL != nil,
-                                            playing: TabAudio.isPlaying(tab)) {
+                                            playing: tab.inMeetCall || TabAudio.isPlaying(tab)) {
                 store.archive(tab.id)
             }
         }

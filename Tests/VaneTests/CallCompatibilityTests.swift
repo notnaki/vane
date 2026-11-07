@@ -62,7 +62,7 @@ import XCTest
         return try XCTUnwrap(value as? Int)
     }
 
-    private static let page = """
+    static let page = """
     <canvas id="canvas" width="320" height="180"></canvas><video id="remote" autoplay muted playsinline></video>
     <script>
     let failure='', left, right, sender, interrupted=false, oldClosed=false;

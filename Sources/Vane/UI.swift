@@ -46,6 +46,7 @@ struct WebView: NSViewRepresentable {
     var tab: Tab?
     var store: TabStore?
     private var mayMount: Bool {
+        if CallPopout.holds(web) { return false }
         guard let tab, let store else { return true }
         // A departing split root may update after its page has moved to the card.
         // It must not take that page back while its old native host is removed.
@@ -202,6 +203,7 @@ final class WebHost: NSView {
     /// than anything that would keep a register. Ceiling: a tab closed while the card is not
     /// redrawing keeps its page until the next switch, which is the next thing that happens.
     func show(_ next: WKWebView, keeping live: [WKWebView] = []) {
+        guard !CallPopout.holds(next) else { return }
         let outgoing = web
         if let outgoing, outgoing !== next { Inspector.hideAttached(to: outgoing, in: self) }
         if next.superview !== self {
@@ -253,6 +255,17 @@ final class WebHost: NSView {
         // A page let go of here, and a page some other host or a suspension took out from
         // under this one, must not be kept alive by the order alone.
         recent.removeAll { $0.superview !== self }
+    }
+
+    /// Put a floating call back without replacing the newer tab this host now shows.
+    func restoreCallPage(_ page: WKWebView) {
+        if web == nil || web === page { show(page); return }
+        page.frame = bounds
+        page.autoresizingMask = [.width, .height]
+        page.isHidden = true
+        addSubview(page, positioned: .below, relativeTo: nil)
+        ground(page)
+        if !recent.contains(where: { $0 === page }) { recent.append(page) }
     }
 
     /// The held pages this host may let go of: everything that is neither the page being
@@ -1968,6 +1981,7 @@ private struct FavoriteTile: View {
             bits.append("in \(folder.name)")
         }
     }
+    if tab.inMeetCall { bits.append("in a Google Meet call") }
     if TabAudio.isMuted(tab) { bits.append("muted") } else if tab.audible { bits.append("playing audio") }
     bits.append(tab.needsRecovery ? "paused after an unexpected stop, select to recover" : (tab.loading ? "loading" : "loaded"))
     return bits.joined(separator: ", ")
@@ -4443,8 +4457,12 @@ struct SidebarTabPresentation: View {
                    hoverHighlight: !returning || !returnHovering,
                    trailingInset: Look.tabRowTrailingInset,
                    action: action) {
-            TabHomeIcon(store: store, tab: tab, returnHovering: held ? .constant(returnHovering) : $returnHovering,
-                        rowSelected: selected, separating: separating)
+            if tab.inMeetCall {
+                MeetCallIndicator(animate: !previewing && !held)
+            } else {
+                TabHomeIcon(store: store, tab: tab, returnHovering: held ? .constant(returnHovering) : $returnHovering,
+                            rowSelected: selected, separating: separating)
+            }
         } label: {
             HStack(spacing: 6) {
                 // Keep the away marker visible during rename and Return hover too.

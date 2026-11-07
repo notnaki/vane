@@ -35,11 +35,17 @@ import XCTest
         XCTAssertTrue(window.isVisible)
     }
 
-    private func quitByCommandQ() throws -> NSApplication.TerminateReply {
+    private func quitByCommandQ() async throws -> NSApplication.TerminateReply {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         weak var weakLifecycle: AppLifecycle?
-        let lifecycle = AppLifecycle(terminationReply: { _, _ in weakLifecycle?.endPersistenceExit() })
+        let completed = XCTestExpectation(description: "quit persistence reply completed")
+        var accepted: Bool?
+        let lifecycle = AppLifecycle(terminationReply: { _, answer in
+            weakLifecycle?.endPersistenceExit()
+            accepted = answer
+            completed.fulfill()
+        })
         weakLifecycle = lifecycle
         let warning = Prefs.warnBeforeQuit
         Prefs.warnBeforeQuit = true
@@ -66,31 +72,42 @@ import XCTest
         XCTAssertEqual(app.currentEvent?.charactersIgnoringModifiers, "q")
         let reply = lifecycle.applicationShouldTerminate(app)
         XCTAssertTrue(Prefs.warnBeforeQuit)
+        if reply == .terminateLater {
+            await fulfillment(of: [completed], timeout: 10)
+            XCTAssertEqual(accepted, true)
+            XCTAssertFalse(lifecycle.persistenceExitInProgress)
+            XCTAssertFalse(Store.admissionPaused, "Quit fixture must join its asynchronous reply before returning")
+        }
         return reply
     }
 
-    func testCommandQQuitsImmediatelyAfterTheLastWindowCloses() throws {
+    func testCommandQQuitsImmediatelyAfterTheLastWindowCloses() async throws {
         let closed = window()
         closed.close()
-        XCTAssertEqual(try quitByCommandQ(), .terminateLater)
+        let reply = try await quitByCommandQ()
+        XCTAssertEqual(reply, .terminateLater)
+        XCTAssertFalse(Store.admissionPaused, "Quit fixture must join its asynchronous reply before returning")
     }
 
-    func testCommandQStillWarnsWithAnOpenWindow() throws {
+    func testCommandQStillWarnsWithAnOpenWindow() async throws {
         _ = window()
-        XCTAssertEqual(try quitByCommandQ(), .terminateCancel)
+        let reply = try await quitByCommandQ()
+        XCTAssertEqual(reply, .terminateCancel)
     }
 
     func testCommandQStillWarnsWithAMinimizedWindow() async throws {
         let minimized = window()
         try await minimize(minimized)
-        XCTAssertEqual(try quitByCommandQ(), .terminateCancel)
+        let reply = try await quitByCommandQ()
+        XCTAssertEqual(reply, .terminateCancel)
     }
 
-    func testOffscreenPreviewHostDoesNotCauseAQuitWarning() throws {
+    func testOffscreenPreviewHostDoesNotCauseAQuitWarning() async throws {
         let host = window()
         host.isExcludedFromWindowsMenu = true
         host.setFrameOrigin(NSPoint(x: -12_000, y: -12_000))
-        XCTAssertEqual(try quitByCommandQ(), .terminateLater)
+        let reply = try await quitByCommandQ()
+        XCTAssertEqual(reply, .terminateLater)
     }
 
     func testDockClickRestoresAMinimizedWindowDespiteTheVisibleWindowsFlag() async throws {

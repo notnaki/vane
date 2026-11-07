@@ -265,6 +265,7 @@ import WebKit
 
     static func toggle(_ tab: Tab?) {
         guard let tab else { return }
+        if tab.inMeetCall { CallPopout.toggle(tab); return }
         if tab.pictureInPicture {
             minimize(tab) { [weak tab] ok in
                 if ok, let tab { exitIfAuto(tab) }
@@ -346,8 +347,12 @@ import WebKit
     /// The page has to still be in the window when it answers — a video whose view has left
     /// the hierarchy has already stopped — so the tab is marked as being asked, which is
     /// what keeps it mounted (`OffscreenPages`), and unmarked the moment it replies.
-    static func enterIfPlaying(_ tab: Tab?) {
+    static func enterIfPlaying(_ tab: Tab?, minimizingWindow: NSWindow? = nil) {
         guard autoEnabled, let tab, !tab.suspended, !PiPMinimizeControls.isReturningToTab(tab) else { return }
+        if tab.inMeetCall || MeetCall.supports(tab.currentURL) {
+            CallPopout.enterIfCalling(tab, minimizingWindow: minimizingWindow)
+            return
+        }
         PiPMinimizeControls.prepare(for: tab)
         let id = tab.id                 // the closure carries a UUID, never the Tab
         MediaState.shared.asking.insert(id)
@@ -357,6 +362,7 @@ import WebKit
     /// The tab the user just came back to. Deliberately *not* gated on `autoEnabled`: a
     /// video detached before the preference was turned off still has to come home.
     static func exitIfAuto(_ tab: Tab?) {
+        if let tab { CallPopout.returnInline(tab) }
         if let tab, PiPMinimizeControls.isReturningToTab(tab) { return }
         // Preserve main's minimized-player ownership across incidental tab returns.
         guard let tab, !tab.suspended, !MediaState.shared.minimized.contains(tab.id) else { return }

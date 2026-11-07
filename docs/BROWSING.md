@@ -266,6 +266,22 @@ WebKit's original live video presentation, including embedded players; when its
 presentation view cannot be safely attached, Vane keeps the native Picture in Picture
 window as a fallback.
 
+Google Meet calls use a floating window containing the existing live page, keeping
+participants, shared screens, and Meet's own call controls together. Leaving the tab
+or minimizing its browser window opens it when automatic Picture in Picture is enabled.
+Calls also follow you out of a split, Space, or profile; a call still visible in another
+browser window stays there.
+Returning to the tab, or choosing **Back to Tab**, puts the page back. **Close** hides
+the floating window without leaving the call; automatic pop-out stays suppressed until
+you return to that tab. The sidebar shows a yellow camera and a pulsing red call-status
+dot while Meet's in-call controls are present. The dot is steady with Reduce Motion or
+Battery Saver. Lobby camera previews do not activate this behavior.
+
+This is Vane's native Meet adapter, rather than the site's Document Picture-in-Picture
+API. Detection depends on Meet's call controls and can need updates when Google changes
+them. Local synthetic call tests cover document identity, controls, playback, and cleanup;
+they do not establish live Google Meet account or screen-sharing compatibility.
+
 Protected playback depends on the system WebKit engine and the service. Public FairPlay
 demo checks do not establish subscription-service compatibility; see the [compatibility
 evidence](REAL-SITE-COMPATIBILITY.md).

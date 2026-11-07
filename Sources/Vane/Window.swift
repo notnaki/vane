@@ -710,6 +710,9 @@ extension VaneWindow {
         SharedTabs.refreshPresentation()
         store.extensions.sync()
         arriving.extensions.sync()
+        // The parked profile is intentionally absent from SharedTabs' visible-window
+        // election. Its outgoing panes still need their call departure considered.
+        store.onScreenTabs.forEach(CallPopout.presentationChanged)
         // Also set synchronously: a cached host may already have observed this title while
         // its profile was parked and had no window to update.
         window.title = WindowTitle.current(in: arriving)
@@ -759,7 +762,7 @@ extension VaneWindow {
         /// Every pane of a split, not just the focused one — the other pane is just as much
         /// what the user was watching.
         func windowWillMiniaturize(_ n: Notification) {
-            MainActor.assumeIsolated { store.onScreenTabs.forEach(PictureInPicture.enterIfPlaying) }
+            MainActor.assumeIsolated { store.onScreenTabs.forEach { PictureInPicture.enterIfPlaying($0, minimizingWindow: store.window) } }
         }
         func windowDidDeminiaturize(_ n: Notification) {
             MainActor.assumeIsolated { store.onScreenTabs.forEach(PictureInPicture.exitIfAuto) }
