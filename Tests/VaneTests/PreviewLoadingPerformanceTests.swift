@@ -244,10 +244,10 @@ private final class PreviewServer: @unchecked Sendable {
         // An about:blank child provides an actual WKScriptMessage with a blank
         // originating frame while the containing WebView already has a new URL.
         // The handler exists only in the metadata producer's isolated world.
-        _ = try await web.callAsyncJavaScript("""
+        web.callAsyncJavaScript("""
         var f = document.createElement('iframe'); document.body.appendChild(f);
         f.contentWindow.webkit.messageHandlers.vanepreviewmeta.postMessage('<title>Stale blank</title>'); return true;
-        """, arguments: [:], in: nil, in: WKContentWorld.world(name: "VanePreviewMetadata"))
+        """, arguments: [:], in: nil, in: WKContentWorld.world(name: "VanePreviewMetadata"), completionHandler: nil)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertNotEqual(previews.current?.title, "Stale blank")
         var pending = Previews.Preview(url: next)

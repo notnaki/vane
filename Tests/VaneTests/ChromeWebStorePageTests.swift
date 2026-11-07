@@ -29,7 +29,7 @@ import XCTest
             guard ContinuousClock.now < deadline else { XCTFail("Store fixture did not load"); return }
             try await Task.sleep(for: .milliseconds(10))
         }
-        try await web.evaluateJavaScript(ChromeWebStorePage.script, in: nil, in: ChromeWebStorePage.world)
+        web.evaluateJavaScript(ChromeWebStorePage.script, in: nil, in: ChromeWebStorePage.world, completionHandler: nil)
         let label = try await web.evaluateJavaScript("document.querySelector('[data-vane-store-install]')?.textContent")
         XCTAssertEqual(label as? String, "Add to Vane")
         try await web.evaluateJavaScript("document.querySelector('[data-vane-store-install]').click()")

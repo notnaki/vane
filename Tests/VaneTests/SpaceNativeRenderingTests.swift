@@ -1903,8 +1903,8 @@ import XCTest
     func testSearchDefersDestructionOfStructurallyInvalidatedHostingTrees() async throws {
         let (store, spaces, _, monitor) = try fixture()
         try await waitForPreparation(monitor, target: spaces[1].id)
-        weak var retiredCapture = monitor.preparedSlides[spaces[1].id]
-        weak var outgoing = monitor.preparedSlides[spaces[1].id]?.outgoing
+        weak let retiredCapture = monitor.preparedSlides[spaces[1].id]
+        weak let outgoing = monitor.preparedSlides[spaces[1].id]?.outgoing
         XCTAssertNotNil(outgoing)
         store.palette = .newTab
         store.todayShape = Pins(entries: [.init(row: .folder(Folder(name: "Changed during search")))])

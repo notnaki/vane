@@ -840,9 +840,6 @@ import XCTest
     func testSupersededPolicyActionCannotRestartRetiredRequest() async throws {
         #if compiler(>=6.4)
         guard #available(macOS 27.0, *) else { throw XCTSkip("macOS 27 navigation action identity") }
-        #else
-        throw XCTSkip("Requires the macOS 27 SDK")
-        #endif
         let probe = NavigationActionProbe(tab: tab)
         tab.web.navigationDelegate = probe
         try await load("/first")
@@ -852,6 +849,9 @@ import XCTest
         tab.webView(tab.web, decidePolicyFor: oldAction) { answer = $0 }
         XCTAssertEqual(answer, .cancel)
         try await compatibilityWait { self.tab.title == "Page /replacement" && !self.tab.loading }
+        #else
+        throw XCTSkip("Requires the macOS 27 SDK")
+        #endif
     }
 
     func testSubframeResponseLoadsWithoutReplacingMainDocumentOwnership() async throws {
