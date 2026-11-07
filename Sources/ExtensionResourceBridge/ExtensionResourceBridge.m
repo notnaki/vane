@@ -30,6 +30,35 @@ WKWebExtension *VaneCreateResourceExtension(NSDictionary<NSString *, NSData *> *
 
 #import <objc/runtime.h>
 
+// macOS 26 can retire a pool with stale extension IPC receivers. The public
+// lifetime owner remains necessary there; cache invalidation uses the public
+// website-data API independently. Newer runtimes never instantiate these owners.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+@interface VaneWebProcessPoolOwner () {
+    WKProcessPool *_pool;
+}
+@end
+
+@implementation VaneWebProcessPoolOwner
+- (instancetype)init
+{
+    self = [super init];
+    if (self) _pool = [[WKProcessPool alloc] init];
+    return self;
+}
+- (void)configure:(WKWebViewConfiguration *)configuration { configuration.processPool = _pool; }
+- (BOOL)matches:(WKWebViewConfiguration *)configuration { return configuration.processPool == _pool; }
+#if !__has_feature(objc_arc)
+- (void)dealloc
+{
+    [_pool release];
+    [super dealloc];
+}
+#endif
+@end
+#pragma clang diagnostic pop
+
 BOOL VaneSetBooleanPreference(id target, SEL setter, BOOL enabled)
 {
     if (![target respondsToSelector:setter]) return NO;

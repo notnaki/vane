@@ -223,13 +223,12 @@ import WebKit
                 .map(WKWebExtensionController.Configuration.init(identifier:))
                 ?? WKWebExtensionController.Configuration.default()
         configuration.defaultWebsiteDataStore = ProfileManager.dataStore(for: profileID)
-        let defaults: WKWebViewConfiguration = configuration.webViewConfiguration
+        let webConfiguration: WKWebViewConfiguration = configuration.webViewConfiguration
         // Older WebKit keeps the page seed separate from the controller's cookie/API
         // store. Bind both to this profile before WebKit copies the configuration.
-        defaults.websiteDataStore = configuration.defaultWebsiteDataStore
-        let webConfiguration = WebKitStartup.extensionConfiguration(from: defaults, profileID: profileID)
+        webConfiguration.websiteDataStore = configuration.defaultWebsiteDataStore
+        WebKitStartup.configureExtensionPages(webConfiguration)
         userAgent.configure(webConfiguration)
-        configuration.webViewConfiguration = webConfiguration
         controller = WKWebExtensionController(configuration: configuration)
         super.init()
         controller.delegate = self
