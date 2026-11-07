@@ -2883,6 +2883,17 @@ struct Stash {
             }
         }
     }
+    /// Library occupies the sidebar: hiding it also ends that visit, so the next
+    /// toggle opens ordinary tabs rather than restoring the Library panel.
+    func toggleSidebar() {
+        if libraryOpen || librarySwipeMonitor.intendsOpen(in: self) {
+            sidebarShown = false
+            sidebarPeeking = false
+            Library.close(self)
+        } else {
+            sidebarShown.toggle()
+        }
+    }
     /// Transient hover reveal that follows the window across Spaces and profiles.
     @Published var sidebarPeeking = false {
         didSet {
