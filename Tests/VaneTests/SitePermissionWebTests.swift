@@ -22,11 +22,6 @@ import XCTest
         _ = NSApplication.shared
         profile = UUID()
         let configuration = Tab.configuration(profileID: profile)
-        let processOwner = VaneWebProcessPoolOwner(extensionResourceRevalidation: false)
-        processOwner.configure(configuration)
-        XCTAssertTrue(processOwner.matches(configuration))
-        XCTAssertFalse(WebKitStartup.processPool.matches(configuration))
-        locationProvider = try PermissionLocationProvider(processOwner: processOwner)
         let preferences = configuration.preferences
         // Test-only WebKit preferences select fake capture devices.
         XCTAssertTrue(preferences.responds(to: NSSelectorFromString("_setMockCaptureDevicesEnabled:")))
@@ -34,6 +29,7 @@ import XCTest
         preferences.setValue(false, forKey: "getUserMediaRequiresFocus")
         preferences.setValue(true, forKey: "mockCaptureDevicesPromptEnabled")
         tab = Tab(popup: configuration, isPrivate: false, profileID: profile)
+        locationProvider = try PermissionLocationProvider(web: tab.web)
         // XCTest has no foreground app window. Disable only this test view's
         // occlusion check so native geolocation requests reach the real delegate.
         XCTAssertTrue(tab.web.responds(to: NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")))
@@ -53,15 +49,15 @@ import XCTest
     }
 
     override func tearDown() async throws {
-        tab.existingWeb?.configuration.userContentController.removeScriptMessageHandler(forName: "permissionFixture")
-        tab.tearDown()
-        locationProvider.stop()
+        tab?.existingWeb?.configuration.userContentController.removeScriptMessageHandler(forName: "permissionFixture")
+        tab?.tearDown()
+        locationProvider?.stop()
         locationProvider = nil
         if let decision { _ = await decision.value }
         decision = nil; recorder = nil
         SitePermissions.resetAll(profileID: profile)
-        window.close()
-        server.stop()
+        window?.close()
+        server?.stop()
         tab = nil; window = nil; server = nil
     }
 
@@ -489,22 +485,30 @@ import XCTest
     private typealias Create = @convention(c) (Double, Double, Double, Double) -> UnsafeRawPointer
     private typealias Update = @convention(c) (UnsafeRawPointer, UnsafeRawPointer) -> Void
     private typealias Release = @convention(c) (UnsafeRawPointer) -> Void
-    private let processOwner: VaneWebProcessPoolOwner
+    private let web: WKWebView
     private let manager: UnsafeRawPointer
     private let setProvider: SetProvider
     private let create: Create
     private let update: Update
     private let release: Release
 
-    init(processOwner: VaneWebProcessPoolOwner) throws {
-        self.processOwner = processOwner // Retain the manager's owner until stop() removes the callback.
+    init(web: WKWebView) throws {
+        self.web = web // Keep the actual native page/context alive until stop() removes the callback.
         let symbols = UnsafeMutableRawPointer(bitPattern: -2) // RTLD_DEFAULT
         func symbol<T>(_ name: String, _: T.Type) throws -> T {
             unsafeBitCast(try XCTUnwrap(dlsym(symbols, name), "Missing WebKit test symbol: \(name)"), to: T.self)
         }
-        typealias Manager = @convention(c) (UnsafeRawPointer) -> UnsafeRawPointer
-        let getManager = try symbol("WKContextGetGeolocationManager", Manager.self)
-        manager = getManager(processOwner.contextHandle)
+        // Test-only system WebKit SPI: bind the synthetic provider to this actual
+        // page's context, without constructing or configuring deprecated pools.
+        let selector = NSSelectorFromString("_pageRefForTransitionToWKWebView")
+        XCTAssertTrue(web.responds(to: selector))
+        let method = try XCTUnwrap(class_getInstanceMethod(WKWebView.self, selector))
+        typealias Page = @convention(c) (WKWebView, Selector) -> UnsafeRawPointer
+        let getPage = unsafeBitCast(method_getImplementation(method), to: Page.self)
+        typealias Context = @convention(c) (UnsafeRawPointer) -> UnsafeRawPointer
+        let getContext = try symbol("WKPageGetContext", Context.self)
+        let getManager = try symbol("WKContextGetGeolocationManager", Context.self)
+        manager = getManager(getContext(getPage(web, selector)))
         setProvider = try symbol("WKGeolocationManagerSetProvider", SetProvider.self)
         create = try symbol("WKGeolocationPositionCreate", Create.self)
         update = try symbol("WKGeolocationManagerProviderDidChangePosition", Update.self)

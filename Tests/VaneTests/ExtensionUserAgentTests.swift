@@ -46,14 +46,14 @@ import XCTest
     // Inspect only the real callback view. The snapshot retains no WebKit object.
     @MainActor private final class BackgroundObservation {
         weak var context: WKWebExtensionContext?
-        let poolMatchesApplication: Bool
+        let controllerMatchesContext: Bool
         let identifiersMatch: Bool
         let persistenceMatches: Bool
 
         init(_ web: WKWebView, context: WKWebExtensionContext, expectedStore: WKWebsiteDataStore) {
             self.context = context
             let configuration = web.configuration
-            poolMatchesApplication = WebKitStartup.extensionProcessPool.matches(configuration)
+            controllerMatchesContext = configuration.webExtensionController === context.webExtensionController
             let actualStore = configuration.websiteDataStore
             identifiersMatch = actualStore.identifier == expectedStore.identifier
             persistenceMatches = actualStore.isPersistent == expectedStore.isPersistent
@@ -66,7 +66,7 @@ import XCTest
             XCTFail("Background ownership must be observed for this actual context", file: file, line: line)
             return
         }
-        XCTAssertTrue(observation.poolMatchesApplication, "Background must use the application's extension pool", file: file, line: line)
+        XCTAssertTrue(observation.controllerMatchesContext, "Background must use its context controller", file: file, line: line)
         XCTAssertTrue(observation.identifiersMatch, "Background must use the selected profile's store identifier", file: file, line: line)
         XCTAssertTrue(observation.persistenceMatches, "Background must retain the selected profile's persistence", file: file, line: line)
     }
@@ -105,7 +105,7 @@ import XCTest
         try await NativeFixtureProfileCleanup.release(released)
     }
 
-    private func install(version: Int, in targetProfile: UUID? = nil, module: Bool = false, generated: Bool = false, workerPath: String = "background.js", hashbang: Bool = false, strict: Bool = false, reusePage: Bool = false, cycle: Bool = false, importsDependency: Bool = false) async throws -> WKWebExtensionContext {
+    private func install(version: Int, in targetProfile: UUID? = nil, module: Bool = false, generated: Bool = false, workerPath: String = "background.js", hashbang: Bool = false, strict: Bool = false, reusePage: Bool = false, cycle: Bool = false, importsDependency: Bool = false, pageBackground: Bool = false) async throws -> WKWebExtensionContext {
         #if DEBUG
         backgroundObservations.removeAll()
         #endif
@@ -113,10 +113,11 @@ import XCTest
             "version": "1.0", "permissions": ["storage"], "optional_permissions": ["alarms", "notifications"]]
         manifest[version == 2 ? "browser_action" : "action"] = ["default_popup": "popup.html"]
         manifest["background"] = version == 2
-            ? ["scripts": ["background.js"], "persistent": true] as [String: Any]
+            ? ["scripts": importsDependency ? ["dependency.js", workerPath] : [workerPath], "persistent": true] as [String: Any]
             : (module ? ["service_worker": workerPath, "type": "module"] : ["service_worker": workerPath])
-        if generated {
-            var background: [String: Any] = ["scripts": [workerPath], "preferred_environment": ["service_worker"]]
+        if generated || pageBackground {
+            var background: [String: Any] = ["scripts": pageBackground && importsDependency ? ["dependency.js", workerPath] : [workerPath],
+                "preferred_environment": [pageBackground ? "document" : "service_worker"]]
             if module { background["type"] = "module" }
             manifest["background"] = background
         }
@@ -129,7 +130,7 @@ import XCTest
         try Data(dependencySource.utf8).write(to: dependencyDirectory.appendingPathComponent("dependency.js"))
         try Data("<title>Reused worker source</title><script \(module ? "type='module'" : "") src='/\(workerPath)'></script>".utf8)
             .write(to: folder.appendingPathComponent("reused.html"))
-        let dependency = (hashbang ? "#!/usr/bin/env javascript\n" : "") + (strict ? "'use strict';\n" : "") + (module ? "import './dependency.js';\n" : importsDependency ? "importScripts('./dependency.js');\n" : "")
+        let dependency = (hashbang ? "#!/usr/bin/env javascript\n" : "") + (strict ? "'use strict';\n" : "") + (module ? "import './dependency.js';\n" : importsDependency && version == 3 && !pageBackground ? "importScripts('./dependency.js');\n" : "")
         let cycleCounter = cycle ? "globalThis.vendorEntryExecutions = (globalThis.vendorEntryExecutions ?? 0) + 1;\n" : ""
         try Data((dependency + cycleCounter + """
             const startupUserAgent = globalThis.dependencyStartupIdentity ?? navigator.userAgent;
@@ -180,8 +181,8 @@ import XCTest
                                 checkingBackgroundIdentity: Bool = true,
                                 file: StaticString = #filePath, line: UInt = #line) async throws {
         let configuration = web.configuration
-        XCTAssertTrue(WebKitStartup.extensionProcessPool.matches(configuration),
-                      "\(scenario): popup must use the application's extension pool", file: file, line: line)
+        XCTAssertTrue(configuration.webExtensionController === context.webExtensionController,
+                      "\(scenario): popup must use its context controller", file: file, line: line)
         assertStore(configuration.websiteDataStore,
                     matches: expectedStore ?? ExtensionHost.host(for: profile).controller.configuration.defaultWebsiteDataStore,
                     scenario: "\(scenario) popup", file: file, line: line)
@@ -206,7 +207,7 @@ import XCTest
         }
     }
 
-    func testBrowserAndExtensionPoolsShareOwnershipWithoutSharingProfileStorage() async throws {
+    func testBrowserAndExtensionControllersPreserveProfileStorageIsolation() async throws {
         let otherProfile = UUID()
         ownedProfiles.insert(otherProfile)
         defer { ExtensionHost.forget(otherProfile) }
@@ -220,16 +221,6 @@ import XCTest
         let otherSeed = try XCTUnwrap(otherExtensions.configuration.webViewConfiguration)
         let privateSeed = try XCTUnwrap(privateExtensions.configuration.webViewConfiguration)
 
-        XCTAssertTrue(WebKitStartup.processPool.matches(browser))
-        for configuration in [otherBrowser, privateBrowser] {
-            XCTAssertTrue(WebKitStartup.processPool.matches(configuration),
-                          "Browser pages must retain the application's browser pool")
-        }
-        XCTAssertFalse(WebKitStartup.extensionProcessPool.matches(browser))
-        for configuration in [seed, otherSeed, privateSeed] {
-            XCTAssertTrue(WebKitStartup.extensionProcessPool.matches(configuration),
-                          "WebKit-owned extension pages must retain the application's extension pool")
-        }
         XCTAssertFalse(extensions === otherExtensions)
         XCTAssertFalse(extensions === privateExtensions)
         XCTAssertFalse(otherExtensions === privateExtensions)
@@ -261,7 +252,6 @@ import XCTest
         ExtensionHost.forget(otherProfile)
         let replacement = ExtensionHost.host(for: otherProfile).controller
         XCTAssertFalse(replacement === otherExtensions)
-        XCTAssertTrue(WebKitStartup.extensionProcessPool.matches(replacement.configuration.webViewConfiguration))
         XCTAssertTrue(replacement.configuration.defaultWebsiteDataStore === otherBrowser.websiteDataStore)
         assertStore(replacement.configuration.webViewConfiguration.websiteDataStore,
                     matches: otherBrowser.websiteDataStore, scenario: "Recreated other profile seed")
@@ -327,7 +317,7 @@ import XCTest
         }
     }
 
-    func testServiceWorkerPopupIdentityAndOwnershipFollowSelectionWhenSharedPoolIsReused() async throws {
+    func testServiceWorkerPopupIdentityAndOwnershipFollowSelectionWhenControllerIsReused() async throws {
         let host = ExtensionHost.host(for: profile)
         let controller = host.controller
         let custom = "Vane Prior Worker Identity/1.0 (no Safari token)"
@@ -411,17 +401,36 @@ import XCTest
         try await checkCanonicalDependencyUpdate(version: "2.0")
     }
 
-    private func checkCanonicalDependencyUpdate(version: String) async throws {
+    func testManifestTwoResourceUpdateRefreshesCanonicalDependency() async throws {
+        try await checkCanonicalDependencyUpdate(version: "1.0", module: false, manifestVersion: 2)
+    }
+
+    func testManifestThreePageResourceUpdateRefreshesCanonicalDependency() async throws {
+        try await checkCanonicalDependencyUpdate(version: "1.0", module: false, pageBackground: true)
+    }
+
+    func testNestedClassicResourceUpdateRefreshesCanonicalDependency() async throws {
+        try await checkCanonicalDependencyUpdate(version: "1.0", module: false, workerPath: "nested/background.js")
+    }
+
+    func testNestedModuleResourceUpdateRefreshesCanonicalDependency() async throws {
+        try await checkCanonicalDependencyUpdate(version: "1.0", workerPath: "nested/background.js")
+    }
+
+    private func checkCanonicalDependencyUpdate(version: String, module: Bool = true,
+                                                workerPath: String = "background.js", manifestVersion: Int = 3, pageBackground: Bool = false) async throws {
         Settings.userAgent = "Vane Updated Module/1.0"
-        print("MV3_CACHE_POLICY alwaysRevalidatesExtensionResources=\(WebKitStartup.revalidatesExtensionResources)")
-        XCTAssertTrue(WebKitStartup.revalidatesExtensionResources)
-        forcedBackgroundUserAgent = "Vane Wrong Native Worker/0"
-        let before = try await install(version: 3, module: true)
+        forcedBackgroundUserAgent = manifestVersion == 3 && !pageBackground ? "Vane Wrong Native Worker/0" : nil
+        let before = try await install(version: manifestVersion, module: module, workerPath: workerPath, importsDependency: true, pageBackground: pageBackground)
         let (action, web) = try await popup(before)
+        _ = try await web.callAsyncJavaScript("await chrome.storage.local.set({workerSaved:'kept across code update'}); return true;",
+                                             arguments: [:], in: nil, contentWorld: .page)
         let original = try await web.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
         XCTAssertEqual(original?["revision"], "initial")
         action.closePopup()
-        let dependency = folder.appendingPathComponent("dependency.js")
+        let dependency = folder.appendingPathComponent(workerPath).deletingLastPathComponent().appendingPathComponent("dependency.js")
+        let popupScript = folder.appendingPathComponent("popup.js")
+        try Data((try String(contentsOf: popupScript, encoding: .utf8) + "\nwindow.popupRevision = 'updated';").utf8).write(to: popupScript)
         let originalBytes = try String(contentsOf: dependency, encoding: .utf8)
         try Data((originalBytes + "\nglobalThis.packageRevision = 'updated';").utf8).write(to: dependency)
         if version != "1.0" {
@@ -439,10 +448,18 @@ import XCTest
         try await assertIdentity(in: newWeb, context: after, expected: "Vane Updated Module/1.0")
         let updated = try await newWeb.evaluateJavaScript("window.backgroundIdentity") as? [String: String]
         XCTAssertEqual(updated?["revision"], "updated", "A new wrapper must not reuse cached canonical vendor imports")
+        XCTAssertEqual(updated?["saved"], "kept across code update", "Resource eviction must preserve extension storage")
+        let popupRevision = try await newWeb.evaluateJavaScript("window.popupRevision") as? String
+        XCTAssertEqual(popupRevision, "updated", "The popup must also load the accepted replacement script")
+        if module {
+            XCTAssertEqual(updated?["dependencyURL"], after.baseURL.appendingPathComponent(workerPath)
+                .deletingLastPathComponent().appendingPathComponent("dependency.js").absoluteString)
+        }
         let codeStore = ExtensionCodeStore(profileID: profile)
         let record = try XCTUnwrap(try codeStore.records()[folder.path])
         let sourceBytes = try Data(contentsOf: dependency)
-        let acceptedBytes = try Data(contentsOf: codeStore.code(for: record).appendingPathComponent("dependency.js"))
+        let acceptedBytes = try Data(contentsOf: codeStore.code(for: record).appendingPathComponent(workerPath)
+            .deletingLastPathComponent().appendingPathComponent("dependency.js"))
         XCTAssertEqual(acceptedBytes, sourceBytes, "The replacement snapshot must contain the actual changed dependency")
         XCTAssertFalse(after === before)
         print("MV3_CACHE_DIAGNOSTIC version=\(version), sourceSHA=\(SHA256.hash(data: sourceBytes)), acceptedSHA=\(SHA256.hash(data: acceptedBytes)), beforeLoaded=\(before.isLoaded), afterLoaded=\(after.isLoaded), original=\(original ?? [:]), updated=\(updated ?? [:])")
@@ -466,8 +483,16 @@ import XCTest
                 print("MV3_CACHE_AFTER_FAILURE_FETCH \(try box.value?.get() as Any)")
             } catch { print("MV3_CACHE_AFTER_FAILURE_FETCH unavailable: \(error)") }
         }
-        XCTAssertEqual(updated?["url"], original?["url"], "Vendor module identity remains canonical")
-        XCTAssertNotEqual(updated?["workerURL"], original?["workerURL"], "Changed dependency bytes require a new worker registration URL")
+        if module {
+            XCTAssertEqual(updated?["url"], original?["url"], "Vendor module identity remains canonical")
+        } else {
+            XCTAssertEqual(updated?["url"], updated?["workerURL"], "Classic scripts observe the wrapper through self.location")
+            XCTAssertEqual(updated?["workerURL"].flatMap(URL.init(string:))?.deletingLastPathComponent(),
+                           original?["workerURL"].flatMap(URL.init(string:))?.deletingLastPathComponent())
+        }
+        if manifestVersion == 3 && !pageBackground {
+            XCTAssertNotEqual(updated?["workerURL"], original?["workerURL"], "Changed dependency bytes require a new worker registration URL")
+        }
         XCTAssertEqual(after.uniqueIdentifier, before.uniqueIdentifier)
         XCTAssertEqual(after.baseURL, before.baseURL)
     }

@@ -62,27 +62,4 @@ final class WebKitCompatibilityAdapterTests: XCTestCase {
         }
     }
 
-    @MainActor func testProcessOwnersKeepDistinctIdentitiesAndConfigurationCopies() {
-        let browser = VaneWebProcessPoolOwner(extensionResourceRevalidation: true)
-        let extensions = VaneWebProcessPoolOwner(extensionResourceRevalidation: true)
-        let fixture = VaneWebProcessPoolOwner(extensionResourceRevalidation: false)
-        let configuration = WKWebViewConfiguration()
-        let store = WKWebsiteDataStore.nonPersistent()
-        configuration.websiteDataStore = store
-        browser.configure(configuration)
-        XCTAssertTrue(configuration.websiteDataStore === store)
-        XCTAssertTrue(browser.matches(configuration))
-        XCTAssertFalse(extensions.matches(configuration))
-        XCTAssertFalse(fixture.matches(configuration))
-        let copied = configuration.copy() as! WKWebViewConfiguration
-        XCTAssertTrue(browser.matches(copied))
-        extensions.configure(configuration)
-        XCTAssertTrue(configuration.websiteDataStore === store)
-        XCTAssertTrue(extensions.matches(configuration))
-        XCTAssertFalse(browser.matches(configuration))
-        XCTAssertTrue(browser.matches(copied))
-        XCTAssertNotEqual(browser.contextHandle, extensions.contextHandle)
-        XCTAssertNotEqual(browser.contextHandle, fixture.contextHandle)
-        XCTAssertFalse(fixture.revalidatesExtensionResources)
-    }
 }
