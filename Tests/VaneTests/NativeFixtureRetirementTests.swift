@@ -10,6 +10,13 @@ import XCTest
         var cookies: [HTTPCookie]?
         var identifiers: [UUID]?
     }
+    // Keep callback admission synchronous so waitForReply retains its bounded deadline.
+    private func storeCookie(_ cookie: HTTPCookie, in store: WKHTTPCookieStore, reply: Reply) {
+        store.setCookie(cookie) { reply.cookieStored = true }
+    }
+    private func readCookies(in store: WKHTTPCookieStore, reply: Reply) {
+        store.getAllCookies { reply.cookies = $0 }
+    }
     private func waitForReply(_ stage: String, condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
         while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
@@ -41,9 +48,9 @@ import XCTest
             let cookie = try XCTUnwrap(HTTPCookie(properties: [.domain: "native-retirement.invalid", .path: "/", .name: "owned", .value: "fixture",
                                                               .expires: Date.now.addingTimeInterval(3600)]))
             let reply = Reply()
-            store.httpCookieStore.setCookie(cookie) { reply.cookieStored = true }
+            storeCookie(cookie, in: store.httpCookieStore, reply: reply)
             try await waitForReply("owned cookie storage") { reply.cookieStored }
-            store.httpCookieStore.getAllCookies { reply.cookies = $0 }
+            readCookies(in: store.httpCookieStore, reply: reply)
             try await waitForReply("owned cookie readback") { reply.cookies != nil }
             XCTAssertTrue(try XCTUnwrap(reply.cookies).contains { $0.name == "owned" && $0.value == "fixture" })
         }

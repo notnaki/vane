@@ -120,7 +120,7 @@ extension BackupWorkerTests {
         let siblings = try FileManager.default.contentsOfDirectory(atPath: root.path)
         XCTAssertTrue(siblings.contains(where: { $0.hasPrefix(".Vane.app.vane-stage-") }))
         release.signal()
-        await health.value
+        _ = await health.value
         XCTAssertEqual(try Data(contentsOf: target.appendingPathComponent("fixture")), Data("new".utf8))
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path)
             .contains(where: { $0.hasPrefix(".Vane.app.vane-stage-") }))

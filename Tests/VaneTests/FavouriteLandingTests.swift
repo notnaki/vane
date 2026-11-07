@@ -33,7 +33,11 @@ final class FavouriteLandingTests: XCTestCase {
         dragging.cancel()
         var source: SidebarDragPreview? = SidebarDragPreview()
         let otherWindow = SidebarDragPreview()
+        #if compiler(>=6.3)
+        weak let lifetime = source
+        #else
         weak var lifetime = source
+        #endif
         dragging.sourcePreview = source
         XCTAssertTrue(source!.ownsGhost)
         XCTAssertFalse(otherWindow.ownsGhost)

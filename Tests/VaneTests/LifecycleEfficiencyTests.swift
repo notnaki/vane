@@ -46,7 +46,11 @@ import XCTest
         TestEnvironment.prepare()
         let tab = Tab(isPrivate: true)
         let host = WebHost(tab.web)
+        #if compiler(>=6.3)
+        weak let old = tab.existingWeb
+        #else
         weak var old = tab.existingWeb
+        #endif
         tab.tearDown()
         XCTAssertNil(host.web, "Detaching a closed page must also prune the host's strong cache")
         let deadline = ContinuousClock.now + .seconds(3)
