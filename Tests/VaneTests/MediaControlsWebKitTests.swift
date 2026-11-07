@@ -37,6 +37,48 @@ import XCTest
         return (tab, window)
     }
 
+    /// WebKit may pause an inline return into an occluded/inactive document. Tests
+    /// asserting foreground playback must own the real app loop and visible source.
+    private func withForegroundMediaFixture(
+        _ html: String, body: @MainActor (Tab, NSWindow) async throws -> Void
+    ) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared, policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .regular)
+        let tab = Tab(isPrivate: true)
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 800, height: 500),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = tab.web
+        var failure: (any Error)?
+        do {
+            window.makeKeyAndOrderFront(nil)
+            app.activate(ignoringOtherApps: true)
+            tab.web.loadHTMLString(html, baseURL: URL(string: "https://media.example.test/"))
+            try await wait {
+                if !app.isActive || !window.isKeyWindow {
+                    window.makeKeyAndOrderFront(nil)
+                    app.activate(ignoringOtherApps: true)
+                }
+                return app.isRunning && app.isActive && window.isKeyWindow
+                    && window.isVisible && window.occlusionState.contains(.visible)
+                    && tab.web.window === window && !tab.web.isHiddenOrHasHiddenAncestor
+                    && !tab.web.isLoading
+            }
+            print("FOREGROUND_MEDIA_ADMITTED running=\(app.isRunning) active=\(app.isActive) sourceKey=\(window.isKeyWindow) sourceVisible=\(window.occlusionState.contains(.visible))")
+            try await body(tab, window)
+        } catch { failure = error }
+        tab.tearDown()
+        window.close()
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Foreground media loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
     func testDecodedPlaybackPauseSeekResumeAndEndUpdateTray() async throws {
         let (tab, _) = try await fixture("<video id='player' muted autoplay src='data:video/mp4;base64,\(Self.video)'></video>")
         try await wait { try await tab.web.evaluateJavaScript("player.currentTime > 0.15 && player.videoWidth === 640 && player.error === null") as? Bool == true }
@@ -53,27 +95,28 @@ import XCTest
     }
 
     func testDRMProbeInvalidatesSamplesOnSeek() async throws {
-        let (tab, _) = try await fixture("<video id='player' muted autoplay src='data:video/mp4;base64,\(Self.video)'></video>")
-        try await wait { try await tab.web.evaluateJavaScript("player.currentTime>0.15 && player.videoWidth===640") as? Bool == true }
-        let firstValue = try await tab.web.evaluateJavaScript(DRMCheck.videoProbe)
-        let first = try XCTUnwrap(firstValue as? [String: Any])
-        XCTAssertEqual(first["paused"] as? Bool, false)
-        _ = try await tab.web.evaluateJavaScript("player.pause(); player.currentTime=0.5; true")
-        try await wait {
-            let id = try await tab.web.evaluateJavaScript("window.__vaneDrmcheckSample.id") as? String
-            return id != first["id"] as? String
+        try await withForegroundMediaFixture("<video id='player' muted autoplay src='data:video/mp4;base64,\(Self.video)'></video>") { tab, _ in
+            try await wait { try await tab.web.evaluateJavaScript("player.currentTime>0.15 && player.videoWidth===640") as? Bool == true }
+            let firstValue = try await tab.web.evaluateJavaScript(DRMCheck.videoProbe)
+            let first = try XCTUnwrap(firstValue as? [String: Any])
+            XCTAssertEqual(first["paused"] as? Bool, false)
+            _ = try await tab.web.evaluateJavaScript("player.pause(); player.currentTime=0.5; true")
+            try await wait {
+                let id = try await tab.web.evaluateJavaScript("window.__vaneDrmcheckSample.id") as? String
+                return id != first["id"] as? String
+            }
+            // Hidden WebKit surfaces can defer a paused seek's final frame. Resume to
+            // finish the seek, then sample after completion as the CLI would.
+            _ = try await tab.web.evaluateJavaScript("player.play(); true")
+            try await wait { try await tab.web.evaluateJavaScript("!player.seeking && player.currentTime>0.5") as? Bool == true }
+            let seekValue = try await tab.web.evaluateJavaScript(DRMCheck.videoProbe)
+            let afterSeek = try XCTUnwrap(seekValue as? [String: Any])
+            XCTAssertNotEqual(first["id"] as? String, afterSeek["id"] as? String,
+                              "A completed seek must invalidate continuity between native polling ticks")
+            XCTAssertNotNil(afterSeek["frames"] as? Int)
+            // Hidden XCTest surfaces may suppress compositor frame callbacks. Actual
+            // delivered-frame progress is checked separately by the signed CLI probe.
         }
-        // Hidden WebKit surfaces can defer a paused seek's final frame. Resume to
-        // finish the seek, then sample after completion as the CLI would.
-        _ = try await tab.web.evaluateJavaScript("player.play(); true")
-        try await wait { try await tab.web.evaluateJavaScript("!player.seeking && player.currentTime>0.5") as? Bool == true }
-        let seekValue = try await tab.web.evaluateJavaScript(DRMCheck.videoProbe)
-        let afterSeek = try XCTUnwrap(seekValue as? [String: Any])
-        XCTAssertNotEqual(first["id"] as? String, afterSeek["id"] as? String,
-                          "A completed seek must invalidate continuity between native polling ticks")
-        XCTAssertNotNil(afterSeek["frames"] as? Int)
-        // Hidden XCTest surfaces may suppress compositor frame callbacks. Actual
-        // delivered-frame progress is checked separately by the signed CLI probe.
     }
 
     func testNavigationClearsPlayingMediaAndFreshDocumentCanPlay() async throws {
@@ -374,15 +417,35 @@ import XCTest
     }
 
     func testPageInlineExitRemovesCustomHostWithoutPausing() async throws {
-        let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
-        PictureInPicture.toggle(tab)
-        try await wait { tab.pictureInPicture }
-        try await wait { NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible } }
-        _ = try await tab.web.evaluateJavaScript("document.getElementById('player').webkitSetPresentationMode('inline')")
-        try await wait { !tab.pictureInPicture }
-        XCTAssertFalse(NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible })
-        let paused = try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool
-        XCTAssertEqual(paused, false)
+        try await withForegroundMediaFixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>") { tab, _ in
+            try await wait { try await tab.web.evaluateJavaScript("!player.paused && player.readyState >= 2 && player.currentTime > 0") as? Bool == true }
+            _ = try await tab.web.evaluateJavaScript("""
+            window.inlineExitEvents = [];
+            ['play','playing','pause','loadedmetadata','webkitpresentationmodechanged'].forEach(name => {
+                player.addEventListener(name, () => inlineExitEvents.push({event:name, paused:player.paused, mode:player.webkitPresentationMode, time:player.currentTime}));
+            }); true;
+            """)
+            @MainActor func trace(_ phase: String) async throws {
+                let value = try await tab.web.evaluateJavaScript("JSON.stringify({paused:player.paused, ready:player.readyState, time:player.currentTime, mode:player.webkitPresentationMode, events:inlineExitEvents})")
+                print("INLINE_EXIT_TRACE \(phase) running=\(NSApp.isRunning) active=\(NSApp.isActive) sourceKey=\(tab.web.window?.isKeyWindow == true) sourceVisible=\(tab.web.window?.isVisible == true) sourceOccluded=\(tab.web.window?.occlusionState.contains(.visible) != true) hidden=\(tab.web.isHiddenOrHasHiddenAncestor) state=\(String(describing: value))")
+            }
+            try await trace("before-entry")
+            PictureInPicture.toggle(tab)
+            try await wait { tab.pictureInPicture }
+            try await wait {
+                guard let owner = PiPMinimizeControls.presentationWindow(for: tab) as? CustomPiPWindow else { return false }
+                return owner.isVisible && owner.alphaValue > 0.99 && owner.videoView.superview === owner.contentView
+            }
+            let owner = try XCTUnwrap(PiPMinimizeControls.presentationWindow(for: tab))
+            try await trace("before-inline")
+            _ = try await tab.web.evaluateJavaScript("document.getElementById('player').webkitSetPresentationMode('inline')")
+            try await wait { !tab.pictureInPicture }
+            XCTAssertFalse(owner.isVisible)
+            XCTAssertNil(PiPMinimizeControls.presentationWindow(for: tab))
+            let paused = try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool
+            try await trace("after-inline")
+            XCTAssertEqual(paused, false)
+        }
     }
 
     func testLandingOnSourceTabKeepsTheMinimizedPlayerUntilExplicitlyOpened() async throws {
