@@ -1,6 +1,7 @@
 import AppKit
 import WebKit
 import XCTest
+import ObjectiveC
 @testable import vane
 
 @MainActor final class ExtensionBackgroundStartupTests: XCTestCase {
@@ -499,5 +500,65 @@ extension ExtensionBackgroundWatchdogTests {
         do { try await task.value; XCTFail("Cancelled startup must not succeed") }
         catch is CancellationError { }
         XCTAssertFalse(started)
+    }
+}
+
+// Deliver WebKit's actual eviction reply, then remove the installation before the
+// suspended load task can resume. This exercises the callback/continuation gap.
+@MainActor private final class ExtensionCacheCompletionGate {
+    static var current: ExtensionCacheCompletionGate?
+    weak var store: WKWebsiteDataStore?
+    var afterDelivery: (@MainActor () -> Void)?
+    var deliveries = 0
+}
+
+extension WKWebsiteDataStore {
+    @objc(vane_removeExtensionCacheOfTypes:modifiedSince:completionHandler:)
+    fileprivate dynamic func vane_removeExtensionCache(ofTypes types: Set<String>, modifiedSince date: Date,
+                                                       completionHandler completion: @escaping @MainActor () -> Void) {
+        guard let gate = ExtensionCacheCompletionGate.current, self === gate.store,
+              let afterDelivery = gate.afterDelivery else {
+            vane_removeExtensionCache(ofTypes: types, modifiedSince: date, completionHandler: completion); return
+        }
+        gate.afterDelivery = nil
+        vane_removeExtensionCache(ofTypes: types, modifiedSince: date) {
+            gate.deliveries += 1
+            completion()
+            afterDelivery()
+        }
+    }
+}
+
+extension ExtensionBackgroundStartupTests {
+    func testRemovalAfterCacheReplyCannotLeaveAnUntrackedLoadedContext() async throws {
+        try writeWorker("chrome.runtime.onInstalled.addListener(() => {});")
+        let host = ExtensionHost.host(for: profile)
+        let gate = ExtensionCacheCompletionGate()
+        gate.store = host.controller.configuration.defaultWebsiteDataStore
+        let original = try XCTUnwrap(class_getInstanceMethod(WKWebsiteDataStore.self,
+            NSSelectorFromString("removeDataOfTypes:modifiedSince:completionHandler:")))
+        let intercepted = try XCTUnwrap(class_getInstanceMethod(WKWebsiteDataStore.self,
+            #selector(WKWebsiteDataStore.vane_removeExtensionCache(ofTypes:modifiedSince:completionHandler:))))
+        ExtensionCacheCompletionGate.current = gate
+        method_exchangeImplementations(original, intercepted)
+        defer {
+            gate.afterDelivery = nil
+            ExtensionCacheCompletionGate.current = nil
+            method_exchangeImplementations(original, intercepted)
+            // Preserve cleanup even when the regression leaves an untracked context.
+            for context in host.controller.extensionContexts { try? host.controller.unload(context) }
+        }
+        gate.afterDelivery = {
+            do { try host.remove(folder: self.folder.path) }
+            catch { XCTFail("Removal at the eviction boundary failed: \(error)") }
+        }
+        do {
+            _ = try await host.load(folder, installing: true) { _ in true }
+            XCTFail("Removed installation must not finish loading")
+        } catch is CancellationError { }
+        XCTAssertEqual(gate.deliveries, 1)
+        XCTAssertTrue(host.installed.isEmpty)
+        XCTAssertTrue(host.controller.extensionContexts.isEmpty, "The stale continuation must not load an untracked context")
+        XCTAssertTrue(try ExtensionCodeStore(profileID: profile).records().isEmpty)
     }
 }

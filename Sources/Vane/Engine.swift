@@ -1432,7 +1432,6 @@ struct TitleReveal: Equatable, Sendable {
                               blocking: Bool = true) -> WKWebViewConfiguration {
         let profileID = isPrivate ? Profile.incognito.id : profileID
         let cfg = WKWebViewConfiguration()
-        WebKitStartup.processPool.configure(cfg)
         PageRendering.configure(cfg.preferences)
         // Persistent: cookies, logins, media keys — and one persistent store per profile, via
         // WKWebsiteDataStore(forIdentifier:). A private window gets a store that lives only as
