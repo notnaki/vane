@@ -21,10 +21,12 @@ jobs:
       - name: Focused native repetitions
         env:
           NATIVE_FILTER: ${{ inputs.native_filter }}
-          NSUnbufferedIO: YES
+          NSUnbufferedIO: 'YES'
+          VANE_NATIVE_LLDB_DIAGNOSTIC: '1'
         shell: bash
         run: |
           set -uo pipefail
+          set +e
           status=0
           for attempt in 1 2 3; do
             python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter "$NATIVE_FILTER" 2>&1 | tee "$RUNNER_TEMP/cache-preflight-$attempt.log"

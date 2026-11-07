@@ -256,6 +256,32 @@ def main(arguments):
     environment = dict(os.environ, **{DIRECTORY_ENV: str(directory), TOKEN_ENV: token})
     environment.pop(PHASE_ENV, None)
     primary = ["swift", "test", *arguments]
+    if os.environ.get("VANE_NATIVE_LLDB_DIAGNOSTIC") == "1":
+        # Diagnostic branch only: preserve this driver's host manifest and cleanup
+        # while collecting the actual native crash stack, rather than swift-test's.
+        import re
+        options = []
+        filter_pattern = ".*"
+        index = 0
+        while index < len(arguments):
+            if arguments[index] in {"--build-system", "--scratch-path", "--configuration"}:
+                options.extend(arguments[index:index + 2]); index += 2
+            elif arguments[index] == "--filter":
+                filter_pattern = arguments[index + 1]; index += 2
+            else: index += 1
+        names = subprocess.check_output(["swift", "test", *options, "--skip-build", "--list-tests"], text=True)
+        selected = [name.strip() for name in names.splitlines()
+                    if "/" in name and re.search(filter_pattern, name)]
+        if not selected: raise SystemExit("No diagnostic test selectors matched")
+        build_options = options
+        binary_directory = Path(subprocess.check_output(["swift", "build", "--show-bin-path", *build_options], text=True).strip())
+        bundles = list(binary_directory.glob("*Tests.xctest"))
+        if len(bundles) != 1: raise SystemExit(f"Expected one diagnostic bundle: {bundles}")
+        xctest = subprocess.check_output(["xcrun", "--find", "xctest"], text=True).strip()
+        primary = ["xcrun", "lldb", "--batch", "-o", "run",
+                   "-o", "script import os; os._exit(lldb.debugger.GetSelectedTarget().GetProcess().GetExitStatus())",
+                   "-k", "thread backtrace all", "-k", "process kill",
+                   "-k", "script import os; os._exit(1)", "--", xctest, "-XCTest", ",".join(selected), str(bundles[0])]
     cleanup = ["swift", "test", "--skip-build", "--filter", SELECTOR]
     # Mirror configuration/toolchain options that locate the exact test bundle.
     pair_options = {"--configuration", "-c", "--build-system", "--scratch-path", "--package-path", "--triple", "--sdk", "--toolchain", "--arch"}
