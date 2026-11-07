@@ -16,8 +16,6 @@ Before a managed extension context is loaded, Vane waits for WebKit's public `WK
 
 WebKit's public website-data record lookup omits custom extension origins, so this evicts the profile's whole in-memory resource cache. Browsing resources may need to be read again, including from the unchanged disk cache. It runs at extension context loading rather than every request, and does not affect other profile stores. The old private `alwaysRevalidatedURLSchemes` process-pool configuration is no longer required.
 
-Actual extension pages retain their owning controller through native view teardown. Explicit context unload releases WebKit's page ownership, allowing the page and then its controller to retire. This avoids older WebKit leaving IPC receivers behind when a controller disappears before its pages; it introduces no shared configuration or process-pool owner.
-
 Changing the selected identity rebuilds MV3 contexts. Reloads retain the native controller, runtime identifier, origin, profile store and explicit access decisions, including denied and expiring grants. Overlapping selections settle on the latest identity; removal invalidates a pending restart. MV2 backgrounds, popups and content scripts retain their existing loading paths.
 
 ## Chrome API scope
