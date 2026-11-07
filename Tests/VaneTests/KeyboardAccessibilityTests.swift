@@ -511,14 +511,29 @@ private struct DisabledKeyboardSurface: View {
             container.addSubview(page)
             window.contentView = container
             chrome.layoutSubtreeIfNeeded()
-            // Admit the new local page and its visible chrome before starting
-            // the unchanged 150ms handoff deadline, not the desired focus result.
+            @MainActor func pillAnchors(in view: NSView) -> [NativeSidebarNavigationControl.Anchor] {
+                (view as? NativeSidebarNavigationControl.Anchor).map { [$0] } ?? view.subviews.flatMap { pillAnchors(in: $0) }
+            }
+            // Attachment can precede the first SwiftUI render. Admit the actual
+            // pill control and painted surfaces before the unchanged 150ms F6
+            // deadline; do not request or await the desired focus during setup.
             try await compatibilityWait {
-                NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
+                page.layoutSubtreeIfNeeded()
+                chrome.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                let registeredPill = pillAnchors(in: chrome).contains {
+                    $0.token != nil && $0.refresh != nil && $0.navigation == nil
+                        && $0.window === window && !$0.isHiddenOrHasHiddenAncestor
+                        && $0.bounds.width > 0 && $0.bounds.height > 0
+                }
+                return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
                     && window.isVisible && window.occlusionState.contains(.visible)
                     && NSApp.modalWindow == nil && window.attachedSheet == nil
                     && page.window === window && chrome.window === window
                     && store.activePageResponder === page
+                    && registeredPill && !page.needsDisplay && !chrome.needsDisplay
+                    && page.layer?.presentation() != nil && chrome.layer?.presentation() != nil
             }
             XCTAssertTrue(window.makeFirstResponder(page))
             print("F6_EASEL before-action running=\(NSApp.isRunning) active=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) key=\(window.isKeyWindow) visible=\(window.isVisible) pageOwner=\(store.activePageResponder === page) holder=\(String(describing: window.firstResponder))")
