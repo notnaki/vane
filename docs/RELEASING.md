@@ -32,6 +32,12 @@ The public version is `MAJOR.MINOR.PATCH`, for example `0.0.39`. Use the followi
 bump policy when deliberately cutting a Stable release; commit messages and PR
 labels do not choose a bump automatically.
 
+This policy applies to future releases. Historically, Stable releases through
+`0.0.39` used the third number as a release counter for both fixes and substantial
+new features. Those older numbers do not distinguish fixes from feature
+milestones. Keep the existing tags and releases; adopting this convention does
+not renumber history or require an immediate release.
+
 | Number or control | Meaning / when to change it |
 | --- | --- |
 | `PATCH`, the third number | Routine fixes, security fixes, polish, and small compatible improvements. This is the default release bump. `0.0.39` → `0.0.40`. |
