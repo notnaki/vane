@@ -71,30 +71,47 @@ def main():
         ({'VALUE': 'expected'}, True), ({'VALUE': '$(exit 0)'}, False), ({}, False),
     ], ['VALUE'])
     cases = []
-    for app in ('true', 'false'):
+    # Preserve every original full/cheap case, then exhaust the new main-reuse
+    # path. Invalid reuse contexts are rejected independently of job outcomes.
+    for app, reused, event in (('true', 'false', 'pull_request'),
+                               ('false', 'false', 'pull_request'), ('true', 'true', 'push')):
         for states in itertools.product(('success', 'failure', 'cancelled', 'skipped'), repeat=len(bindings)):
             results = dict(zip(bindings.values(), states))
-            wanted = results['changes'] == results['routing'] == 'success' and all(
-                value == ('success' if app == 'true' else 'skipped')
+            reuse_allowed = reused == 'false' or (app == 'true' and event == 'push')
+            wanted = reuse_allowed and results['changes'] == results['routing'] == 'success' and all(
+                value == ('skipped' if app == 'false' or name == 'native' and reused == 'true' else 'success')
                 for name, value in results.items() if name not in ('changes', 'routing'))
-            env = {**dict(zip(bindings, states)), 'APP_REQUIRED': app}
+            env = {**dict(zip(bindings, states)), 'APP_REQUIRED': app, 'NATIVE_REUSED': reused,
+                   'EVENT_NAME': event, 'EVENT_REF': 'refs/heads/main' if event == 'push' else 'refs/pull/7/merge'}
             cases.append((env, wanted))
-    for key in [*bindings, 'APP_REQUIRED']:
+    baseline = {**dict.fromkeys(bindings, 'success'), 'APP_REQUIRED': 'true',
+                'NATIVE_REUSED': 'false', 'EVENT_NAME': 'push', 'EVENT_REF': 'refs/heads/main'}
+    for key in [*bindings, 'APP_REQUIRED', 'NATIVE_REUSED']:
         for value in ('', 'unknown', 'success\nsuccess', '$(exit 0)'):
-            env = {**dict.fromkeys(bindings, 'success'), 'APP_REQUIRED': 'true', key: value}
+            env = {**baseline, key: value}
             cases.append((env, False))
-        env = {**dict.fromkeys(bindings, 'success'), 'APP_REQUIRED': 'true'}
+        env = dict(baseline)
         env.pop(key)
         cases.append((env, False))
-    verify_gate_cases(script, cases, [*bindings, 'APP_REQUIRED'])
+    for event, ref in (('pull_request', 'refs/pull/7/merge'), ('pull_request', 'refs/heads/main'),
+                       ('push', 'refs/heads/other'), ('workflow_dispatch', 'refs/heads/main')):
+        cases.append(({**baseline, 'NATIVE_REUSED': 'true', 'NATIVE_RESULT': 'skipped',
+                       'EVENT_NAME': event, 'EVENT_REF': ref}, False))
+    cases.append(({**baseline, 'APP_REQUIRED': 'false', 'NATIVE_REUSED': 'true',
+                   'SOURCE_RESULT': 'skipped', 'BUILD_RESULT': 'skipped',
+                   'NATIVE_RESULT': 'skipped', 'PACKAGING_RESULT': 'skipped'}, False))
+    verify_gate_cases(script, cases, [*bindings, 'APP_REQUIRED', 'NATIVE_REUSED', 'EVENT_NAME', 'EVENT_REF'])
     trials = len(cases)
 
     assert 'runs-on: ubuntu-latest' in sections['changes']
     assert 'fetch-depth: 0' in sections['changes']
     assert 'scripts/ci-change-scope.py' in sections['changes']
+    assert 'native_reused: ${{ steps.reuse.outputs.native_reused || \'false\' }}' in sections['changes']
+    assert 'scripts/ci-native-reuse.py' in sections['changes']
+    assert 'actions: read' in sections['changes'] and 'pull-requests: read' in sections['changes']
     assert 'runs-on: ubuntu-latest' in sections['routing']
     assert not dependencies(sections['routing']), 'routing fixtures run alongside scope detection'
-    for command in ('python3 scripts/test-ci-change-scope.py', 'python3 scripts/test-checks-workflow.py',
+    for command in ('python3 scripts/test-ci-native-reuse.py', 'python3 scripts/test-ci-change-scope.py', 'python3 scripts/test-checks-workflow.py',
                     'node docs/tests/galaxy.test.cjs'):
         assert command in sections['routing'], command + ' must also validate the fast path'
     for name in ('source', 'build', 'native', 'packaging'):
@@ -102,6 +119,11 @@ def main():
         assert "if: needs.changes.outputs.app_required == 'true'" in section
         assert dependencies(section) == ({'changes', 'build'} if name in ('native', 'packaging') else {'changes'})
     build, native, packaging = (sections[name] for name in ('build', 'native', 'packaging'))
+    assert "needs.changes.outputs.native_reused != 'true'" in native
+    assert all('native_reused' not in sections[name] for name in ('build', 'source', 'packaging'))
+    header = text.split('\njobs:\n', 1)[0]
+    assert "group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}" in header
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in header
     assert 'swift build --build-system native -c debug --build-tests --disable-index-store' in build
     assert 'run: ./make-app.sh debug --skip-app-build\n' in build
     assert 'VANE_CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}' in build

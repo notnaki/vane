@@ -6,9 +6,11 @@ changes. Native tests retain four isolated desktops and sequential execution.
 
 ## Workflow operation
 
-`checks.yml` runs on pull requests and pushes to `main`. Its branch/PR concurrency
-group cancels superseded runs. The workflow token has read-only contents access;
-only the post-validation cache-pruning job receives cache deletion permission.
+`checks.yml` runs on pull requests and pushes to `main`. Its PR concurrency group
+cancels superseded PR runs; every main run has a unique group so a later push cannot
+cancel active or pending main validation. The workflow token has read-only contents
+access; scope detection also receives read-only Actions/PR access for native reuse
+verification. Only the post-validation cache-pruning job receives cache deletion permission.
 
 1. **Change scope and diff checks** (Ubuntu) fetches history, runs `git diff --check`,
    and conservatively determines `app_required`. PRs compare the base with the tested
@@ -40,7 +42,8 @@ only the post-validation cache-pruning job receives cache deletion permission.
    validates selfchecks, cold WebKit startup, icons, CLI import, cloud transport,
    DMG lifecycle and updater rollback/transport/relaunch/installer behavior.
 6. **checks** (Ubuntu) always evaluates all required results. Intentional app-job
-   skips pass only when scope selected the fast path; failures and unexpected skips
+   skips pass only when scope selected the fast path or native reuse was verified;
+   failures and unexpected skips
    fail closed. Strict current-base branch protection, including administrators,
    remains required. After successful main checks, **prune-caches** retains two
    recent debug caches across cache-key generations.
@@ -205,3 +208,47 @@ comparison. Refresh the advisory table periodically using the listed runs' downl
 `native-loop-logs-*` artifacts: take the first completion of each selected method before the primary/cleanup
 boundary, sum by class per run, take the median across successful runs, and retain provenance in the JSON. Do not derive
 weights from failed or incomplete suites.
+
+## Identical-tree native reuse — 7 November 2026
+
+The serial cost matters when landing many PRs: a successful PR suite is followed by
+another main suite before the next merge. For example,
+[PR run 42324736011](https://github.com/notnaki/vane/actions/runs/42324736011)
+took about 12 minutes, then [main run 42325877540](https://github.com/notnaki/vane/actions/runs/42325877540)
+took about 11 minutes. These are observed elapsed times including queue/setup work,
+not a prediction for every change.
+
+PRs still execute all selected checks. Main can reuse only the four native shards
+from a fully successful PR run when `scripts/ci-native-reuse.py` verifies:
+
+- The push contains one squash commit whose parent is exactly the previous main.
+- Exactly one associated merged PR targets this repository's main, has that squash
+  SHA, and has a head in the same repository. Forks fall back to normal validation.
+- The entire PR head tree equals the main tree, including tests, scripts, resources
+  and workflow policy. The previous main is also an ancestor of that PR head, so
+  the tested PR integration had the same tree; stale integrations do not qualify.
+- The latest matching `pull_request` run of this workflow, including its latest
+  attempt, completed successfully before the merge. All four native shards, build,
+  packaging, source, routing, diff checks and aggregate must each occur once and
+  pass in that attempt. All API pages are examined, and current run metadata is
+  rechecked after the job evidence to reject a concurrent rerun.
+
+Missing history, changed trees/bases, multi-commit pushes, unavailable APIs, malformed
+metadata, missing jobs, failed/skipped/cancelled jobs, newer non-passing attempts,
+and other events all retain the full native suite. The verifier downloads no
+artifacts and executes no code from earlier runs. Its decision and source-run link
+appear in the Actions summary. Read-only API calls have per-command timeouts.
+
+Main continues its fresh build, source/routing fixtures, packaging and integration
+checks. These cover commit-dependent bundle metadata and keep main's compiler cache
+warm for following PRs. The aggregate permits a native skip only for a verified
+app-required push to main; other selected jobs still must succeed. Main-only cache
+saves/pruning, release eligibility, strict branch protection and administrator
+enforcement remain in force.
+
+This removes four duplicate macOS jobs per eligible merge and their test stage
+from main's critical path. It does not remove the PR suite or the subsequent main
+build/packaging wait. Actual savings depend on compilation, packaging and runner
+availability; measure the first eligible main run before claiming an end-to-end
+speedup. GitHub's merge queue is not available for this personally owned repository
+([availability](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)).
