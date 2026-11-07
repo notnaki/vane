@@ -2,9 +2,9 @@
 
 > Use the executing-plans workflow for implementation and independent whole-branch review.
 
-**Goal:** Remove the deprecated `WKProcessPool` and private scheme-revalidation dependency while preserving MV3 startup, canonical resource freshness, identity, permissions, and stored data.
+**Goal:** Replace private scheme revalidation with public memory-cache eviction while preserving MV3 startup, canonical resource freshness, identity, permissions, and stored data. The user approved retaining the deprecated public process owner only on macOS 26; macOS 27+ bypasses it.
 
-**Architecture:** Prove public `WKWebsiteDataStore` memory-cache eviction refreshes canonical extension resources before a replacement context loads. Use WebKit's standard web-view configurations and validate repeated controller retirement, avoiding deprecated pool APIs and sharing of hidden configuration state. Preserve the immutable accepted resource view and content-derived worker entry paths.
+**Architecture:** Public `WKWebsiteDataStore` memory-cache eviction refreshes canonical extension resources before a replacement context loads. On macOS 26 only, two lazy public process owners preserve native receiver lifetime. Configurations retain independent visited-link state, mutable preferences and content controllers. Preserve the immutable accepted resource view and content-derived worker entry paths.
 
 **Tech stack:** Swift, Objective-C, system WebKit, native XCTest.
 
@@ -14,7 +14,7 @@
 
 - [x] Reproduce canonical module dependency staleness with private revalidation disabled, preserving the original failure log.
 - [x] Test public memory-cache eviction before context loading against same-version and version-bumped dependency updates.
-- [x] Replace deprecated pool construction/configuration with standard WebKit configuration lifetimes; remove obsolete capability checks and bridge declarations.
+- [x] Remove private pool configuration and obsolete capability checks; isolate the approved public macOS 26 lifetime owner behind availability guards.
 - [x] Extend update coverage to classic/transitive imports and storage preservation; preserve ownership and retirement assertions using configuration seeds.
 - [ ] Run extension identity/lifecycle regressions and cold WebKit startup validation. Record limitations and cache-eviction performance cost.
 - [ ] Review the current PR diff independently, resolve findings, pass required CI against current main, squash-merge, and clean up task worktrees/test processes.
@@ -79,3 +79,9 @@ Upstream references: [public store API](https://developer.apple.com/documentatio
 - Full local run of experiment `9e2c1954` completed 2505 cases, 52 skips, 9 assertion failures across seven cases (one unexpected error), primary 1 / cleanup 0. The 13:48:15–13:48:28 desktop overlap remains contaminated evidence. Failure cases: `EdgeSidebarScrollContinuityTests.testClickingCurrentSpaceAtCreateEdgeAnimatesTheLiveViewportHome`, `EdgeSidebarScrollContinuityTests.testCreateEdgeCancellationAnimatesTheLiveViewportHome`, `PasswordAutofillTests.testReplacementUsernameFormCannotReuseExplicitSelection`, `SpaceHandoffFlashTests.testCommittedSidebarHandoffDoesNotDoubleCompositeText`, `SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding`, `SpaceSelectionContinuityTests.testBatterySaverKeepsTheLatestSelectionAnimated`, and `SpaceSelectionContinuityTests.testLatestClickReplacesAMountingSelection`. No claim is made that these are all existing failures or that a passing sample repairs them.
 - At 13:59:27 Istanbul, primary PID21335 and cleanup PID28782 had exited; all 12 observed xctest PIDs were absent. Cleanup verified all 320 exact owned backend IDs absent. Sent explicit release to #606 and the deprecation owner. #606 owns the next build/native slot until its explicit release.
 - Remote diagnostic run `42366404098` narrows the unchanged failed page-lifetime experiment to the page-background/popup case and the following restore case, with three predetermined attempts. This is a causal reproduction, not a passing retry or proposed repair. No local app/build work is queued.
+
+### Approved public macOS 26 compatibility exception
+
+The user explicitly approved keeping the deprecated but public process owner only on macOS 26, after the fully nondeprecated public alternatives failed validation or review. Keep two lazy application-lifetime owners with the public default initializer and configuration property. No private process-pool configuration or scheme revalidation remains. macOS 27+ bypasses and does not initialize the owners. Preserve the Boolean preference adapter. No minimum OS increase is authorized or required.
+
+Applied proposal `839cca62` to the implementation after rebasing onto `12a7587a`. The prototype per-profile configuration cache and controller/page association are absent. Remote focused preflight of diagnostic source `44a220f2` runs three predetermined rounds covering DraftProtection, startup/watchdog, user-agent/resource updates and compatibility-adapter tests. Required full CI follows only after that gate passes. #606 must merge first, followed by the final integration rebase and validation.

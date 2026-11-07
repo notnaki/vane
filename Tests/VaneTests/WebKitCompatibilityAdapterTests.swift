@@ -62,4 +62,21 @@ final class WebKitCompatibilityAdapterTests: XCTestCase {
         }
     }
 
+    @MainActor func testPublicCompatibilityOwnersPreserveDistinctIdentitiesAndCopies() {
+        let browser = VaneWebProcessPoolOwner()
+        let extensions = VaneWebProcessPoolOwner()
+        let configuration = WKWebViewConfiguration()
+        let store = WKWebsiteDataStore.nonPersistent()
+        configuration.websiteDataStore = store
+        browser.configure(configuration)
+        let copied = configuration.copy() as! WKWebViewConfiguration
+        XCTAssertTrue(browser.matches(configuration))
+        XCTAssertTrue(browser.matches(copied))
+        XCTAssertFalse(extensions.matches(configuration))
+        extensions.configure(configuration)
+        XCTAssertTrue(configuration.websiteDataStore === store)
+        XCTAssertTrue(extensions.matches(configuration))
+        XCTAssertTrue(browser.matches(copied))
+    }
+
 }

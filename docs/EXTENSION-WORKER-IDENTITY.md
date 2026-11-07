@@ -16,6 +16,8 @@ Before a managed extension context is loaded, Vane waits for WebKit's public `WK
 
 WebKit's public website-data record lookup omits custom extension origins, so this evicts the profile's whole in-memory resource cache. Browsing resources may need to be read again, including from the unchanged disk cache. It runs at extension context loading rather than every request, and does not affect other profile stores. The old private `alwaysRevalidatedURLSchemes` process-pool configuration is no longer required.
 
+macOS 26 retains two application-lifetime owners through the deprecated but public `WKProcessPool` API, solely to avoid native IPC receiver retirement failures. These owners use the public default initializer and public configuration property, with no private pool configuration or revalidation policy. macOS 27 and later bypass this compatibility path. This is an explicitly accepted compatibility exception; `WKProcessPool` remains deprecated.
+
 Changing the selected identity rebuilds MV3 contexts. Reloads retain the native controller, runtime identifier, origin, profile store and explicit access decisions, including denied and expiring grants. Overlapping selections settle on the latest identity; removal invalidates a pending restart. MV2 backgrounds, popups and content scripts retain their existing loading paths.
 
 ## Chrome API scope
