@@ -72,6 +72,7 @@ private struct DisabledKeyboardSurface: View {
     /// Admit the native loop and exact mounted page owner before the handoff deadline,
     /// keeping the target page cold. Retire the fixture before closing its owned loop.
     private func withNativePageFixture(
+        isPrivate: Bool = true,
         _ body: @MainActor (TabStore, NSWindow, WKWebView) async throws -> Void
     ) async throws {
         TestEnvironment.prepare()
@@ -82,7 +83,7 @@ private struct DisabledKeyboardSurface: View {
         let loop = try await NativeFixtureApplicationLoop.acquire()
         var failure: (any Error)?
         do {
-            let (store, window, web, retire) = makeFixture(isPrivate: true)
+            let (store, window, web, retire) = makeFixture(isPrivate: isPrivate)
             defer { retire() }
             window.makeKeyAndOrderFront(nil)
             app.activate(ignoringOtherApps: true)
@@ -497,27 +498,39 @@ private struct DisabledKeyboardSurface: View {
     }
 
     func testF6LeavesTheLocalEaselForBrowserControls() async throws {
-        let (store, window, _) = fixture(isPrivate: false)
-        let opened = await store.openEaselAsync(create: true)
-        let tab = try XCTUnwrap(opened)
-        let session = try XCTUnwrap(tab.easelSession)
-        let page = EaselHostingView(rootView: EaselWorkspace(session: session, browser: store))
-        let chrome = NSHostingView(rootView: AddressPill(tab: tab).environmentObject(store))
-        let container = NSView(frame: window.contentView!.frame)
-        page.frame = NSRect(x: 250, y: 0, width: 550, height: 600)
-        chrome.frame = NSRect(x: 0, y: 520, width: 250, height: 80)
-        container.addSubview(chrome)
-        container.addSubview(page)
-        window.contentView = container
-        chrome.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(150))
-        XCTAssertTrue(window.makeFirstResponder(page))
-        store.focusNextArea()
-        try await Task.sleep(for: .milliseconds(150))
-        XCTAssertFalse(window.firstResponder === page, "F6 must leave the canvas for the address pill")
-        XCTAssertFalse(window.firstResponder === window)
-        store.focusNextArea()
-        XCTAssertTrue(window.firstResponder === page)
+        try await withNativePageFixture(isPrivate: false) { store, window, _ in
+            let opened = await store.openEaselAsync(create: true)
+            let tab = try XCTUnwrap(opened)
+            let session = try XCTUnwrap(tab.easelSession)
+            let page = EaselHostingView(rootView: EaselWorkspace(session: session, browser: store))
+            let chrome = NSHostingView(rootView: AddressPill(tab: tab).environmentObject(store))
+            let container = NSView(frame: window.contentView!.frame)
+            page.frame = NSRect(x: 250, y: 0, width: 550, height: 600)
+            chrome.frame = NSRect(x: 0, y: 520, width: 250, height: 80)
+            container.addSubview(chrome)
+            container.addSubview(page)
+            window.contentView = container
+            chrome.layoutSubtreeIfNeeded()
+            // Admit the new local page and its visible chrome before starting
+            // the unchanged 150ms handoff deadline, not the desired focus result.
+            try await compatibilityWait {
+                NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
+                    && window.isVisible && window.occlusionState.contains(.visible)
+                    && NSApp.modalWindow == nil && window.attachedSheet == nil
+                    && page.window === window && chrome.window === window
+                    && store.activePageResponder === page
+            }
+            XCTAssertTrue(window.makeFirstResponder(page))
+            print("F6_EASEL before-action running=\(NSApp.isRunning) active=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) key=\(window.isKeyWindow) visible=\(window.isVisible) pageOwner=\(store.activePageResponder === page) holder=\(String(describing: window.firstResponder))")
+            XCTAssertTrue(NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window,
+                          "F6 must start in an admitted foreground AppKit window")
+            store.focusNextArea()
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertFalse(window.firstResponder === page, "F6 must leave the canvas for the address pill")
+            XCTAssertFalse(window.firstResponder === window)
+            store.focusNextArea()
+            XCTAssertTrue(window.firstResponder === page)
+        }
     }
 
     func testSearchResultHandsFocusFromOldPageToNewTab() async throws {
