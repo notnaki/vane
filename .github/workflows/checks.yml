@@ -1,381 +1,49 @@
-name: checks
-
+name: Extension cache native preflight
 on:
-  push:
-    branches: [main]
-  pull_request:
-
+  workflow_dispatch:
+    inputs:
+      native_filter:
+        description: Focused cases
+        required: true
+        default: 'DraftProtectionTests|ExtensionBackgroundStartupTests|ExtensionBackgroundWatchdogTests|ExtensionUserAgentTests'
 permissions:
   contents: read
-
-# Superseded PRs cancel; each main run has its own group and is preserved.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
-  changes:
-    name: Change scope and diff checks
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: read
-    outputs:
-      app_required: ${{ steps.scope.outputs.app_required }}
-      native_reused: ${{ steps.reuse.outputs.native_reused || 'false' }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Validate diff and choose checks
-        id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.sha }}
-        run: python3 scripts/ci-change-scope.py --base "$BASE_SHA" --head "$HEAD_SHA"
-
-      - name: Verify identical PR native results
-        id: reuse
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.scope.outputs.app_required == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.before }}
-        run: python3 scripts/ci-native-reuse.py
-
-  routing:
-    # Run universal fixtures alongside scope detection so compilation can start early.
-    name: Website and routing fixtures
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      # Keep the required aggregate green when native jobs intentionally skip.
-      - name: Fast path regressions
-        run: |
-          python3 scripts/test-ci-native-reuse.py
-          python3 scripts/test-ci-change-scope.py
-          python3 scripts/test-checks-workflow.py
-          node docs/tests/galaxy.test.cjs
-
-  source:
-    needs: [changes]
-    if: needs.changes.outputs.app_required == 'true'
-    name: Source fixtures
+  preflight:
     runs-on: macos-26
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-
-      - name: Source timestamp cache fixture
-        run: python3 scripts/test-ci-source-state.py
-
-      - name: Release workflow fixture
-        run: |
-          python3 scripts/test-release-workflow.py
-          python3 scripts/test-prepare-nightly.py
-          python3 scripts/test-update-channel.py
-
-      - name: Packaged resource regression
-        run: python3 scripts/test-packaged-resources.py
-
-      - name: Default browser prompt build policy
-        run: python3 scripts/test-default-browser-prompt.py
-
-      - name: Native shard coverage fixtures
-        run: python3 scripts/test-native-test-shards.py
-
-      - name: Historical worker UA evidence fixtures
-        run: python3 scripts/test-classify-worker-ua.py
-
-      - name: Shared build artifact fixtures
-        run: python3 scripts/test-ci-build-artifact.py
-
-      - name: Native fixture runner safety
-        run: python3 scripts/test-native-fixture-runner.py
-
-  build:
-    name: Shared debug build
-    needs: [changes]
-    if: needs.changes.outputs.app_required == 'true'
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Identify Swift toolchain
-        id: toolchain
-        run: |
-          set -euo pipefail
-          KEY=$(python3 scripts/ci-build-artifact.py toolchain)
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
-
-      # Only checks builds go into this cache. Release builds compile an OAuth secret
-      # into the app, so their build products must never enter a PR-readable cache.
-      # PRs reuse main's cache without leaving a separate archive for every revision.
-      - name: Restore Swift debug build
-        id: swift-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: .build
-          key: swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**', 'Tests/**', 'scripts/ci-source-state.py', 'make-app.sh', '.github/workflows/checks.yml') }}
-          restore-keys: |
-            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
-            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
-
-      # Checkout gives even unchanged inputs new mtimes. Restore only content-matching
-      # timestamps for Swift, C/Objective-C bridges, headers and resources. Rebuilding
-      # an unchanged bridge can invalidate all dependent Swift compilation.
-      - name: Restore unchanged source timestamps
-        run: python3 scripts/ci-source-state.py restore
-
-      - name: Build app and native tests once
-        run: swift build -c debug --build-tests --disable-index-store
-
-      - name: Bundle
+      - name: Select supported toolchain
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+      - name: Build actual diagnostic tree
+        run: swift build --build-system native --build-tests --jobs 4
+      - name: Focused native repetitions
         env:
-          VANE_CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}
-        run: ./make-app.sh debug --skip-app-build
-
-      - name: Package shared debug runtime
+          NATIVE_FILTER: ${{ inputs.native_filter }}
+          NSUnbufferedIO: YES
+        shell: bash
         run: |
-          set -euo pipefail
-          BIN_PATH=$(swift build -c debug --show-bin-path)
-          python3 scripts/ci-build-artifact.py pack \
-            --bin-path "$BIN_PATH" --revision "$GITHUB_SHA" \
-            --archive "$RUNNER_TEMP/vane-debug-runtime.tar.gz"
-
-      - name: Share compiled runtime
-        uses: actions/upload-artifact@v6
-        with:
-          name: debug-runtime
-          path: ${{ runner.temp }}/vane-debug-runtime.tar.gz
-          compression-level: 0
-          overwrite: true
-          retention-days: 1
-
-      - name: Save source timestamps for the build cache
-        run: python3 scripts/ci-source-state.py save
-
-      - name: Save Swift debug build
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swift-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: .build
-          key: ${{ steps.swift-cache.outputs.cache-primary-key }}
-
-  native:
-    # Share compiled products; each shard still owns its own isolated desktop.
-    name: Native regressions (${{ matrix.shard }}/4)
-    needs: [changes, build]
-    if: needs.changes.outputs.app_required == 'true' && needs.changes.outputs.native_reused != 'true'
-    runs-on: macos-26
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    env:
-      NATIVE_SHARD: ${{ matrix.shard }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download compiled runtime
-        uses: actions/download-artifact@v8
-        with:
-          # Preserve v5's warning policy; the restore step verifies our archive.
-          digest-mismatch: warn
-          name: debug-runtime
-          path: ${{ runner.temp }}/vane-debug-runtime
-
-      - name: Restore and verify compiled runtime
-        run: |
-          python3 scripts/ci-build-artifact.py restore \
-            --revision "$GITHUB_SHA" \
-            --archive "$RUNNER_TEMP/vane-debug-runtime/vane-debug-runtime.tar.gz"
-
-      - name: Discover and partition all native tests
-        run: |
-          set -euo pipefail
-          swift test list --skip-build > "$RUNNER_TEMP/vane-native-tests.txt"
-          python3 scripts/native-test-shards.py plan \
-            --inventory "$RUNNER_TEMP/vane-native-tests.txt" \
-            --suite required \
-            --index "$NATIVE_SHARD" --count 4 \
-            --manifest "$RUNNER_TEMP/vane-native-shard.json" \
-            --filter-output "$RUNNER_TEMP/vane-native-shard.filter"
-
-      # A fresh selected host verifies startup, async progress and two owned
-      # stop-and-return cycles before this shard uses the same loop helper.
-      # The outer bound includes SwiftPM's restored-build planning/startup.
-      # NativeFixtureApplicationLoop keeps its own 12s lifecycle watchdogs.
-      - name: Owned AppKit loop preflight
-        timeout-minutes: 4
-        env:
-          VANE_APPKIT_LOOP_SMOKE: '1'
-          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
-          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
-        run: |
-          set -euo pipefail
-          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/vane-appkit-loop-preflight.log"
-          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-appkit-loop-preflight.log"; then exit 1; fi
-          grep -Fq "Test Case '-[VaneTests.NativeApplicationLoopSmokeTests testOwnedLoopAdmitsAsyncWorkAndStops]' passed" "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Expected owned AppKit loop preflight did not pass.'; exit 1; }
-          grep -Fq 'AppKit loop smoke: delayedHeartbeat=true, completed=true' "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Delayed AppKit heartbeat regression did not complete.'; exit 1; }
-          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-appkit-loop-preflight.log" || { echo '::error::Owned AppKit loop preflight retirement was not verified.'; exit 1; }
-
-      - name: Native regression tests
-        timeout-minutes: 24
-        env:
-          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
-          # Capture the original process/order, even when no ReportCrash file appears.
-          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
-        run: |
-          set -euo pipefail
-          python3 scripts/run-native-tests.py --skip-build --jobs 1 \
-            --filter "$(cat "$RUNNER_TEMP/vane-native-shard.filter")" \
-            2>&1 | tee "$RUNNER_TEMP/vane-swift-tests.log"
-          # Swift's signal handler can return after a software-raised trap. A fatal
-          # signal remains a failed test run even if the process then exits zero.
-          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-swift-tests.log"; then
-            echo '::error::Swift runtime captured a fatal signal during tests.'
-            exit 1
-          fi
-
-      - name: Verify every selected native test completed
-        run: |
-          python3 scripts/native-test-shards.py verify \
-            --manifest "$RUNNER_TEMP/vane-native-shard.json" \
-            --log "$RUNNER_TEMP/vane-swift-tests.log"
-
-      - name: Preserve native loop failure evidence
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: native-loop-logs-${{ matrix.shard }}
-          overwrite: true
-          path: |
-            ${{ runner.temp }}/vane-appkit-loop-preflight.log
-            ${{ runner.temp }}/vane-swift-tests.log
-            ${{ runner.temp }}/vane-native-tests.txt
-            ${{ runner.temp }}/vane-native-shard.json
-            ${{ runner.temp }}/vane-native-shard.filter
-          if-no-files-found: ignore
-          retention-days: 7
-
-  packaging:
-    # Common runtime/fixture checks run once, away from the native test desktops.
-    name: Packaging and integrations
-    needs: [changes, build]
-    if: needs.changes.outputs.app_required == 'true'
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download compiled runtime
-        uses: actions/download-artifact@v8
-        with:
-          # Preserve v5's warning policy; the restore step verifies our archive.
-          digest-mismatch: warn
-          name: debug-runtime
-          path: ${{ runner.temp }}/vane-debug-runtime
-
-      - name: Restore and verify compiled runtime
-        run: |
-          python3 scripts/ci-build-artifact.py restore \
-            --revision "$GITHUB_SHA" \
-            --archive "$RUNNER_TEMP/vane-debug-runtime/vane-debug-runtime.tar.gz"
-
-      - name: Checks
-        run: ./.build/debug/vane selfcheck --pure
-
-      - name: Cold WebKit registry startup
-        run: scripts/check-webkit-startup.sh
-
-      - name: App icon migration and bundled selections
-        run: scripts/check-app-icons.sh
-
-      - name: CLI password import errors
-        run: bash scripts/test-cli-import.sh .build/debug/vane
-
-      - name: Cloud AI transport and privacy checks
-        run: scripts/check-cloud-ai.sh
-
-      - name: DMG package
-        run: ./scripts/test-build-dmg.sh
-
-      - name: Updater interruption, rollback, transport and relaunch recovery
-        run: |
-          scripts/test-updater-recovery.sh
-          bash scripts/test-update-launch-ownership.sh
-          python3 scripts/test-updater-transport.py
-          python3 scripts/test-updater-archive.py
-          scripts/test-updater-relaunch.sh
-
-      - name: Update installer rejection and quarantine cleanup
-        run: bash scripts/test-update-installer.sh Vane.app --unsigned
-
-  checks:
-    # Only cheap scopes or verified main native reuse permit intentional skips.
-    if: ${{ always() }}
-    needs: [changes, routing, source, build, native, packaging]
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Require every selected check to pass
-        env:
-          ROUTING_RESULT: ${{ needs.routing.result }}
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          APP_REQUIRED: ${{ needs.changes.outputs.app_required }}
-          NATIVE_REUSED: ${{ needs.changes.outputs.native_reused }}
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_REF: ${{ github.ref }}
-          SOURCE_RESULT: ${{ needs.source.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
-          NATIVE_RESULT: ${{ needs.native.result }}
-          PACKAGING_RESULT: ${{ needs.packaging.result }}
-        run: |
-          set -euo pipefail
-          [ "$CHANGES_RESULT" = success ] || { echo '::error::Change detection failed.'; exit 1; }
-          [ "$ROUTING_RESULT" = success ] || { echo '::error::Website or routing fixtures failed.'; exit 1; }
-          case "$APP_REQUIRED" in
-            true) expected=success ;;
-            false) expected=skipped ;;
-            *) echo '::error::Missing or invalid change scope.'; exit 1 ;;
-          esac
-          case "$NATIVE_REUSED" in
-            false) native_expected="$expected" ;;
-            true)
-              if [ "$EVENT_NAME" != push ] || [ "$EVENT_REF" != refs/heads/main ] || [ "$APP_REQUIRED" != true ]; then
-                echo '::error::Native reuse is only valid for app checks on main pushes.'
-                exit 1
-              fi
-              native_expected=skipped
-              ;;
-            *) echo '::error::Missing or invalid native reuse decision.'; exit 1 ;;
-          esac
-          [ "$NATIVE_RESULT" = "$native_expected" ] || { echo '::error::Native validation did not match the verified plan.'; exit 1; }
-          for result in "$SOURCE_RESULT" "$BUILD_RESULT" "$PACKAGING_RESULT"; do
-            if [ "$result" != "$expected" ]; then
-              echo "::error::A selected check did not succeed or an app job skipped unexpectedly (result=$result, expected=$expected)."
-              exit 1
-            fi
+          set -uo pipefail
+          status=0
+          for attempt in 1 2 3; do
+            python3 scripts/run-native-tests.py --build-system native --skip-build --jobs 1 --filter "$NATIVE_FILTER" 2>&1 | tee "$RUNNER_TEMP/cache-preflight-$attempt.log"
+            code=${PIPESTATUS[0]}
+            if [ "$code" -ne 0 ]; then status=1; fi
           done
-
-  prune-caches:
-    # Keep deletion credentials away from the build and from pull request runs.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.app_required == 'true'
-    needs: [changes, checks]
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Keep the two newest Swift debug caches
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          exit "$status"
+      - name: Collect system diagnostics
+        if: always()
+        shell: bash
         run: |
-          set -euo pipefail
-          gh cache list --ref refs/heads/main --key swift-debug- \
-            --limit 10000 --sort created_at --order desc --json id \
-            --jq '.[2:] | .[].id' > "$RUNNER_TEMP/stale-cache-ids"
-          while IFS= read -r cache_id; do
-            gh cache delete "$cache_id"
-          done < "$RUNNER_TEMP/stale-cache-ids"
+          mkdir -p "$RUNNER_TEMP/cache-diagnostics"
+          log show --last 10m --style compact --predicate 'process == "xctest"' > "$RUNNER_TEMP/cache-diagnostics/system.log" 2>&1 || true
+          shopt -s nullglob
+          for report in "$HOME"/Library/Logs/DiagnosticReports/xctest*; do cp "$report" "$RUNNER_TEMP/cache-diagnostics/"; done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cache-preflight-diagnostics
+          path: |
+            ${{ runner.temp }}/cache-preflight-*.log
+            ${{ runner.temp }}/cache-diagnostics

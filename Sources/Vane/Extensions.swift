@@ -585,11 +585,16 @@ import WebKit
         guard let store = controller.configuration.defaultWebsiteDataStore else {
             throw Failure("The extension profile store is unavailable. Retry before starting the extension.")
         }
+        FileHandle.standardError.write(Data("CACHE_PROD before-wait\n".utf8))
         try await ExtensionBackgroundStartup.wait(start: { completion in
+            FileHandle.standardError.write(Data("CACHE_PROD before-store-call\n".utf8))
             store.removeData(ofTypes: [WKWebsiteDataTypeMemoryCache], modifiedSince: .distantPast) {
+                FileHandle.standardError.write(Data("CACHE_PROD store-callback\n".utf8))
                 completion(nil)
+                FileHandle.standardError.write(Data("CACHE_PROD store-callback-returned\n".utf8))
             }
         }, check: checkLifetime)
+        FileHandle.standardError.write(Data("CACHE_PROD resumed-wait\n".utf8))
         // The callback validates before resuming us; removal can run in that gap.
         try checkLifetime()
         try controller.load(context)
