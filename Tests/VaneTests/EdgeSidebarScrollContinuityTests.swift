@@ -177,8 +177,7 @@ import XCTest
                 _ = try SidebarSnapshot.pixels(in: host)
             }
         }
-        NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: commit ? .ended : .cancelled,
-                                          timestamp: gestureStart + 0.5))
+        NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: commit ? .ended : .cancelled))
         if diagonal {
             for _ in 0..<4 {
                 NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, dx: 15, dy: 10,
