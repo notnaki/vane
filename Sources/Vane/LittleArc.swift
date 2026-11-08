@@ -180,14 +180,23 @@ import SwiftUI
         guard !all.isEmpty else { return }
         if allShowing {
             all.forEach { $0.miniaturize(nil) }
+            rebuild()
         } else {
-            for w in all {
-                if w.isMiniaturized { w.deminiaturize(nil) }
-                w.orderFront(nil)
-            }
-            all.last?.makeKeyAndOrderFront(nil)
+            showAll()
         }
-        rebuild()          // the item's own title is the thing that just changed
+    }
+
+    /// The Dock's Show command always reveals; unlike the Window menu's toggle,
+    /// invoking it again must never minimize windows that are already visible.
+    static func showAll() {
+        let all = windows
+        guard !all.isEmpty else { return }
+        for window in all {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.orderFront(nil)
+        }
+        all.last?.makeKeyAndOrderFront(nil)
+        rebuild()
     }
 
     // MARK: - Open in ▸
