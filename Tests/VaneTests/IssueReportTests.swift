@@ -84,4 +84,21 @@ import XCTest
         XCTAssertEqual(handoff.url.host, "github.com")
         XCTAssertEqual(handoff.url.scheme, "https")
     }
+
+    func testFallbackStaysBoundedEvenWhenOneGraphemeHasThousandsOfCombiningMarks() {
+        let title = "e" + String(repeating: "\u{301}", count: 10_000)
+        let handoff = IssueReportHandoff(title: title, markdown: "Full report")
+        XCTAssertTrue(handoff.requiresPaste)
+        XCTAssertLessThanOrEqual(handoff.url.absoluteString.utf8.count, IssueReportHandoff.maximumURLBytes)
+    }
+
+    func testShareRequiresBothSummaryAndDescription() {
+        var draft = IssueReportDraft(snapshot: DiagnosticLog().snapshot(), environment: "fixture")
+        XCTAssertFalse(draft.canShare)
+        draft.title = "Title"
+        draft.details = " \n "
+        XCTAssertFalse(draft.canShare)
+        draft.details = "Reproduction"
+        XCTAssertTrue(draft.canShare)
+    }
 }

@@ -26,22 +26,30 @@
 
 Files: create `Sources/Vane/IssueReport.swift`, `Tests/VaneTests/IssueReportTests.swift`.
 
-- [ ] Write tests for cutoff inclusion, old/future eviction, capacity, private-event rejection, snapshot stability, default log exclusion, opt-in filtering, and URL decoding/oversize fallback.
-- [ ] Run the focused tests and observe missing APIs fail.
-- [ ] Implement `DiagnosticEvent`, `DiagnosticLog`, `IssueReportDraft`, and `IssueReportHandoff` with an injected clock in tests and a size-bounded URL decision.
-- [ ] Run focused tests, then commit the model and tests.
+- [x] Write tests for cutoff inclusion, old/future eviction, capacity, private-event rejection, snapshot stability, default log exclusion, opt-in filtering, and URL decoding/oversize fallback.
+- [x] Run the focused tests and observe missing APIs fail.
+- [x] Implement `DiagnosticEvent`, `DiagnosticLog`, `IssueReportDraft`, and `IssueReportHandoff` with an injected clock in tests and a size-bounded URL decision.
+- [x] Run focused tests, then commit the model and tests.
 
 ### Task 2: Native report window and instrumentation
 
 Files: create `Sources/Vane/IssueReportWindow.swift`, `Tests/VaneTests/IssueReportWindowTests.swift`; modify `Menu.swift`, `Palette.swift`, `Engine.swift`, `main.swift`, `README.md`.
 
-- [ ] Add native tests proving shared presentation preserves a visible draft, close/reopen clears consent, and a real navigation failure records only a numeric code while private activity is absent.
-- [ ] Implement title/description entry, optional logs and time-window picker, exact preview, copy/save, and GitHub draft action with explicit oversized fallback and open/save errors.
-- [ ] Wire Help and the existing palette report action. Instrument launch and accepted public navigation start/commit/finish/failure/process-termination callbacks.
-- [ ] Run the focused native regressions through `scripts/run-native-tests.py`, build and pure selfchecks, update documentation, and commit.
+- [x] Add native tests proving shared presentation preserves a visible draft, close/reopen clears consent, and a real navigation failure records only a numeric code while private activity is absent.
+- [x] Implement title/description entry, optional logs and time-window picker, exact preview, copy/save, and GitHub draft action with explicit oversized fallback and open/save errors.
+- [x] Wire Help and the existing palette report action. Instrument launch and accepted public navigation start/commit/finish/failure/process-termination callbacks.
+- [x] Run the focused native regressions through `scripts/run-native-tests.py`, build and pure selfchecks, update documentation, and commit.
 
 ### Task 3: Review and integrate
 
 - [ ] Inspect the final diff and obtain independent review of the current head; repair actionable findings and validate them.
 - [ ] Push, open and link a PR, satisfy required CI and review on the latest integration tree.
 - [ ] Recheck separate main CI, squash-merge, verify preservation, clean up task-owned processes/worktree, and report links and verification.
+
+## Verification record
+
+- Baseline: `swift build -c debug --build-tests --disable-index-store` passed.
+- Model RED: missing diagnostic/report APIs; GREEN: six tests passed.
+- Native RED: missing report window/session APIs. Added edge cases then observed oversized combining-mark URL and missing window minimum fail; fixed URL fallback and explicit content minimum.
+- `scripts/run-native-tests.py --disable-index-store --jobs 1 --filter IssueReport`: 14 tests passed; exact fixture cleanup status 0.
+- `vane selfcheck --pure`: 3,680 assertions passed. Light default-size and dark minimum-size report captures inspected.

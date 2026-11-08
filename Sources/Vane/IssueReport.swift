@@ -140,8 +140,10 @@ struct IssueReportHandoff {
         if requiresPaste {
             // Keep this bounded even for arbitrarily long Unicode titles. The original
             // title remains in the report window; the full body goes on the clipboard.
-            url = draftURL(title: String(title.prefix(120)),
-                           body: "Paste the report copied by Vane here (Command-V).")
+            let instruction = "Paste the report copied by Vane here (Command-V)."
+            let fallback = draftURL(title: String(title.prefix(120)), body: instruction)
+            url = fallback.absoluteString.utf8.count <= Self.maximumURLBytes
+                ? fallback : draftURL(title: "Vane problem report", body: instruction)
         } else {
             url = candidate
         }

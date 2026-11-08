@@ -975,6 +975,8 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         NSApp.changeWindowsItem(w, title: w.title, filename: false)
     }
     let help = menu("Help", [
+        item("Report a Problem…", "") { IssueReportWindow.show() },
+        .separator(),
         item(.vaneHelp) {
             if let u = URL(string: "https://github.com/notnaki/vane") { NSWorkspace.shared.open(u) }
         },

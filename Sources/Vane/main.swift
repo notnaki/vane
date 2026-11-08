@@ -41,6 +41,7 @@ if args.first == "import" {
 // The event loop starts before disk recovery, while browser/storage bootstrap
 // remains ordered behind it. Slow bundle verification cannot monopolize AppKit.
 @MainActor func launchBrowser() async {
+    DiagnosticLog.shared.record(.launched)
     defer { AppLifecycle.shared.completeBootstrap() }
     // A replacement that failed before its first healthy launch restores the prior app and
     // relaunches it. This must happen before any browser window or storage migration begins.
