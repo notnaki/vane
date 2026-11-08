@@ -101,4 +101,18 @@ import XCTest
         draft.details = "Reproduction"
         XCTAssertTrue(draft.canShare)
     }
+
+    func testOversizedDraftPreservesEntireSummaryInReviewedAndCopiedReport() {
+        for summary in [String(repeating: "A long summary ", count: 40),
+                        "e" + String(repeating: "\u{301}", count: 2_000)] {
+            var draft = IssueReportDraft(snapshot: DiagnosticLog().snapshot(), environment: "fixture")
+            draft.title = summary
+            draft.details = String(repeating: "Full reproduction steps\n", count: 2_000)
+            let handoff = draft.handoff
+            XCTAssertTrue(handoff.requiresPaste)
+            XCTAssertNotNil(draft.markdown.range(of: summary, options: .literal), "The preview must retain the complete summary")
+            XCTAssertNotNil(handoff.clipboardText.range(of: summary, options: .literal), "The copied report must retain the complete summary")
+            XCTAssertNotNil(handoff.clipboardText.range(of: draft.details, options: .literal))
+        }
+    }
 }

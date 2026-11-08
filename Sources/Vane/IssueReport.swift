@@ -83,7 +83,7 @@ struct IssueReportDraft {
     }
 
     var markdown: String {
-        var text = "## What happened\n\n\(details)\n\n## Environment\n\n\(environment)\n"
+        var text = "## Summary\n\n\(title)\n\n## What happened\n\n\(details)\n\n## Environment\n\n\(environment)\n"
         guard includeLogs else { return text }
         let captured = snapshot.capturedAt.ISO8601Format()
         let lines = selectedEvents.map { event in
@@ -139,7 +139,7 @@ struct IssueReportHandoff {
         requiresPaste = candidate.absoluteString.utf8.count > Self.maximumURLBytes
         if requiresPaste {
             // Keep this bounded even for arbitrarily long Unicode titles. The original
-            // title remains in the report window; the full body goes on the clipboard.
+            // summary is also in the reviewed Markdown, so the copy retains it in full.
             let instruction = "Paste the report copied by Vane here (Command-V)."
             let fallback = draftURL(title: String(title.prefix(120)), body: instruction)
             url = fallback.absoluteString.utf8.count <= Self.maximumURLBytes

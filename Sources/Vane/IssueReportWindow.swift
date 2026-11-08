@@ -8,7 +8,8 @@ import UniformTypeIdentifiers
     static var session: IssueReportSession? { controller?.session }
 
     static func show(in origin: TabStore? = Windows.current) {
-        if let window, window.isVisible {
+        if let window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
             NSApp.activate()
             return
@@ -65,7 +66,7 @@ import UniformTypeIdentifiers
         panel.nameFieldStringValue = "Vane-problem-report.md"
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
         panel.canCreateDirectories = true
-        let markdown = "# \(session.draft.title)\n\n" + session.draft.markdown
+        let markdown = session.draft.markdown
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
             do {

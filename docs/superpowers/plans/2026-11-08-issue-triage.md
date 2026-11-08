@@ -42,7 +42,7 @@ Files: create `Sources/Vane/IssueReportWindow.swift`, `Tests/VaneTests/IssueRepo
 
 ### Task 3: Review and integrate
 
-- [ ] Inspect the final diff and obtain independent review of the current head; repair actionable findings and validate them.
+- [x] Inspect the final diff and obtain independent review of the current head; repair actionable findings and validate them.
 - [ ] Push, open and link a PR, satisfy required CI and review on the latest integration tree.
 - [ ] Recheck separate main CI, squash-merge, verify preservation, clean up task-owned processes/worktree, and report links and verification.
 
@@ -53,3 +53,7 @@ Files: create `Sources/Vane/IssueReportWindow.swift`, `Tests/VaneTests/IssueRepo
 - Native RED: missing report window/session APIs. Added edge cases then observed oversized combining-mark URL and missing window minimum fail; fixed URL fallback and explicit content minimum.
 - `scripts/run-native-tests.py --disable-index-store --jobs 1 --filter IssueReport`: 14 tests passed; exact fixture cleanup status 0.
 - `vane selfcheck --pure`: 3,680 assertions passed. Light default-size and dark minimum-size report captures inspected.
+- Independent review found one P2: oversized title text could be lost. Full summary is now part of previewed/copied/saved Markdown; regression observed RED then GREEN, including a combining-mark title.
+- After the review fix, report/navigation/palette coverage: 59 tests passed, primary status 0, exact cleanup status 0.
+- Additional lifecycle regression reproduced replacement of a hidden draft. Reusing the retained controller until close now preserves hidden/minimized drafts; targeted validation recorded in the PR.
+- Hidden-draft fix: focused report tests 15/15 passed, primary/cleanup status 0; final pure selfchecks passed. No task-launched standalone Vane app was run.
