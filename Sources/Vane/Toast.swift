@@ -26,6 +26,8 @@ import SwiftUI
         /// A sticky toast is up because something is still true, not because something just
         /// happened: no clock, and an × of its own. The updater is the only thing with one.
         var sticky = false
+        /// Status notices may wrap; page titles keep their usual single-line truncation.
+        var wraps = false
         /// The window it happened in, so only that window draws it. On the toast
         /// rather than the store: a toast from a second window must not drag the one
         /// already showing into the wrong sidebar. `nil` means every window, which is what a
@@ -87,9 +89,9 @@ import SwiftUI
     /// Automatic page notices may fill an empty ordinary slot, but must not replace an
     /// action the user can still take — including one held past its expiry by hovering.
     static func show(_ text: String, action: (title: String, run: @MainActor () -> Void)? = nil,
-                     in store: TabStore? = Windows.current, replacingCurrent: Bool = true) {
+                     in store: TabStore? = Windows.current, replacingCurrent: Bool = true, wraps: Bool = false) {
         guard replacingCurrent || shared.queue.latest == nil else { return }
-        shared.put(Toast(text: text, action: action, owner: store.map(ObjectIdentifier.init)))
+        shared.put(Toast(text: text, action: action, wraps: wraps, owner: store.map(ObjectIdentifier.init)))
     }
 
     /// Up it goes, and whatever was showing goes with it — clock, hover and all. Dropping
@@ -342,7 +344,7 @@ struct ToastPill: View {
         // `styled` sets both weights itself. Page titles truncate on one line; persistent
         // update notices can use two lines to keep their status readable.
         Text(styled(toast.text, emphasis: toast.sticky))
-            .lineLimit(toast.sticky ? 2 : 1)
+            .lineLimit(toast.sticky || toast.wraps ? 2 : 1)
             .truncationMode(.tail)
             .fixedSize(horizontal: false, vertical: true)
             .foregroundStyle(Look.barSelectedText)
