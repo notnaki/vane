@@ -974,6 +974,32 @@ extension VaneWindow {
     }
 }
 
+/// Native travel sits above the SwiftUI search overlay. Multiply only its captured
+/// content by the scrim colour; its transparent ground is already dimmed underneath.
+private struct NativeSpacePreview: View {
+    let preview: SpacePreviewList
+    let scope: SidebarNativeReadinessScope
+    let theme: SpaceChromeTheme
+    @ObservedObject var store: TabStore
+
+    var body: some View {
+        let dimmed = store.palette.map { !$0.usesSidebarAddress(in: store) } ?? false
+        if dimmed {
+            content.colorMultiply(Color(white: 1 - Look.scrimOpacity))
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        preview.equatable()
+            .environment(\.sidebarNativeReadinessScope, scope)
+            .environment(\.spaceChromeTheme, theme)
+            .environment(\.colorScheme, preview.colorScheme)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
 /// Keep the same two sidebar surfaces on a native track from finger movement through
 /// landing, including page selection underneath it and a profile host handoff.
 @MainActor final class ProfileSpaceSlide: NSView {
@@ -1023,16 +1049,10 @@ extension VaneWindow {
         let incomingFallback = ProfileManager.shared.profiles.first { $0.id == incoming.space.profileID }?.colorHex
             ?? source.profile.colorHex
         let incomingTheme = SpaceChromeTheme(space: incoming.space, fallback: incomingFallback)
-        let outgoingHost = NSHostingView(rootView: outgoing
-            .environment(\.sidebarNativeReadinessScope, outgoingScope)
-            .environment(\.spaceChromeTheme, outgoingTheme)
-            .environment(\.colorScheme, outgoing.colorScheme)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
-        let incomingHost = NSHostingView(rootView: incoming
-            .environment(\.sidebarNativeReadinessScope, incomingScope)
-            .environment(\.spaceChromeTheme, incomingTheme)
-            .environment(\.colorScheme, incoming.colorScheme)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
+        let outgoingHost = NSHostingView(rootView: NativeSpacePreview(
+            preview: outgoing, scope: outgoingScope, theme: outgoingTheme, store: source))
+        let incomingHost = NSHostingView(rootView: NativeSpacePreview(
+            preview: incoming, scope: incomingScope, theme: incomingTheme, store: source))
         // Both captures have an explicit native frame. Intrinsic/min/max fitting
         // probes otherwise lay out the frozen rows again during window layout.
         outgoingHost.sizingOptions = []
@@ -1090,6 +1110,13 @@ extension VaneWindow {
         // Both keep this overlay until the arriving sidebar acknowledges its rest state.
         guard (!finished || completingSelection), destination !== store else { return }
         destination = store
+        for view in [outgoing, incoming] {
+            if let host = view as? NSHostingView<NativeSpacePreview> {
+                var root = host.rootView
+                root.store = store
+                host.rootView = root
+            }
+        }
         store.spaceSwiping = true
         store.spaceGesture.outgoing = originPreview
         store.spaceGesture.neighbour = preparedTarget
@@ -1272,18 +1299,23 @@ extension VaneWindow {
                 spring.duration = spring.settlingDuration
                 animation = spring
             } else {
-                animation = CABasicAnimation(keyPath: "position")
-                animation.duration = duration
+                let spring = CASpringAnimation(keyPath: "position")
+                // Same non-bouncy response as Look.spaceSlide. Scale the physics
+                // with custom durations so the sidebar, footer and wash land together.
+                let response = Look.spaceSlideResponse * max(duration, 0.001) / Look.spaceSlideDuration
+                let frequency = 2 * Double.pi / response
+                spring.mass = 1
+                spring.stiffness = frequency * frequency
+                spring.damping = 2 * frequency
                 let distance = layer.position.x - from.x
                 let fresh = lastTracking.map { ProcessInfo.processInfo.systemUptime - $0.time < 0.1 } ?? false
                 if fresh, distance != 0 {
-                    // Cubic Hermite travel: leave with the finger's velocity and arrive
-                    // with zero velocity. Bounded controls keep even a flick monotonic.
-                    let slope = max(0, min(3, trackingVelocity * duration / distance))
-                    animation.timingFunction = CAMediaTimingFunction(controlPoints: 1 / 3, Float(slope / 3), 2 / 3, 1)
-                } else {
-                    animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    // Critical damping stays monotonic up to this normalized speed.
+                    // Preserve the flick without allowing a fast release to overshoot.
+                    spring.initialVelocity = max(0, min(frequency, Double(trackingVelocity / distance)))
                 }
+                spring.duration = duration
+                animation = spring
             }
             animation.fromValue = NSValue(point: from)
             animation.toValue = NSValue(point: layer.position)

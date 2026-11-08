@@ -765,7 +765,8 @@ enum Look {
     /// Dims the page behind the command bar, so what is being typed reads as the only live
     /// thing on screen. Black rather than a material: it must darken, not blur again.
     /// Light: Arc hardly dims the page, and the bar's own shadow does most of the lifting.
-    static let scrim = Color.black.opacity(0.12)
+    static let scrimOpacity = 0.12
+    static let scrim = Color.black.opacity(scrimOpacity)
     /// The bar's ground: Arc's is #141414 and all but opaque (20 over a black page, 23 over
     /// a (22,22,24) one). Always dark, whatever the appearance — the bar forces its colour
     /// scheme — so these are plain white alphas, not `ink`.

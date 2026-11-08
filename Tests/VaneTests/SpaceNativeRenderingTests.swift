@@ -260,30 +260,76 @@ import XCTest
     }
 
     func testNativeSpaceClickBlendsBackgroundDuringSidebarTravel() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await checkNativeSpaceClickBlendsBackground() } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Click tint AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkNativeSpaceClickBlendsBackground() async throws {
         let (store, spaces, window, monitor) = try fixture(coloured: true)
-        try await Task.sleep(for: .milliseconds(120))
+        // Search's first presentation can occupy the main actor longer than the
+        // landing tail. This fixture samples tint; empty-Space/search handoff has
+        // its own coverage in SpaceSwipeLandingTests.
+        store.switchTo(space: spaces[1])
+        let tab = store.newBlankTab(focus: false)
+        tab.park(url: URL(string: "https://example.test/tint")!, Parked(title: "Tint fixture"))
+        store.current = tab.id
+        store.switchTo(space: spaces[0])
+        store.palette = nil
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let surface = try XCTUnwrap(colourSurface(in: XCTUnwrap(window.contentView)))
+        // Admit the exact visible source and its prepared destination before the
+        // action. A guessed startup delay can miss the spring's entire early travel.
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
+                  window.isVisible, window.occlusionState.contains(.visible),
+                  NSApp.modalWindow == nil, window.attachedSheet == nil,
+                  let prepared = monitor.preparedSlides[spaces[1].id], prepared.preparedPopulationReady,
+                  surface.base.presentation() != nil,
+                  let presented = try? self.firstColour(of: surface, presented: true).redComponent,
+                  let model = try? self.firstColour(of: surface).redComponent else { return false }
+            return abs(presented - model) < 0.001
+        }
         let start = try firstColour(of: surface, presented: true).redComponent
         let selectionStart = ContinuousClock.now
         monitor.select(spaces[1], in: store)
         let selectionTime = selectionStart.duration(to: .now)
         var samples = [start]
+        var positions: [CGFloat] = [0]
+        var sampleTimes = [selectionStart.duration(to: .now)]
         let deadline = ProcessInfo.processInfo.systemUptime + 2
         repeat {
             try await Task.sleep(for: .milliseconds(16))
             samples.append(try firstColour(of: surface, presented: true).redComponent)
+            positions.append(host.spaceSlide.map { min(1, abs($0.offset / SidebarWidth.shared.width)) } ?? 1)
+            sampleTimes.append(selectionStart.duration(to: .now))
         } while store.spaceSwiping && ProcessInfo.processInfo.systemUptime < deadline
         XCTAssertEqual(store.currentSpaceID, spaces[1].id)
         try await Task.sleep(for: .milliseconds(60))
         let end = try firstColour(of: surface, presented: true).redComponent
         samples.append(end)
+        positions.append(1)
         XCTAssertGreaterThan(abs(start - end), 0.5)
         XCTAssertTrue(samples.contains { abs($0 - start) > 0.05 && abs($0 - end) > 0.05 },
                       "The actual BrowserWindowHost must show intermediate background colours")
-        let largestStep = zip(samples, samples.dropFirst()).map { abs($0 - $1) }.max() ?? 0
-        print("NATIVE_CLICK_TINT select=\(selectionTime) reds=\(samples)")
-        XCTAssertLessThan(largestStep, abs(start - end) * 0.6,
-                          "The background must blend during native travel instead of cutting at handoff")
+        print("NATIVE_CLICK_TINT select=\(selectionTime) times=\(sampleTimes) reds=\(samples)")
+        for (red, position) in zip(samples, positions) {
+            // Main-actor samples can be separated by a page-restore stall. Compare
+            // the two compositor presentations, not the size of that missing interval.
+            XCTAssertEqual((red - start) / (end - start), Double(position), accuracy: 0.05,
+                           "The background must follow native travel instead of cutting at handoff")
+        }
     }
 
     func testProfileClickDoesNotRestoreItsDepartureColour() async throws {
@@ -1473,13 +1519,12 @@ import XCTest
                       "An adjacent button click must reuse the hosting trees prepared while idle")
         XCTAssertNil(monitor.preparedSlides[spaces[1].id], "The active surface must leave the idle cache")
         XCTAssertFalse(prepared.isHidden)
-        let animation = try XCTUnwrap(prepared.outgoing.layer?.animation(forKey: "space-position"))
-        XCTAssertEqual(animation.duration, Look.spaceSlideDuration)
-        let timing = try XCTUnwrap(animation.timingFunction)
-        var actual: [Float] = [0, 0], expected: [Float] = [0, 0]
-        timing.getControlPoint(at: 1, values: &actual)
-        CAMediaTimingFunction(name: .easeInEaseOut).getControlPoint(at: 1, values: &expected)
-        XCTAssertEqual(actual, expected, "Prepared button travel must retain the approved click easing")
+        let animation = try XCTUnwrap(prepared.outgoing.layer?.animation(forKey: "space-position") as? CASpringAnimation)
+        XCTAssertEqual(animation.duration, 0.3, accuracy: 0.001,
+                       "Default Space travel should settle in the reference's short landing tail")
+        XCTAssertEqual(animation.damping, 2 * sqrt(animation.mass * animation.stiffness), accuracy: 0.001,
+                       "Space travel must settle without oscillating past the destination")
+        XCTAssertEqual(animation.initialVelocity, 0, "An idle click must not manufacture finger velocity")
         try await Task.sleep(for: .milliseconds(500))
     }
 
@@ -2510,10 +2555,10 @@ import XCTest
         monitor.track(-60, width: 250, in: store)
         monitor.land(1, to: spaces[1], width: 250, store: store)
         let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
-        let timing = try XCTUnwrap(slide.outgoing.layer?.animation(forKey: "space-position")?.timingFunction)
-        var control: [Float] = [0, 0]
-        timing.getControlPoint(at: 1, values: &control)
-        XCTAssertGreaterThan(control[1], 0, "Release must not stop moving before easing to its endpoint")
+        let animation = try XCTUnwrap(slide.outgoing.layer?.animation(forKey: "space-position") as? CASpringAnimation)
+        XCTAssertGreaterThan(animation.initialVelocity, 0, "Release must retain the finger's forward velocity")
+        XCTAssertLessThanOrEqual(animation.initialVelocity, sqrt(animation.stiffness / animation.mass),
+                                 "A fast flick must not overshoot the destination")
         try await Task.sleep(for: .milliseconds(400))
     }
 
