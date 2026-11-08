@@ -124,6 +124,13 @@ Use **File → New Window** (`⌘N`) for a regular window, **New Private Window*
 (`⇧⌘N`) for private browsing, or **New Little Vane Window** (`⌥⌘N`) for a compact
 single-page window. These are the default bindings; Settings can change them.
 
+Right-click Vane’s Dock icon for **New Window**, **New Incognito Window**,
+**Show Little Vane Windows**, and **Close Little Vane Windows**. Show restores all
+compact windows without hiding any that are already visible; Close leaves regular
+browser windows open. Both compact-window commands are disabled when none are open.
+The native window list identifies each window by its active tab, rather than listing
+all Today tabs; private windows keep their generic titles.
+
 Regular window titles follow the active page: `Page title — Vane`, with the profile
 name appended for non-default profiles. This lets password managers and window tools
 identify the active page. Turn off **Settings → Advanced → Show page titles in window
