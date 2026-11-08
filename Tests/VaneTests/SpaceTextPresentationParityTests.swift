@@ -105,6 +105,11 @@ import XCTest
         try await compatibilityWait {
             host.layoutSubtreeIfNeeded()
             admission = "running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window) visible=\(window.isVisible) occluded=\(!window.occlusionState.contains(.visible)) anchor=\(store.spaceGesture.sectionsView != nil) presented=\(host.layer?.presentation() != nil) prepared=\(monitor.preparedSlides[spaces[1].id]?.preparedPopulationReady == true)"
+            if !NSApp.isActive || NSApp.keyWindow !== window {
+                NSApp.activate()
+                window.makeKeyAndOrderFront(nil)
+                return false
+            }
             guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
                   window.isVisible, window.occlusionState.contains(.visible),
                   NSApp.modalWindow == nil, window.attachedSheet == nil,
