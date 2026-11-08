@@ -494,6 +494,39 @@ extension Release {
 
     static var releasesPage: URL { URL(string: "https://github.com/\(repo)/releases")! }
 
+    /// Describe actual transport failures; a timeout or a server error does not prove
+    /// this Mac is offline. Local browsing never depends on a reachability preflight.
+    enum ConnectionIssue: Equatable, Sendable {
+        case offline, interrupted, timedOut
+
+        init?(_ error: Error) {
+            let error = error as NSError
+            guard error.domain == NSURLErrorDomain else { return nil }
+            switch error.code {
+            case NSURLErrorNotConnectedToInternet: self = .offline
+            case NSURLErrorNetworkConnectionLost: self = .interrupted
+            case NSURLErrorTimedOut: self = .timedOut
+            default: return nil
+            }
+        }
+
+        var checkMessage: String {
+            switch self {
+            case .offline: "You’re offline"
+            case .interrupted: "Network lost"
+            case .timedOut: "Timed out"
+            }
+        }
+
+        var downloadMessage: String {
+            switch self {
+            case .offline: "You’re offline"
+            case .interrupted: "Network lost"
+            case .timedOut: "Timed out"
+            }
+        }
+    }
+
     enum Phase: Equatable {
         case available(String)      // tag — press Update to fetch it
         case downloading(Double)    // 0…1
@@ -504,6 +537,7 @@ extension Release {
         /// transient failure carries nil, so pressing Update again, or the next tick, may
         /// retry it.
         case failed(String?)
+        case downloadFailed(ConnectionIssue) // keeps the pending release for an explicit retry
     }
 
     /// Whether an offer of `tag` may be armed over whatever is already on screen. Pure, so
@@ -522,6 +556,7 @@ extension Release {
         case .downloading, .installing, .ready: return false
         case let .available(offered):           return offered != tag
         case let .failed(refused):              return refused != tag
+        case .downloadFailed:                   return true
         }
     }
 
@@ -582,8 +617,10 @@ extension Release {
         requestGeneration &+= 1
         lastCheck = nil
         backingOff = false
-        guard !working, phase != .installing, phase != .ready else { return }
+        // An active transaction owns its captured asset, but a later retry must check
+        // the newly selected channel instead of downloading the old offer again.
         pending = nil
+        guard !working, phase != .installing, phase != .ready else { return }
         phase = nil
         if let toast = Toasts.shared.queue.sticky, toast.id == toastID {
             Toasts.shared.dismiss(toast)
@@ -670,7 +707,7 @@ extension Release {
         } catch {
             guard self.channel == channel, generation == requestGeneration else { return }
             backingOff = true
-            failedCheck(silent)
+            failedCheck(silent, error: error)
         }
     }
 
@@ -682,11 +719,17 @@ extension Release {
 
     /// A silent check that cannot reach GitHub says nothing at all — a browser that toasts
     /// about its own update server every half hour on a bad connection is a broken browser.
-    private func failedCheck(_ silent: Bool) {
+    private func failedCheck(_ silent: Bool, error: Error? = nil) {
         guard Release.answer(newer: nil, manual: !silent, reachable: false) == .unreachable
         else { return }
-        Toasts.show("Couldn't check for updates",
-                    action: ("Open Releases", { NSWorkspace.shared.open(Self.releasesPage) }))
+        if let issue = error.flatMap(ConnectionIssue.init) {
+            Toasts.show(issue.checkMessage, action: ("Retry", { [weak self] in
+                self?.check(silent: false)
+            }), wraps: true)
+        } else {
+            Toasts.show("Couldn't check for updates",
+                        action: ("Open Releases", { NSWorkspace.shared.open(Self.releasesPage) }))
+        }
     }
 
     private func present(tag: String?, asset: URL?, silent: Bool) {
@@ -751,7 +794,13 @@ extension Release {
     // MARK: - Download
 
     func startDownload() {
-        guard !working, let (tag, asset) = pending else { return }
+        guard !working else { return }
+        guard let (tag, asset) = pending else {
+            // A channel switch can retire an offer during an active download/install.
+            // The failed transaction's Retry then discovers the current channel afresh.
+            check(silent: false)
+            return
+        }
         working = true
         set(.downloading(0))
         // The container's own tmp: nobody has to find this file, because nobody has to open
@@ -772,12 +821,23 @@ extension Release {
                         case .success(let file): Updater.shared.install(file, tag: tag)
                         case .failure(let error):
                             NSLog("[vane] update: download rejected: %@", String(describing: error))
-                            Updater.shared.fail()
+                            Updater.shared.downloadFailed(error)
                         }
                     }
                 })
         } catch {
             NSLog("[vane] update: could not start download: %@", String(describing: error))
+            downloadFailed(error)
+        }
+    }
+
+    /// A connection failure does not reject the release or discard its retry target.
+    func downloadFailed(_ error: Error) {
+        working = false
+        download = nil
+        if let issue = ConnectionIssue(error) {
+            set(.downloadFailed(issue))
+        } else {
             fail()
         }
     }
@@ -1022,6 +1082,7 @@ extension Release {
         case .installing:           return "Installing…"
         case .ready:                return "Restart to update"
         case .failed:               return "Update failed"
+        case .downloadFailed(let issue): return issue.downloadMessage
         }
     }
 
@@ -1033,6 +1094,8 @@ extension Release {
             return nil                                  // nothing to press while it works
         case .ready:
             return ("Restart", { Updater.shared.restart() })
+        case .failed(nil), .downloadFailed:
+            return ("Retry", { Updater.shared.startDownload() })
         case .failed:
             return ("Releases", { NSWorkspace.shared.open(Updater.releasesPage) })
         }
