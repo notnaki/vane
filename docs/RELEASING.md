@@ -315,6 +315,7 @@ approval of the changed build.
 
 ## Release checklist
 
+- Read this document in full before choosing a release version, creating or pushing a release tag, dispatching the release workflow, or publishing a release. Follow the version format and bump policy above; do not rely on memory or prior releases.
 - Run the [release-configuration and smoke checks](DEVELOPMENT.md#release-and-graphical-smoke-checks) appropriate to the candidate.
 - Confirm required PR checks and review passed for the source being released.
 - Validate the unchanged notarized archive with `scripts/check-release-candidate.sh`.
