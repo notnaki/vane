@@ -64,6 +64,32 @@ import XCTest
         XCTAssertNil(defaults.string(forKey: UpdateChannel.stable.cacheKey("etag")))
     }
 
+    func testLegacyBrowserAssetCacheFetchesAndRemembersAPIURL() async throws {
+        for channel in UpdateChannel.allCases {
+            let defaults = try defaults()
+            defaults.set(channel.rawValue, forKey: UpdateChannel.preferenceKey)
+            defaults.set("old-etag", forKey: "update.\(channel.rawValue).etag")
+            defaults.set("old-date", forKey: "update.\(channel.rawValue).lastModified")
+            defaults.set("https://github.com/notnaki/vane/releases/download/v1.2.3/Vane.zip",
+                         forKey: "update.\(channel.rawValue).asset")
+            let release = #"{"tag_name":"v1.2.3","draft":false,"prerelease":false,"assets":[{"name":"Vane.zip","url":"https://api.github.com/repos/notnaki/vane/releases/assets/123","browser_download_url":"https://github.com/notnaki/vane/releases/download/v1.2.3/Vane.zip"}]}"#
+            var seen: URLRequest?
+            let updater = Updater(defaults: defaults, fetchRelease: { request in
+                seen = request
+                let body = channel == .stable ? release : "[\(release)]"
+                return (Data(body.utf8), self.response(request))
+            })
+            await updater.fetch(silent: true)
+            XCTAssertNil(seen?.value(forHTTPHeaderField: "If-None-Match"))
+            XCTAssertNil(seen?.value(forHTTPHeaderField: "If-Modified-Since"))
+            XCTAssertEqual(defaults.string(forKey: channel.cacheKey("asset")),
+                           "https://api.github.com/repos/notnaki/vane/releases/assets/123")
+            XCTAssertEqual(defaults.string(forKey: channel.cacheKey("fallbackAsset")),
+                           "https://github.com/notnaki/vane/releases/download/v1.2.3/Vane.zip")
+            XCTAssertEqual(defaults.string(forKey: channel.cacheKey("etag")), "fixture-etag")
+        }
+    }
+
     func testSwitchingAwayAndBackStillDiscardsOriginalResponse() async throws {
         let defaults = try defaults()
         let started = expectation(description: "original request started")
