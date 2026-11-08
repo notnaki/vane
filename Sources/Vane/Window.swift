@@ -974,9 +974,41 @@ extension VaneWindow {
     }
 }
 
+/// Native travel sits above the SwiftUI search overlay. Multiply only its captured
+/// content by the scrim colour; its transparent ground is already dimmed underneath.
+private struct NativeSpacePreview: View {
+    let preview: SpacePreviewList
+    let scope: SidebarNativeReadinessScope
+    let theme: SpaceChromeTheme
+    @ObservedObject var dimming: NativeSpacePreviewDimming
+
+    var body: some View {
+        if dimming.opacity > 0 {
+            content.colorMultiply(Color(white: 1 - dimming.opacity))
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        preview.equatable()
+            .environment(\.sidebarNativeReadinessScope, scope)
+            .environment(\.spaceChromeTheme, theme)
+            .environment(\.colorScheme, preview.colorScheme)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+@MainActor private final class NativeSpacePreviewDimming: ObservableObject {
+    @Published var opacity: Double
+    init(opacity: Double) { self.opacity = opacity }
+}
+
 /// Keep the same two sidebar surfaces on a native track from finger movement through
 /// landing, including page selection underneath it and a profile host handoff.
 @MainActor final class ProfileSpaceSlide: NSView {
+    private let previewDimming: NativeSpacePreviewDimming
+    private var dimmingLink: CADisplayLink?
     private(set) var outgoing: NSView
     private var incoming: NSView
     private var direction: Int
@@ -1014,6 +1046,8 @@ extension VaneWindow {
 
     init(frame: NSRect, outgoing: SpacePreviewList, incoming: SpacePreviewList,
          drag: CGFloat, direction: Int, source: TabStore, includesFavorites: Bool, travelWidth: CGFloat) {
+        let dimming = NativeSpacePreviewDimming(opacity: source.spaceGesture.presentedPaletteScrimOpacity)
+        previewDimming = dimming
         requiresNativePopulation = NativeCachedSidebarBatchesExperiment.enabled
         let outgoingScope = SidebarNativeReadinessScope(store: source, spaceID: outgoing.space.id, surfaceID: UUID())
         let incomingScope = SidebarNativeReadinessScope(store: source, spaceID: incoming.space.id, surfaceID: UUID())
@@ -1023,16 +1057,10 @@ extension VaneWindow {
         let incomingFallback = ProfileManager.shared.profiles.first { $0.id == incoming.space.profileID }?.colorHex
             ?? source.profile.colorHex
         let incomingTheme = SpaceChromeTheme(space: incoming.space, fallback: incomingFallback)
-        let outgoingHost = NSHostingView(rootView: outgoing
-            .environment(\.sidebarNativeReadinessScope, outgoingScope)
-            .environment(\.spaceChromeTheme, outgoingTheme)
-            .environment(\.colorScheme, outgoing.colorScheme)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
-        let incomingHost = NSHostingView(rootView: incoming
-            .environment(\.sidebarNativeReadinessScope, incomingScope)
-            .environment(\.spaceChromeTheme, incomingTheme)
-            .environment(\.colorScheme, incoming.colorScheme)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
+        let outgoingHost = NSHostingView(rootView: NativeSpacePreview(
+            preview: outgoing, scope: outgoingScope, theme: outgoingTheme, dimming: dimming))
+        let incomingHost = NSHostingView(rootView: NativeSpacePreview(
+            preview: incoming, scope: incomingScope, theme: incomingTheme, dimming: dimming))
         // Both captures have an explicit native frame. Intrinsic/min/max fitting
         // probes otherwise lay out the frozen rows again during window layout.
         outgoingHost.sizingOptions = []
@@ -1090,6 +1118,7 @@ extension VaneWindow {
         // Both keep this overlay until the arriving sidebar acknowledges its rest state.
         guard (!finished || completingSelection), destination !== store else { return }
         destination = store
+        updatePreviewDimming()
         store.spaceSwiping = true
         store.spaceGesture.outgoing = originPreview
         store.spaceGesture.neighbour = preparedTarget
@@ -1178,6 +1207,7 @@ extension VaneWindow {
     /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
     func track(drag: CGFloat) {
         guard isActive else { return }
+        beginPreviewDimming()
         lastPublishedDrag = drag
         let now = ProcessInfo.processInfo.systemUptime
         if let previous = lastTracking {
@@ -1225,6 +1255,7 @@ extension VaneWindow {
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
+        beginPreviewDimming()
         self.completion = completion
         restingSpaceID = returning ? preparedOrigin.id : targetID
         let animationID = UUID()
@@ -1272,18 +1303,23 @@ extension VaneWindow {
                 spring.duration = spring.settlingDuration
                 animation = spring
             } else {
-                animation = CABasicAnimation(keyPath: "position")
-                animation.duration = duration
+                let spring = CASpringAnimation(keyPath: "position")
+                // Same non-bouncy response as Look.spaceSlide. Scale the physics
+                // with custom durations so the sidebar, footer and wash land together.
+                let response = Look.spaceSlideResponse * max(duration, 0.001) / Look.spaceSlideDuration
+                let frequency = 2 * Double.pi / response
+                spring.mass = 1
+                spring.stiffness = frequency * frequency
+                spring.damping = 2 * frequency
                 let distance = layer.position.x - from.x
                 let fresh = lastTracking.map { ProcessInfo.processInfo.systemUptime - $0.time < 0.1 } ?? false
                 if fresh, distance != 0 {
-                    // Cubic Hermite travel: leave with the finger's velocity and arrive
-                    // with zero velocity. Bounded controls keep even a flick monotonic.
-                    let slope = max(0, min(3, trackingVelocity * duration / distance))
-                    animation.timingFunction = CAMediaTimingFunction(controlPoints: 1 / 3, Float(slope / 3), 2 / 3, 1)
-                } else {
-                    animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    // Critical damping stays monotonic up to this normalized speed.
+                    // Preserve the flick without allowing a fast release to overshoot.
+                    spring.initialVelocity = max(0, min(frequency, Double(trackingVelocity / distance)))
                 }
+                spring.duration = duration
+                animation = spring
             }
             animation.fromValue = NSValue(point: from)
             animation.toValue = NSValue(point: layer.position)
@@ -1313,6 +1349,25 @@ extension VaneWindow {
     @objc private func advanceProgress(_ link: CADisplayLink) {
         guard !finished, let presentation = outgoing.layer?.presentation() else { return }
         publishProgress(presentation.frame.minX - contentInset)
+    }
+
+    private func beginPreviewDimming() {
+        updatePreviewDimming()
+        guard dimmingLink == nil, let screen = window?.screen ?? NSScreen.main else { return }
+        let link = screen.displayLink(target: self, selector: #selector(advancePreviewDimming(_:)))
+        let rate = Float(screen.maximumFramesPerSecond)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+        dimmingLink = link
+        link.add(to: .main, forMode: .common)
+    }
+
+    @objc private func advancePreviewDimming(_ link: CADisplayLink) { updatePreviewDimming() }
+
+    private func updatePreviewDimming() {
+        let opacity = (destination ?? source)?.spaceGesture.presentedPaletteScrimOpacity ?? 0
+        if abs(previewDimming.opacity - opacity) > 0.0001 {
+            Motion.instant { previewDimming.opacity = opacity }
+        }
     }
 
     private func publishProgress(_ drag: CGFloat) {
@@ -1348,6 +1403,8 @@ extension VaneWindow {
 
     /// An unused idle surface has never owned the gesture's visibility state.
     func discardPreparation() {
+        dimmingLink?.invalidate()
+        dimmingLink = nil
         finished = true
         finishGround?(source?.swipeSpace)
         finishGround = nil
@@ -1460,6 +1517,8 @@ extension VaneWindow {
     private func retire() {
         guard !retired else { return }
         retired = true
+        dimmingLink?.invalidate()
+        dimmingLink = nil
         SidebarNativeReadinessCoordinator.shared.removeObservation(retirementReadinessObservation)
         retirementReadinessObservation = nil
         retirementTimeout?.cancel()

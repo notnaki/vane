@@ -455,6 +455,10 @@ enum Palette {
 enum PaletteMode {
     case all, tabs, address, newTab
 
+    @MainActor func usesSidebarAddress(in store: TabStore) -> Bool {
+        self == .address && store.sidebarShown && !store.libraryOpen && !store.isLittle
+    }
+
     /// What VoiceOver calls the bar. Never drawn — the prompt below is what is drawn.
     var title: String {
         switch self {
@@ -466,6 +470,29 @@ enum PaletteMode {
     var prompt: String { "Search or Enter URL…" }
 }
 
+
+/// A native anchor exposes the enclosing SwiftUI transition's presented opacity
+/// to the separately hosted Space preview, without a second animation clock.
+private struct PaletteScrimSurface: NSViewRepresentable {
+    let opacity: Double
+    let gesture: SpaceGesture
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        view.wantsLayer = true
+        view.setAccessibilityElement(false)
+        gesture.paletteScrimView = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        gesture.paletteScrimView = view
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        view.layer?.backgroundColor = NSColor.black.withAlphaComponent(opacity).cgColor
+        CATransaction.commit()
+    }
+}
 
 // MARK: - The bar
 
@@ -957,7 +984,7 @@ private struct PaletteResultHover: ViewModifier {
     /// separates, than at the bottom, where the bar's edge has to.
     private var listPadding: CGFloat { Look.barInset - Look.barRowGap + Look.barInset }
     private var sidebarAddress: Bool {
-        mode == .address && store.sidebarShown && !store.libraryOpen && !store.isLittle
+        mode.usesSidebarAddress(in: store)
     }
     private var fieldHeight: CGFloat { sidebarAddress ? Look.barRowHeight : Look.barFieldHeight }
     private var barHeight: CGFloat {
@@ -1004,7 +1031,12 @@ private struct PaletteResultHover: ViewModifier {
             ZStack(alignment: sidebarAddress ? .topLeading : .top) {
                 // Click-off to dismiss. Decoration only — Esc is the accessible route out,
                 // and VoiceOver should never land on a full-screen unlabelled rectangle.
-                (sidebarAddress ? Color.clear : Look.scrim)
+                Color.clear
+                    .background {
+                        PaletteScrimSurface(opacity: sidebarAddress ? 0 : Look.scrimOpacity,
+                                            gesture: store.spaceGesture)
+                            .allowsHitTesting(false)
+                    }
                     .contentShape(.rect)
                     .onTapGesture { close() }
                     .accessibilityHidden(true)

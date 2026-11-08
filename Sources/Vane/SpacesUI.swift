@@ -85,6 +85,20 @@ import UniformTypeIdentifiers
     var captureGround: (() -> ThemeWashPresentation?)?
     var animateGround: ((Space, Space, Double, Double, CABasicAnimation, ThemeWashPresentation?) -> ((Space?) -> Void))?
     var colourDuration = Look.spaceSlideDuration
+    weak var paletteScrimView: NSView?
+    /// Read the scrim's actual compositor opacity, including its enclosing fade.
+    var presentedPaletteScrimOpacity: Double {
+        guard let view = paletteScrimView, view.window != nil,
+              let presented = view.layer?.presentation() else { return 0 }
+        var opacity = Double(presented.backgroundColor?.alpha ?? 0)
+        var layer: CALayer? = presented
+        while let current = layer {
+            if current.isHidden { return 0 }
+            opacity *= Double(current.opacity)
+            layer = current.superlayer
+        }
+        return min(1, max(0, opacity))
+    }
     var pull: CGFloat {
         get { read(\.pull) }
         set { write(\.pull, newValue) }
@@ -133,17 +147,17 @@ import UniformTypeIdentifiers
 /// The tokens are `Look`'s, extended rather than edited.
 
 extension Look {
-    /// Click travel shares the established Space timing.
-    static let spaceSlideDuration: TimeInterval = 0.24
-    static let spaceSlide = Animation.easeInOut(duration: spaceSlideDuration)
-    /// The strip finishing a swipe: the rest of the travel after the fingers leave, and the
-    /// spring back when they did not go far enough. A spring rather than an ease because the
-    /// gesture handed it a velocity and an ease throws that away — the strip has to leave the
-    /// fingers at the speed they left it at.
+    /// Arc's recorded Space travel has a quick, critically damped landing: a
+    /// 0.2-second response is effectively at rest after 0.3 seconds, without bounce.
+    /// Keep the SwiftUI fallback and native compositor on the same spring.
+    static let spaceSlideResponse: TimeInterval = 0.2
+    static let spaceSlideDuration: TimeInterval = 0.3
+    static let spaceSlide = Animation.spring(response: spaceSlideResponse, dampingFraction: 1)
+    /// Release the rubber-banded creation affordance at the end of the strip.
     static let spaceSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
     /// A committed swipe finishes continuously while its captured sidebar covers page selection.
-    static let spaceLandingDuration: TimeInterval = 0.18
-    static let spaceLanding = Animation.easeInOut(duration: spaceLandingDuration)
+    static let spaceLandingDuration = spaceSlideDuration
+    static let spaceLanding = spaceSlide
     /// Returning from a canceled drag keeps its gentler timing.
     static let spaceReturn = Animation.spring(response: 0.16, dampingFraction: 0.9)
     /// A footer-height target leaves room for a rounded hover fill around the glyph.
