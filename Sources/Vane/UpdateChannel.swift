@@ -20,7 +20,9 @@ enum UpdateChannel: String, CaseIterable {
     var apiPath: String {
         self == .stable ? "releases/latest" : "releases?per_page=100"
     }
-    func cacheKey(_ field: String) -> String { "update.\(rawValue).\(field)" }
+    // Old caches only know the browser URL. Refetch once instead of letting a 304
+    // preserve that URL indefinitely without the API route and its fallback.
+    func cacheKey(_ field: String) -> String { "update.assetAPI.\(rawValue).\(field)" }
 
     func release(from data: Data) throws -> UpdateRelease? {
         let decoder = JSONDecoder()
@@ -43,9 +45,10 @@ struct UpdateRelease: Decodable {
     struct Asset: Decodable {
         let name: String
         let url: String
+        let browserURL: String?
         enum CodingKeys: String, CodingKey {
-            case name
-            case url = "browser_download_url"
+            case name, url
+            case browserURL = "browser_download_url"
         }
     }
     let tag: String
