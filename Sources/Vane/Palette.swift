@@ -1688,18 +1688,12 @@ private struct PaletteResultHover: ViewModifier {
         return order.compactMap { byID[$0] }.map { tabRow($0, in: store, place: "") }
     }
 
-    /// The one row in the bar at rest that is not a page you have open. Arc's is "Contact the
-    /// Team"; Vane has an issue tracker instead, and Return opens a fresh issue in a new tab
-    /// rather than handing the window's page over to it.
+    /// The bar's feedback row opens the same optional-diagnostics draft as Help.
     private func reportRow() -> PaletteRow {
-        let issues = "https://github.com/notnaki/vane/issues/new"
         return PaletteRow(id: "report", icon: "bubble.left", title: "Report a Problem",
-                          detail: issues, chip: true, kind: "Feedback") { [weak store] _ in
-            guard let url = URL(string: issues) else { return }
-            // This bar's own window, not whichever one is key: the palette can be up in a
-            // window that is not `Windows.current`, and the issue belongs beside the tabs
-            // the user was looking at when they pressed it.
-            store?.newTab(url)
+                          detail: "Describe an issue · optionally include recent logs",
+                          chip: true, kind: "Feedback") { [weak store] _ in
+            IssueReportWindow.show(in: store)
         }
     }
 

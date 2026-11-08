@@ -206,7 +206,16 @@ Start with the [contributor guide](CONTRIBUTING.md) for setup, choosing relevant
 checks, and opening a pull request. The [development guide](docs/DEVELOPMENT.md)
 covers project structure, native fixtures, and CI details.
 
-Use the [issue templates](https://github.com/notnaki/vane/issues/new/choose) to report
+In Vane, choose **Help → Report a Problem…** or **Report a Problem** in the command
+bar. Describe the issue, then optionally include diagnostic events from the last
+30 seconds, minute, or 5 minutes. Logs are off by default; Vane keeps a bounded
+memory-only buffer of event names and numeric error codes, excluding page URLs,
+titles, content, and private-tab activity. The window captures a snapshot when
+opened and lets you preview, copy, or save the report. **Open GitHub Issue…**
+prefills a draft for you to review and submit; large reports offer a copy-and-paste
+handoff. Nothing is sent automatically.
+
+You can also use the [issue templates](https://github.com/notnaki/vane/issues/new/choose) to report
 a bug or suggest an improvement. Keep passwords, tokens, personal browsing data,
 and private documents out of reports. For vulnerabilities, follow the
 [security policy](SECURITY.md) and

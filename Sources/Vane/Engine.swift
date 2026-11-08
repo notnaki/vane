@@ -1786,6 +1786,7 @@ struct TitleReveal: Equatable, Sendable {
 
     func webViewWebContentProcessDidTerminate(_ w: WKWebView) {
         guard w === existingWeb else { return }
+        DiagnosticLog.shared.record(.webContentTerminated, isPrivate: isPrivate)
         // Retain URL/title, but never feed the dead page's opaque POST history back into
         // WebKit. Selection, split mounting and autosave must not cause another load.
         parkedURL = currentURL ?? URL(string: address)
@@ -1815,6 +1816,7 @@ struct TitleReveal: Equatable, Sendable {
         #endif
         guard w === existingWeb, !tornDown, !suspended else { return }
         guard navigationState.begin(navigation) else { return }
+        DiagnosticLog.shared.record(.navigationStarted, isPrivate: isPrivate)
         #if DEBUG
         recordNavigationStage("provisional-accepted", navigation: navigation)
         #endif
@@ -1852,6 +1854,7 @@ struct TitleReveal: Equatable, Sendable {
                               detail: "code=\((error as NSError).code), owned=\(ownsNavigation(navigation, in: w))")
         #endif
         guard ownsNavigation(navigation, in: w) else { return }
+        DiagnosticLog.shared.record(.navigationFailed, code: (error as NSError).code, isPrivate: isPrivate)
         #if DEBUG
         recordNavigationStage("failure-accepted", navigation: navigation)
         #endif
@@ -1869,6 +1872,7 @@ struct TitleReveal: Equatable, Sendable {
         // Only the current navigation's failure means nothing is pending: a superseded
         // load fails after its replacement was allowed.
         guard ownsNavigation(navigation, in: w) else { return }
+        DiagnosticLog.shared.record(.provisionalNavigationFailed, code: (error as NSError).code, isPrivate: isPrivate)
         #if DEBUG
         recordNavigationStage("provisional-failure-accepted", navigation: navigation)
         #endif
@@ -1959,6 +1963,7 @@ struct TitleReveal: Equatable, Sendable {
                               detail: "owned=\(ownsNavigation(navigation, in: w))")
         #endif
         guard ownsNavigation(navigation, in: w) else { return }
+        DiagnosticLog.shared.record(.navigationCommitted, isPrivate: isPrivate)
         // A canceled provisional load/download leaves the old call document alive.
         // Release its status and floating host only when a document replaces it.
         MeetCall.reset(self)
@@ -2000,6 +2005,7 @@ struct TitleReveal: Equatable, Sendable {
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
         guard ownsNavigation(navigation, in: w) else { return }
+        DiagnosticLog.shared.record(.navigationFinished, isPrivate: isPrivate)
         if provisional {
             navigationState.commitDocumentResponse(navigation, at: w.url)
             provisional = false; showCommitted(w)
