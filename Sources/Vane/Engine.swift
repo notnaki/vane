@@ -4295,14 +4295,21 @@ struct Stash {
         palette = nil
         editingSpace = nil
         Motion.space(Look.spaceSlide) {
-            spacePull = 0
-            creatingSpace = true
+            // Native row hosts may synchronously flush the window while the row
+            // observer publishes. Let them see the assigned form state, rather
+            // than retaining the old sidebar during @Published's will-set.
+            sidebarObservation.withCompletedChanges {
+                spacePull = 0
+                creatingSpace = true
+            }
         }
     }
 
     /// The form's Cancel, and ⎋: the sections come back.
     func cancelCreatingSpace() {
-        creatingSpace = false            // the sidebar animates the swap itself
+        sidebarObservation.withCompletedChanges {
+            creatingSpace = false        // the sidebar animates the swap itself
+        }
     }
 
     /// The form's Create button. The Space is switched into here whichever profile it was
