@@ -147,6 +147,32 @@ A page's `alert()`, `confirm()`, and `prompt()` open as sheets on its window, na
 site that asked. A background tab can't open one and gets the Cancel answer. If a site
 repeats them quickly, the sheet offers to silence that site until the tab closes.
 
+## Without an internet connection
+
+Vane keeps local tools available while you are offline. You can organize tabs, Spaces,
+bookmarks, and history; edit Easel notes and drawings; open downloaded files; and read
+articles already saved in **Library → Reading Queue**. Saved articles include only the
+text and images captured when you saved them. Private windows cannot access that queue.
+
+New websites, web searches, remote search suggestions, Instant Links, streaming media,
+new downloads, cloud AI, GitHub Live Folder refreshes, extension downloads, and online
+blocklist refreshes need a connection. A page already open may remain readable, but its
+forms, embedded content, and live features depend on the site. Restoring a tab or opening
+a bookmark does not create an offline copy. Easel live web views also need their sites.
+Local network sites may still work when the public internet is unavailable.
+
+When a page reports that you are offline, reconnect and choose **Try Again**. To keep an
+article for later, use **Save for Offline** while its readable content is available;
+see [offline reading](FEATURES.md#offline-reading-queue).
+
+**Vane → Check for Updates…** also needs internet. An offline check explains this and
+offers **Retry**; a dropped or timed-out connection offers another check too.
+Automatic check failures stay quiet and keep the previous release cache. If an update
+download loses its connection, **Retry** starts a fresh download after you reconnect;
+partial archives are removed rather than installed. An update already installed and
+waiting for **Restart** can finish without another update download. Manual checks and
+retries do not wait for the automatic check's backoff interval.
+
 ## Search and history
 
 **Instant Links** uses **Shift+Return** in the address or new-tab bar to open the

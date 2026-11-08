@@ -4,11 +4,11 @@ import XCTest
 @testable import vane
 
 @MainActor final class ToastLayoutTests: XCTestCase {
-    private func render(_ message: String, action: String? = "Undo", width: CGFloat, sticky: Bool = false) throws -> NSBitmapImageRep {
+    private func render(_ message: String, action: String? = "Undo", width: CGFloat, sticky: Bool = false, dark: Bool = true, wraps: Bool = false) throws -> NSBitmapImageRep {
         TestEnvironment.prepare()
-        let toast = Toasts.Toast(text: message, action: action.map { ($0, {}) }, sticky: sticky)
+        let toast = Toasts.Toast(text: message, action: action.map { ($0, {}) }, sticky: sticky, wraps: wraps)
         let renderer = ImageRenderer(content: ToastPill(toast: toast, tint: .green)
-            .environment(\.colorScheme, .dark))
+            .environment(\.colorScheme, dark ? .dark : .light))
         renderer.proposedSize = ProposedViewSize(width: width - Look.inset * 2, height: nil)
         return NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
     }
@@ -68,4 +68,31 @@ import XCTest
         XCTAssertLessThanOrEqual(image.pixelsWide, Int(SidebarWidth.minimum - Look.inset * 2))
         XCTAssertLessThanOrEqual(image.pixelsHigh, 32)
     }
+    func testOfflineUpdateNoticesFitBothThemes() throws {
+        let notices: [(String, String, Bool)] = [
+            ("You’re offline", "Retry", false),
+            ("Network lost", "Retry", false),
+            ("Timed out", "Retry", false),
+            ("You’re offline", "Retry", true),
+            ("Network lost", "Retry", true),
+            ("Timed out", "Retry", true),
+        ]
+        for dark in [false, true] {
+            for width in [SidebarWidth.minimum, SidebarWidth.standard] {
+                for (index, notice) in notices.enumerated() {
+                    let image = try render(notice.0, action: notice.1, width: width,
+                                           sticky: notice.2, dark: dark, wraps: true)
+                    XCTAssertLessThanOrEqual(image.pixelsWide, Int(width - Look.inset * 2))
+                    XCTAssertLessThanOrEqual(image.pixelsHigh, 56)
+                    if let directory = ProcessInfo.processInfo.environment["VANE_OFFLINE_UPDATE_SNAPSHOTS"] {
+                        let root = URL(fileURLWithPath: directory)
+                        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                        try XCTUnwrap(image.representation(using: .png, properties: [:]))
+                            .write(to: root.appendingPathComponent("\(index)-\(Int(width))-\(dark ? "dark" : "light").png"))
+                    }
+                }
+            }
+        }
+    }
+
 }
