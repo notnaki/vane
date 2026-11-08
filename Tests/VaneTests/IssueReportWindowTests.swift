@@ -103,23 +103,80 @@ import XCTest
     }
 
     func testRealNavigationFailureRecordsOnlyTypedEventsAndNumericCode() async throws {
+        let originalPolicy = NSApp.activationPolicy()
+        defer { NSApp.setActivationPolicy(originalPolicy) }
         let tab = publicTab()
-        defer { tab.tearDown() }
-        let marker = Date.now
-        let url = try XCTUnwrap(URL(string: "https://127.0.0.1:1/private-path?secret=do-not-capture"))
-        tab.navigate(to: url)
-        try await compatibilityWait {
-            DiagnosticLog.shared.snapshot().events.contains {
+        let web = tab.web
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 640, height: 480),
+                              styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = web
+        window.center()
+        var loop: NativeFixtureApplicationLoop?
+        var server: NavigationHTTPFixture?
+        var failure: (any Error)?
+        do {
+            let admitted = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory,
+                beforeHeartbeat: {
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                }, launchReadiness: {
+                    NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+                        && window.isVisible && window.isKeyWindow && !window.isMiniaturized
+                        && web.window === window && web.bounds.width > 0 && web.bounds.height > 0
+                })
+            loop = admitted
+            try await compatibilityWait { try admitted.isReadyForInteraction() }
+            XCTAssertTrue(NSApp.isRunning, "Navigation fixture must own an admitted AppKit loop")
+            XCTAssertTrue(web.window === window, "Navigation fixture must mount the exact document before loading")
+
+            let listener = try NavigationHTTPFixture()
+            server = listener
+            try await compatibilityWait { listener.port != nil }
+            // Prove this document can navigate before exercising a failure. A
+            // reserved fixed port can be rejected before WebKit claims a load.
+            let readyURL = try listener.url("/triage-ready")
+            tab.navigate(to: readyURL)
+            try await compatibilityWait {
+                web.url == readyURL && tab.title == "Page /triage-ready" && !web.isLoading && !tab.loading
+            }
+            let url = try listener.url("/private-path?secret=do-not-capture")
+            listener.stop()
+            // cancel() is a request; connection refusal requires terminal shutdown.
+            try await compatibilityWait { listener.listenerCancelled }
+            let marker = Date.now
+            tab.navigate(to: url)
+            try await compatibilityWait {
+                DiagnosticLog.shared.snapshot().events.contains {
+                    $0.timestamp >= marker && $0.kind == .provisionalNavigationFailed
+                }
+            }
+            let snapshot = DiagnosticLog.shared.snapshot()
+            let event = try XCTUnwrap(snapshot.events.first {
                 $0.timestamp >= marker && $0.kind == .provisionalNavigationFailed
+            })
+            XCTAssertEqual(event.code, URLError.Code.cannotConnectToHost.rawValue)
+            var draft = IssueReportDraft(snapshot: snapshot, environment: "fixture")
+            draft.includeLogs = true
+            XCTAssertFalse(draft.markdown.contains("private-path"))
+            XCTAssertFalse(draft.markdown.contains("do-not-capture"))
+            XCTAssertFalse(draft.markdown.contains("127.0.0.1"))
+        } catch {
+            print("ISSUE_REPORT_NAVIGATION_FIXTURE running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow) mounted=\(web.window === window) loading=\(tab.loading) webLoading=\(web.isLoading) listenerCancelled=\(server?.listenerCancelled == true)")
+            failure = error
+        }
+        server?.stop()
+        tab.tearDown()
+        window.contentView = nil
+        window.close()
+        if let loop {
+            do { try await loop.close() }
+            catch {
+                if failure == nil { failure = error }
+                else { XCTFail("Report fixture AppKit loop cleanup also failed: \(error)") }
             }
         }
-        let snapshot = DiagnosticLog.shared.snapshot()
-        XCTAssertTrue(snapshot.events.contains { $0.timestamp >= marker && $0.code != nil })
-        var draft = IssueReportDraft(snapshot: snapshot, environment: "fixture")
-        draft.includeLogs = true
-        XCTAssertFalse(draft.markdown.contains("private-path"))
-        XCTAssertFalse(draft.markdown.contains("do-not-capture"))
-        XCTAssertFalse(draft.markdown.contains("127.0.0.1"))
+        if let failure { throw failure }
     }
 
     func testReportWindowRendersAtMinimumSizeWithLogs() async throws {
