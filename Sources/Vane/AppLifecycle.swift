@@ -386,12 +386,27 @@ enum QuitAsk {
         return .terminateLater
     }
 
-    /// Right-clicking the Dock icon. The two things anyone wants from there, and the two the
-    /// File menu leads with.
+    /// App-specific Dock commands. macOS supplies the window list and standard
+    /// Options, Show All Windows, Hide and Quit items around this menu.
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
+        // AppKit must not re-enable the compact-window commands just because their
+        // closure target responds to fire(). Reopening the Dock menu refreshes state.
+        menu.autoenablesItems = false
         menu.addItem(dockItem("New Window") { [self] in afterBootstrap { self.openWindow(false) } })
-        menu.addItem(dockItem("New Private Window") { [self] in afterBootstrap { self.openWindow(true) } })
+        menu.addItem(dockItem("New Incognito Window") { [self] in afterBootstrap { self.openWindow(true) } })
+        let show = dockItem("Show Little Vane Windows") { [self] in
+            afterBootstrap { LittleArc.showAll() }
+        }
+        let close = dockItem("Close Little Vane Windows") { [self] in
+            afterBootstrap {
+                for window in LittleArc.windows { window.performClose(nil) }
+            }
+        }
+        show.isEnabled = !LittleArc.windows.isEmpty
+        close.isEnabled = show.isEnabled
+        menu.addItem(show)
+        menu.addItem(close)
         return menu
     }
 
