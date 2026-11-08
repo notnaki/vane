@@ -218,6 +218,14 @@ import XCTest
             window.displayIfNeeded()
         }
         defer { layout.cancel() }
+        // Resetting the pull while the ordinary sidebar is still selected exposes
+        // a resting frame between fingers-up and the form's insertion transition.
+        let retirement = store.spaceGesture.$presentation.dropFirst().sink { presentation in
+            guard !presentation.swiping, presentation.drag == 0 else { return }
+            XCTAssertTrue(store.creatingSpace,
+                          "The form must own the sidebar before the completed pull publishes rest")
+        }
+        defer { retirement.cancel() }
         // Hold still, with no intermediate movement packets, then lift the fingers.
         send(phase: .ended, at: 2.42)
         XCTAssertTrue(store.creatingSpace)
@@ -231,6 +239,7 @@ import XCTest
         XCTAssertNil(host.spaceSlide, "An outgoing native sidebar must not cover the creation form")
         send(-width, phase: [], at: 2.44) // remaining gesture packets cannot dismiss the form
         XCTAssertTrue(store.creatingSpace)
+        retirement.cancel()
         store.cancelCreatingSpace()
         try await compatibilityWait {
             formField(in: host) == nil && store.spaceGesture.sectionsView?.window === window

@@ -4288,7 +4288,6 @@ struct Stash {
     /// Opening it does not create a Space or leave the current one.
     func beginCreatingSpace() {
         guard !isPrivate, !isLittle else { return }
-        spaceGesture.monitor.prepareForCreation(in: self)
         palette = nil
         editingSpace = nil
         Motion.space(Look.spaceSlide) {
@@ -4296,8 +4295,10 @@ struct Stash {
             // observer publishes. Let them see the assigned form state, rather
             // than retaining the old sidebar during @Published's will-set.
             sidebarObservation.withCompletedChanges {
-                spacePull = 0
                 creatingSpace = true
+                // Keep the pulled strip until the form owns its replacement.
+                // Resetting first exposes the resting sidebar before insertion.
+                spaceGesture.monitor.prepareForCreation(in: self)
             }
         }
     }
