@@ -980,13 +980,14 @@ private struct NativeSpacePreview: View {
     let preview: SpacePreviewList
     let scope: SidebarNativeReadinessScope
     let theme: SpaceChromeTheme
-    @ObservedObject var store: TabStore
+    @ObservedObject var dimming: NativeSpacePreviewDimming
 
     var body: some View {
-        let dimmed = store.palette.map { !$0.usesSidebarAddress(in: store) } ?? false
-        content
-            .modifier(NativeSpacePreviewDimming(opacity: dimmed ? Look.scrimOpacity : 0))
-            .animation(Motion.reduced ? nil : Look.appear, value: store.palette == nil)
+        if dimming.opacity > 0 {
+            content.colorMultiply(Color(white: 1 - dimming.opacity))
+        } else {
+            content
+        }
     }
 
     private var content: some View {
@@ -998,25 +999,16 @@ private struct NativeSpacePreview: View {
     }
 }
 
-private struct NativeSpacePreviewDimming: AnimatableModifier {
-    nonisolated var opacity: Double
-    nonisolated var animatableData: Double {
-        get { opacity }
-        set { opacity = newValue }
-    }
-
-    @ViewBuilder func body(content: Content) -> some View {
-        if opacity > 0 {
-            content.colorMultiply(Color(white: 1 - opacity)).transition(.identity)
-        } else {
-            content.transition(.identity)
-        }
-    }
+@MainActor private final class NativeSpacePreviewDimming: ObservableObject {
+    @Published var opacity: Double
+    init(opacity: Double) { self.opacity = opacity }
 }
 
 /// Keep the same two sidebar surfaces on a native track from finger movement through
 /// landing, including page selection underneath it and a profile host handoff.
 @MainActor final class ProfileSpaceSlide: NSView {
+    private let previewDimming: NativeSpacePreviewDimming
+    private var dimmingLink: CADisplayLink?
     private(set) var outgoing: NSView
     private var incoming: NSView
     private var direction: Int
@@ -1054,6 +1046,8 @@ private struct NativeSpacePreviewDimming: AnimatableModifier {
 
     init(frame: NSRect, outgoing: SpacePreviewList, incoming: SpacePreviewList,
          drag: CGFloat, direction: Int, source: TabStore, includesFavorites: Bool, travelWidth: CGFloat) {
+        let dimming = NativeSpacePreviewDimming(opacity: source.spaceGesture.presentedPaletteScrimOpacity)
+        previewDimming = dimming
         requiresNativePopulation = NativeCachedSidebarBatchesExperiment.enabled
         let outgoingScope = SidebarNativeReadinessScope(store: source, spaceID: outgoing.space.id, surfaceID: UUID())
         let incomingScope = SidebarNativeReadinessScope(store: source, spaceID: incoming.space.id, surfaceID: UUID())
@@ -1064,9 +1058,9 @@ private struct NativeSpacePreviewDimming: AnimatableModifier {
             ?? source.profile.colorHex
         let incomingTheme = SpaceChromeTheme(space: incoming.space, fallback: incomingFallback)
         let outgoingHost = NSHostingView(rootView: NativeSpacePreview(
-            preview: outgoing, scope: outgoingScope, theme: outgoingTheme, store: source))
+            preview: outgoing, scope: outgoingScope, theme: outgoingTheme, dimming: dimming))
         let incomingHost = NSHostingView(rootView: NativeSpacePreview(
-            preview: incoming, scope: incomingScope, theme: incomingTheme, store: source))
+            preview: incoming, scope: incomingScope, theme: incomingTheme, dimming: dimming))
         // Both captures have an explicit native frame. Intrinsic/min/max fitting
         // probes otherwise lay out the frozen rows again during window layout.
         outgoingHost.sizingOptions = []
@@ -1124,13 +1118,7 @@ private struct NativeSpacePreviewDimming: AnimatableModifier {
         // Both keep this overlay until the arriving sidebar acknowledges its rest state.
         guard (!finished || completingSelection), destination !== store else { return }
         destination = store
-        for view in [outgoing, incoming] {
-            if let host = view as? NSHostingView<NativeSpacePreview> {
-                var root = host.rootView
-                root.store = store
-                host.rootView = root
-            }
-        }
+        updatePreviewDimming()
         store.spaceSwiping = true
         store.spaceGesture.outgoing = originPreview
         store.spaceGesture.neighbour = preparedTarget
@@ -1219,6 +1207,7 @@ private struct NativeSpacePreviewDimming: AnimatableModifier {
     /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
     func track(drag: CGFloat) {
         guard isActive else { return }
+        beginPreviewDimming()
         lastPublishedDrag = drag
         let now = ProcessInfo.processInfo.systemUptime
         if let previous = lastTracking {
@@ -1266,6 +1255,7 @@ private struct NativeSpacePreviewDimming: AnimatableModifier {
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
+        beginPreviewDimming()
         self.completion = completion
         restingSpaceID = returning ? preparedOrigin.id : targetID
         let animationID = UUID()
@@ -1361,6 +1351,25 @@ private struct NativeSpacePreviewDimming: AnimatableModifier {
         publishProgress(presentation.frame.minX - contentInset)
     }
 
+    private func beginPreviewDimming() {
+        updatePreviewDimming()
+        guard dimmingLink == nil, let screen = window?.screen ?? NSScreen.main else { return }
+        let link = screen.displayLink(target: self, selector: #selector(advancePreviewDimming(_:)))
+        let rate = Float(screen.maximumFramesPerSecond)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+        dimmingLink = link
+        link.add(to: .main, forMode: .common)
+    }
+
+    @objc private func advancePreviewDimming(_ link: CADisplayLink) { updatePreviewDimming() }
+
+    private func updatePreviewDimming() {
+        let opacity = (destination ?? source)?.spaceGesture.presentedPaletteScrimOpacity ?? 0
+        if abs(previewDimming.opacity - opacity) > 0.0001 {
+            Motion.instant { previewDimming.opacity = opacity }
+        }
+    }
+
     private func publishProgress(_ drag: CGFloat) {
         lastPublishedDrag = drag
         guard let window else { return }
@@ -1394,6 +1403,8 @@ private struct NativeSpacePreviewDimming: AnimatableModifier {
 
     /// An unused idle surface has never owned the gesture's visibility state.
     func discardPreparation() {
+        dimmingLink?.invalidate()
+        dimmingLink = nil
         finished = true
         finishGround?(source?.swipeSpace)
         finishGround = nil
@@ -1506,6 +1517,8 @@ private struct NativeSpacePreviewDimming: AnimatableModifier {
     private func retire() {
         guard !retired else { return }
         retired = true
+        dimmingLink?.invalidate()
+        dimmingLink = nil
         SidebarNativeReadinessCoordinator.shared.removeObservation(retirementReadinessObservation)
         retirementReadinessObservation = nil
         retirementTimeout?.cancel()

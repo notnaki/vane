@@ -471,6 +471,29 @@ enum PaletteMode {
 }
 
 
+/// A native anchor exposes the enclosing SwiftUI transition's presented opacity
+/// to the separately hosted Space preview, without a second animation clock.
+private struct PaletteScrimSurface: NSViewRepresentable {
+    let opacity: Double
+    let gesture: SpaceGesture
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        view.wantsLayer = true
+        view.setAccessibilityElement(false)
+        gesture.paletteScrimView = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        gesture.paletteScrimView = view
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        view.layer?.backgroundColor = NSColor.black.withAlphaComponent(opacity).cgColor
+        CATransaction.commit()
+    }
+}
+
 // MARK: - The bar
 
 /// One line of the command bar. `icon` is drawn only when `image` (a favicon) is missing,
@@ -1008,7 +1031,12 @@ private struct PaletteResultHover: ViewModifier {
             ZStack(alignment: sidebarAddress ? .topLeading : .top) {
                 // Click-off to dismiss. Decoration only — Esc is the accessible route out,
                 // and VoiceOver should never land on a full-screen unlabelled rectangle.
-                (sidebarAddress ? Color.clear : Look.scrim)
+                Color.clear
+                    .background {
+                        PaletteScrimSurface(opacity: sidebarAddress ? 0 : Look.scrimOpacity,
+                                            gesture: store.spaceGesture)
+                            .allowsHitTesting(false)
+                    }
                     .contentShape(.rect)
                     .onTapGesture { close() }
                     .accessibilityHidden(true)

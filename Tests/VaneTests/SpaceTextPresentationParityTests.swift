@@ -11,7 +11,7 @@ import XCTest
         try await checkTextPresentation(palette: .newTab, floating: true)
     }
 
-    func testDockedAddressSearchDoesNotDimNativeText() async throws {
+    func testDockedAddressSearchKeepsThePresentedScrimClear() async throws {
         try await checkTextPresentation(palette: .address, floating: false)
     }
 
@@ -123,7 +123,11 @@ import XCTest
         try await displayFrames(in: window)
         let anchor = try XCTUnwrap(store.spaceGesture.sectionsView)
         let sections = anchor.convert(anchor.bounds, to: host)
-        let baseline = try await capture(in: host, sections: sections)
+        // Inline search suggestions cover these label regions. Check their actual
+        // clear scrim instead of comparing unrelated popup text with sidebar text.
+        let inlineAddress = palette == .address && !floating
+        let baseline = inlineAddress ? nil : try await capture(in: host, sections: sections)
+        if inlineAddress { XCTAssertEqual(store.spaceGesture.presentedPaletteScrimOpacity, 0) }
 
         NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
         NSApp.sendEvent(ScrollEvent(window: window, dx: -12))
@@ -136,6 +140,15 @@ import XCTest
                 && abs(slide.offset) < 0.01 && slide.window === window
         }
         try await displayFrames(in: window)
+        guard let baseline else {
+            XCTAssertEqual(store.spaceGesture.presentedPaletteScrimOpacity, 0,
+                           "Inline address editing must leave the sidebar ground undimmed during travel")
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
+            try await compatibilityWait { !store.spaceSwiping && host.spaceSlide == nil }
+            XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+            XCTAssertEqual(store.spaceGesture.presentedPaletteScrimOpacity, 0)
+            return
+        }
         let covered = try await capture(in: host, sections: sections)
         let position = try XCTUnwrap(slide.outgoing.layer).position
         let fractional = CABasicAnimation(keyPath: "position")

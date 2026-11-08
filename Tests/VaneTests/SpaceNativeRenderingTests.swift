@@ -288,14 +288,21 @@ import XCTest
         store.palette = nil
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let surface = try XCTUnwrap(colourSurface(in: XCTUnwrap(window.contentView)))
-        // Admit the exact visible source and its prepared destination before the
+        // Admit the exact visible source and its row population before the
         // action. A guessed startup delay can miss the spring's entire early travel.
         try await compatibilityWait {
             host.layoutSubtreeIfNeeded()
+            if !NSApp.isActive || NSApp.keyWindow !== window {
+                NSApp.activate()
+                window.makeKeyAndOrderFront(nil)
+                return false
+            }
             guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
                   window.isVisible, window.occlusionState.contains(.visible),
                   NSApp.modalWindow == nil, window.attachedSheet == nil,
-                  let prepared = monitor.preparedSlides[spaces[1].id], prepared.preparedPopulationReady,
+                  SidebarNativeReadinessCoordinator.shared.isReady(
+                    SidebarNativeReadinessScope(store: store, spaceID: spaces[0].id),
+                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled),
                   surface.base.presentation() != nil,
                   let presented = try? self.firstColour(of: surface, presented: true).redComponent,
                   let model = try? self.firstColour(of: surface).redComponent else { return false }

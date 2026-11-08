@@ -85,6 +85,20 @@ import UniformTypeIdentifiers
     var captureGround: (() -> ThemeWashPresentation?)?
     var animateGround: ((Space, Space, Double, Double, CABasicAnimation, ThemeWashPresentation?) -> ((Space?) -> Void))?
     var colourDuration = Look.spaceSlideDuration
+    weak var paletteScrimView: NSView?
+    /// Read the scrim's actual compositor opacity, including its enclosing fade.
+    var presentedPaletteScrimOpacity: Double {
+        guard let view = paletteScrimView, view.window != nil,
+              let presented = view.layer?.presentation() else { return 0 }
+        var opacity = Double(presented.backgroundColor?.alpha ?? 0)
+        var layer: CALayer? = presented
+        while let current = layer {
+            if current.isHidden { return 0 }
+            opacity *= Double(current.opacity)
+            layer = current.superlayer
+        }
+        return min(1, max(0, opacity))
+    }
     var pull: CGFloat {
         get { read(\.pull) }
         set { write(\.pull, newValue) }
