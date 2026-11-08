@@ -1,4 +1,8 @@
 import AppKit
+import Combine
+import CoreMedia
+import CoreVideo
+@preconcurrency import ScreenCaptureKit
 import SwiftUI
 import XCTest
 @testable import vane
@@ -15,6 +19,21 @@ import XCTest
     private func assertHandoff(returning: Bool) async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires animated handoff")
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await exerciseHandoff(returning: returning) } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Handoff AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func exerciseHandoff(returning: Bool) async throws {
         let profile = ProfileManager.shared.create(name: "Presented sidebar fixture").id
         let spaces = ["First", "Second"].map { Space(name: $0, profileID: profile) }
         XCTAssertTrue(ProfileManager.shared.saveSpaces(spaces, for: profile))
@@ -25,10 +44,11 @@ import XCTest
         store.window = window
         let host = BrowserWindowHost(shown: ShownStore(store))
         window.contentView = host
-        window.orderFront(nil)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
         let monitor = store.spaceGesture.monitor
         monitor.install(store)
-        addTeardownBlock { @MainActor in
+        defer {
             monitor.remove()
             window.orderOut(nil)
             window.contentView = nil
@@ -50,11 +70,26 @@ import XCTest
         }
         store.switchTo(space: spaces[0])
         store.palette = nil
-        host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(350))
+        try await compatibilityWait {
+            if !NSApp.isActive || NSApp.keyWindow !== window {
+                NSApp.activate()
+                window.makeKeyAndOrderFront(nil)
+                return false
+            }
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            CATransaction.flush()
+            guard NSApp.isRunning, window.isVisible, window.occlusionState.contains(.visible),
+                  NSApp.modalWindow == nil, window.attachedSheet == nil,
+                  let anchor = store.spaceGesture.sectionsView, anchor.window === window,
+                  anchor.layer?.presentation() != nil, host.layer?.presentation() != nil else { return false }
+            return SidebarNativeReadinessCoordinator.shared.isReady(
+                SidebarNativeReadinessScope(store: store, spaceID: spaces[0].id),
+                allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)
+        }
         let sampler = PresentedSidebarSampler(host: host, store: store)
-        sampler.start(on: try XCTUnwrap(window.screen))
-        defer { sampler.stop() }
+        try await sampler.start(in: window)
+        do {
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
         if returning {
             NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -12))
@@ -82,6 +117,7 @@ import XCTest
         }
         XCTAssertEqual(store.currentSpaceID, spaces[returning ? 0 : 1].id)
         XCTAssertNil(host.spaceSlide)
+        try await sampler.stop()
         let covered = sampler.samples.filter(\.covered)
         let uncovered = sampler.samples.filter { !$0.covered }
         XCTAssertTrue(sampler.observedGesture, "A display callback must observe the actual gesture")
@@ -95,53 +131,133 @@ import XCTest
             XCTAssertGreaterThan(frame.edges, settled * 0.85,
                                  "Sidebar content must not disappear for a frame at native handoff")
         }
+        } catch {
+            let primary = error
+            do { try await sampler.stop() }
+            catch { XCTFail("Handoff capture cleanup also failed: \(error)") }
+            throw primary
+        }
     }
 }
 
-/// Render the presentation tree on display callbacks, outside state-publication callbacks.
-@MainActor private final class PresentedSidebarSampler: NSObject {
+/// Capture WindowServer output: rendering a newly committed layer tree into a
+/// CGContext can temporarily omit asynchronously drawn SwiftUI backing contents.
+@MainActor private final class PresentedSidebarSampler: NSObject, SCStreamOutput {
     struct Sample { let covered: Bool; let edges: Double }
     private weak var host: BrowserWindowHost?
     private weak var store: TabStore?
     private(set) var observedGesture = false
     private var link: CADisplayLink?
-    private var reachedEndpoint = false
-    var samples: [Sample] = []
+    private var stream: SCStream?
+    private var observation: AnyCancellable?
+    private nonisolated let frames = HandoffCaptureFrames()
+    var samples: [Sample] { frames.samples.map { Sample(covered: $0.0, edges: $0.1) } }
     init(host: BrowserWindowHost, store: TabStore) {
         self.host = host
         self.store = store
     }
-    func start(on screen: NSScreen) {
+    func start(in window: NSWindow) async throws {
+        let content = try await SCShareableContent.currentProcess
+        let target = try XCTUnwrap(content.windows.first { $0.windowID == CGWindowID(window.windowNumber) })
+        let filter = SCContentFilter(desktopIndependentWindow: target)
+        let configuration = SCStreamConfiguration()
+        let host = try XCTUnwrap(host)
+        let crop = CGRect(x: 8, y: 70, width: max(1, SidebarWidth.shared.width - 16), height: 280)
+        let screenCrop = window.convertToScreen(host.convert(crop, to: nil))
+        configuration.sourceRect = CGRect(x: screenCrop.minX - window.frame.minX,
+            y: window.frame.maxY - screenCrop.maxY, width: crop.width, height: crop.height)
+        configuration.width = Int(crop.width)
+        configuration.height = Int(crop.height)
+        configuration.showsCursor = false
+        configuration.ignoreShadowsSingleWindow = true
+        configuration.captureDynamicRange = .SDR
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        let screen = try XCTUnwrap(window.screen)
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(screen.maximumFramesPerSecond))
+        configuration.queueDepth = 8
+        let capture = SCStream(filter: filter, configuration: configuration, delegate: nil)
+        try capture.addStreamOutput(self, type: .screen, sampleHandlerQueue: frames.queue)
+        stream = capture
+        do {
+            try await capture.startCapture()
+            try await compatibilityWait { self.frames.hasRenderedContent }
+        } catch {
+            try? await capture.stopCapture()
+            stream = nil
+            throw error
+        }
+        observation = store?.spaceGesture.$presentation.sink { [weak self] state in
+            guard let self else { return }
+            if state.swiping { self.observedGesture = true }
+            else if self.observedGesture { self.frames.reachedEndpoint(at: CACurrentMediaTime()) }
+        }
         let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
         let rate = Float(screen.maximumFramesPerSecond)
         link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
         link.add(to: .main, forMode: .common)
         self.link = link
     }
-    func stop() { link?.invalidate(); link = nil }
+    func stop() async throws {
+        link?.invalidate(); link = nil
+        observation = nil
+        if let stream {
+            try await stream.stopCapture()
+            self.stream = nil
+            frames.queue.sync {}
+        }
+    }
     @objc private func tick(_ link: CADisplayLink) {
-        guard let host, let layer = host.layer?.presentation() else { return }
-        guard let store else { return }
-        if store.spaceSwiping { observedGesture = true }
-        if observedGesture, !store.spaceSwiping { reachedEndpoint = true }
-        guard reachedEndpoint else { return }
-        let pixelsWide = max(1, Int(SidebarWidth.shared.width) - 16), pixelsHigh = 280
-        guard let context = CGContext(data: nil, width: pixelsWide, height: pixelsHigh,
-                                      bitsPerComponent: 8, bytesPerRow: pixelsWide * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
-              let bytes = context.data?.assumingMemoryBound(to: UInt8.self) else { return }
-        context.translateBy(x: -8, y: -70)
-        layer.render(in: context)
+        if observedGesture, host?.spaceSlide == nil { frames.retired(at: CACurrentMediaTime()) }
+    }
+    nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+                            of type: SCStreamOutputType) {
+        guard type == .screen, sampleBuffer.isValid else { return }
+        let time = CMTimeGetSeconds(sampleBuffer.presentationTimeStamp)
+        guard time.isFinite else { return }
+        let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]]
+        let status = attachments?.first?[.status] as? Int
+        // An idle frame repeats the last displayed content; a blank frame is
+        // real missing content and must remain a zero-edge assertion sample.
+        if status == SCFrameStatus.idle.rawValue { frames.repeatFrame(at: time); return }
+        if status == SCFrameStatus.blank.rawValue { frames.append(time: time, edges: 0); return }
+        guard status == SCFrameStatus.complete.rawValue, let pixel = sampleBuffer.imageBuffer else { return }
+        CVPixelBufferLockBaseAddress(pixel, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
+        guard let bytes = CVPixelBufferGetBaseAddress(pixel)?.assumingMemoryBound(to: UInt8.self) else { return }
+        let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
+        let strideBytes = CVPixelBufferGetBytesPerRow(pixel)
         var edges = 0.0
-        for y in stride(from: 0, to: pixelsHigh, by: 2) {
-            for x in stride(from: 0, to: pixelsWide - 1, by: 2) {
-                let offset = (y * pixelsWide + x) * 4
+        for y in stride(from: 0, to: height, by: 2) {
+            for x in stride(from: 0, to: width - 1, by: 2) {
+                let offset = y * strideBytes + x * 4
                 for component in 0..<3 {
                     edges += Double(abs(Int(bytes[offset + component]) - Int(bytes[offset + 4 + component]))) / 255
                 }
             }
         }
-        samples.append(Sample(covered: host.spaceSlide != nil, edges: edges))
+        frames.append(time: time, edges: edges)
+    }
+}
+
+private final class HandoffCaptureFrames: @unchecked Sendable {
+    let queue = DispatchQueue(label: "vane.handoff.capture")
+    private let lock = NSLock()
+    private var endpoint: Double?
+    private var retirement: Double?
+    private var recorded: [(Double, Double)] = []
+    var hasRenderedContent: Bool { lock.withLock { recorded.contains { $0.1 > 1 } } }
+    var samples: [(Bool, Double)] {
+        lock.withLock {
+            guard let endpoint else { return [] }
+            return recorded.filter { $0.0 >= endpoint }.map { frame in
+                (retirement.map { frame.0 < $0 } ?? true, frame.1)
+            }
+        }
+    }
+    func reachedEndpoint(at time: Double) { lock.withLock { if endpoint == nil { endpoint = time } } }
+    func retired(at time: Double) { lock.withLock { if retirement == nil { retirement = time } } }
+    func append(time: Double, edges: Double) { lock.withLock { recorded.append((time, edges)) } }
+    func repeatFrame(at time: Double) {
+        lock.withLock { if let last = recorded.last { recorded.append((time, last.1)) } }
     }
 }

@@ -827,6 +827,21 @@ import XCTest
     func testProfileOriginClickReversesBeforeTheCurrentLandingFinishes() async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await checkProfileOriginClickReversal() } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Profile reversal AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkProfileOriginClickReversal() async throws {
         let manager = ProfileManager.shared
         let previous = manager.active
         let profiles = [manager.create(name: "Click origin"), manager.create(name: "Click arrival")]
@@ -850,7 +865,10 @@ import XCTest
             .first { $0.owner === source && $0.configuration?.id == spaces[1].id }?.marker?.symbol)
         let width = SidebarWidth.shared.width
         source.spaceGesture.monitor.track(-60, width: width, in: source)
-        source.spaceGesture.monitor.land(1, to: spaces[1], width: width, store: source, duration: 0.8)
+        // A critical spring covers its middle early. Slow only this setup leg so
+        // a cold profile can mount before the midpoint reversal; the click below
+        // still uses production timing and its original 100 ms outcome bound.
+        source.spaceGesture.monitor.land(1, to: spaces[1], width: width, store: source, duration: 2)
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
         try await compatibilityWait {
