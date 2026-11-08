@@ -147,6 +147,14 @@ Nightly date/counter components; a newer publication timestamp or build number
 alone does not win. An update must be newer than both the running app and any
 existing installation at the destination.
 
+ZIP downloads use the release asset API with `Accept: application/octet-stream`.
+The browser download URL is retained as an alternate route: an HTTP or network
+failure silently tries the other endpoint once, including after a partial
+download. Both attempts share the overall deadline and redirect budget; size,
+host trust, archive and signature checks still apply. The existing progress pill
+continues throughout, and only failure of the complete download is shown. Old
+browser-only conditional caches are refetched once to obtain both endpoints.
+
 With automatic checks enabled, Vane checks about five seconds after launch, when
 returning to the app if at least five minutes have elapsed since the last check,
 and on its minute timer once at least 30 minutes have elapsed. After a network or
