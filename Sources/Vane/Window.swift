@@ -984,11 +984,9 @@ private struct NativeSpacePreview: View {
 
     var body: some View {
         let dimmed = store.palette.map { !$0.usesSidebarAddress(in: store) } ?? false
-        if dimmed {
-            content.colorMultiply(Color(white: 1 - Look.scrimOpacity))
-        } else {
-            content
-        }
+        content
+            .modifier(NativeSpacePreviewDimming(opacity: dimmed ? Look.scrimOpacity : 0))
+            .animation(Motion.reduced ? nil : Look.appear, value: store.palette == nil)
     }
 
     private var content: some View {
@@ -997,6 +995,22 @@ private struct NativeSpacePreview: View {
             .environment(\.spaceChromeTheme, theme)
             .environment(\.colorScheme, preview.colorScheme)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct NativeSpacePreviewDimming: AnimatableModifier {
+    nonisolated var opacity: Double
+    nonisolated var animatableData: Double {
+        get { opacity }
+        set { opacity = newValue }
+    }
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if opacity > 0 {
+            content.colorMultiply(Color(white: 1 - opacity)).transition(.identity)
+        } else {
+            content.transition(.identity)
+        }
     }
 }
 

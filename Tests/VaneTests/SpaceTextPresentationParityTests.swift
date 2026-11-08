@@ -19,15 +19,34 @@ import XCTest
         try await checkTextPresentation(palette: nil, floating: false)
     }
 
-    private func checkTextPresentation(palette: PaletteMode?, floating: Bool) async throws {
+    func testDismissingSearchDuringNativeTrackingKeepsTextAndGroundInStep() async throws {
+        try await checkTextPresentation(palette: .newTab, floating: true, dismissWhileTracking: true)
+    }
+
+    private func checkTextPresentation(palette: PaletteMode?, floating: Bool,
+                                       dismissWhileTracking: Bool = false) async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires native swipe presentation")
+        let saver = BatterySaver.shared
+        let previousSaverMode = saver.mode
+        saver.setMode(.off)
+        defer { saver.setMode(previousSaverMode) }
+        let speedKey = UIAnimation.surfaces.key
+        let previousSpeed = UserDefaults.vane.object(forKey: speedKey)
+        if dismissWhileTracking { UserDefaults.vane.set(0.25, forKey: speedKey) }
+        defer {
+            if let previousSpeed { UserDefaults.vane.set(previousSpeed, forKey: speedKey) }
+            else { UserDefaults.vane.removeObject(forKey: speedKey) }
+        }
         _ = NSApplication.shared
         let previousPolicy = NSApp.activationPolicy()
         defer { NSApp.setActivationPolicy(previousPolicy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
-        do { try await checkTextContrast(palette: palette, floating: floating) } catch { failure = error }
+        do {
+            try await checkTextContrast(palette: palette, floating: floating,
+                                        dismissWhileTracking: dismissWhileTracking)
+        } catch { failure = error }
         do { try await loop.close() }
         catch {
             if failure == nil { failure = error }
@@ -36,7 +55,8 @@ import XCTest
         if let failure { throw failure }
     }
 
-    private func checkTextContrast(palette: PaletteMode?, floating: Bool) async throws {
+    private func checkTextContrast(palette: PaletteMode?, floating: Bool,
+                                   dismissWhileTracking: Bool) async throws {
         let manager = ProfileManager.shared
         let profile = manager.create(name: "Text contrast fixture").id
         // Identical content and identical default washes isolate text rendering
@@ -98,7 +118,7 @@ import XCTest
         try await displayFrames(in: window)
         let anchor = try XCTUnwrap(store.spaceGesture.sectionsView)
         let sections = anchor.convert(anchor.bounds, to: host)
-        let baseline = try await contrast(in: host, sections: sections)
+        let baseline = try await capture(in: host, sections: sections)
 
         NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
         NSApp.sendEvent(ScrollEvent(window: window, dx: -12))
@@ -111,7 +131,7 @@ import XCTest
                 && abs(slide.offset) < 0.01 && slide.window === window
         }
         try await displayFrames(in: window)
-        let covered = try await contrast(in: host, sections: sections)
+        let covered = try await capture(in: host, sections: sections)
         let position = try XCTUnwrap(slide.outgoing.layer).position
         let fractional = CABasicAnimation(keyPath: "position")
         let shifted = NSValue(point: CGPoint(x: position.x - 0.25, y: position.y))
@@ -120,9 +140,18 @@ import XCTest
         fractional.duration = 60
         slide.outgoing.layer?.add(fractional, forKey: "text-fractional-probe")
         try await displayFrames(in: window)
-        let fractionalContrast = try await contrast(in: host, sections: sections)
+        let fractionalContrast = try await capture(in: host, sections: sections)
 
         slide.outgoing.layer?.removeAnimation(forKey: "text-fractional-probe")
+
+        var dismissal: [TextCapture] = []
+        if dismissWhileTracking {
+            store.palette = nil
+            let deadline = ContinuousClock.now + .seconds(Look.appearDuration + 0.2)
+            repeat {
+                dismissal.append(try await capture(in: host, sections: sections))
+            } while ContinuousClock.now < deadline
+        }
 
         NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
         try await compatibilityWait {
@@ -130,24 +159,41 @@ import XCTest
                 && store.currentSpaceID == spaces[0].id
         }
         try await displayFrames(in: window)
-        let retired = try await contrast(in: host, sections: sections)
+        let retired = try await capture(in: host, sections: sections)
         print("SPACE_TEXT_CONTRAST baseline=\(baseline) native=\(covered) fractional=\(fractionalContrast) retired=\(retired)")
-        for index in baseline.indices {
+        for index in baseline.contrast.indices {
             let label = index == 0 ? "Space title" : "New Tab"
-            XCTAssertGreaterThan(baseline[index], 20, "\(label) ROI must contain rendered text")
-            XCTAssertEqual(covered[index], baseline[index], accuracy: baseline[index] * 0.05,
+            XCTAssertGreaterThan(baseline.contrast[index], 20, "\(label) ROI must contain rendered text")
+            XCTAssertEqual(covered.contrast[index], baseline.contrast[index], accuracy: baseline.contrast[index] * 0.05,
                            "\(label) contrast must survive native preview takeover")
-            XCTAssertEqual(fractionalContrast[index], baseline[index], accuracy: baseline[index] * 0.05,
+            XCTAssertEqual(fractionalContrast.contrast[index], baseline.contrast[index], accuracy: baseline.contrast[index] * 0.05,
                            "\(label) contrast must survive fractional compositor travel")
-            XCTAssertEqual(retired[index], baseline[index], accuracy: baseline[index] * 0.05,
-                           "\(label) contrast must survive native preview retirement")
+            if dismissWhileTracking {
+                XCTAssertTrue(dismissal.contains {
+                    $0.ground[index] > baseline.ground[index] + 0.005
+                        && $0.ground[index] < retired.ground[index] - 0.005
+                }, "Observe an intermediate scrim frame before checking its endpoint")
+                for sample in dismissal {
+                    let expected = retired.contrast[index] * sample.ground[index] / retired.ground[index]
+                    XCTAssertEqual(sample.contrast[index], expected, accuracy: retired.contrast[index] * 0.05,
+                                   "\(label) must fade with the actual presented scrim")
+                }
+            } else {
+                XCTAssertEqual(retired.contrast[index], baseline.contrast[index], accuracy: baseline.contrast[index] * 0.05,
+                               "\(label) contrast must survive native preview retirement")
+            }
         }
+    }
+
+    private struct TextCapture {
+        let contrast: [Double]
+        let ground: [Double]
     }
 
     /// Sum foreground contrast over each label, excluding icons and trailing
     /// controls. An adjacent empty strip supplies the ground independently for
     /// every capture; no assumed RGB value or foreground-color token is used.
-    private func contrast(in host: NSView, sections: NSRect) async throws -> [Double] {
+    private func capture(in host: NSView, sections: NSRect) async throws -> TextCapture {
         windowDisplay(host)
         let window = try XCTUnwrap(host.window)
         let content = try await SCShareableContent.currentProcess
@@ -170,7 +216,7 @@ import XCTest
             let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
             return (color.redComponent + color.greenComponent + color.blueComponent) / 3
         }
-        return try [CGFloat(0), Look.rowHeight + Look.rowGap].map { top in
+        let rows = try [CGFloat(0), Look.rowHeight + Look.rowGap].map { top -> (Double, Double) in
             // BrowserWindowHost is unflipped; bitmap scanlines run top to bottom.
             let upper = window.frame.height - sections.maxY + top
             let x0 = Int((labelX - host.bounds.minX) * sx)
@@ -185,8 +231,9 @@ import XCTest
             for y in y0..<y1 {
                 for x in x0..<x1 { contrast += max(0, try mean(x, y) - ground) }
             }
-            return contrast
+            return (contrast, ground)
         }
+        return TextCapture(contrast: rows.map(\.0), ground: rows.map(\.1))
     }
 
     private func windowDisplay(_ host: NSView) {
