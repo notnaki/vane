@@ -19,7 +19,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            if self.path == '/forbidden':
+            if self.path in ['/asset-api', '/asset-api-redirect', '/asset-body']:
+                # GitHub's asset API returns JSON metadata unless binary content is requested.
+                if self.headers.get('Accept') != 'application/octet-stream':
+                    body = b'{"name":"Vane.zip"}'
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path == '/asset-api-redirect':
+                    self.send_response(302)
+                    self.send_header('Location', '/asset-body')
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+            if self.path in ['/forbidden', '/fallback-must-not-fetch']:
                 forbidden_requests.append(self.path)
             if self.path in ['/redirect-good', '/redirect-bad', '/redirect-loop']:
                 self.send_response(302)
@@ -29,7 +44,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             body = b'complete archive fixture'
-            self.send_response(503 if self.path == '/http-error' else 200)
+            if self.path == '/delayed-http-error':
+                time.sleep(.8)
+            self.send_response(503 if self.path in ['/http-error', '/delayed-http-error'] else 403 if self.path == '/api-http-error' else 200)
             if self.path == '/unknown-large':
                 self.end_headers()
                 self.wfile.write(b'x' * 4096)
@@ -55,6 +72,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 if self.path == '/exact-cap':
                     body = b'x' * 1024
+                if self.path == '/empty':
+                    body = b''
                 if self.path == '/advertised-large':
                     body = b'x' * 100000
                 size = 100000 if self.path in ['/advertised-large', '/truncated', '/interrupted'] else len(body)
@@ -66,7 +85,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if self.path == '/advertised-large':
                     self.wfile.flush()
                     time.sleep(.1)
-                self.wfile.write(body if self.path in ['/complete', '/exact-cap', '/advertised-large'] else body[:4])
+                self.wfile.write(body if self.path in ['/complete', '/exact-cap', '/advertised-large',
+                                                      '/asset-api', '/asset-body'] else body[:4])
                 self.wfile.flush()
                 if self.path == '/interrupted':
                     self.connection.shutdown(socket.SHUT_RDWR)

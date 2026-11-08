@@ -561,7 +561,7 @@ extension Release {
     }
 
     private(set) var phase: Phase?
-    private var pending: (tag: String, asset: URL)?
+    private var pending: (tag: String, asset: URL, fallback: URL?)?
     /// Where the new copy went — the same path, or /Applications when it was installed.
     private var installed: URL?
     private var working = false
@@ -687,18 +687,22 @@ extension Release {
                 // previous launch is still a url that came off the network.
                 present(tag: defaults.string(forKey: channel.cacheKey("tag")),
                         asset: Release.trusted(defaults.string(forKey: channel.cacheKey("asset"))
+                            .flatMap(URL.init(string:))),
+                        fallback: Release.trusted(defaults.string(forKey: channel.cacheKey("fallbackAsset"))
                             .flatMap(URL.init(string:))), silent: silent)
             case 200:
                 let release = try channel.release(from: data)
                 let tag = release?.tag
                 let asset = Release.asset(release?.assets.map { ($0.name, $0.url) } ?? [])
+                let fallback = Release.asset(release?.assets.map { ($0.name, $0.browserURL ?? "") } ?? [])
                 // Only a decoded response may advance the conditional cache. Otherwise a
                 // later 304 could turn a malformed response into a stale update offer.
                 backingOff = false
                 remember(http, channel: channel)
                 defaults.set(tag, forKey: channel.cacheKey("tag"))
                 defaults.set(asset?.absoluteString, forKey: channel.cacheKey("asset"))
-                present(tag: tag, asset: asset, silent: silent)
+                defaults.set(fallback?.absoluteString, forKey: channel.cacheKey("fallbackAsset"))
+                present(tag: tag, asset: asset, fallback: fallback, silent: silent)
             default:
                 // 403 is the rate limit, 404 a repo with no release yet, 5xx a bad day.
                 backingOff = true
@@ -732,7 +736,7 @@ extension Release {
         }
     }
 
-    private func present(tag: String?, asset: URL?, silent: Bool) {
+    private func present(tag: String?, asset: URL?, fallback: URL?, silent: Bool) {
         // The whole of the "when may this say anything" rule, in one pure call. A launch and
         // a half-hourly tick may only ever offer a real update; "up to date" belongs to the
         // person who pressed Check for Updates and to nobody else.
@@ -786,7 +790,7 @@ extension Release {
         // Also the ×: a toast the user has put away must not come back every half hour for
         // the same release, and neither must one this copy has already refused.
         guard Self.mayArm(tag: tag, over: phase, working: working) else { return }
-        pending = (tag, asset)
+        pending = (tag, asset, fallback)
         set(.available(tag))
     }
 
@@ -795,7 +799,7 @@ extension Release {
 
     func startDownload() {
         guard !working else { return }
-        guard let (tag, asset) = pending else {
+        guard let (tag, asset, fallback) = pending else {
             // A channel switch can retire an offer during an active download/install.
             // The failed transaction's Retry then discovers the current channel afresh.
             check(silent: false)
@@ -808,7 +812,7 @@ extension Release {
         let dest = FileManager.default.temporaryDirectory
             .appendingPathComponent("Vane-update-\(UUID().uuidString).zip")
         do {
-            download = try UpdateDownload.start(url: asset, destination: dest,
+            download = try UpdateDownload.start(url: asset, fallbackURL: fallback, destination: dest,
                 maxBytes: Release.maxAssetBytes,
                 trusted: { Release.trusted($0) != nil },
                 progress: { bytes, expected in
