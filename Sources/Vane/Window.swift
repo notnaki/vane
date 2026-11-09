@@ -936,6 +936,15 @@ extension VaneWindow {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        // Autoresizing updates the hosting view's frame, but SwiftUI otherwise
+        // lays out its page on a later turn. During live resize that exposes a
+        // strip of window ground at the trailing edge. Finish the visible root
+        // in this resize pass; parked profiles can keep their deferred layout.
+        if let current { hosts[current]?.layoutSubtreeIfNeeded() }
+    }
+
     private func show(_ store: TabStore) {
         let id = ObjectIdentifier(store)
         footerPresentation.activate(store)
