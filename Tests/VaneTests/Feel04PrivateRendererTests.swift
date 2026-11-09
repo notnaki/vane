@@ -173,7 +173,28 @@ private final class Feel04WaitingServer: @unchecked Sendable {
     private func checkSession(observerEnabled: Bool, inactiveChange: Bool = false,
                               policyChange: Bool = false) async throws {
         TestEnvironment.prepare()
-        _ = NSApplication.shared
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        // Own the nested loop from the test body, so XCTest can enter and leave
+        // its lifecycle callbacks without waiting for that loop to return.
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do {
+            try await exerciseSession(observerEnabled: observerEnabled,
+                                      inactiveChange: inactiveChange, policyChange: policyChange)
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Cookie renderer AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func exerciseSession(observerEnabled: Bool, inactiveChange: Bool,
+                                 policyChange: Bool) async throws {
+        XCTAssertTrue(NSApp.isRunning, "Cookie renderer snapshots require an admitted AppKit loop")
         let server = try Feel04WaitingServer(body: "<title>Cookie preview</title><body style='margin:0'><div style='height:240px;background:#1976d2'>Preview</div><div style='height:240px;background:#e53935'></div><div style='height:240px;background:#43a047'></div></body>", cookie: true)
         let url = try await server.start(), clock = Feel04DebounceFixture()
         let profile = UUID()
@@ -227,8 +248,11 @@ private final class Feel04WaitingServer: @unchecked Sendable {
             if previews.current?.title == "Cookie preview", previews.current?.image != nil { break }
             try await Task.sleep(for: .milliseconds(20))
         }
+        print("FEEL04_RENDERER_ADMISSION running=\(NSApp.isRunning) image=\(previews.current?.image != nil) loading=\(String(describing: previews.current?.loading)) host=\(host is PreviewHostWindow)")
         XCTAssertEqual(previews.current?.title, "Cookie preview")
-        XCTAssertNotNil(previews.current?.image)
+        // A cache-miss reload can reuse its renderer. Do not interpret that as a
+        // session-invalidation failure if the initial cache was never populated.
+        _ = try XCTUnwrap(previews.current?.image, "The initial preview must populate the pixel cache")
         let web = try XCTUnwrap(host?.contentView as? WKWebView)
         let pageCookies = try await web.evaluateJavaScript("document.cookie") as? String
         XCTAssertTrue(pageCookies?.contains("source=signed-in") == true)
