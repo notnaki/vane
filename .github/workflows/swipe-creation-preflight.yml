@@ -1,0 +1,65 @@
+name: Swipe creation focused preflight
+
+on:
+  push:
+    branches: [codex/swipe-creation-preflight]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  creation:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Identify toolchain
+        id: toolchain
+        run: |
+          sw_vers
+          swift --version
+          KEY=$(python3 scripts/ci-build-artifact.py toolchain)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swipe-creation-preflight-${{ github.sha }}
+          restore-keys: |
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - run: python3 scripts/ci-source-state.py restore
+      - run: swift build -c debug --build-tests --disable-index-store
+      - name: Select creation and related palette fixtures
+        run: |
+          swift test list --skip-build > creation-inventory.txt
+          python3 - <<'PY'
+          import json, re
+          from pathlib import Path
+          tests = [line.strip() for line in Path('creation-inventory.txt').read_text().splitlines()
+                   if line.startswith(('VaneTests.SpaceCreationSwipeRenderingTests/', 'VaneTests.SpaceSwipePaletteTests/'))]
+          assert len([test for test in tests if '.SpaceCreationSwipeRenderingTests/' in test]) == 2
+          Path('creation-manifest.json').write_text(json.dumps({'schema': 1, 'tests': tests}, indent=2))
+          Path('creation.filter').write_text('^(' + '|'.join(re.escape(test) for test in tests) + ')$')
+          print('Selected cases:', len(tests))
+          PY
+      - name: Three predetermined focused runs
+        env:
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 \
+              --filter "$(cat creation.filter)" 2>&1 | tee "creation-attempt-$attempt.log"
+            python3 scripts/native-test-shards.py verify \
+              --manifest creation-manifest.json --log "creation-attempt-$attempt.log"
+            grep -Fq 'RECORDED_CREATION_PREREQUISITES reducedMotion=true prepared=0' "creation-attempt-$attempt.log"
+          done
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: swipe-creation-preflight
+          path: |
+            creation-attempt-*.log
+            creation-manifest.json
+            creation.filter
+          retention-days: 7
