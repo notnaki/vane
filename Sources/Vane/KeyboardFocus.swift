@@ -70,9 +70,6 @@ private struct KeyboardAction: ViewModifier {
             .focused($focused)
             .focusEffectDisabled()
             .onChange(of: focused) { _, value in
-                if NativeSidebarNavigation.diagnosticsEnabled {
-                    print("FOCUS_STATE_TRACE time=\(ProcessInfo.processInfo.systemUptime) token=\(focusOwner) focused=\(value)")
-                }
                 if let bufferedFocus {
                     bufferedFocus.set(value, owner: focusOwner)
                 }
@@ -89,9 +86,6 @@ private struct KeyboardAction: ViewModifier {
                 if !value { focused = false }
             }
             .onChange(of: requestFocus?.wrappedValue, initial: true) { _, requested in
-                if NativeSidebarNavigation.diagnosticsEnabled, requested == true {
-                    print("FOCUS_BINDING_TRACE time=\(ProcessInfo.processInfo.systemUptime) token=\(focusOwner) enabled=\(enabled) isEnabled=\(isEnabled) before=\(focused)")
-                }
                 guard requested == true else { return }
                 let accepted = consumeFocusRequest?() ?? true
                 guard enabled, isEnabled, accepted else {

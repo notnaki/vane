@@ -1,4 +1,4 @@
-name: Focus handoff diagnostic
+name: Upload submission diagnostic
 
 on:
   push:
@@ -36,30 +36,24 @@ jobs:
           run-id: 42605541597
           github-token: ${{ github.token }}
           path: original-shard
-      - name: Preserve original predecessor sequence
+      - name: Select affected and related upload fixtures
         run: |
           python3 - <<'PY'
           import json, re, subprocess
           from pathlib import Path
           manifest = json.loads(Path('original-shard/vane-native-shard.json').read_text())
-          manifest['tests'] = [t for t in manifest['tests']
-              if t.split('/')[0] <= 'VaneTests.KeyboardAccessibilityTests']
-          assert 'VaneTests.KeyboardAccessibilityTests/testF6LeavesTheLocalEaselForBrowserControls' in manifest['tests']
           current = subprocess.check_output(['swift', 'test', 'list', '--skip-build'], text=True).splitlines()
-          related = [t for t in current if t.startswith('VaneTests.KeyboardAccessibilityTests/')
-              or t in ['VaneTests.LibrarySwipeTests/testF6SupersedesPendingLibraryOpening',
-                       'VaneTests.LibrarySwipeTests/testOpeningCommandBarSupersedesPendingLibraryOpening',
-                       'VaneTests.LibrarySwipeTests/testExplicitCloseSupersedesOpeningLanding',
-                       'VaneTests.LibrarySwipeTests/testClosingMountedLibrarySearchReturnsKeyboardToPage']]
-          manifest['tests'] = sorted(set(manifest['tests'] + related))
+          manifest['tests'] = sorted(t for t in current if t.startswith(
+              ('VaneTests.FileUploadTests/', 'VaneTests.UploadSubmissionTests/')))
+          assert len(manifest['tests']) == 20
+          assert 'VaneTests.UploadSubmissionTests/testCrossOriginFrameReceivesSelectedFileAndSubmits' in manifest['tests']
           Path('focus-prefix.json').write_text(json.dumps(manifest, indent=2))
           Path('focus-prefix.filter').write_text('^(' + '|'.join(re.escape(t) for t in manifest['tests']) + ')$')
-          print('Original-prefix cases:', len(manifest['tests']))
+          print('Focused upload cases:', len(manifest['tests']))
           PY
       - name: Three predetermined focused reproductions
         env:
-          VANE_NATIVE_NAV_DIAGNOSTICS: '1'
-          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
