@@ -1244,10 +1244,22 @@ import XCTest
 
     func testRapidProfileBoundarySwipesCanImmediatelyReverse() async throws {
         TestEnvironment.prepare()
-        _ = NSApplication.shared
-        let activationPolicy = NSApp.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
-        defer { NSApp.setActivationPolicy(activationPolicy) }
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await checkRapidProfileBoundarySwipesCanImmediatelyReverse() }
+        catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Rapid profile AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkRapidProfileBoundarySwipesCanImmediatelyReverse() async throws {
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
         let manager = ProfileManager.shared
         let previous = manager.active
@@ -1263,7 +1275,16 @@ import XCTest
             manager.active = previous
         }
         source.palette = nil
-        try await Task.sleep(for: .milliseconds(150))
+        try await compatibilityWait {
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+                && window.isVisible && window.occlusionState.contains(.visible)
+                && NSApp.modalWindow == nil && window.attachedSheet == nil
+                && source.window === window && source.profileVisible
+                && source.spaceGesture.sectionsView?.window === window
+                && source.spaceGesture.monitor.isInstalled
+        }
         for leg in 0..<8 {
             let direction: CGFloat = leg.isMultiple(of: 2) ? -1 : 1
             NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
@@ -2639,6 +2660,22 @@ import XCTest
 
     func testProfileClickPreservesSlideAndReduceMotionAcrossHosts() async throws {
         TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await checkProfileClickPreservesSlideAndReduceMotionAcrossHosts() }
+        catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Profile click AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkProfileClickPreservesSlideAndReduceMotionAcrossHosts() async throws {
         let manager = ProfileManager.shared
         let previous = manager.active
         let firstProfile = manager.create(name: "Immediate origin")
@@ -2654,7 +2691,18 @@ import XCTest
             manager.active = previous
         }
         let reduced = Motion.spaceReduced
-        try await Task.sleep(for: .milliseconds(80))
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        try await compatibilityWait {
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+                && window.isVisible && window.occlusionState.contains(.visible)
+                && NSApp.modalWindow == nil && window.attachedSheet == nil
+                && source.window === window && source.profileVisible
+                && source.spaceGesture.sectionsView?.window === window
+                && source.spaceGesture.monitor.isInstalled
+        }
         source.spaceGesture.monitor.select(second, in: source)
         if !reduced {
             XCTAssertTrue(source.window === window)
