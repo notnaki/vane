@@ -1571,6 +1571,9 @@ extension TabStore {
             let nobody = holder == nil || holder === window || heldPreviousPage
                 || (holder as? NSView).map { $0.window !== window } ?? false
             let page = activePageResponder
+            if NativeSidebarNavigation.diagnosticsEnabled {
+                print("FOCUS_PAGE_TRACE time=\(ProcessInfo.processInfo.systemUptime) remaining=\(remaining) nobody=\(nobody) holder=\(String(describing: holder)) page=\(String(describing: page))")
+            }
             if Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
                                          libraryOpen: libraryOpen), let page,
                page.window === window, window.makeFirstResponder(page) { return }
@@ -1597,6 +1600,9 @@ extension TabStore {
         let onPage = (holder as? NSView).map { responder in
             page.map { responder === $0 || responder.isDescendant(of: $0) } ?? false
         } ?? false
+        if NativeSidebarNavigation.diagnosticsEnabled {
+            print("F6_ENTRY_TRACE time=\(ProcessInfo.processInfo.systemUptime) onPage=\(onPage) holder=\(String(describing: holder)) page=\(String(describing: page))")
+        }
         if !onPage, holder != nil, holder !== window,
            let page, page.window === window {
             window.makeFirstResponder(page)
@@ -1607,6 +1613,9 @@ extension TabStore {
             sidebarShown = true
         }
         DispatchQueue.main.async { [weak self, weak holder] in
+            if NativeSidebarNavigation.diagnosticsEnabled {
+                print("F6_QUEUED_TRACE time=\(ProcessInfo.processInfo.systemUptime) expected=\(String(describing: holder)) actual=\(String(describing: self?.window?.firstResponder))")
+            }
             guard let self, let window = self.window, self.palette == nil,
                   window.attachedSheet == nil, NSApp.modalWindow == nil,
                   window.firstResponder === holder else { return }

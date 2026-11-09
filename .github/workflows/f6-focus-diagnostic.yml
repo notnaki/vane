@@ -1,0 +1,72 @@
+name: Focus handoff diagnostic
+
+on:
+  push:
+    branches: [codex/f6-focus-diagnostic]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  focus:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Identify toolchain
+        id: toolchain
+        run: |
+          sw_vers
+          swift --version
+          KEY=$(python3 scripts/ci-build-artifact.py toolchain)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: focus-diagnostic-${{ github.sha }}
+          restore-keys: |
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - run: python3 scripts/ci-source-state.py restore
+      - run: swift build -c debug --build-tests --disable-index-store
+      - uses: actions/download-artifact@v8
+        with:
+          digest-mismatch: warn
+          name: native-loop-logs-1
+          run-id: 42605541597
+          github-token: ${{ github.token }}
+          path: original-shard
+      - name: Preserve original predecessor sequence
+        run: |
+          python3 - <<'PY'
+          import json, re
+          from pathlib import Path
+          manifest = json.loads(Path('original-shard/vane-native-shard.json').read_text())
+          manifest['tests'] = [t for t in manifest['tests']
+              if t.split('/')[0] <= 'VaneTests.KeyboardAccessibilityTests']
+          assert 'VaneTests.KeyboardAccessibilityTests/testF6LeavesTheLocalEaselForBrowserControls' in manifest['tests']
+          Path('focus-prefix.json').write_text(json.dumps(manifest, indent=2))
+          Path('focus-prefix.filter').write_text('^(' + '|'.join(re.escape(t) for t in manifest['tests']) + ')$')
+          print('Original-prefix cases:', len(manifest['tests']))
+          PY
+      - name: Three predetermined focused reproductions
+        env:
+          VANE_NATIVE_NAV_DIAGNOSTICS: '1'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 \
+              --filter "$(cat focus-prefix.filter)" 2>&1 | tee "focus-attempt-$attempt.log"
+            python3 scripts/native-test-shards.py verify \
+              --manifest focus-prefix.json --log "focus-attempt-$attempt.log"
+          done
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: focus-diagnostic
+          path: |
+            focus-attempt-*.log
+            focus-prefix.json
+            focus-prefix.filter
+          retention-days: 7

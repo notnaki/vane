@@ -539,8 +539,14 @@ private struct DisabledKeyboardSurface: View {
             print("F6_EASEL before-action running=\(NSApp.isRunning) active=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) key=\(window.isKeyWindow) visible=\(window.isVisible) pageOwner=\(store.activePageResponder === page) holder=\(String(describing: window.firstResponder))")
             XCTAssertTrue(NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window,
                           "F6 must start in an admitted foreground AppKit window")
+            let requestStart = ContinuousClock.now
+            let requestTrace = store.$chromeFocusRequested.dropFirst().sink { requested in
+                print("F6_REQUEST_TRACE elapsed=\(requestStart.duration(to: .now)) requested=\(requested) responder=\(String(describing: window.firstResponder))")
+            }
+            defer { requestTrace.cancel() }
             store.focusNextArea()
             try await Task.sleep(for: .milliseconds(150))
+            print("F6_OUTCOME_TRACE elapsed=\(requestStart.duration(to: .now)) requested=\(store.chromeFocusRequested) responder=\(String(describing: window.firstResponder))")
             XCTAssertFalse(window.firstResponder === page, "F6 must leave the canvas for the address pill")
             XCTAssertFalse(window.firstResponder === window)
             store.focusNextArea()
