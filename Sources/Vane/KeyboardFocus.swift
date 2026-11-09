@@ -52,6 +52,7 @@ private struct KeyboardAction: ViewModifier {
     let action: () -> Void
     var previewAction: (() -> Void)?
     var requestFocus: Binding<Bool>?
+    var consumeFocusRequest: (() -> Bool)?
     var focusChanged: ((Bool) -> Void)?
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -85,14 +86,19 @@ private struct KeyboardAction: ViewModifier {
                 if !value { focused = false }
             }
             .onChange(of: requestFocus?.wrappedValue, initial: true) { _, requested in
-                guard requested == true, enabled, isEnabled else { return }
+                guard requested == true else { return }
+                let accepted = consumeFocusRequest?() ?? true
+                guard enabled, isEnabled, accepted else {
+                    if requestFocus?.wrappedValue == true { requestFocus?.wrappedValue = false }
+                    return
+                }
                 if let nativeNavigation, let navigation = nativeNavigation.navigation {
                     navigation.requestFocus(token: focusOwner, row: nativeNavigation.row)
                 } else {
                     focusVisibility.showForKeyboard()
                     focused = true
                 }
-                requestFocus?.wrappedValue = false
+                if requestFocus?.wrappedValue == true { requestFocus?.wrappedValue = false }
             }
             .background {
                 NativeSidebarNavigationControl(row: nativeNavigation, token: focusOwner, enabled: enabled && isEnabled) {
@@ -187,10 +193,12 @@ extension View {
     }
     func vaneKeyboardAction(enabled: Bool = true, radius: CGFloat = Look.pillRadius,
                             requestFocus: Binding<Bool>? = nil,
+                            consumeFocusRequest: (() -> Bool)? = nil,
                             previewAction: (() -> Void)? = nil,
                             focusChanged: ((Bool) -> Void)? = nil,
                             action: @escaping () -> Void) -> some View {
         modifier(KeyboardAction(enabled: enabled, radius: radius, action: action, previewAction: previewAction,
-                                requestFocus: requestFocus, focusChanged: focusChanged))
+                                requestFocus: requestFocus, consumeFocusRequest: consumeFocusRequest,
+                                focusChanged: focusChanged))
     }
 }

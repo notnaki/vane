@@ -497,6 +497,122 @@ private struct DisabledKeyboardSurface: View {
         XCTAssertTrue(window.firstResponder === web)
     }
 
+    func testF6DoesNotRebuildAlreadyVisibleBrowserControlsBeforeRequestingFocus() {
+        let (store, window, web) = fixture()
+        XCTAssertTrue(window.makeFirstResponder(web))
+        XCTAssertTrue(store.sidebarShown)
+        XCTAssertFalse(store.libraryOpen)
+        var visibilityPublications = 0
+        let sidebar = store.$sidebarShown.dropFirst().sink { _ in visibilityPublications += 1 }
+        let library = store.$libraryOpen.dropFirst().sink { _ in visibilityPublications += 1 }
+        defer { sidebar.cancel(); library.cancel() }
+        store.focusNextArea()
+        XCTAssertEqual(visibilityPublications, 0,
+                       "F6 must not invalidate unchanged chrome before handing its existing pill the keyboard")
+    }
+
+    func testF6RequestsVisibleBrowserControlsInTheInputTurn() {
+        let (store, window, web) = fixture()
+        XCTAssertTrue(window.makeFirstResponder(web))
+        store.focusNextArea()
+        XCTAssertTrue(store.chromeFocusRequested,
+                      "An existing address pill must not wait behind queued page-opening work")
+    }
+
+    func testNewerResponderCancelsPendingF6Request() async throws {
+        try await withNativePageFixture { store, window, web in
+            let host = NSHostingView(rootView: AddressPill(tab: store.active).environmentObject(store))
+            let field = NSTextField(string: "Newer input")
+            let container = NSView(frame: window.contentView!.frame)
+            host.frame = NSRect(x: 0, y: 520, width: 250, height: 80)
+            web.frame = NSRect(x: 250, y: 0, width: 550, height: 600)
+            field.frame = NSRect(x: 0, y: 400, width: 200, height: 30)
+            container.addSubview(host)
+            container.addSubview(web)
+            container.addSubview(field)
+            window.contentView = container
+            @MainActor func readyPill(in view: NSView) -> Bool {
+                if let anchor = view as? NativeSidebarNavigationControl.Anchor,
+                   anchor.token != nil, anchor.refresh != nil, anchor.navigation == nil,
+                   anchor.window === window, !anchor.isHiddenOrHasHiddenAncestor,
+                   anchor.bounds.width > 0, anchor.bounds.height > 0 { return true }
+                return view.subviews.contains { readyPill(in: $0) }
+            }
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                return NSApp.isRunning && NSApp.isActive && window.isKeyWindow
+                    && readyPill(in: host) && host.layer?.presentation() != nil
+            }
+            XCTAssertTrue(window.makeFirstResponder(web))
+            store.focusNextArea()
+            XCTAssertTrue(store.chromeFocusRequested)
+            XCTAssertTrue(window.makeFirstResponder(field))
+            let newer = try XCTUnwrap(window.firstResponder)
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertTrue(window.firstResponder === newer,
+                          "A newer input owner must supersede F6 before SwiftUI consumes its request")
+            XCTAssertFalse(store.chromeFocusRequested, "Rejected requests must be retired")
+        }
+    }
+
+    func testChromeModeChangesRetirePendingF6BeforeTheyAreRestored() {
+        for mode in ["palette", "library", "sidebar"] {
+            let (store, window, web) = fixture()
+            XCTAssertTrue(window.makeFirstResponder(web))
+            store.focusNextArea()
+            XCTAssertTrue(store.chromeFocusRequested)
+            switch mode {
+            case "palette": store.palette = .newTab; store.palette = nil
+            case "library": store.libraryOpen = true; store.libraryOpen = false
+            default: store.sidebarShown = false; store.sidebarShown = true
+            }
+            XCTAssertFalse(store.chromeFocusRequested,
+                           "Restoring \(mode) must not replay a superseded focus request")
+        }
+    }
+
+    func testRestoredChromeModesCannotReviveDeferredF6() async {
+        for mode in ["palette", "library", "sidebar"] {
+            let (store, window, web) = fixture()
+            XCTAssertTrue(window.makeFirstResponder(web))
+            store.sidebarShown = false
+            store.focusNextArea()
+            XCTAssertFalse(store.chromeFocusRequested, "Revealing controls is still deferred")
+            switch mode {
+            case "palette": store.palette = .newTab; store.palette = nil
+            case "library": store.libraryOpen = true; store.libraryOpen = false
+            default: store.sidebarShown = false; store.sidebarShown = true
+            }
+            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                DispatchQueue.main.async { done.resume() }
+            }
+            XCTAssertFalse(store.chromeFocusRequested,
+                           "Restoring \(mode) must not revive the earlier reveal request")
+        }
+    }
+
+    func testF6ReturningToPageRetiresEarlierControlRequest() {
+        let (store, window, web) = fixture()
+        let container = NSView(frame: window.contentView!.frame)
+        window.contentView = container
+        web.frame = NSRect(x: 250, y: 0, width: 550, height: 600)
+        container.addSubview(web)
+        let field = NSTextField(string: "Browser control")
+        field.frame = NSRect(x: 0, y: 400, width: 200, height: 30)
+        container.addSubview(field)
+        XCTAssertTrue(window.makeFirstResponder(web))
+        store.focusNextArea()
+        XCTAssertTrue(store.chromeFocusRequested)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        store.focusNextArea()
+        XCTAssertTrue(window.firstResponder === web)
+        XCTAssertFalse(store.chromeFocusRequested,
+                       "Returning to the page supersedes the earlier F6 request")
+        XCTAssertFalse(store.takeChromeFocusRequest())
+    }
+
     func testF6LeavesTheLocalEaselForBrowserControls() async throws {
         try await withNativePageFixture(isPrivate: false) { store, window, _ in
             let opened = await store.openEaselAsync(create: true)

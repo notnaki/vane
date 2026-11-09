@@ -1588,6 +1588,39 @@ extension TabStore {
         }
     }
 
+    /// Revalidate native ownership when SwiftUI consumes the request, which can follow
+    /// another input or a mode change even when F6 published in the input turn.
+    private func requestChromeFocus(from holder: NSResponder?, in window: NSWindow) {
+        let hadResponder = holder != nil
+        let generation = chromeFocusGeneration
+        chromeFocusCheck = { [weak self, weak window, weak holder] in
+            guard let self, let window, self.window === window,
+                  self.chromeFocusGeneration == generation,
+                  !hadResponder || holder != nil,
+                  window.firstResponder === holder,
+                  self.palette == nil, !self.libraryOpen, self.sidebarShown,
+                  window.attachedSheet == nil, NSApp.modalWindow == nil else { return false }
+            return true
+        }
+        chromeFocusRequested = true
+    }
+
+    func takeChromeFocusRequest() -> Bool {
+        guard chromeFocusRequested, !takingChromeFocusRequest else { return false }
+        takingChromeFocusRequest = true
+        defer { takingChromeFocusRequest = false }
+        let check = chromeFocusCheck
+        chromeFocusRequested = false
+        // Clearing the published request may synchronously process newer input.
+        return check?() ?? true
+    }
+
+    func cancelChromeFocusRequest() {
+        chromeFocusGeneration &+= 1
+        chromeFocusCheck = nil
+        if chromeFocusRequested, !takingChromeFocusRequest { chromeFocusRequested = false }
+    }
+
     /// F6 crosses the page/chrome boundary even when WebKit keeps Tab inside its document.
     func focusNextArea() {
         guard let window, palette == nil, window.attachedSheet == nil,
@@ -1599,18 +1632,30 @@ extension TabStore {
         } ?? false
         if !onPage, holder != nil, holder !== window,
            let page, page.window === window {
+            cancelChromeFocusRequest()
             window.makeFirstResponder(page)
             return
         }
-        Motion.list {
-            libraryOpen = false
-            sidebarShown = true
+        // Even an equal libraryOpen=false write used to supersede a released
+        // opening swipe. Preserve that command intent without invalidating chrome.
+        librarySwipeMonitor.cancelPendingActivation(toward: false)
+        if !libraryOpen, sidebarShown {
+            requestChromeFocus(from: holder, in: window)
+            return
         }
+        if libraryOpen || !sidebarShown {
+            Motion.list {
+                if libraryOpen { libraryOpen = false }
+                if !sidebarShown { sidebarShown = true }
+            }
+        }
+        let generation = chromeFocusGeneration
         DispatchQueue.main.async { [weak self, weak holder] in
             guard let self, let window = self.window, self.palette == nil,
+                  self.chromeFocusGeneration == generation,
                   window.attachedSheet == nil, NSApp.modalWindow == nil,
                   window.firstResponder === holder else { return }
-            self.chromeFocusRequested = true
+            self.requestChromeFocus(from: holder, in: window)
         }
     }
 
