@@ -57,6 +57,17 @@ import XCTest
         let second = Space(name: "Second", profileID: profile)
         XCTAssertTrue(ProfileManager.shared.saveSpaces([first, second], for: profile))
         let store = TabStore(profileID: profile, space: first, session: [])
+        // Observe the already-assigned target before hosting work can delay the
+        // polling task. That scheduling delay is not a second animation tail.
+        var measuringSelection = false
+        var committedStateObservedAt: TimeInterval?
+        let committedState = store.objectWillChange.sink {
+            if measuringSelection, committedStateObservedAt == nil,
+               store.currentSpaceID == second.id {
+                committedStateObservedAt = ProcessInfo.processInfo.systemUptime
+            }
+        }
+        defer { committedState.cancel() }
         let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 300, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -126,6 +137,7 @@ import XCTest
             return abs(layer.convert(.zero, to: root).x - nativeOrigin - store.spaceDrag) < 0.125
         }
 
+        measuringSelection = true
         let start = ProcessInfo.processInfo.systemUptime
         if clicking { monitor.select(second, in: store) }
         else { monitor.land(1, to: second, width: 250, store: store) }
@@ -133,8 +145,10 @@ import XCTest
               ProcessInfo.processInfo.systemUptime - start < 2 {
             try await Task.sleep(for: .milliseconds(5))
         }
-        let elapsed = ProcessInfo.processInfo.systemUptime - start
+        let observedAt = ProcessInfo.processInfo.systemUptime
+        let elapsed = try XCTUnwrap(committedStateObservedAt) - start
         print("COMMITTED_SPACE_FOCUS_SECONDS: \(elapsed)")
+        print("COMMITTED_SPACE_OBSERVER_WAKE_SECONDS: \(observedAt - start)")
         XCTAssertEqual(store.currentSpaceID, second.id)
         XCTAssertEqual(store.current, remembered?.id)
         // This fixture exercises the SwiftUI fallback, which selects at its endpoint.

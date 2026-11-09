@@ -45,7 +45,7 @@ import XCTest
         let host = BrowserWindowHost(shown: ShownStore(store))
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        NSApp.activate(ignoringOtherApps: true)
         let monitor = store.spaceGesture.monitor
         monitor.install(store)
         defer {
@@ -70,9 +70,12 @@ import XCTest
         }
         store.switchTo(space: spaces[0])
         store.palette = nil
+        var admitted = "not sampled"
+        defer { print("HANDOFF_ADMISSION \(admitted)") }
         try await compatibilityWait {
+            admitted = "running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) anchor=\(store.spaceGesture.sectionsView?.window === window)"
             if !NSApp.isActive || NSApp.keyWindow !== window {
-                NSApp.activate()
+                NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
                 return false
             }
@@ -118,6 +121,7 @@ import XCTest
         XCTAssertEqual(store.currentSpaceID, spaces[returning ? 0 : 1].id)
         XCTAssertNil(host.spaceSlide)
         try await sampler.stop()
+        print("HANDOFF_CAPTURE \(sampler.diagnostics)")
         let covered = sampler.samples.filter(\.covered)
         let uncovered = sampler.samples.filter { !$0.covered }
         XCTAssertTrue(sampler.observedGesture, "A display callback must observe the actual gesture")
@@ -149,8 +153,11 @@ import XCTest
     private(set) var observedGesture = false
     private var link: CADisplayLink?
     private var stream: SCStream?
+    private var capturePulse: NSView?
     private var observation: AnyCancellable?
     private nonisolated let frames = HandoffCaptureFrames()
+    private var ticks = 0
+    var diagnostics: String { "ticks=\(ticks) \(frames.diagnostics)" }
     var samples: [Sample] { frames.samples.map { Sample(covered: $0.0, edges: $0.1) } }
     init(host: BrowserWindowHost, store: TabStore) {
         self.host = host
@@ -180,10 +187,29 @@ import XCTest
         stream = capture
         do {
             try await capture.startCapture()
+            // ScreenCaptureKit is change-driven. Keep this fixture's window
+            // producing fresh buffers even after the sidebar becomes static.
+            // The compositor-only pulse sits outside the measured sidebar crop.
+            let pulse = NSView(frame: NSRect(x: host.bounds.maxX - 4, y: host.bounds.minY + 4,
+                                            width: 2, height: 2))
+            pulse.wantsLayer = true
+            pulse.layer?.backgroundColor = NSColor.white.cgColor
+            pulse.setAccessibilityElement(false)
+            host.addSubview(pulse)
+            let animation = CABasicAnimation(keyPath: "opacity")
+            animation.fromValue = 0.25
+            animation.toValue = 0.75
+            animation.duration = 0.25
+            animation.autoreverses = true
+            animation.repeatCount = .infinity
+            pulse.layer?.add(animation, forKey: "fixture-capture-pulse")
+            capturePulse = pulse
             try await compatibilityWait { self.frames.hasRenderedContent }
         } catch {
             try? await capture.stopCapture()
             stream = nil
+            capturePulse?.removeFromSuperview()
+            capturePulse = nil
             throw error
         }
         observation = store?.spaceGesture.$presentation.sink { [weak self] state in
@@ -198,6 +224,11 @@ import XCTest
         self.link = link
     }
     func stop() async throws {
+        defer {
+            capturePulse?.layer?.removeAllAnimations()
+            capturePulse?.removeFromSuperview()
+            capturePulse = nil
+        }
         link?.invalidate(); link = nil
         observation = nil
         if let stream {
@@ -207,6 +238,7 @@ import XCTest
         }
     }
     @objc private func tick(_ link: CADisplayLink) {
+        ticks += 1
         if observedGesture, host?.spaceSlide == nil { frames.retired(at: CACurrentMediaTime()) }
     }
     nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
@@ -216,6 +248,7 @@ import XCTest
         guard time.isFinite else { return }
         let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]]
         let status = attachments?.first?[.status] as? Int
+        frames.note(status: status ?? -1, time: time, receipt: CACurrentMediaTime())
         // An idle frame repeats the last displayed content; a blank frame is
         // real missing content and must remain a zero-edge assertion sample.
         if status == SCFrameStatus.idle.rawValue { frames.repeatFrame(at: time); return }
@@ -245,6 +278,17 @@ private final class HandoffCaptureFrames: @unchecked Sendable {
     private var endpoint: Double?
     private var retirement: Double?
     private var recorded: [(Double, Double)] = []
+    private var raw: [(Int, Double, Double)] = []
+    var diagnostics: String {
+        lock.withLock {
+            let statuses = Dictionary(grouping: raw, by: { $0.0 }).mapValues(\.count)
+            let lag = raw.map { $0.2 - $0.1 }.max() ?? 0
+            return "endpoint=\(String(describing: endpoint)) retirement=\(String(describing: retirement)) raw=\(raw.count) recorded=\(recorded.count) statuses=\(statuses) maxReceiptLag=\(lag)"
+        }
+    }
+    func note(status: Int, time: Double, receipt: Double) {
+        lock.withLock { raw.append((status, time, receipt)) }
+    }
     var hasRenderedContent: Bool { lock.withLock { recorded.contains { $0.1 > 1 } } }
     var samples: [(Bool, Double)] {
         lock.withLock {
