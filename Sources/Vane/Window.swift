@@ -857,6 +857,24 @@ extension VaneWindow {
     init(_ store: TabStore) { self.store = store }
 }
 
+/// The window owns this root's frame. Propagate a native size change through
+/// SwiftUI immediately so WebKit receives its viewport before the next commit.
+/// Only update the hosting root here; walking every native descendant's layout
+/// during the resize also reflows the sidebar's retained controls unnecessarily.
+@MainActor final class BrowserHostingView<Content: View>: NSHostingView<Content> {
+    private var applyingFrame = false
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let previous = frame.size
+        super.setFrameSize(newSize)
+        guard previous != newSize, window != nil, !isHiddenOrHasHiddenAncestor,
+              !applyingFrame else { return }
+        applyingFrame = true
+        defer { applyingFrame = false }
+        super.layout()
+    }
+}
+
 /// One native hosting view per profile visited in this window. Hiding a host preserves
 /// its SwiftUI state and WebKit backing frames; returning only unhides it. Each root
 /// stays bound to its own store, so gestures and shortcuts cannot leak into
@@ -936,15 +954,6 @@ extension VaneWindow {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func resizeSubviews(withOldSize oldSize: NSSize) {
-        super.resizeSubviews(withOldSize: oldSize)
-        // Autoresizing updates the hosting view's frame, but SwiftUI otherwise
-        // lays out its page on a later turn. During live resize that exposes a
-        // strip of window ground at the trailing edge. Finish the visible root
-        // in this resize pass; parked profiles can keep their deferred layout.
-        if let current { hosts[current]?.layoutSubtreeIfNeeded() }
-    }
-
     private func show(_ store: TabStore) {
         let id = ObjectIdentifier(store)
         footerPresentation.activate(store)
@@ -957,11 +966,15 @@ extension VaneWindow {
         let host: NSView
         if let existing = hosts[id] { host = existing }
         else {
-            host = NSHostingView(rootView: BrowserWindow()
+            let profileHost = BrowserHostingView(rootView: BrowserWindow()
                 .environmentObject(store)
                 .environmentObject(ProfileManager.shared)
                 .environment(\.spaceFooterPresentation, footerPresentation)
                 .font(Look.text))
+            // The outer native container supplies the frame; do not separately
+            // measure minimum, ideal and maximum sizes on each resize.
+            profileHost.sizingOptions = []
+            host = profileHost
             hosts[id] = host
         }
         let departing = current.flatMap { hosts[$0] }

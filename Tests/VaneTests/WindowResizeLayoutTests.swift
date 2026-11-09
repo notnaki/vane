@@ -1,9 +1,10 @@
 import AppKit
+import WebKit
 import XCTest
 @testable import vane
 
 @MainActor final class WindowResizeLayoutTests: XCTestCase {
-    func testPageFollowsEachWindowResizeWithoutWaitingForAnotherLayoutTurn() async throws {
+    func testPageViewportFollowsTheNativeFrameBeforeItsNextPresentation() async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -12,6 +13,10 @@ import XCTest
         var failure: (any Error)?
         do {
             let store = TabStore(isPrivate: true)
+            let sidebarWidth = SidebarWidth.shared.width
+            SidebarWidth.shared.width = 228
+            defer { SidebarWidth.shared.width = sidebarWidth }
+            store.sidebarShown = true
             let tab = store.newBlankTab()
             store.palette = nil
             _ = tab.web
@@ -44,23 +49,30 @@ import XCTest
                     && window.occlusionState.contains(.visible) && tab.web.window === window
                     && tab.web.bounds.width > 100
             }
-            for shown in [true, false] {
-                Motion.instant { store.sidebarShown = shown }
-                try await compatibilityWait {
-                    host.layoutSubtreeIfNeeded()
-                    let page = tab.web.convert(tab.web.bounds, to: host)
-                    return abs(page.maxX - (host.bounds.width - Look.cardGap)) < 1
-                }
-                for width: CGFloat in [1100, 1200, 950, 800, 1000, 900] {
-                    var frame = window.frame
-                    frame.origin.x += frame.width - width
-                    frame.size.width = width
-                    window.setFrame(frame, display: true)
-                    let page = tab.web.convert(tab.web.bounds, to: host)
-                    XCTAssertEqual(page.maxX, host.bounds.width - Look.cardGap, accuracy: 1,
-                        "The page must cover the new width in the resize layout pass (sidebar=\(shown), width=\(width))")
+            tab.web.loadHTMLString("<html><title>Resize ready</title><style>body{margin:0;background:#17324d}aside{position:fixed;right:0;top:0;width:100px;height:100vh;background:#f04020}</style><body><aside></aside></body></html>", baseURL: nil)
+            try await compatibilityWait { !tab.web.isLoading && tab.web.title == "Resize ready" }
+            for direct in [false, true] {
+                let root: NSView = direct ? WebHost(tab.web) : host
+                window.contentView = root
+                root.layoutSubtreeIfNeeded()
+                try await presentation(tab.web)
+                for width: CGFloat in [1100, 800, 1200, 900, 1100, 900] {
+                    let started = ProcessInfo.processInfo.systemUptime
+                    window.setContentSize(NSSize(width: width, height: 600))
+                    let frameMS = (ProcessInfo.processInfo.systemUptime - started) * 1000
+                    let earlyWidth = tab.web.bounds.width
+                    try await presentation(tab.web)
+                    let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+                    let viewport = try await tab.web.evaluateJavaScript("window.innerWidth")
+                    let expected = direct ? width : width - 239
+                    XCTAssertEqual(earlyWidth, expected, accuracy: 1,
+                                   "Send WebKit its new viewport before waiting for the next presentation")
+                    XCTAssertEqual(try XCTUnwrap(viewport as? NSNumber).doubleValue, expected, accuracy: 1,
+                                   "The rendered document must use the requested viewport")
+                    print("RESIZE_PRESENT direct=\(direct) request=\(width) early=\(earlyWidth) settled=\(tab.web.bounds.width) viewport=\(String(describing: viewport)) frameMS=\(frameMS) presentedMS=\(elapsed)")
                 }
             }
+
         } catch { failure = error }
         do { try await loop.close() }
         catch {
@@ -68,5 +80,16 @@ import XCTest
             else { XCTFail("Resize fixture AppKit loop cleanup also failed: \(error)") }
         }
         if let failure { throw failure }
+    }
+
+    private func presentation(_ web: WKWebView) async throws {
+        let selector = NSSelectorFromString("_doAfterNextPresentationUpdate:")
+        guard web.responds(to: selector) else { throw XCTSkip("Presentation diagnostic unavailable") }
+        let presented = XCTestExpectation(description: "WebKit presents its next viewport")
+        let completion: @convention(block) () -> Void = { presented.fulfill() }
+        _ = web.perform(selector, with: completion)
+        guard await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed else {
+            throw NSError(domain: "ResizePresentationTimeout", code: 1)
+        }
     }
 }

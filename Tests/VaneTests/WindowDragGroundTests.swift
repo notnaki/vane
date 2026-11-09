@@ -4,6 +4,30 @@ import XCTest
 @testable import vane
 
 @MainActor final class WindowDragGroundTests: XCTestCase {
+    func testResizableWindowEdgesStayWithAppKitEvenOverHoveredGround() {
+        _ = NSApplication.shared
+        let window = VaneWindow(contentRect: NSRect(x: 100, y: 100, width: 800, height: 600),
+                                styleMask: [.titled, .resizable, .fullSizeContentView],
+                                backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let ground = WindowDragGround()
+        let patch = WindowDragPatch(frame: window.contentView!.bounds)
+        window.contentView!.addSubview(patch)
+        ground.hover(true, patch: patch)
+        for point in [NSPoint(x: 2, y: 300), NSPoint(x: 798, y: 300),
+                      NSPoint(x: 400, y: 2), NSPoint(x: 400, y: 598),
+                      NSPoint(x: 2, y: 2)] {
+            XCTAssertFalse(ground.over(in: window, at: point),
+                           "A resize-edge mouse-down must reach AppKit instead of performDrag")
+        }
+        XCTAssertTrue(ground.over(in: window, at: NSPoint(x: 20, y: 300)),
+                      "The sidebar's interior remains a window drag handle")
+        window.styleMask.remove(.resizable)
+        XCTAssertTrue(ground.over(in: window, at: NSPoint(x: 2, y: 300)),
+                      "A fixed-size window has no resize edge to reserve")
+    }
+
     func testDetachedHoveredGroundDoesNotStealClicksFromAnotherProfile() {
         _ = NSApplication.shared
         let window = VaneWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
