@@ -1738,12 +1738,16 @@ private struct SpaceSwipe: ViewModifier {
             if let offset = out.offset {
                 self.track(offset, width: width, in: store)
             }
-            store.spacePull = out.pull
+            let opensCreation = creatable && (out.commit ?? 0) > 0 && index == self.list.count - 1
+            // A committed creation keeps its filled footer slot until the form
+            // owns it. Publishing the verdict's zero pull first removes that
+            // slot for one layout and makes the existing markers hop sideways.
+            if !opensCreation { store.spacePull = out.pull }
             if let direction = out.commit {
                 if let window = store.window {
                     Self.committedSwipes.add(window)
                 }
-                if creatable, direction > 0, index == self.list.count - 1 {
+                if opensCreation {
                     self.create(store)
                 } else {
                     if self.list.indices.contains(index + direction) {
