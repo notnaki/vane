@@ -1602,9 +1602,14 @@ extension TabStore {
             window.makeFirstResponder(page)
             return
         }
-        Motion.list {
-            libraryOpen = false
-            sidebarShown = true
+        // Even an equal libraryOpen=false write used to supersede a released
+        // opening swipe. Preserve that command intent without invalidating chrome.
+        librarySwipeMonitor.cancelPendingActivation(toward: false)
+        if libraryOpen || !sidebarShown {
+            Motion.list {
+                if libraryOpen { libraryOpen = false }
+                if !sidebarShown { sidebarShown = true }
+            }
         }
         DispatchQueue.main.async { [weak self, weak holder] in
             guard let self, let window = self.window, self.palette == nil,
