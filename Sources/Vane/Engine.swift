@@ -2891,6 +2891,7 @@ struct Stash {
     }
     /// Per window: hiding the sidebar in one window must not hide it in the next.
     @Published var sidebarShown = true {
+        willSet { if !newValue { cancelChromeFocusRequest() } }
         didSet {
             if sidebarShown != oldValue {
                 if sidebarShown { sidebarFloatingChrome = false }
@@ -2923,7 +2924,12 @@ struct Stash {
     /// A changed revision marks that update as restoration, rather than a fresh toggle.
     @Published var sidebarPresentationRevision: UInt = 0
     /// One-shot handoff from the webpage to the sidebar address pill.
-    @Published var chromeFocusRequested = false
+    @Published var chromeFocusRequested = false {
+        didSet { if !chromeFocusRequested { chromeFocusCheck = nil } }
+    }
+    var chromeFocusCheck: (() -> Bool)?
+    var chromeFocusGeneration: UInt64 = 0
+    var takingChromeFocusRequest = false
     /// Presentation only, per Space and window: hiding pins never changes their contents.
     @Published private(set) var collapsedPinnedSpaces: Set<UUID> = []
     var pinnedSectionCollapsed: Bool {
@@ -2941,7 +2947,12 @@ struct Stash {
     /// each have their own open. `.address` is what ⌘L, ⌘T and clicking the address pill
     /// open — the place to type a url or a search.
     @Published var palette: PaletteMode? {
-        didSet { if palette != nil { librarySwipeMonitor.cancelPendingActivation() } }
+        willSet { if newValue != nil { cancelChromeFocusRequest() } }
+        didSet {
+            if palette != nil {
+                librarySwipeMonitor.cancelPendingActivation()
+            }
+        }
     }
     /// “Open “Zoom”?” — a link in this window that leads out of the browser, waiting for
     /// an answer. Per window, like the command bar: the card is anchored to the page that
@@ -4847,7 +4858,10 @@ struct Stash {
 
     /// The Library panel in this window, opened from the footer, ⇧⌘L, or an edge swipe.
     @Published var libraryOpen = false {
-        didSet { librarySwipeMonitor.cancelPendingActivation(toward: libraryOpen) }
+        willSet { if newValue { cancelChromeFocusRequest() } }
+        didSet {
+            librarySwipeMonitor.cancelPendingActivation(toward: libraryOpen)
+        }
     }
     /// Only the navigation layout observes per-sample gesture updates.
     let libraryGesture = LibraryGesture()

@@ -1993,13 +1993,13 @@ private struct SpaceSwipe: ViewModifier {
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
             Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }
             slide.start(duration: duration, completion: finish)
-            // Submit compositor travel first, then restore the page under its covering
-            // sidebar. Selection must not wait for the animation's endpoint.
-            DispatchQueue.main.async { [weak self, weak store] in
-                guard let self, self.transition == token, let store,
-                      store.currentSpaceID == self.landingFrom,
-                      store.spaceGesture.neighbour?.id == destination.id else { return }
-                _ = self.activate(destination, in: store)
+            // Install compositor travel first, then select the page in this input turn.
+            // Queuing selection lets continuing input leave the old page/search visible
+            // while the native sidebar is already landing in its destination.
+            if transition == token, store.window != nil,
+               store.currentSpaceID == landingFrom,
+               store.spaceGesture.neighbour?.id == destination.id {
+                _ = activate(destination, in: store)
             }
         } else {
             if let host = store.window?.contentView as? BrowserWindowHost,

@@ -1353,6 +1353,8 @@ import XCTest
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
         monitor.land(1, to: second, width: SidebarWidth.shared.width, store: source, duration: 0.8)
+        XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, second.id,
+                       "A profile boundary must select its page during the swipe-release input turn")
         try await Task.sleep(for: .milliseconds(100))
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
         XCTAssertEqual(arriving.profileID, secondProfile.id,
@@ -2479,6 +2481,10 @@ import XCTest
         XCTAssertEqual(store.currentSpaceID, spaces[0].id, "Dragging must not activate the page")
         monitor.land(1, to: spaces[1], width: 250, store: store,
                      duration: 0.4)
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id,
+                       "Releasing the swipe must select its page in the input turn, before queued work")
+        XCTAssertEqual(store.palette, .newTab,
+                       "An empty destination must offer search as soon as the swipe commits")
         XCTAssertTrue(host.spaceSlide === slide, "Release must animate the surface already under the fingers")
         // A newly ordered window may submit its first compositor frame after start().
         // Observe native completion before measuring the separate live-tree handoff.
@@ -2705,7 +2711,8 @@ import XCTest
         }
         source.spaceGesture.monitor.select(second, in: source)
         if !reduced {
-            XCTAssertTrue(source.window === window)
+            XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, second.id,
+                           "A native click landing must also select its page without queued input work")
             try await Task.sleep(for: .milliseconds(310))
         }
         let destination = try XCTUnwrap(TabStore.all.first { $0.window === window })
@@ -2747,13 +2754,15 @@ import XCTest
         try await Task.sleep(for: .milliseconds(80))
         source.spaceGesture.monitor.select(second, in: source)
         let departing = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
-        Motion.instant { source.sidebarShown = false; source.sidebarPeeking = false }
+        let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
+        XCTAssertEqual(arriving.profileID, secondProfile.id)
+        Motion.instant { arriving.sidebarShown = false; arriving.sidebarPeeking = false }
         window.contentView?.layoutSubtreeIfNeeded()
         let deadline = ProcessInfo.processInfo.systemUptime + 0.4
-        while source.window === window, ProcessInfo.processInfo.systemUptime < deadline {
+        while (window.contentView as? BrowserWindowHost)?.spaceSlide != nil,
+              ProcessInfo.processInfo.systemUptime < deadline {
             try await Task.sleep(for: .milliseconds(5))
         }
-        let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
         XCTAssertEqual(arriving.profileID, secondProfile.id, "Hiding preserves the committed profile selection")
         XCTAssertEqual(arriving.currentSpaceID, second.id)
         XCTAssertTrue(departing.isDestination(arriving),
