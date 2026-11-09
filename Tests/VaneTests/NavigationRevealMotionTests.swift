@@ -51,6 +51,9 @@ private struct NavigationRevealFixture: View {
 
     func testEnabledAndDisabledNavigationKeepTheirSpacingThroughoutReveal() async throws {
         TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let previousPolicy = app.activationPolicy()
+        defer { app.setActivationPolicy(previousPolicy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do {
@@ -86,7 +89,9 @@ private struct NavigationRevealFixture: View {
             try await Task.sleep(for: .milliseconds(150))
             let final = try glyphCenters(host)
             XCTAssertEqual(final.count, 3)
-            guard initial.count == 3, final.count == 3 else { return }
+            guard initial.count == 3, final.count == 3 else {
+                throw NSError(domain: "NavigationRevealGlyphCount", code: 1)
+            }
             XCTAssertEqual(final[0] - initial[0], 160, accuracy: 1)
             XCTAssertTrue(frames.contains { $0.count == 3 && $0[0] > initial[0] + 3 && $0[0] < final[0] - 3 },
                           "The render check must observe intermediate sidebar travel")
