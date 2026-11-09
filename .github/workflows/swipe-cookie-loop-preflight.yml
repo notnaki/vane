@@ -1,0 +1,75 @@
+name: Cookie renderer loop focused preflight
+
+on:
+  push:
+    branches: [codex/swipe-cookie-loop-preflight]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  cookie:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Identify toolchain
+        id: toolchain
+        run: |
+          sw_vers
+          swift --version
+          KEY=$(python3 scripts/ci-build-artifact.py toolchain)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swipe-cookie-loop-preflight-${{ github.sha }}
+          restore-keys: |
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - run: python3 scripts/ci-source-state.py restore
+      - run: swift build -c debug --build-tests --disable-index-store
+      - uses: actions/download-artifact@v8
+        with:
+          digest-mismatch: warn
+          name: native-loop-logs-1
+          run-id: 42626650934
+          github-token: ${{ github.token }}
+          path: original-shard
+      - name: Preserve original predecessors and related renderer cases
+        run: |
+          python3 - <<'PY'
+          import json, re
+          from pathlib import Path
+          manifest = json.loads(Path('original-shard/vane-native-shard.json').read_text())
+          manifest['tests'] = [t for t in manifest['tests']
+              if t.split('/')[0] <= 'VaneTests.Feel04CookieRendererTests'
+              or t.startswith(('VaneTests.Feel04PrivateRendererTests/', 'VaneTests.Feel04SkippedLoadTests/'))]
+          assert 'VaneTests.Feel04CookieRendererTests/testCachedPixelsRejectSameSitePolicyChangesWithoutCookieCallbacks' in manifest['tests']
+          assert len([t for t in manifest['tests'] if '.Feel04CookieRendererTests/' in t]) == 4
+          Path('cookie-prefix.json').write_text(json.dumps(manifest, indent=2))
+          Path('cookie-prefix.filter').write_text('^(' + '|'.join(re.escape(t) for t in manifest['tests']) + ')$')
+          print('Original-prefix and related cases:', len(manifest['tests']))
+          PY
+      - name: Three predetermined original-prefix runs
+        env:
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
+          NSUnbufferedIO: 'YES'
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 \
+              --filter "$(cat cookie-prefix.filter)" 2>&1 | tee "cookie-attempt-$attempt.log"
+            python3 scripts/native-test-shards.py verify \
+              --manifest cookie-prefix.json --log "cookie-attempt-$attempt.log"
+            test "$(grep -Fc 'FEEL04_RENDERER_ADMISSION running=true image=true' "cookie-attempt-$attempt.log")" -eq 4
+          done
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: swipe-cookie-loop-preflight
+          path: |
+            cookie-attempt-*.log
+            cookie-prefix.json
+            cookie-prefix.filter
+          retention-days: 7
