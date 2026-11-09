@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 @preconcurrency import ScreenCaptureKit
 import SwiftUI
 import XCTest
@@ -7,6 +8,72 @@ import XCTest
 /// Standalone section snapshots omit the search scrim. Capture the compositor's
 /// complete window when comparing settled and native swipe text instead.
 @MainActor final class SpaceTextPresentationParityTests: XCTestCase {
+    func testSynchronousReadersSeeTheCompleteGesturePublication() {
+        let gesture = SpaceGesture()
+        var publications = 0
+        let observation = gesture.$presentation.dropFirst().sink { state in
+            publications += 1
+            XCTAssertEqual(gesture.profileSliding, state.profileSliding)
+            XCTAssertEqual(gesture.swiping, state.swiping)
+            XCTAssertEqual(gesture.drag, state.drag)
+        }
+        defer { observation.cancel() }
+        gesture.withPresentationUpdate {
+            gesture.swiping = true
+            gesture.profileSliding = true
+            gesture.drag = -20
+        }
+        gesture.profileSliding = false
+        gesture.swiping = false
+        gesture.drag = 0
+        XCTAssertEqual(publications, 4)
+    }
+
+    func testSynchronousFollowupWritesSurviveTheCurrentPublication() {
+        for nestedBatch in [false, true] {
+            let gesture = SpaceGesture()
+            var changed = false
+            var publications: [SpaceGesture.Presentation] = []
+            let observation = gesture.$presentation.dropFirst().sink { state in
+                publications.append(state)
+                guard state.swiping, !changed else { return }
+                changed = true
+                if nestedBatch {
+                    gesture.withPresentationUpdate { gesture.drag = 20 }
+                } else {
+                    gesture.drag = 20
+                }
+            }
+            gesture.withPresentationUpdate { gesture.swiping = true }
+            observation.cancel()
+            XCTAssertTrue(changed)
+            XCTAssertTrue(gesture.swiping)
+            XCTAssertEqual(gesture.drag, 20, "Publication must retain a synchronous follow-up write (nested=\(nestedBatch))")
+            XCTAssertEqual(gesture.presentation.drag, 20)
+            XCTAssertEqual(publications.map(\.drag), [0, 20])
+        }
+    }
+
+    func testPublicationKeepsAReentrantBatchOpenUntilItsOwnerClosesIt() {
+        let gesture = SpaceGesture()
+        var opened = false
+        var publications: [SpaceGesture.Presentation] = []
+        let observation = gesture.$presentation.dropFirst().sink { state in
+            publications.append(state)
+            guard !opened else { return }
+            opened = true
+            gesture.beginPresentationUpdate()
+        }
+        gesture.swiping = true
+        XCTAssertTrue(opened)
+        gesture.drag = 20
+        gesture.endPresentationUpdate()
+        observation.cancel()
+        XCTAssertTrue(gesture.presentation.swiping)
+        XCTAssertEqual(gesture.presentation.drag, 20)
+        XCTAssertEqual(publications.map(\.drag), [0, 20])
+    }
+
     func testSearchDimmedFloatingTextKeepsItsContrastDuringNativeTravel() async throws {
         try await checkTextPresentation(palette: .newTab, floating: true)
     }
@@ -19,12 +86,23 @@ import XCTest
         try await checkTextPresentation(palette: nil, floating: false)
     }
 
+    func testOrdinarySpaceTravelKeepsItsTextContrastDuringSynchronousPublicationFlush() async throws {
+        try await checkTextPresentation(palette: nil, floating: false, flushDuringPublication: true)
+    }
+
+    func testOrdinarySpaceTravelAndRetirementKeepTheirTextDuringSynchronousPublicationFlushes() async throws {
+        try await checkTextPresentation(palette: nil, floating: false,
+                                        flushDuringPublication: true, flushEveryPublication: true)
+    }
+
     func testDismissingSearchDuringNativeTrackingKeepsTextAndGroundInStep() async throws {
         try await checkTextPresentation(palette: .newTab, floating: true, dismissWhileTracking: true)
     }
 
     private func checkTextPresentation(palette: PaletteMode?, floating: Bool,
-                                       dismissWhileTracking: Bool = false) async throws {
+                                       dismissWhileTracking: Bool = false,
+                                       flushDuringPublication: Bool = false,
+                                       flushEveryPublication: Bool = false) async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires native swipe presentation")
         let saver = BatterySaver.shared
@@ -45,7 +123,9 @@ import XCTest
         var failure: (any Error)?
         do {
             try await checkTextContrast(palette: palette, floating: floating,
-                                        dismissWhileTracking: dismissWhileTracking)
+                                        dismissWhileTracking: dismissWhileTracking,
+                                        flushDuringPublication: flushDuringPublication,
+                                        flushEveryPublication: flushEveryPublication)
         } catch { failure = error }
         do { try await loop.close() }
         catch {
@@ -56,7 +136,9 @@ import XCTest
     }
 
     private func checkTextContrast(palette: PaletteMode?, floating: Bool,
-                                   dismissWhileTracking: Bool) async throws {
+                                   dismissWhileTracking: Bool,
+                                   flushDuringPublication: Bool,
+                                   flushEveryPublication: Bool) async throws {
         let manager = ProfileManager.shared
         let profile = manager.create(name: "Text contrast fixture").id
         // Identical content and identical default washes isolate text rendering
@@ -98,7 +180,7 @@ import XCTest
             manager.delete(profile)
             try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: profile, in: Store.directory))
         }
-        NSApp.activate()
+        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         var admission = "not sampled"
         defer { print("SPACE_TEXT_ADMISSION \(admission)") }
@@ -106,7 +188,7 @@ import XCTest
             host.layoutSubtreeIfNeeded()
             admission = "running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window) visible=\(window.isVisible) occluded=\(!window.occlusionState.contains(.visible)) anchor=\(store.spaceGesture.sectionsView != nil) presented=\(host.layer?.presentation() != nil) prepared=\(monitor.preparedSlides[spaces[1].id]?.preparedPopulationReady == true)"
             if !NSApp.isActive || NSApp.keyWindow !== window {
-                NSApp.activate()
+                NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
                 return false
             }
@@ -128,6 +210,14 @@ import XCTest
         let inlineAddress = palette == .address && !floating
         let baseline = inlineAddress ? nil : try await capture(in: host, sections: sections)
         if inlineAddress { XCTAssertEqual(store.spaceGesture.presentedPaletteScrimOpacity, 0) }
+
+        var flushCount = 0
+        let publicationFlush = flushDuringPublication ? store.spaceGesture.$presentation.dropFirst().sink { state in
+            guard flushEveryPublication || state.profileSliding && flushCount == 0 else { return }
+            flushCount += 1
+            self.windowDisplay(host)
+        } : nil
+        defer { publicationFlush?.cancel() }
 
         NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
         NSApp.sendEvent(ScrollEvent(window: window, dx: -12))
@@ -161,6 +251,20 @@ import XCTest
         let fractionalContrast = try await capture(in: host, sections: sections)
 
         slide.outgoing.layer?.removeAnimation(forKey: "text-fractional-probe")
+        print("SPACE_TEXT_TAKEOVER baseline=\(baseline) native=\(covered) fractional=\(fractionalContrast)")
+
+        if flushDuringPublication {
+            slide.isHidden = true
+            try await displayFrames(in: window)
+            let liveUnderlay = try await capture(in: host, sections: sections)
+            slide.isHidden = false
+            try await displayFrames(in: window)
+            print("SPACE_TEXT_UNDERLAY \(liveUnderlay) flushes=\(flushCount) sliding=\(store.spaceGesture.profileSliding)")
+            XCTAssertGreaterThan(flushCount, 0)
+            for contrast in liveUnderlay.contrast {
+                XCTAssertLessThan(contrast, 20, "The live labels must be hidden while the native preview owns them")
+            }
+        }
 
         var dismissal: [TextCapture] = []
         if dismissWhileTracking {
