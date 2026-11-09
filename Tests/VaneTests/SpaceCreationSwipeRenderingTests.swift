@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import XCTest
 @testable import vane
 
@@ -41,6 +42,16 @@ import XCTest
     }
 
     private func exerciseRecordedCrossProfilePull() async throws {
+        let oldWidth = SidebarWidth.shared.width
+        let iconKey = SpaceFooterPreferences.showIconsKey
+        let oldIcons = UserDefaults.vane.object(forKey: iconKey)
+        SidebarWidth.shared.width = 243
+        UserDefaults.vane.set(false, forKey: iconKey)
+        defer {
+            SidebarWidth.shared.width = oldWidth
+            if let oldIcons { UserDefaults.vane.set(oldIcons, forKey: iconKey) }
+            else { UserDefaults.vane.removeObject(forKey: iconKey) }
+        }
         let manager = ProfileManager.shared
         let previous = manager.active
         let profiles = (1...3).map { manager.create(name: "Recorded swipe profile \($0)") }
@@ -149,9 +160,57 @@ import XCTest
                                        timestamp: 3 + sample.0))
         }
         XCTAssertEqual(store.spacePull, 2, "The recorded deliberate pull must arm creation")
-        NSApp.sendEvent(ScrollEvent(window: window, phase: .ended, timestamp: 3.375062042))
         let host = try XCTUnwrap(window.contentView)
-        try await compatibilityWait { store.creatingSpace && formIsUsable(in: host, window: window) }
+        func footerViews(in view: NSView) -> [NativeSpaceFooterMarkerView] {
+            let own = (view as? NativeSpaceFooterMarkerView).map { [$0] } ?? []
+            return own + view.subviews.flatMap { footerViews(in: $0) }
+        }
+        func footerCenters(presented: Bool) -> [UUID: CGFloat] {
+            guard let root = presented ? host.layer?.presentation() : host.layer else { return [:] }
+            var result: [UUID: CGFloat] = [:]
+            for view in footerViews(in: host) where view.owner === store && !view.isHiddenOrHasHiddenAncestor {
+                guard let config = view.configuration, config.layout.count == spaces.count + 1,
+                      let model = view.marker?.layer,
+                      let layer = presented ? model.presentation() : model else { continue }
+                result[config.id] = layer.convert(CGPoint(x: layer.bounds.midX, y: layer.bounds.midY), to: root).x
+            }
+            return result
+        }
+        var baseline: [UUID: CGFloat] = [:]
+        // Admit the already-expanded footer before release, not its post-release outcome.
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            CATransaction.flush()
+            let model = footerCenters(presented: false)
+            let visible = footerCenters(presented: true)
+            guard model.count == spaces.count, visible.count == spaces.count,
+                  model.allSatisfy({ id, x in abs((visible[id] ?? .infinity) - x) < 0.1 }) else { return false }
+            baseline = visible
+            return true
+        }
+        let slotPublication = store.spaceGesture.$presentation.dropFirst().sink { state in
+            guard state.pull == 0 else { return }
+            XCTAssertTrue(store.creatingSpace,
+                          "The form must own the filled creation slot before release publishes zero pull")
+        }
+        defer { slotPublication.cancel() }
+        NSApp.sendEvent(ScrollEvent(window: window, phase: .ended, timestamp: 3.375062042))
+        var excursions: [CGFloat] = []
+        let sampleEnd = ContinuousClock.now + .milliseconds(350)
+        // Sample immediately after release within the existing form-readiness
+        // deadline, including frames after the form first becomes usable.
+        try await compatibilityWait {
+            let centers = footerCenters(presented: true)
+            if centers.count == spaces.count {
+                excursions.append(baseline.map { id, x in abs((centers[id] ?? x) - x) }.max() ?? 0)
+            }
+            return ContinuousClock.now >= sampleEnd
+                && store.creatingSpace && formIsUsable(in: host, window: window)
+        }
+        print("CREATION_FOOTER_MAX_EXCURSION points=\(excursions.max() ?? .infinity) samples=\(excursions.count)")
+        XCTAssertGreaterThan(excursions.count, 3, "Observe native footer frames across release")
+        XCTAssertLessThanOrEqual(excursions.max() ?? .infinity, 0.5,
+                                 "Existing footer markers must not hop when the pulled creation slot becomes the form")
         XCTAssertFalse(store.spaceSwiping)
     }
 
