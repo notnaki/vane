@@ -1331,7 +1331,6 @@ private struct PillBody: View {
         .onHover { hovering = $0 }
         .onTapGesture { open() }
         .vaneKeyboardAction(requestFocus: $store.chromeFocusRequested,
-                            consumeFocusRequest: store.takeChromeFocusRequest,
                             focusChanged: { pillFocused = $0 }, action: open)
         // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is
         // the top of the sidebar, and it is what the empty grid used to be dropped on.
