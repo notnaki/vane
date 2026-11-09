@@ -497,6 +497,20 @@ private struct DisabledKeyboardSurface: View {
         XCTAssertTrue(window.firstResponder === web)
     }
 
+    func testF6DoesNotRebuildAlreadyVisibleBrowserControlsBeforeRequestingFocus() {
+        let (store, window, web) = fixture()
+        XCTAssertTrue(window.makeFirstResponder(web))
+        XCTAssertTrue(store.sidebarShown)
+        XCTAssertFalse(store.libraryOpen)
+        var visibilityPublications = 0
+        let sidebar = store.$sidebarShown.dropFirst().sink { _ in visibilityPublications += 1 }
+        let library = store.$libraryOpen.dropFirst().sink { _ in visibilityPublications += 1 }
+        defer { sidebar.cancel(); library.cancel() }
+        store.focusNextArea()
+        XCTAssertEqual(visibilityPublications, 0,
+                       "F6 must not invalidate unchanged chrome before handing its existing pill the keyboard")
+    }
+
     func testF6LeavesTheLocalEaselForBrowserControls() async throws {
         try await withNativePageFixture(isPrivate: false) { store, window, _ in
             let opened = await store.openEaselAsync(create: true)
