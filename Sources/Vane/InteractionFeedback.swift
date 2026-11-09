@@ -268,7 +268,9 @@ private struct TactileButtonBody: View {
                        value: configuration.isPressed)
             .animation(reduced ? nil : Look.feedback, value: hovered)
             .transaction {
-                if reduced || motionSuppressed || configuration.isPressed || !enabled {
+                // Disabled controls already suppress their tactile surface above.
+                // Keep inherited placement motion so they travel with enabled peers.
+                if reduced || motionSuppressed || configuration.isPressed {
                     $0.animation = nil
                     $0.disablesAnimations = true
                 }
