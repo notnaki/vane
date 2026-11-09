@@ -23,21 +23,30 @@ import UniformTypeIdentifiers
     @Published private(set) var presentation = Presentation()
     private var pendingPresentation: Presentation?
     private var presentationDepth = 0
+    private var publishingPresentation = false
 
     /// A native input mounts its overlay before publishing one complete state.
     /// Publishing each flag separately makes SwiftUI synchronously flush several
     /// intermediate browser layouts while the same input is still being handled.
     func beginPresentationUpdate() {
-        if presentationDepth == 0 { pendingPresentation = presentation }
+        if presentationDepth == 0, pendingPresentation == nil { pendingPresentation = presentation }
         presentationDepth += 1
     }
 
     func endPresentationUpdate() {
         precondition(presentationDepth > 0)
         presentationDepth -= 1
-        guard presentationDepth == 0, let next = pendingPresentation else { return }
-        pendingPresentation = nil
-        if next != presentation { presentation = next }
+        guard presentationDepth == 0, !publishingPresentation else { return }
+        // @Published notifies before assignment. A native host can synchronously
+        // lay out during that notification, so keep the completed values readable
+        // until assignment finishes. A callback's follow-up writes remain staged
+        // and publish after this assignment, rather than being overwritten by it.
+        publishingPresentation = true
+        defer { publishingPresentation = false }
+        while presentationDepth == 0, let next = pendingPresentation {
+            if next != presentation { presentation = next }
+            if presentationDepth == 0, pendingPresentation == next { pendingPresentation = nil }
+        }
     }
 
     func withPresentationUpdate<Result>(_ body: () throws -> Result) rethrows -> Result {
@@ -54,9 +63,7 @@ import UniformTypeIdentifiers
         guard read(key) != value else { return }
         if pendingPresentation != nil { pendingPresentation?[keyPath: key] = value }
         else {
-            var next = presentation
-            next[keyPath: key] = value
-            presentation = next
+            withPresentationUpdate { pendingPresentation?[keyPath: key] = value }
         }
     }
 
