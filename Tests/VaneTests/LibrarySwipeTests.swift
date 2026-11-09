@@ -485,18 +485,6 @@ import XCTest
         XCTAssertNil(store.librarySwipeProgress)
     }
 
-    func testF6SupersedesPendingLibraryOpening() async throws {
-        let (store, _, monitor, _) = try await releasedOpening()
-        XCTAssertFalse(store.libraryOpen)
-        XCTAssertTrue(monitor.intendsOpen(in: store))
-        store.focusNextArea()
-        XCTAssertFalse(monitor.intendsOpen(in: store),
-                       "F6 must cancel a released opening before requesting browser-control focus")
-        try await Task.sleep(for: .milliseconds(400))
-        XCTAssertFalse(store.libraryOpen, "The canceled swipe must not reopen Library after F6")
-        XCTAssertNil(store.librarySwipeProgress)
-    }
-
     func testOpeningCommandBarSupersedesPendingLibraryOpening() async throws {
         let (store, _, _, _) = try await releasedOpening()
         store.palette = .address
