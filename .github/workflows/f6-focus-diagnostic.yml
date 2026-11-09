@@ -39,12 +39,19 @@ jobs:
       - name: Preserve original predecessor sequence
         run: |
           python3 - <<'PY'
-          import json, re
+          import json, re, subprocess
           from pathlib import Path
           manifest = json.loads(Path('original-shard/vane-native-shard.json').read_text())
           manifest['tests'] = [t for t in manifest['tests']
               if t.split('/')[0] <= 'VaneTests.KeyboardAccessibilityTests']
           assert 'VaneTests.KeyboardAccessibilityTests/testF6LeavesTheLocalEaselForBrowserControls' in manifest['tests']
+          current = subprocess.check_output(['swift', 'test', 'list', '--skip-build'], text=True).splitlines()
+          related = [t for t in current if t.startswith('VaneTests.KeyboardAccessibilityTests/')
+              or t in ['VaneTests.LibrarySwipeTests/testF6SupersedesPendingLibraryOpening',
+                       'VaneTests.LibrarySwipeTests/testOpeningCommandBarSupersedesPendingLibraryOpening',
+                       'VaneTests.LibrarySwipeTests/testExplicitCloseSupersedesOpeningLanding',
+                       'VaneTests.LibrarySwipeTests/testClosingMountedLibrarySearchReturnsKeyboardToPage']]
+          manifest['tests'] = sorted(set(manifest['tests'] + related))
           Path('focus-prefix.json').write_text(json.dumps(manifest, indent=2))
           Path('focus-prefix.filter').write_text('^(' + '|'.join(re.escape(t) for t in manifest['tests']) + ')$')
           print('Original-prefix cases:', len(manifest['tests']))
