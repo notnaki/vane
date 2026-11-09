@@ -85,7 +85,14 @@ import XCTest
             tab.park(url: URL(string: "https://example.test/\(index)")!, Parked(title: "Document \(index)"))
         }
         store.palette = nil
-        try await compatibilityWait { !store.spaceGesture.monitor.preparedSlides.isEmpty }
+        // Reduced-motion navigation intentionally does not prepare animated
+        // sidebar surfaces. Still replay the pull and verify the usable form.
+        if Motion.spaceReduced {
+            XCTAssertTrue(store.spaceGesture.monitor.preparedSlides.isEmpty)
+        } else {
+            try await compatibilityWait { !store.spaceGesture.monitor.preparedSlides.isEmpty }
+        }
+        print("RECORDED_CREATION_PREREQUISITES reducedMotion=\(Motion.spaceReduced) prepared=\(store.spaceGesture.monitor.preparedSlides.count)")
         // Real trackpad packets from the reported failure: drift grows only after axis lock.
         let samples: [(TimeInterval, CGFloat, CGFloat)] = [
             (0.000000000, -1, 0),
