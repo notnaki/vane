@@ -220,13 +220,33 @@ import XCTest
         if try await runInFreshHost(#function) { return }
         let bytes = Data("cross origin synthetic content".utf8)
         selection.urls = [try file("framed.txt", bytes)]
-        server.pages["/upload"]! += "<script>window.addEventListener('message',()=>document.getElementById('files').click());</script>"
-        server.pages["/parent"] = "<title>Parent</title><iframe id='child' src='\(try server.url("/upload", host: "localhost"))'></iframe>"
+        server.pages["/upload"]! += """
+        <script>
+        window.addEventListener('message', event => {
+            if (event.source === parent && event.data === 'choose') document.getElementById('files').click();
+        });
+        parent.postMessage('upload-ready', '*');
+        </script>
+        """
+        let childOrigin = "http://localhost:\(try XCTUnwrap(server.port))"
+        server.pages["/parent"] = """
+        <title>Parent</title><script>
+        window.uploadReady = false;
+        window.addEventListener('message', event => {
+            const child = document.getElementById('child');
+            if (child && event.source === child.contentWindow && event.origin === '\(childOrigin)'
+                && event.data === 'upload-ready') window.uploadReady = true;
+        });
+        </script><iframe id='child' src='\(try server.url("/upload", host: "localhost"))'></iframe>
+        """
         try await load("/parent")
         try await compatibilityWait {
-            try await self.tab.web.evaluateJavaScript("document.getElementById('child').contentWindow.postMessage('choose','*'); true") as? Bool == true
-                && self.selection.frame != nil
+            try await self.tab.web.evaluateJavaScript("window.uploadReady === true") as? Bool == true
         }
+        // Poll readiness and outcomes, never the action: another click can replace
+        // WebKit's in-flight selected-file handoff before the first one settles.
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('child').contentWindow.postMessage('choose','\(childOrigin)'); true")
+        try await compatibilityWait { self.selection.frame != nil }
         let frame = try XCTUnwrap(selection.frame)
         XCTAssertFalse(frame.isMainFrame)
         XCTAssertEqual(frame.securityOrigin.host, "localhost")
@@ -240,6 +260,8 @@ import XCTest
         try await compatibilityWait { self.server.submissions.count == 1 }
         XCTAssertNotNil(server.submissions[0].range(of: bytes))
         XCTAssertEqual(tab.web.title, "Parent", "Upload navigates only the requesting frame")
+        XCTAssertEqual(selection.pickerRequests, 1,
+                       "The fixture must issue exactly one choose action before observing its result")
     }
 }
 
@@ -247,10 +269,12 @@ import XCTest
     var urls: [URL] = []
     var frame: WKFrameInfo?
     var multiple = false, directories = false
+    var pickerRequests = 0
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
                  initiatedByFrame frame: WKFrameInfo,
                  completionHandler: @escaping @MainActor ([URL]?) -> Void) {
         self.frame = frame
+        pickerRequests += 1
         multiple = parameters.allowsMultipleSelection; directories = parameters.allowsDirectories
         completionHandler(urls)
     }
