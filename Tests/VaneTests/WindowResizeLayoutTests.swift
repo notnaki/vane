@@ -33,6 +33,7 @@ import XCTest
                 store.window = nil
                 window.close()
                 store.dropStashes()
+                SharedTabs.release(store.tabs, excluding: store)
                 TabStore.all.removeAll { $0 === store }
             }
             try await compatibilityWait {
