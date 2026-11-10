@@ -1,0 +1,109 @@
+name: Swipe creation current-main preflight
+
+on:
+  push:
+    branches: [codex/swipe-creation-current-main-preflight]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  preflight:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Verify pinned candidate source
+        run: |
+          git diff --exit-code 1e867d5a6a065b6d9cb7fd77885306fca268847d HEAD -- . ':!.github/workflows/swipe-creation-current-main-preflight.yml'
+          git rev-parse HEAD
+          echo 'Pinned source candidate: 1e867d5a6a065b6d9cb7fd77885306fca268847d'
+      - name: Identify toolchain
+        id: toolchain
+        run: |
+          sw_vers
+          swift --version
+          KEY=$(python3 scripts/ci-build-artifact.py toolchain)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swipe-creation-preflight-${{ github.sha }}
+          restore-keys: |
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - run: python3 scripts/ci-source-state.py restore
+      - run: swift build -c debug --build-tests --disable-index-store
+      - name: Record exact three-case inventory
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib, json, re, subprocess
+          from pathlib import Path
+          inventory = subprocess.check_output(['swift', 'test', 'list', '--skip-build'], text=True)
+          Path('creation-discovery.txt').write_text(inventory)
+          actual = sorted(t for t in inventory.splitlines() if t.startswith('VaneTests.SpaceCreationSwipeRenderingTests/'))
+          expected = sorted('VaneTests.SpaceCreationSwipeRenderingTests/' + name for name in [
+              'testAccidentalPullReturnsAndDeliberatePullShowsAUsableForm',
+              'testPacedRecordedPullOpensCreationAfterSwipingAcrossThreeProfiles',
+              'testRecordedPullKeepsTheExistingProfilesFooterMarkers',
+          ])
+          assert actual == expected, (actual, expected)
+          manifest = {'schema': 1, 'tests': expected, 'candidate': '1e867d5a6a065b6d9cb7fd77885306fca268847d',
+                      'diagnostic_head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                      'inventory_sha256': hashlib.sha256(inventory.encode()).hexdigest()}
+          Path('creation-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          Path('creation.filter').write_text('^(' + '|'.join(re.escape(t) for t in expected) + ')$')
+          print(json.dumps(manifest, indent=2))
+          PYCODE
+      - name: Three predetermined fresh-process creation passes
+        env:
+          NSUnbufferedIO: 'YES'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 \
+              --filter "$(cat creation.filter)" 2>&1 | tee "creation-attempt-$attempt.log"
+            python3 scripts/native-test-shards.py verify \
+              --manifest creation-manifest.json --log "creation-attempt-$attempt.log"
+            python3 - "$attempt" <<'PYCODE'
+          import json, re, sys
+          from pathlib import Path
+          attempt = int(sys.argv[1])
+          log = Path(f'creation-attempt-{attempt}.log').read_text()
+          expected = set(json.loads(Path('creation-manifest.json').read_text())['tests'])
+          completed = re.findall(r"Test Case '-\[([^ ]+) ([^ ]+)\]' (passed|skipped|failed) \(", log)
+          selected = [(f'{cls}/{name}', status) for cls, name, status in completed if cls == 'VaneTests.SpaceCreationSwipeRenderingTests']
+          assert len(selected) == 3 and {name for name, _ in selected} == expected, selected
+          assert all(status == 'passed' for _, status in selected), selected
+          policy = re.findall(r'RECORDED_CREATION_PREREQUISITES reducedMotion=(true|false) prepared=(\d+)', log)
+          assert len(policy) == 2, policy
+          assert 'Native suite primary status=0; cleanup status=0' in log.splitlines()
+          drivers = re.findall(r'NATIVE TEST DRIVER pid=(\d+) phase=primary', log)
+          assert len(drivers) == 1, drivers
+          proof = {'attempt': attempt, 'selected': selected, 'skipped': 0, 'reduceMotionAndPrepared': policy,
+                   'primary': 0, 'cleanup': 0, 'primary_driver_pid': int(drivers[0])}
+          Path(f'creation-proof-{attempt}.json').write_text(json.dumps(proof, indent=2) + '\n')
+          print('CREATION_PASS_PROOF', json.dumps(proof))
+          PYCODE
+          done
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          proofs = [json.loads(Path(f'creation-proof-{i}.json').read_text()) for i in (1, 2, 3)]
+          assert len({proof['primary_driver_pid'] for proof in proofs}) == 3, proofs
+          print('PASS: three fresh primary drivers, nine selected creation tests, zero skips, all primary/cleanup zero')
+          PYCODE
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: swipe-creation-current-main-preflight
+          path: |
+            creation-attempt-*.log
+            creation-proof-*.json
+            creation-manifest.json
+            creation.filter
+            creation-discovery.txt
+          retention-days: 7
