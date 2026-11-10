@@ -38,6 +38,14 @@ its saved page, its sidebar row shows `/` before its title and offers **Return t
 Tab**; returning loads the pinned URL again. Favorites belong to a profile, while pinned
 and Today tabs belong to a Space. Library lists Spaces across all profiles.
 
+## Copy a clean link
+
+Press **⌘⇧C** (**View → Copy Page URL**) to copy the current page's URL with known
+tracking parameters removed, including `utm_*`, `fbclid`, and advertising click IDs.
+The address bar's **Copy Link** button uses the same cleanup. Page parameters such
+as searches and item IDs, URL encoding, and fragments are preserved. Copying does
+not navigate or change the page's address.
+
 ## Reorder, group, and clean up tabs
 
 Drag a sidebar tab to reorder it: the white line marks the nearest insertion gap, and

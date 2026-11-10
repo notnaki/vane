@@ -1518,8 +1518,7 @@ private struct PillBody: View {
 
     private func copyLink() {
         guard let u = tab?.currentURL else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(u.absoluteString, forType: .string)
+        CleanLink.copy(u)
         store.feedback.copied(u)
         axAnnounce("Link copied.")
         Toasts.show("Copied URL", in: store)
