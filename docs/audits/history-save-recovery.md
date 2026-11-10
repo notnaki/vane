@@ -35,3 +35,18 @@ Evidence is retained under `/tmp/vane-readiness-history-20261110/`, including th
 original red run and headless crash. No windows, activation, input, capture,
 personal profiles or real account data were used. Foreground History interaction,
 physical disk failure, macOS 26 and notarized builds remain separate checks.
+
+## Background-batch review follow-up
+
+Three additional regressions reproduced six assertion failures before repair:
+retry feedback escaped into another profile/private window, and zero-progress
+retries emitted committed-history notifications. Save/rejection notices now capture
+a matching nonprivate owner explicitly. Failed replay publishes history changes
+only if a prefix committed; save-state feedback remains separate.
+
+The combined blocker/history/import/search/data-fidelity wrapper passed 138 tests
+with zero failures and successful cleanup. This includes all blocker IO fixtures
+and the three new failed-write tests. The ownership regression uses real, unshown
+windows and verifies they remain invisible and non-key; no activation, input or
+capture is used. Red/green evidence is retained under
+`/tmp/vane-background-limitations-batch-20261110-evidence/`.

@@ -191,6 +191,11 @@ struct BookmarkImportResult: Equatable, Sendable {
     private var deletedFolderIDs: Set<String> = []
     private(set) var lastHistoryError: String?
     private var navigationSaveNoticeShown = false
+    private var historyFeedbackOwner: TabStore? {
+        guard NSApp != nil, let profileID, let owner = Windows.current,
+              owner.profileID == profileID, !owner.isPrivate else { return nil }
+        return owner
+    }
 
     init(path: String? = nil, profileID: UUID? = nil) {
         self.profileID = profileID
@@ -259,12 +264,12 @@ struct BookmarkImportResult: Equatable, Sendable {
                 lastHistoryError = (result.error ?? "Queued browsing changes could not be saved. Try again.")
                     + (rejected.isEmpty ? "" : " " + rejected.joined(separator: " "))
                 NSLog("Vane queued history write failed: %@", lastHistoryError!)
-                if NSApp != nil, Windows.current != nil {
+                if let owner = historyFeedbackOwner {
                     Toasts.show("Browsing changes are waiting to be saved", action: ("Retry", { [weak self] in
                         Task { _ = await self?.flushPendingWrites() }
-                    }))
+                    }), in: owner)
                 }
-                NotificationCenter.default.post(name: Self.historyChanged, object: self)
+                if result.changed { NotificationCenter.default.post(name: Self.historyChanged, object: self) }
                 return false
             }
             if result.changed { NotificationCenter.default.post(name: Self.historyChanged, object: self) }
@@ -277,7 +282,9 @@ struct BookmarkImportResult: Equatable, Sendable {
         navigationSaveNoticeShown = false
         if !rejected.isEmpty {
             NotificationCenter.default.post(name: Self.historyChanged, object: self)
-            if NSApp != nil, Windows.current != nil { Toasts.show("A bookmark change could not be applied: " + rejected[0]) }
+            if let owner = historyFeedbackOwner {
+                Toasts.show("A bookmark change could not be applied: " + rejected[0], in: owner)
+            }
         }
         return true
     }
@@ -369,12 +376,11 @@ struct BookmarkImportResult: Equatable, Sendable {
         guard !accepted else { return true }
         pending.append(StorePendingWrite(operation: operation))
         NotificationCenter.default.post(name: Self.historySaveStateChanged, object: self)
-        if !navigationSaveNoticeShown, NSApp != nil, let profileID,
-           Windows.current?.profileID == profileID, Windows.current?.isPrivate == false {
+        if !navigationSaveNoticeShown, let owner = historyFeedbackOwner {
             navigationSaveNoticeShown = true
             Toasts.show("Browsing history is waiting to be saved", action: ("Retry Save", { [weak self] in
                 Task { _ = await self?.flushPendingWrites() }
-            }))
+            }), in: owner)
         }
         return false
     }

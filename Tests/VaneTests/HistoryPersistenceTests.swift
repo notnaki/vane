@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 import SQLite3
 @testable import vane
@@ -10,11 +11,11 @@ import SQLite3
         var total: Int { lock.lock(); defer { lock.unlock() }; return count }
     }
 
-    private func fixture() throws -> (Store, OpaquePointer) {
+    private func fixture(profileID: UUID? = nil) throws -> (Store, OpaquePointer) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let path = directory.appendingPathComponent("history.db").path
-        let store = Store(path: path)
+        let store = Store(path: path, profileID: profileID)
         var connection: OpaquePointer?
         XCTAssertEqual(sqlite3_open(path, &connection), SQLITE_OK)
         let db = try XCTUnwrap(connection)
@@ -26,9 +27,9 @@ import SQLite3
         XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK, String(cString: sqlite3_errmsg(db)))
     }
 
-    private func observe(_ store: Store) -> Notifications {
+    private func observe(_ store: Store, name: Notification.Name = Store.historyChanged) -> Notifications {
         let notifications = Notifications()
-        let token = NotificationCenter.default.addObserver(forName: Store.historyChanged, object: nil, queue: nil) { note in
+        let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { note in
             if note.object as? Store === store { notifications.receive() }
         }
         addTeardownBlock { NotificationCenter.default.removeObserver(token) }
@@ -104,6 +105,93 @@ import SQLite3
         execute("DROP TRIGGER reject_insert", on: db)
         _ = await store.flushPendingWrites()
         XCTAssertTrue(store.history().isEmpty, "Clear follows and removes earlier pending history")
+    }
+
+    func testFailedRetryDoesNotPublishUncommittedHistory() async throws {
+        let (store, db) = try fixture()
+        let durable = observe(store)
+        let saveState = observe(store, name: Store.historySaveStateChanged)
+        execute("CREATE TRIGGER reject_visit BEFORE INSERT ON visits BEGIN SELECT RAISE(ABORT, 'retry failure'); END", on: db)
+        XCTAssertFalse(store.recordNavigation(URL(string: "https://example.com/retry")!, title: "Pending"))
+        XCTAssertEqual(durable.total, 0)
+        XCTAssertEqual(saveState.total, 1)
+        let failed = await store.flushPendingWrites()
+        XCTAssertFalse(failed)
+        XCTAssertTrue(store.history().isEmpty)
+        XCTAssertEqual(durable.total, 0, "A failed retry must not reload committed history")
+        XCTAssertEqual(saveState.total, 2, "Retry feedback uses the save-state signal")
+        execute("DROP TRIGGER reject_visit", on: db)
+        let saved = await store.flushPendingWrites()
+        XCTAssertTrue(saved)
+        XCTAssertEqual(store.history().map(\.title), ["Pending"])
+        XCTAssertEqual(durable.total, 1)
+        XCTAssertEqual(saveState.total, 3)
+    }
+
+    func testPartialRetryPublishesOnlyItsCommittedPrefix() async throws {
+        let (store, db) = try fixture()
+        let durable = observe(store)
+        execute("CREATE TRIGGER reject_visit BEFORE INSERT ON visits BEGIN SELECT RAISE(ABORT, 'queue both'); END", on: db)
+        XCTAssertFalse(store.recordNavigation(URL(string: "https://example.com/prefix")!, title: "Prefix"))
+        XCTAssertTrue(store.recordNavigation(URL(string: "https://example.com/suffix")!, title: "Suffix"))
+        execute("DROP TRIGGER reject_visit; CREATE TRIGGER reject_suffix BEFORE INSERT ON visits WHEN NEW.title = 'Suffix' BEGIN SELECT RAISE(ABORT, 'retain suffix'); END", on: db)
+        let partial = await store.flushPendingWrites()
+        XCTAssertFalse(partial)
+        XCTAssertEqual(store.history().map(\.title), ["Prefix"])
+        XCTAssertEqual(durable.total, 1, "A committed prefix still publishes despite a later failure")
+        let unchanged = await store.flushPendingWrites()
+        XCTAssertFalse(unchanged)
+        XCTAssertEqual(durable.total, 1, "An unchanged suffix failure must not republish the prefix")
+        execute("DROP TRIGGER reject_suffix", on: db)
+        let saved = await store.flushPendingWrites()
+        XCTAssertTrue(saved)
+        XCTAssertEqual(store.history().map(\.title), ["Suffix", "Prefix"])
+        XCTAssertEqual(durable.total, 2)
+    }
+
+    func testFailedRetryNoticeStaysInItsRegularProfile() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let previousStores = TabStore.all
+        TabStore.all = []
+        defer { TabStore.all = previousStores }
+        let profileID = UUID()
+        let (store, db) = try fixture(profileID: profileID)
+        execute("CREATE TRIGGER reject_visit BEFORE INSERT ON visits BEGIN SELECT RAISE(ABORT, 'profile retry failure'); END", on: db)
+        XCTAssertFalse(store.recordNavigation(URL(string: "https://example.com/owned")!, title: "Pending"))
+        let cases = [(UUID(), false, false), (profileID, true, false), (profileID, false, true)]
+        for (ownerProfile, isPrivate, shouldNotify) in cases {
+            let owner = TabStore(isPrivate: isPrivate, profileID: ownerProfile, session: [])
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
+                                  styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            owner.window = window
+            defer {
+                if let toast = Toasts.shared.current, toast.owner == ObjectIdentifier(owner) {
+                    Toasts.shared.dismiss(toast)
+                }
+                owner.window = nil; window.close(); owner.dropStashes()
+                TabStore.all.removeAll { $0 === owner }
+                Store.forget(owner.profileID)
+            }
+            XCTAssertFalse(window.isVisible)
+            XCTAssertFalse(window.isKeyWindow)
+            XCTAssertTrue(Windows.current === owner, "Exercise the real unshown fallback owner")
+            let previousToast = Toasts.shared.current?.id
+            let saved = await store.flushPendingWrites()
+            XCTAssertFalse(saved)
+            if shouldNotify {
+                let toast = try XCTUnwrap(Toasts.shared.current)
+                XCTAssertNotEqual(toast.id, previousToast)
+                XCTAssertEqual(toast.owner, ObjectIdentifier(owner))
+                XCTAssertEqual(toast.action?.title, "Retry")
+            } else {
+                XCTAssertEqual(Toasts.shared.current?.id, previousToast,
+                               "A retry must not publish into another profile or private window")
+            }
+            XCTAssertFalse(window.isVisible)
+            XCTAssertFalse(window.isKeyWindow)
+        }
     }
 
     func testRejectedSingleWritesDoNotPublishHistoryChanges() throws {
