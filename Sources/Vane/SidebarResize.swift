@@ -131,13 +131,24 @@ final class SidebarResizeHighlightView: NSView {
     init() {
         super.init(frame: .zero)
         wantsLayer = true
-        // Arc's 4pt pill uses a 40% white overlay, including in light Spaces.
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.4).cgColor
-        layer?.cornerRadius = 2
+        // Arc's 4pt rule has elongated oval caps, not 2pt circular corners.
+        (layer as? CAShapeLayer)?.fillColor = NSColor.white.withAlphaComponent(0.4).cgColor
         layer?.opacity = 0
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func makeBackingLayer() -> CALayer { CAShapeLayer() }
+
+    override func layout() {
+        super.layout()
+        guard let shape = layer as? CAShapeLayer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shape.path = CGPath(roundedRect: bounds, cornerWidth: bounds.width / 2,
+                            cornerHeight: min(5, bounds.height / 2), transform: nil)
+        CATransaction.commit()
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
