@@ -2,6 +2,26 @@ import AppKit
 import SwiftUI
 import WebKit
 
+/// AppKit proposes a frame size. Preserve the opposite edges of the native drag
+/// when the matching painted frame is committed asynchronously.
+struct WindowResizeAnchor {
+    let frame: NSRect
+    let fixedRight: Bool
+    let fixedTop: Bool
+
+    init(frame: NSRect, pointer: NSPoint) {
+        self.frame = frame
+        fixedRight = abs(pointer.x - frame.minX) < abs(pointer.x - frame.maxX)
+        fixedTop = abs(pointer.y - frame.minY) < abs(pointer.y - frame.maxY)
+    }
+
+    func frame(for size: NSSize) -> NSRect {
+        NSRect(x: fixedRight ? frame.maxX - size.width : frame.minX,
+               y: fixedTop ? frame.maxY - size.height : frame.minY,
+               width: size.width, height: size.height)
+    }
+}
+
 /// The same column sizing used by LibraryNavigationLayout, captured by its root.
 /// Native resize preparation needs the next viewport before SwiftUI's next layout.
 struct PageResizeLayout {
@@ -40,6 +60,7 @@ extension EnvironmentValues {
     private let originalParentSize: NSSize
     private let mask: NSView.AutoresizingMask
     private let autoSubviews: Bool
+    private var installed = false
     private var restored = false
 
     init(web: WKWebView, size: NSSize) {
@@ -64,10 +85,18 @@ extension EnvironmentValues {
         web.prepareContent(in: NSRect(origin: .zero, size: size))
     }
 
+    func installNativeGeometry() {
+        guard !installed, web.superview === parent else { return }
+        installed = true
+        web.autoresizesSubviews = autoSubviews
+        if autoSubviews { web.resizeSubviews(withOldSize: originalSize) }
+    }
+
     func restore(committed: Bool) {
         guard !restored else { return }
         restored = true
         if web.superview === parent {
+            if committed { installNativeGeometry() }
             if !committed {
                 let parentSize = parent?.bounds.size ?? originalParentSize
                 web.setFrameSize(NSSize(
@@ -76,7 +105,7 @@ extension EnvironmentValues {
             }
             web.autoresizingMask = mask
             web.autoresizesSubviews = autoSubviews
-            if autoSubviews { web.resizeSubviews(withOldSize: originalSize) }
+            if autoSubviews && !installed { web.resizeSubviews(withOldSize: originalSize) }
             web.prepareContent(in: web.bounds)
         } else {
             // A new host already owns its frame/mask. Restore only the temporary
@@ -92,6 +121,8 @@ extension EnvironmentValues {
 /// Keeps native window geometry and the rendered document in one CA commit.
 /// There is at most one preparation and one latest request; no event-loop waits.
 @MainActor final class WindowResizePreparation {
+    typealias Presenter = @MainActor (WKWebView, @escaping @MainActor @Sendable () -> Void) -> Void
+    typealias Deadline = @MainActor (@escaping @MainActor @Sendable () -> Void) -> Void
     struct Request {
         let frame: NSRect
         let display: Bool
@@ -99,17 +130,25 @@ extension EnvironmentValues {
 
     private weak var window: NSWindow?
     private let commit: @MainActor (NSRect, Bool) -> Void
+    private let presenter: Presenter?
+    private let deadline: Deadline?
     private var pending: Request?
     private var pages: [PreparedPageResize] = []
     private weak var root: NSView?
     private var active: Request?
+    private var startingFrame: NSRect?
     private var generation = UUID()
     private var remaining = 0
+    private var nextScheduled = false
+    private var watchdog: Timer?
     private(set) var bypassForDrag = false
-    var isPreparing: Bool { active != nil }
+    var isPreparing: Bool { active != nil || nextScheduled }
 
-    init(window: NSWindow, commit: @escaping @MainActor (NSRect, Bool) -> Void) {
+    init(window: NSWindow, presenter: Presenter? = nil, deadline: Deadline? = nil,
+         commit: @escaping @MainActor (NSRect, Bool) -> Void) {
         self.window = window
+        self.presenter = presenter
+        self.deadline = deadline
         self.commit = commit
     }
 
@@ -118,7 +157,7 @@ extension EnvironmentValues {
     @discardableResult func request(frame: NSRect, display: Bool) -> Bool {
         guard !bypassForDrag, let window, window.isVisible, let root = window.contentView else { return false }
         let request = Request(frame: frame, display: display)
-        if active != nil {
+        if isPreparing {
             pending = request
             return true
         }
@@ -128,6 +167,7 @@ extension EnvironmentValues {
         let targets = Self.targets(in: root, nextSize: nextSize)
         guard !targets.isEmpty else { return false }
         self.root = root
+        startingFrame = window.frame
         active = request
         pages = targets
         remaining = targets.count
@@ -136,22 +176,34 @@ extension EnvironmentValues {
         // All views must receive their new viewport before requesting any paint.
         targets.forEach { $0.prepare() }
         for target in targets {
+            if let presenter {
+                presenter(target.web) { [weak self] in self?.presented(token) }
+                continue
+            }
             let callback: @convention(block) () -> Void = { [weak self] in
                 MainActor.assumeIsolated { self?.presented(token) }
             }
             target.web.perform(Self.presentation, with: callback)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self] in
-            self?.timedOut(token)
+        let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
+        if let deadline { deadline(timeout) }
+        else if generation == token, active != nil {
+            let timer = Timer(timeInterval: 0.1, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
+            watchdog = timer
+            RunLoop.main.add(timer, forMode: .common)
         }
         return true
     }
 
     func cancel() {
         generation = UUID()
+        watchdog?.invalidate()
+        watchdog = nil
         pending = nil
         active = nil
+        startingFrame = nil
         remaining = 0
+        nextScheduled = false
         pages.forEach { $0.restore(committed: false) }
         pages = []
         root = nil
@@ -161,32 +213,61 @@ extension EnvironmentValues {
         guard generation == token, let active else { return }
         remaining -= 1
         guard remaining == 0 else { return }
-        guard let window, window.isVisible, window.contentView === root,
+        watchdog?.invalidate()
+        watchdog = nil
+        guard let window, window.frame == startingFrame else {
+            // A programmatic resize/move supersedes the pending native drag.
+            cancel()
+            return
+        }
+        guard window.isVisible, window.contentView === root,
               pages.allSatisfy({ $0.stillOwned && $0.web.window === window }) else {
             let latest = pending ?? active
             cancel()
-            if let window, window.isVisible { commit(latest.frame, latest.display) }
+            if window.isVisible { commit(latest.frame, latest.display) }
             return
         }
         // WebKit invokes this inside its layer-tree transaction, after the new
         // content is installed. Commit the window and child geometry together.
-        commit(active.frame, active.display)
+        // setFrame(display:true) may flush AppKit drawing synchronously. Install
+        // the already-painted child's clip first, while keeping the web view's
+        // own autoresizing mask disabled so the window cannot apply its delta twice.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            pages.forEach { $0.installNativeGeometry() }
+            commit(active.frame, active.display)
+        }
         pages.forEach { $0.restore(committed: true) }
         pages = []
         self.active = nil
+        startingFrame = nil
         generation = UUID()
-        if let next = pending {
-            pending = nil
-            if !request(frame: next.frame, display: next.display) { commit(next.frame, next.display) }
+        if pending != nil {
+            nextScheduled = true
+            let nextToken = generation
+            // Finish this paint transaction before preparing another viewport.
+            // Otherwise its native clips can enter the previous size's commit.
+            RunLoop.main.perform(inModes: [.common]) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.generation == nextToken, self.nextScheduled else { return }
+                    CATransaction.flush()
+                    self.nextScheduled = false
+                    guard let next = self.pending else { return }
+                    self.pending = nil
+                    if !self.request(frame: next.frame, display: next.display) { self.commit(next.frame, next.display) }
+                }
+            }
         }
     }
 
     private func timedOut(_ token: UUID) {
         guard generation == token, let active else { return }
+        guard let window, window.frame == startingFrame else { cancel(); return }
         let latest = pending ?? active
         cancel()
-        bypassForDrag = window?.inLiveResize == true
-        if let window, window.isVisible { commit(latest.frame, latest.display) }
+        bypassForDrag = window.inLiveResize
+        if window.isVisible { commit(latest.frame, latest.display) }
     }
 
     private static let presentation = NSSelectorFromString("_doAfterNextPresentationUpdate:")

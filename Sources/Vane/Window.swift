@@ -3,7 +3,7 @@ import SwiftUI
 import Combine
 import WebKit
 
-/// The window, only so the traffic lights can be nailed to the sidebar's top row.
+/// The native browser frame, page-paint coordination, and traffic-light placement.
 ///
 /// AppKit picks where the lights go from the titlebar's height, and it re-picks after every
 /// resize, every key/resign-key and every restored frame. An empty compact toolbar gets that
@@ -12,15 +12,8 @@ import WebKit
 /// So the buttons are moved back onto the line after every layout pass, whatever AppKit did.
 final class VaneWindow: NSWindow {
     private var resizePreparation: WindowResizePreparation?
+    private var resizeAnchor: WindowResizeAnchor?
     private var committingResize = false
-
-    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
-        if !committingResize, isVisible, !styleMask.contains(.fullScreen),
-           inLiveResize || resizePreparation?.isPreparing == true {
-            if preparePageResize(frame: frameRect, display: flag) { return }
-        }
-        super.setFrame(frameRect, display: flag)
-    }
 
     var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true }
 
@@ -29,8 +22,6 @@ final class VaneWindow: NSWindow {
             resizePreparation = WindowResizePreparation(window: self) { [weak self] frame, display in
                 self?.commitPreparedResize(frame, display: display)
             }
-            NotificationCenter.default.addObserver(self, selector: #selector(nativeResizeEnded),
-                name: NSWindow.didEndLiveResizeNotification, object: self)
         }
         return resizePreparation?.request(frame: frame, display: display) == true
     }
@@ -38,24 +29,39 @@ final class VaneWindow: NSWindow {
     private func commitPreparedResize(_ frame: NSRect, display: Bool) {
         committingResize = true
         defer { committingResize = false }
-        super.setFrame(frame, display: display)
+        super.setFrame(frame, display: false)
+        if display { viewsNeedDisplay = true }
     }
 
-    @objc private func nativeResizeEnded(_ notification: Notification) {
+    func beginPageResize(at point: NSPoint = NSEvent.mouseLocation) {
+        resizeAnchor = WindowResizeAnchor(frame: frame, pointer: point)
+    }
+
+    func proposedPageResize(_ size: NSSize) -> NSSize {
+        guard !committingResize, let resizeAnchor, !styleMask.contains(.fullScreen) else { return size }
+        let target = resizeAnchor.frame(for: size)
+        return preparePageResize(frame: target, display: true) ? frame.size : size
+    }
+
+    func endPageResize() {
+        resizeAnchor = nil
         resizePreparation?.endLiveResize()
     }
 
     override func close() {
+        endPageResize()
         resizePreparation?.cancel()
         super.close()
     }
 
     override func miniaturize(_ sender: Any?) {
+        endPageResize()
         resizePreparation?.cancel()
         super.miniaturize(sender)
     }
 
     override func toggleFullScreen(_ sender: Any?) {
+        endPageResize()
         resizePreparation?.cancel()
         super.toggleFullScreen(sender)
     }
@@ -793,7 +799,16 @@ extension VaneWindow {
             (store.window as? VaneWindow)?.centreTrafficLights()
         }
         func windowDidResize(_ n: Notification) { recentre() }
-        func windowDidEndLiveResize(_ n: Notification) { recentre() }
+        func windowWillStartLiveResize(_ n: Notification) {
+            (store.window as? VaneWindow)?.beginPageResize()
+        }
+        func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+            (sender as? VaneWindow)?.proposedPageResize(frameSize) ?? frameSize
+        }
+        func windowDidEndLiveResize(_ n: Notification) {
+            (store.window as? VaneWindow)?.endPageResize()
+            recentre()
+        }
         func windowDidBecomeKey(_ n: Notification) {
             recentre()
             MainActor.assumeIsolated { rebuild(); SharedTabs.refreshPresentation(); store.extensions.sync() }

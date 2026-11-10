@@ -3,8 +3,22 @@ import WebKit
 import XCTest
 @testable import vane
 
-/// Native sizing only: no window, focus, input, or capture is needed.
+/// Unshown native objects only: no focus, input, or capture is needed.
 @MainActor final class WindowResizePreparationTests: XCTestCase {
+    func testLeftBottomResizeKeepsTheOppositeCornerFixed() {
+        let frame = NSRect(x: 100, y: 200, width: 900, height: 600)
+        let anchor = WindowResizeAnchor(frame: frame, pointer: NSPoint(x: 100, y: 200))
+        XCTAssertEqual(anchor.frame(for: NSSize(width: 1100, height: 700)),
+                       NSRect(x: -100, y: 100, width: 1100, height: 700))
+    }
+
+    func testRightTopResizeKeepsTheOppositeCornerFixed() {
+        let frame = NSRect(x: 100, y: 200, width: 900, height: 600)
+        let anchor = WindowResizeAnchor(frame: frame, pointer: NSPoint(x: 1000, y: 800))
+        XCTAssertEqual(anchor.frame(for: NSSize(width: 1100, height: 700)),
+                       NSRect(x: 100, y: 200, width: 1100, height: 700))
+    }
+
     private func fixture() -> (WebHost, WKWebView) {
         TestEnvironment.prepare()
         let configuration = WKWebViewConfiguration()
@@ -61,4 +75,92 @@ import XCTest
         XCTAssertEqual(web.autoresizingMask, [.height])
         XCTAssertTrue(web.autoresizesSubviews)
     }
+
+    func testQueuedFramesCoalesceAndInstallTheClipBeforeWindowDisplay() async throws {
+        let (host, web) = fixture()
+        let window = modelWindow(host)
+        defer { window.contentView = nil; host.removePage(); window.close() }
+        let child = try XCTUnwrap(web.subviews.first)
+        var paints: [@MainActor @Sendable () -> Void] = []
+        var commits: [NSSize] = []
+        let resize = WindowResizePreparation(window: window,
+            presenter: { _, callback in paints.append(callback) }, deadline: { _ in }) { frame, display in
+                XCTAssertEqual(child.frame.size, frame.size,
+                               "setFrame(display:true) can flush before returning")
+                XCTAssertEqual(web.autoresizingMask, [], "Do not apply the native delta twice")
+                commits.append(frame.size)
+                window.setFrame(frame, display: display)
+            }
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 800, height: 500), display: true))
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), display: true))
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 900, height: 600), display: true))
+        XCTAssertEqual(paints.count, 1)
+        paints.removeFirst()()
+        try await compatibilityWait { paints.count == 1 }
+        XCTAssertEqual(paints.count, 1)
+        paints.removeFirst()()
+        XCTAssertEqual(commits, [NSSize(width: 800, height: 500), NSSize(width: 900, height: 600)])
+        XCTAssertFalse(resize.isPreparing)
+        XCTAssertEqual(web.frame.size, window.contentView?.bounds.size)
+        XCTAssertTrue(web.autoresizesSubviews)
+    }
+
+    func testTimeoutRestoresNativeSizingAndIgnoresLatePaint() {
+        let (host, web) = fixture()
+        let window = modelWindow(host)
+        defer { window.contentView = nil; host.removePage(); window.close() }
+        var paints: [@MainActor @Sendable () -> Void] = []
+        var deadlines: [@MainActor @Sendable () -> Void] = []
+        var commits = 0
+        let resize = WindowResizePreparation(window: window,
+            presenter: { _, callback in paints.append(callback) },
+            deadline: { deadlines.append($0) }) { frame, display in
+                commits += 1
+                window.setFrame(frame, display: display)
+            }
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 800, height: 500), display: true))
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), display: true))
+        deadlines.removeFirst()()
+        XCTAssertEqual(window.frame.size, NSSize(width: 1000, height: 700))
+        XCTAssertTrue(web.autoresizesSubviews)
+        XCTAssertEqual(web.autoresizingMask, [.width, .height])
+        XCTAssertTrue(resize.bypassForDrag)
+        paints.removeFirst()()
+        XCTAssertEqual(commits, 1, "A late paint cannot restore the stale frame")
+        XCTAssertFalse(resize.request(frame: NSRect(x: 0, y: 0, width: 1100, height: 700), display: true))
+        resize.endLiveResize()
+        XCTAssertFalse(resize.bypassForDrag)
+    }
+
+    func testProgrammaticFrameSupersedesPendingNativeResize() {
+        let (host, web) = fixture()
+        let window = modelWindow(host)
+        defer { window.contentView = nil; host.removePage(); window.close() }
+        var paint: (@MainActor @Sendable () -> Void)?
+        var commits = 0
+        let resize = WindowResizePreparation(window: window,
+            presenter: { _, callback in paint = callback }, deadline: { _ in }) { _, _ in commits += 1 }
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 800, height: 500), display: true))
+        let requested = NSRect(x: 20, y: 30, width: 700, height: 450)
+        window.setFrame(requested, display: false)
+        paint?()
+        XCTAssertEqual(commits, 0)
+        XCTAssertEqual(window.frame, requested)
+        XCTAssertEqual(web.frame.size, host.bounds.size)
+        XCTAssertFalse(resize.isPreparing)
+    }
+
+    private func modelWindow(_ host: WebHost) -> ResizeModelWindow {
+        let window = ResizeModelWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                                       styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        return window
+    }
+}
+
+/// Simulates only admission values for deterministic queue tests. Never ordered in.
+private final class ResizeModelWindow: NSWindow {
+    override var isVisible: Bool { true }
+    override var inLiveResize: Bool { true }
 }

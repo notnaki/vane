@@ -8,6 +8,14 @@ import XCTest
 
 @MainActor final class WindowResizeLayoutTests: XCTestCase {
     func testPageViewportFollowsTheNativeFrameBeforeItsNextPresentation() async throws {
+        try await resizeFixture(capture: false)
+    }
+
+    func testPaintedPageFollowsNativeResizeProposals() async throws {
+        try await resizeFixture(capture: true)
+    }
+
+    private func resizeFixture(capture: Bool) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -34,7 +42,6 @@ import XCTest
             window.orderFrontRegardless()
             app.activate(ignoringOtherApps: true)
             defer {
-                print("Resize fixture: active=\(app.isActive) key=\(window.isKeyWindow) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) pageWindow=\(tab.web.window === window) pageBounds=\(tab.web.bounds) hostBounds=\(host.bounds)")
                 store.librarySwipeMonitor.remove()
                 store.spaceGesture.monitor.remove()
                 window.contentView = nil
@@ -46,55 +53,55 @@ import XCTest
             }
             try await compatibilityWait {
                 host.layoutSubtreeIfNeeded()
-                // Geometry needs the owned visible tree, without requiring the
-                // CLI test host to win keyboard focus from another application.
                 return app.isRunning && window.isVisible
                     && window.occlusionState.contains(.visible) && tab.web.window === window
                     && tab.web.bounds.width > 100
             }
-            tab.web.loadHTMLString("<html><title>Resize ready</title><style>body{margin:0;background:#17324d}aside{position:fixed;right:0;top:0;width:100px;height:100vh;background:#f04020}</style><body><aside></aside></body></html>", baseURL: nil)
+            let html = "<html><title>Resize ready</title><style>body{margin:0;background:#17324d}aside{position:fixed;right:0;top:0;width:100px;height:100vh;background:#f04020}</style><body><aside></aside></body></html>"
+            tab.web.loadHTMLString(html, baseURL: nil)
             try await compatibilityWait { !tab.web.isLoading && tab.web.title == "Resize ready" }
-            var ancestor: NSView? = tab.web
-            while let view = ancestor {
-                print("RESIZE_TREE type=\(type(of: view)) frame=\(view.frame) mask=\(view.autoresizingMask.rawValue) autoSubviews=\(view.autoresizesSubviews) translates=\(view.translatesAutoresizingMaskIntoConstraints)")
-                ancestor = view.superview
-            }
-            let paths = ProcessInfo.processInfo.environment["VANE_RESIZE_DRAWING"] == "native-drag"
-                ? [false] : [false, true]
-            for direct in paths {
-                let root: NSView = direct ? WebHost(tab.web) : host
+            for direct in [false, true] {
+                // The control has an independent page. Borrowing a page from a
+                // retained SwiftUI root lets a later update mount it back there.
+                let page: WKWebView
+                let root: NSView
+                if direct {
+                    let configuration = WKWebViewConfiguration()
+                    configuration.websiteDataStore = .nonPersistent()
+                    PageRendering.configure(configuration.preferences)
+                    page = WKWebView(frame: .zero, configuration: configuration)
+                    root = WebHost(page)
+                    root.clipsToBounds = true
+                } else {
+                    page = tab.web
+                    root = host
+                }
                 window.contentView = root
                 root.layoutSubtreeIfNeeded()
-                try await presentation(tab.web)
-                if ProcessInfo.processInfo.environment["VANE_RESIZE_PIXELS"] == "1" {
-                    try await captureResizePixels(window, web: tab.web, direct: direct)
-                    continue
+                if direct {
+                    page.loadHTMLString(html, baseURL: nil)
+                    try await compatibilityWait { !page.isLoading && page.title == "Resize ready" }
                 }
-                for width: CGFloat in [1100, 800, 1200, 900, 1100, 900] {
-                    let started = ProcessInfo.processInfo.systemUptime
-                    window.setContentSize(NSSize(width: width, height: 600))
-                    let frameMS = (ProcessInfo.processInfo.systemUptime - started) * 1000
-                    let earlyWidth = tab.web.bounds.width
-                    print("RESIZE_VISIBLE direct=\(direct) bounds=\(tab.web.bounds) visible=\(tab.web.visibleRect)")
-                    if !direct && width == 1200 {
-                        var layer = tab.web.layer
-                        while let current = layer {
-                            print("RESIZE_LAYER type=\(type(of: current)) bounds=\(current.bounds) presented=\(String(describing: current.presentation()?.bounds)) masks=\(current.masksToBounds) mask=\(String(describing: current.mask?.bounds)) animations=\(current.animationKeys() ?? [])")
-                            layer = current.superlayer
-                        }
+                defer {
+                    if direct { page.stopLoading(); (root as? WebHost)?.removePage() }
+                }
+                try await presentation(page)
+                if capture {
+                    try await captureResizePixels(window, web: page, direct: direct)
+                } else {
+                    for width: CGFloat in [1100, 800, 1200, 900, 1100, 900] {
+                        window.setContentSize(NSSize(width: width, height: 600))
+                        let earlyWidth = page.bounds.width
+                        try await presentation(page)
+                        let viewport = try await page.evaluateJavaScript("window.innerWidth")
+                        let expected = direct ? width : width - 239
+                        XCTAssertEqual(earlyWidth, expected, accuracy: 1,
+                                       "Send WebKit its new viewport before waiting for its next presentation")
+                        XCTAssertEqual(try XCTUnwrap(viewport as? NSNumber).doubleValue, expected, accuracy: 1,
+                                       "The rendered document must use the requested viewport")
                     }
-                    try await presentation(tab.web)
-                    let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
-                    let viewport = try await tab.web.evaluateJavaScript("window.innerWidth")
-                    let expected = direct ? width : width - 239
-                    XCTAssertEqual(earlyWidth, expected, accuracy: 1,
-                                   "Send WebKit its new viewport before waiting for the next presentation")
-                    XCTAssertEqual(try XCTUnwrap(viewport as? NSNumber).doubleValue, expected, accuracy: 1,
-                                   "The rendered document must use the requested viewport")
-                    print("RESIZE_PRESENT direct=\(direct) request=\(width) early=\(earlyWidth) settled=\(tab.web.bounds.width) viewport=\(String(describing: viewport)) frameMS=\(frameMS) presentedMS=\(elapsed)")
                 }
             }
-
         } catch { failure = error }
         do { try await loop.close() }
         catch {
@@ -105,106 +112,55 @@ import XCTest
     }
 
     private func captureResizePixels(_ window: VaneWindow, web: WKWebView, direct: Bool) async throws {
-        let drawing = ProcessInfo.processInfo.environment["VANE_RESIZE_DRAWING"] ?? "ordinary"
+        // Diagnostic reference: the original geometry-only path must remain RED.
+        let baselineControl = ProcessInfo.processInfo.environment["VANE_RESIZE_BASELINE"] == "1"
+        try await compatibilityWait { NSApp.isActive && window.isKeyWindow }
+        let owner = ResizeCaptureOwner()
+        owner.maxWidth = window.frame.width
+        let observers = [
+            NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
+                object: window, queue: .main) { _ in MainActor.assumeIsolated { owner.interrupted = true } },
+            NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                object: NSApp, queue: .main) { _ in MainActor.assumeIsolated { owner.interrupted = true } },
+            NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification,
+                object: window, queue: .main) { _ in
+                    MainActor.assumeIsolated { owner.maxWidth = max(owner.maxWidth, window.frame.width) }
+                }
+        ]
+        defer { observers.forEach(NotificationCenter.default.removeObserver) }
         let sampler = ResizePixelSampler()
         try await sampler.start(window)
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
             let began = CACurrentMediaTime()
+            if !baselineControl {
+                window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.maxY))
+            }
+            defer { window.endPageResize() }
             let widths = Array(stride(from: 900, through: 1300, by: 40))
                 + Array(stride(from: 1260, through: 900, by: -40))
-            if drawing == "native-drag" {
-                let ended = XCTestExpectation(description: "Owned window native resize ends")
-                let token = NotificationCenter.default.addObserver(forName: NSWindow.didEndLiveResizeNotification,
-                    object: window, queue: .main) { _ in ended.fulfill() }
-                defer { NotificationCenter.default.removeObserver(token) }
-                print("RESIZE_NATIVE_READY window=\(window.windowNumber) frame=\(window.frame)")
-                guard await XCTWaiter.fulfillment(of: [ended], timeout: 25) == .completed else {
-                    throw NSError(domain: "NativeResizeDragTimeout", code: 1)
-                }
-                XCTAssertGreaterThan(abs(window.frame.width - 900), 50, "Exercise a real native edge drag")
-                try await compatibilityWait { !window.isPreparingPageResize }
-            }
-            for width in drawing == "native-drag" ? [] : widths {
+            for width in widths {
                 let deadline = ContinuousClock.now + .milliseconds(8)
                 let size = NSSize(width: width, height: 600)
-                if drawing == "production" {
-                    var frame = window.frame
-                    frame.size.width += size.width - (window.contentView?.bounds.width ?? window.frame.width)
-                    if !window.preparePageResize(frame: frame, display: true) { window.setContentSize(size) }
-                } else if drawing.hasPrefix("prepare") {
-                    // Diagnostic only: submit the next document viewport first,
-                    // then commit the matching native window geometry inside the
-                    // presentation callback, before WebKit's CA transaction closes.
-                    let viewport = NSSize(width: CGFloat(width) - (direct ? 0 : 239),
-                                          height: web.frame.height)
-                    let mask = web.autoresizingMask
-                    web.autoresizingMask = []
-                    let previousSize = web.frame.size
-                    let resizedChildren = web.autoresizesSubviews
-                    if drawing == "prepare-children-held" { web.autoresizesSubviews = false }
-                    let oldBounds = web.layer?.bounds
-                    let oldPosition = web.layer?.position
-                    var oldLayers: [(CALayer, CGRect, CGPoint)] = []
-                    func remember(_ layer: CALayer) {
-                        oldLayers.append((layer, layer.bounds, layer.position))
-                        layer.sublayers?.forEach(remember)
-                        if let mask = layer.mask { remember(mask) }
-                    }
-                    if drawing == "prepare-trace", width == 1260, let layer = web.layer {
-                        remember(layer)
-                    }
-                    web.setFrameSize(viewport)
-                    web.prepareContent(in: NSRect(origin: .zero, size: viewport))
-                    for (layer, oldBounds, oldPosition) in oldLayers
-                    where layer.bounds != oldBounds || layer.position != oldPosition {
-                        print("RESIZE_GEOMETRY direct=\(direct) layer=\(type(of: layer)) name=\(layer.name ?? "-") masks=\(layer.masksToBounds) bounds=\(oldBounds)->\(layer.bounds) position=\(oldPosition)->\(layer.position)")
-                    }
-                    let nextBounds = web.layer?.bounds
-                    let nextPosition = web.layer?.position
-                    if drawing == "prepare-held" {
-                        if let oldBounds { web.layer?.bounds = oldBounds }
-                        if let oldPosition { web.layer?.position = oldPosition }
-                    }
-                    do {
-                        try await presentation(web) {
-                            window.setContentSize(size)
-                            web.setFrameSize(viewport)
-                            if drawing == "prepare-held" {
-                                if let nextBounds { web.layer?.bounds = nextBounds }
-                                if let nextPosition { web.layer?.position = nextPosition }
-                            }
-                            if drawing == "prepare-children-held" {
-                                web.autoresizesSubviews = resizedChildren
-                                if resizedChildren { web.resizeSubviews(withOldSize: previousSize) }
-                            }
-                        }
-                    } catch {
-                        web.autoresizingMask = mask
-                        web.autoresizesSubviews = resizedChildren
-                        throw error
-                    }
-                    web.autoresizingMask = mask
-                    print("RESIZE_STEP direct=\(direct) width=\(width) time=\(CACurrentMediaTime()) web=\(web.frame.size) window=\(window.contentView?.frame.size ?? .zero)")
-                } else {
-                    window.setContentSize(size)
-                    if drawing == "flush" { CATransaction.flush() }
-                }
+                let accepted = baselineControl ? size : window.proposedPageResize(size)
+                window.setContentSize(accepted)
                 try await ContinuousClock().sleep(until: deadline)
             }
-            if drawing == "production" {
-                try await compatibilityWait { !window.isPreparingPageResize }
-            }
+            try await compatibilityWait { !window.isPreparingPageResize }
             let ended = CACurrentMediaTime()
             try await presentation(web)
             try await compatibilityWait { (sampler.frames.last?.time ?? 0) >= ended }
             try await sampler.stop()
-            try sampler.frames.saveImages(prefix: direct ? "native" : "browser")
+            let prefix = "\(direct ? "native" : "browser")-\(ProcessInfo.processInfo.processIdentifier)"
+            try sampler.frames.saveImages(prefix: prefix)
             let samples = sampler.frames.samples.filter { $0.time >= began && $0.time <= ended }
             XCTAssertGreaterThan(samples.count, 3, "Capture actual WindowServer frames during resizing")
-            let gaps = samples.map(\.gap)
-            print("RESIZE_PIXELS drawing=\(drawing) direct=\(direct) duration=\(ended - began) baselineGap=\(baseline.gap) gaps=\(gaps) worstTime=\(samples.max(by: { $0.gap < $1.gap })?.time ?? 0)")
-            XCTAssertLessThanOrEqual(gaps.max() ?? 0, baseline.gap + 2,
+            XCTAssertFalse(owner.interrupted, "Foreground admission was lost during the native resize capture")
+            XCTAssertGreaterThanOrEqual(owner.maxWidth, 1100, "The window must actually grow during capture")
+            XCTAssertEqual(window.frame.width, 900, accuracy: 1, "Commit the latest queued request")
+            let maximum = samples.map(\.gap).max() ?? 0
+            print("RESIZE_PIXELS baselineControl=\(baselineControl) direct=\(direct) samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum)")
+            XCTAssertLessThanOrEqual(maximum, baseline.gap + 2,
                                      "The rendered right-edge marker must follow the visible window edge")
         } catch {
             try? await sampler.stop()
@@ -212,19 +168,21 @@ import XCTest
         }
     }
 
-    private func presentation(_ web: WKWebView, beforeCommit: (@MainActor @Sendable () -> Void)? = nil) async throws {
+    private func presentation(_ web: WKWebView) async throws {
         let selector = NSSelectorFromString("_doAfterNextPresentationUpdate:")
         guard web.responds(to: selector) else { throw XCTSkip("Presentation diagnostic unavailable") }
         let presented = XCTestExpectation(description: "WebKit presents its next viewport")
-        let completion: @convention(block) () -> Void = {
-            MainActor.assumeIsolated { beforeCommit?() }
-            presented.fulfill()
-        }
+        let completion: @convention(block) () -> Void = { presented.fulfill() }
         _ = web.perform(selector, with: completion)
         guard await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed else {
             throw NSError(domain: "ResizePresentationTimeout", code: 1)
         }
     }
+}
+
+@MainActor private final class ResizeCaptureOwner {
+    var interrupted = false
+    var maxWidth: CGFloat = 0
 }
 
 @MainActor private final class ResizePixelSampler: NSObject, SCStreamOutput {
@@ -281,8 +239,11 @@ import XCTest
         let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
         guard let rectDictionary = info?.first?[.contentRect] as? NSDictionary,
               let rect = CGRect(dictionaryRepresentation: rectDictionary as CFDictionary),
-              let factor = info?.first?[.scaleFactor] as? NSNumber else { return }
+              let factor = info?.first?[.scaleFactor] as? NSNumber,
+              let contentScale = info?.first?[.contentScale] as? NSNumber else { return }
         let scale = CGFloat(factor.doubleValue)
+        let pixelsPerPoint = factor.doubleValue * contentScale.doubleValue
+        guard pixelsPerPoint.isFinite, pixelsPerPoint > 0 else { return }
         let valid = CGRect(x: rect.minX * scale, y: rect.minY * scale,
                            width: rect.width * scale, height: rect.height * scale)
             .intersection(CGRect(x: 0, y: 0, width: width, height: height))
@@ -300,20 +261,21 @@ import XCTest
                 lastRed = x
             }
         }
-        // The CSS marker is 100 points wide. Normalize by its captured width so
-        // stream scaling and letterboxing cannot manufacture a resize gap.
+        // Use the stream's point-to-pixel scale. A prepared wider viewport can
+        // legitimately clip part of the marker before the window grows; dividing
+        // by that partial marker width would inflate the card's normal margin.
         // Losing the marker during a shrink is also a stale viewport; retain that
         // frame rather than silently excluding it from the measured sequence.
         let gap: Double
-        if let firstRed, let lastRed, let rightWindow, lastRed > firstRed {
-            gap = Double(rightWindow - lastRed) * 100 / Double(lastRed - firstRed + 1)
+        if let lastRed, let rightWindow {
+            gap = Double(rightWindow - lastRed) / pixelsPerPoint
         } else {
             gap = 10_000
         }
         let snapshot = frames.needsImage(for: gap)
             ? ResizePixelFrames.Image(data: Data(bytes: bytes, count: CVPixelBufferGetBytesPerRow(pixel) * height),
                                       width: width, height: height, stride: CVPixelBufferGetBytesPerRow(pixel)) : nil
-        if snapshot != nil { print("RESIZE_CAPTURE_BOUND time=\(time) rect=\(valid) red=\(String(describing: firstRed))...\(String(describing: lastRed)) right=\(String(describing: rightWindow)) gap=\(gap)") }
+        if snapshot != nil { print("RESIZE_CAPTURE_BOUND time=\(time) rect=\(valid) red=\(String(describing: firstRed))...\(String(describing: lastRed)) right=\(String(describing: rightWindow)) gap=\(gap) screen=\(String(describing: info?.first?[.screenRect]))") }
         if frames.last == nil { print("RESIZE_CAPTURE info=\(String(describing: info?.first))") }
         frames.append(time: time, gap: gap, image: snapshot)
     }
