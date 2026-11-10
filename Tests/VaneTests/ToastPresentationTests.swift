@@ -37,6 +37,18 @@ private final class ToastPresentationHostingView: NSHostingView<AnyView> {
 
     func testActiveToastKeepsItsActionAndHoverAcrossSidebarAndLibraryChanges() async throws {
         let (store, window, host) = fixture()
+        // This test holds model hover independently of the physical pointer. Keep
+        // real AppKit hover exits from competing with that synthetic hold as the
+        // pill moves between its sidebar, page, and Library slots.
+        let screen = try XCTUnwrap(window.screen ?? NSScreen.main).visibleFrame.insetBy(dx: 20, dy: 20)
+        let origins = [CGPoint(x: screen.minX, y: screen.minY),
+                       CGPoint(x: screen.maxX - window.frame.width, y: screen.minY),
+                       CGPoint(x: screen.minX, y: screen.maxY - window.frame.height),
+                       CGPoint(x: screen.maxX - window.frame.width, y: screen.maxY - window.frame.height)]
+        let origin = try XCTUnwrap(origins.first {
+            !CGRect(origin: $0, size: CGSize(width: 500, height: 180)).contains(NSEvent.mouseLocation)
+        }, "The synthetic hover fixture needs a toast area away from the physical pointer")
+        window.setFrameOrigin(origin)
         var actions = 0
         Toasts.show("Saved transition fixture with a long title", action: ("Open", { actions += 1 }), in: store)
         let toast = try XCTUnwrap(Toasts.shared.current)

@@ -211,6 +211,10 @@ partial archives are removed rather than installed. An update already installed 
 waiting for **Restart** can finish without another update download. Manual checks and
 retries do not wait for the automatic check's backoff interval.
 
+The update status pill is shared across Spaces and profiles, including when the
+destination has an open command bar. Its current Update, Retry, or Restart action
+remains available there.
+
 ## Search and history
 
 **Instant Links** uses **Shift+Return** in the address or new-tab bar to open the

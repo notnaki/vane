@@ -618,11 +618,12 @@ struct BrowserPaletteOverlay: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
+    @ObservedObject private var sidebar = SidebarWidth.shared
 
     var body: some View {
         ZStack {
             if let mode = store.palette {
-                PaletteView(mode: mode) {
+                PaletteView(ownsAccessibilityModal: false, mode: mode) {
                     store.palette = nil
                     store.focusPage()
                 }
@@ -630,6 +631,21 @@ struct BrowserPaletteOverlay: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottomLeading) {
+            if store.palette != nil {
+                // A profile can retain an open command bar while parked. App update
+                // status belongs above its scrim, with the live action still reachable.
+                // ToastPresentation covers the ordinary host while search is open.
+                ToastHost(stickyOnly: true)
+                    .frame(width: sidebar.width)
+                    .padding(.leading, store.sidebarShown || store.sidebarPeeking ? 0 : 16 - Look.inset)
+                    .padding(.bottom, store.sidebarShown || store.sidebarPeeking
+                             ? Look.footer + Look.footerInset + 2 * Look.inset : 16)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(store.palette == nil ? [] : .isModal)
+        .accessibilityHidden(store.palette == nil)
         // Keep search's fade out of the sidebar's disabled-state transaction.
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
                    value: store.palette == nil)
