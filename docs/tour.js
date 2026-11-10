@@ -3,11 +3,15 @@ const captures = [...document.querySelectorAll('[data-capture]')];
 const explanation = document.querySelector('#tour-explanation');
 const panel = document.querySelector('#tour-panel');
 const descriptions = {
-  spaces: 'An Explore Space keeps Wikipedia, MDN, and GitHub pages together, with Work and Personal a click away.',
-  split: 'Wikipedia’s Architecture and Industrial design articles, open side by side in a native Vane Split View.',
-  little: 'MDN Web Docs in Little Vane, alongside Wikipedia in the Explore Space. Open a link without leaving your main window.'
+  spaces: 'Keep research, projects, and everyday pages together in a Space.',
+  split: 'Bring two pages together without switching windows.',
+  little: 'Take a quick look in Little Vane, then return to your main window.'
 };
+let tourMotion;
+const tourReduceMotion=matchMedia('(prefers-reduced-motion: reduce)');
+tourReduceMotion.addEventListener('change',()=>{ if(tourReduceMotion.matches) tourMotion?.finish(); });
 function select(name, updateHash = true) {
+  tourMotion?.cancel();
   const feature = tabs.some(tab => tab.dataset.feature === name) ? name : 'spaces';
   tabs.forEach(tab => {
     const selected = tab.dataset.feature === feature;
@@ -19,6 +23,9 @@ function select(name, updateHash = true) {
     capture.classList.toggle('is-active', selected);
     capture.setAttribute('aria-hidden', String(!selected));
   });
+  if (feature === 'little' && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    tourMotion = document.querySelector('[data-capture="little"] .capture-floating').animate([{transform:'translate(16px,6px)'},{transform:'translate(0,0)'}],{duration:260,easing:'cubic-bezier(.16,1,.3,1)'});
+  }
   panel.setAttribute('aria-labelledby', 'tab-' + feature);
   explanation.textContent = descriptions[feature];
   if (updateHash) history.replaceState(null, '', '#' + feature);
