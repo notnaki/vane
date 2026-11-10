@@ -4,8 +4,12 @@ import Darwin
 
 enum BackupError: LocalizedError {
     case invalid(String), futureVersion, tooLarge, storage(String), saveFailed, recoveryFailed(String)
+    case passwordRequired, emptyPassword, unlockFailed
     var errorDescription: String? {
         switch self {
+        case .passwordRequired: "Enter the password used to encrypt this backup."
+        case .emptyPassword: "Enter a backup password, or explicitly choose Export Without Password."
+        case .unlockFailed: "The backup could not be unlocked. Check the password; the file may also be damaged."
         case .invalid(let detail): "This backup cannot be restored: \(detail)"
         case .futureVersion: "This backup needs a newer version of Vane."
         case .tooLarge: "This backup exceeds the 512 MB backup limit. No data was omitted."
@@ -124,26 +128,27 @@ enum BackupCodec {
         }
         guard withinLimit([archive.preferences.count] + archive.files.map { $0.data.count }) else { throw BackupError.tooLarge }
     }
-    static func encode(_ archive: BackupArchive) throws -> Data {
+    static func encode(_ archive: BackupArchive, password: String? = nil) throws -> Data {
         try validate(archive)
         let encoder = PropertyListEncoder(); encoder.outputFormat = .binary
         let data = try encoder.encode(archive)
         guard data.count <= limit else { throw BackupError.tooLarge }
-        return data
+        return try password.map { try BackupEncryption.seal(data, password: $0) } ?? data
     }
-    static func decode(_ data: Data) throws -> BackupArchive {
+    static func decode(_ data: Data, password: String? = nil) throws -> BackupArchive {
         guard data.count <= limit else { throw BackupError.tooLarge }
+        let data = try BackupEncryption.isEncrypted(data) ? BackupEncryption.open(data, password: password) : data
         let archive: BackupArchive
         do { archive = try PropertyListDecoder().decode(BackupArchive.self, from: data) }
         catch { throw BackupError.invalid("The backup file could not be read.") }
         try validate(archive)
         return archive
     }
-    static func read(_ url: URL) throws -> BackupArchive { try decode(BackupIO.read(url)) }
-    static func write(_ archive: BackupArchive, to url: URL,
+    static func read(_ url: URL, password: String? = nil) throws -> BackupArchive { try decode(BackupIO.read(url), password: password) }
+    static func write(_ archive: BackupArchive, to url: URL, password: String? = nil,
                       writer: (Data, URL) throws -> Void = BackupIO.write) throws {
         try BackupIO.checkFile(url, mayBeMissing: true)
-        try writer(encode(archive), url)
+        try writer(encode(archive, password: password), url)
     }
 }
 

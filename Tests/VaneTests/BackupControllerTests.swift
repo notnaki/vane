@@ -27,6 +27,73 @@ import XCTest
         XCTAssertEqual(try f.library.validate(archive).profiles.count, 1)
         XCTAssertNotNil(controller.status)
     }
+
+    func testEncryptedExportRequiresPasswordBeforePreviewAndRestoresTheSnapshot() async throws {
+        let source = try fixture(), target = try fixture()
+        source.defaults.set("Incoming encrypted", forKey: "homepage")
+        target.defaults.set("Current", forKey: "homepage")
+        let file = source.root.appendingPathComponent("encrypted.vanebackup")
+        let exporter = BackupController(library: source.library, flush: { true }, restart: {})
+        await exporter.export(to: file, password: "secret backup password")
+        XCTAssertNil(exporter.error)
+        XCTAssertThrowsError(try BackupCodec.read(file))
+        let controller = BackupController(library: target.library, flush: { true }, restart: {})
+        await controller.previewRestore(from: file)
+        XCTAssertNil(controller.preview)
+        XCTAssertNotNil(controller.error)
+        await controller.previewRestore(from: file, password: "incorrect")
+        XCTAssertNil(controller.preview)
+        XCTAssertEqual(target.defaults.string(forKey: "homepage"), "Current")
+        await controller.previewRestore(from: file, password: "secret backup password")
+        XCTAssertNotNil(controller.preview)
+        XCTAssertNil(controller.error)
+        await controller.restorePreview()
+        XCTAssertEqual(try BackupRestore(library: target.library).recoverAtLaunch(), .restored)
+        XCTAssertEqual(target.defaults.string(forKey: "homepage"), "Incoming encrypted")
+    }
+
+    func testEmptyPasswordExportPreservesExistingDestination() async throws {
+        let f = try fixture(), file = f.root.appendingPathComponent("keep.vanebackup")
+        try Data("previous backup".utf8).write(to: file)
+        let controller = BackupController(library: f.library, flush: { true }, restart: {})
+        await controller.export(to: file, password: "")
+        XCTAssertNotNil(controller.error)
+        XCTAssertEqual(try Data(contentsOf: file), Data("previous backup".utf8))
+    }
+
+    func testUnlockRetryUsesFrozenBytesAndCancelKeepsLibraryUntouched() async throws {
+        let source = try fixture(), target = try fixture()
+        let file = source.root.appendingPathComponent("encrypted.vanebackup")
+        let archive = try source.library.capture(reason: .manual)
+        try BackupCodec.write(archive, to: file, password: "backup password")
+        target.defaults.set("Keep", forKey: "homepage")
+        let controller = BackupController(library: target.library, flush: { true }, restart: {})
+        var prompts = 0
+        await controller.previewRestore(from: file, passwordPrompt: { message in
+            prompts += 1
+            XCTAssertNil(message)
+            return nil
+        })
+        XCTAssertEqual(prompts, 1)
+        XCTAssertNil(controller.preview)
+        XCTAssertNil(controller.error)
+        XCTAssertEqual(target.defaults.string(forKey: "homepage"), "Keep")
+        prompts = 0
+        await controller.previewRestore(from: file, passwordPrompt: { message in
+            prompts += 1
+            if prompts == 1 {
+                XCTAssertNil(message)
+                try? Data("replaced source".utf8).write(to: file)
+                return "wrong password"
+            }
+            XCTAssertNotNil(message)
+            return "backup password"
+        })
+        XCTAssertEqual(prompts, 2)
+        XCTAssertEqual(controller.preview?.archive.id, archive.id)
+        XCTAssertNil(controller.error)
+        XCTAssertEqual(target.defaults.string(forKey: "homepage"), "Keep")
+    }
     func testPreviewCancelAndChangedSourceDoNotAffectStagedSnapshot() async throws {
         let source = try fixture(), target = try fixture()
         source.defaults.set("Incoming", forKey: "homepage")

@@ -471,8 +471,8 @@ enum PaletteMode {
 }
 
 
-/// A native anchor exposes the enclosing SwiftUI transition's presented opacity
-/// to the separately hosted Space preview, without a second animation clock.
+/// A native scrim anchor exposes its actual compositor opacity, including the
+/// enclosing search fade, for presentation diagnostics.
 private struct PaletteScrimSurface: NSViewRepresentable {
     let opacity: Double
     let gesture: SpaceGesture
@@ -1055,7 +1055,6 @@ private struct PaletteResultHover: ViewModifier {
                                                  geo.size.height - barHeight - Look.inset)
                                            : searchTop(geo.size.height)))
                     .animation(motion(Look.quick), value: rows.count)
-                    .animation(motion(Look.quick), value: sidebarLayout.stacked)
             }
             .onChange(of: geo.size.height, initial: true) { _, height in windowHeight = height }
         }

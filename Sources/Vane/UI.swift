@@ -404,6 +404,9 @@ private struct PageRecoveryView: View {
 /// tinted by the current space. Nothing here is opaque — `WindowGlass` is the only ground,
 /// so the desktop shows through everything the sidebar does not cover.
 struct BrowserWindow: View {
+    // BrowserWindowHost presents search above its native Space-swipe surfaces.
+    // Standalone SwiftUI hosts retain the inline presentation.
+    var presentsPalette = true
     @ObservedObject private var batterySaver = BatterySaver.shared
     @EnvironmentObject var store: TabStore
     @EnvironmentObject var profiles: ProfileManager
@@ -461,21 +464,7 @@ struct BrowserWindow: View {
                 SidebarHandle().offset(x: sidebar.width - SidebarHandle.hitTestWidth / 2)
                     .zIndex(1)
             }
-            // Last, so the search bar composites over the sidebar as well as the page.
-            ZStack {
-                if let mode = store.palette {
-                    PaletteView(mode: mode) { dismissPalette() }
-                        // The bar fades itself in; this is the way out — Escape and a click
-                        // on the scrim dissolve it rather than cutting to the page.
-                        .transition(.opacity)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Keep the fade transaction inside the persistent overlay. Opening search
-            // also disables the sidebar; those controls do not need to animate with it.
-            .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
-                       value: store.palette == nil)
-            .zIndex(2)
+            if presentsPalette { BrowserPaletteOverlay().zIndex(2) }
         }
         // The window is `.fullSizeContentView`, but SwiftUI still keeps a titlebar-sized
         // safe area at the top. Without this the sidebar's first row sits *below* the
@@ -638,11 +627,28 @@ struct BrowserWindow: View {
         window?.centreTrafficLights()
     }
 
-    /// Nothing to undo on dismiss: ⌘T makes no tab until the bar is submitted. The page takes
-    /// the keyboard back as the bar's field goes — see `TabStore.focusPage`.
-    private func dismissPalette() {
-        store.palette = nil
-        store.focusPage()
+}
+
+/// Shared by standalone SwiftUI windows and the native overlay above Space travel.
+struct BrowserPaletteOverlay: View {
+    @EnvironmentObject var store: TabStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    var body: some View {
+        ZStack {
+            if let mode = store.palette {
+                PaletteView(mode: mode) {
+                    store.palette = nil
+                    store.focusPage()
+                }
+                .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Keep search's fade out of the sidebar's disabled-state transaction.
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
+                   value: store.palette == nil)
     }
 }
 
@@ -1103,49 +1109,28 @@ struct TopRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
     private var layout: SidebarChromeLayout { SidebarChromeLayout(width: sidebar.width) }
-    private var compact: Bool { layout.compact }
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Group {
-            // Keep the lights and toggle on their original centre line. Navigation
-            // gets its own row when preserving the gaps would crowd the controls.
-            if layout.stacked {
-                VStack(spacing: 0) {
-                    HStack {
-                        Spacer().frame(width: Look.trafficLights)
-                        Spacer(minLength: 8)
-                        toggle
-                    }
-                    .frame(height: Look.topRow)
-                    HStack {
-                        Spacer(minLength: 0)
-                        NavButtons(tab: store.active, compact: compact)
-                    }
-                    .frame(height: Look.topRow)
-                }
-            } else {
-                HStack(spacing: compact ? 8 : 12) {
-                    Spacer().frame(width: Look.trafficLights)
-                    toggle
-                    Spacer(minLength: 0)
-                    NavButtons(tab: store.active, compact: compact)
-                }
-                .frame(height: Look.topRow)
-            }
+        HStack(spacing: layout.headerSpacing) {
+            Spacer().frame(width: Look.trafficLights)
+            if !layout.usesOverflow { toggle }
+            Spacer(minLength: 0)
+            NavButtons(tab: store.active, spacing: layout.navigationSpacing,
+                       toggleSidebar: layout.usesOverflow ? { store.toggleSidebar() } : nil)
         }
+        .frame(height: Look.topRow)
         .buttonStyle(TactileButtonStyle())
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: compact)
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
-                   value: layout.stacked)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: layout.usesOverflow)
     }
 
     private var toggle: some View {
-        Button { store.toggleSidebar() } label: { Image(systemName: "sidebar.left") }
-            .frame(width: compact ? 22 : nil)
+        Button { store.toggleSidebar() } label: {
+            Image(systemName: "sidebar.left").modifier(NavigationTarget())
+        }
             .vaneTooltip("Toggle Sidebar", shortcut: Keybindings.binding(for: .toggleSidebar).display)
             .accessibilityLabel("Toggle Sidebar")
             .accessibilityValue(store.sidebarShown ? "Shown" : "Hidden")
@@ -1157,13 +1142,14 @@ struct TopRow: View {
 /// that as the window emptying out rather than as one tab going away.
 struct NavButtons: View {
     let tab: Tab?
-    var compact = false
+    var spacing: CGFloat = 6
+    var toggleSidebar: (() -> Void)?
 
     var body: some View {
         if let tab {
-            LiveNavButtons(tab: tab, compact: compact)
+            LiveNavButtons(tab: tab, spacing: spacing, toggleSidebar: toggleSidebar)
         } else {
-            NavGlyphs(tab: nil, back: false, forward: false, loading: false, compact: compact)
+            NavGlyphs(tab: nil, back: false, forward: false, loading: false, spacing: spacing, toggleSidebar: toggleSidebar)
         }
     }
 }
@@ -1172,10 +1158,11 @@ struct NavButtons: View {
 /// optional, and the disabled state above has no tab to observe.
 private struct LiveNavButtons: View {
     @ObservedObject var tab: Tab
-    var compact = false
+    var spacing: CGFloat = 6
+    var toggleSidebar: (() -> Void)?
     var body: some View {
         NavGlyphs(tab: tab, back: tab.canGoBack, forward: tab.canGoForward,
-                  loading: tab.loading, compact: compact)
+                  loading: tab.loading, spacing: spacing, toggleSidebar: toggleSidebar)
     }
 }
 
@@ -1184,21 +1171,24 @@ private struct NavGlyphs: View {
     let back: Bool
     let forward: Bool
     let loading: Bool
-    var compact = false
+    var spacing: CGFloat = 6
+    var toggleSidebar: (() -> Void)?
     /// One per glyph, and kept across redraws: the AppKit view the menu hangs off is
     /// reached through it, and a new holder every frame would lose that view.
     @StateObject private var backMenu = HoldMenu()
     @StateObject private var forwardMenu = HoldMenu()
+    @StateObject private var overflowMenu = ChromeMenuAnchor()
+    @Environment(\.isEnabled) private var enabled
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         // Icon-only, so each one carries its own label and tooltip — without them
         // VoiceOver announces three identical "button"s.
-        HStack(spacing: compact ? 2 : 6) {
+        HStack(spacing: spacing) {
             Button { tab?.back() } label: {
                 Image(systemName: "arrow.left")
-                    .modifier(NavigationTarget(compact: compact))
+                    .modifier(NavigationTarget())
             }
                 .vaneTooltip("Back", hint: "Hold for recent pages", shortcut: "⌘[")
                 .disabled(!back)
@@ -1209,7 +1199,7 @@ private struct NavGlyphs: View {
                 }
             Button { tab?.forward() } label: {
                 Image(systemName: "arrow.right")
-                    .modifier(NavigationTarget(compact: compact))
+                    .modifier(NavigationTarget())
             }
                 .vaneTooltip("Forward", hint: "Hold for recent pages", shortcut: "⌘]")
                 .disabled(!forward)
@@ -1217,20 +1207,40 @@ private struct NavGlyphs: View {
                 .holdMenu(forwardMenu, enabled: forward, named: "Show History") {
                     tab.flatMap { NavHistory.menu(for: $0, back: false) }
                 }
-            Button {
-                if loading { tab?.stop() }
-                else { tab?.reload() }
-            } label: {
-                Image(systemName: loading ? "xmark" : "arrow.clockwise")
-                    .contentTransition(reduceMotion || batterySaver.isActive ? .identity : .opacity)
-                    .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: loading)
-                    .modifier(NavigationTarget(compact: compact))
+            if let toggleSidebar {
+                Button {
+                    overflowMenu.show(NavigationOverflow.items(tab: tab, toggleSidebar: toggleSidebar),
+                                      title: "Navigation Actions", showsPointer: true)
+                } label: {
+                    Image(systemName: "ellipsis").modifier(NavigationTarget())
+                }
+                .background { ChromeMenuAnchorView(anchor: overflowMenu) }
+                .vaneTooltip("Navigation Actions", hint: "Reload and toggle sidebar")
+                .accessibilityLabel("Navigation Actions")
+                .onDisappear { dismissOverflow() }
+            } else {
+                Button {
+                    if loading { tab?.stop() }
+                    else { tab?.reload() }
+                } label: {
+                    Image(systemName: loading ? "xmark" : "arrow.clockwise")
+                        .contentTransition(reduceMotion || batterySaver.isActive ? .identity : .opacity)
+                        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: loading)
+                        .modifier(NavigationTarget())
+                }
+                .vaneTooltip(loading ? "Stop Loading" : "Reload Page", shortcut: loading ? nil : "⌘R")
+                .disabled(tab == nil)
+                .accessibilityLabel(loading ? "Stop Loading" : "Reload Page")
             }
-            .vaneTooltip(loading ? "Stop Loading" : "Reload Page", shortcut: loading ? nil : "⌘R")
-            .disabled(tab == nil)
-            .accessibilityLabel(loading ? "Stop Loading" : "Reload Page")
         }
         .buttonStyle(TactileButtonStyle())
+        .onChange(of: tab?.id) { dismissOverflow() }
+        .onChange(of: loading) { dismissOverflow() }
+        .onChange(of: enabled) { if !enabled { dismissOverflow() } }
+    }
+
+    private func dismissOverflow() {
+        if overflowMenu.isPresented { ChromeMenu.shared.dismiss() }
     }
 }
 
@@ -1238,7 +1248,6 @@ private struct NavGlyphs: View {
 /// pill's trailing edge. Equal slots also keep Stop from moving its neighbours.
 private struct NavigationTarget: ViewModifier {
     @Environment(\.spaceChromeTheme) private var chromeTheme
-    var compact: Bool
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
@@ -1246,7 +1255,7 @@ private struct NavigationTarget: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .frame(width: compact ? 20 : Look.control, height: Look.control)
+            .frame(width: Look.control, height: Look.control)
             .background(enabled && hovering ? chromeTheme.hovered : .clear,
                         in: .rect(cornerRadius: Look.cardRadius))
             .contentShape(.rect)

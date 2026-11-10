@@ -924,13 +924,34 @@ extension VaneWindow {
     }
 }
 
-/// One native hosting view per profile visited in this window. Hiding a host preserves
-/// its SwiftUI state and WebKit backing frames; returning only unhides it. Each root
-/// stays bound to its own store, so gestures and shortcuts cannot leak into
-/// another profile. Parked stores have no window, and their event monitors ignore input.
+/// An empty search layer must pass clicks through to the page and sidebar.
+private final class BrowserPaletteLayer: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
+}
+
+private final class BrowserPaletteHost: NSHostingView<AnyView> {
+    weak var store: TabStore?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard store?.palette != nil else { return nil }
+        return super.hitTest(point)
+    }
+}
+
+/// Retained native hosts per profile preserve SwiftUI state and WebKit backing
+/// frames. Search has its own layer above both live chrome and native Space travel.
 @MainActor final class BrowserWindowHost: NSView {
     let footerPresentation = SpaceFooterPresentation()
-    private var hosts: [ObjectIdentifier: NSView] = [:]
+    private struct ProfileHosts {
+        let content: NSView
+        let palette: BrowserPaletteHost
+        var views: [NSView] { [content, palette] }
+    }
+    private var hosts: [ObjectIdentifier: ProfileHosts] = [:]
+    private let paletteLayer = BrowserPaletteLayer()
     private var current: ObjectIdentifier?
     private var subscription: AnyCancellable?
     private(set) var spaceSlide: ProfileSpaceSlide?
@@ -963,11 +984,16 @@ extension VaneWindow {
         // Idle surfaces are already above the live host. Re-adding one detaches its
         // backing layer until AppKit's next display turn, leaving hidden live rows blank.
         if slide.superview !== self {
-            addSubview(slide)
+            mountSpaceSlide(slide)
             // A cold insertion has no committed backing hierarchy yet. Complete that
             // AppKit display pass before track/start transfers visibility from live rows.
             if slide.layer?.superlayer !== layer { window?.displayIfNeeded() }
         }
+    }
+
+    /// Warm preparations and cold gestures share the same native stacking order.
+    func mountSpaceSlide(_ slide: ProfileSpaceSlide) {
+        addSubview(slide, positioned: .below, relativeTo: paletteLayer)
     }
 
     func didFinishSpaceSlide(_ slide: ProfileSpaceSlide) {
@@ -998,6 +1024,9 @@ extension VaneWindow {
 
     init(shown: ShownStore) {
         super.init(frame: .zero)
+        paletteLayer.frame = bounds
+        paletteLayer.autoresizingMask = [.width, .height]
+        addSubview(paletteLayer)
         subscription = shown.$store.sink { [weak self] store in self?.show(store) }
     }
 
@@ -1010,58 +1039,59 @@ extension VaneWindow {
         // Profile deletion can release a parked store. Do not keep its interface alive.
         let kept = Set(TabStore.all.map(ObjectIdentifier.init)).union([id])
         for stale in Array(hosts.keys) where !kept.contains(stale) {
-            hosts.removeValue(forKey: stale)?.removeFromSuperview()
+            hosts.removeValue(forKey: stale)?.views.forEach { $0.removeFromSuperview() }
         }
-        let host: NSView
+        let host: ProfileHosts
         if let existing = hosts[id] { host = existing }
         else {
-            let profileHost = BrowserHostingView(rootView: BrowserWindow()
+            let content = BrowserHostingView(rootView: BrowserWindow(presentsPalette: false)
                 .environmentObject(store)
                 .environmentObject(ProfileManager.shared)
                 .environment(\.spaceFooterPresentation, footerPresentation)
                 .font(Look.text))
             // The outer native container supplies the frame; do not separately
             // measure minimum, ideal and maximum sizes on each resize.
-            profileHost.sizingOptions = []
-            host = profileHost
+            content.sizingOptions = []
+            let palette = BrowserPaletteHost(rootView: AnyView(BrowserPaletteOverlay()
+                .environmentObject(store)
+                .environmentObject(ProfileManager.shared)
+                .spaceChrome(store)
+                .vaneMotionPolicy()
+                .font(Look.text)
+                .ignoresSafeArea()))
+            palette.store = store
+            palette.sizingOptions = []
+            host = ProfileHosts(content: content, palette: palette)
             hosts[id] = host
         }
         let departing = current.flatMap { hosts[$0] }
-        host.frame = bounds
-        host.autoresizingMask = [.width, .height]
-        if host.superview !== self {
-            addSubview(host, positioned: .below, relativeTo: spaceSlide)
+        for view in host.views {
+            view.frame = bounds
+            view.autoresizingMask = [.width, .height]
         }
-        // Detaching a cached WebKit tree discards its ready backing frame and forces
-        // another paint on return. Keep parked roots mounted, outside input/AX, just
-        // as WebHost keeps pages behind the selected tab.
+        if host.content.superview !== self {
+            addSubview(host.content, positioned: .below, relativeTo: (spaceSlide as NSView?) ?? paletteLayer)
+        }
+        if host.palette.superview !== paletteLayer { paletteLayer.addSubview(host.palette) }
+        // Keep both trees mounted when parking a profile, including a typed query.
         if let departing, let holder = window?.firstResponder as? NSView,
-           holder.isDescendant(of: departing) {
+           departing.views.contains(where: { holder.isDescendant(of: $0) }) {
             window?.makeFirstResponder(nil)
         }
-        departing?.isHidden = true
-        host.isHidden = false
+        departing?.views.forEach { $0.isHidden = true }
+        host.views.forEach { $0.isHidden = false }
         current = id
     }
 }
 
-/// Native travel sits above the SwiftUI search overlay. Multiply only its captured
-/// content by the scrim colour; its transparent ground is already dimmed underneath.
+/// Native previews use the same theme as live chrome. The search overlay and its
+/// scrim composite above them, including during search's appearance/dismissal fade.
 private struct NativeSpacePreview: View {
     let preview: SpacePreviewList
     let scope: SidebarNativeReadinessScope
     let theme: SpaceChromeTheme
-    @ObservedObject var dimming: NativeSpacePreviewDimming
 
     var body: some View {
-        if dimming.opacity > 0 {
-            content.colorMultiply(Color(white: 1 - dimming.opacity))
-        } else {
-            content
-        }
-    }
-
-    private var content: some View {
         preview.equatable()
             .environment(\.sidebarNativeReadinessScope, scope)
             .environment(\.spaceChromeTheme, theme)
@@ -1070,16 +1100,9 @@ private struct NativeSpacePreview: View {
     }
 }
 
-@MainActor private final class NativeSpacePreviewDimming: ObservableObject {
-    @Published var opacity: Double
-    init(opacity: Double) { self.opacity = opacity }
-}
-
 /// Keep the same two sidebar surfaces on a native track from finger movement through
 /// landing, including page selection underneath it and a profile host handoff.
 @MainActor final class ProfileSpaceSlide: NSView {
-    private let previewDimming: NativeSpacePreviewDimming
-    private var dimmingLink: CADisplayLink?
     private(set) var outgoing: NSView
     private var incoming: NSView
     private var direction: Int
@@ -1117,8 +1140,6 @@ private struct NativeSpacePreview: View {
 
     init(frame: NSRect, outgoing: SpacePreviewList, incoming: SpacePreviewList,
          drag: CGFloat, direction: Int, source: TabStore, includesFavorites: Bool, travelWidth: CGFloat) {
-        let dimming = NativeSpacePreviewDimming(opacity: source.spaceGesture.presentedPaletteScrimOpacity)
-        previewDimming = dimming
         requiresNativePopulation = NativeCachedSidebarBatchesExperiment.enabled
         let outgoingScope = SidebarNativeReadinessScope(store: source, spaceID: outgoing.space.id, surfaceID: UUID())
         let incomingScope = SidebarNativeReadinessScope(store: source, spaceID: incoming.space.id, surfaceID: UUID())
@@ -1129,9 +1150,9 @@ private struct NativeSpacePreview: View {
             ?? source.profile.colorHex
         let incomingTheme = SpaceChromeTheme(space: incoming.space, fallback: incomingFallback)
         let outgoingHost = NSHostingView(rootView: NativeSpacePreview(
-            preview: outgoing, scope: outgoingScope, theme: outgoingTheme, dimming: dimming))
+            preview: outgoing, scope: outgoingScope, theme: outgoingTheme))
         let incomingHost = NSHostingView(rootView: NativeSpacePreview(
-            preview: incoming, scope: incomingScope, theme: incomingTheme, dimming: dimming))
+            preview: incoming, scope: incomingScope, theme: incomingTheme))
         // Both captures have an explicit native frame. Intrinsic/min/max fitting
         // probes otherwise lay out the frozen rows again during window layout.
         outgoingHost.sizingOptions = []
@@ -1189,7 +1210,6 @@ private struct NativeSpacePreview: View {
         // Both keep this overlay until the arriving sidebar acknowledges its rest state.
         guard (!finished || completingSelection), destination !== store else { return }
         destination = store
-        updatePreviewDimming()
         store.spaceSwiping = true
         store.spaceGesture.outgoing = originPreview
         store.spaceGesture.neighbour = preparedTarget
@@ -1278,7 +1298,6 @@ private struct NativeSpacePreview: View {
     /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
     func track(drag: CGFloat) {
         guard isActive else { return }
-        beginPreviewDimming()
         lastPublishedDrag = drag
         let now = ProcessInfo.processInfo.systemUptime
         if let previous = lastTracking {
@@ -1326,7 +1345,6 @@ private struct NativeSpacePreview: View {
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
-        beginPreviewDimming()
         self.completion = completion
         restingSpaceID = returning ? preparedOrigin.id : targetID
         let animationID = UUID()
@@ -1422,25 +1440,6 @@ private struct NativeSpacePreview: View {
         publishProgress(presentation.frame.minX - contentInset)
     }
 
-    private func beginPreviewDimming() {
-        updatePreviewDimming()
-        guard dimmingLink == nil, let screen = window?.screen ?? NSScreen.main else { return }
-        let link = screen.displayLink(target: self, selector: #selector(advancePreviewDimming(_:)))
-        let rate = Float(screen.maximumFramesPerSecond)
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
-        dimmingLink = link
-        link.add(to: .main, forMode: .common)
-    }
-
-    @objc private func advancePreviewDimming(_ link: CADisplayLink) { updatePreviewDimming() }
-
-    private func updatePreviewDimming() {
-        let opacity = (destination ?? source)?.spaceGesture.presentedPaletteScrimOpacity ?? 0
-        if abs(previewDimming.opacity - opacity) > 0.0001 {
-            Motion.instant { previewDimming.opacity = opacity }
-        }
-    }
-
     private func publishProgress(_ drag: CGFloat) {
         lastPublishedDrag = drag
         guard let window else { return }
@@ -1474,8 +1473,6 @@ private struct NativeSpacePreview: View {
 
     /// An unused idle surface has never owned the gesture's visibility state.
     func discardPreparation() {
-        dimmingLink?.invalidate()
-        dimmingLink = nil
         finished = true
         finishGround?(source?.swipeSpace)
         finishGround = nil
@@ -1588,8 +1585,6 @@ private struct NativeSpacePreview: View {
     private func retire() {
         guard !retired else { return }
         retired = true
-        dimmingLink?.invalidate()
-        dimmingLink = nil
         SidebarNativeReadinessCoordinator.shared.removeObservation(retirementReadinessObservation)
         retirementReadinessObservation = nil
         retirementTimeout?.cancel()
