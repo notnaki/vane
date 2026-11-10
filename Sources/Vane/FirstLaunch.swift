@@ -49,8 +49,9 @@ import SwiftUI
         guard needed, !isPresenting else { return false }
         let store = Windows.main ?? Windows.open()
         guard let host = store.window else { return false }
+        let setup = FirstLaunchSetup(store: store, finish: { finish(store: store, host: host) })
         let welcome = FirstLaunchPresentation(host: host, content: AnyView(
-            FirstLaunchView(store: store) { finish(store: store, host: host) }
+            FirstLaunchView(setup: setup)
         ), onHostClose: { finish(store: store, host: host, showBrowser: false) })
         presentation = welcome
         welcome.show()
@@ -59,25 +60,32 @@ import SwiftUI
 
     private static func finish(store: TabStore, host: NSWindow, showBrowser: Bool = true) {
         guard let welcome = presentation else { return }
+        guard showBrowser else {
+            welcome.close()
+            presentation = nil
+            return
+        }
         state.complete()
         needed = false
-        welcome.close()
-        presentation = nil
-        guard showBrowser else { return }
-        host.makeKeyAndOrderFront(nil)
-        // Leave the dismissal event behind before offering another dialog.
-        Task { @MainActor in
+        welcome.closeAndContinue {
+            host.makeKeyAndOrderFront(nil)
             URLHandling.promptIfNotDefaultOnce()
             if store.current == nil, store.palette == nil { store.openPalette(.newTab) }
         }
+        presentation = nil
     }
 }
 
 /// Bundled captures of the real browser, and the exact V from its shipped icon SVG.
 @MainActor enum WelcomeArtwork {
+    static let icon = load("WelcomeIcon", extension: "png")
     static let logo = load("VaneLogo", extension: "pdf")
     static let search = load("Search", extension: "png")
     static let spaces = load("Spaces", extension: "png")
+
+    static func engineIcon(_ engine: SearchEngine) -> NSImage {
+        load("Search-" + engine.id, extension: "png")
+    }
 
     private static func load(_ name: String, extension ext: String) -> NSImage {
         guard let url = AppResources.bundle.url(forResource: name, withExtension: ext, subdirectory: "WelcomeAssets"),

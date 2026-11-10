@@ -531,9 +531,13 @@ enum ArcImport {
         var vaults: [String: Vault] = [:]
         var routing: ArcLinkRouting? = nil
         var routingUnavailable = false
+        /// Onboarding confirms these exact library snapshots along with the sidebar.
+        /// nil preserves the menu import's ordinary read-at-commit behavior.
+        var reviewedLibrary: [String: BrowserImport.Source]? = nil
 
         /// Arc's `User Data`, where the Chromium half of the installation lives.
         var userData: URL { root.appendingPathComponent("User Data") }
+        var requiresKey: Bool { passwordCount > 0 || cookieCount > 0 }
         var passwordCount: Int { vaults.values.reduce(0) { $0 + $1.logins.filter { !$0.blocked && !$0.value.isEmpty }.count } }
         var cookieCount: Int { vaults.values.reduce(0) { $0 + $1.cookies.count } }
         var pinnedCount: Int { sidebar.spaces.reduce(0) { $0 + ArcSidebar.flatten($1.pinned).count } }
@@ -555,7 +559,7 @@ enum ArcImport {
         var locked = 0
         /// Rows that came out in the clear and the keychain would not take.
         var refused = 0
-        /// Files Arc still has that would not open at all — Full Disk Access, most likely.
+        /// Source data files that could not be read; not necessarily a privacy denial.
         var unreadable = 0
         /// True when the keychain would not give up Arc's key, so the two things that need
         /// it were skipped wholesale rather than one row at a time.
@@ -654,9 +658,25 @@ enum ArcImport {
     /// JSON parsing and every SQLite snapshot stay on the worker, including large Arc
     /// sidebars. Only the completed immutable scan returns to the UI.
     @MainActor static func scan(_ root: URL) async -> Scan? {
-        await Task.detached(priority: .userInitiated) {
-            guard let data = try? Data(contentsOf: root.appendingPathComponent("StorableSidebar.json")),
-                  let sidebar = ArcSidebar.parse(data) else { return nil as Scan? }
+        try? await checkedScan(root)
+    }
+
+    /// A missing sidebar is an ordinary library-only installation. A sidebar that
+    /// exists but cannot be read must be disclosed before importing the library.
+    @MainActor static func checkedScan(_ root: URL) async throws -> Scan? {
+        try await Task.detached(priority: .userInitiated) { () throws -> Scan? in
+            let file = root.appendingPathComponent("StorableSidebar.json")
+            let data: Data
+            do { data = try Data(contentsOf: file) }
+            catch {
+                let failure = error as NSError
+                if failure.domain == NSCocoaErrorDomain && failure.code == NSFileReadNoSuchFileError { return nil }
+                throw BrowserImport.Failure("Arc Spaces and tabs couldn’t be read from StorableSidebar.json.",
+                    kind: BrowserImport.accessDenied(error) ? .accessDenied : .unavailable)
+            }
+            guard let sidebar = ArcSidebar.parse(data) else {
+                throw BrowserImport.Failure("Arc’s StorableSidebar.json couldn’t be understood. Spaces and tabs weren’t included.")
+            }
             let userData = root.appendingPathComponent("User Data")
             let listed = (try? Data(contentsOf: userData.appendingPathComponent("Local State")))
                 .map(ArcProfiles.parse) ?? []
@@ -953,9 +973,12 @@ enum ArcImport {
         var counts = Counts()
         counts.sidebarWarnings = scan.sidebar.warnings
         let ids = profileIDs(for: scan, counts: &counts)
-        let key = await Task.detached(priority: .userInitiated) { safeStorageKey() }.value
+        let key: Data?
+        if scan.requiresKey {
+            key = await Task.detached(priority: .userInitiated) { safeStorageKey() }.value
+        } else { key = nil }
         try Task.checkCancellation()
-        counts.noKey = key == nil
+        counts.noKey = scan.requiresKey && key == nil
 
         var gained: Set<UUID> = []
         var spaceIDs: [String: UUID] = [:]
@@ -1006,19 +1029,28 @@ enum ArcImport {
                 })
                 counts.cookies += published
             }
-            let (hasHistory, hasBookmarks) = await Task.detached(priority: .userInitiated) {
-                let fm = FileManager.default
-                return (fm.fileExists(atPath: vault.path.appendingPathComponent("History").path),
-                        fm.fileExists(atPath: vault.path.appendingPathComponent("Bookmarks").path))
-            }.value
             guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
-            guard hasHistory || hasBookmarks else { continue }
-            let profile = BrowserProfile(browser: "Arc", profile: directory, path: vault.path,
-                                         hasHistory: hasHistory, hasBookmarks: hasBookmarks)
-            // `importAll` reaches the right profile's Store because it was given one to reach;
-            // before Import from Arc it always wrote into whichever profile was on screen.
             do {
-                let done = try await BrowserImport.importAllAsync(from: profile, profileID: profileID, admission: admission)
+                let done: (history: Int, bookmarks: Int)
+                if let library = scan.reviewedLibrary {
+                    // Missing entries were unreadable at review time; don't silently
+                    // import a previously undisclosed category if it becomes readable.
+                    guard let source = library[directory] else { continue }
+                    let imported = try await Store.store(for: profileID).importBrowserDataAsync(
+                        visits: source.visits, bookmarks: source.bookmarks, admission: admission)
+                    done = (imported.history, imported.bookmarks.imported)
+                } else {
+                    let (hasHistory, hasBookmarks) = await Task.detached(priority: .userInitiated) {
+                        let fm = FileManager.default
+                        return (fm.fileExists(atPath: vault.path.appendingPathComponent("History").path),
+                                fm.fileExists(atPath: vault.path.appendingPathComponent("Bookmarks").path))
+                    }.value
+                    guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
+                    guard hasHistory || hasBookmarks else { continue }
+                    let profile = BrowserProfile(browser: "Arc", profile: directory, path: vault.path,
+                                                 hasHistory: hasHistory, hasBookmarks: hasBookmarks)
+                    done = try await BrowserImport.importAllAsync(from: profile, profileID: profileID, admission: admission)
+                }
                 counts.history += done.history
                 counts.bookmarks += done.bookmarks
             } catch is CancellationError {
@@ -1042,21 +1074,7 @@ enum ArcImport {
 
     /// The menu item. One panel, one summary, one toast.
     @MainActor static func chooseAndImport() {
-        let panel = NSOpenPanel()
-        panel.title = "Import from Arc"
-        panel.message = "Choose Arc's folder — Library/Application Support/Arc. "
-            + "macOS only lets Vane read a folder you pick yourself."
-        panel.prompt = "Import"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.showsHiddenFiles = true
-        // The sandbox hides ~/Library from the panel's sidebar but not from a path it is
-        // opened at, which is why this is set rather than left to the last-used folder.
-        panel.directoryURL = LegacyData.realHome
-            .appendingPathComponent("Library/Application Support/Arc", isDirectory: true)
-        guard panel.runModal() == .OK, let root = panel.url else { return }
+        let root = LegacyData.realHome.appendingPathComponent("Library/Application Support/Arc", isDirectory: true)
 
         // A Task around the rest of it because the scan reads Arc's SQLite off the main
         // actor: the summary alert is only worth putting up once the counts in it are real.
@@ -1064,10 +1082,8 @@ enum ArcImport {
             guard let scan = await scan(root) else {
                 let a = NSAlert()
                 a.alertStyle = .warning
-                a.messageText = "That folder doesn't look like Arc."
-                a.informativeText = "Vane looked for StorableSidebar.json in "
-                    + "\(root.lastPathComponent) and found none. Arc's folder is usually "
-                    + "Library/Application Support/Arc."
+                a.messageText = "Arc data isn’t available to import."
+                a.informativeText = "Vane checks Arc’s data automatically. If macOS protects it, allow access in Privacy & Security and try again."
                 a.runModal()
                 return
             }
@@ -1160,8 +1176,7 @@ enum ArcImport {
         if c.cookiesSkipped > 0 { tail.append("\(c.cookiesSkipped) expired, existing or unsupported cookies were skipped safely.") }
         if c.cookiesFailed > 0 { tail.append("\(c.cookiesFailed) cookie writes could not be verified; they were not counted as imported.") }
         if c.unreadable > 0 {
-            tail.append("\(c.unreadable) file\(c.unreadable == 1 ? "" : "s") Arc still has "
-                + "would not open — Full Disk Access, most likely.")
+            tail.append("\(c.unreadable) Arc data file\(c.unreadable == 1 ? "" : "s") could not be read.")
         }
         tail.append(contentsOf: c.historyImportFailures)
         guard !parts.isEmpty else {
@@ -1485,8 +1500,7 @@ enum ArcImport {
         var shut = Counts()
         shut.spaces = 1; shut.unreadable = 1
         assert("arc report: a file that would not open is not reported as an empty one",
-               report(shut) == "Imported 1 space. 1 file Arc still has would not open "
-                   + "— Full Disk Access, most likely.")
+               report(shut) == "Imported 1 space. 1 Arc data file could not be read.")
         var kept = Counts()
         kept.spaces = 1; kept.liveFolders = 1
         assert("arc report: a live folder is one of the things the toast counts",

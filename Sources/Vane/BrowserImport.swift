@@ -19,14 +19,15 @@ enum BrowserImport {
     /// copy, a `sqlite3_step` loop and the error it can fail with, and `ArcImport` runs them
     /// off the main actor so a heavy profile does not freeze the window.
     nonisolated struct Failure: LocalizedError {
+        enum Kind: Sendable, Equatable { case accessDenied, busy, unavailable }
         let errorDescription: String?
-        init(_ m: String) { errorDescription = m }
+        let kind: Kind
+        init(_ m: String, kind: Kind = .unavailable) { errorDescription = m; self.kind = kind }
     }
 
     // MARK: Detection
 
-    private static let appSupport = FileManager.default
-        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    static var sourceHome: URL { LegacyData.realHome }
 
     /// Vendor directory per browser. Opera and Arc are the odd ones — Opera keeps its data
     /// in the vendor directory itself, Arc hides its profiles one level down in "User Data".
@@ -40,32 +41,77 @@ enum BrowserImport {
         ("Arc",      "Arc/User Data"),
     ]
 
-    static func detect() -> [BrowserProfile] {
+    static func detect() -> [BrowserProfile] { detect(home: sourceHome) }
+
+    struct Discovery: Sendable {
+        var profiles: [BrowserProfile] = []
+        var unavailable: [String] = []
+    }
+
+    static func detect(home: URL) -> [BrowserProfile] { discover(home: home).profiles }
+
+    static func discover(home: URL, installedBrowsers: Set<String> = []) -> Discovery {
+        let appSupport = home.appendingPathComponent("Library/Application Support", isDirectory: true)
         let fm = FileManager.default
-        var out: [BrowserProfile] = []
+        var discovery = Discovery()
+        func readable(_ root: URL, browser: String) -> Bool {
+            guard fm.fileExists(atPath: root.path) else { return false }
+            do { _ = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil); return true }
+            catch {
+                // Helpers can leave support folders for browsers never installed.
+                // A denied path is not evidence of an installation or a library.
+                if installedBrowsers.contains(browser), accessDenied(error) {
+                    discovery.unavailable.append(browser)
+                }
+                return false
+            }
+        }
 
         for (name, vendor) in chromiumVendors {
             let root = appSupport.appendingPathComponent(vendor)
-            out += chromiumProfiles(browser: name, root: root)
+            guard readable(root, browser: name) else { continue }
+            discovery.profiles += chromiumProfiles(browser: name, root: root)
         }
 
-        let firefox = appSupport.appendingPathComponent("Firefox/Profiles")
-        for dir in (try? fm.contentsOfDirectory(at: firefox, includingPropertiesForKeys: nil)) ?? []
-        where fm.fileExists(atPath: dir.appendingPathComponent("places.sqlite").path) {
-            out.append(BrowserProfile(browser: "Firefox", profile: dir.lastPathComponent,
+        for (browser, vendor) in [("Firefox", "Firefox/Profiles"), ("Zen", "zen/Profiles")] {
+            let firefox = appSupport.appendingPathComponent(vendor)
+            guard readable(firefox, browser: browser) else { continue }
+            for dir in (try? fm.contentsOfDirectory(at: firefox, includingPropertiesForKeys: nil)) ?? []
+            where fm.fileExists(atPath: dir.appendingPathComponent("places.sqlite").path) {
+                discovery.profiles.append(BrowserProfile(browser: browser, profile: dir.lastPathComponent,
                                       path: dir, hasHistory: true, hasBookmarks: true))
+            }
+        }
+        let orion = appSupport.appendingPathComponent("Orion")
+        if readable(orion, browser: "Orion") {
+            for dir in (try? fm.contentsOfDirectory(at: orion, includingPropertiesForKeys: nil)) ?? [] {
+                let history = fm.fileExists(atPath: dir.appendingPathComponent("history").path)
+                let bookmarks = fm.fileExists(atPath: dir.appendingPathComponent("favourites.plist").path)
+                if history || bookmarks {
+                    discovery.profiles.append(BrowserProfile(browser: "Orion", profile: dir.lastPathComponent,
+                        path: dir, hasHistory: history, hasBookmarks: bookmarks))
+                }
+            }
         }
 
         // Safari is listed on existence alone: TCC lets us stat these files but not open
         // them, so whether they are actually readable only comes out at import time.
-        let safari = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Safari")
+        let safari = home.appendingPathComponent("Library/Safari")
         let hasHistory = fm.fileExists(atPath: safari.appendingPathComponent("History.db").path)
         let hasMarks = fm.fileExists(atPath: safari.appendingPathComponent("Bookmarks.plist").path)
         if hasHistory || hasMarks {
-            out.append(BrowserProfile(browser: "Safari", profile: "Default", path: safari,
+            discovery.profiles.append(BrowserProfile(browser: "Safari", profile: "Default", path: safari,
                                       hasHistory: hasHistory, hasBookmarks: hasMarks))
         }
-        return out
+        return discovery
+    }
+
+    nonisolated static func accessDenied(_ error: any Error) -> Bool {
+        if let failure = error as? Failure { return failure.kind == .accessDenied }
+        let e = error as NSError
+        if e.domain == NSCocoaErrorDomain && e.code == NSFileReadNoPermissionError { return true }
+        if e.domain == NSPOSIXErrorDomain && [Int(EPERM), Int(EACCES)].contains(e.code) { return true }
+        return (e.userInfo[NSUnderlyingErrorKey] as? NSError).map { accessDenied($0) } ?? false
     }
 
     static func chromiumProfiles(browser: String, root: URL) -> [BrowserProfile] {
@@ -105,6 +151,16 @@ enum BrowserImport {
         var marks: [NativeBookmark] = []
 
         switch family(of: p) {
+        case .orion:
+            if p.hasHistory {
+                let file = p.path.appendingPathComponent("history")
+                try query(file, """
+                    SELECT i.URL, i.TITLE, strftime('%s', v.VISIT_TIME) FROM history_items i
+                    JOIN visits v ON v.HISTORY_ITEM_ID = i.ID
+                    WHERE strftime('%s', v.VISIT_TIME) IS NOT NULL ORDER BY v.VISIT_TIME DESC
+                    """) { visits.append((text($0, 0), text($0, 1), Date(timeIntervalSince1970: sqlite3_column_double($0, 2)))) }
+            }
+            if p.hasBookmarks { marks = try orionBookmarks(p.path.appendingPathComponent("favourites.plist")) }
         case .safari:
             if p.hasBookmarks { marks = try safariBookmarksFile(p.path.appendingPathComponent("Bookmarks.plist")) }
             if p.hasHistory { visits = try safariHistory(p.path.appendingPathComponent("History.db")) }
@@ -184,6 +240,16 @@ enum BrowserImport {
             let source = try await ImportWork.run { try readSource(from: p) }
             try Task.checkCancellation()
             let result = try await destination.importBrowserDataAsync(visits: source.visits, bookmarks: source.bookmarks, admission: accepted)
+            return (result.history, result.bookmarks.imported)
+        }
+    }
+
+    @MainActor static func importSnapshot(_ source: Source, profileID: UUID,
+        validateDestination: @escaping @MainActor () -> Bool) async throws -> (history: Int, bookmarks: Int) {
+        try await ImportOperations.run { admission in
+            guard validateDestination() else { throw CancellationError() }
+            let result = try await Store.store(for: profileID).importBrowserDataAsync(
+                visits: source.visits, bookmarks: source.bookmarks, admission: admission)
             return (result.history, result.bookmarks.imported)
         }
     }
@@ -308,10 +374,11 @@ enum BrowserImport {
                               hasHistory: history || places, hasBookmarks: marks || places)
     }
 
-    private enum Family { case chromium, firefox, safari }
+    private enum Family { case chromium, firefox, safari, orion }
 
     private static func family(of p: BrowserProfile) -> Family {
         if p.browser == "Safari" { return .safari }
+        if p.browser == "Orion" { return .orion }
         if FileManager.default.fileExists(atPath: p.path.appendingPathComponent("places.sqlite").path) {
             return .firefox
         }
@@ -517,6 +584,47 @@ enum BrowserImport {
         try checkedSafariBookmarks(PropertyListSerialization.propertyList(from: try read(file), format: nil))
     }
 
+    private static func orionBookmarks(_ file: URL) throws -> [NativeBookmark] {
+        guard let nodes = try PropertyListSerialization.propertyList(from: read(file), format: nil) as? [String: [String: Any]]
+        else { throw Failure("Orion bookmarks are not a readable library.") }
+        for node in nodes.values where node["parentId"] != nil && !(node["parentId"] is String) {
+            throw Failure("An Orion bookmark has malformed folder metadata.")
+        }
+        let children = Dictionary(grouping: nodes.keys.filter { nodes[$0]?["parentId"] is String }) {
+            nodes[$0]!["parentId"] as! String
+        }
+        func ordered(_ ids: [String]) -> [String] {
+            ids.sorted {
+                let a = (nodes[$0]?["index"] as? NSNumber)?.intValue ?? 0
+                let b = (nodes[$1]?["index"] as? NSNumber)?.intValue ?? 0
+                return a == b ? $0 < $1 : a < b
+            }
+        }
+        var seen: Set<String> = []
+        func walk(_ id: String, path: [String], depth: Int) throws -> [NativeBookmark] {
+            guard depth <= 256, seen.insert(id).inserted, let node = nodes[id] else {
+                throw Failure("The Orion bookmark folder tree is damaged.")
+            }
+            var out: [NativeBookmark] = []
+            if let raw = node["url"] {
+                guard let url = raw as? String, let title = node["title"] as? String else {
+                    throw Failure("An Orion bookmark has malformed metadata.")
+                }
+                out.append(NativeBookmark(url: url, title: title, folder: folderPath(path), at: nil))
+            }
+            let title = node["title"] as? String ?? ""
+            let next = depth > 0 && node["url"] == nil && !title.isEmpty ? path + [title] : path
+            for child in ordered(children[id] ?? []) { out += try walk(child, path: next, depth: depth + 1) }
+            return out
+        }
+        var out: [NativeBookmark] = []
+        for root in ordered(nodes.keys.filter { nodes[$0]?["parentId"] == nil }) {
+            out += try walk(root, path: [], depth: 0)
+        }
+        guard seen.count == nodes.count else { throw Failure("The Orion bookmark folder tree is damaged.") }
+        return out
+    }
+
     /// Safari stores a title on each visit, so retain each visit and its own title.
     private static func safariHistory(_ file: URL) throws -> [(url: String, title: String, at: Date)] {
         var out: [(url: String, title: String, at: Date)] = []
@@ -543,9 +651,7 @@ enum BrowserImport {
             throw Failure("\(file.lastPathComponent) is not there.")
         }
         guard fm.isReadableFile(atPath: file.path) else {
-            throw Failure("macOS is blocking access to \(file.lastPathComponent).\n\n"
-                + "Open System Settings → Privacy & Security → Full Disk Access, turn it on "
-                + "for Vane, then try the import again.")
+            throw Failure("macOS is blocking access to \(file.lastPathComponent).", kind: .accessDenied)
         }
     }
 
@@ -560,8 +666,9 @@ enum BrowserImport {
         try guardReadable(file)
         var source: OpaquePointer?
         defer { sqlite3_close(source) }
-        guard sqlite3_open_v2(file.path, &source, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            throw Failure("\(file.lastPathComponent) is not a database Vane can read.")
+        let opened = sqlite3_open_v2(file.path, &source, SQLITE_OPEN_READONLY, nil)
+        guard opened == SQLITE_OK else {
+            throw snapshotFailure(file, code: opened)
         }
         sqlite3_busy_timeout(source, 1_000)
         var db: OpaquePointer?
@@ -573,9 +680,19 @@ enum BrowserImport {
         let copied = sqlite3_backup_step(backup, -1)
         let finished = sqlite3_backup_finish(backup)
         guard copied == SQLITE_DONE, finished == SQLITE_OK else {
-            throw Failure("Could not snapshot \(file.lastPathComponent): \(String(cString: sqlite3_errmsg(db)))")
+            let code = copied == SQLITE_DONE ? finished : copied
+            // A source failure can leave the destination message as "not an error".
+            throw snapshotFailure(file, code: code)
         }
         return try read(db!)
+    }
+
+    nonisolated static func snapshotFailure(_ file: URL, code: Int32) -> Failure {
+        // READONLY/CANTOPEN can mean WAL recovery or missing shared-memory files,
+        // not a live lock or a privacy denial. Only actual locking codes say busy.
+        let busy = [SQLITE_BUSY, SQLITE_LOCKED].contains(code & 0xff)
+        return Failure("Could not read \(file.lastPathComponent) consistently (SQLite \(code): \(String(cString: sqlite3_errstr(code)))).",
+                       kind: busy ? .busy : .unavailable)
     }
 
     nonisolated static func query(db: OpaquePointer, file: URL, sql: String,
@@ -615,29 +732,22 @@ enum BrowserImport {
 
     // MARK: UI
 
-    @MainActor static func chooseAndImport() {
+    @MainActor static func chooseAndImport(browser: String? = nil) {
         Task {
-            let found = await Task.detached(priority: .userInitiated) { detect() }.value
+            let found = await Task.detached(priority: .userInitiated) {
+                detect().filter { browser == nil || $0.browser == browser }
+            }.value
             chooseAndImport(found: found)
         }
     }
 
     @MainActor private static func chooseAndImport(found: [BrowserProfile]) {
         guard !found.isEmpty else {
-            // Under the App Sandbox this is the normal case, not an error: scanning
-            // ~/Library/Application Support/Google/Chrome is denied outright, so detect()
-            // finds nothing however many browsers are installed. A folder the user picks
-            // themselves comes with a powerbox grant, which is the way through.
             let a = NSAlert()
-            a.messageText = "Vane can't look for browsers on its own."
-            a.informativeText = "macOS only lets Vane read a folder you choose yourself. "
-                + "Pick a browser profile folder — for Chrome that is usually "
-                + "Library/Application Support/Google/Chrome/Default, and for Firefox a "
-                + "folder inside Firefox/Profiles."
-            a.addButton(withTitle: "Choose Folder…")
-            a.addButton(withTitle: "Cancel")
-            guard a.runModal() == .alertFirstButtonReturn, let picked = pickProfileFolder() else { return }
-            report(importing: picked)
+            a.messageText = "No browser data is available to import."
+            a.informativeText = "Vane checks supported browsers automatically. If macOS protects a browser’s data, allow access in Privacy & Security and try again."
+            a.addButton(withTitle: "OK")
+            a.runModal()
             return
         }
 

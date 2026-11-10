@@ -50,6 +50,20 @@
   <array>
     <string>/Applications/</string>
     <string>/Library/Application Support/Vane/</string>
+    <!-- Automatic browser import: known source locations only, always read-only.
+         Scans run on explicit import/onboarding entry; Keychain and macOS privacy
+         consent remain separate. No blanket home or Library access. -->
+    <string>/Library/Application Support/Arc/</string>
+    <string>/Library/Application Support/Google/Chrome/</string>
+    <string>/Library/Application Support/Chromium/</string>
+    <string>/Library/Application Support/Microsoft Edge/</string>
+    <string>/Library/Application Support/BraveSoftware/Brave-Browser/</string>
+    <string>/Library/Application Support/Vivaldi/</string>
+    <string>/Library/Application Support/com.operasoftware.Opera/</string>
+    <string>/Library/Application Support/Firefox/Profiles/</string>
+    <string>/Library/Application Support/zen/Profiles/</string>
+    <string>/Library/Application Support/Orion/</string>
+    <string>/Library/Safari/</string>
   </array>
 
   <!-- ...and this is what makes those picks survive a relaunch. Without it a folder the

@@ -974,44 +974,12 @@ private struct DataRow: View {
 // MARK: - Max
 
 private struct MaxPane: View {
-    @AppStorage("appleAI") private var appleAI = true
-    @AppStorage("tidyTabs") private var tidyTabs = true
-    @AppStorage("tidyPreview") private var tidyPreview = true
-    @AppStorage("tidyDownloads") private var tidyDownloads = false
-    @AppStorage("tidyTitles") private var tidyTitles = true
     @AppStorage("instantLinks") private var instant = true
-    @AppStorage("aiSettingsRevision") private var aiRevision = 0
-
-    private func off(_ feature: AIFeature) -> Bool {
-        _ = aiRevision
-        return !appleAI || !BrowserAI.ready(for: feature)
-    }
 
     var body: some View {
         Pane {
             AIProviderSettings()
-            SettingsCard {
-                SettingsRow("AI features") {
-                    Toggle("", isOn: BrowserAI.enabledBinding).labelsHidden()
-                }
-                // Each feature is separately switchable, because they do not cost the same.
-                // Grouping tabs is ~12 seconds of model time; the others are far cheaper or
-                // usually answered without the model at all.
-                SettingsRow("Group tabs by topic") {
-                    Toggle("", isOn: $tidyTabs).labelsHidden().disabled(off(.tabGroups))
-                }
-                SettingsRow("Preview before tidying") {
-                    Toggle("Preview before tidying", isOn: $tidyPreview).labelsHidden()
-                }
-                Footnote("Turn off to apply Tidy groups immediately. You can undo the grouping afterward.")
-                SettingsRow("Rename messy downloads") {
-                    Toggle("", isOn: $tidyDownloads).labelsHidden().disabled(off(.downloads))
-                }
-                SettingsRow("Rename favorite and pinned tab titles") {
-                    Toggle("", isOn: $tidyTitles).labelsHidden().disabled(off(.tabTitles))
-                }
-                Footnote("Each feature uses the connection selected above. Grouping runs when you choose Tidy Tabs. These switches control download naming and favorite and pinned tab naming.")
-            }
+            AIFeatureSettings()
 
             SettingsCard {
                 SettingsRow("Instant Links") { Toggle("", isOn: $instant).labelsHidden() }

@@ -69,6 +69,12 @@ extension UserDefaults {
     @MainActor static func main() async {
         defer { UserDefaults.vane.removePersistentDomain(forName: UserDefaults.fixtureSuite) }
         var checks: [(String, Bool)] = []
+        UserDefaults.vane.removeObject(forKey: "appleAI")
+        checks.append(("absent master preference keeps every AI route off", !BrowserAI.enabled && AIFeature.allCases.allSatisfy { !BrowserAI.ready(for: $0) }))
+        UserDefaults.vane.set(true, forKey: "appleAI")
+        checks.append(("explicit saved AI opt-in survives", BrowserAI.enabled))
+        UserDefaults.vane.set(false, forKey: "appleAI")
+        checks.append(("explicit saved AI opt-out survives", !BrowserAI.enabled))
         func setup(_ feature: AIFeature, cloud: Bool) -> AIConnection {
             var connection = AIConnection(provider: .chatGPT); connection.model = "fixture"
             connection.registration = .init(clientID: "oaiapp_fixture", subject: "fixture", email: nil)

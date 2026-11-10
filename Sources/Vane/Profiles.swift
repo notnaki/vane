@@ -338,12 +338,12 @@ import WebKit
 @MainActor enum LegacyData {
     /// The *real* home directory. `NSHomeDirectory()` is redirected into the container
     /// under the sandbox; the passwd entry is not.
-    static var realHome: URL {
+    nonisolated static let realHome: URL = {
         guard let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir else {
             return URL(fileURLWithPath: NSHomeDirectory())
         }
         return URL(fileURLWithPath: String(cString: dir))
-    }
+    }()
 
     static var legacy: URL {
         realHome.appendingPathComponent("Library/Application Support/Vane", isDirectory: true)
