@@ -1,13 +1,23 @@
 import AppKit
 import SwiftUI
 
-/// The header and address editor use the same reflow, so editing still opens over the pill.
+/// Keep full-size header targets until they touch, then move secondary actions into a menu.
 struct SidebarChromeLayout {
     let width: CGFloat
+    // The address pill has its own compact presentation, independent of header overflow.
     var compact: Bool { width < Look.sidebarWidth }
-    // 16pt outer insets + 62pt lights + 22pt toggle + 64pt navigation + three 8pt gaps.
-    var stacked: Bool { width < 188 }
-    var headerHeight: CGFloat { Look.topRow * (stacked ? 2 : 1) }
+    private var fullTargetsWidth: CGFloat { Look.inset * 2 + Look.trafficLights + Look.control * 4 }
+    var usesOverflow: Bool { width < fullTargetsWidth }
+
+    /// Close gaps continuously; never shrink the glyphs or their 24pt hit areas.
+    /// Header gaps are twice the navigation gaps, matching the normal 12pt / 6pt rhythm.
+    var navigationSpacing: CGFloat {
+        let targets = usesOverflow ? fullTargetsWidth - Look.control : fullTargetsWidth
+        let gapUnits: CGFloat = usesOverflow ? 6 : 8
+        return min(6, max(0, (width - targets) / gapUnits))
+    }
+    var headerSpacing: CGFloat { navigationSpacing * 2 }
+    var headerHeight: CGFloat { Look.topRow }
     var addressTop: CGFloat { Look.topInset + headerHeight + Look.inset }
 }
 
@@ -34,7 +44,7 @@ struct SidebarChromeLayout {
 
     /// Measured from the installed Arc for macOS resize handlers: 164–500pt,
     /// a 228pt reset width, and collapse when the pointer passes 82pt.
-    /// The compact header reflows at the minimum without hiding navigation controls.
+    /// At the minimum, Back and Forward remain visible beside the navigation menu.
     nonisolated static let minimum: CGFloat = 164
     nonisolated static let maximum: CGFloat = 500
     nonisolated static let collapseThreshold: CGFloat = 82
