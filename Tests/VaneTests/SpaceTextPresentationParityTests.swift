@@ -7,6 +7,14 @@ import XCTest
 /// Standalone section snapshots omit the search scrim. Capture the compositor's
 /// complete window when comparing settled and native swipe text instead.
 @MainActor final class SpaceTextPresentationParityTests: XCTestCase {
+    private var nativeProfiles: Set<UUID> = []
+
+    override func tearDown() async throws {
+        let profiles = nativeProfiles
+        nativeProfiles.removeAll()
+        try await NativeFixtureProfileCleanup.release(profiles)
+    }
+
     func testSearchDimmedFloatingTextKeepsItsContrastDuringNativeTravel() async throws {
         try await checkTextPresentation(palette: .newTab, floating: true)
     }
@@ -23,8 +31,16 @@ import XCTest
         try await checkTextPresentation(palette: .newTab, floating: true, dismissWhileTracking: true)
     }
 
+    func testCenteredSearchOccludesNativeSidebarPreview() async throws {
+        try await checkTextPresentation(palette: .newTab, floating: false, checkOcclusion: true)
+    }
+
+    func testAddressSearchOccludesNativeSidebarPreview() async throws {
+        try await checkTextPresentation(palette: .address, floating: false, checkOcclusion: true)
+    }
+
     private func checkTextPresentation(palette: PaletteMode?, floating: Bool,
-                                       dismissWhileTracking: Bool = false) async throws {
+                                       dismissWhileTracking: Bool = false, checkOcclusion: Bool = false) async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires native swipe presentation")
         let saver = BatterySaver.shared
@@ -45,7 +61,7 @@ import XCTest
         var failure: (any Error)?
         do {
             try await checkTextContrast(palette: palette, floating: floating,
-                                        dismissWhileTracking: dismissWhileTracking)
+                                        dismissWhileTracking: dismissWhileTracking, checkOcclusion: checkOcclusion)
         } catch { failure = error }
         do { try await loop.close() }
         catch {
@@ -56,9 +72,10 @@ import XCTest
     }
 
     private func checkTextContrast(palette: PaletteMode?, floating: Bool,
-                                   dismissWhileTracking: Bool) async throws {
+                                   dismissWhileTracking: Bool, checkOcclusion: Bool) async throws {
         let manager = ProfileManager.shared
         let profile = manager.create(name: "Text contrast fixture").id
+        nativeProfiles.insert(profile)
         // Identical content and identical default washes isolate text rendering
         // from title changes, background interpolation and moving-glyph sampling.
         let spaces = (0..<2).map { _ in
@@ -67,10 +84,19 @@ import XCTest
         }
         XCTAssertTrue(manager.saveSpaces(spaces, for: profile))
         let store = TabStore(profileID: profile, space: spaces[0], session: [])
+        if checkOcclusion {
+            store.tabs = (0..<5).map { index in
+                let tab = Tab(profileID: profile)
+                tab.park(url: URL(string: "https://search.fixture/\(index)")!,
+                         Parked(title: "Search result \(index)", needsRecovery: true))
+                return tab
+            }
+            store.syncShapes()
+        }
         store.palette = palette
         store.sidebarShown = !floating
         store.sidebarPeeking = floating
-        let window = VaneWindow(contentRect: NSRect(x: 100, y: 100, width: 1280, height: 650),
+        let window = VaneWindow(contentRect: NSRect(x: 100, y: 100, width: checkOcclusion ? 800 : 1280, height: 650),
                               styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.isOpaque = false
@@ -125,6 +151,60 @@ import XCTest
         let sections = anchor.convert(anchor.bounds, to: host)
         // Inline search suggestions cover these label regions. Check their actual
         // clear scrim instead of comparing unrelated popup text with sidebar text.
+        if checkOcclusion {
+            func field(in view: NSView) -> CommandField.BarField? {
+                if let input = view as? CommandField.BarField,
+                   input.accessibilityLabel() == palette?.title { return input }
+                return view.subviews.lazy.compactMap { field(in: $0) }.first
+            }
+            let input = try XCTUnwrap(field(in: host))
+            var fieldAdmission = "not sampled"
+            defer { print("SEARCH_FIELD_ADMISSION \(fieldAdmission)") }
+            try await compatibilityWait {
+                // NSTextField can hide its own backing while the field editor draws.
+                // Admit the enclosing presentation, which owns the bar's fade/scale.
+                var ancestor = input.superview
+                while ancestor?.layer == nil, ancestor != nil { ancestor = ancestor?.superview }
+                guard let presented = ancestor?.layer?.presentation() else {
+                    fieldAdmission = "enclosingPresentation=false"
+                    return false
+                }
+                var layer: CALayer? = presented
+                var opacity: Float = 1
+                var hidden = false
+                while let current = layer {
+                    opacity *= current.opacity
+                    hidden = hidden || current.isHidden
+                    layer = current.superlayer
+                }
+                let focused = window.firstResponder === input.currentEditor()
+                fieldAdmission = "focused=\(focused) opacity=\(opacity) hidden=\(hidden)"
+                return focused && !hidden && opacity >= 0.999
+            }
+            // Compare the actual result surface where it crosses the sidebar. The
+            // stationary preview must not add a second set of labels over search.
+            let fieldRect = input.convert(input.bounds, to: host)
+            let region = NSRect(x: max(fieldRect.minX, sections.minX + 40),
+                                y: fieldRect.minY - 160, width: 100, height: 120)
+            XCTAssertTrue(sections.intersects(region), "The fixture must cover sidebar content")
+            let baseline = try await capturePixels(in: host, region: region)
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
+            NSApp.sendEvent(ScrollEvent(window: window, dx: -12))
+            NSApp.sendEvent(ScrollEvent(window: window, dx: -8))
+            let slide = try XCTUnwrap(host.spaceSlide)
+            slide.track(drag: 0)
+            try await compatibilityWait { slide.preparedPopulationReady && slide.window === window }
+            try await displayFrames(in: window)
+            let covered = try await capturePixels(in: host, region: region)
+            let difference = zip(baseline, covered).reduce(0.0) { $0 + abs($1.0 - $1.1) }
+                / Double(baseline.count)
+            print("SEARCH_OCCLUSION mode=\(String(describing: palette)) difference=\(difference)")
+            XCTAssertLessThan(difference, 0.004,
+                              "Native sidebar labels must remain behind the search surface")
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
+            try await compatibilityWait { !store.spaceSwiping && host.spaceSlide == nil }
+            return
+        }
         let inlineAddress = palette == .address && !floating
         let baseline = inlineAddress ? nil : try await capture(in: host, sections: sections)
         if inlineAddress { XCTAssertEqual(store.spaceGesture.presentedPaletteScrimOpacity, 0) }
@@ -212,19 +292,8 @@ import XCTest
     /// controls. An adjacent empty strip supplies the ground independently for
     /// every capture; no assumed RGB value or foreground-color token is used.
     private func capture(in host: NSView, sections: NSRect) async throws -> TextCapture {
-        windowDisplay(host)
+        let bitmap = try await captureBitmap(in: host)
         let window = try XCTUnwrap(host.window)
-        let content = try await SCShareableContent.currentProcess
-        let capturedWindow = try XCTUnwrap(content.windows.first { $0.windowID == CGWindowID(window.windowNumber) })
-        let filter = SCContentFilter(desktopIndependentWindow: capturedWindow)
-        let configuration = SCStreamConfiguration()
-        configuration.width = Int(window.frame.width * window.backingScaleFactor)
-        configuration.height = Int(window.frame.height * window.backingScaleFactor)
-        configuration.showsCursor = false
-        configuration.ignoreShadowsSingleWindow = true
-        configuration.captureDynamicRange = .SDR
-        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-        let bitmap = NSBitmapImageRep(cgImage: image)
         let sx = CGFloat(bitmap.pixelsWide) / window.frame.width
         let sy = CGFloat(bitmap.pixelsHigh) / window.frame.height
         let labelX = sections.minX + Look.rowInset + Look.tileIcon + Look.rowSpacing
@@ -252,6 +321,37 @@ import XCTest
             return (contrast, ground)
         }
         return TextCapture(contrast: rows.map(\.0), ground: rows.map(\.1))
+    }
+
+    private func captureBitmap(in host: NSView) async throws -> NSBitmapImageRep {
+        windowDisplay(host)
+        let window = try XCTUnwrap(host.window)
+        let content = try await SCShareableContent.currentProcess
+        let capturedWindow = try XCTUnwrap(content.windows.first { $0.windowID == CGWindowID(window.windowNumber) })
+        let filter = SCContentFilter(desktopIndependentWindow: capturedWindow)
+        let configuration = SCStreamConfiguration()
+        configuration.width = Int(window.frame.width * window.backingScaleFactor)
+        configuration.height = Int(window.frame.height * window.backingScaleFactor)
+        configuration.showsCursor = false
+        configuration.ignoreShadowsSingleWindow = true
+        configuration.captureDynamicRange = .SDR
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        return NSBitmapImageRep(cgImage: image)
+    }
+
+    private func capturePixels(in host: NSView, region: NSRect) async throws -> [Double] {
+        let bitmap = try await captureBitmap(in: host)
+        let window = try XCTUnwrap(host.window)
+        let sx = CGFloat(bitmap.pixelsWide) / window.frame.width
+        let sy = CGFloat(bitmap.pixelsHigh) / window.frame.height
+        var pixels: [Double] = []
+        for y in Int((window.frame.height - region.maxY) * sy)..<Int((window.frame.height - region.minY) * sy) {
+            for x in Int(region.minX * sx)..<Int(region.maxX * sx) {
+                let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+                pixels.append(contentsOf: [color.redComponent, color.greenComponent, color.blueComponent])
+            }
+        }
+        return pixels
     }
 
     private func windowDisplay(_ host: NSView) {

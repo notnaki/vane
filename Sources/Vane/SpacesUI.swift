@@ -1342,7 +1342,7 @@ private struct SpaceSwipe: ViewModifier {
                 slide.isHidden = true
                 // Claim this surface in place; moving it above live rows on the first
                 // finger sample would detach its compositor layer until a later frame.
-                host.addSubview(slide, positioned: .above, relativeTo: nil)
+                host.mountSpaceSlide(slide)
                 slide.prepare()
                 self.preparedSlides[target.id] = slide
             }
