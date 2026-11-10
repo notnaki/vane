@@ -44,6 +44,35 @@ import SwiftUI
     }
 }
 
+/// Preserve the requesting responder while a hosting root installs its window.
+/// Nil and the window itself both mean that no control owns the keyboard yet.
+@MainActor final class AddressFocusRequest {
+    private weak var window: NSWindow?
+    private weak var responder: NSResponder?
+    private var bound = false
+    private var unowned = false
+
+    init(window: NSWindow?) {
+        if let window { bind(to: window) }
+    }
+
+    func bind(to window: NSWindow) {
+        guard !bound else { return }
+        self.window = window
+        responder = window.firstResponder
+        unowned = responder == nil || responder === window
+        bound = true
+    }
+
+    func isCurrent(in window: NSWindow) -> Bool {
+        bind(to: window)
+        guard self.window === window else { return false }
+        if unowned { return window.firstResponder == nil || window.firstResponder === window }
+        guard let responder else { return false }
+        return window.firstResponder === responder
+    }
+}
+
 /// One exact native keyboard/AX endpoint for the address surface. It never
 /// discovers a SwiftUI responder or borrows the surrounding browser's host.
 @MainActor final class MountedAddressButton: NSButton {
@@ -52,6 +81,7 @@ import SwiftUI
     var perform: (() -> Void)?
     var focusChanged: ((Bool) -> Void)?
     var addressValue = ""
+    private var focusDeliveryScheduled = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -125,10 +155,50 @@ import SwiftUI
         registerOwner()
         observeAfterCommit()
     }
+    override func layout() {
+        super.layout()
+        registerOwner()
+    }
     func registerOwner() {
         guard let store else { return }
-        if let window, store.window === window { store.mountedAddressEndpoint = self }
-        else if store.mountedAddressEndpoint === self { store.mountedAddressEndpoint = nil }
+        // Mounting can precede TabStore.window installation. Remember the weak
+        // candidate now; available still requires exact store/window ownership.
+        if let window, store.profileVisible, store.window == nil || store.window === window {
+            store.mountedAddressEndpoint = self
+            store.addressFocusRequest?.bind(to: window)
+            scheduleRequestedFocus()
+        } else if store.mountedAddressEndpoint === self,
+                  window == nil || !store.profileVisible {
+            store.mountedAddressEndpoint = nil
+        }
+        // A temporary foreign store.window invalidates available, but the weak
+        // mounted candidate must survive so restoring the real owner can retry.
+    }
+    func scheduleRequestedFocus() {
+        guard store?.chromeFocusRequested == true, !focusDeliveryScheduled else { return }
+        focusDeliveryScheduled = true
+        // Native mounting/layout may run inside SwiftUI's update. Publish the
+        // acknowledgement only after that update has committed.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.focusDeliveryScheduled = false
+            self.deliverRequestedFocus()
+        }
+    }
+    private func deliverRequestedFocus() {
+        guard let store, store.chromeFocusRequested, store.mountedAddressEndpoint === self,
+              let window, store.window === window else { return }
+        guard store.profileVisible, store.palette == nil, !store.libraryOpen,
+              store.isLittle || store.sidebarShown || store.sidebarPeeking,
+              isEnabled, !isHiddenOrHasHiddenAncestor,
+              window.attachedSheet == nil, NSApp.modalWindow == nil,
+              store.addressFocusRequest?.isCurrent(in: window) == true else {
+            store.chromeFocusRequested = false
+            return
+        }
+        // Zero-sized/unpresented mounting is temporary. Native layout or window
+        // installation will try again; never consume an undelivered request.
+        if takeFocus(from: window.firstResponder) { store.chromeFocusRequested = false }
     }
     func retire() {
         if store?.mountedAddressEndpoint === self { store?.mountedAddressEndpoint = nil }
@@ -224,10 +294,7 @@ private struct AddressKeyboardAction: ViewModifier {
             }
             .onChange(of: store.chromeFocusRequested, initial: true) { _, requested in
                 guard requested else { return }
-                if let endpoint = store.mountedAddressEndpoint {
-                    endpoint.takeFocus(from: endpoint.window?.firstResponder)
-                }
-                store.chromeFocusRequested = false
+                store.mountedAddressEndpoint?.scheduleRequestedFocus()
             }
             .overlay {
                 RoundedRectangle(cornerRadius: Look.pillRadius)

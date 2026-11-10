@@ -2967,7 +2967,14 @@ struct Stash {
     /// A changed revision marks that update as restoration, rather than a fresh toggle.
     @Published var sidebarPresentationRevision: UInt = 0
     /// One-shot handoff from the webpage to the sidebar address pill.
-    @Published var chromeFocusRequested = false
+    @Published var chromeFocusRequested = false {
+        didSet {
+            addressFocusRequest = chromeFocusRequested
+                ? AddressFocusRequest(window: window ?? mountedAddressEndpoint?.window) : nil
+            mountedAddressEndpoint?.scheduleRequestedFocus()
+        }
+    }
+    var addressFocusRequest: AddressFocusRequest?
     /// The actual mounted address control; cached/profile roots never retain it here.
     weak var mountedAddressEndpoint: MountedAddressButton?
     /// Presentation only, per Space and window: hiding pins never changes their contents.
@@ -3088,7 +3095,9 @@ struct Stash {
     /// Presentation only: a Little Vane borrows its Open in destination's look without
     /// joining that Space, restoring its tabs, or changing the page's browsing identity.
     @Published var littleDestinationSpace: Space?
-    weak var window: NSWindow?
+    weak var window: NSWindow? {
+        didSet { mountedAddressEndpoint?.registerOwner() }
+    }
     /// Cached roots remain mounted for WebKit continuity, but only the shown profile
     /// may own presentation bindings and window-level gesture monitors.
     @Published var profileVisible = true
