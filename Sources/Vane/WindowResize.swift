@@ -78,12 +78,23 @@ extension EnvironmentValues {
             && parent?.bounds.size == originalParentSize && web.frame.size == size
     }
 
+    var parentReachedPreparedSize: Bool {
+        guard let parent, web.superview === parent else { return false }
+        let expected = NSSize(width: originalParentSize.width + size.width - originalSize.width,
+                              height: originalParentSize.height + size.height - originalSize.height)
+        return abs(parent.bounds.width - expected.width) < 0.001
+            && abs(parent.bounds.height - expected.height) < 0.001
+    }
+
     func prepare() {
         web.autoresizingMask = []
         web.autoresizesSubviews = false
+        prepareStyle()
         web.setFrameSize(size)
         web.prepareContent(in: NSRect(origin: .zero, size: size))
     }
+
+    func prepareStyle() { PageResizeStyle.prepare(web, nextSize: size) }
 
     func installNativeGeometry() {
         guard !installed, web.superview === parent else { return }
@@ -143,6 +154,8 @@ extension EnvironmentValues {
     private var watchdog: Timer?
     private var recoveryToken: UUID?
     private var recoveryRemaining = 0
+    private let styledPages = NSHashTable<WKWebView>.weakObjects()
+    private var liveResizeEnded = false
     private(set) var bypassForDrag = false
     var isPreparing: Bool { active != nil || nextScheduled }
 
@@ -155,9 +168,18 @@ extension EnvironmentValues {
     }
 
     func endLiveResize() {
+        liveResizeEnded = true
         bypassForDrag = false
         recoveryToken = nil
         recoveryRemaining = 0
+        if !isPreparing { finishStyles() }
+    }
+
+    func beginLiveResize() { liveResizeEnded = false }
+
+    private func finishStyles() {
+        styledPages.allObjects.forEach(PageResizeStyle.finish)
+        styledPages.removeAllObjects()
     }
 
     @discardableResult func request(frame: NSRect, display: Bool) -> Bool {
@@ -171,16 +193,23 @@ extension EnvironmentValues {
         // Preparing the smaller viewport first can reveal its new right edge
         // inside the still-larger window before the window geometry commits.
         // Growth needs the opposite order: paint the extra area before exposing it.
-        guard frame.width > window.frame.width || frame.height > window.frame.height else { return false }
         guard frame.size != window.frame.size else { return false }
         let nextSize = NSSize(width: root.bounds.width + frame.width - window.frame.width,
                               height: root.bounds.height + frame.height - window.frame.height)
         let targets = Self.targets(in: root, nextSize: nextSize)
         guard !targets.isEmpty else { return false }
+        guard frame.width > window.frame.width || frame.height > window.frame.height else {
+            for target in targets {
+                styledPages.add(target.web)
+                target.prepareStyle()
+            }
+            return false
+        }
         self.root = root
         startingFrame = window.frame
         active = request
         pages = targets
+        targets.forEach { styledPages.add($0.web) }
         remaining = targets.count
         generation = UUID()
         let token = generation
@@ -222,6 +251,7 @@ extension EnvironmentValues {
         pages.forEach { $0.restore(committed: false) }
         pages = []
         root = nil
+        finishStyles()
     }
 
     private func presented(_ token: UUID) {
@@ -287,8 +317,11 @@ extension EnvironmentValues {
                     guard let next = self.pending else { return }
                     self.pending = nil
                     if !self.request(frame: next.frame, display: next.display) { self.commit(next.frame, next.display) }
+                    if self.liveResizeEnded && !self.isPreparing { self.finishStyles() }
                 }
             }
+        } else if liveResizeEnded {
+            finishStyles()
         }
     }
 
@@ -311,7 +344,7 @@ extension EnvironmentValues {
 
     private static let presentation = NSSelectorFromString("_doAfterNextPresentationUpdate:")
 
-    private static func targets(in root: NSView, nextSize: NSSize) -> [PreparedPageResize] {
+    static func targets(in root: NSView, nextSize: NSSize, leadingExpansion: CGFloat = 0) -> [PreparedPageResize] {
         let delta = NSSize(width: nextSize.width - root.bounds.width,
                            height: nextSize.height - root.bounds.height)
         var result: [PreparedPageResize] = []
@@ -322,7 +355,7 @@ extension EnvironmentValues {
                 guard !host.offscreen else { return }
                 guard host.resizeLayout.enabled else { admitted = false; return }
                 let layout = host.resizeLayout
-                let dx = delta.width - layout.leadingWidth(at: nextSize.width)
+                let dx = delta.width + leadingExpansion - layout.leadingWidth(at: nextSize.width)
                     + layout.leadingWidth(at: root.bounds.width)
                 for web in host.subviews.compactMap({ $0 as? WKWebView })
                 where !web.isHiddenOrHasHiddenAncestor && web.bounds.width > 0 && web.bounds.height > 0 {
@@ -341,5 +374,133 @@ extension EnvironmentValues {
         }
         visit(root)
         return admitted ? result : []
+    }
+}
+
+/// A sidebar close reveals extra page width without a native window proposal.
+/// Paint its final viewport under the existing clip before starting the slide.
+/// Keep the page's autoresizing mask suspended until SwiftUI installs that layout.
+@MainActor final class SidebarPageResizePreparation {
+    private weak var window: NSWindow?
+    private weak var root: NSView?
+    private let frame: NSRect
+    private var pages: [PreparedPageResize]
+    private let isCurrent: @MainActor () -> Bool
+    private let commit: @MainActor () -> Void
+    private let presenter: WindowResizePreparation.Presenter?
+    private let deadline: WindowResizePreparation.Deadline?
+    private var remaining: Int
+    private var timer: Timer?
+    private var deadlineToken = UUID()
+    private let hosts = NSHashTable<WebHost>.weakObjects()
+    private var active = false
+    private(set) var published = false
+    var awaitingPaint: Bool { active && !published }
+
+
+    init(window: NSWindow, pages: [PreparedPageResize],
+         presenter: WindowResizePreparation.Presenter? = nil,
+         deadline: WindowResizePreparation.Deadline? = nil,
+         isCurrent: @escaping @MainActor () -> Bool,
+         commit: @escaping @MainActor () -> Void) {
+        self.window = window
+        root = window.contentView
+        frame = window.frame
+        self.pages = pages
+        remaining = pages.count
+        self.presenter = presenter
+        self.deadline = deadline
+        self.isCurrent = isCurrent
+        self.commit = commit
+    }
+
+    func start() {
+        guard !pages.isEmpty else { return }
+        active = true
+        for page in pages {
+            if let host = page.web.superview as? WebHost {
+                hosts.add(host)
+                host.pageLayoutDidResize = { [weak self] in self?.layoutChanged() }
+            }
+        }
+        pages.forEach { $0.prepare() }
+        armDeadline(after: 0.25)
+        for page in pages {
+            let callback: @MainActor @Sendable () -> Void = { [weak self] in self?.presented() }
+            if let presenter { presenter(page.web, callback) }
+            else {
+                let block: @convention(block) () -> Void = { MainActor.assumeIsolated { callback() } }
+                page.web.perform(NSSelectorFromString("_doAfterNextPresentationUpdate:"), with: block)
+            }
+        }
+    }
+
+    private func armDeadline(after interval: TimeInterval) {
+        timer?.invalidate()
+        deadlineToken = UUID()
+        let token = deadlineToken
+        let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
+        if let deadline { deadline(timeout) }
+        else {
+            let timer = Timer(timeInterval: interval, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
+            self.timer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+
+    func cancel() {
+        guard active else { return }
+        active = false
+        deadlineToken = UUID()
+        timer?.invalidate()
+        timer = nil
+        hosts.allObjects.forEach { $0.pageLayoutDidResize = nil }
+        hosts.removeAllObjects()
+        for page in pages {
+            page.restore(committed: published && page.parentReachedPreparedSize)
+            PageResizeStyle.finish(page.web)
+        }
+        pages.removeAll()
+    }
+
+    private var ownsLayout: Bool {
+        guard let window, window.isVisible, window.frame == frame,
+              window.contentView === root else { return false }
+        return true
+    }
+
+    private func presented() {
+        guard active, !published else { return }
+        remaining -= 1
+        guard remaining == 0 else { return }
+        guard ownsLayout, isCurrent(), pages.allSatisfy(\.stillOwned) else { cancel(); return }
+        pages.forEach { $0.installNativeGeometry() }
+        published = true
+        // Painting and native interpolation are separate phases. A slow but
+        // successful paint must still leave the sidebar its full configured slide.
+        armDeadline(after: UIAnimation.sidebar.duration(0.2) + 0.25)
+        commit()
+        root?.layoutSubtreeIfNeeded()
+        layoutChanged()
+    }
+
+    private func layoutChanged() {
+        guard active else { return }
+        guard ownsLayout else { cancel(); return }
+        if !published {
+            if !pages.allSatisfy(\.stillOwned) { cancel() }
+            return
+        }
+        // Each split pane can receive its layout in a separate native callback.
+        for page in pages where page.parentReachedPreparedSize { page.restore(committed: true) }
+        if pages.allSatisfy(\.parentReachedPreparedSize) { cancel() }
+    }
+
+    private func timedOut(_ token: UUID) {
+        guard active, deadlineToken == token else { return }
+        let shouldCommit = !published && ownsLayout && isCurrent()
+        cancel()
+        // A stalled WebContent process must not disable the sidebar command.
+        if shouldCommit { commit() }
     }
 }

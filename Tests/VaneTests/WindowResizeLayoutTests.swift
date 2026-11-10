@@ -19,7 +19,11 @@ import XCTest
         try await resizeFixture(capture: true, slowResize: true)
     }
 
-    private func resizeFixture(capture: Bool, slowResize: Bool = false) async throws {
+    func testClosingSidebarKeepsTheExpandingPagePainted() async throws {
+        try await resizeFixture(capture: true, slowResize: true, sidebarToggle: true)
+    }
+
+    private func resizeFixture(capture: Bool, slowResize: Bool = false, sidebarToggle: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -62,10 +66,12 @@ import XCTest
                     && tab.web.bounds.width > 100
             }
             let delay = slowResize ? "<script>addEventListener('resize',()=>{let end=performance.now()+120;while(performance.now()<end){}})</script>" : ""
-            let html = "<html><title>Resize ready</title><style>body{margin:0;background:#17324d}aside{position:fixed;right:0;top:0;width:100px;height:100vh;background:#f04020}</style><body><aside></aside>\(delay)</body></html>"
+            let variables = (0..<160).map { "--resize-fixture-\($0):\($0)px;" }.joined()
+            let html = "<html><title>Resize ready</title><style>:root{\(variables)}body{margin:0;background:#17324d}aside{position:fixed;right:0;top:0;width:100px;height:100vh;background:#f04020}</style><body><aside></aside>\(delay)</body></html>"
             tab.web.loadHTMLString(html, baseURL: nil)
             try await compatibilityWait { !tab.web.isLoading && tab.web.title == "Resize ready" }
             for direct in [false, true] {
+                if sidebarToggle && direct { continue }
                 // The control has an independent page. Borrowing a page from a
                 // retained SwiftUI root lets a later update mount it back there.
                 let page: WKWebView
@@ -91,7 +97,9 @@ import XCTest
                     if direct { page.stopLoading(); (root as? WebHost)?.removePage() }
                 }
                 try await presentation(page)
-                if capture {
+                if sidebarToggle {
+                    try await captureSidebarPixels(window, store: store, web: page)
+                } else if capture {
                     try await captureResizePixels(window, web: page, direct: direct,
                                                   proposalInterval: slowResize ? .milliseconds(40) : .milliseconds(8))
                 } else {
@@ -117,6 +125,51 @@ import XCTest
         if let failure { throw failure }
     }
 
+    private func captureSidebarPixels(_ window: VaneWindow, store: TabStore, web: WKWebView) async throws {
+        try await compatibilityWait { NSApp.isActive && window.isKeyWindow }
+        let originalFrame = window.frame
+        let originalWidth = web.bounds.width
+        let owner = ResizeCaptureOwner()
+        let observations = [
+            NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
+                object: window, queue: .main) { _ in MainActor.assumeIsolated { owner.interrupted = true } },
+            NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                object: NSApp, queue: .main) { _ in MainActor.assumeIsolated { owner.interrupted = true } }
+        ]
+        defer { observations.forEach(NotificationCenter.default.removeObserver) }
+        let sampler = ResizePixelSampler()
+        try await sampler.start(window)
+        do {
+            let baseline = try XCTUnwrap(sampler.frames.last)
+            let began = CACurrentMediaTime()
+            store.toggleSidebar()
+            // Capture the whole transition, including frames before its endpoint.
+            try await Task.sleep(for: .milliseconds(650))
+            let ended = CACurrentMediaTime()
+            try await presentation(web)
+            let presented = CACurrentMediaTime()
+            try await compatibilityWait { (sampler.frames.last?.time ?? 0) >= presented }
+            try await sampler.stop()
+            try sampler.frames.saveImages(prefix: "sidebar-\(ProcessInfo.processInfo.processIdentifier)")
+            let samples = sampler.frames.samples.filter { $0.time >= began && $0.time <= ended }
+            let maximum = samples.map(\.gap).max() ?? 0
+            print("SIDEBAR_PIXELS samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum) width=\(originalWidth)->\(web.bounds.width)")
+            XCTAssertFalse(owner.interrupted, "Sidebar capture must retain actual foreground ownership")
+            XCTAssertGreaterThan(samples.count, 3)
+            XCTAssertEqual(window.frame, originalFrame, "Sidebar closing must not resize the window")
+            XCTAssertFalse(store.sidebarShown)
+            XCTAssertGreaterThan(web.bounds.width, originalWidth + 200)
+            XCTAssertEqual(web.pageZoom, 1)
+            XCTAssertLessThanOrEqual(maximum, baseline.gap + 2,
+                "Closing the sidebar must not expose unpainted page width")
+            XCTAssertLessThanOrEqual(try XCTUnwrap(sampler.frames.last).markerGap, baseline.markerGap + 2,
+                "The fixed page marker must finish at the expanded viewport edge")
+        } catch {
+            try? await sampler.stop()
+            throw error
+        }
+    }
+
     private func captureResizePixels(_ window: VaneWindow, web: WKWebView, direct: Bool,
                                      proposalInterval: Duration) async throws {
         // Diagnostic reference: the original geometry-only path must remain RED.
@@ -140,6 +193,7 @@ import XCTest
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
             let began = CACurrentMediaTime()
+            let frameHeight = window.frame.height
             if !baselineControl {
                 window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.maxY))
             }
@@ -148,9 +202,11 @@ import XCTest
                 + Array(stride(from: 1260, through: 900, by: -40))
             for width in widths {
                 let deadline = ContinuousClock.now + proposalInterval
-                let size = NSSize(width: width, height: 600)
+                let size = NSSize(width: CGFloat(width), height: frameHeight)
                 let accepted = baselineControl ? size : window.proposedPageResize(size)
-                window.setContentSize(accepted)
+                if accepted != window.frame.size {
+                    window.setFrame(NSRect(origin: window.frame.origin, size: accepted), display: false)
+                }
                 try await ContinuousClock().sleep(until: deadline)
             }
             try await compatibilityWait { !window.isPreparingPageResize }
@@ -166,6 +222,8 @@ import XCTest
             XCTAssertFalse(owner.interrupted, "Foreground admission was lost during the native resize capture")
             XCTAssertGreaterThanOrEqual(owner.maxWidth, 1100, "The window must actually grow during capture")
             XCTAssertEqual(window.frame.width, 900, accuracy: 1, "Commit the latest queued request")
+            XCTAssertEqual(window.frame.height, frameHeight, accuracy: 1,
+                           "Native width proposals must not repeatedly add the titlebar height")
             let maximum = samples.map(\.gap).max() ?? 0
             print("RESIZE_PIXELS baselineControl=\(baselineControl) direct=\(direct) samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum)")
             XCTAssertLessThanOrEqual(maximum, baseline.gap + 2,

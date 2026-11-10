@@ -98,3 +98,29 @@ All13 preparation tests and pure checks pass on merged main8f0a6ef9. Read-only
 independent review of this timeout/recovery diff found no actionable issues.
 A real120ms busy resize-handler pixel fixture is compiled; its foreground
 validation and the user's fresh native-drag preview remain pending.
+
+## Responsive style equality improvement
+
+Measured the true page-work bottleneck on private GitHub pages: inherited CSS custom-property equality during style changes. A harmless count change skips WebKit's deep comparison. Inline-root control/hint/control reduced steady width latency from154–178ms to15–16ms; a browser-owned constructed stylesheet preserved HTML attributes and every visible style/geometry fingerprint while reducing169–184ms to41–46ms.
+
+Implement the safer stylesheet path only on variable-heavy documents. Keep the existing paint-before-growth coordinator and exact responsive viewport. Use two private unused entries to avoid cancelling ordinary one-entry media-query changes. Keep one reusable sheet per document and clear active declarations after the final live-resize preparation or cancellation. Preserve author stylesheets, navigation ownership, and page zoom.
+
+Required checks: production preparation latency regression RED171ms vs70ms bound; GREEN candidate with identical bound; local private-page visual/style/attribute and cleanup invariants; original16 native sizing/coverage cases; visible WindowServer motion on the real responsive workload; fresh personal preview. No push/fullCI/base/merge without coordinator authorization. Latest user directive prohibits cross-agent messages; results stay in this thread.
+
+
+## Sidebar-close coverage and remaining smoothness
+
+User tested the live-media optimization and reports an overall improvement, but still sees a right strip specifically while closing the sidebar. They do not identify a single hitch. This transition changes the internal page width without an outer window proposal, bypassing WindowResizePreparation. First reproduce with actual WindowServer pixels on the real BrowserWindowHost, while leaving the window frame unchanged and asserting normal page zoom. Preserve the strict settled-gutter+2pt coverage bound and a final fixed-right marker.
+
+If reproduced, prepare the final viewport before beginning the discrete sidebar close, with cancellation/reversal/owner guards and ordinary brief sidebar animation. Keep the accepted live responsive window drag; do not hold a wider layout for its duration or scale page content. Measure any further per-frame optimization before adopting it. No full CI/push/base/merge without central authorization; personal approval still pending.
+
+
+### 2026-11-11 tested checkpoint and pause
+
+The sidebar-close regression reproduced216pt of unpainted width. Prepare the final viewport before publishing the close, retain native sizing through the slide, and give painting and configured animation separate generation-guarded deadlines. The first candidate's64pt residual strip was traced to the paint watchdog firing during the legitimate slide; a deterministic model reproduced the same early restoration. An additional half-point endpoint regression prevents applying the final parent delta twice.
+
+Restored checkpoint:30 unshown model/style/zoom cases PASS, primary0/cleanup0; all4 strict native viewport/coverage cases PASS, primary0/cleanup0. Sidebar maximum gap1.7142858pt equals its settled gutter; exact final viewport878pt. Ordinary window browser gap1.714pt/native0;120ms busy-handler browser maximum1.857pt versus1.714pt settled/native0. Bounds unchanged. Receipts are preserved at `/Users/nuh/.t3/userdata/artifacts/vane-resize-sidebar-checkpoint-20261111`.
+
+Overall window smoothness remains user-gated. The earlier actual WindowServer motion check retained an initial93.86ms pause against80ms; p9557.79ms/maxstep20pt passed their bounds. No repaired-cadence or READY claim. Latest user says improved but still room for improvement. A directional hint-band experiment reduced deterministic stylesheet refreshes but did not improve the controlled aggregate timings (mean17.87ms control versus18.77ms candidate); archived and reverted. The restored source is the state validated by the30-model/4-native pass, rather than that experiment. Current compiled build products include the later archived experiment and must not be packaged as this checkpoint without rebuilding.
+
+Coordinator requested a usage pause: no further optimization, tests, captures, previews, delegates, push, CI, base update or merge now. Keep #618 draft and preserve the existing isolated preview. Fresh independent review and personal outer-window approval remain pending.

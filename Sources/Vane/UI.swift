@@ -97,6 +97,7 @@ struct WebView: NSViewRepresentable {
 final class WebHost: NSView {
     var resizeLayout = PageResizeLayout()
     var resizeFraction = NSSize(width: 1, height: 1)
+    var pageLayoutDidResize: (() -> Void)?
     private(set) var web: WKWebView?
     /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
     /// of the window's key loop and out of the accessibility tree, so an invisible page is
@@ -117,6 +118,19 @@ final class WebHost: NSView {
         self.offscreen = offscreen
         isHidden = offscreen
         if let web { show(web) }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if !offscreen, let web { PageResizeStyle.warm(web) }
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let previous = frame.size
+        let wasEmpty = frame.width <= 0 || frame.height <= 0
+        super.setFrameSize(newSize)
+        if previous != newSize { pageLayoutDidResize?() }
+        if wasEmpty, !offscreen, let web { PageResizeStyle.warm(web) }
     }
 
     func removePage() {
@@ -229,6 +243,7 @@ final class WebHost: NSView {
         }
         next.isHidden = false
         web = next
+        if outgoing !== next { PageResizeStyle.warm(next) }
         recent.removeAll { $0 === next }
         recent.insert(next, at: 0)
         // WebKit's docked inspector is also a WKWebView sibling. Only pages we

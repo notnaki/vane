@@ -14,10 +14,38 @@ final class VaneWindow: NSWindow {
     private var resizePreparation: WindowResizePreparation?
     private var resizeAnchor: WindowResizeAnchor?
     private var committingResize = false
+    private var sidebarResizePreparation: SidebarPageResizePreparation?
+
+    /// A second close command cancels the pending close; a command after its
+    /// publication may proceed as a normal reopen.
+    func cancelSidebarResize() -> Bool {
+        let waiting = sidebarResizePreparation?.awaitingPaint == true
+        sidebarResizePreparation?.cancel()
+        sidebarResizePreparation = nil
+        return waiting
+    }
+
+    func prepareSidebarClose(_ store: TabStore) -> Bool {
+        guard isVisible, !isPreparingPageResize, !inLiveResize, let root = contentView,
+              store.sidebarShown, !store.libraryOpen else { return false }
+        let expansion = SidebarWidth.shared.width - Look.cardGap
+        let pages = WindowResizePreparation.targets(in: root, nextSize: root.bounds.size,
+                                                    leadingExpansion: expansion)
+        guard !pages.isEmpty else { return false }
+        let preparation = SidebarPageResizePreparation(window: self, pages: pages,
+            isCurrent: { [weak self, weak store] in
+                guard let self, let store else { return false }
+                return store.window === self && store.profileVisible && store.sidebarShown && !store.libraryOpen
+            }, commit: { [weak store] in store?.sidebarShown = false })
+        sidebarResizePreparation = preparation
+        preparation.start()
+        return true
+    }
 
     var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true }
 
     @discardableResult func preparePageResize(frame: NSRect, display: Bool) -> Bool {
+        _ = cancelSidebarResize()
         if resizePreparation == nil {
             resizePreparation = WindowResizePreparation(window: self) { [weak self] frame, display in
                 self?.commitPreparedResize(frame, display: display)
@@ -34,7 +62,9 @@ final class VaneWindow: NSWindow {
     }
 
     func beginPageResize(at point: NSPoint = NSEvent.mouseLocation) {
+        _ = cancelSidebarResize()
         resizeAnchor = WindowResizeAnchor(frame: frame, pointer: point)
+        resizePreparation?.beginLiveResize()
     }
 
     func proposedPageResize(_ size: NSSize) -> NSSize {
@@ -49,18 +79,21 @@ final class VaneWindow: NSWindow {
     }
 
     override func close() {
+        _ = cancelSidebarResize()
         endPageResize()
         resizePreparation?.cancel()
         super.close()
     }
 
     override func miniaturize(_ sender: Any?) {
+        _ = cancelSidebarResize()
         endPageResize()
         resizePreparation?.cancel()
         super.miniaturize(sender)
     }
 
     override func toggleFullScreen(_ sender: Any?) {
+        _ = cancelSidebarResize()
         endPageResize()
         resizePreparation?.cancel()
         super.toggleFullScreen(sender)

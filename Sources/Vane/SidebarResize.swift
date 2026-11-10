@@ -151,7 +151,7 @@ struct SidebarHandle: View {
                         start = nil
                         sidebar.save()
                         if SidebarWidth.shouldCollapse(proposed) {
-                            store.sidebarShown = false
+                            if store.sidebarShown { store.toggleSidebar() }
                             axAnnounce("Sidebar hidden.")
                         } else {
                             axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")
