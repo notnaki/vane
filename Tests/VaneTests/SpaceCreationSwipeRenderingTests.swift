@@ -25,13 +25,21 @@ import XCTest
     }
 
     func testPacedRecordedPullOpensCreationAfterSwipingAcrossThreeProfiles() async throws {
+        try await checkRecordedCrossProfilePull()
+    }
+
+    func testRecordedPullKeepsTheExistingProfilesFooterMarkers() async throws {
+        try await checkRecordedCrossProfilePull(withAmbientSpace: true)
+    }
+
+    private func checkRecordedCrossProfilePull(withAmbientSpace: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
         defer { app.setActivationPolicy(policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
-        do { try await exerciseRecordedCrossProfilePull() }
+        do { try await exerciseRecordedCrossProfilePull(withAmbientSpace: withAmbientSpace) }
         catch { failure = error }
         do { try await loop.close() }
         catch {
@@ -41,7 +49,7 @@ import XCTest
         if let failure { throw failure }
     }
 
-    private func exerciseRecordedCrossProfilePull() async throws {
+    private func exerciseRecordedCrossProfilePull(withAmbientSpace: Bool) async throws {
         let oldWidth = SidebarWidth.shared.width
         let iconKey = SpaceFooterPreferences.showIconsKey
         let oldIcons = UserDefaults.vane.object(forKey: iconKey)
@@ -54,6 +62,12 @@ import XCTest
         }
         let manager = ProfileManager.shared
         let previous = manager.active
+        let ambient = withAmbientSpace ? manager.create(name: "Existing footer profile") : nil
+        let ambientSpace = ambient.map { manager.createSpace(name: "Existing Space", in: $0.id) }
+        defer {
+            if let ambient { _ = manager.delete(ambient.id) }
+            manager.active = previous
+        }
         let profiles = (1...3).map { manager.create(name: "Recorded swipe profile \($0)") }
         let spaces = profiles.map { manager.createSpace(name: "Recorded swipe", in: $0.id) }
         let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
@@ -61,7 +75,6 @@ import XCTest
         defer {
             window.close()
             profiles.forEach { _ = manager.delete($0.id) }
-            manager.active = previous
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -104,6 +117,15 @@ import XCTest
             try await compatibilityWait { !store.spaceGesture.monitor.preparedSlides.isEmpty }
         }
         print("RECORDED_CREATION_PREREQUISITES reducedMotion=\(Motion.spaceReduced) prepared=\(store.spaceGesture.monitor.preparedSlides.count)")
+        // The original shard can leave other registered Spaces. Derive the
+        // complete expected marker set independently of the rendered output.
+        let registeredSpaces = manager.profiles.flatMap { manager.spaces(for: $0.id) }
+        let expectedMarkerIDs = Set(registeredSpaces.map(\.id))
+        XCTAssertEqual(expectedMarkerIDs.count, registeredSpaces.count)
+        XCTAssertEqual(Array(registeredSpaces.suffix(spaces.count)).map(\.id), spaces.map(\.id))
+        XCTAssertEqual(store.strip.map(\.id), registeredSpaces.map(\.id))
+        XCTAssertEqual(store.currentSpaceID, registeredSpaces.last?.id)
+        if let ambientSpace { XCTAssertTrue(expectedMarkerIDs.contains(ambientSpace.id)) }
         // Real trackpad packets from the reported failure: drift grows only after axis lock.
         let samples: [(TimeInterval, CGFloat, CGFloat)] = [
             (0.000000000, -1, 0),
@@ -169,7 +191,7 @@ import XCTest
             guard let root = presented ? host.layer?.presentation() : host.layer else { return [:] }
             var result: [UUID: CGFloat] = [:]
             for view in footerViews(in: host) where view.owner === store && !view.isHiddenOrHasHiddenAncestor {
-                guard let config = view.configuration, config.layout.count == spaces.count + 1,
+                guard let config = view.configuration, config.layout.count == expectedMarkerIDs.count + 1,
                       let model = view.marker?.layer,
                       let layer = presented ? model.presentation() : model else { continue }
                 result[config.id] = layer.convert(CGPoint(x: layer.bounds.midX, y: layer.bounds.midY), to: root).x
@@ -183,7 +205,7 @@ import XCTest
             CATransaction.flush()
             let model = footerCenters(presented: false)
             let visible = footerCenters(presented: true)
-            guard model.count == spaces.count, visible.count == spaces.count,
+            guard Set(model.keys) == expectedMarkerIDs, Set(visible.keys) == expectedMarkerIDs,
                   model.allSatisfy({ id, x in abs((visible[id] ?? .infinity) - x) < 0.1 }) else { return false }
             baseline = visible
             return true
@@ -196,19 +218,23 @@ import XCTest
         defer { slotPublication.cancel() }
         NSApp.sendEvent(ScrollEvent(window: window, phase: .ended, timestamp: 3.375062042))
         var excursions: [CGFloat] = []
+        var incompleteMarkerSamples = 0
         let sampleEnd = ContinuousClock.now + .milliseconds(350)
         // Sample immediately after release within the existing form-readiness
         // deadline, including frames after the form first becomes usable.
         try await compatibilityWait {
             let centers = footerCenters(presented: true)
-            if centers.count == spaces.count {
+            if Set(centers.keys) == expectedMarkerIDs {
                 excursions.append(baseline.map { id, x in abs((centers[id] ?? x) - x) }.max() ?? 0)
-            }
+            } else { incompleteMarkerSamples += 1 }
             return ContinuousClock.now >= sampleEnd
+                && Set(centers.keys) == expectedMarkerIDs
                 && store.creatingSpace && formIsUsable(in: host, window: window)
         }
         print("CREATION_FOOTER_MAX_EXCURSION points=\(excursions.max() ?? .infinity) samples=\(excursions.count)")
         XCTAssertGreaterThan(excursions.count, 3, "Observe native footer frames across release")
+        XCTAssertEqual(incompleteMarkerSamples, 0,
+                       "Every existing Space marker must remain present throughout release")
         XCTAssertLessThanOrEqual(excursions.max() ?? .infinity, 0.5,
                                  "Existing footer markers must not hop when the pulled creation slot becomes the form")
         XCTAssertFalse(store.spaceSwiping)
