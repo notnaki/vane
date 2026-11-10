@@ -26,6 +26,7 @@ import XCTest
         }
     }
     func testRetireManifest() async throws {
+        F6DiagnosticHostTrace.record("fresh-retirement")
         try await NativeFixtureRetirement.retireManifest()
     }
 

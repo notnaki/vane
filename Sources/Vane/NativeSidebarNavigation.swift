@@ -303,6 +303,7 @@ import SwiftUI
         if activeOuterToken == token { activeOuterToken = nil }
     }
     static func outerFocusChanged(_ focused: Bool, token: UUID) {
+        F6StageTrace.record("native-focus-callback", "token=\(token) focused=\(focused) window=\(F6StageTrace.identity(outerControls[token]?.anchor?.window)) holder=\(F6StageTrace.identity(outerControls[token]?.anchor?.window?.firstResponder))")
         guard let control = outerControls[token] else { return }
         if focused, let window = control.anchor?.window, window.isKeyWindow,
            let responder = window.firstResponder, !(responder is NSTextView) {

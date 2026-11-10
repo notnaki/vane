@@ -1586,6 +1586,7 @@ extension TabStore {
 
     /// F6 crosses the page/chrome boundary even when WebKit keeps Tab inside its document.
     func focusNextArea() {
+        F6StageTrace.record("entry", "window=\(F6StageTrace.identity(window)) holder=\(F6StageTrace.identity(window?.firstResponder)) palette=\(palette != nil) modal=\(NSApp.modalWindow != nil) sheet=\(window?.attachedSheet != nil) request=\(chromeFocusRequested)")
         guard let window, palette == nil, window.attachedSheet == nil,
               NSApp.modalWindow == nil else { return }
         let holder = window.firstResponder
@@ -1593,6 +1594,7 @@ extension TabStore {
         let onPage = (holder as? NSView).map { responder in
             page.map { responder === $0 || responder.isDescendant(of: $0) } ?? false
         } ?? false
+        F6StageTrace.record("input", "holder=\(F6StageTrace.identity(holder)) page=\(F6StageTrace.identity(page)) onPage=\(onPage) active=\(NSApp.isActive) key=\(window.isKeyWindow) library=\(libraryOpen) sidebar=\(sidebarShown)")
         if !onPage, holder != nil, holder !== window,
            let page, page.window === window {
             window.makeFirstResponder(page)
@@ -1609,10 +1611,12 @@ extension TabStore {
             librarySwipeMonitor.cancelPendingActivation(toward: false)
         }
         DispatchQueue.main.async { [weak self, weak holder] in
+            F6StageTrace.record("queued-guard", "self=\(self != nil) window=\(F6StageTrace.identity(self?.window)) expected=\(F6StageTrace.identity(holder)) actual=\(F6StageTrace.identity(self?.window?.firstResponder)) palette=\(self?.palette != nil) modal=\(NSApp.modalWindow != nil) sheet=\(self?.window?.attachedSheet != nil)")
             guard let self, let window = self.window, self.palette == nil,
                   window.attachedSheet == nil, NSApp.modalWindow == nil,
                   window.firstResponder === holder else { return }
             self.chromeFocusRequested = true
+            F6StageTrace.record("published", "request=\(self.chromeFocusRequested) holder=\(F6StageTrace.identity(window.firstResponder))")
         }
     }
 

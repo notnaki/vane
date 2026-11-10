@@ -98,11 +98,13 @@ import ObjectiveC
     }
 
     func testPageScriptErrorDoesNotRejectWorkingBackgroundAndPopup() async throws {
+        F6StageTrace.host("extension-before-loop")
         let app = NSApplication.shared
         let policy = app.activationPolicy()
         if policy == .prohibited { app.setActivationPolicy(.accessory) }
         defer { app.setActivationPolicy(policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire()
+        F6StageTrace.host("extension-after-loop-acquire")
         var failure: (any Error)?
         do { try await exercisePageScriptError() } catch { failure = error }
         do { try await loop.close() }
@@ -110,6 +112,7 @@ import ObjectiveC
             if failure == nil { failure = error }
             else { XCTFail("Background fixture AppKit loop cleanup also failed: \(error)") }
         }
+        F6StageTrace.host("extension-after-loop-close")
         if let failure { throw failure }
     }
 

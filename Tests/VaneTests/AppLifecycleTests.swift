@@ -3,6 +3,24 @@ import XCTest
 @testable import vane
 
 @MainActor final class AppLifecycleTests: XCTestCase {
+    override class func setUp() {
+        super.setUp()
+        F6DiagnosticHostTrace.record("prefix-primary")
+        MainActor.assumeIsolated { F6StageTrace.host("prefix-before-first-case") }
+    }
+
+    override func setUp() {
+        super.setUp()
+        let caseName = name
+        MainActor.assumeIsolated { F6StageTrace.host("app-lifecycle-case-start \(caseName)") }
+    }
+
+    override func tearDown() {
+        let caseName = name
+        MainActor.assumeIsolated { F6StageTrace.host("app-lifecycle-case-end \(caseName)") }
+        super.tearDown()
+    }
+
     private func window() -> NSWindow {
         TestEnvironment.prepare()
         _ = NSApplication.shared

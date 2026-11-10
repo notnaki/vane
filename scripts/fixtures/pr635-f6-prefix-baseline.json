@@ -1,0 +1,1329 @@
+{
+  "source_head": "81a355405d9216548baa42be06b66208d454ee8d",
+  "source_job": 130023444291,
+  "raw_cross_phase_inventory": "failed-full-shard-prefix-through-f6.json",
+  "raw_cross_phase_sha256": "b66f1ece1d7573bd52e88800e8ffb6b35f44a2eeaa2227c664245c0098c569e2",
+  "external_preflight": {
+    "primary": [
+      "VaneTests.NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops"
+    ],
+    "cleanup": [
+      "VaneTests.NativeFixtureRetirementTests/testRetireManifest"
+    ],
+    "separate_hosts": true
+  },
+  "primary_prefix": {
+    "driver_pid": 1967,
+    "count": 258,
+    "ordered_case_ids": [
+      "VaneTests.AppLifecycleTests/testClosingTheLastMinimizedWindowRestoresThePreviousOne",
+      "VaneTests.AppLifecycleTests/testCommandQQuitsImmediatelyAfterTheLastWindowCloses",
+      "VaneTests.AppLifecycleTests/testCommandQStillWarnsWithAMinimizedWindow",
+      "VaneTests.AppLifecycleTests/testCommandQStillWarnsWithAnOpenWindow",
+      "VaneTests.AppLifecycleTests/testDockClickLeavesMinimizedWindowsAloneWhileAnotherWindowIsOpen",
+      "VaneTests.AppLifecycleTests/testDockClickRestoresAMinimizedWindowDespiteTheVisibleWindowsFlag",
+      "VaneTests.AppLifecycleTests/testDockClickRestoresOnlyTheLastMinimizedWindowRatherThanTheLastCreated",
+      "VaneTests.AppLifecycleTests/testFloatingPanelDoesNotPreventRestoringAMinimizedWindow",
+      "VaneTests.AppLifecycleTests/testMinimizingARestoredWindowMakesItTheMostRecentAgain",
+      "VaneTests.AppLifecycleTests/testOffscreenPreviewHostDoesNotCauseAQuitWarning",
+      "VaneTests.AppLifecycleTests/testOffscreenPreviewHostDoesNotPreventRestoringAMinimizedWindow",
+      "VaneTests.BackupEncryptionTests/testEmptyPasswordCannotSilentlyProducePlaintext",
+      "VaneTests.BackupEncryptionTests/testIndependentPythonAESGCMAndPBKDF2ReferenceCanBeRead",
+      "VaneTests.BackupEncryptionTests/testPasswordProtectsAllArchiveContentsAndRequiresUnlock",
+      "VaneTests.BackupEncryptionTests/testRepeatedEncryptionUsesFreshSaltAndNonce",
+      "VaneTests.BackupEncryptionTests/testTamperedOrTruncatedEncryptedFilesCannotBePreviewed",
+      "VaneTests.BackupEncryptionTests/testUnencryptedLegacyBackupsRemainReadable",
+      "VaneTests.BackupLibraryTests/testClosedProfileFavouritesAndSharedGridCountOnce",
+      "VaneTests.BackupLibraryTests/testClosedProfilesSettingsAndEaselIdentitySurviveCapture",
+      "VaneTests.BackupLibraryTests/testEmbeddedImageBytesAndSidecarArePreserved",
+      "VaneTests.BackupLibraryTests/testGlobalDefaultsAndLocalBookkeepingAreExcluded",
+      "VaneTests.BackupLibraryTests/testImportedListsAndPreferenceReferencesAreIncluded",
+      "VaneTests.BackupLibraryTests/testMalformedPresentFilesAndOrphanProfilesAreRejected",
+      "VaneTests.BackupLibraryTests/testPreviewCountsSpaceAndSharedSessionTabsWithoutInflation",
+      "VaneTests.BackupLibraryTests/testSourceSymlinkIsRejectedAndDamagedOriginalsCanBePreserved",
+      "VaneTests.BackupLibraryTests/testSQLiteSnapshotIncludesUncheckpointedWAL",
+      "VaneTests.BackupRestoreTests/testCancellationAndInvalidIncomingNeverChangeTheLibrary",
+      "VaneTests.BackupRestoreTests/testCorruptedStagedBytesNeverTouchCurrentLibrary",
+      "VaneTests.BackupRestoreTests/testDamagedCurrentLibraryCanBeReplacedAndItsOriginalsKept",
+      "VaneTests.BackupRestoreTests/testDamagedDatabaseAndWALRollBackExactly",
+      "VaneTests.BackupRestoreTests/testEveryInterruptedMutationRollsBackOnNextLaunch",
+      "VaneTests.BackupRestoreTests/testInterruptedPreparationNeverPublishesPendingTransaction",
+      "VaneTests.BackupRestoreTests/testInterruptedRestorePreservesPreviouslyEnabledBoostScriptsOnRollback",
+      "VaneTests.BackupRestoreTests/testInterruptedRestoreRollsBackRememberedSecurityDecisionsExactly",
+      "VaneTests.BackupRestoreTests/testRestoredBoostScriptsRequireEnablingAgainWithoutLosingCodeOrStyles",
+      "VaneTests.BackupRestoreTests/testRestoreDiscardsRememberedSecurityDecisionsAcrossProfiles",
+      "VaneTests.BackupRestoreTests/testRestoreInvalidatesOldFallbacksAndInterruptedRestoreRollsThemBack",
+      "VaneTests.BackupRestoreTests/testRestoreReplacesOwnedDataRemovesAbsentFilesAndPreservesUnrelatedData",
+      "VaneTests.BackupRestoreTests/testRollbackFailureRetainsJournalAndOriginals",
+      "VaneTests.BackupRestoreTests/testSuccessfulDamagedRestoreRetainsRawDatabaseJournalsInRecoveryPoint",
+      "VaneTests.BackupRestoreTests/testSymlinkRecoveryAndStagingFailureDoNotTouchOriginals",
+      "VaneTests.BackupWorkerTests/testBlockedBackupWorkerLeavesMainActorResponsiveAndExportOrdered",
+      "VaneTests.BackupWorkerTests/testBlockedBundleVerificationLeavesMainActorFreeAndKeepsRollbackUntilHealth",
+      "VaneTests.BackupWorkerTests/testContinuousFileChangesRejectSnapshotAndLeaveOriginals",
+      "VaneTests.BackupWorkerTests/testDamagedEvidenceCaptureDoesNotRebuildOriginalSHMAndRefreshKeepsRawProof",
+      "VaneTests.BackupWorkerTests/testRestoreFinalGateDrainsEaselEditAdmittedDuringPreparationAndRejectsNewEdits",
+      "VaneTests.BackupWorkerTests/testRestoreFinalWriteFailureCancelsPendingBeforeReleasingQueuedIngress",
+      "VaneTests.BackupWorkerTests/testRestorePreservesChangesSavedAfterAsynchronousPreparation",
+      "VaneTests.BackupWorkerTests/testStableCaptureRetriesAnAtomicFileReplacement",
+      "VaneTests.BackupWorkerTests/testStableCaptureRetriesChangedPreferences",
+      "VaneTests.BangScopeTests/testAdditionalDefaultSitesSupportBothWordsAndBangs",
+      "VaneTests.BangScopeTests/testCustomKeywordsKeepPrecedenceOverSiteNames",
+      "VaneTests.BangScopeTests/testExplicitBangsActivateOnlyOnceDelimited",
+      "VaneTests.BangScopeTests/testScopeSearchTreatsQueriesLiterallyAndSupportsEmptyHomepage",
+      "VaneTests.BangScopeTests/testSiteScopeIncludesSubdomainsButRejectsSimilarHosts",
+      "VaneTests.BangScopeTests/testWordsAndNamesOfferExactShortcuts",
+      "VaneTests.BlockerTests/testAcceptedSnapshotStillRecompilesSiteExceptionsAfterSourceFailure",
+      "VaneTests.BlockerTests/testBadfilterCanonicalizesSupportedPartyAliasesDomainsAndInsensitivePatterns",
+      "VaneTests.BlockerTests/testBadfilterDisablesOnlyMatchingSupportedNetworkRuleAcrossSources",
+      "VaneTests.BlockerTests/testBadfilterDomainDecompositionIsReportedInsteadOfPretendingToDisableSubset",
+      "VaneTests.BlockerTests/testBadfilterRejectsRepeatedOrderSensitiveOptionsWithoutRemovingDifferentRule",
+      "VaneTests.BlockerTests/testCaseSensitiveRulesPreservePatternCase",
+      "VaneTests.BlockerTests/testCaseSensitiveSeparatorStillTreatsUppercaseLettersAsWordCharacters",
+      "VaneTests.BlockerTests/testConditionalBranchesAreNotUnconditionallyInstalled",
+      "VaneTests.BlockerTests/testConditionalStateCannotSuppressAnotherSourceOrItsExceptions",
+      "VaneTests.BlockerTests/testCRLFReportsOriginalLineNumbers",
+      "VaneTests.BlockerTests/testDiagnosticSamplesAreBoundedButCountsAreComplete",
+      "VaneTests.BlockerTests/testDiagnosticsKeepLineNumbersAndCountReasons",
+      "VaneTests.BlockerTests/testExceptionRegexExcludesExactTopHostForNetworkAndCosmeticRules",
+      "VaneTests.BlockerTests/testImportDialogKeepsLongDiagnosticsInScrollingReport",
+      "VaneTests.BlockerTests/testLinkedSourcePublicationValidatesAllOtherSourcesBeforeSaving",
+      "VaneTests.BlockerTests/testMixedAndMalformedDomainsNeverBecomeBroaderRules",
+      "VaneTests.BlockerTests/testNegatedTypesNarrowExplicitPositiveTypes",
+      "VaneTests.BlockerTests/testPrivateRuleCacheIsSeparateAndSweepingPreservesLiveOwners",
+      "VaneTests.BlockerTests/testSafeRegularExpressionsPreserveAnchorsClassesEscapesAndOptions",
+      "VaneTests.BlockerTests/testSiteExceptionsPersistPerProfileAndPrivateExceptionsStayInMemory",
+      "VaneTests.BlockerTests/testUnsupportedNegationsCannotBroadenOrInvertRules",
+      "VaneTests.BlockerWebKitTests/testCaseAndNarrowedResourceOptionsActuallyControlScriptLoading",
+      "VaneTests.BlockerWebKitTests/testExactSiteExceptionAllowsBlockedRequestsAndCosmeticsOnlyOnThatHost",
+      "VaneTests.BlockerWebKitTests/testLinkedSettingsOperationsPublishPersistedSnapshotsIntoActualWebKitLoads",
+      "VaneTests.BoostPersistenceWorkerTests/testCachedRecordsInvalidateWhenPreferencesAreReplaced",
+      "VaneTests.BoostPersistenceWorkerTests/testDebouncedEditsFlushLatestValueAndKeepProfilesIsolated",
+      "VaneTests.CertificatePromptTests/testBackgroundSentryFailureCannotInterruptKognity",
+      "VaneTests.CertificatePromptTests/testCommittedOrMissingNavigationCannotPrompt",
+      "VaneTests.CertificatePromptTests/testDefaultHTTPSPortAndCaseInsensitiveHostStillPrompt",
+      "VaneTests.CertificatePromptTests/testOnlyTheExactHTTPSNavigationOriginCanPrompt",
+      "VaneTests.ChromiumCookieWebKitTests/testNativePublicationKeepsSecurityLifetimeExistingSessionsAndOtherProfilePrivateStores",
+      "VaneTests.DRMPlaybackEvidenceTests/testClearPlaybackCannotBeReportedAsProtected",
+      "VaneTests.DRMPlaybackEvidenceTests/testDecodedEncryptedProgressIsProtectedPlaybackEvidence",
+      "VaneTests.DRMPlaybackEvidenceTests/testFrozenSeekedFrameAndFirstSampleAreUnverified",
+      "VaneTests.DRMPlaybackEvidenceTests/testKeysWithoutDecodedProgressDoNotProvePlayback",
+      "VaneTests.DRMPlaybackEvidenceTests/testSeekingPausedAndUndecodedTimeJumpsAreUnverified",
+      "VaneTests.DataIntegrationTests/testBoostWrongTypesAndNoncanonicalOriginsCannotReachRestore",
+      "VaneTests.DataIntegrationTests/testControllerStorageAndCorruptInputFailuresPreservePopulatedLibraryAndReportFeedback",
+      "VaneTests.DataIntegrationTests/testCorruptBoostPreferencesAreRejectedBeforeRestoreAndPreservedForRecovery",
+      "VaneTests.DataIntegrationTests/testCrossProfileEaselReferenceIsRejectedWithoutChangingCurrentLibrary",
+      "VaneTests.DataIntegrationTests/testEveryPopulatedRestoreCheckpointPreservesCompleteRecoverableInventory",
+      "VaneTests.DataIntegrationTests/testPopulatedLibraryExportDeleteRestoreAndColdReopen",
+      "VaneTests.DataIntegrationTests/testPrivateFeatureActionsDoNotChangeBackupInventory",
+      "VaneTests.DataIntegrationTests/testUnavailableStorageSaveFailuresKeepLastSnapshotsAndCanRetry",
+      "VaneTests.DockMenuTests/testCloseClosesNormalAndPrivateLittleWindowsButLeavesBrowserWindowsOpen",
+      "VaneTests.DockMenuTests/testLittleWindowCommandsStayDisabledAfterMenuValidationWithoutLittleWindows",
+      "VaneTests.DockMenuTests/testShowRestoresHiddenAndMinimizedLittleWindowsAndNeverHidesThem",
+      "VaneTests.DownloadFeedbackTests/testBrowserOnlyMeasuresDownloadAnchorsWhileFeedbackIsVisible",
+      "VaneTests.DownloadFeedbackTests/testFastConsecutiveStartsCannotBeLandedOrDismissedByOlderAnimation",
+      "VaneTests.DownloadFeedbackTests/testFeedbackStaysInOriginWindowAndPrivateDownloadsStayPrivate",
+      "VaneTests.DownloadFeedbackTests/testHiddenSidebarGetsVisibleDownloadTargetInsidePage",
+      "VaneTests.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithAnimation",
+      "VaneTests.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithBatterySaver",
+      "VaneTests.DownloadFeedbackTests/testReducedMotionShowsFileIconImmediatelyAndDetachedOriginCannotMatch",
+      "VaneTests.DownloadFeedbackTests/testVisibleSidebarUsesActualLibraryTarget",
+      "VaneTests.DownloadTabWebKitTests/testBackgroundDownloadTabClosesWithoutChangingSelection",
+      "VaneTests.DownloadTabWebKitTests/testBlankScriptWindowNavigatedToDownloadCloses",
+      "VaneTests.DownloadTabWebKitTests/testBlankTargetDownloadClosesTabAndCompletesTransfer",
+      "VaneTests.DownloadTabWebKitTests/testDelayedDownloadClosesItsTabAfterSwitchingSpaces",
+      "VaneTests.DownloadTabWebKitTests/testDownloadFromExistingDocumentKeepsItsTab",
+      "VaneTests.DownloadTabWebKitTests/testDownloadFromWrittenBlankDocumentKeepsItsTab",
+      "VaneTests.DownloadTabWebKitTests/testEmptyBlankDocumentWithBackHistoryKeepsItsTab",
+      "VaneTests.DownloadTabWebKitTests/testEmptyBlankDocumentWithForwardHistoryKeepsItsTab",
+      "VaneTests.DownloadTabWebKitTests/testRedirectedBlankTargetDownloadClosesTabAndCompletesTransfer",
+      "VaneTests.DownloadTabWebKitTests/testTransferContinuesAfterItsBlankTabCloses",
+      "VaneTests.DuplicateSearchScoringTests/testDuplicateScoresKeepPerVisitPopularityAndBestHistoricalTitle",
+      "VaneTests.DuplicateSearchScoringTests/testQueryCacheDoesNotLeakAcrossQueriesEngineScopesOrCommittedChanges",
+      "VaneTests.EaselTabTests/testBoardAddressResolvesOnlyInTheTabsProfile",
+      "VaneTests.EaselTabTests/testBoardRenamesUpdateBothTabAndPinnedSidebarTitle",
+      "VaneTests.EaselTabTests/testCaptureSavesToChosenBoardWithSourceAndOpensItsNativeTab",
+      "VaneTests.EaselTabTests/testCommandPaletteOffersEaselCreationAndLibraryInAnOrdinaryWindow",
+      "VaneTests.EaselTabTests/testEaselMovesToAnotherSpaceAndSurvivesStashedSpaceSave",
+      "VaneTests.EaselTabTests/testExplicitNavigationLeavesNativeCanvasAndCanReturnToItsPinnedHome",
+      "VaneTests.EaselTabTests/testMalformedNativeAddressesAreNotLoadedByWebKit",
+      "VaneTests.EaselTabTests/testNativeCanvasIgnoresWebpageCommandsWithoutCreatingAWebView",
+      "VaneTests.EaselTabTests/testOpeningAndRestoringAnEaselKeepsNativeContentAndTheBoardAddress",
+      "VaneTests.EaselTabTests/testPrivateTabsCannotOpenPersistentEaselContent",
+      "VaneTests.EaselTabTests/testProfileMoveCannotStrandLocalEaselBoards",
+      "VaneTests.EaselTabTests/testRealSessionAndSpaceWritersPreserveEaselTabsFoldersAndSelection",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testClickingCurrentSpaceAtCreateEdgeAnimatesTheLiveViewportHome",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCancellationAnimatesTheLiveViewportHome",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCommitKeepsScrolledViewportUntilFormTakesOver",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeNeverShowsAnOutgoingViewportAtTheTop",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryDiagonalStartupAndMomentumKeepTheClaimedViewportSteady",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgeCommitAndCloseRestoreTheScrolledViewport",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgePreservesScrolledLiveViewportThroughClaimReversalAndCancel",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryWithAnActivePageKeepsTheScrolledViewportAndPageWidthSteady",
+      "VaneTests.ExtensionBackgroundStartupTests/testEscapedIdentifierPreservesClassicStrictFailure",
+      "VaneTests.ExtensionBackgroundStartupTests/testLaunchClearsCrashStageBeforeAnyInstallationWasAccepted",
+      "VaneTests.ExtensionBackgroundStartupTests/testLaunchPreservesRevisionsWhenIndexIsMissingCorruptOrRetainedForRecovery",
+      "VaneTests.ExtensionBackgroundStartupTests/testLaunchSweepDoesNotFollowRevisionSymlinks",
+      "VaneTests.ExtensionBackgroundStartupTests/testLaunchSweepsOnlyUnreferencedInactiveRevisionsForThisProfile",
+      "VaneTests.ExtensionBackgroundStartupTests/testOnlyReportedRuntimeScriptErrorsAreNonblocking",
+      "VaneTests.ExtensionBackgroundStartupTests/testPageScriptErrorDoesNotRejectWorkingBackgroundAndPopup",
+      "VaneTests.ExtensionBackgroundStartupTests/testRemovalAfterCacheReplyCannotLeaveAnUntrackedLoadedContext",
+      "VaneTests.ExtensionBackgroundStartupTests/testThrowingAcceptedWorkerRestoreLeavesVisibleFailureAndRetainsAcceptedCode",
+      "VaneTests.ExtensionBackgroundStartupTests/testThrowingWorkerInstallFinishesAndDiscardsCandidate",
+      "VaneTests.ExtensionBackgroundStartupTests/testThrowingWorkerUpdateFinishesAndRetainsAcceptedVersion",
+      "VaneTests.ExtensionBackgroundStartupTests/testValidWorkerInstallAndRestoreComplete",
+      "VaneTests.ExtensionBackgroundStartupTests/testVersionBumpedThrowingWorkerUpdateFinishesAndRetainsAcceptedVersion",
+      "VaneTests.ExtensionCompatibilityTests/testApprovedContentScriptExecutesOnlyInItsProfileAndMatchingOrigin",
+      "VaneTests.ExtensionCompatibilityTests/testDeletingProfileRemovesOnlyItsExtensionIdentities",
+      "VaneTests.ExtensionCompatibilityTests/testLocalStorageAndRuntimeIdentitySurviveHostRestore",
+      "VaneTests.ExtensionCompatibilityTests/testMV2BackgroundAndMV3WorkerMessagingStorageAndAction",
+      "VaneTests.ExtensionManagementTests/testBrokenUpdateKeepsAcceptedCodeAndRecoverableConfiguration",
+      "VaneTests.ExtensionManagementTests/testConcurrentBackgroundInstallsDoNotOverwriteIdentities",
+      "VaneTests.ExtensionManagementTests/testDeclinedUpdateKeepsActiveContextAndOldApproval",
+      "VaneTests.ExtensionManagementTests/testDisableClosesOwnedOptionsAndIgnoresStaleControls",
+      "VaneTests.ExtensionManagementTests/testDisableSurvivesRestoreAndEnablePreservesIdentity",
+      "VaneTests.ExtensionManagementTests/testEmptyActionPopupIsValidForMV2AndMV3",
+      "VaneTests.ExtensionManagementTests/testExtensionPageURLsUseURLPathsInsteadOfLiteralFilenames",
+      "VaneTests.ExtensionManagementTests/testInvalidManifestEntryFailsBeforeConsent",
+      "VaneTests.ExtensionManagementTests/testManifestChangeDuringReviewCannotActivateUnreviewedCode",
+      "VaneTests.ExtensionManagementTests/testMissingContentScriptFailsBeforeConsentOrActivation",
+      "VaneTests.ExtensionManagementTests/testMovedDisabledFolderKeepsItsStateIdentityAndConsent",
+      "VaneTests.ExtensionManagementTests/testPinningAnotherExtensionPreservesInactivePins",
+      "VaneTests.ExtensionManagementTests/testRemovalDeletesAssociatedUnresolvableBookmarkOnly",
+      "VaneTests.ExtensionManagementTests/testRemovalDuringUpdateReviewCannotReactivateOrOverwriteConsent",
+      "VaneTests.ExtensionManagementTests/testRemovalOfFailedFolderDeletesIdentityConsentPinsAndDisabledState",
+      "VaneTests.ExtensionManagementTests/testResourceEscapingFolderFailsBeforeConsent",
+      "VaneTests.ExtensionManagementTests/testRevokingAdditionalAccessPreservesManifestGrants",
+      "VaneTests.ExtensionManagerPaletteTests/testManageExtensionsUsesTheOriginatingWindowsProfile",
+      "VaneTests.ExtensionManagerPaletteTests/testManagerSearchOwnsCommandFOnlyInItsWindow",
+      "VaneTests.ExtensionRuntimePermissionTests/testAllThreeRuntimeHooksGrantOrRejectOnlyTheRequest",
+      "VaneTests.ExtensionRuntimePermissionTests/testJavaScriptRuntimeRequestRejectionGrantRevocationAndExpiration",
+      "VaneTests.ExtensionRuntimePermissionTests/testRemovalDuringRuntimePromptRejectsThePendingGrant",
+      "VaneTests.ExtensionRuntimePermissionTests/testRuntimeGrantsExpireAndDoNotSurviveRestore",
+      "VaneTests.ExtensionRuntimePermissionTests/testUnsupportedHostCapabilitiesAreDisclosedAndCannotBeGranted",
+      "VaneTests.FaviconHostObservationLifetimeTests/testUnmountedIconLeafDoesNotRemainOwnedByItsCacheAndCanRemount",
+      "VaneTests.FaviconPublicationTests/testFetchedIconPublishesToTabsAndCacheBeforeBlockedPersistenceFinishes",
+      "VaneTests.FaviconPublicationTests/testIncognitoCacheNeverWritesFetchedArtwork",
+      "VaneTests.FaviconPublicationTests/testNewDeclaredIconQueuedDuringPersistenceIsNotDiscarded",
+      "VaneTests.FaviconPublicationTests/testPrivateOnlyFetchInPublicCacheDoesNotAuthorizePersistence",
+      "VaneTests.FaviconPublicationTests/testUnchangedDeclaredArtworkKeepsSiblingImageWhileRealChangesPublish",
+      "VaneTests.FavouritePreviewHoverTests/testBriefHoverDoesNotOpenAndTransferKeepsCardOpen",
+      "VaneTests.FavouritePreviewHoverTests/testKeyboardOpeningStaysUntilEscapeAndDismissCancelsDwell",
+      "VaneTests.FavouritePreviewNavigationTests/testEmbeddedFrameFailureDoesNotAbortPreview",
+      "VaneTests.FavouritePreviewNavigationTests/testMainPageStillRejectsFailuresAndUnsupportedContent",
+      "VaneTests.Feel01RestorationTests/testLargeSessionKeepsIdentityStateTitlesAndBackgroundRowsParked",
+      "VaneTests.Feel01RestorationTests/testMixedRestoreReusesOnlyMatchingProfileIdentitiesAndKeepsSectionOrder",
+      "VaneTests.Feel01RestorationTests/testUsableParkedTitleAvoidsOpeningHistoryButPlaceholderStillUsesIt",
+      "VaneTests.Feel03SearchTests/testAsyncInsertionsKeepSelectedResultPastTheDisplayCap",
+      "VaneTests.Feel03SearchTests/testFieldTakesFocusOnMountAndDoesNotStealItAfterRemoval",
+      "VaneTests.Feel03SearchTests/testHostedAddressPaletteSelectsSeedAndKeepsTypingFocus",
+      "VaneTests.Feel03SearchTests/testLateSuggestionsReuseLayoutAndPreserveArrangement",
+      "VaneTests.Feel03SearchTests/testRecentTabsMatchStableFullSortAcrossLargeCountsAndCaps",
+      "VaneTests.Feel03SearchTests/testRetiringFieldCannotTakeFocusDuringDismissal",
+      "VaneTests.Feel03SearchTests/testSelectedCompletionSurvivesHistoryCappingAndDeduplication",
+      "VaneTests.Feel03SearchTests/testSharedTabRowsRetainTheirIntendedWindow",
+      "VaneTests.Feel03SearchTests/testTabSnapshotIgnoresProgressAndTracksResultContent",
+      "VaneTests.Feel04LinkPreviewTests/testDisablingPreviewsRetiresAnAlreadyVisibleShell",
+      "VaneTests.Feel04LinkPreviewTests/testSameURLCannotReusePrivateSnapshotInAnotherTab",
+      "VaneTests.Feel04PreviewTests/testCardKeepsReferenceGeometryAsContentArrives",
+      "VaneTests.Feel04PreviewTests/testRepeatedRequestDoesNotCancelOrLoseInflightResultToCooldown",
+      "VaneTests.Feel04SkippedLoadTests/testBusySourceReplacementUnloadsTheRetiredDocument",
+      "VaneTests.Feel05DownloadPresentationTests/testMissingCompletedDownloadKeepsItsHistoricalGroupAndIdentity",
+      "VaneTests.Feel05DownloadPresentationTests/testProgressDoesNotRebuildMembershipButCompletionRenameAndRemovalDo",
+      "VaneTests.Feel06PasswordLayoutTests/testExtensionWindowVisibilityTracksCloseAndExplicitReopen",
+      "VaneTests.Feel06PasswordLayoutTests/testSwitchingSettingsToPasswordsDoesNotEnlargeTheRetainedWindow",
+      "VaneTests.Feel06PresentationTests/testReusesPresentationForUnchangedInputsAndRebuildsAfterEdits",
+      "VaneTests.Feel08FindTests/testCancelledTypingDoesNotSelectOrPublishMatches",
+      "VaneTests.Feel08FindTests/testFreshTypingBurstSelectsOnlyLatestQuery",
+      "VaneTests.Feel08FindTests/testSameURLReplacementRejectsOldFindResult",
+      "VaneTests.FolderExitTests/testBottomDropAppendsPinnedRunAfterExistingTodayTabs",
+      "VaneTests.FolderExitTests/testBottomDropLeavesCollapsedLastFolderAndKeepsRunAtEnd",
+      "VaneTests.FolderExitTests/testCrossSectionRootDropPreservesRunOrderAndEveryTab",
+      "VaneTests.FolderExitTests/testDropOnTodayMovesTidyTabsToRootInSelectionOrder",
+      "VaneTests.FolderExitTests/testRemovingNestedPinnedTabKeepsItsKindAndOtherFolderContents",
+      "VaneTests.GitHubProductionSignOutTests/testProductionSignOutDeletesRenewalSuccessorAfterWaitingForLock",
+      "VaneTests.GitHubProductionSignOutTests/testProductionSignOutPreservesReplacementSignInForSameAccount",
+      "VaneTests.HistorySearchTests/testDateRangeIsInclusiveAtStartAndExclusiveAtEnd",
+      "VaneTests.HistorySearchTests/testHistoryReadsStayInTheRequestedProfile",
+      "VaneTests.HistorySearchTests/testIndependentTitleRankingAndStableTies",
+      "VaneTests.HistorySearchTests/testTabSourcesCannotCrossProfilesOrPrivateWindows",
+      "VaneTests.HistorySearchTests/testYesterdayUsesCalendarDaysAcrossDaylightSaving",
+      "VaneTests.ImportWorkerTests/testAcceptedCSVBatchBlocksLifecycleDrainUntilAllInjectedSavesComplete",
+      "VaneTests.ImportWorkerTests/testAcceptedImportIntentDrainsAcrossPreServiceAwaitAndPauseRejectsNewIntent",
+      "VaneTests.ImportWorkerTests/testArcImportedTitlesAwaitTheSessionLaneWithoutBlockingInputActor",
+      "VaneTests.ImportWorkerTests/testBoundedSourceReadRejectsBeforeParsingOrCredentialWrites",
+      "VaneTests.ImportWorkerTests/testCancellationRollsBackAndRetainsConcurrentNormalNavigation",
+      "VaneTests.ImportWorkerTests/testCancelledArcCredentialStageNeverPublishesCookies",
+      "VaneTests.ImportWorkerTests/testCommentAndQuotedMarkupDoNotCreateFalseBookmarkTokens",
+      "VaneTests.ImportWorkerTests/testCommittedReplayPrefixReconcilesTemporaryIDsBeforeFailedSuffixEdits",
+      "VaneTests.ImportWorkerTests/testCSVParserHonorsWorkerCancellationBeforeAnyCredentialSave",
+      "VaneTests.ImportWorkerTests/testFailedAtomicImportRollsBackBothCategoriesAndStillReplaysNavigation",
+      "VaneTests.ImportWorkerTests/testFailedReplayRetainsUncommittedSuffixForRetryWithoutDuplicatingPrefix",
+      "VaneTests.ImportWorkerTests/testForgettingProfileWaitsForCancelledWorkerBeforeRemovingFiles",
+      "VaneTests.ImportWorkerTests/testForgettingSQLiteArtifactsIsIdempotentWhenSidecarsAreAlreadyGone",
+      "VaneTests.ImportWorkerTests/testHistoryExportReturnsSnapshotCountAndWritesEveryVisit",
+      "VaneTests.ImportWorkerTests/testInvalidQueuedEditsRejectBeforeAdmissionAndDoNotBlockNavigationOrRetry",
+      "VaneTests.ImportWorkerTests/testLifecyclePauseRejectsNewImportAndDrainsLateAcceptedWrites",
+      "VaneTests.ImportWorkerTests/testPasswordCSVReadParseAndInjectedCredentialBatchRunAwayFromUIActor",
+      "VaneTests.ImportWorkerTests/testQueuedClearAndFolderEditsKeepOrderWhenImportCreatesTheSameFolderName",
+      "VaneTests.ImportWorkerTests/testQueuedDeleteAddAndURLEditAreVisibleToFollowingToggle",
+      "VaneTests.ImportWorkerTests/testRepeatedUnclosedAnchorsRejectWithoutRepeatedSuffixScanning",
+      "VaneTests.ImportWorkerTests/testReplayTerminalNameConflictReportsRejectionAndStillDrainsHistory",
+      "VaneTests.ImportWorkerTests/testUnclosedQuotedAttributeRejectsWithoutRepeatedSuffixScanning",
+      "VaneTests.ImportWorkerTests/testWorkerLockWaitLeavesActorAvailableAndReplaysNavigationAndBookmarkEdits",
+      "VaneTests.KeyboardAccessibilityTests/testClosingClickedPinKeepsOutlineHiddenAndKeyboardActivationRestoresIt",
+      "VaneTests.KeyboardAccessibilityTests/testDeferredPageFocusDoesNotTakeFocusFromNewPalette",
+      "VaneTests.KeyboardAccessibilityTests/testDisabledSidebarControlLeavesKeyboardNavigationAndRejectsActivation",
+      "VaneTests.KeyboardAccessibilityTests/testF6LeavesTheLocalEaselForBrowserControls"
+    ],
+    "terminal_events": [
+      {
+        "test": "VaneTests.AppLifecycleTests/testClosingTheLastMinimizedWindowRestoresThePreviousOne",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.AppLifecycleTests/testCommandQQuitsImmediatelyAfterTheLastWindowCloses",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.AppLifecycleTests/testCommandQStillWarnsWithAMinimizedWindow",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.AppLifecycleTests/testCommandQStillWarnsWithAnOpenWindow",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.AppLifecycleTests/testDockClickLeavesMinimizedWindowsAloneWhileAnotherWindowIsOpen",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.AppLifecycleTests/testDockClickRestoresAMinimizedWindowDespiteTheVisibleWindowsFlag",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.AppLifecycleTests/testDockClickRestoresOnlyTheLastMinimizedWindowRatherThanTheLastCreated",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.AppLifecycleTests/testFloatingPanelDoesNotPreventRestoringAMinimizedWindow",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.AppLifecycleTests/testMinimizingARestoredWindowMakesItTheMostRecentAgain",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.AppLifecycleTests/testOffscreenPreviewHostDoesNotCauseAQuitWarning",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.AppLifecycleTests/testOffscreenPreviewHostDoesNotPreventRestoringAMinimizedWindow",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupEncryptionTests/testEmptyPasswordCannotSilentlyProducePlaintext",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupEncryptionTests/testIndependentPythonAESGCMAndPBKDF2ReferenceCanBeRead",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupEncryptionTests/testPasswordProtectsAllArchiveContentsAndRequiresUnlock",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupEncryptionTests/testRepeatedEncryptionUsesFreshSaltAndNonce",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupEncryptionTests/testTamperedOrTruncatedEncryptedFilesCannotBePreviewed",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupEncryptionTests/testUnencryptedLegacyBackupsRemainReadable",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupLibraryTests/testClosedProfileFavouritesAndSharedGridCountOnce",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupLibraryTests/testClosedProfilesSettingsAndEaselIdentitySurviveCapture",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupLibraryTests/testEmbeddedImageBytesAndSidecarArePreserved",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupLibraryTests/testGlobalDefaultsAndLocalBookkeepingAreExcluded",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupLibraryTests/testImportedListsAndPreferenceReferencesAreIncluded",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupLibraryTests/testMalformedPresentFilesAndOrphanProfilesAreRejected",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupLibraryTests/testPreviewCountsSpaceAndSharedSessionTabsWithoutInflation",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupLibraryTests/testSourceSymlinkIsRejectedAndDamagedOriginalsCanBePreserved",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupLibraryTests/testSQLiteSnapshotIncludesUncheckpointedWAL",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testCancellationAndInvalidIncomingNeverChangeTheLibrary",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testCorruptedStagedBytesNeverTouchCurrentLibrary",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testDamagedCurrentLibraryCanBeReplacedAndItsOriginalsKept",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testDamagedDatabaseAndWALRollBackExactly",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testEveryInterruptedMutationRollsBackOnNextLaunch",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testInterruptedPreparationNeverPublishesPendingTransaction",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testInterruptedRestorePreservesPreviouslyEnabledBoostScriptsOnRollback",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testInterruptedRestoreRollsBackRememberedSecurityDecisionsExactly",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testRestoredBoostScriptsRequireEnablingAgainWithoutLosingCodeOrStyles",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testRestoreDiscardsRememberedSecurityDecisionsAcrossProfiles",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testRestoreInvalidatesOldFallbacksAndInterruptedRestoreRollsThemBack",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testRestoreReplacesOwnedDataRemovesAbsentFilesAndPreservesUnrelatedData",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testRollbackFailureRetainsJournalAndOriginals",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testSuccessfulDamagedRestoreRetainsRawDatabaseJournalsInRecoveryPoint",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupRestoreTests/testSymlinkRecoveryAndStagingFailureDoNotTouchOriginals",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupWorkerTests/testBlockedBackupWorkerLeavesMainActorResponsiveAndExportOrdered",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupWorkerTests/testBlockedBundleVerificationLeavesMainActorFreeAndKeepsRollbackUntilHealth",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupWorkerTests/testContinuousFileChangesRejectSnapshotAndLeaveOriginals",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupWorkerTests/testDamagedEvidenceCaptureDoesNotRebuildOriginalSHMAndRefreshKeepsRawProof",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupWorkerTests/testRestoreFinalGateDrainsEaselEditAdmittedDuringPreparationAndRejectsNewEdits",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupWorkerTests/testRestoreFinalWriteFailureCancelsPendingBeforeReleasingQueuedIngress",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupWorkerTests/testRestorePreservesChangesSavedAfterAsynchronousPreparation",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupWorkerTests/testStableCaptureRetriesAnAtomicFileReplacement",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BackupWorkerTests/testStableCaptureRetriesChangedPreferences",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BangScopeTests/testAdditionalDefaultSitesSupportBothWordsAndBangs",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BangScopeTests/testCustomKeywordsKeepPrecedenceOverSiteNames",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BangScopeTests/testExplicitBangsActivateOnlyOnceDelimited",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BangScopeTests/testScopeSearchTreatsQueriesLiterallyAndSupportsEmptyHomepage",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BangScopeTests/testSiteScopeIncludesSubdomainsButRejectsSimilarHosts",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BangScopeTests/testWordsAndNamesOfferExactShortcuts",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testAcceptedSnapshotStillRecompilesSiteExceptionsAfterSourceFailure",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testBadfilterCanonicalizesSupportedPartyAliasesDomainsAndInsensitivePatterns",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testBadfilterDisablesOnlyMatchingSupportedNetworkRuleAcrossSources",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testBadfilterDomainDecompositionIsReportedInsteadOfPretendingToDisableSubset",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testBadfilterRejectsRepeatedOrderSensitiveOptionsWithoutRemovingDifferentRule",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testCaseSensitiveRulesPreservePatternCase",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testCaseSensitiveSeparatorStillTreatsUppercaseLettersAsWordCharacters",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testConditionalBranchesAreNotUnconditionallyInstalled",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testConditionalStateCannotSuppressAnotherSourceOrItsExceptions",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testCRLFReportsOriginalLineNumbers",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testDiagnosticSamplesAreBoundedButCountsAreComplete",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testDiagnosticsKeepLineNumbersAndCountReasons",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testExceptionRegexExcludesExactTopHostForNetworkAndCosmeticRules",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testImportDialogKeepsLongDiagnosticsInScrollingReport",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testLinkedSourcePublicationValidatesAllOtherSourcesBeforeSaving",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testMixedAndMalformedDomainsNeverBecomeBroaderRules",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testNegatedTypesNarrowExplicitPositiveTypes",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testPrivateRuleCacheIsSeparateAndSweepingPreservesLiveOwners",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testSafeRegularExpressionsPreserveAnchorsClassesEscapesAndOptions",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testSiteExceptionsPersistPerProfileAndPrivateExceptionsStayInMemory",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerTests/testUnsupportedNegationsCannotBroadenOrInvertRules",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerWebKitTests/testCaseAndNarrowedResourceOptionsActuallyControlScriptLoading",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerWebKitTests/testExactSiteExceptionAllowsBlockedRequestsAndCosmeticsOnlyOnThatHost",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BlockerWebKitTests/testLinkedSettingsOperationsPublishPersistedSnapshotsIntoActualWebKitLoads",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BoostPersistenceWorkerTests/testCachedRecordsInvalidateWhenPreferencesAreReplaced",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.BoostPersistenceWorkerTests/testDebouncedEditsFlushLatestValueAndKeepProfilesIsolated",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.CertificatePromptTests/testBackgroundSentryFailureCannotInterruptKognity",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.CertificatePromptTests/testCommittedOrMissingNavigationCannotPrompt",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.CertificatePromptTests/testDefaultHTTPSPortAndCaseInsensitiveHostStillPrompt",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.CertificatePromptTests/testOnlyTheExactHTTPSNavigationOriginCanPrompt",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ChromiumCookieWebKitTests/testNativePublicationKeepsSecurityLifetimeExistingSessionsAndOtherProfilePrivateStores",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DRMPlaybackEvidenceTests/testClearPlaybackCannotBeReportedAsProtected",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DRMPlaybackEvidenceTests/testDecodedEncryptedProgressIsProtectedPlaybackEvidence",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DRMPlaybackEvidenceTests/testFrozenSeekedFrameAndFirstSampleAreUnverified",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DRMPlaybackEvidenceTests/testKeysWithoutDecodedProgressDoNotProvePlayback",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DRMPlaybackEvidenceTests/testSeekingPausedAndUndecodedTimeJumpsAreUnverified",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DataIntegrationTests/testBoostWrongTypesAndNoncanonicalOriginsCannotReachRestore",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DataIntegrationTests/testControllerStorageAndCorruptInputFailuresPreservePopulatedLibraryAndReportFeedback",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DataIntegrationTests/testCorruptBoostPreferencesAreRejectedBeforeRestoreAndPreservedForRecovery",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DataIntegrationTests/testCrossProfileEaselReferenceIsRejectedWithoutChangingCurrentLibrary",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DataIntegrationTests/testEveryPopulatedRestoreCheckpointPreservesCompleteRecoverableInventory",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DataIntegrationTests/testPopulatedLibraryExportDeleteRestoreAndColdReopen",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DataIntegrationTests/testPrivateFeatureActionsDoNotChangeBackupInventory",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DataIntegrationTests/testUnavailableStorageSaveFailuresKeepLastSnapshotsAndCanRetry",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DockMenuTests/testCloseClosesNormalAndPrivateLittleWindowsButLeavesBrowserWindowsOpen",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DockMenuTests/testLittleWindowCommandsStayDisabledAfterMenuValidationWithoutLittleWindows",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DockMenuTests/testShowRestoresHiddenAndMinimizedLittleWindowsAndNeverHidesThem",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadFeedbackTests/testBrowserOnlyMeasuresDownloadAnchorsWhileFeedbackIsVisible",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadFeedbackTests/testFastConsecutiveStartsCannotBeLandedOrDismissedByOlderAnimation",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadFeedbackTests/testFeedbackStaysInOriginWindowAndPrivateDownloadsStayPrivate",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadFeedbackTests/testHiddenSidebarGetsVisibleDownloadTargetInsidePage",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithAnimation",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithBatterySaver",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadFeedbackTests/testReducedMotionShowsFileIconImmediatelyAndDetachedOriginCannotMatch",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadFeedbackTests/testVisibleSidebarUsesActualLibraryTarget",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadTabWebKitTests/testBackgroundDownloadTabClosesWithoutChangingSelection",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadTabWebKitTests/testBlankScriptWindowNavigatedToDownloadCloses",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadTabWebKitTests/testBlankTargetDownloadClosesTabAndCompletesTransfer",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadTabWebKitTests/testDelayedDownloadClosesItsTabAfterSwitchingSpaces",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadTabWebKitTests/testDownloadFromExistingDocumentKeepsItsTab",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadTabWebKitTests/testDownloadFromWrittenBlankDocumentKeepsItsTab",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadTabWebKitTests/testEmptyBlankDocumentWithBackHistoryKeepsItsTab",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadTabWebKitTests/testEmptyBlankDocumentWithForwardHistoryKeepsItsTab",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadTabWebKitTests/testRedirectedBlankTargetDownloadClosesTabAndCompletesTransfer",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DownloadTabWebKitTests/testTransferContinuesAfterItsBlankTabCloses",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DuplicateSearchScoringTests/testDuplicateScoresKeepPerVisitPopularityAndBestHistoricalTitle",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.DuplicateSearchScoringTests/testQueryCacheDoesNotLeakAcrossQueriesEngineScopesOrCommittedChanges",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testBoardAddressResolvesOnlyInTheTabsProfile",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testBoardRenamesUpdateBothTabAndPinnedSidebarTitle",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testCaptureSavesToChosenBoardWithSourceAndOpensItsNativeTab",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testCommandPaletteOffersEaselCreationAndLibraryInAnOrdinaryWindow",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testEaselMovesToAnotherSpaceAndSurvivesStashedSpaceSave",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testExplicitNavigationLeavesNativeCanvasAndCanReturnToItsPinnedHome",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testMalformedNativeAddressesAreNotLoadedByWebKit",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testNativeCanvasIgnoresWebpageCommandsWithoutCreatingAWebView",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testOpeningAndRestoringAnEaselKeepsNativeContentAndTheBoardAddress",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testPrivateTabsCannotOpenPersistentEaselContent",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testProfileMoveCannotStrandLocalEaselBoards",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EaselTabTests/testRealSessionAndSpaceWritersPreserveEaselTabsFoldersAndSelection",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.EdgeSidebarScrollContinuityTests/testClickingCurrentSpaceAtCreateEdgeAnimatesTheLiveViewportHome",
+        "outcome": "skipped"
+      },
+      {
+        "test": "VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCancellationAnimatesTheLiveViewportHome",
+        "outcome": "skipped"
+      },
+      {
+        "test": "VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCommitKeepsScrolledViewportUntilFormTakesOver",
+        "outcome": "skipped"
+      },
+      {
+        "test": "VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeNeverShowsAnOutgoingViewportAtTheTop",
+        "outcome": "skipped"
+      },
+      {
+        "test": "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryDiagonalStartupAndMomentumKeepTheClaimedViewportSteady",
+        "outcome": "skipped"
+      },
+      {
+        "test": "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgeCommitAndCloseRestoreTheScrolledViewport",
+        "outcome": "skipped"
+      },
+      {
+        "test": "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgePreservesScrolledLiveViewportThroughClaimReversalAndCancel",
+        "outcome": "skipped"
+      },
+      {
+        "test": "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryWithAnActivePageKeepsTheScrolledViewportAndPageWidthSteady",
+        "outcome": "skipped"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testEscapedIdentifierPreservesClassicStrictFailure",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testLaunchClearsCrashStageBeforeAnyInstallationWasAccepted",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testLaunchPreservesRevisionsWhenIndexIsMissingCorruptOrRetainedForRecovery",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testLaunchSweepDoesNotFollowRevisionSymlinks",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testLaunchSweepsOnlyUnreferencedInactiveRevisionsForThisProfile",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testOnlyReportedRuntimeScriptErrorsAreNonblocking",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testPageScriptErrorDoesNotRejectWorkingBackgroundAndPopup",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testRemovalAfterCacheReplyCannotLeaveAnUntrackedLoadedContext",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testThrowingAcceptedWorkerRestoreLeavesVisibleFailureAndRetainsAcceptedCode",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testThrowingWorkerInstallFinishesAndDiscardsCandidate",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testThrowingWorkerUpdateFinishesAndRetainsAcceptedVersion",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testValidWorkerInstallAndRestoreComplete",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionBackgroundStartupTests/testVersionBumpedThrowingWorkerUpdateFinishesAndRetainsAcceptedVersion",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionCompatibilityTests/testApprovedContentScriptExecutesOnlyInItsProfileAndMatchingOrigin",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionCompatibilityTests/testDeletingProfileRemovesOnlyItsExtensionIdentities",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionCompatibilityTests/testLocalStorageAndRuntimeIdentitySurviveHostRestore",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionCompatibilityTests/testMV2BackgroundAndMV3WorkerMessagingStorageAndAction",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testBrokenUpdateKeepsAcceptedCodeAndRecoverableConfiguration",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testConcurrentBackgroundInstallsDoNotOverwriteIdentities",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testDeclinedUpdateKeepsActiveContextAndOldApproval",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testDisableClosesOwnedOptionsAndIgnoresStaleControls",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testDisableSurvivesRestoreAndEnablePreservesIdentity",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testEmptyActionPopupIsValidForMV2AndMV3",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testExtensionPageURLsUseURLPathsInsteadOfLiteralFilenames",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testInvalidManifestEntryFailsBeforeConsent",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testManifestChangeDuringReviewCannotActivateUnreviewedCode",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testMissingContentScriptFailsBeforeConsentOrActivation",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testMovedDisabledFolderKeepsItsStateIdentityAndConsent",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testPinningAnotherExtensionPreservesInactivePins",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testRemovalDeletesAssociatedUnresolvableBookmarkOnly",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testRemovalDuringUpdateReviewCannotReactivateOrOverwriteConsent",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testRemovalOfFailedFolderDeletesIdentityConsentPinsAndDisabledState",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testResourceEscapingFolderFailsBeforeConsent",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagementTests/testRevokingAdditionalAccessPreservesManifestGrants",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagerPaletteTests/testManageExtensionsUsesTheOriginatingWindowsProfile",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionManagerPaletteTests/testManagerSearchOwnsCommandFOnlyInItsWindow",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionRuntimePermissionTests/testAllThreeRuntimeHooksGrantOrRejectOnlyTheRequest",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionRuntimePermissionTests/testJavaScriptRuntimeRequestRejectionGrantRevocationAndExpiration",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionRuntimePermissionTests/testRemovalDuringRuntimePromptRejectsThePendingGrant",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionRuntimePermissionTests/testRuntimeGrantsExpireAndDoNotSurviveRestore",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ExtensionRuntimePermissionTests/testUnsupportedHostCapabilitiesAreDisclosedAndCannotBeGranted",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FaviconHostObservationLifetimeTests/testUnmountedIconLeafDoesNotRemainOwnedByItsCacheAndCanRemount",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FaviconPublicationTests/testFetchedIconPublishesToTabsAndCacheBeforeBlockedPersistenceFinishes",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FaviconPublicationTests/testIncognitoCacheNeverWritesFetchedArtwork",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FaviconPublicationTests/testNewDeclaredIconQueuedDuringPersistenceIsNotDiscarded",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FaviconPublicationTests/testPrivateOnlyFetchInPublicCacheDoesNotAuthorizePersistence",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FaviconPublicationTests/testUnchangedDeclaredArtworkKeepsSiblingImageWhileRealChangesPublish",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FavouritePreviewHoverTests/testBriefHoverDoesNotOpenAndTransferKeepsCardOpen",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FavouritePreviewHoverTests/testKeyboardOpeningStaysUntilEscapeAndDismissCancelsDwell",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FavouritePreviewNavigationTests/testEmbeddedFrameFailureDoesNotAbortPreview",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FavouritePreviewNavigationTests/testMainPageStillRejectsFailuresAndUnsupportedContent",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel01RestorationTests/testLargeSessionKeepsIdentityStateTitlesAndBackgroundRowsParked",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel01RestorationTests/testMixedRestoreReusesOnlyMatchingProfileIdentitiesAndKeepsSectionOrder",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel01RestorationTests/testUsableParkedTitleAvoidsOpeningHistoryButPlaceholderStillUsesIt",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel03SearchTests/testAsyncInsertionsKeepSelectedResultPastTheDisplayCap",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel03SearchTests/testFieldTakesFocusOnMountAndDoesNotStealItAfterRemoval",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel03SearchTests/testHostedAddressPaletteSelectsSeedAndKeepsTypingFocus",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel03SearchTests/testLateSuggestionsReuseLayoutAndPreserveArrangement",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel03SearchTests/testRecentTabsMatchStableFullSortAcrossLargeCountsAndCaps",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel03SearchTests/testRetiringFieldCannotTakeFocusDuringDismissal",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel03SearchTests/testSelectedCompletionSurvivesHistoryCappingAndDeduplication",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel03SearchTests/testSharedTabRowsRetainTheirIntendedWindow",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel03SearchTests/testTabSnapshotIgnoresProgressAndTracksResultContent",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel04LinkPreviewTests/testDisablingPreviewsRetiresAnAlreadyVisibleShell",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel04LinkPreviewTests/testSameURLCannotReusePrivateSnapshotInAnotherTab",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel04PreviewTests/testCardKeepsReferenceGeometryAsContentArrives",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel04PreviewTests/testRepeatedRequestDoesNotCancelOrLoseInflightResultToCooldown",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel04SkippedLoadTests/testBusySourceReplacementUnloadsTheRetiredDocument",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel05DownloadPresentationTests/testMissingCompletedDownloadKeepsItsHistoricalGroupAndIdentity",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel05DownloadPresentationTests/testProgressDoesNotRebuildMembershipButCompletionRenameAndRemovalDo",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel06PasswordLayoutTests/testExtensionWindowVisibilityTracksCloseAndExplicitReopen",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel06PasswordLayoutTests/testSwitchingSettingsToPasswordsDoesNotEnlargeTheRetainedWindow",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel06PresentationTests/testReusesPresentationForUnchangedInputsAndRebuildsAfterEdits",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel08FindTests/testCancelledTypingDoesNotSelectOrPublishMatches",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel08FindTests/testFreshTypingBurstSelectsOnlyLatestQuery",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.Feel08FindTests/testSameURLReplacementRejectsOldFindResult",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FolderExitTests/testBottomDropAppendsPinnedRunAfterExistingTodayTabs",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FolderExitTests/testBottomDropLeavesCollapsedLastFolderAndKeepsRunAtEnd",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FolderExitTests/testCrossSectionRootDropPreservesRunOrderAndEveryTab",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FolderExitTests/testDropOnTodayMovesTidyTabsToRootInSelectionOrder",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.FolderExitTests/testRemovingNestedPinnedTabKeepsItsKindAndOtherFolderContents",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.GitHubProductionSignOutTests/testProductionSignOutDeletesRenewalSuccessorAfterWaitingForLock",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.GitHubProductionSignOutTests/testProductionSignOutPreservesReplacementSignInForSameAccount",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.HistorySearchTests/testDateRangeIsInclusiveAtStartAndExclusiveAtEnd",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.HistorySearchTests/testHistoryReadsStayInTheRequestedProfile",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.HistorySearchTests/testIndependentTitleRankingAndStableTies",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.HistorySearchTests/testTabSourcesCannotCrossProfilesOrPrivateWindows",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.HistorySearchTests/testYesterdayUsesCalendarDaysAcrossDaylightSaving",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testAcceptedCSVBatchBlocksLifecycleDrainUntilAllInjectedSavesComplete",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testAcceptedImportIntentDrainsAcrossPreServiceAwaitAndPauseRejectsNewIntent",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testArcImportedTitlesAwaitTheSessionLaneWithoutBlockingInputActor",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testBoundedSourceReadRejectsBeforeParsingOrCredentialWrites",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testCancellationRollsBackAndRetainsConcurrentNormalNavigation",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testCancelledArcCredentialStageNeverPublishesCookies",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testCommentAndQuotedMarkupDoNotCreateFalseBookmarkTokens",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testCommittedReplayPrefixReconcilesTemporaryIDsBeforeFailedSuffixEdits",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testCSVParserHonorsWorkerCancellationBeforeAnyCredentialSave",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testFailedAtomicImportRollsBackBothCategoriesAndStillReplaysNavigation",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testFailedReplayRetainsUncommittedSuffixForRetryWithoutDuplicatingPrefix",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testForgettingProfileWaitsForCancelledWorkerBeforeRemovingFiles",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testForgettingSQLiteArtifactsIsIdempotentWhenSidecarsAreAlreadyGone",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testHistoryExportReturnsSnapshotCountAndWritesEveryVisit",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testInvalidQueuedEditsRejectBeforeAdmissionAndDoNotBlockNavigationOrRetry",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testLifecyclePauseRejectsNewImportAndDrainsLateAcceptedWrites",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testPasswordCSVReadParseAndInjectedCredentialBatchRunAwayFromUIActor",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testQueuedClearAndFolderEditsKeepOrderWhenImportCreatesTheSameFolderName",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testQueuedDeleteAddAndURLEditAreVisibleToFollowingToggle",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testRepeatedUnclosedAnchorsRejectWithoutRepeatedSuffixScanning",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testReplayTerminalNameConflictReportsRejectionAndStillDrainsHistory",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testUnclosedQuotedAttributeRejectsWithoutRepeatedSuffixScanning",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.ImportWorkerTests/testWorkerLockWaitLeavesActorAvailableAndReplaysNavigationAndBookmarkEdits",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.KeyboardAccessibilityTests/testClosingClickedPinKeepsOutlineHiddenAndKeyboardActivationRestoresIt",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.KeyboardAccessibilityTests/testDeferredPageFocusDoesNotTakeFocusFromNewPalette",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.KeyboardAccessibilityTests/testDisabledSidebarControlLeavesKeyboardNavigationAndRejectsActivation",
+        "outcome": "passed"
+      },
+      {
+        "test": "VaneTests.KeyboardAccessibilityTests/testF6LeavesTheLocalEaselForBrowserControls",
+        "outcome": "failed"
+      }
+    ],
+    "expected_skips": [
+      "VaneTests.EdgeSidebarScrollContinuityTests/testClickingCurrentSpaceAtCreateEdgeAnimatesTheLiveViewportHome",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCancellationAnimatesTheLiveViewportHome",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCommitKeepsScrolledViewportUntilFormTakesOver",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeNeverShowsAnOutgoingViewportAtTheTop",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryDiagonalStartupAndMomentumKeepTheClaimedViewportSteady",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgeCommitAndCloseRestoreTheScrolledViewport",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgePreservesScrolledLiveViewportThroughClaimReversalAndCancel",
+      "VaneTests.EdgeSidebarScrollContinuityTests/testLibraryWithAnActivePageKeepsTheScrolledViewportAndPageWidthSteady"
+    ],
+    "selector": "^(?:VaneTests\\.AppLifecycleTests/testClosingTheLastMinimizedWindowRestoresThePreviousOne|VaneTests\\.AppLifecycleTests/testCommandQQuitsImmediatelyAfterTheLastWindowCloses|VaneTests\\.AppLifecycleTests/testCommandQStillWarnsWithAMinimizedWindow|VaneTests\\.AppLifecycleTests/testCommandQStillWarnsWithAnOpenWindow|VaneTests\\.AppLifecycleTests/testDockClickLeavesMinimizedWindowsAloneWhileAnotherWindowIsOpen|VaneTests\\.AppLifecycleTests/testDockClickRestoresAMinimizedWindowDespiteTheVisibleWindowsFlag|VaneTests\\.AppLifecycleTests/testDockClickRestoresOnlyTheLastMinimizedWindowRatherThanTheLastCreated|VaneTests\\.AppLifecycleTests/testFloatingPanelDoesNotPreventRestoringAMinimizedWindow|VaneTests\\.AppLifecycleTests/testMinimizingARestoredWindowMakesItTheMostRecentAgain|VaneTests\\.AppLifecycleTests/testOffscreenPreviewHostDoesNotCauseAQuitWarning|VaneTests\\.AppLifecycleTests/testOffscreenPreviewHostDoesNotPreventRestoringAMinimizedWindow|VaneTests\\.BackupEncryptionTests/testEmptyPasswordCannotSilentlyProducePlaintext|VaneTests\\.BackupEncryptionTests/testIndependentPythonAESGCMAndPBKDF2ReferenceCanBeRead|VaneTests\\.BackupEncryptionTests/testPasswordProtectsAllArchiveContentsAndRequiresUnlock|VaneTests\\.BackupEncryptionTests/testRepeatedEncryptionUsesFreshSaltAndNonce|VaneTests\\.BackupEncryptionTests/testTamperedOrTruncatedEncryptedFilesCannotBePreviewed|VaneTests\\.BackupEncryptionTests/testUnencryptedLegacyBackupsRemainReadable|VaneTests\\.BackupLibraryTests/testClosedProfileFavouritesAndSharedGridCountOnce|VaneTests\\.BackupLibraryTests/testClosedProfilesSettingsAndEaselIdentitySurviveCapture|VaneTests\\.BackupLibraryTests/testEmbeddedImageBytesAndSidecarArePreserved|VaneTests\\.BackupLibraryTests/testGlobalDefaultsAndLocalBookkeepingAreExcluded|VaneTests\\.BackupLibraryTests/testImportedListsAndPreferenceReferencesAreIncluded|VaneTests\\.BackupLibraryTests/testMalformedPresentFilesAndOrphanProfilesAreRejected|VaneTests\\.BackupLibraryTests/testPreviewCountsSpaceAndSharedSessionTabsWithoutInflation|VaneTests\\.BackupLibraryTests/testSourceSymlinkIsRejectedAndDamagedOriginalsCanBePreserved|VaneTests\\.BackupLibraryTests/testSQLiteSnapshotIncludesUncheckpointedWAL|VaneTests\\.BackupRestoreTests/testCancellationAndInvalidIncomingNeverChangeTheLibrary|VaneTests\\.BackupRestoreTests/testCorruptedStagedBytesNeverTouchCurrentLibrary|VaneTests\\.BackupRestoreTests/testDamagedCurrentLibraryCanBeReplacedAndItsOriginalsKept|VaneTests\\.BackupRestoreTests/testDamagedDatabaseAndWALRollBackExactly|VaneTests\\.BackupRestoreTests/testEveryInterruptedMutationRollsBackOnNextLaunch|VaneTests\\.BackupRestoreTests/testInterruptedPreparationNeverPublishesPendingTransaction|VaneTests\\.BackupRestoreTests/testInterruptedRestorePreservesPreviouslyEnabledBoostScriptsOnRollback|VaneTests\\.BackupRestoreTests/testInterruptedRestoreRollsBackRememberedSecurityDecisionsExactly|VaneTests\\.BackupRestoreTests/testRestoredBoostScriptsRequireEnablingAgainWithoutLosingCodeOrStyles|VaneTests\\.BackupRestoreTests/testRestoreDiscardsRememberedSecurityDecisionsAcrossProfiles|VaneTests\\.BackupRestoreTests/testRestoreInvalidatesOldFallbacksAndInterruptedRestoreRollsThemBack|VaneTests\\.BackupRestoreTests/testRestoreReplacesOwnedDataRemovesAbsentFilesAndPreservesUnrelatedData|VaneTests\\.BackupRestoreTests/testRollbackFailureRetainsJournalAndOriginals|VaneTests\\.BackupRestoreTests/testSuccessfulDamagedRestoreRetainsRawDatabaseJournalsInRecoveryPoint|VaneTests\\.BackupRestoreTests/testSymlinkRecoveryAndStagingFailureDoNotTouchOriginals|VaneTests\\.BackupWorkerTests/testBlockedBackupWorkerLeavesMainActorResponsiveAndExportOrdered|VaneTests\\.BackupWorkerTests/testBlockedBundleVerificationLeavesMainActorFreeAndKeepsRollbackUntilHealth|VaneTests\\.BackupWorkerTests/testContinuousFileChangesRejectSnapshotAndLeaveOriginals|VaneTests\\.BackupWorkerTests/testDamagedEvidenceCaptureDoesNotRebuildOriginalSHMAndRefreshKeepsRawProof|VaneTests\\.BackupWorkerTests/testRestoreFinalGateDrainsEaselEditAdmittedDuringPreparationAndRejectsNewEdits|VaneTests\\.BackupWorkerTests/testRestoreFinalWriteFailureCancelsPendingBeforeReleasingQueuedIngress|VaneTests\\.BackupWorkerTests/testRestorePreservesChangesSavedAfterAsynchronousPreparation|VaneTests\\.BackupWorkerTests/testStableCaptureRetriesAnAtomicFileReplacement|VaneTests\\.BackupWorkerTests/testStableCaptureRetriesChangedPreferences|VaneTests\\.BangScopeTests/testAdditionalDefaultSitesSupportBothWordsAndBangs|VaneTests\\.BangScopeTests/testCustomKeywordsKeepPrecedenceOverSiteNames|VaneTests\\.BangScopeTests/testExplicitBangsActivateOnlyOnceDelimited|VaneTests\\.BangScopeTests/testScopeSearchTreatsQueriesLiterallyAndSupportsEmptyHomepage|VaneTests\\.BangScopeTests/testSiteScopeIncludesSubdomainsButRejectsSimilarHosts|VaneTests\\.BangScopeTests/testWordsAndNamesOfferExactShortcuts|VaneTests\\.BlockerTests/testAcceptedSnapshotStillRecompilesSiteExceptionsAfterSourceFailure|VaneTests\\.BlockerTests/testBadfilterCanonicalizesSupportedPartyAliasesDomainsAndInsensitivePatterns|VaneTests\\.BlockerTests/testBadfilterDisablesOnlyMatchingSupportedNetworkRuleAcrossSources|VaneTests\\.BlockerTests/testBadfilterDomainDecompositionIsReportedInsteadOfPretendingToDisableSubset|VaneTests\\.BlockerTests/testBadfilterRejectsRepeatedOrderSensitiveOptionsWithoutRemovingDifferentRule|VaneTests\\.BlockerTests/testCaseSensitiveRulesPreservePatternCase|VaneTests\\.BlockerTests/testCaseSensitiveSeparatorStillTreatsUppercaseLettersAsWordCharacters|VaneTests\\.BlockerTests/testConditionalBranchesAreNotUnconditionallyInstalled|VaneTests\\.BlockerTests/testConditionalStateCannotSuppressAnotherSourceOrItsExceptions|VaneTests\\.BlockerTests/testCRLFReportsOriginalLineNumbers|VaneTests\\.BlockerTests/testDiagnosticSamplesAreBoundedButCountsAreComplete|VaneTests\\.BlockerTests/testDiagnosticsKeepLineNumbersAndCountReasons|VaneTests\\.BlockerTests/testExceptionRegexExcludesExactTopHostForNetworkAndCosmeticRules|VaneTests\\.BlockerTests/testImportDialogKeepsLongDiagnosticsInScrollingReport|VaneTests\\.BlockerTests/testLinkedSourcePublicationValidatesAllOtherSourcesBeforeSaving|VaneTests\\.BlockerTests/testMixedAndMalformedDomainsNeverBecomeBroaderRules|VaneTests\\.BlockerTests/testNegatedTypesNarrowExplicitPositiveTypes|VaneTests\\.BlockerTests/testPrivateRuleCacheIsSeparateAndSweepingPreservesLiveOwners|VaneTests\\.BlockerTests/testSafeRegularExpressionsPreserveAnchorsClassesEscapesAndOptions|VaneTests\\.BlockerTests/testSiteExceptionsPersistPerProfileAndPrivateExceptionsStayInMemory|VaneTests\\.BlockerTests/testUnsupportedNegationsCannotBroadenOrInvertRules|VaneTests\\.BlockerWebKitTests/testCaseAndNarrowedResourceOptionsActuallyControlScriptLoading|VaneTests\\.BlockerWebKitTests/testExactSiteExceptionAllowsBlockedRequestsAndCosmeticsOnlyOnThatHost|VaneTests\\.BlockerWebKitTests/testLinkedSettingsOperationsPublishPersistedSnapshotsIntoActualWebKitLoads|VaneTests\\.BoostPersistenceWorkerTests/testCachedRecordsInvalidateWhenPreferencesAreReplaced|VaneTests\\.BoostPersistenceWorkerTests/testDebouncedEditsFlushLatestValueAndKeepProfilesIsolated|VaneTests\\.CertificatePromptTests/testBackgroundSentryFailureCannotInterruptKognity|VaneTests\\.CertificatePromptTests/testCommittedOrMissingNavigationCannotPrompt|VaneTests\\.CertificatePromptTests/testDefaultHTTPSPortAndCaseInsensitiveHostStillPrompt|VaneTests\\.CertificatePromptTests/testOnlyTheExactHTTPSNavigationOriginCanPrompt|VaneTests\\.ChromiumCookieWebKitTests/testNativePublicationKeepsSecurityLifetimeExistingSessionsAndOtherProfilePrivateStores|VaneTests\\.DRMPlaybackEvidenceTests/testClearPlaybackCannotBeReportedAsProtected|VaneTests\\.DRMPlaybackEvidenceTests/testDecodedEncryptedProgressIsProtectedPlaybackEvidence|VaneTests\\.DRMPlaybackEvidenceTests/testFrozenSeekedFrameAndFirstSampleAreUnverified|VaneTests\\.DRMPlaybackEvidenceTests/testKeysWithoutDecodedProgressDoNotProvePlayback|VaneTests\\.DRMPlaybackEvidenceTests/testSeekingPausedAndUndecodedTimeJumpsAreUnverified|VaneTests\\.DataIntegrationTests/testBoostWrongTypesAndNoncanonicalOriginsCannotReachRestore|VaneTests\\.DataIntegrationTests/testControllerStorageAndCorruptInputFailuresPreservePopulatedLibraryAndReportFeedback|VaneTests\\.DataIntegrationTests/testCorruptBoostPreferencesAreRejectedBeforeRestoreAndPreservedForRecovery|VaneTests\\.DataIntegrationTests/testCrossProfileEaselReferenceIsRejectedWithoutChangingCurrentLibrary|VaneTests\\.DataIntegrationTests/testEveryPopulatedRestoreCheckpointPreservesCompleteRecoverableInventory|VaneTests\\.DataIntegrationTests/testPopulatedLibraryExportDeleteRestoreAndColdReopen|VaneTests\\.DataIntegrationTests/testPrivateFeatureActionsDoNotChangeBackupInventory|VaneTests\\.DataIntegrationTests/testUnavailableStorageSaveFailuresKeepLastSnapshotsAndCanRetry|VaneTests\\.DockMenuTests/testCloseClosesNormalAndPrivateLittleWindowsButLeavesBrowserWindowsOpen|VaneTests\\.DockMenuTests/testLittleWindowCommandsStayDisabledAfterMenuValidationWithoutLittleWindows|VaneTests\\.DockMenuTests/testShowRestoresHiddenAndMinimizedLittleWindowsAndNeverHidesThem|VaneTests\\.DownloadFeedbackTests/testBrowserOnlyMeasuresDownloadAnchorsWhileFeedbackIsVisible|VaneTests\\.DownloadFeedbackTests/testFastConsecutiveStartsCannotBeLandedOrDismissedByOlderAnimation|VaneTests\\.DownloadFeedbackTests/testFeedbackStaysInOriginWindowAndPrivateDownloadsStayPrivate|VaneTests\\.DownloadFeedbackTests/testHiddenSidebarGetsVisibleDownloadTargetInsidePage|VaneTests\\.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithAnimation|VaneTests\\.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithBatterySaver|VaneTests\\.DownloadFeedbackTests/testReducedMotionShowsFileIconImmediatelyAndDetachedOriginCannotMatch|VaneTests\\.DownloadFeedbackTests/testVisibleSidebarUsesActualLibraryTarget|VaneTests\\.DownloadTabWebKitTests/testBackgroundDownloadTabClosesWithoutChangingSelection|VaneTests\\.DownloadTabWebKitTests/testBlankScriptWindowNavigatedToDownloadCloses|VaneTests\\.DownloadTabWebKitTests/testBlankTargetDownloadClosesTabAndCompletesTransfer|VaneTests\\.DownloadTabWebKitTests/testDelayedDownloadClosesItsTabAfterSwitchingSpaces|VaneTests\\.DownloadTabWebKitTests/testDownloadFromExistingDocumentKeepsItsTab|VaneTests\\.DownloadTabWebKitTests/testDownloadFromWrittenBlankDocumentKeepsItsTab|VaneTests\\.DownloadTabWebKitTests/testEmptyBlankDocumentWithBackHistoryKeepsItsTab|VaneTests\\.DownloadTabWebKitTests/testEmptyBlankDocumentWithForwardHistoryKeepsItsTab|VaneTests\\.DownloadTabWebKitTests/testRedirectedBlankTargetDownloadClosesTabAndCompletesTransfer|VaneTests\\.DownloadTabWebKitTests/testTransferContinuesAfterItsBlankTabCloses|VaneTests\\.DuplicateSearchScoringTests/testDuplicateScoresKeepPerVisitPopularityAndBestHistoricalTitle|VaneTests\\.DuplicateSearchScoringTests/testQueryCacheDoesNotLeakAcrossQueriesEngineScopesOrCommittedChanges|VaneTests\\.EaselTabTests/testBoardAddressResolvesOnlyInTheTabsProfile|VaneTests\\.EaselTabTests/testBoardRenamesUpdateBothTabAndPinnedSidebarTitle|VaneTests\\.EaselTabTests/testCaptureSavesToChosenBoardWithSourceAndOpensItsNativeTab|VaneTests\\.EaselTabTests/testCommandPaletteOffersEaselCreationAndLibraryInAnOrdinaryWindow|VaneTests\\.EaselTabTests/testEaselMovesToAnotherSpaceAndSurvivesStashedSpaceSave|VaneTests\\.EaselTabTests/testExplicitNavigationLeavesNativeCanvasAndCanReturnToItsPinnedHome|VaneTests\\.EaselTabTests/testMalformedNativeAddressesAreNotLoadedByWebKit|VaneTests\\.EaselTabTests/testNativeCanvasIgnoresWebpageCommandsWithoutCreatingAWebView|VaneTests\\.EaselTabTests/testOpeningAndRestoringAnEaselKeepsNativeContentAndTheBoardAddress|VaneTests\\.EaselTabTests/testPrivateTabsCannotOpenPersistentEaselContent|VaneTests\\.EaselTabTests/testProfileMoveCannotStrandLocalEaselBoards|VaneTests\\.EaselTabTests/testRealSessionAndSpaceWritersPreserveEaselTabsFoldersAndSelection|VaneTests\\.EdgeSidebarScrollContinuityTests/testClickingCurrentSpaceAtCreateEdgeAnimatesTheLiveViewportHome|VaneTests\\.EdgeSidebarScrollContinuityTests/testCreateEdgeCancellationAnimatesTheLiveViewportHome|VaneTests\\.EdgeSidebarScrollContinuityTests/testCreateEdgeCommitKeepsScrolledViewportUntilFormTakesOver|VaneTests\\.EdgeSidebarScrollContinuityTests/testCreateEdgeNeverShowsAnOutgoingViewportAtTheTop|VaneTests\\.EdgeSidebarScrollContinuityTests/testLibraryDiagonalStartupAndMomentumKeepTheClaimedViewportSteady|VaneTests\\.EdgeSidebarScrollContinuityTests/testLibraryEdgeCommitAndCloseRestoreTheScrolledViewport|VaneTests\\.EdgeSidebarScrollContinuityTests/testLibraryEdgePreservesScrolledLiveViewportThroughClaimReversalAndCancel|VaneTests\\.EdgeSidebarScrollContinuityTests/testLibraryWithAnActivePageKeepsTheScrolledViewportAndPageWidthSteady|VaneTests\\.ExtensionBackgroundStartupTests/testEscapedIdentifierPreservesClassicStrictFailure|VaneTests\\.ExtensionBackgroundStartupTests/testLaunchClearsCrashStageBeforeAnyInstallationWasAccepted|VaneTests\\.ExtensionBackgroundStartupTests/testLaunchPreservesRevisionsWhenIndexIsMissingCorruptOrRetainedForRecovery|VaneTests\\.ExtensionBackgroundStartupTests/testLaunchSweepDoesNotFollowRevisionSymlinks|VaneTests\\.ExtensionBackgroundStartupTests/testLaunchSweepsOnlyUnreferencedInactiveRevisionsForThisProfile|VaneTests\\.ExtensionBackgroundStartupTests/testOnlyReportedRuntimeScriptErrorsAreNonblocking|VaneTests\\.ExtensionBackgroundStartupTests/testPageScriptErrorDoesNotRejectWorkingBackgroundAndPopup|VaneTests\\.ExtensionBackgroundStartupTests/testRemovalAfterCacheReplyCannotLeaveAnUntrackedLoadedContext|VaneTests\\.ExtensionBackgroundStartupTests/testThrowingAcceptedWorkerRestoreLeavesVisibleFailureAndRetainsAcceptedCode|VaneTests\\.ExtensionBackgroundStartupTests/testThrowingWorkerInstallFinishesAndDiscardsCandidate|VaneTests\\.ExtensionBackgroundStartupTests/testThrowingWorkerUpdateFinishesAndRetainsAcceptedVersion|VaneTests\\.ExtensionBackgroundStartupTests/testValidWorkerInstallAndRestoreComplete|VaneTests\\.ExtensionBackgroundStartupTests/testVersionBumpedThrowingWorkerUpdateFinishesAndRetainsAcceptedVersion|VaneTests\\.ExtensionCompatibilityTests/testApprovedContentScriptExecutesOnlyInItsProfileAndMatchingOrigin|VaneTests\\.ExtensionCompatibilityTests/testDeletingProfileRemovesOnlyItsExtensionIdentities|VaneTests\\.ExtensionCompatibilityTests/testLocalStorageAndRuntimeIdentitySurviveHostRestore|VaneTests\\.ExtensionCompatibilityTests/testMV2BackgroundAndMV3WorkerMessagingStorageAndAction|VaneTests\\.ExtensionManagementTests/testBrokenUpdateKeepsAcceptedCodeAndRecoverableConfiguration|VaneTests\\.ExtensionManagementTests/testConcurrentBackgroundInstallsDoNotOverwriteIdentities|VaneTests\\.ExtensionManagementTests/testDeclinedUpdateKeepsActiveContextAndOldApproval|VaneTests\\.ExtensionManagementTests/testDisableClosesOwnedOptionsAndIgnoresStaleControls|VaneTests\\.ExtensionManagementTests/testDisableSurvivesRestoreAndEnablePreservesIdentity|VaneTests\\.ExtensionManagementTests/testEmptyActionPopupIsValidForMV2AndMV3|VaneTests\\.ExtensionManagementTests/testExtensionPageURLsUseURLPathsInsteadOfLiteralFilenames|VaneTests\\.ExtensionManagementTests/testInvalidManifestEntryFailsBeforeConsent|VaneTests\\.ExtensionManagementTests/testManifestChangeDuringReviewCannotActivateUnreviewedCode|VaneTests\\.ExtensionManagementTests/testMissingContentScriptFailsBeforeConsentOrActivation|VaneTests\\.ExtensionManagementTests/testMovedDisabledFolderKeepsItsStateIdentityAndConsent|VaneTests\\.ExtensionManagementTests/testPinningAnotherExtensionPreservesInactivePins|VaneTests\\.ExtensionManagementTests/testRemovalDeletesAssociatedUnresolvableBookmarkOnly|VaneTests\\.ExtensionManagementTests/testRemovalDuringUpdateReviewCannotReactivateOrOverwriteConsent|VaneTests\\.ExtensionManagementTests/testRemovalOfFailedFolderDeletesIdentityConsentPinsAndDisabledState|VaneTests\\.ExtensionManagementTests/testResourceEscapingFolderFailsBeforeConsent|VaneTests\\.ExtensionManagementTests/testRevokingAdditionalAccessPreservesManifestGrants|VaneTests\\.ExtensionManagerPaletteTests/testManageExtensionsUsesTheOriginatingWindowsProfile|VaneTests\\.ExtensionManagerPaletteTests/testManagerSearchOwnsCommandFOnlyInItsWindow|VaneTests\\.ExtensionRuntimePermissionTests/testAllThreeRuntimeHooksGrantOrRejectOnlyTheRequest|VaneTests\\.ExtensionRuntimePermissionTests/testJavaScriptRuntimeRequestRejectionGrantRevocationAndExpiration|VaneTests\\.ExtensionRuntimePermissionTests/testRemovalDuringRuntimePromptRejectsThePendingGrant|VaneTests\\.ExtensionRuntimePermissionTests/testRuntimeGrantsExpireAndDoNotSurviveRestore|VaneTests\\.ExtensionRuntimePermissionTests/testUnsupportedHostCapabilitiesAreDisclosedAndCannotBeGranted|VaneTests\\.FaviconHostObservationLifetimeTests/testUnmountedIconLeafDoesNotRemainOwnedByItsCacheAndCanRemount|VaneTests\\.FaviconPublicationTests/testFetchedIconPublishesToTabsAndCacheBeforeBlockedPersistenceFinishes|VaneTests\\.FaviconPublicationTests/testIncognitoCacheNeverWritesFetchedArtwork|VaneTests\\.FaviconPublicationTests/testNewDeclaredIconQueuedDuringPersistenceIsNotDiscarded|VaneTests\\.FaviconPublicationTests/testPrivateOnlyFetchInPublicCacheDoesNotAuthorizePersistence|VaneTests\\.FaviconPublicationTests/testUnchangedDeclaredArtworkKeepsSiblingImageWhileRealChangesPublish|VaneTests\\.FavouritePreviewHoverTests/testBriefHoverDoesNotOpenAndTransferKeepsCardOpen|VaneTests\\.FavouritePreviewHoverTests/testKeyboardOpeningStaysUntilEscapeAndDismissCancelsDwell|VaneTests\\.FavouritePreviewNavigationTests/testEmbeddedFrameFailureDoesNotAbortPreview|VaneTests\\.FavouritePreviewNavigationTests/testMainPageStillRejectsFailuresAndUnsupportedContent|VaneTests\\.Feel01RestorationTests/testLargeSessionKeepsIdentityStateTitlesAndBackgroundRowsParked|VaneTests\\.Feel01RestorationTests/testMixedRestoreReusesOnlyMatchingProfileIdentitiesAndKeepsSectionOrder|VaneTests\\.Feel01RestorationTests/testUsableParkedTitleAvoidsOpeningHistoryButPlaceholderStillUsesIt|VaneTests\\.Feel03SearchTests/testAsyncInsertionsKeepSelectedResultPastTheDisplayCap|VaneTests\\.Feel03SearchTests/testFieldTakesFocusOnMountAndDoesNotStealItAfterRemoval|VaneTests\\.Feel03SearchTests/testHostedAddressPaletteSelectsSeedAndKeepsTypingFocus|VaneTests\\.Feel03SearchTests/testLateSuggestionsReuseLayoutAndPreserveArrangement|VaneTests\\.Feel03SearchTests/testRecentTabsMatchStableFullSortAcrossLargeCountsAndCaps|VaneTests\\.Feel03SearchTests/testRetiringFieldCannotTakeFocusDuringDismissal|VaneTests\\.Feel03SearchTests/testSelectedCompletionSurvivesHistoryCappingAndDeduplication|VaneTests\\.Feel03SearchTests/testSharedTabRowsRetainTheirIntendedWindow|VaneTests\\.Feel03SearchTests/testTabSnapshotIgnoresProgressAndTracksResultContent|VaneTests\\.Feel04LinkPreviewTests/testDisablingPreviewsRetiresAnAlreadyVisibleShell|VaneTests\\.Feel04LinkPreviewTests/testSameURLCannotReusePrivateSnapshotInAnotherTab|VaneTests\\.Feel04PreviewTests/testCardKeepsReferenceGeometryAsContentArrives|VaneTests\\.Feel04PreviewTests/testRepeatedRequestDoesNotCancelOrLoseInflightResultToCooldown|VaneTests\\.Feel04SkippedLoadTests/testBusySourceReplacementUnloadsTheRetiredDocument|VaneTests\\.Feel05DownloadPresentationTests/testMissingCompletedDownloadKeepsItsHistoricalGroupAndIdentity|VaneTests\\.Feel05DownloadPresentationTests/testProgressDoesNotRebuildMembershipButCompletionRenameAndRemovalDo|VaneTests\\.Feel06PasswordLayoutTests/testExtensionWindowVisibilityTracksCloseAndExplicitReopen|VaneTests\\.Feel06PasswordLayoutTests/testSwitchingSettingsToPasswordsDoesNotEnlargeTheRetainedWindow|VaneTests\\.Feel06PresentationTests/testReusesPresentationForUnchangedInputsAndRebuildsAfterEdits|VaneTests\\.Feel08FindTests/testCancelledTypingDoesNotSelectOrPublishMatches|VaneTests\\.Feel08FindTests/testFreshTypingBurstSelectsOnlyLatestQuery|VaneTests\\.Feel08FindTests/testSameURLReplacementRejectsOldFindResult|VaneTests\\.FolderExitTests/testBottomDropAppendsPinnedRunAfterExistingTodayTabs|VaneTests\\.FolderExitTests/testBottomDropLeavesCollapsedLastFolderAndKeepsRunAtEnd|VaneTests\\.FolderExitTests/testCrossSectionRootDropPreservesRunOrderAndEveryTab|VaneTests\\.FolderExitTests/testDropOnTodayMovesTidyTabsToRootInSelectionOrder|VaneTests\\.FolderExitTests/testRemovingNestedPinnedTabKeepsItsKindAndOtherFolderContents|VaneTests\\.GitHubProductionSignOutTests/testProductionSignOutDeletesRenewalSuccessorAfterWaitingForLock|VaneTests\\.GitHubProductionSignOutTests/testProductionSignOutPreservesReplacementSignInForSameAccount|VaneTests\\.HistorySearchTests/testDateRangeIsInclusiveAtStartAndExclusiveAtEnd|VaneTests\\.HistorySearchTests/testHistoryReadsStayInTheRequestedProfile|VaneTests\\.HistorySearchTests/testIndependentTitleRankingAndStableTies|VaneTests\\.HistorySearchTests/testTabSourcesCannotCrossProfilesOrPrivateWindows|VaneTests\\.HistorySearchTests/testYesterdayUsesCalendarDaysAcrossDaylightSaving|VaneTests\\.ImportWorkerTests/testAcceptedCSVBatchBlocksLifecycleDrainUntilAllInjectedSavesComplete|VaneTests\\.ImportWorkerTests/testAcceptedImportIntentDrainsAcrossPreServiceAwaitAndPauseRejectsNewIntent|VaneTests\\.ImportWorkerTests/testArcImportedTitlesAwaitTheSessionLaneWithoutBlockingInputActor|VaneTests\\.ImportWorkerTests/testBoundedSourceReadRejectsBeforeParsingOrCredentialWrites|VaneTests\\.ImportWorkerTests/testCancellationRollsBackAndRetainsConcurrentNormalNavigation|VaneTests\\.ImportWorkerTests/testCancelledArcCredentialStageNeverPublishesCookies|VaneTests\\.ImportWorkerTests/testCommentAndQuotedMarkupDoNotCreateFalseBookmarkTokens|VaneTests\\.ImportWorkerTests/testCommittedReplayPrefixReconcilesTemporaryIDsBeforeFailedSuffixEdits|VaneTests\\.ImportWorkerTests/testCSVParserHonorsWorkerCancellationBeforeAnyCredentialSave|VaneTests\\.ImportWorkerTests/testFailedAtomicImportRollsBackBothCategoriesAndStillReplaysNavigation|VaneTests\\.ImportWorkerTests/testFailedReplayRetainsUncommittedSuffixForRetryWithoutDuplicatingPrefix|VaneTests\\.ImportWorkerTests/testForgettingProfileWaitsForCancelledWorkerBeforeRemovingFiles|VaneTests\\.ImportWorkerTests/testForgettingSQLiteArtifactsIsIdempotentWhenSidecarsAreAlreadyGone|VaneTests\\.ImportWorkerTests/testHistoryExportReturnsSnapshotCountAndWritesEveryVisit|VaneTests\\.ImportWorkerTests/testInvalidQueuedEditsRejectBeforeAdmissionAndDoNotBlockNavigationOrRetry|VaneTests\\.ImportWorkerTests/testLifecyclePauseRejectsNewImportAndDrainsLateAcceptedWrites|VaneTests\\.ImportWorkerTests/testPasswordCSVReadParseAndInjectedCredentialBatchRunAwayFromUIActor|VaneTests\\.ImportWorkerTests/testQueuedClearAndFolderEditsKeepOrderWhenImportCreatesTheSameFolderName|VaneTests\\.ImportWorkerTests/testQueuedDeleteAddAndURLEditAreVisibleToFollowingToggle|VaneTests\\.ImportWorkerTests/testRepeatedUnclosedAnchorsRejectWithoutRepeatedSuffixScanning|VaneTests\\.ImportWorkerTests/testReplayTerminalNameConflictReportsRejectionAndStillDrainsHistory|VaneTests\\.ImportWorkerTests/testUnclosedQuotedAttributeRejectsWithoutRepeatedSuffixScanning|VaneTests\\.ImportWorkerTests/testWorkerLockWaitLeavesActorAvailableAndReplaysNavigationAndBookmarkEdits|VaneTests\\.KeyboardAccessibilityTests/testClosingClickedPinKeepsOutlineHiddenAndKeyboardActivationRestoresIt|VaneTests\\.KeyboardAccessibilityTests/testDeferredPageFocusDoesNotTakeFocusFromNewPalette|VaneTests\\.KeyboardAccessibilityTests/testDisabledSidebarControlLeavesKeyboardNavigationAndRejectsActivation|VaneTests\\.KeyboardAccessibilityTests/testF6LeavesTheLocalEaselForBrowserControls)$"
+  },
+  "final_cleanup": {
+    "test": "VaneTests.NativeFixtureRetirementTests/testRetireManifest",
+    "separate_host": true
+  },
+  "classification": "diagnostic baseline, not repair proof"
+}

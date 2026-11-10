@@ -64,11 +64,16 @@ private struct KeyboardAction: ViewModifier {
     private var showsOutline: Bool { focused && focusVisibility.visible }
 
     func body(content: Content) -> some View {
+        let _ = requestFocus?.wrappedValue == true
+            ? F6StageTrace.record("request-body", "token=\(focusOwner) focused=\(focused) enabled=\(enabled && isEnabled)") : ()
         content
             .focusable(enabled)
             .focused($focused)
             .focusEffectDisabled()
             .onChange(of: focused) { _, value in
+                if requestFocus != nil {
+                    F6StageTrace.record("focus-state", "token=\(focusOwner) value=\(value)")
+                }
                 if let bufferedFocus {
                     bufferedFocus.set(value, owner: focusOwner)
                 }
@@ -85,6 +90,9 @@ private struct KeyboardAction: ViewModifier {
                 if !value { focused = false }
             }
             .onChange(of: requestFocus?.wrappedValue, initial: true) { _, requested in
+                if requestFocus != nil {
+                    F6StageTrace.record("consume", "token=\(focusOwner) requested=\(String(describing: requested)) focused=\(focused) enabled=\(enabled && isEnabled) nativeNavigation=\(nativeNavigation?.navigation != nil)")
+                }
                 guard requested == true, enabled, isEnabled else { return }
                 if let nativeNavigation, let navigation = nativeNavigation.navigation {
                     navigation.requestFocus(token: focusOwner, row: nativeNavigation.row)
@@ -93,6 +101,7 @@ private struct KeyboardAction: ViewModifier {
                     focused = true
                 }
                 requestFocus?.wrappedValue = false
+                F6StageTrace.record("consumed", "token=\(focusOwner) focused=\(focused) request=\(String(describing: requestFocus?.wrappedValue))")
             }
             .background {
                 NativeSidebarNavigationControl(row: nativeNavigation, token: focusOwner, enabled: enabled && isEnabled) {

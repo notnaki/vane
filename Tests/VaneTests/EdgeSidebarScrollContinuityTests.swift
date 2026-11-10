@@ -13,6 +13,7 @@ import XCTest
                              exercise: @MainActor (TabStore, NSWindow, BrowserWindowHost) async throws -> Void) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
+        F6StageTrace.host("edge-before-original-guard")
         try XCTSkipIf(Motion.spaceReduced, "Requires animated edge navigation")
         let previousPolicy = app.activationPolicy()
         defer { app.setActivationPolicy(previousPolicy) }

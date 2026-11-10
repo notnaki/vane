@@ -17,6 +17,7 @@ import NativeTestHostBootstrap
     }
 
     func testOwnedLoopAdmitsAsyncWorkAndStops() async throws {
+        F6DiagnosticHostTrace.record("smoke-primary")
         try assertNativeHostBootstrap()
         TestEnvironment.prepare()
         guard ProcessInfo.processInfo.environment["VANE_APPKIT_LOOP_SMOKE"] == "1" else {

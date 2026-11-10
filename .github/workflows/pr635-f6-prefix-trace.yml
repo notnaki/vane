@@ -1,0 +1,34 @@
+name: PR 635 exact prefix F6 diagnostic
+on:
+  push:
+    branches: [codex/pr635-f6-prefix-trace]
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: pr635-f6-prefix-${{ github.sha }}
+          restore-keys: swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore matching source timestamps
+        run: python3 scripts/ci-source-state.py restore
+      - name: Compile passive diagnostics
+        timeout-minutes: 20
+        run: swift build -c debug --build-tests --disable-index-store
+      - name: One separate smoke followed by exact single-host 258 prefix
+        timeout-minutes: 30
+        env:
+          VANE_F6_STAGE_TRACE: '1'
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: python3 scripts/pr635-f6-prefix-diagnostic.py
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: pr635-f6-prefix-evidence
+          path: ${{ runner.temp }}/pr635-prefix-*
+          retention-days: 14
