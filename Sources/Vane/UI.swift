@@ -2359,6 +2359,9 @@ private struct PanePill: View {
                             radius: Look.panePillRadius) { store.focusPane(tab.id) }
         .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
         .tabTooltip(TidyTitles.title(for: tab), enabled: store.renamingTab == nil)
+        .contextMenu {
+            if !held && !previewing { SidebarTabContextMenu(store: store, tab: tab) }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(TidyTitles.title(for: tab))
         .accessibilityValue("Pane \(index + 1) of \(of)" + (active ? ", showing" : ""))
@@ -4340,6 +4343,7 @@ private struct SplitRow: View {
         .contextMenu {
             if ticked, store.selection.count > 1 {
                 BulkMenu(store: store, count: store.selection.count, kind: lead.kind)
+                SidebarExtensionMenu(store: store, tab: active)
             } else {
                 SplitMenu(store: store, split: split)
             }
@@ -4372,7 +4376,7 @@ extension SplitRow {
 /// The right-click menu on a split's row: what can be done to the split as a whole. What can
 /// be done to one pane is on that pane's own tab menu, which is where it was before it
 /// became a pane.
-private struct SplitMenu: View {
+struct SplitMenu: View {
     let store: TabStore
     let split: Split
 
@@ -4381,6 +4385,7 @@ private struct SplitMenu: View {
         Button("Separate All Tabs") { store.separateSplit(split) }
         Divider()
         Button("Close Split View") { store.closeSplit(split) }
+        SidebarExtensionMenu(store: store, tab: store.tabs.first { $0.id == split.activeTab })
     }
 }
 
@@ -4570,13 +4575,7 @@ private struct TabRow: View {
         .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
         // Right-clicking one of several ticked rows is about all of them; anywhere else it
         // is about the one tab, exactly as before.
-        .contextMenu {
-            if ticked, store.selection.count > 1 {
-                BulkMenu(store: store, count: store.selection.count, kind: tab.kind)
-            } else {
-                TabMenu(store: store, tab: tab)
-            }
-        }
+        .contextMenu { SidebarTabContextMenu(store: store, tab: tab) }
         // One element per tab, the way a tab in Safari reads: the title is the label, the
         // state is the value, and the close button becomes an action rather than a second
         // element the user has to find and then guess the meaning of.
@@ -4674,6 +4673,23 @@ private struct TabRow: View {
     }
 }
 
+struct SidebarTabContextMenu: View {
+    let store: TabStore
+    let tab: Tab
+
+    var body: some View {
+        // A pane belongs to the split's one selected row. Its extension subject
+        // remains the clicked pane, independently of that row's lead tab.
+        let row = store.split(containing: tab.id).flatMap { store.leadPane($0) } ?? tab.id
+        if store.selection.contains(row), store.selection.count > 1 {
+            BulkMenu(store: store, count: store.selection.count, kind: store.selection.section ?? tab.kind)
+            SidebarExtensionMenu(store: store, tab: tab)
+        } else {
+            TabMenu(store: store, tab: tab)
+        }
+    }
+}
+
 /// The right-click menu on any tab in the sidebar, in Arc's shape: what this tab is, where
 /// it can go, and how to be rid of it. `Move To` names the other two sections, so a tab can
 /// be moved without a drag — which is the only route VoiceOver and the keyboard have.
@@ -4693,6 +4709,7 @@ struct TabMenu: View {
         } else {
             ordinaryMenu
         }
+        SidebarExtensionMenu(store: store, tab: tab)
     }
 
     @ViewBuilder private var ordinaryMenu: some View {

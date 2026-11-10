@@ -197,8 +197,11 @@ Browser and native editing shortcuts take precedence; details disclose conflicts
 Command/Control extension shortcuts can work in login fields. Character-insertion
 shortcuts (including Option-only combinations) stay with native and detected website
 editors. Commands do not run from sheets, private/locked tabs, or manager windows. WebKit supplies webpage extension context-menu items; Vane preserves them
-alongside its link actions. Extension items in Vane’s sidebar tab menus are not yet
-integrated, although WebKit exposes a public API for them.
+alongside its link actions. Sidebar tab menus also include extension tab actions for the
+clicked tab, including favourites and split panes. Bulk menus keep their core commands;
+extension commands apply to the clicked row’s tab. Actions recheck the tab, profile,
+private access and extension permission before dispatch. See
+[sidebar menu behavior and validation](validation/sidebar-extension-menus.md).
 Popup/options behavior still depends on the extension and WebKit.
 Tab selection returns a clear error for rows hidden by folded folders, a collapsed
 Pinned section, or a non-leading Split View pane. Activating those tabs remains supported.

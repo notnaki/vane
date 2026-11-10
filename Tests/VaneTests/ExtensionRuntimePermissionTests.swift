@@ -167,7 +167,7 @@ import XCTest
             XCTAssertTrue(review.limitations.contains { $0.contains("downloads") })
             XCTAssertTrue(review.limitations.contains { $0.contains("nativeMessaging") })
             XCTAssertFalse(review.limitations.contains { $0.contains("contextMenus") })
-            XCTAssertTrue(review.limitations.contains { $0.contains("sidebar tab menus") })
+            XCTAssertFalse(review.limitations.contains { $0.contains("sidebar tab menus") })
             XCTAssertFalse(review.limitations.contains { $0.contains("commands") })
             return true
         }
