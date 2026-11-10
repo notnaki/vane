@@ -567,6 +567,9 @@ struct TitleReveal: Equatable, Sendable {
     /// Only an account name crosses a submitted username step's next navigation.
     /// Never shared between tabs, profiles, frames, or origins; never a stored secret.
     private var passwordStep: (id: UUID, origin: PasswordOrigin, account: String, expires: Date, awaitingNavigation: Bool, continuationAllowed: Bool)?
+    /// A dispatched continuation owns one SDK result independently of later focus
+    /// metadata reads. Keep only the newest ready target until that result arrives.
+    private var passwordContinuationFill: (id: UUID, request: UUID, document: UUID, pendingTarget: String?)?
     /// A choice belongs to one document and field target. The page can fake a username
     /// submission, so another form or frame cannot reuse that choice for continuation.
     private var chosenAccount: (origin: PasswordOrigin, account: String, target: String, document: UUID, expires: Date)?
@@ -1218,6 +1221,7 @@ struct TitleReveal: Equatable, Sendable {
         passwordSubmission = nil
         viewSourceTask?.cancel(); viewSourceRequest = UUID()
         readingDocumentGeneration = UUID()
+        passwordContinuationFill = nil
         Reader.forget(tab: self)
         passwordStep = nil
         chosenAccount = nil
@@ -1513,6 +1517,7 @@ struct TitleReveal: Equatable, Sendable {
                                               account: String? = nil) -> Bool {
         guard let step = passwordStep, step.id == continuation.id, step.expires == continuation.expires,
               step.continuationAllowed, !step.awaitingNavigation, step.expires > .now,
+              passwordContinuationFill?.id != continuation.id,
               step.origin == origin, secureOrigin == origin else { return false }
         return account.map { $0 == step.account } ?? true
     }
@@ -1641,19 +1646,48 @@ struct TitleReveal: Equatable, Sendable {
                       page.url == pageURL, self.readingDocumentGeneration == document,
                       self.secureOrigin == login.origin, self.passwordReadRequest == request else { return }
                 if let continuation, !self.permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) { return }
+                if let continuation {
+                    self.passwordContinuationFill = (continuation.id, request, document, nil)
+                }
                 page.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password,
                                                      automatic: automatic, target: target, continuation: continuation != nil),
                                        in: nil, in: Autofill.world) { [weak self, weak page] result in
-                    guard let self, let page, self.existingWeb === page, page.url == pageURL,
+                    guard let self else { return }
+                    var retryRejectedTarget = false
+                    defer {
+                        if self.passwordContinuationFill?.request == request {
+                            let target = self.passwordContinuationFill?.pendingTarget
+                            self.passwordContinuationFill = nil
+                            // Only an explicit false reports rejection before delivery.
+                            // A queued target still passes every ordinary authorization,
+                            // document, origin and DOM-target check on its fresh attempt.
+                            if retryRejectedTarget, self.passwordExplicitFillRequest == nil,
+                               let continuation, let target {
+                                self.fillPassword(automatic: true, target: target, accountHint: login.account,
+                                                  continuation: continuation)
+                            }
+                        }
+                    }
+                    guard let page, !self.tornDown, !self.suspended, !self.isPrivate,
+                          self.existingWeb === page, page.url == pageURL,
                           self.readingDocumentGeneration == document, self.secureOrigin == login.origin,
-                          self.passwordReadRequest == request, self.profileID == profile,
+                          self.profileID == profile,
                           case let .success(value) = result else { return }
+                    if let continuation {
+                        guard let claim = self.passwordContinuationFill, claim.request == request,
+                              claim.id == continuation.id, claim.document == document else { return }
+                        // Focus can supersede the metadata request after WebKit has
+                        // already delivered the secret. Consume only this owned,
+                        // scoped success, even when that newer request is current.
+                        if (value as? Bool) == true, self.passwordStep?.id == continuation.id,
+                           self.passwordStep?.expires == continuation.expires {
+                            self.passwordStep?.continuationAllowed = false
+                        } else if (value as? Bool) == false { retryRejectedTarget = true }
+                    }
+                    guard self.passwordReadRequest == request else { return }
                     if (value as? Bool) == true {
                         if !automatic {
                             self.chosenAccount = (login.origin, login.account, target, document, .now.addingTimeInterval(120))
-                            self.passwordStep?.continuationAllowed = false
-                        } else if let continuation, self.passwordStep?.id == continuation.id,
-                                  self.passwordStep?.expires == continuation.expires {
                             self.passwordStep?.continuationAllowed = false
                         }
                         self.lastFilledAt = .now
@@ -1826,6 +1860,7 @@ struct TitleReveal: Equatable, Sendable {
         retitleTask?.cancel()
         if w === existingWeb {
             readingDocumentGeneration = UUID()
+            passwordContinuationFill = nil
             chosenAccount = nil
             Reader.forget(tab: self)
         }
@@ -2392,6 +2427,11 @@ struct TitleReveal: Equatable, Sendable {
                   step.origin == secureOrigin, step.expires > .now else { return }
             let hint = body["accountHint"] as? String ?? ""
             guard hint.isEmpty || hint == step.account else { return }
+            if let claim = passwordContinuationFill, claim.id == step.id,
+               claim.document == readingDocumentGeneration {
+                passwordContinuationFill?.pendingTarget = target
+                return
+            }
             fillPassword(automatic: true, target: target, accountHint: step.account,
                          continuation: PasswordContinuation(id: step.id, expires: step.expires))
             return
@@ -2443,6 +2483,7 @@ struct TitleReveal: Equatable, Sendable {
         // Typed usernames still carry into save prompts. Only a choice in this exact
         // main-document username target authorizes the next page to read a secret.
         let allowed = selectedExpiry != nil
+        passwordContinuationFill = nil
         passwordStep = (UUID(), origin, account, selectedExpiry ?? .now.addingTimeInterval(120), true, allowed)
         return allowed
     }
@@ -2597,6 +2638,7 @@ struct TitleReveal: Equatable, Sendable {
     func stop() {
         navigationState.invalidate(preservingDocument: true)
         readingDocumentGeneration = UUID()
+        passwordContinuationFill = nil
         certificateDestinationURL = nil
         certificateNavigation = nil
         CertificateTrust.navigationStarted(in: self)
