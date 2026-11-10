@@ -1,4 +1,5 @@
 import AppKit
+import Accelerate
 import Combine
 import CoreMedia
 import CoreVideo
@@ -8,21 +9,54 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceHandoffFlashTests: XCTestCase {
+    func testHandoffContrastIgnoresPixelPhaseButDetectsDoubleText() {
+        let width = 16, height = 8
+        func score(offset: Int, strength: UInt8 = 80, fraction: Double = 0) -> Double {
+            var bytes = [UInt8](repeating: 48, count: width * height * 4)
+            for y in 0..<height {
+                for x in offset..<(offset + 2) {
+                    for channel in 0..<3 { bytes[(y * width + x) * 4 + channel] += strength }
+                }
+            }
+            let original = bytes
+            for y in 0..<height {
+                for x in 1..<width {
+                    for channel in 0..<3 {
+                        let position = (y * width + x) * 4 + channel
+                        bytes[position] = UInt8((1 - fraction) * Double(original[position])
+                            + fraction * Double(original[position - 4]))
+                    }
+                }
+            }
+            return bytes.withUnsafeBufferPointer {
+                HandoffTextContrast.measure($0.baseAddress!, width: width, height: height, stride: width * 4)
+            }
+        }
+        let baseline = score(offset: 3)
+        XCTAssertGreaterThan(baseline, 1)
+        XCTAssertEqual(score(offset: 4), baseline, accuracy: baseline * 0.01,
+                       "Moving one text surface must not look like changed alpha")
+        XCTAssertEqual(score(offset: 3, fraction: 0.5), baseline, accuracy: baseline * 0.15,
+                       "Subpixel return travel must retain the same text contrast")
+        XCTAssertGreaterThan(score(offset: 3, strength: 120), baseline * 1.15,
+                             "The measurement must still reject doubled translucent text")
+    }
+
     func testTrackingResetCannotRetireTheReleasedHandoffCapture() {
         let frames = HandoffCaptureFrames()
-        frames.append(time: 1, edges: 20)
+        frames.append(time: 1, contrast: 20)
         // Losing the gesture while fingers are still down is not the final
         // released landing. A subsequent claimed packet can start tracking again.
         frames.reachedEndpoint(at: 2)
         frames.retired(at: 3)
-        frames.append(time: 4, edges: 30)
+        frames.append(time: 4, contrast: 30)
         XCTAssertTrue(frames.samples.isEmpty,
                       "Pre-release tracking must not be classified as landing/retirement")
         frames.release()
         frames.reachedEndpoint(at: 5)
-        frames.append(time: 6, edges: 40)
+        frames.append(time: 6, contrast: 40)
         frames.retired(at: 7)
-        frames.append(time: 8, edges: 50)
+        frames.append(time: 8, contrast: 50)
         XCTAssertEqual(frames.samples.count, 2)
         XCTAssertEqual(frames.samples.map(\.0), [true, false])
         XCTAssertEqual(frames.samples.map(\.1), [40, 50])
@@ -153,13 +187,13 @@ import XCTest
         let uncovered = sampler.samples.filter { !$0.covered }
         XCTAssertTrue(sampler.observedGesture, "A display callback must observe the actual gesture")
         XCTAssertGreaterThan(uncovered.count, 3, "Sample several displayed frames after retirement")
-        print("HANDOFF_EDGES \(sampler.samples.map { ($0.covered, $0.edges) })")
-        let settled = try XCTUnwrap(uncovered.last?.edges)
+        print("HANDOFF_CONTRAST \(sampler.samples.map { ($0.covered, $0.contrast) })")
+        let settled = try XCTUnwrap(uncovered.last?.contrast)
         XCTAssertGreaterThan(settled, 1, "The destination must contain rendered sidebar text")
         for frame in covered + uncovered {
-            XCTAssertLessThan(frame.edges, settled * 1.15,
+            XCTAssertLessThan(frame.contrast, settled * 1.15,
                               "Live and native text must not brighten through double alpha compositing")
-            XCTAssertGreaterThan(frame.edges, settled * 0.85,
+            XCTAssertGreaterThan(frame.contrast, settled * 0.85,
                                  "Sidebar content must not disappear for a frame at native handoff")
         }
         } catch {
@@ -174,7 +208,7 @@ import XCTest
 /// Capture WindowServer output: rendering a newly committed layer tree into a
 /// CGContext can temporarily omit asynchronously drawn SwiftUI backing contents.
 @MainActor private final class PresentedSidebarSampler: NSObject, SCStreamOutput {
-    struct Sample { let covered: Bool; let edges: Double }
+    struct Sample { let covered: Bool; let contrast: Double }
     private weak var host: BrowserWindowHost?
     private weak var store: TabStore?
     private(set) var observedGesture = false
@@ -187,7 +221,7 @@ import XCTest
     private nonisolated let frames = HandoffCaptureFrames()
     private var ticks = 0
     var diagnostics: String { "ticks=\(ticks) \(frames.diagnostics)" }
-    var samples: [Sample] { frames.samples.map { Sample(covered: $0.0, edges: $0.1) } }
+    var samples: [Sample] { frames.samples.map { Sample(covered: $0.0, contrast: $0.1) } }
     func release() { released = true; frames.release() }
     init(host: BrowserWindowHost, store: TabStore) {
         self.host = host
@@ -269,6 +303,7 @@ import XCTest
             self.stream = nil
             frames.queue.sync {}
         }
+
     }
     @objc private func tick(_ link: CADisplayLink) {
         ticks += 1
@@ -285,23 +320,43 @@ import XCTest
         // An idle frame repeats the last displayed content; a blank frame is
         // real missing content and must remain a zero-edge assertion sample.
         if status == SCFrameStatus.idle.rawValue { frames.repeatFrame(at: time); return }
-        if status == SCFrameStatus.blank.rawValue { frames.append(time: time, edges: 0); return }
+        if status == SCFrameStatus.blank.rawValue { frames.append(time: time, contrast: 0); return }
         guard status == SCFrameStatus.complete.rawValue, let pixel = sampleBuffer.imageBuffer else { return }
         CVPixelBufferLockBaseAddress(pixel, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
         guard let bytes = CVPixelBufferGetBaseAddress(pixel)?.assumingMemoryBound(to: UInt8.self) else { return }
         let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
         let strideBytes = CVPixelBufferGetBytesPerRow(pixel)
-        var edges = 0.0
-        for y in stride(from: 0, to: height, by: 2) {
-            for x in stride(from: 0, to: width - 1, by: 2) {
-                let offset = y * strideBytes + x * 4
-                for component in 0..<3 {
-                    edges += Double(abs(Int(bytes[offset + component]) - Int(bytes[offset + 4 + component]))) / 255
+        let contrast = HandoffTextContrast.measure(bytes, width: width, height: height, stride: strideBytes)
+        frames.append(time: time, contrast: contrast)
+
+    }
+}
+
+private enum HandoffTextContrast {
+    static func measure(_ bytes: UnsafePointer<UInt8>, width: Int, height: Int, stride: Int) -> Double {
+        // Sparse derivatives alias against the final subpixel spring frames:
+        // translating one ordinary glyph by a pixel can change that score by
+        // over 50%. Integrate contrast over every pixel instead. The row mean
+        // follows the smooth background without requiring a particular theme.
+        var contrast = 0.0
+        var row = [Float](repeating: 0, count: width)
+        row.withUnsafeMutableBufferPointer { values in
+            let count = vDSP_Length(width)
+            for y in 0..<height {
+                for channel in 0..<3 {
+                    vDSP_vfltu8(bytes + y * stride + channel, 4, values.baseAddress!, 1, count)
+                    var mean: Float = 0
+                    vDSP_meanv(values.baseAddress!, 1, &mean, count)
+                    mean = -mean
+                    vDSP_vsadd(values.baseAddress!, 1, &mean, values.baseAddress!, 1, count)
+                    var magnitude: Float = 0
+                    vDSP_svemg(values.baseAddress!, 1, &magnitude, count)
+                    contrast += Double(magnitude) / 255
                 }
             }
         }
-        frames.append(time: time, edges: edges)
+        return contrast
     }
 }
 
@@ -342,7 +397,7 @@ private final class HandoffCaptureFrames: @unchecked Sendable {
     func retired(at time: Double) {
         lock.withLock { if endpoint != nil, retirement == nil { retirement = time } }
     }
-    func append(time: Double, edges: Double) { lock.withLock { recorded.append((time, edges)) } }
+    func append(time: Double, contrast: Double) { lock.withLock { recorded.append((time, contrast)) } }
     func repeatFrame(at time: Double) {
         lock.withLock { if let last = recorded.last { recorded.append((time, last.1)) } }
     }
