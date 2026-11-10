@@ -58,9 +58,10 @@ enum ExtensionFilterRules {
                 guard hosts.count == 2, validHost(String(hosts[1])), hosts[1] != "localhost" else { continue }
                 line = "||\(hosts[1])^"
             }
-            if opts.contains("important"), let dollar = line.firstIndex(of: "$") {
-                let rest = line[line.index(after: dollar)...].split(separator: ",").filter { $0.lowercased() != "important" }
-                line = String(line[..<dollar]) + (rest.isEmpty ? "" : "$" + rest.joined(separator: ","))
+            let parts = networkParts(line)
+            if opts.contains("important"), let declared = parts.options {
+                let rest = declared.split(separator: ",").filter { $0.lowercased() != "important" }
+                line = parts.pattern + (rest.isEmpty ? "" : "$" + rest.joined(separator: ","))
                 important.append(line)
             } else { ordinary.append(line) }
         }
@@ -110,18 +111,27 @@ enum ExtensionFilterRules {
         return Compilation(chunks: chunks, report: report)
     }
 
+    private static func networkParts(_ line: String) -> (pattern: String, options: String?) {
+        let exception = line.hasPrefix("@@")
+        // Share the compiler's delimiter: a regex's terminal `$` is an anchor,
+        // and must never hide resource restrictions from the bridge's safety gate.
+        let parts = Blocker.networkParts(exception ? String(line.dropFirst(2)) : line)
+        return ((exception ? "@@" : "") + parts.pattern, parts.options)
+    }
+
     private static func options(_ line: String) -> Set<String> {
-        guard !line.contains("##"), let dollar = line.firstIndex(of: "$") else { return [] }
-        return Set(line[line.index(after: dollar)...].split(separator: ",").map { $0.lowercased() })
+        guard !line.contains("##"), let declared = networkParts(line).options else { return [] }
+        return Set(declared.split(separator: ",").map { $0.lowercased() })
     }
 
     private static func signature(_ line: String) -> String {
-        guard let dollar = line.firstIndex(of: "$") else { return line.lowercased() }
+        let parts = networkParts(line)
+        guard parts.options != nil else { return line.lowercased() }
         let declared = options(line).subtracting(["badfilter"])
         let opts = Set(declared.map { option in
             switch option { case "3p": "third-party"; case "1p", "~third-party": "first-party"; default: option }
         }).sorted()
-        let body = String(line[..<dollar])
+        let body = parts.pattern
         return (declared.contains("match-case") ? body : body.lowercased())
             + (opts.isEmpty ? "" : "$" + opts.joined(separator: ","))
     }

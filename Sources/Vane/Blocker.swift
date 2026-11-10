@@ -648,7 +648,7 @@ private struct BlockRule: Codable, Equatable {
     }
 
     /// A terminal regex `$` is an anchor, not the start of filter options.
-    private nonisolated static func networkParts(_ body: String) -> (pattern: String, options: String?) {
+    nonisolated static func networkParts(_ body: String) -> (pattern: String, options: String?) {
         if body.hasPrefix("/"), let slash = body.lastIndex(of: "/"), slash != body.startIndex {
             let suffix = body[body.index(after: slash)...]
             if suffix.isEmpty { return (body, nil) }

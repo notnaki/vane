@@ -161,6 +161,20 @@ Both wrapper runs returned primary 0 / cleanup 0 and retired their exact owned
 hosts and stores. Logs are retained under `/tmp/vane-manifest-v2-artifacts/` as
 `api-lifetime-green.log` and `final-related-regressions.log`.
 
+Integration on main `295d0033494e49a11954ddd9355acee66a332852` exposed a
+regex-option parsing interaction with that base's expanded filter compiler.
+The bridge now shares the compiler's regex-aware delimiter, so a terminal `$`
+anchor cannot hide document or imprecise resource restrictions. The regression
+first reproduced seven wrongly emitted rules, then passed after the repair;
+anchored-regex badfilter and important precedence also remain covered. Current-base
+validation passed 18 compatibility cases (including the official package) and
+64 related cases with one existing live-store opt-in skip, zero failures. Both
+wrappers returned primary 0 / cleanup 0, verifying retirement of six and 33 exact
+owned backends respectively. Evidence: `integration-regex-red.log`,
+`integration-core-green.log` and `integration-related-green.log` in the same
+artifact directory. The superseded baseline build was stopped before tests;
+its preserved `integration-core.log` records primary -15 / cleanup 0.
+
 The actual package still reports the explicit privacy denial, a missing local
 fallback asset (`pgl.yoyo.org/as/serverlist.txt`), and WebKit rejecting an `abp:*`
 context-menu target pattern. These diagnostics remain visible; this work does

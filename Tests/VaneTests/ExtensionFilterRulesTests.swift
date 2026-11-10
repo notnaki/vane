@@ -54,6 +54,26 @@ final class ExtensionFilterRulesTests: XCTestCase {
         XCTAssertFalse(result.chunks[0].contains("conditional"))
     }
 
+    func testRegexAnchorsCannotHideUnrepresentableResourceOptions() throws {
+        let types = ["document", "subdocument", "xmlhttprequest", "xhr", "websocket", "ping", "other", "popup"]
+        let result = try ExtensionFilterRules.compile(texts: [types.map { "/blocked$/$\($0)" }.joined(separator: "\n")], trustedSites: [])
+        XCTAssertEqual(result.report.rules, 0)
+        XCTAssertEqual(result.report.skipped, types.count)
+        XCTAssertTrue(result.chunks.isEmpty)
+    }
+
+    func testAnchoredRegexKeepsBadfilterAndImportantPrecedence() throws {
+        let result = try ExtensionFilterRules.compile(texts: ["/ads$/$image\n/critical$/$image,important\n@@/critical$/$image", "/ads$/$image,badfilter"], trustedSites: [])
+        XCTAssertEqual(result.report.rules, 2)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.chunks[0].utf8)) as? [[String: Any]])
+        XCTAssertEqual(rules.compactMap { ($0["action"] as? [String: Any])?["type"] as? String }, ["ignore-previous-rules", "block"])
+        for rule in rules {
+            let trigger = try XCTUnwrap(rule["trigger"] as? [String: Any])
+            XCTAssertEqual(trigger["url-filter"] as? String, "critical$")
+            XCTAssertEqual(trigger["resource-type"] as? [String], ["image"])
+        }
+    }
+
     func testUntranslatableTrustedDirectivesAndOversizedPoliciesFailAsAWhole() {
         XCTAssertThrowsError(try ExtensionFilterRules.compile(texts: ["/ads"], trustedSites: ["/arbitrary-regex/"]))
         XCTAssertThrowsError(try ExtensionFilterRules.compile(texts: [String(repeating: "x", count: 65537)], trustedSites: []))
