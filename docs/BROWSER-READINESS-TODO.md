@@ -49,7 +49,8 @@ Remaining:
 **Implemented and checked in synthetic fixtures:** camera/microphone and macOS 27
 location site decisions, document-scoped Allow Once, revocation, private isolation,
 installation consent, expanded-access review, extension management, and runtime
-permission lifecycles. See [site permissions](SITE-PERMISSIONS.md) and
+permission lifecycles. Sidebar tab menus expose extension actions for the clicked
+tab with lifecycle, permission and profile/private revalidation. See [site permissions](SITE-PERMISSIONS.md) and
 [extension controls and limitations](INTEGRATIONS.md#extensions).
 
 Remaining:
@@ -62,6 +63,27 @@ Remaining:
   do not certify arbitrary APIs, store compatibility, or full native popup use.
 - Verify fixed extension storage identity through actual signed-app quit/relaunch;
   host recreation within XCTest is the recorded restoration evidence.
+
+## Local filters, passwords and browser migration
+
+**Implemented with synthetic and scoped WebKit checks:** opt-in automatic linked filter-file refresh
+with last-good snapshots, safe regex and equivalent `$badfilter` handling; nested
+and dynamic open-shadow autofill with explicit multi-step username handoff; and
+opt-in Chromium cookie/session copying that preserves existing destination cookies.
+See [integrations](INTEGRATIONS.md), [passwords](PASSWORD-MANAGER.md) and
+[data/privacy](DATA-AND-PRIVACY.md).
+
+Remaining:
+
+- Linked files are checked every 30 seconds and on startup/wake, rather than
+  through immediate filesystem notifications. Unsupported EasyList syntax remains
+  reported rather than approximated.
+- Closed shadow roots, cross-origin frames and arbitrary provider login flows remain
+  outside the verified autofill boundary. Synthetic cookies do not certify real
+  Keychain access or provider sign-in, and unsupported encryption is skipped.
+- File-panel/consent interactions, macOS 26 and notarized access grants need their
+  own validation. No personal browser profiles, credentials or account sessions were
+  used for these changes. Sync and passkeys remain outside this implementation.
 
 ## Updater and distribution
 
