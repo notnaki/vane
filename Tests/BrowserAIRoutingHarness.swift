@@ -1,6 +1,7 @@
 // Compile the real BrowserAI dispatcher with deterministic substitutes only at framework,
 // network and credential boundaries. No Keychain, UI, Neural Engine or real HTTP is used.
 import Foundation
+import SwiftUI
 import Security
 
 @MainActor final class Gate {
@@ -12,6 +13,7 @@ import Security
 @MainActor enum Boundary {
     static var gate: Gate?
     static var requests = 0
+    static var cancelledCredentials = 0
 }
 enum Store {
     static let overrideDirectory: String? = FileManager.default.temporaryDirectory.appendingPathComponent("vane-ai-routing-" + UUID().uuidString).path
@@ -34,7 +36,11 @@ extension UserDefaults {
     var signedOut = false
     let read: () -> ChatGPTOAuth.Credentials?
     init(registration: ChatGPTRegistration, lockURL: URL, read: @escaping () -> ChatGPTOAuth.Credentials?, write: @escaping (ChatGPTOAuth.Credentials?) -> Bool) { self.registration = registration; self.read = read }
-    func credentials() async throws -> ChatGPTOAuth.Credentials { await Boundary.gate?.wait(); return read()! }
+    func credentials() async throws -> ChatGPTOAuth.Credentials {
+        await Boundary.gate?.wait()
+        if Task.isCancelled { Boundary.cancelledCredentials += 1 }
+        return read()!
+    }
     func invalidate() {}
     func signOut() async throws -> Bool { signedOut = true; return true }
 }
@@ -71,7 +77,7 @@ extension UserDefaults {
             UserDefaults.vane.set(true, forKey: "appleAI"); BrowserAI.save(state)
             let grant = ChatGPTOAuth.Credentials(accessToken: "fixture", refreshToken: "fixture", idToken: "fixture", scopes: ["chatgpt.tokens.use.direct"], expiresAt: .distantFuture)
             AIKeys.values[connection.credentialAccount] = grant.stored
-            Boundary.requests = 0; Boundary.gate = nil
+            Boundary.requests = 0; Boundary.cancelledCredentials = 0; Boundary.gate = nil
             return connection
         }
         func waitForGate(_ gate: Gate) async -> Bool {
@@ -92,6 +98,43 @@ extension UserDefaults {
         refresh.release()
         let result = await summary.value
         checks.append(("route changes during refresh prevent page-text upload", entered && Boundary.requests == 0 && result.isEmpty))
+        _ = setup(.summaries, cloud: true)
+        let masterRefresh = Gate(); Boundary.gate = masterRefresh
+        let masterSummary = Task { @MainActor in
+            var values: [String] = []
+            for await value in BrowserAI.summarizeStream("Page text from before disabling AI", sentences: 2) { values.append(value) }
+            return values
+        }
+        let masterEntered = await waitForGate(masterRefresh)
+        let beforeMaster = BrowserAI.revision
+        // Exercise the same production Binding used by Settings → Max.
+        let masterEnabled = BrowserAI.enabledBinding
+        masterEnabled.wrappedValue = false
+        let disabledRevision = BrowserAI.revision
+        let offPersisted = !BrowserAI.enabled && !UserDefaults.vane.bool(forKey: "appleAI")
+        masterEnabled.wrappedValue = true
+        let afterMaster = BrowserAI.revision
+        masterRefresh.release()
+        let masterResult = await masterSummary.value
+        print("EVIDENCE master off/on: entered=\(masterEntered) enabled=\(BrowserAI.enabled) revision=\(beforeMaster)->\(afterMaster) uploads=\(Boundary.requests) results=\(masterResult.count)")
+        checks.append(("master off/on during refresh prevents stale page-text upload", masterEntered && Boundary.requests == 0 && masterResult.isEmpty))
+        checks.append(("master transition synchronously persists and invalidates each edge", offPersisted && BrowserAI.enabled && disabledRevision == beforeMaster + 1 && afterMaster == disabledRevision + 1))
+        checks.append(("master switch cancels the suspended request before refresh resumes", Boundary.cancelledCredentials == 1))
+        // New work after re-enabling must remain admissible. A no-op UI write must
+        // neither invalidate it nor advance the generation.
+        let freshRefresh = Gate(); Boundary.gate = freshRefresh
+        let freshSummary = Task { @MainActor in
+            var values: [String] = []
+            for await value in BrowserAI.summarizeStream("New page text after re-enabling AI", sentences: 2) { values.append(value) }
+            return values
+        }
+        let freshEntered = await waitForGate(freshRefresh)
+        let freshRevision = BrowserAI.revision
+        masterEnabled.wrappedValue = true
+        let noOpRevision = BrowserAI.revision
+        freshRefresh.release()
+        let freshResult = await freshSummary.value
+        checks.append(("re-enabled AI admits only fresh work and ignores same-value writes", freshEntered && freshRevision == noOpRevision && Boundary.requests == 1 && freshResult.count == 1))
         _ = setup(.tabTitles, cloud: true)
         let privateResult = await BrowserAI.shortTitle(for: "private", url: url, isPrivate: true)
         checks.append(("private browser calls never reach cloud dispatcher", privateResult == nil && Boundary.requests == 0))
@@ -107,10 +150,11 @@ extension UserDefaults {
         let grouping = Gate(); Boundary.gate = grouping
         let groups = Task { @MainActor in await BrowserAI.group([(id: "1", title: "One", host: "fixture"), (id: "2", title: "Two", host: "fixture")]) }
         let groupingEntered = await waitForGate(grouping)
-        UserDefaults.vane.set(false, forKey: "appleAI"); BrowserAI.settingsChanged()
+        BrowserAI.enabledBinding.wrappedValue = false
+        BrowserAI.enabledBinding.wrappedValue = true
         grouping.release()
         let staleGroups = await groups.value
-        checks.append(("disabling AI discards old Apple groups", groupingEntered && staleGroups == nil))
+        checks.append(("master off/on discards old Apple groups", groupingEntered && BrowserAI.enabled && staleGroups == nil))
         for (name, passed) in checks { print("\(passed ? "ok" : "FAIL") \(name)") }
         exit(checks.allSatisfy(\.1) ? 0 : 1)
     }

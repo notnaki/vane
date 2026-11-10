@@ -1,10 +1,20 @@
 import Foundation
 import Security
+import SwiftUI
 
 /// Resolve a saved connection separately for each Max feature. Apple stays the default.
 @MainActor enum BrowserAI {
     static var state: AIConnections { AIConnections.load(UserDefaults.vane) }
     static var enabled: Bool { UserDefaults.vane.object(forKey: "appleAI") as? Bool ?? true }
+    /// Invalidate synchronously on each master-switch edge; SwiftUI may coalesce an
+    /// off→on sequence before an onChange observer runs, reopening stale admission.
+    static var enabledBinding: Binding<Bool> {
+        Binding(get: { enabled }, set: { value in
+            guard value != enabled else { return }
+            UserDefaults.vane.set(value, forKey: "appleAI")
+            settingsChanged()
+        })
+    }
     static var namespace: String? { Store.overrideDirectory.map { UserDefaults.suiteName(forDataDir: $0) } }
     static var revision: Int { UserDefaults.vane.integer(forKey: "aiSettingsRevision") }
     static func save(_ state: AIConnections) { state.save(UserDefaults.vane); settingsChanged() }

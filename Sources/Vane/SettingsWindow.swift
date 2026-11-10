@@ -992,7 +992,7 @@ private struct MaxPane: View {
             AIProviderSettings()
             SettingsCard {
                 SettingsRow("AI features") {
-                    Toggle("", isOn: $appleAI).labelsHidden()
+                    Toggle("", isOn: BrowserAI.enabledBinding).labelsHidden()
                 }
                 // Each feature is separately switchable, because they do not cost the same.
                 // Grouping tabs is ~12 seconds of model time; the others are far cheaper or
