@@ -12,7 +12,7 @@ Vane keeps history (including URLs, titles, and visit times), bookmarks, tabs, S
 
 Saved passwords, AI API keys, and GitHub connection credentials use the local macOS Keychain. Vane does not enable Keychain synchronization for these items. Passwords are used to fill matching HTTPS sign-in forms; submitting a form sends its contents to that website. Vane does not upload your password library to a Vane service.
 
-Browser imports read the local data you select and, where required, use Keychain access to import supported credentials. Library files and recovery copies are not encrypted by Vane. Folder locks limit access within the app; they do not encrypt browser data. Password CSV exports are plaintext, and `.vanebackup` exports are unencrypted. Protect these files and any device or system backups containing them.
+Browser imports read the local data you select and, where required, use Keychain access to import supported credentials. Library files and recovery copies are not encrypted by Vane. Folder locks limit access within the app; they do not encrypt browser data. Password CSV exports are plaintext, and `.vanebackup` exports offer optional password encryption. Vane cannot recover backup passwords. Exports made without a password and automatic local recovery points remain unencrypted. Protect these files and any device or system backups containing them.
 
 ## Browsing, searches, and website requests
 

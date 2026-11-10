@@ -180,7 +180,7 @@ WebKit version, the website, and sometimes signing or Apple-managed capabilities
   Chrome Web Store installation and MV2/MV3 support do not guarantee arbitrary extension API compatibility.
 - **Blocking supports part of EasyList.** Unsupported rules are reported; local
   disk lists do not update automatically. URL subscriptions do.
-- **Data does not sync between Macs.** Backups are unencrypted and exclude Keychain
+- **Data does not sync between Macs.** Backup exports offer password encryption and exclude Keychain
   secrets, cookies/site storage, downloaded files, and extension code/data.
   General browser imports exclude sessions; the dedicated Arc flow supports some.
 - **Live drafts are not recoverable backups.** Suspension protects detected or

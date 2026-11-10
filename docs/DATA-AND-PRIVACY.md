@@ -112,8 +112,10 @@ invalid/skipped rows and Keychain write failures. Malformed CSV quoting fails be
 saves. A password export fails if any owned credential cannot be read.
 
 Bookmark HTML retains titles, URLs, whole-second dates and readable folder paths; nested
-paths become one `Parent / Child` folder. Native browser bookmark imports currently
-retain only URLs and titles. Browser history imports retain each available visit and
+paths become one `Parent / Child` folder. Native browser bookmark imports retain URLs, titles and readable folder paths; Chromium and
+Firefox creation dates are preserved when available. Source root containers are omitted; nested
+folders become one `Parent / Child` folder, and empty folders are not imported. Safari bookmarks
+without creation dates use import-time dates. Browser history imports retain each available visit and
 deduplicate by URL and timestamp, so repeated imports add nothing. A failure reading or
 saving either selected browser category leaves both categories unchanged. History
 CSV/JSON files are export formats; they have no user-facing file importer. See [browser
@@ -148,7 +150,7 @@ Settings → Advanced → **Backup and Restore** exports one `.vanebackup` file 
 regular profiles, Spaces, saved tabs and sessions, bookmark folders and bookmarks,
 history, Space templates, offline articles with captured images and read state, settings
 (including Reader preferences and profile-scoped site Boosts), imported blocking lists,
-and Easels with embedded images. Backups are unencrypted and limited to 512 MB;
+and Easels with embedded images. Exports offer password encryption and are limited to 512 MB;
 oversized backups fail without omitting data. Passwords and tokens in Keychain, cookies
 and website sign-ins/storage, downloaded files, caches, and extension code/data are
 excluded, including external source folders and Vane's managed extension copies and
@@ -156,7 +158,14 @@ installation index. External folder choices are remembered, but another Mac may 
 you to select and review those folders again. These backups do not restore an extension's
 working code or `storage.local` settings.
 
-**Restore Backup…** validates the file and shows its date, profiles, item counts, and
+**Export Backup…** offers **Export Encrypted** by default, with a password and confirmation.
+Use a long, unique password and keep it safe: Vane cannot recover it. **Export Without Password**
+remains available. Encrypted exports protect the entire archive with AES-256-GCM and a
+PBKDF2-HMAC-SHA256 key derived with a fresh 16-byte salt and 600,000 iterations. No plaintext
+export file is created. Older unencrypted backups remain readable; older Vane versions cannot
+open encrypted exports.
+
+**Restore Backup…** asks for the password of an encrypted export, then validates the file and shows its date, profiles, item counts, and
 current saved-library totals before replacing anything. Cancel leaves the library alone.
 **Restore and Restart** preserves a local recovery point, then restores all saved
 profiles and settings during a controlled restart. It replaces the library; it does not
@@ -172,7 +181,7 @@ another only when saved data changes. The latest ten completed points are kept u
 data folder's `Recovery/Points`, including points made before restores. The last healthy
 point is protected if damaged originals need preserving. Preview and restore them from
 the same Settings section. A write failure keeps previous points and shows an error with
-Retry. These local copies share your disk: export to another disk for protection against
+Retry. These local copies are unencrypted and share your disk: export to another disk for protection against
 disk loss. **Erase Everything…** removes local recovery points too.
 
 Focused backup validation:

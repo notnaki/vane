@@ -80,7 +80,7 @@ struct BackupCandidate: Identifiable, Sendable {
         return true
     }
     private func finish() { Motion.list { busy = false; progress = "" } }
-    func export(to url: URL) async {
+    func export(to url: URL, password: String? = nil) async {
         guard start("Saving backup…") else { return }
         defer { finish() }
         do {
@@ -88,29 +88,49 @@ struct BackupCandidate: Identifiable, Sendable {
             let library = library
             try await worker.run {
                 let archive = try library.capture(reason: .manual)
-                try BackupCodec.write(archive, to: url)
+                try BackupCodec.write(archive, to: url, password: password)
             }
             Motion.list { status = "Backup saved to \(url.lastPathComponent)." }
         } catch { self.error = error.localizedDescription }
     }
-    func previewRestore(from url: URL) async {
+    func previewRestore(from url: URL, password: String? = nil,
+                        passwordPrompt: (@MainActor (String?) -> String?)? = nil) async {
         guard start("Checking backup…") else { return }
+        Motion.list { preview = nil }
         defer { finish() }
         do {
             let saved = await flush()
             let library = library
-            let candidate = try await worker.run {
-                let archive = try BackupCodec.read(url)
-                let incoming = try library.validate(archive)
-                var current: BackupPreview?, currentError: String?
+            // Freeze the bounded source bytes before asking for a password. A
+            // replacement on disk cannot swap the candidate during an unlock retry.
+            let data = try await worker.run { try BackupIO.read(url) }
+            var password = password
+            while true {
+                let attempt = password
                 do {
-                    guard saved else { throw BackupError.saveFailed }
-                    current = try library.validate(library.capture(reason: .manual))
+                    let candidate = try await worker.run {
+                        let archive = try BackupCodec.decode(data, password: attempt)
+                        let incoming = try library.validate(archive)
+                        var current: BackupPreview?, currentError: String?
+                        do {
+                            guard saved else { throw BackupError.saveFailed }
+                            current = try library.validate(library.capture(reason: .manual))
+                        }
+                        catch { currentError = error.localizedDescription }
+                        return BackupCandidate(archive: archive, incoming: incoming, current: current, currentError: currentError)
+                    }
+                    Motion.list { preview = candidate }
+                    return
+                } catch BackupError.passwordRequired {
+                    guard let passwordPrompt else { throw BackupError.passwordRequired }
+                    guard let value = passwordPrompt(nil) else { return }
+                    password = value
+                } catch BackupError.unlockFailed {
+                    guard let passwordPrompt else { throw BackupError.unlockFailed }
+                    guard let value = passwordPrompt(BackupError.unlockFailed.localizedDescription) else { return }
+                    password = value
                 }
-                catch { currentError = error.localizedDescription }
-                return BackupCandidate(archive: archive, incoming: incoming, current: current, currentError: currentError)
             }
-            Motion.list { preview = candidate }
         } catch { self.error = error.localizedDescription }
     }
     func cancelPreview() { guard !busy else { return }; Motion.list { preview = nil } }
@@ -191,7 +211,11 @@ struct BackupCandidate: Identifiable, Sendable {
         panel.allowedContentTypes = [.data]
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await export(to: url) }
+        switch BackupPasswordPrompt.export() {
+        case .encrypted(let password): Task { await export(to: url, password: password) }
+        case .unencrypted: Task { await export(to: url) }
+        case .cancelled: break
+        }
     }
     func showRestorePanel() {
         guard !busy, !restorePending else { return }
@@ -199,7 +223,7 @@ struct BackupCandidate: Identifiable, Sendable {
         panel.title = "Preview Vane Backup"
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await previewRestore(from: url) }
+        Task { await previewRestore(from: url, passwordPrompt: BackupPasswordPrompt.unlock) }
     }
     func reportLaunch(_ result: BackupRestore.Result) {
         switch result {
