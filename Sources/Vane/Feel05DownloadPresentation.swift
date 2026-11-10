@@ -6,13 +6,14 @@ import Foundation
 @MainActor final class Feel05DownloadPresentation: ObservableObject {
     struct Row: Equatable {
         let item: Downloads.Item
+        let profileID: UUID
         let name: String
         let source: String
         let done: Bool
         let completed: Date?
         let image: Bool
         static func == (lhs: Row, rhs: Row) -> Bool {
-            lhs.item === rhs.item && lhs.name == rhs.name && lhs.source == rhs.source
+            lhs.item === rhs.item && lhs.profileID == rhs.profileID && lhs.name == rhs.name && lhs.source == rhs.source
                 && lhs.done == rhs.done && lhs.completed == rhs.completed && lhs.image == rhs.image
         }
     }
@@ -48,18 +49,19 @@ import Foundation
     }
 
     func refresh() {
-        let next = source.items.map { item in
-            Row(item: item, name: item.name, source: item.source?.absoluteString ?? "",
+        let next = source.ownedItems.map { item, profileID in
+            Row(item: item, profileID: profileID, name: item.name, source: item.source?.absoluteString ?? "",
                 done: item.status == .done, completed: item.completed,
                 image: Library.isImage(name: item.name))
         }
         if next != rows { rows = next }
     }
 
-    func groups(query: String, completedOnly: Bool) -> [(title: String, items: [Downloads.Item])] {
+    func groups(query: String, completedOnly: Bool, profileIDs: Set<UUID> = []) -> [(title: String, items: [Downloads.Item])] {
         let now = Date()
         return Library.grouped(rows.filter {
-            Library.keeps(done: $0.done, completedOnly: completedOnly)
+            (profileIDs.isEmpty || profileIDs.contains($0.profileID))
+                && Library.keeps(done: $0.done, completedOnly: completedOnly)
                 && Library.matches([$0.name, $0.source], query)
         }, by: { $0.completed ?? now }, now: now).map { ($0.title, $0.items.map(\.item)) }
     }
