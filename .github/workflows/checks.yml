@@ -106,6 +106,8 @@ jobs:
         id: toolchain
         run: |
           set -euo pipefail
+          swift --version
+          xcodebuild -version
           KEY=$(python3 scripts/ci-build-artifact.py toolchain)
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
 
