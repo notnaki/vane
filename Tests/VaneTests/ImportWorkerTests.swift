@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 import SQLite3
 @testable import vane
@@ -28,6 +29,8 @@ import SQLite3
     }
     private func fixture() throws -> (Store, URL) {
         TestEnvironment.prepare()
+        // Replay failures can rebuild menus; admit AppKit without creating/activating a window.
+        _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vane-import-worker-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
