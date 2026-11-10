@@ -310,7 +310,7 @@ import WebKit
 @MainActor private final class CaptureOverlay: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
-    var region: CGRect? { didSet { needsDisplay = true } }
+    var region: CGRect? { didSet { updateHighlight(animated: origin == nil && !dragged && !Motion.reduced) } }
     var hover: ((CGPoint) -> Void)?
     var select: ((CGRect?, CGPoint?) -> Void)?
     var cancel: (() -> Void)?
@@ -319,6 +319,8 @@ import WebKit
     private var origin: CGPoint?
     private var dragged = false
     private var tracking: NSTrackingArea?
+    private let highlight = CaptureSelectionLayers()
+    private var motionSubscriptions: Set<AnyCancellable> = []
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -326,6 +328,15 @@ import WebKit
         setAccessibilityRole(.group)
         setAccessibilityLabel("Page capture. Click an element, drag a region, or choose Full Page. Return captures the visible page. Escape cancels.")
         identifier = NSUserInterfaceItemIdentifier("page-capture-selection")
+        wantsLayer = true
+        if let layer { highlight.mount(in: layer) }
+        BatterySaver.shared.$isActive.dropFirst().sink { [weak self] active in
+            if active { self?.highlight.settle() }
+        }.store(in: &motionSubscriptions)
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
+            .sink { [weak self] _ in
+                if Motion.reduced { self?.highlight.settle() }
+            }.store(in: &motionSubscriptions)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -342,6 +353,7 @@ import WebKit
     override func mouseDown(with event: NSEvent) {
         origin = convert(event.locationInWindow, from: nil)
         dragged = false
+        highlight.settle()
         hover?(CGPoint(x: -1, y: -1))
     }
     override func mouseDragged(with event: NSEvent) {
@@ -357,6 +369,7 @@ import WebKit
             if let rect = PageCapture.rectangle(from: origin, to: point, in: bounds) { select?(rect, nil) }
         } else { select?(nil, point) }
         self.origin = nil
+        dragged = false
     }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { cancel?() }
@@ -372,7 +385,7 @@ import WebKit
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil { cancel?() }
+        if window == nil { highlight.settle(); cancel?() }
         else if instructions == nil {
             let host = NSHostingView(rootView: CaptureInstructions(
                 fullPage: { [weak self] in self?.fullPage?() }, cancel: { [weak self] in self?.cancel?() }))
@@ -390,20 +403,21 @@ import WebKit
     }
     override func layout() {
         super.layout()
+        updateHighlight(animated: false)
         guard let instructions else { return }
         let width = max(0, min(520, bounds.width - 24))
         instructions.frame = CGRect(x: (bounds.width - width) / 2, y: max(0, bounds.height - 88), width: width, height: 72)
     }
-    override func draw(_ dirtyRect: NSRect) {
-        let mask = NSBezierPath(rect: bounds)
-        if let region { mask.append(NSBezierPath(roundedRect: region, xRadius: 8, yRadius: 8)); mask.windingRule = .evenOdd }
-        NSColor.black.withAlphaComponent(0.36).setFill()
-        mask.fill()
-        if let region {
-            NSColor.controlAccentColor.setStroke()
-            let border = NSBezierPath(roundedRect: region.insetBy(dx: -0.5, dy: -0.5), xRadius: 8.5, yRadius: 8.5)
-            border.lineWidth = 3
-            border.stroke()
+    private func updateHighlight(animated: Bool) {
+        highlight.dimming.contentsScale = window?.backingScaleFactor ?? 1
+        highlight.outline.contentsScale = window?.backingScaleFactor ?? 1
+        highlight.update(region.map { convertToLayer($0) }, in: layer?.bounds ?? bounds, animated: animated)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            highlight.outline.strokeColor = NSColor.controlAccentColor.cgColor
         }
     }
 }
