@@ -149,7 +149,8 @@ import XCTest
             try await compatibilityWait { !window.isPreparingPageResize }
             let ended = CACurrentMediaTime()
             try await presentation(web)
-            try await compatibilityWait { (sampler.frames.last?.time ?? 0) >= ended }
+            let presented = CACurrentMediaTime()
+            try await compatibilityWait { (sampler.frames.last?.time ?? 0) >= presented }
             try await sampler.stop()
             let prefix = "\(direct ? "native" : "browser")-\(ProcessInfo.processInfo.processIdentifier)"
             try sampler.frames.saveImages(prefix: prefix)
@@ -161,7 +162,9 @@ import XCTest
             let maximum = samples.map(\.gap).max() ?? 0
             print("RESIZE_PIXELS baselineControl=\(baselineControl) direct=\(direct) samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum)")
             XCTAssertLessThanOrEqual(maximum, baseline.gap + 2,
-                                     "The rendered right-edge marker must follow the visible window edge")
+                                     "Drawn page content must reach the visible window edge without an empty strip")
+            XCTAssertLessThanOrEqual(try XCTUnwrap(sampler.frames.last).markerGap, baseline.markerGap + 2,
+                                     "The final paint must lay out the fixed marker at the new viewport edge")
         } catch {
             try? await sampler.stop()
             throw error
@@ -251,24 +254,27 @@ import XCTest
         // ScreenCaptureKit can retain pixels from the previously wider window
         // outside this frame's content rectangle. Those are not visible content.
         let row = Int(valid.midY) * CVPixelBufferGetBytesPerRow(pixel)
-        var firstRed: Int?, lastRed: Int?, rightWindow: Int?
+        var firstRed: Int?, lastRed: Int?, lastPainted: Int?, rightWindow: Int?
         for x in max(0, Int(ceil(valid.minX)))..<min(width, Int(floor(valid.maxX))) {
             let p = row + x * 4
             let b = Int(bytes[p]), g = Int(bytes[p + 1]), r = Int(bytes[p + 2])
             if r + g + b > 40 { rightWindow = x }
-            if r > 180 && g < 110 && b < 100 {
+            let red = r > 180 && g < 110 && b < 100
+            let blue = b > r + 20 && b > g + 15 && b < 130 && g > 20 && g < 100
+            if red {
                 if firstRed == nil { firstRed = x }
                 lastRed = x
             }
+            if red || blue { lastPainted = x }
         }
-        // Use the stream's point-to-pixel scale. A prepared wider viewport can
-        // legitimately clip part of the marker before the window grows; dividing
-        // by that partial marker width would inflate the card's normal margin.
-        // Losing the marker during a shrink is also a stale viewport; retain that
-        // frame rather than silently excluding it from the measured sequence.
+        // Measure the actual empty strip, using the stream's point scale.
+        // During a native shrink the larger page is clipped until it repaints;
+        // both the blue body and red marker are drawn page content. Requiring the
+        // fixed marker itself at the edge incorrectly rejects that normal clip.
+        // A missing page still fails instead of being excluded from the sequence.
         let gap: Double
-        if let lastRed, let rightWindow {
-            gap = Double(rightWindow - lastRed) / pixelsPerPoint
+        if let lastPainted, let rightWindow {
+            gap = Double(rightWindow - lastPainted) / pixelsPerPoint
         } else {
             gap = 10_000
         }
@@ -277,12 +283,13 @@ import XCTest
                                       width: width, height: height, stride: CVPixelBufferGetBytesPerRow(pixel)) : nil
         if snapshot != nil { print("RESIZE_CAPTURE_BOUND time=\(time) rect=\(valid) red=\(String(describing: firstRed))...\(String(describing: lastRed)) right=\(String(describing: rightWindow)) gap=\(gap) screen=\(String(describing: info?.first?[.screenRect]))") }
         if frames.last == nil { print("RESIZE_CAPTURE info=\(String(describing: info?.first))") }
-        frames.append(time: time, gap: gap, image: snapshot)
+        let markerGap = lastRed.flatMap { red in rightWindow.map { Double($0 - red) / pixelsPerPoint } } ?? 10_000
+        frames.append(time: time, gap: gap, markerGap: markerGap, image: snapshot)
     }
 }
 
 private final class ResizePixelFrames: @unchecked Sendable {
-    struct Frame { let time: Double; let gap: Double }
+    struct Frame { let time: Double; let gap: Double; let markerGap: Double }
     struct Image { let data: Data; let width: Int; let height: Int; let stride: Int }
     let queue = DispatchQueue(label: "vane.resize.pixel-capture")
     private let lock = NSLock()
@@ -293,15 +300,15 @@ private final class ResizePixelFrames: @unchecked Sendable {
     var last: Frame? { lock.withLock { recorded.last } }
     var samples: [Frame] { lock.withLock { recorded } }
     func needsImage(for gap: Double) -> Bool { lock.withLock { baselineImage == nil || gap > worstGap } }
-    func append(time: Double, gap: Double, image: Image?) {
+    func append(time: Double, gap: Double, markerGap: Double, image: Image?) {
         lock.withLock {
-            recorded.append(Frame(time: time, gap: gap))
+            recorded.append(Frame(time: time, gap: gap, markerGap: markerGap))
             if baselineImage == nil { baselineImage = image }
             if gap > worstGap { worstGap = gap; worstImage = image }
         }
     }
     func repeatFrame(_ time: Double) {
-        lock.withLock { if let last = recorded.last { recorded.append(Frame(time: time, gap: last.gap)) } }
+        lock.withLock { if let last = recorded.last { recorded.append(Frame(time: time, gap: last.gap, markerGap: last.markerGap)) } }
     }
     @MainActor func saveImages(prefix: String) throws {
         let images = lock.withLock { [("baseline", baselineImage), ("worst", worstImage)] }

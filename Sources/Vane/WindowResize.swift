@@ -161,6 +161,11 @@ extension EnvironmentValues {
             pending = request
             return true
         }
+        // On shrink, AppKit can clip the existing larger page immediately.
+        // Preparing the smaller viewport first can reveal its new right edge
+        // inside the still-larger window before the window geometry commits.
+        // Growth needs the opposite order: paint the extra area before exposing it.
+        guard frame.width > window.frame.width || frame.height > window.frame.height else { return false }
         guard frame.size != window.frame.size else { return false }
         let nextSize = NSSize(width: root.bounds.width + frame.width - window.frame.width,
                               height: root.bounds.height + frame.height - window.frame.height)

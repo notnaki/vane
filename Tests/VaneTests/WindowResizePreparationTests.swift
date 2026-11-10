@@ -176,6 +176,39 @@ import XCTest
         XCTAssertFalse(resize.isPreparing)
     }
 
+    func testShrinkUsesNativeClippingInsteadOfPreparingSmallerPixelsInALargerWindow() async throws {
+        let (host, web) = fixture()
+        let window = modelWindow(host)
+        defer { window.contentView = nil; host.removePage(); window.close() }
+        var paints: [@MainActor @Sendable () -> Void] = []
+        var commits: [NSSize] = []
+        let resize = WindowResizePreparation(window: window,
+            presenter: { _, callback in paints.append(callback) }, deadline: { _ in }) { frame, display in
+                commits.append(frame.size)
+                window.setFrame(frame, display: display)
+            }
+        let smaller = NSRect(x: 0, y: 0, width: 500, height: 300)
+        XCTAssertFalse(resize.request(frame: smaller, display: true))
+        XCTAssertTrue(paints.isEmpty, "Let AppKit clip the old page before asking WebKit to shrink")
+        resize.cancel()
+
+        // A reversal queued behind a growth must use the same native shrink path.
+        paints.removeAll()
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 800, height: 500), display: true))
+        XCTAssertTrue(resize.request(frame: smaller, display: true))
+        paints.removeFirst()()
+        let drained = XCTestExpectation(description: "Queued reversal handled")
+        RunLoop.main.perform(inModes: [.common]) { drained.fulfill() }
+        await fulfillment(of: [drained], timeout: 2)
+        XCTAssertTrue(paints.isEmpty, "Do not expose smaller content in the still-larger window")
+        XCTAssertEqual(commits, [NSSize(width: 800, height: 500), smaller.size])
+        XCTAssertEqual(window.frame.size, smaller.size)
+        XCTAssertEqual(web.frame.size, host.bounds.size)
+        XCTAssertTrue(web.autoresizesSubviews)
+        XCTAssertFalse(resize.isPreparing)
+        resize.cancel()
+    }
+
     func testReplacedRootRejectsPaintAndTimeoutCommits() {
         for useTimeout in [false, true] {
             let (host, web) = fixture()
