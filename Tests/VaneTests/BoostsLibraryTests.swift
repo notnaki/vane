@@ -3,7 +3,13 @@ import XCTest
 @testable import vane
 
 @MainActor final class BoostsLibraryTests: XCTestCase {
-    override func setUp() async throws { TestEnvironment.prepare(); _ = NSApplication.shared }
+    override func setUp() async throws {
+        WebKitPretargetDiagnostics.emit("boosts.setup.prepare.begin")
+        TestEnvironment.prepare()
+        WebKitPretargetDiagnostics.emit("boosts.setup.prepare.end app.begin")
+        _ = NSApplication.shared
+        WebKitPretargetDiagnostics.emit("boosts.setup.app.end")
+    }
 
     func testLibraryOffersSavedBoostsOnlyInRegularWindows() throws {
         let section = try XCTUnwrap(LibrarySection(rawValue: "boosts"))
@@ -41,21 +47,43 @@ import XCTest
     }
 
     func testGlobalBoostsKeepSameSiteInDifferentProfilesAndSearchProfileNames() {
+        WebKitPretargetDiagnostics.emit("boosts.method.begin profiles.begin")
         let work = Profile(name: "Work"), home = Profile(name: "Home")
-        defer { SiteBoosts.forget(profile: work.id); SiteBoosts.forget(profile: home.id) }
+        WebKitPretargetDiagnostics.emit("boosts.profiles.end")
+        defer {
+            WebKitPretargetDiagnostics.emit("boosts.forget-work.begin")
+            SiteBoosts.forget(profile: work.id)
+            WebKitPretargetDiagnostics.emit("boosts.forget-work.end forget-home.begin")
+            SiteBoosts.forget(profile: home.id)
+            WebKitPretargetDiagnostics.emit("boosts.forget-home.end method.end")
+        }
         var boost = SiteBoost(); boost.font = "Georgia"
+        WebKitPretargetDiagnostics.emit("boosts.set-work.begin")
         SiteBoosts.set(boost, origin: "https://example.test", profile: work.id)
+        WebKitPretargetDiagnostics.emit("boosts.set-work.end")
         boost.enabled = false
+        WebKitPretargetDiagnostics.emit("boosts.set-home.begin")
         SiteBoosts.set(boost, origin: "https://example.test", profile: home.id)
+        WebKitPretargetDiagnostics.emit("boosts.set-home.end")
 
+        WebKitPretargetDiagnostics.emit("boosts.entries-all.begin")
         let rows = BoostsLibrary.entries(profiles: [work, home])
+        WebKitPretargetDiagnostics.emit("boosts.entries-all.end")
         XCTAssertEqual(rows.map(\.profileName), ["Home", "Work"])
         XCTAssertEqual(Set(rows.map(\.id)).count, 2)
         XCTAssertEqual(rows.map(\.boost.enabled), [false, true])
+        WebKitPretargetDiagnostics.emit("boosts.entries-work.begin")
         XCTAssertEqual(BoostsLibrary.entries(profiles: [work, home], query: "WORK").map(\.profileID), [work.id])
+        WebKitPretargetDiagnostics.emit("boosts.entries-work.end")
+        WebKitPretargetDiagnostics.emit("boosts.entries-site.begin")
         XCTAssertEqual(BoostsLibrary.entries(profiles: [work, home], query: "example.test").count, 2)
+        WebKitPretargetDiagnostics.emit("boosts.entries-site.end")
+        WebKitPretargetDiagnostics.emit("boosts.entries-missing.begin")
         XCTAssertTrue(BoostsLibrary.entries(profiles: [work, home], query: "missing").isEmpty)
+        WebKitPretargetDiagnostics.emit("boosts.entries-missing.end")
+        WebKitPretargetDiagnostics.emit("boosts.entries-home.begin")
         XCTAssertEqual(BoostsLibrary.entries(profiles: [home]).map(\.profileID), [home.id])
+        WebKitPretargetDiagnostics.emit("boosts.entries-home.end")
     }
 
     func testLibraryCanToggleAndDeleteSavedBoostWithoutAnOpenTab() {

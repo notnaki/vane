@@ -1,0 +1,142 @@
+name: Swipe separate WebKit pretarget diagnostic
+
+on:
+  push:
+    branches: [codex/swipe-webkit-pretarget-diagnostic]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Record source and environment
+        id: toolchain
+        run: |
+          git diff --exit-code 1e867d5a6a065b6d9cb7fd77885306fca268847d HEAD -- Sources Package.swift Package.resolved
+          git rev-parse HEAD
+          sw_vers
+          swift --version
+          swift -e 'import AppKit; print("DIAGNOSTIC_ENV ReduceMotion=\(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)")'
+          KEY=$(python3 scripts/ci-build-artifact.py toolchain)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          python3 -c 'import json,time; from pathlib import Path; Path("diagnostic-start.json").write_text(json.dumps({"utc":time.time()}))'
+      - uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swipe-webkit-diagnostic-${{ github.sha }}
+          restore-keys: |
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - run: python3 scripts/ci-source-state.py restore
+      - run: swift build -c debug --build-tests --disable-index-store
+      - name: Record exact three original case inventory
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib, json, re, subprocess
+          from pathlib import Path
+          inventory = subprocess.check_output(['swift', 'test', 'list', '--skip-build'], text=True)
+          Path('webkit-pretarget-discovery.txt').write_text(inventory)
+          expected = [
+              'VaneTests.BlockerWebKitTests/testCaseAndNarrowedResourceOptionsActuallyControlScriptLoading',
+              'VaneTests.BlockerWebKitTests/testExactSiteExceptionAllowsBlockedRequestsAndCosmeticsOnlyOnThatHost',
+              'VaneTests.BoostsLibraryTests/testGlobalBoostsKeepSameSiteInDifferentProfilesAndSearchProfileNames',
+          ]
+          pattern = '^(' + '|'.join(re.escape(t) for t in expected) + ')$'
+          selected = [t for t in inventory.splitlines() if re.search(pattern, t)]
+          assert selected == expected, (selected, expected)
+          manifest = {'schema': 1, 'tests': expected, 'candidate': '1e867d5a6a065b6d9cb7fd77885306fca268847d',
+                      'diagnostic_head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                      'inventory_sha256': hashlib.sha256(inventory.encode()).hexdigest()}
+          Path('webkit-pretarget-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          Path('webkit-pretarget.filter').write_text(pattern)
+          print(json.dumps(manifest, indent=2))
+          PYCODE
+      - name: One fresh primary with failure-only owned UI sampling
+        env:
+          NSUnbufferedIO: 'YES'
+          VANE_DIAG_WEBKIT_PRETARGET: '1'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
+        run: |
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 \
+            --filter "$(cat webkit-pretarget.filter)" 2>&1 | tee webkit-pretarget-native.log
+      - name: Preserve outcome and exact order proof
+        if: always()
+        run: |
+          python3 - <<'PYCODE'
+          import json, re
+          from pathlib import Path
+          manifest = Path('webkit-pretarget-manifest.json')
+          log_path = Path('webkit-pretarget-native.log')
+          if not manifest.exists() or not log_path.exists():
+              Path('webkit-pretarget-outcome.json').write_text(json.dumps({'nativeEvidence': 'unavailable; inspect prior failed step'}))
+              raise SystemExit(1)
+          expected = json.loads(manifest.read_text())['tests']
+          log = log_path.read_text()
+          starts = [f'{a}/{b}' for a,b in re.findall(r"Test Case '-\[([^ ]+) ([^ ]+)\]' started\.", log) if 'NativeFixtureRetirementTests' not in a]
+          ends = [(f'{a}/{b}', status) for a,b,status in re.findall(r"Test Case '-\[([^ ]+) ([^ ]+)\]' (passed|failed|skipped) \(", log) if 'NativeFixtureRetirementTests' not in a]
+          statuses = re.findall(r'Native suite primary status=(\d+); cleanup status=(\d+)', log)
+          proof = {'starts':starts, 'ends':ends, 'expected':expected, 'primaryCleanup':statuses,
+                   'skips':[name for name,status in ends if status=='skipped'],
+                   'issues':[line for line in log.splitlines() if 'WEBKIT_PRETARGET' in line and 'issue' in line],
+                   'interpretation':'Diagnostic only; unchanged pass is non-reproduction, not repair or prior629 clearance'}
+          Path('webkit-pretarget-outcome.json').write_text(json.dumps(proof, indent=2) + '\n')
+          print(json.dumps(proof, indent=2))
+          assert starts == expected, starts
+          assert [name for name,status in ends] == expected, ends
+          assert not proof['skips'], proof['skips']
+          assert statuses == [('0','0')], statuses
+          assert all(status=='passed' for name,status in ends), ends
+          PYCODE
+          python3 scripts/native-test-shards.py verify --manifest webkit-pretarget-manifest.json --log webkit-pretarget-native.log
+      - name: Preserve only matching owned native crash reports
+        if: always()
+        run: |
+          python3 - <<'PYCODE'
+          import datetime, json, os, shutil
+          from pathlib import Path
+          result = {'copied': [], 'unavailable': []}
+          hosts_path = Path('webkit-pretarget-hosts.json')
+          if hosts_path.exists():
+              hosts = json.loads(hosts_path.read_text())['hosts']
+              since = json.loads(Path('diagnostic-start.json').read_text())['utc']
+              root = Path.home() / 'Library/Logs/DiagnosticReports'
+              for report in root.glob('*.ips'):
+                  if report.is_symlink() or report.stat().st_mtime < since or report.stat().st_size > 8*1024*1024: continue
+                  try:
+                      text = report.read_text(); decoder = json.JSONDecoder(); records = []
+                      while text.strip():
+                          value, end = decoder.raw_decode(text.lstrip()); records.append(value); text = text.lstrip()[end:]
+                      body = records[-1]
+                      launch = datetime.datetime.fromisoformat(body['procLaunch']).timestamp()
+                      owned = any(body['pid']==h['pid'] and os.path.realpath(body['procPath'])==os.path.realpath(h['path']) and abs(launch-h['start']/1_000_000)<0.01 for h in hosts)
+                      if owned:
+                          destination = Path('webkit-pretarget-owned-reports')/report.name
+                          destination.parent.mkdir(exist_ok=True)
+                          shutil.copyfile(report, destination)
+                          result['copied'].append(report.name)
+                  except (OSError, ValueError, KeyError, TypeError): continue
+              if not result['copied']: result['unavailable'].append('No newly created report matched recorded PID/executable/launch; no foreign reports collected')
+          else: result['unavailable'].append('Validated owned-host evidence unavailable; no reports collected')
+          result['xctestAttachments'] = 'Public secure attachment archives (issue description and frames in native log) saved in webkit-pretarget-issues when available; native log records archival failure explicitly'
+          Path('webkit-pretarget-report-collection.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, indent=2))
+          PYCODE
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: swipe-webkit-pretarget-diagnostic
+          path: |
+            diagnostic-start.json
+            webkit-pretarget-*.json
+            webkit-pretarget-*.txt
+            webkit-pretarget-native.log
+            webkit-pretarget.filter
+            webkit-pretarget-owned-reports/
+            webkit-pretarget-issues/
+          retention-days: 7

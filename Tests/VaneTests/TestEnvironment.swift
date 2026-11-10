@@ -18,6 +18,7 @@ import XCTest
 
     static func prepare() {
         _ = cleanup
+        WebKitPretargetDiagnostics.installIfEnabled()
         NativeFixtureRetirement.registerHostIfEnabled()
         _ = resourceBaseline
     }

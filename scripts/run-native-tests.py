@@ -174,6 +174,43 @@ def process_identity(pid):
     return {"pid": pid, "start": info.seconds * 1000000 + info.microseconds, "path": os.path.realpath(os.fsdecode(path.value))}
 
 
+def sample_timed_out_ui(directory, token, identity=process_identity, invoke=subprocess.run):
+    """Temporary opt-in, failure-only observation; never changes retirement/result."""
+    if os.environ.get("VANE_DIAG_WEBKIT_PRETARGET") != "1": return
+    try:
+        records = load_records(directory, token)
+        if len(records) != 1:
+            raise ValueError("expected exactly one manifest-owned primary host")
+        host = records[0]["host"]
+        expected = {"pid": host["pid"], "start": host["start"], "path": os.path.realpath(host["path"])}
+        if identity(host["pid"]) != expected:
+            raise ValueError("recorded UI host identity unavailable or changed before sample")
+        # One actual UI host only, never a process-name search or a WebContent PID.
+        with tempfile.TemporaryDirectory(prefix="vane-pretarget-sample-") as temporary:
+            output = Path(temporary) / "sample.txt"
+            print(f'WEBKIT_PRETARGET timeout-sample begin pid={host["pid"]} start={host["start"]} executable={host["path"]} bundle={host["testBundlePath"]}', flush=True)
+            if identity(host["pid"]) != expected:
+                raise ValueError("recorded UI host identity changed at sample boundary")
+            result = invoke(["/usr/bin/sample", str(host["pid"]), "1", "10", "-mayDie", "-file", str(output)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            # Five-second child budget leaves headroom within the six-second diagnostic cap.
+            if identity(host["pid"]) != expected:
+                raise ValueError("sample discarded: UI host changed during collection")
+            if result.returncode != 0:
+                raise ValueError(f"sampler exit={result.returncode}")
+            descriptor = os.open(output, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+                    raise ValueError("sample output is not an owned regular file")
+                data = os.read(descriptor, 65536)
+            finally: os.close(descriptor)
+            print("WEBKIT_PRETARGET timeout-sample captured (maximum65536 bytes):\n" + data.decode("utf-8", errors="replace"), flush=True)
+    except Exception as error:
+        # Observation failure must never suppress primary124 or the ordinary cleanup.
+        print("WEBKIT_PRETARGET timeout-sample unavailable: " + str(error), flush=True)
+
+
 def require_exited_hosts(records, identity=process_identity):
     for record in records:
         host = record["host"]
@@ -284,6 +321,11 @@ def main(arguments):
         if primary_timed_out and not primary_timeout_verified:
             raise ValueError("primary timeout ownership/exit unverified; cleanup refused; manifest retained")
         records = load_records(directory, token)  # Validate ALL records before deletion.
+        if os.environ.get("VANE_DIAG_WEBKIT_PRETARGET") == "1":
+            try:
+                Path("webkit-pretarget-hosts.json").write_text(json.dumps({"schema": 1, "hosts": [record["host"] for record in records]}, indent=2) + "\n")
+            except Exception as error:
+                print("WEBKIT_PRETARGET host-evidence unavailable: " + str(error), flush=True)
         if primary_timed_out:
             if not records: raise ValueError("primary timeout has no host records at cleanup recheck; manifest retained")
             require_record_inclusion(timeout_verified_records, records)
@@ -306,6 +348,7 @@ def main(arguments):
             if not is_cleanup:
                 primary_timed_out = True
                 print(f"NATIVE PRIMARY TIMEOUT seconds={primary_timeout}; validating recorded hosts before retirement", flush=True)
+                sample_timed_out_ui(directory, token)
                 try: timeout_verified_records = retire_timed_out_primary(active, directory, token)
                 except Exception as error: raise PrimaryTimeoutError(str(error)) from error
                 primary_timeout_verified = True

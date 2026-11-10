@@ -537,6 +537,19 @@ class PrimaryTimeoutTests(unittest.TestCase):
         retire.assert_not_called()
         self.assertEqual(count, 2)
 
+    def test_sampling_hook_is_timeout_only_and_preserves_primary_cleanup_status(self):
+        with mock.patch.object(runner, "sample_timed_out_ui") as observe:
+            code, primary, cleanup, count, retire = self.main_mocks("2")
+            self.assertEqual(code, 124)
+            observe.assert_called_once_with(self.directory, self.token)
+            retire.assert_called_once()
+            cleanup.wait.assert_called_once_with(timeout=90)
+        # A separate scratch root is needed because successful cleanup removes it.
+        with mock.patch.object(runner, "sample_timed_out_ui") as observe:
+            code, primary, cleanup, count, retire = self.main_mocks(None, primary_timeout=False)
+            self.assertEqual(code, 0)
+            observe.assert_not_called()
+
     def test_timeout_diagnostic_error_keeps_primary_124_but_still_calls_cleanup_guard(self):
         events = []
         def invoke(command):
@@ -546,6 +559,60 @@ class PrimaryTimeoutTests(unittest.TestCase):
         result = runner.run_commands(["primary"], ["cleanup"], invoke, lambda: events.append("guard"))
         self.assertEqual(result, 124)
         self.assertEqual(events, [["primary"], "guard", ["cleanup"]])
+
+
+class PretargetTimeoutSampleTests(unittest.TestCase):
+    def setUp(self):
+        self.host = {"pid": 123, "start": 456, "path": "/private/tmp/Owned.xctest/Contents/MacOS/Owned",
+                     "testBundlePath": "/private/tmp/Owned.xctest"}
+        self.identity = {key: self.host[key] for key in ("pid", "start", "path")}
+
+    def test_disabled_observation_never_reads_manifests_or_launches_sample(self):
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(runner, "load_records") as records:
+            invoke = mock.Mock()
+            runner.sample_timed_out_ui("/unused", "token", invoke=invoke)
+            records.assert_not_called()
+            invoke.assert_not_called()
+
+    def test_reused_pid_or_changed_executable_never_samples(self):
+        for identity in (None, dict(self.identity, start=999), dict(self.identity, path="/tmp/Foreign")):
+            with self.subTest(identity=identity), mock.patch.dict(os.environ, {"VANE_DIAG_WEBKIT_PRETARGET": "1"}), \
+                 mock.patch.object(runner, "load_records", return_value=[{"host": self.host}]):
+                invoke = mock.Mock()
+                runner.sample_timed_out_ui("/unused", "token", identity=lambda pid: identity, invoke=invoke)
+                invoke.assert_not_called()
+
+    def test_exact_owned_ui_is_sampled_once_with_bounded_child(self):
+        def collect(command, **options):
+            self.assertEqual(command[:4], ["/usr/bin/sample", "123", "1", "10"])
+            self.assertEqual(options["timeout"], 5)
+            Path(command[-1]).write_text("owned UI stack")
+            return subprocess.CompletedProcess(command, 0)
+        invoke = mock.Mock(side_effect=collect)
+        with mock.patch.dict(os.environ, {"VANE_DIAG_WEBKIT_PRETARGET": "1"}), \
+             mock.patch.object(runner, "load_records", return_value=[{"host": self.host}]), \
+             mock.patch("builtins.print") as output:
+            runner.sample_timed_out_ui("/unused", "token", identity=lambda pid: self.identity, invoke=invoke)
+            self.assertTrue(any("owned UI stack" in str(call) for call in output.call_args_list))
+        self.assertEqual(invoke.call_count, 1)
+
+    def test_collection_failure_and_changed_identity_are_diagnostic_only(self):
+        for fail in (True, False):
+            with self.subTest(fail=fail), mock.patch.dict(os.environ, {"VANE_DIAG_WEBKIT_PRETARGET": "1"}), \
+                 mock.patch.object(runner, "load_records", return_value=[{"host": self.host}]), \
+                 mock.patch("builtins.print") as output:
+                identities = iter([self.identity, self.identity, dict(self.identity, start=999)])
+                invoke = mock.Mock(side_effect=subprocess.TimeoutExpired("sample", 5)) if fail else mock.Mock(return_value=subprocess.CompletedProcess([], 0))
+                runner.sample_timed_out_ui("/unused", "token", identity=lambda pid: next(identities), invoke=invoke)
+                self.assertTrue(any("timeout-sample unavailable" in str(call) for call in output.call_args_list))
+                self.assertEqual(invoke.call_count, 1)
+
+    def test_multiple_manifest_hosts_are_not_guessed(self):
+        invoke = mock.Mock()
+        with mock.patch.dict(os.environ, {"VANE_DIAG_WEBKIT_PRETARGET": "1"}), \
+             mock.patch.object(runner, "load_records", return_value=[{"host": self.host}, {"host": self.host}]):
+            runner.sample_timed_out_ui("/unused", "token", identity=lambda pid: self.identity, invoke=invoke)
+        invoke.assert_not_called()
 
 
 if __name__ == "__main__": unittest.main()
