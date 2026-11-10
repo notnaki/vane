@@ -1,0 +1,45 @@
+name: PR 630 focused F6 diagnostics
+on:
+  push:
+    branches: [codex/pr630-f6-diagnostics]
+permissions:
+  contents: read
+jobs:
+  focus:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: pr630-f6-${{ github.sha }}
+          restore-keys: swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore matching source timestamps
+        run: python3 scripts/ci-source-state.py restore
+      - name: Build focused diagnostics
+        run: swift build -c debug --build-tests --disable-index-store
+      - name: Run three focused preflights
+        env:
+          VANE_NATIVE_NAV_DIAGNOSTICS: '1'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '120'
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess, sys
+          results = []
+          for attempt in range(1, 4):
+              path = pathlib.Path(os.environ['RUNNER_TEMP']) / f'pr630-f6-{attempt}.log'
+              selector = '^VaneTests[.](FolderDisclosureTests|GlobalEaselLibraryTests|InspectorWebKitTests|InstantLinksTests|KeyboardAccessibilityTests)/'
+              with path.open('w') as log:
+                  result = subprocess.run(['python3', 'scripts/run-native-tests.py', '--skip-build', '--jobs', '1', '--filter', selector], stdout=log, stderr=subprocess.STDOUT)
+              print(path.read_text(), flush=True)
+              print(f'F6 preflight {attempt}: status={result.returncode}', flush=True)
+              results.append(result.returncode)
+          sys.exit(1 if any(results) else 0)
+          PY
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: pr630-f6-diagnostics
+          path: ${{ runner.temp }}/pr630-f6-*.log
+          retention-days: 7

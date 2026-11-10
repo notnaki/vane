@@ -1593,6 +1593,9 @@ extension TabStore {
         let onPage = (holder as? NSView).map { responder in
             page.map { responder === $0 || responder.isDescendant(of: $0) } ?? false
         } ?? false
+        if NativeSidebarNavigation.diagnosticsEnabled {
+            print("F6_TRACE input at=\(ProcessInfo.processInfo.systemUptime) holder=\(String(describing: holder)) onPage=\(onPage) request=\(chromeFocusRequested)")
+        }
         if !onPage, holder != nil, holder !== window,
            let page, page.window === window {
             window.makeFirstResponder(page)
@@ -1603,6 +1606,9 @@ extension TabStore {
             sidebarShown = true
         }
         DispatchQueue.main.async { [weak self, weak holder] in
+            if NativeSidebarNavigation.diagnosticsEnabled {
+                print("F6_TRACE queued at=\(ProcessInfo.processInfo.systemUptime) holder=\(String(describing: self?.window?.firstResponder)) unchanged=\(self?.window?.firstResponder === holder) request=\(String(describing: self?.chromeFocusRequested))")
+            }
             guard let self, let window = self.window, self.palette == nil,
                   window.attachedSheet == nil, NSApp.modalWindow == nil,
                   window.firstResponder === holder else { return }

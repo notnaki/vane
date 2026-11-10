@@ -541,9 +541,11 @@ private struct DisabledKeyboardSurface: View {
                           "F6 must start in an admitted foreground AppKit window")
             store.focusNextArea()
             try await Task.sleep(for: .milliseconds(150))
+            print("F6_TRACE endpoint at=\(ProcessInfo.processInfo.systemUptime) request=\(store.chromeFocusRequested) holder=\(String(describing: window.firstResponder)) chrome=\(chrome) page=\(page)")
             XCTAssertFalse(window.firstResponder === page, "F6 must leave the canvas for the address pill")
             XCTAssertFalse(window.firstResponder === window)
             store.focusNextArea()
+            print("F6_TRACE return at=\(ProcessInfo.processInfo.systemUptime) holder=\(String(describing: window.firstResponder))")
             XCTAssertTrue(window.firstResponder === page)
         }
     }

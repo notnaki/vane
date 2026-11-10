@@ -69,6 +69,7 @@ private struct KeyboardAction: ViewModifier {
             .focused($focused)
             .focusEffectDisabled()
             .onChange(of: focused) { _, value in
+                if NativeSidebarNavigation.diagnosticsEnabled { print("F6_TRACE focused at=\(ProcessInfo.processInfo.systemUptime) token=\(focusOwner) value=\(value)") }
                 if let bufferedFocus {
                     bufferedFocus.set(value, owner: focusOwner)
                 }
@@ -85,6 +86,7 @@ private struct KeyboardAction: ViewModifier {
                 if !value { focused = false }
             }
             .onChange(of: requestFocus?.wrappedValue, initial: true) { _, requested in
+                if NativeSidebarNavigation.diagnosticsEnabled, requestFocus != nil { print("F6_TRACE consume at=\(ProcessInfo.processInfo.systemUptime) token=\(focusOwner) requested=\(String(describing: requested)) enabled=\(enabled && isEnabled) focused=\(focused)") }
                 guard requested == true, enabled, isEnabled else { return }
                 if let nativeNavigation, let navigation = nativeNavigation.navigation {
                     navigation.requestFocus(token: focusOwner, row: nativeNavigation.row)
