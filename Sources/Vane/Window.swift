@@ -307,6 +307,10 @@ final class TrafficLightRest: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        Self.drawDiscs(discs, key: key)
+    }
+
+    static func drawDiscs(_ discs: [CGRect], key: Bool) {
         let ringed = key ? Look.lightRingOpacity : Look.lightInactiveRingOpacity
         for (i, disc) in discs.enumerated() where i < Look.lightColours.count {
             (key ? Look.lightRest : Look.lightInactive).setFill()

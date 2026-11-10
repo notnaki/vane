@@ -5,7 +5,7 @@ import SwiftUI
 /// Resolve a saved connection separately for each Max feature. Apple stays the default.
 @MainActor enum BrowserAI {
     static var state: AIConnections { AIConnections.load(UserDefaults.vane) }
-    static var enabled: Bool { UserDefaults.vane.object(forKey: "appleAI") as? Bool ?? true }
+    static var enabled: Bool { UserDefaults.vane.object(forKey: "appleAI") as? Bool ?? false }
     /// Invalidate synchronously on each master-switch edge; SwiftUI may coalesce an
     /// off→on sequence before an onChange observer runs, reopening stale admission.
     static var enabledBinding: Binding<Bool> {
