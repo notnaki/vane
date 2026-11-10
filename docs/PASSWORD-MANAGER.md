@@ -23,6 +23,26 @@ rediscovered after a short coalesced delay. Username-first flows retain an accou
 within the same form replacement or one same-origin navigation, for up to two minutes.
 The account remains attached to that password step for capture after submission.
 
+Visible controls in nested **open** shadow roots use the same chooser, fill, generation
+and submission-review path. Focus follows open roots and same-origin frames; input/change
+events cross open shadow boundaries so component state can update. Hidden, inert,
+`aria-hidden` and clipped hosts or slots do not grant access to their controls. Roots and
+fields inserted later are observed, with a paced one-second scan for roots attached to
+an existing host; focusing a new root admits its listeners immediately. Discovery stops
+on page exit, resumes on page-cache restore and removes listeners from detached roots. A traversal
+budget (20,000 elements, 128 tree scopes, 32 shadow levels per scan) refuses incomplete
+scans. Closed shadow-root controls remain inaccessible.
+
+A retained separate username form can also identify a later password-only form when the
+password's sole `aria-labelledby` reference uniquely names that previously chosen
+`autocomplete=username` input in the same document/tree scope. The input must retain
+its chosen value, become hidden or read-only, and remain within safe form actions. This
+association lasts up to two minutes, constrains the account, and participates in the
+chooser's field identity; replacing it or removing the reference invalidates the old
+chooser. Unrelated text, duplicate IDs and references across shadow roots or frames do
+not establish an account association. The browser still requires account selection and
+never submits or treats a submission as verified authentication.
+
 Saved credentials never fill new-password fields. Multiple unlabelled passwords are
 ambiguous and are not guessed at. Hidden, offscreen, clipped, disabled, read-only and
 one-time-code fields are excluded from writing. A hidden/read-only username can be an
@@ -108,8 +128,22 @@ signed sandbox fixture. It also writes disposable credentials, exits, reads them
 fresh process of the same signed app, verifies profile/port isolation, and deletes them.
 The runner tracks bundle paths, PIDs and start times and verifies process exits.
 
+For focus-free local validation without Keychain access or native presentation, run:
+
+```sh
+python3 scripts/run-native-tests.py --jobs 2 --filter 'PasswordShadowAutofillTests|PasswordOriginTests|PasswordGeneratorTests|PasswordServiceReviewTests|PasswordIntegrationBoundaryTests'
+```
+
+The shadow fixtures use nonpersistent real WebKit documents and attached, never-ordered
+windows. They cover nested/dynamic roots, composed focus/events, local submission capture,
+explicit retained-username association, stale replacements, host/slot visibility,
+action/formaction policy, focused same-origin and opaque-frame boundaries, generation,
+rejected attempts and lifecycle teardown. Native chooser interactions, keyboard routing,
+profile/private bridge behavior and navigation-continuation integration still require the
+existing foreground suites in required CI; focus-free fixtures do not prove those UI checks.
+
 These are controlled fixtures, not verified provider sign-ins. Unusual SPA login-completion
-signals, shadow-DOM fields, cross-origin identity-provider frames and nonstandard fetch
+signals, closed shadow roots, cross-origin identity-provider frames and nonstandard fetch
 buttons can require manual entry or adding a login in Settings. Visible rejection markers
 are heuristics and cannot establish authentication success. Touch ID/VoiceOver behavior,
 Developer ID upgrades, notarized clean-Mac persistence, and broad real-site compatibility
