@@ -734,13 +734,13 @@ struct SpacePreviewList: View, Equatable {
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.identity == rhs.identity }
 
     enum Row {
-        case folder(Folder, depth: Int = 0)
+        case folder(Folder, depth: Int = 0, showsArrivals: Bool = false)
         case blank(Tab, depth: Int = 0)
         case site(URL, TabKind, Tab? = nil, depth: Int = 0, pr: GitHub.Row? = nil, savedIndex: Int? = nil)
 
         var depth: Int {
             switch self {
-            case .folder(_, let depth), .blank(_, let depth), .site(_, _, _, let depth, _, _): return depth
+            case .folder(_, let depth, _), .blank(_, let depth), .site(_, _, _, let depth, _, _): return depth
             }
         }
 
@@ -855,8 +855,15 @@ struct SpacePreviewList: View, Equatable {
         let byID = Dictionary(uniqueKeysWithValues: opened.map { ($0.id, $0.url) })
         let liveByID = Dictionary(uniqueKeysWithValues: (loaded ?? []).map { ($0.id.uuidString, $0) })
         let strip = (tabs ?? []).map { ($0.id, $0.kind) }
-        let rows: [Row] = shape.visible(unlocked: unlocked).compactMap { visible in
-            if let folder = visible.entry.folder { return .folder(folder, depth: visible.depth) }
+        let visibleRows = shape.visible(unlocked: unlocked)
+        let arrivalFolders = Set(visibleRows.compactMap {
+            $0.entry.liveArrival == true ? $0.entry.parent : nil
+        })
+        let rows: [Row] = visibleRows.compactMap { visible in
+            if let folder = visible.entry.folder {
+                return .folder(folder, depth: visible.depth,
+                               showsArrivals: folder.collapsed && folder.live != nil && arrivalFolders.contains(folder.id))
+            }
             guard let id = visible.entry.tab, let name = byID[id] else { return nil }
             let tab = liveByID[id]
             if let tab, let split = splits.first(where: { $0.contains(tab.id) }),
@@ -937,9 +944,9 @@ struct SpacePreviewList: View, Equatable {
                                            ticked: selection.contains(tab.id), previewing: true, renaming: false)
                         .environment(\.livePR, row.pr)
                 }
-            } else if case .folder(let folder, _) = row {
+            } else if case .folder(let folder, _, let showsArrivals) = row {
                 SidebarRow(selected: false, action: {}) {
-                    FolderGlyph(folder: folder, live: live)
+                    FolderGlyph(folder: folder, live: live, showsArrivals: showsArrivals)
                 } label: {
                     Text(folder.name).font(Look.folderTitle)
                 } trailing: {
@@ -998,7 +1005,7 @@ struct SpacePreviewList: View, Equatable {
 
     func title(for row: Row, saved: [String: Parked]) -> String {
         switch row {
-        case .folder(let folder, _): return folder.name
+        case .folder(let folder, _, _): return folder.name
         case .blank(let tab, _): return TidyTitles.title(for: tab)
         case .site(let url, let kind, _, _, _, _):
             return liveTab(for: row).map { TidyTitles.title(for: $0) }

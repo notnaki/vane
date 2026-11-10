@@ -3,6 +3,29 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpacePreviewPRTests: XCTestCase {
+    func testCollapsedArrivalMarkerIsCapturedUntilNextGesture() throws {
+        try withFixture { store, live, folder, space, url in
+            store.pins.toggle(folder: folder.id)
+            live.receive(.success([GitHub.PR(url: url.absoluteString, title: "New PR",
+                draft: false, repo: "fixture/project", number: 1, author: "fixture")]),
+                for: folder.id, token: "fixture-token")
+            @MainActor func marker(_ preview: SpacePreviewList) throws -> Bool {
+                guard case .folder(_, _, let showsArrivals) = try XCTUnwrap(preview.rows.pinned.first) else {
+                    XCTFail("The live folder must precede its arrivals")
+                    return false
+                }
+                return showsArrivals
+            }
+            let captured = preview(store, live: live, space: space)
+            XCTAssertTrue(try marker(captured))
+            store.pins.toggle(folder: folder.id)
+            XCTAssertTrue(try marker(captured), "An in-flight preview keeps its captured arrival marker")
+            XCTAssertFalse(try marker(preview(store, live: live, space: space)))
+            store.pins.toggle(folder: folder.id)
+            XCTAssertFalse(try marker(preview(store, live: live, space: space)), "Reclosing must not restore acknowledged arrivals")
+        }
+    }
+
     func testGhostKeepsAuthorAndRenderedAppearanceUntilNextGesture() throws {
         try withFixture { store, live, folder, space, url in
             @MainActor func refresh(author: String) {
