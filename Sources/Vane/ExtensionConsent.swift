@@ -39,7 +39,7 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         case "activeTab": "Access the active page when you use the extension"
         case "alarms": "Schedule extension tasks"
         case "clipboardWrite": "Write to your clipboard"
-        case "contextMenus", "menus": "Add items to page menus"
+        case "contextMenus", "menus": "Add items to page and tab menus"
         case "cookies": "Read and change website cookies"
         case "declarativeNetRequest", "declarativeNetRequestWithHostAccess": "Block or modify website requests"
         case "declarativeNetRequestFeedback": "Read information about filtered website requests"
