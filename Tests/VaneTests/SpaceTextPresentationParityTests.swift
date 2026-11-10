@@ -340,6 +340,8 @@ import XCTest
             slide.isHidden = false
             try await displayFrames(in: window)
             print("SPACE_TEXT_UNDERLAY \(liveUnderlay) flushes=\(flushCount) sliding=\(store.spaceGesture.profileSliding)")
+            XCTAssertTrue(store.spaceSwiping && store.spaceGesture.profileSliding && slide.isActive,
+                          "The claimed native gesture must still own the inspected live underlay before release")
             XCTAssertGreaterThan(flushCount, 0)
             for contrast in liveUnderlay.contrast {
                 XCTAssertLessThan(contrast, 20, "The live labels must be hidden while the native preview owns them")
