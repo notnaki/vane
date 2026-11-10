@@ -60,6 +60,9 @@ import WebKit
     static func forget(_ profileID: UUID) {
         guard let host = hosts[profileID] else { return }
         host.invalidated = true
+        for bridge in host.filterBridges.values { bridge.invalidate() }
+        host.filterBridges.removeAll()
+        host.backgroundViews.removeAllObjects()
         host.nativeMessagingDenial.cancelAll()
         host.workerIdentityUpdate?.cancel()
         host.storeUpdateTimer?.invalidate()
@@ -90,6 +93,8 @@ import WebKit
     let profileID: UUID
     let controller: WKWebExtensionController
     private let userAgent = ExtensionUserAgent()
+    private let backgroundViews = NSMapTable<WKWebExtensionContext, WKWebView>(keyOptions: .weakMemory, valueOptions: .weakMemory)
+    private var filterBridges: [ObjectIdentifier: ExtensionFilterBridge] = [:]
 
     #if DEBUG
     // DEBUG assertions inspect only an already-created background page.
@@ -202,7 +207,8 @@ import WebKit
                          requiredAccess: record?.required ?? ExtensionConsent.saved(for: URL(fileURLWithPath: path), profileID: profileID),
                          optionalAccess: record?.optional ?? legacyMetadata[path]?.optional,
                          compatibility: (record?.compatibility ?? limitations[path] ?? [])
-                            + (userAgent.limitation.map { [$0] } ?? []),
+                            + (userAgent.limitation.map { [$0] } ?? [])
+                            + (context.flatMap { filterBridges[ObjectIdentifier($0)]?.status }.map { [$0] } ?? []),
                          runtimeDiagnostics: runtimeErrors.isEmpty ? nil : ExtensionDiagnostics.describe(runtimeErrors),
                          nativeMessagingErrorCompatibilityAvailable: !invalidated && metadataFailure == nil && profileID != Profile.incognito.id
                             && record.map { ExtensionNativeMessagingErrors.isApproved(version: ExtensionNativeMessagingErrors.currentVersion,
@@ -228,6 +234,7 @@ import WebKit
         // store. Bind both to this profile before WebKit copies the configuration.
         webConfiguration.websiteDataStore = configuration.defaultWebsiteDataStore
         WebKitStartup.configureExtensionPages(webConfiguration)
+        ExtensionMV2Compatibility.configure(webConfiguration)
         userAgent.configure(webConfiguration)
         controller = WKWebExtensionController(configuration: configuration)
         super.init()
@@ -245,6 +252,7 @@ import WebKit
                 .sink { [weak self] note in
                     guard let self, let context = note.object as? WKWebExtensionContext,
                           self.installed.contains(where: { $0 === context }) else { return }
+                    self.filterBridges[ObjectIdentifier(context)]?.permissionsChanged()
                     self.objectWillChange.send()
                 }.store(in: &metadataObservations)
         }
@@ -599,6 +607,8 @@ import WebKit
     private func unloadContext(_ context: WKWebExtensionContext) throws {
         nativeMessagingDenial.cancel(contextID: ObjectIdentifier(context))
         try controller.unload(context)
+        filterBridges.removeValue(forKey: ObjectIdentifier(context))?.invalidate()
+        backgroundViews.removeObject(forKey: context)
     }
 
     private func deactivate(_ path: String) throws {
@@ -1090,6 +1100,10 @@ import WebKit
 
     private func publish(_ context: WKWebExtensionContext, at path: String) {
         loaded.append((path, context))
+        if ExtensionFilterBridge.recognizes(context.webExtension) {
+            filterBridges[ObjectIdentifier(context)] = ExtensionFilterBridge(profileID: profileID, context: context,
+                background: backgroundViews.object(forKey: context), changed: { [weak self] in self?.objectWillChange.send() })
+        }
         scheduleWorkerIdentityUpdate()
     }
 
@@ -2119,6 +2133,8 @@ import WebKit
                              for context: WKWebExtensionContext) {
         guard controller === self.controller else { return }
         userAgent.track(web)
+        backgroundViews.setObject(web, forKey: context)
+        filterBridges[ObjectIdentifier(context)]?.backgroundChanged(web)
         #if DEBUG
         backgroundCreationObserver?(web, context)
         #endif
@@ -2568,6 +2584,16 @@ extension View {
     func indexInWindow(for context: WKWebExtensionContext) -> Int {
         guard accessible, let tab, let i = store?.accessibleTabs.firstIndex(where: { $0 === tab }) else { return NSNotFound }
         return i
+    }
+
+    func parentTab(for context: WKWebExtensionContext) -> (any WKWebExtensionTab)? {
+        guard accessible, let tab, let parent = tab.extensionParent,
+              parent.profileID == tab.profileID, parent.isPrivate == tab.isPrivate,
+              let owner = TabStore.all.first(where: {
+                  $0.profileID == tab.profileID && $0.window != nil && !$0.isParked
+                      && $0.tabs.contains(where: { $0 === parent }) && !$0.isTabLocked(parent.id)
+              }) else { return nil }
+        return ExtensionHost.host(for: tab.profileID).adapter(for: parent, in: owner)
     }
 
     // Everything WebKit can read straight off the web view (zoom, loading, snapshots,

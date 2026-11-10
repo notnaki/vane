@@ -130,6 +130,7 @@ private struct BlockRule: Codable, Equatable {
         let next = enabled(for: profileID) ? list(for: profileID) : nil
         if let next { controller.add(next) }
         controllers.setObject(Attachment(profileID: profileID, list: next), forKey: controller)
+        ExtensionFilterBridge.apply(to: controller, profileID: profileID)
     }
 
     /// Recompile from the current sources and reattach to every live web view. Cheap after
@@ -525,6 +526,11 @@ private struct BlockRule: Codable, Equatable {
     /// Admission before allocating line arrays/rules. Reject the whole candidate so a
     /// limit never silently drops part of an installed blocking policy.
     nonisolated static func convertBoundedSources(_ texts: [String]) throws -> BlockerConversion {
+        try validateSourceBounds(texts)
+        return convertSources(texts)
+    }
+
+    nonisolated static func validateSourceBounds(_ texts: [String]) throws {
         var bytes = 0
         var lines = 0
         for text in texts {
@@ -547,7 +553,6 @@ private struct BlockRule: Codable, Equatable {
             lines += 1
         }
         guard lines <= 1_000_000 else { throw BlockerFiles.Failure("Combined filter lists exceed the one million line limit. Previous rules remain active.") }
-        return convertSources(texts)
     }
 
     nonisolated static func convertSources(_ texts: [String], excludingHosts: [String] = []) -> BlockerConversion {
@@ -643,7 +648,7 @@ private struct BlockRule: Codable, Equatable {
     }
 
     /// A terminal regex `$` is an anchor, not the start of filter options.
-    private nonisolated static func networkParts(_ body: String) -> (pattern: String, options: String?) {
+    nonisolated static func networkParts(_ body: String) -> (pattern: String, options: String?) {
         if body.hasPrefix("/"), let slash = body.lastIndex(of: "/"), slash != body.startIndex {
             let suffix = body[body.index(after: slash)...]
             if suffix.isEmpty { return (body, nil) }
@@ -653,6 +658,11 @@ private struct BlockRule: Codable, Equatable {
             return (String(body[..<dollar]), String(body[body.index(after: dollar)...]))
         }
         return (body, nil)
+    }
+
+    nonisolated static func networkOptions(_ options: String) -> [String] {
+        options.split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
     }
 
     private nonisolated static func networkIdentity(_ line: String) -> String {
@@ -790,8 +800,7 @@ private struct BlockRule: Codable, Equatable {
                                                  to trigger: inout BlockRule.Trigger) -> Bool {
         var types: [String] = []
         var excluded = Set<String>()
-        for part in options.split(separator: ",", omittingEmptySubsequences: false) {
-            let option = part.trimmingCharacters(in: .whitespaces).lowercased()
+        for option in networkOptions(options) {
             switch option {
             case "match-case":
                 trigger.urlFilterIsCaseSensitive = true

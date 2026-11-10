@@ -220,6 +220,21 @@ swift test --filter 'Extension.*Tests'
 ./.build/debug/vane selfcheck --pure
 ```
 
+### Manifest V2 request filtering
+
+MV2 background pages, content scripts, messaging, storage and actions can run.
+System WebKit's `webRequest` cannot cancel or redirect requests or change headers,
+even when it recognizes `webRequestBlocking`. Vane discloses that limitation.
+
+For full **uBlock Origin** MV2, Vane can compile supported selected static lists,
+enabled user filters and trusted-site settings into profile-isolated WebKit rules.
+The extension must retain all website access. The manager shows active rule counts,
+unsupported reasons or bridge failures. Changes apply after compilation; reload
+changed pages. Disabling the extension also removes its compiled rules. This is
+partial compatibility: dynamic filtering and other unrepresentable operations remain
+unavailable. uBlock Origin Lite uses its existing MV3 declarative rules instead.
+See [MV2 behavior, limits and browser research](MANIFEST-V2-COMPATIBILITY.md).
+
 ## Content blocking and filter subscriptions
 
 Settings → Privacy and Security → Content Blocking separates **Import from Disk** (local

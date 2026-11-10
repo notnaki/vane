@@ -130,7 +130,7 @@ extension TabStore {
         // One animation for the append and the move, so the row grows in beside its opener
         // rather than appearing at the bottom and flying up.
         Motion.list {
-            let tab = newBlankTab(focus: focus)
+            let tab = newBlankTab(focus: focus, parent: tabs.first { $0.id == opener })
             if let from = tabs.firstIndex(where: { $0.id == tab.id }) {
                 let moved = tabs.remove(at: from)
                 let dest = TabStore.insertionIndexBeside(

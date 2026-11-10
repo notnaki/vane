@@ -200,6 +200,7 @@ extension TabStore {
     func popup(_ cfg: WKWebViewConfiguration, placement: Popup.Placement,
                opener: Tab.ID?, features: WKWindowFeatures? = nil) -> WKWebView {
         let tab = Tab(popup: cfg, isPrivate: isPrivate, profileID: profileID)
+        tab.extensionParent = tabs.first { $0.id == opener }
         switch placement {
         case .tab(let focus) where !isLittle:
             adoptBeside(tab, opener: opener, focus: focus)
