@@ -20,6 +20,10 @@ struct ExtensionCodeStore: Sendable {
         var store: ChromeWebStore? = nil
         // Approval of error callbacks only; never native-host authorization.
         var nativeMessagingErrorCompatibilityVersion: Int? = nil
+        // Cloud entity identity is distinct from an existing local runtime/storage identity.
+        var iCloudIdentity: String? = nil
+        // Portable installation source, without asserting a verified store runtime ID.
+        var iCloudStoreID: String? = nil
     }
 
     struct Stage: Sendable {
@@ -89,6 +93,8 @@ struct ExtensionCodeStore: Sendable {
               Set(records.values.map { $0.revision.lowercased() }).count == records.count,
               records.allSatisfy({ key, record in
                   UUID(uuidString: record.identity) != nil && UUID(uuidString: record.revision) != nil
+                      && (record.iCloudIdentity.map { UUID(uuidString: $0) != nil } ?? true)
+                      && (record.iCloudStoreID.map(ChromeWebStore.validID) ?? true)
                       && (record.safari.map { $0.isValid && $0.key == key } ?? !key.hasPrefix("/safari-extension/"))
                       && (record.store.map { $0.isValid && $0.key == key && record.safari == nil } ?? !key.hasPrefix("/chrome-web-store/"))
               }),

@@ -52,7 +52,7 @@ struct ReadingQueuePane: View {
     private var preparationRequest: PreparationRequest? {
         guard !origin.isPrivate, !batterySaver.isActive,
               let identity = hoveredArticle ?? focusedArticle,
-              results.contains(where: { $0.id == identity }),
+              results.contains(where: { $0.id == identity && $0.article.hasOfflineContent != false }),
               let repository = collection.repository(for: identity.profileID) else { return nil }
         return .init(identity: identity, revision: repository.revision)
     }
@@ -136,26 +136,41 @@ struct ReadingQueuePane: View {
         return repository
     }
     private func openSaved(_ item: ReadingQueueItem) {
-        guard !origin.isPrivate, let repository = collection.repository(for: item.profileID) else { return }
+        guard !origin.isPrivate, item.article.hasOfflineContent != false,
+              let repository = collection.repository(for: item.profileID) else { return }
         SavedReaderWindow.show(articleID: item.article.id, repository: repository, origin: origin, preparation: preparation)
     }
     private func row(_ item: ReadingQueueItem) -> some View {
         let article = item.article
+        let source = article.hasQueueMetadata == false ? "Article details not synced" : URL(string: article.sourceURL)?.host ?? ""
+        let provenance = article.hasQueueMetadata == false ? item.profileName : "\(item.profileName) · \(article.capturedAt.formatted(date: .abbreviated, time: .omitted))"
+        let action = article.hasOfflineContent == false ? "live page" : "saved copy"
+        let saved = "Saved " + article.capturedAt.formatted() + " · " + size(collection.repository(for: item.profileID)?.bytes(for: article) ?? 0)
+        let availability = article.hasOfflineContent == false ? "Open the live page. The offline copy is unavailable on this Mac." : saved
+        let help = article.hasQueueMetadata == false ? "Article details are not synced on this Mac." : article.sourceURL + "\n" + availability
         return HStack(alignment: .top, spacing: 7) {
             Button {
-                openSaved(item)
+                guard !origin.isPrivate, collection.repository(for: item.profileID) != nil else { return }
+                if article.hasOfflineContent == false {
+                    if article.hasQueueMetadata != false, let url = ReadingArticleCodec.webURL(article.sourceURL) {
+                        SavedReaderLivePage.open(url, profileID: item.profileID); Library.close(origin)
+                    }
+                } else { openSaved(item) }
             } label: {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: article.isRead ? "checkmark.circle" : "circle.fill").font(.system(size: 10)).foregroundStyle(article.isRead ? Look.inkTertiary : Look.inkPrimary).padding(.top, 4)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(article.title).font(Look.small).foregroundStyle(Look.inkPrimary).lineLimit(3)
-                        Text(URL(string: article.sourceURL)?.host ?? "").font(Look.caption).foregroundStyle(Look.inkSecondary).lineLimit(1)
-                        Text("\(item.profileName) · \(article.capturedAt.formatted(date: .abbreviated, time: .omitted))").font(Look.caption).foregroundStyle(Look.inkTertiary)
+                        Text(source).font(Look.caption).foregroundStyle(Look.inkSecondary).lineLimit(1)
+                        if article.hasOfflineContent == false {
+                            Text("Offline copy unavailable").font(Look.caption).foregroundStyle(Look.inkSecondary)
+                        }
+                        Text(provenance).font(Look.caption).foregroundStyle(Look.inkTertiary)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).focused($focusedArticle, equals: item.id)
-                .accessibilityLabel("\(article.title), saved copy in \(item.profileName), \(article.isRead ? "read" : "unread")")
-                .help("\(article.sourceURL)\nSaved \(article.capturedAt.formatted()) · \(size(collection.repository(for: item.profileID)?.bytes(for: article) ?? 0))")
+                .accessibilityLabel("\(article.title), \(action) in \(item.profileName), \(article.isRead ? "read" : "unread")")
+                .help(help)
             Menu { actions(item) } label: { Image(systemName: "ellipsis") }
                 .menuStyle(.borderlessButton).tint(Look.inkSecondary).menuIndicator(.hidden).fixedSize().accessibilityLabel("Actions for \(article.title)")
         }.padding(8)
@@ -168,13 +183,17 @@ struct ReadingQueuePane: View {
     }
     @ViewBuilder private func actions(_ item: ReadingQueueItem) -> some View {
         let article = item.article
-        Button("Open Saved Copy") { openSaved(item) }
+        Button("Open Saved Copy") { openSaved(item) }.disabled(article.hasOfflineContent == false)
         Button(article.isRead ? "Mark Unread" : "Mark Read") { perform { try await ownedRepository(item.profileID).setRead(!article.isRead, id: article.id) } }
+            .disabled(article.hasQueueMetadata == false)
         Button("Open Live Page") {
-            guard !origin.isPrivate, collection.repository(for: item.profileID) != nil, let url = ReadingArticleCodec.webURL(article.sourceURL) else { return }
+            guard !origin.isPrivate, article.hasQueueMetadata != false, collection.repository(for: item.profileID) != nil, let url = ReadingArticleCodec.webURL(article.sourceURL) else { return }
             SavedReaderLivePage.open(url, profileID: item.profileID); Library.close(origin)
         }
-        Text("\(size(collection.repository(for: item.profileID)?.bytes(for: article) ?? 0)) saved")
+        .disabled(article.hasQueueMetadata == false)
+        if article.hasOfflineContent != false {
+            Text("\(size(collection.repository(for: item.profileID)?.bytes(for: article) ?? 0)) saved")
+        }
         Divider()
         Button("Remove", role: .destructive) { perform { try await ownedRepository(item.profileID).remove(article.id) } }
     }

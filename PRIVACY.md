@@ -1,18 +1,30 @@
 # Vane Privacy Policy
 
-Effective and last updated: **23 October 2026**
+Effective and last updated: **10 November 2026**
 
 This policy covers the Vane macOS browser and its [project website](https://notnaki.github.io/vane/), maintained by [notnaki](https://github.com/notnaki). It describes the current implementation in this repository. Older releases and third-party builds may behave differently.
 
-Vane stores your browser library on your Mac. It has no Vane account, hosted browsing-history service, or built-in sync between Macs. Vane does not include app analytics or automatic crash-report uploads. Browsing and the features below still make network requests; local storage does not mean that nothing leaves your device.
+Vane stores your browser library on your Mac. It has no Vane account or Vane-hosted browsing-history service. Explicitly provisioned builds offer optional iCloud sync through Apple's services; sync starts off. Ordinary local builds keep sync unavailable. Vane does not include app analytics or automatic crash-report uploads. Browsing and the features below still make network requests; local storage does not mean that nothing leaves your device.
 
 ## Data stored on your Mac
 
 Vane keeps history (including URLs, titles, and visit times), bookmarks, tabs, Spaces, settings, download records, saved articles and images, Easels, and recovery copies locally. WebKit manages cookies, website storage, caches, and website sign-ins. Regular profiles separate history, bookmarks, saved passwords, extensions, and website stores; download and media records are shared across regular profiles.
 
-Saved passwords, AI API keys and ChatGPT tokens, and GitHub connection credentials use the local macOS Keychain. Vane does not enable Keychain synchronization for these items. Passwords are used to fill matching HTTPS sign-in forms; submitting a form sends its contents to that website. Vane does not upload your password library to a Vane service.
+Saved passwords, AI API keys and ChatGPT tokens, and GitHub connection credentials use the local macOS Keychain. Passwords and AI keys have separate opt-in iCloud Keychain controls in provisioned builds; both start unselected. ChatGPT tokens, registrations and GitHub connection credentials stay local. Passwords are used to fill matching HTTPS sign-in forms; submitting a form sends its contents to that website. Vane does not upload your password library to a Vane service.
 
 Browser imports scan known local browser locations when you open import or reach the onboarding import step, show the items found, and copy the selected source only after you confirm. Known browser locations have read-only sandbox access; macOS privacy controls still apply. Where required, importing supported credentials uses separate Keychain consent. Library files and recovery copies are not encrypted by Vane. Folder locks limit access within the app; they do not encrypt browser data. Password CSV exports are plaintext, and `.vanebackup` exports offer optional password encryption. Vane cannot recover backup passwords. Exports made without a password and automatic local recovery points remain unencrypted. Protect these files and any device or system backups containing them.
+
+## Optional iCloud sync
+
+Settings → iCloud lets you review each category before enabling sync on that Mac. Selected browser-library records and saved content use your Apple Account's private CloudKit database. Separate switches cover profiles, Spaces, favourites, pins, folders, bookmarks, history, device-labelled tab lists, Easels, reading content, templates, Boosts, preferences, site settings, content blocking, extensions, extension sync data and download history. History, extension sync data, passwords and API keys are unselected initially; Select All explicitly includes them. Download history includes page URLs, filenames, dates, sizes and the owning Mac, never downloaded file bytes, destination paths, file grants or resume data.
+
+Private browsing, website cookies/sign-ins/storage, unsaved forms, macOS permissions, authentication proofs, GitHub tokens and ChatGPT registrations/tokens do not enter sync. API connection definitions and their feature routes can travel with portable preferences; ChatGPT connections and routes stay local. Synced Boost scripts and extension packages require this Mac's local execution approval. The separate extension sync-data switch transfers only values an extension puts in `storage.sync`, through public WebKit APIs. Extension `storage.local`, `storage.session`, opaque databases and local grants do not transfer. An extension can put sensitive values in its sync namespace; Vane cannot reliably identify their meaning. Incoming values wait for this Mac's approved extension activation. Writes already submitted to WebKit may finish after sync is turned off.
+
+CloudKit records use encrypted fields and assets; this does not promise unconditional end-to-end encryption. Apple's Advanced Data Protection settings affect key availability. Password and API-key payloads use Apple's synchronizable Keychain separately, not CloudKit records or Vane servers. Turning these categories off stops Vane's sync admissions; it cannot stop Apple's transport for already-synchronizable Keychain items.
+
+Disabling sync keeps existing local and cloud copies. Removing selected iCloud data is a separate confirmed action that preserves local copies and pauses devices when they observe its reset marker. Offline devices can take time to observe changes. Apple controls account availability, service retention and propagation. An Apple Account change pauses Vane sync until you deliberately approve merging the local library with the new account.
+
+Distributed builds require matching provisioning and a production schema. Signed one-Mac development checks cover account access, encrypted data, assets, queries and local synchronizable Keychain operations. Cross-Mac convergence and Keychain propagation remain unverified. See [provisioning and validation requirements](docs/ICLOUD-PROVISIONING.md).
 
 ## Browsing, searches, and website requests
 

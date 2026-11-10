@@ -92,8 +92,14 @@ the intended revision's validation and readiness before starting them.
 The workflow builds `Vane.app`, packages `Vane.dmg` and `Vane.zip`, and publishes them
 to a GitHub Release. To produce a Developer ID signed and notarized build, the
 repository needs `DEVELOPER_ID_CERT_P12_BASE64`, `DEVELOPER_ID_CERT_PASSWORD`,
-`AC_API_KEY_ID`, `AC_API_ISSUER_ID`, and `AC_API_KEY_P8_BASE64` as Actions secrets. The
-workflow stops before publishing if any of these five credentials is missing. A tag
+`AC_API_KEY_ID`, `AC_API_ISSUER_ID`, and `AC_API_KEY_P8_BASE64` as Actions secrets.
+iCloud-enabled releases also require the `VANE_ICLOUD_PROFILE_BASE64` secret
+(Vane's Developer ID provisioning profile) and `VANE_ICLOUD_CONTAINER` Actions
+variable. The workflow restores the profile privately, selects Production, and
+validates its app/container/certificate grants during packaging. It stops before
+tag preparation if any required input is missing; it never falls back to a release
+with iCloud unavailable. Deploy and verify the [CloudKit schema](ICLOUD-PROVISIONING.md)
+before releasing the feature. A tag
 containing a hyphen, such as `v1.2.3-rc1`, publishes a prerelease. Release candidates
 and betas are not offered by either in-app update channel.
 

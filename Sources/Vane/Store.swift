@@ -171,6 +171,7 @@ struct BookmarkImportResult: Equatable, Sendable {
     private let historyReader: LocalSuggestionReader
     private let bookmarkReader: LocalSuggestionReader?
     private var imports = 0
+    private var iCloudApplies = 0
     private var discarding = false
     private nonisolated let lifetime = StoreImportCancellation()
     nonisolated var isRetired: Bool { lifetime.isCancelled }
@@ -545,6 +546,22 @@ struct BookmarkImportResult: Equatable, Sendable {
         guard !discarding, url.scheme == "http" || url.scheme == "https",
               let saved = projectedBookmark(id: id),
               projectedBookmarkID(url: url.absoluteString).map({ $0 == id }) ?? true else { return false }
+        if gated, iCloudApplies > 0 {
+            let changedURL = url.absoluteString != saved.url
+            let changedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines) != saved.title
+            let changedFolder = folderID != saved.folderID
+            project(Bookmark(id: id, url: url.absoluteString, title: title.trimmingCharacters(in: .whitespacesAndNewlines), at: saved.at, folderID: folderID))
+            // During a cloud write, a full editor form represents only the fields
+            // the user changed. Replay those fields over the committed remote row.
+            return mutate(true, rejected: false, operation: { db in
+                // Concurrent deletion wins; a late editor cannot recreate its row.
+                guard let current = db.bookmark(id: id) else { return true }
+                guard let currentURL = URL(string: current.url) else { return false }
+                return db.updateBookmark(id, url: changedURL ? url : currentURL,
+                    title: changedTitle ? title : current.title,
+                    folderID: changedFolder ? folderID : current.folderID)
+            }, immediate: { $0.updateBookmark(id, url: url, title: title, folderID: folderID) })
+        }
         if gated { project(Bookmark(id: id, url: url.absoluteString, title: title.trimmingCharacters(in: .whitespacesAndNewlines), at: saved.at, folderID: folderID)) }
         return mutate(true, rejected: false, operation: { $0.updateBookmark(id, url: url, title: title, folderID: folderID) },
                       immediate: { $0.updateBookmark(id, url: url, title: title, folderID: folderID) })
@@ -1345,5 +1362,229 @@ extension UserDefaults {
         for home in Set([NSHomeDirectory(), Updater.realHome]) {
             try? FileManager.default.removeItem(atPath: suitePlist(suite, home: home))
         }
+    }
+}
+
+extension Store {
+    func captureICloud(_ enabled: Set<ICloudCategory>, profile: UUID, namespace: String = "") async throws -> [ICloudItem] {
+        await waitForImports()
+        guard await flushPendingWrites(), !discarding else { throw CocoaError(.fileWriteUnknown) }
+        imports += 1
+        defer { finishICloudOperation() }
+        do {
+            let result = try await writer.captureICloud(enabled, profile: profile, namespace: namespace)
+            guard await flushPendingWrites(), !discarding else { throw CocoaError(.fileWriteUnknown) }
+            return result
+        } catch {
+            _ = await flushPendingWrites()
+            throw error
+        }
+    }
+
+    func applyICloud(_ item: ICloudItem, deleting: Bool, namespace: String = "") async throws {
+        let admission = ICloudApplyContext.admission
+        let baseline = ICloudApplyContext.baseline
+        try ICloudApplyContext.check()
+        await waitForImports()
+        try ICloudApplyContext.check()
+        guard await flushPendingWrites(), !discarding, !Self.admissionPaused else { throw CocoaError(.fileWriteUnknown) }
+        try ICloudApplyContext.check()
+        imports += 1; iCloudApplies += 1
+        defer { iCloudApplies -= 1; finishICloudOperation() }
+        do {
+            try await writer.applyICloud(item, deleting: deleting, namespace: namespace, admission: admission, baseline: baseline, lifetime: lifetime)
+            guard await flushPendingWrites(), !discarding else { throw CocoaError(.fileWriteUnknown) }
+        } catch {
+            _ = await flushPendingWrites()
+            throw error
+        }
+        if item.category == .history { NotificationCenter.default.post(name: Self.historyChanged, object: self) }
+        if let profileID, item.category == .bookmarks { BookmarkManager.refresh(profileID: profileID) }
+    }
+
+    private func finishICloudOperation() {
+        imports -= 1
+        if imports == 0 {
+            let waiting = importWaiters; importWaiters.removeAll()
+            for waiter in waiting { waiter.resume() }
+        }
+    }
+}
+
+private extension StoreConnection {
+    func prepareICloudIdentities(namespace: String) -> Bool {
+        guard namespace.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return false }
+        let aliasTable = "icloud_bookmark_aliases" + namespace
+        guard exec("CREATE TABLE IF NOT EXISTS \(aliasTable)(alias TEXT PRIMARY KEY, canonical TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0)") else { return false }
+        for table in ["bookmarks", "visits"] {
+            var exists = false
+            guard run("PRAGMA table_info(\(table))", [], { if self.text($0, 1) == "sync_id" { exists = true } }) else { return false }
+            if !exists && !exec("ALTER TABLE \(table) ADD COLUMN sync_id TEXT") { return false }
+        }
+        return true
+    }
+
+    func captureICloud(_ enabled: Set<ICloudCategory>, profile: UUID, namespace: String = "") throws -> [ICloudItem] {
+        guard prepareICloudIdentities(namespace: namespace) else { throw CocoaError(.fileReadCorruptFile) }
+        var result: [ICloudItem] = []
+        guard transaction({
+            for (category, table) in [(ICloudCategory.bookmarks, "bookmarks"), (.history, "visits")] where enabled.contains(category) {
+                var missing: [Int64] = []
+                guard self.run("SELECT id FROM \(table) WHERE sync_id IS NULL", [], { missing.append(sqlite3_column_int64($0, 0)) }) else { return false }
+                for row in missing {
+                    guard self.run("UPDATE \(table) SET sync_id = ? WHERE id = ?", [UUID().uuidString, row]) else { return false }
+                }
+                let folder = category == .bookmarks ? "folder_id" : "NULL"
+                guard self.run("SELECT sync_id,url,title,at,\(folder) FROM \(table)", [], { row in
+                    let fields: [String: Any] = ["url": self.text(row, 1), "title": self.text(row, 2), "at": sqlite3_column_double(row, 3), "kind": "page", "folderID": sqlite3_column_type(row, 4) == SQLITE_NULL ? NSNull() : self.text(row, 4)]
+                    let encoded = fields.mapValues { try! JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed, .sortedKeys]) }
+                    result.append(ICloudItem(category: category, id: self.text(row, 0), profileID: profile, parentID: nil, fields: encoded))
+                }) else { return false }
+                if category == .bookmarks {
+                    guard self.run("SELECT id,name,position FROM bookmark_folders", [], { row in
+                        let fields: [String: Any] = ["name": self.text(row, 1), "position": Int(sqlite3_column_int64(row, 2)), "kind": "folder"]
+                        result.append(ICloudItem(category: .bookmarks, id: "folder:" + self.text(row, 0), profileID: profile, parentID: nil, fields: fields.mapValues { try! JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }))
+                    }) else { return false }
+                }
+            }
+            return true
+        }) else { throw CocoaError(.fileWriteUnknown) }
+        return result
+    }
+
+    func applyICloud(_ source: ICloudItem, deleting: Bool, namespace: String,
+                     admission: ICloudAdmission?, baseline: [String: ICloudItem], lifetime: StoreImportCancellation) throws {
+        func check() throws {
+            try Task.checkCancellation(); try admission?.check()
+            if lifetime.isCancelled { throw CancellationError() }
+        }
+        try check()
+        guard exec("BEGIN IMMEDIATE") else { try check(); throw CocoaError(.fileWriteUnknown) }
+        var committed = false
+        defer { if !committed && sqlite3_get_autocommit(db) == 0 { exec("ROLLBACK") } }
+        // BEGIN may wait for another writer. Revoke is checked after obtaining the
+        // actual write lock, and again immediately before publishing the transaction.
+        try check()
+        try ICloudApplyContext.$baseline.withValue(baseline) {
+            try applyICloudBody(source, deleting: deleting, namespace: namespace)
+        }
+        try check()
+        guard exec("COMMIT") else { throw CocoaError(.fileWriteUnknown) }
+        committed = true
+    }
+
+    func applyICloudBody(_ source: ICloudItem, deleting: Bool, namespace: String) throws {
+        var item = source
+        let aliasTable = "icloud_bookmark_aliases" + namespace
+        guard prepareICloudIdentities(namespace: namespace) else { throw CocoaError(.fileWriteUnknown) }
+        if item.category == .bookmarks, !item.id.hasPrefix("folder:") {
+            var canonical: String?, retired = false
+            guard run("SELECT canonical,deleted FROM \(aliasTable) WHERE alias = ?", [item.id], { row in
+                canonical = self.text(row, 0); retired = sqlite3_column_int64(row, 1) != 0
+            }) else { throw CocoaError(.fileReadCorruptFile) }
+            if retired && !deleting { return }
+            if let canonical, deleting, canonical != item.id {
+                // A journal retires losing duplicate identities separately. Their
+                // tombstones must never delete the deterministic surviving bookmark.
+                guard run("UPDATE \(aliasTable) SET deleted=1 WHERE alias=?", [item.id]) else { throw CocoaError(.fileWriteUnknown) }
+                return
+            }
+            if let canonical { item.id = canonical }
+        }
+        if !deleting, !item.id.hasPrefix("folder:") {
+            let table = item.category == .bookmarks ? "bookmarks" : "visits"
+            let folder = item.category == .bookmarks ? "folder_id" : "NULL"
+            var previous: [String: Data] = [:]
+            guard run("SELECT url,title,at,\(folder) FROM \(table) WHERE sync_id = ?", [item.id], { row in
+                let object: [String: Any] = ["url": self.text(row, 0), "title": self.text(row, 1), "at": sqlite3_column_double(row, 2), "folderID": sqlite3_column_type(row, 3) == SQLITE_NULL ? NSNull() : self.text(row, 3)]
+                previous = object.mapValues { try! JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }
+            }) else { throw CocoaError(.fileReadCorruptFile) }
+            if previous.isEmpty, ICloudApplyContext.baseline[source.key] != nil { return }
+            let patch = ICloudApplyContext.reconcile(source, current: previous)
+            item.fields = previous.merging(patch.fields) { _, incoming in incoming }
+        }
+        func value<T: Decodable>(_ key: String, _ type: T.Type) throws -> T {
+            guard let bytes = item.fields[key] else { throw CocoaError(.fileReadCorruptFile) }
+            return try JSONDecoder().decode(type, from: bytes)
+        }
+        if item.id.hasPrefix("folder:") {
+            let id = String(item.id.dropFirst(7))
+            let ok: Bool
+            if deleting {
+                let ownedID = folderAliases[id] ?? id
+                ok = run("UPDATE bookmarks SET folder_id = NULL WHERE folder_id = ?", [ownedID])
+                    && run("DELETE FROM bookmark_folders WHERE id = ?", [ownedID])
+            } else {
+                var current: [String: Data] = [:]
+                guard run("SELECT name,position FROM bookmark_folders WHERE id = ?", [folderAliases[id] ?? id], { row in
+                    current = ["name": try! JSONEncoder().encode(self.text(row, 0)), "position": try! JSONEncoder().encode(Int(sqlite3_column_int64(row, 1))), "kind": try! JSONEncoder().encode("folder")]
+                }) else { throw CocoaError(.fileReadCorruptFile) }
+                if current.isEmpty, ICloudApplyContext.baseline[source.key] != nil { return }
+                item.fields = current.merging(ICloudApplyContext.reconcile(source, current: current).fields) { _, incoming in incoming }
+                let name = try value("name", String.self)
+                let position = try value("position", Int.self)
+                // Existing same-name folders retain the deterministic surviving identity.
+                ok = run("INSERT INTO bookmark_folders(id,name,position,created_at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,position=excluded.position", [id, name, position, Date.now.timeIntervalSince1970])
+                    || ensureBookmarkFolder(named: name, id: id)
+            }
+            guard ok else { throw CocoaError(.fileWriteUnknown) }; return
+        }
+        let table = item.category == .bookmarks ? "bookmarks" : "visits"
+        if deleting {
+            let removed: Bool = {
+                if item.category == .bookmarks {
+                    guard self.run("INSERT INTO \(aliasTable)(alias,canonical,deleted) VALUES(?,?,1) ON CONFLICT(alias) DO UPDATE SET deleted=1", [item.id,item.id]),
+                          self.run("UPDATE \(aliasTable) SET deleted=1 WHERE canonical = ?", [item.id]) else { return false }
+                }
+                return self.run("DELETE FROM \(table) WHERE sync_id = ?", [item.id])
+            }()
+            guard removed else { throw CocoaError(.fileWriteUnknown) }
+            if item.category == .history { historyDidChange = true }
+            return
+        }
+        let url = try value("url", String.self), title = try value("title", String.self), at = try value("at", Double.self)
+        guard let parsed = URL(string: url), ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""), at.isFinite else { throw CocoaError(.fileReadCorruptFile) }
+        let folder = try item.fields["folderID"].flatMap { try JSONDecoder().decode(String?.self, from: $0) }
+        let written: Bool = {
+            if item.category == .bookmarks {
+                var collision: String?
+                guard self.run("SELECT sync_id FROM bookmarks WHERE url = ?", [url], { collision = self.text($0, 0) }) else { return false }
+                if let collision, !collision.isEmpty {
+                    let surviving = min(collision, item.id)
+                    for alias in Set([collision, item.id, source.id]) {
+                        guard self.run("INSERT INTO \(aliasTable)(alias,canonical,deleted) VALUES(?,?,0) ON CONFLICT(alias) DO UPDATE SET canonical=excluded.canonical", [alias,surviving]) else { return false }
+                    }
+                    guard self.run("UPDATE \(aliasTable) SET canonical=? WHERE canonical IN (?,?)", [surviving,collision,item.id]) else { return false }
+                    return self.run("UPDATE bookmarks SET title=?,at=?,folder_id=?,sync_id=? WHERE url=?", [title, at, folder.map { (self.folderAliases[$0] ?? $0) as Any } ?? NSNull(), min(collision, item.id), url])
+                }
+            }
+            var rowID: Int64?
+            guard self.run("SELECT id FROM \(table) WHERE sync_id = ?", [item.id], { rowID = sqlite3_column_int64($0, 0) }) else { return false }
+            if let rowID {
+                if item.category == .bookmarks { return self.run("UPDATE bookmarks SET url=?,title=?,at=?,folder_id=? WHERE id=?", [url,title,at,folder.map { (self.folderAliases[$0] ?? $0) as Any } ?? NSNull(),rowID]) }
+                return self.run("UPDATE visits SET url=?,title=?,at=? WHERE id=?", [url,title,at,rowID])
+            }
+            if item.category == .bookmarks { return self.run("INSERT INTO bookmarks(url,title,at,folder_id,sync_id) VALUES(?,?,?,?,?)", [url,title,at,folder.map { (self.folderAliases[$0] ?? $0) as Any } ?? NSNull(),item.id]) }
+            return self.run("INSERT INTO visits(url,title,at,sync_id) VALUES(?,?,?,?)", [url,title,at,item.id])
+        }()
+        guard written else { throw CocoaError(.fileWriteUnknown) }
+        if item.category == .history { historyDidChange = true }
+    }
+}
+
+private extension StoreBulkWriter {
+    func captureICloud(_ enabled: Set<ICloudCategory>, profile: UUID, namespace: String = "") throws -> [ICloudItem] {
+        let db = StoreConnection(path: path, initialize: false)
+        return try db.captureICloud(enabled, profile: profile, namespace: namespace)
+    }
+    func applyICloud(_ item: ICloudItem, deleting: Bool, namespace: String,
+                     admission: ICloudAdmission?, baseline: [String: ICloudItem], lifetime: StoreImportCancellation) throws {
+        try Task.checkCancellation(); try admission?.check()
+        if lifetime.isCancelled { throw CancellationError() }
+        let db = StoreConnection(path: path, initialize: false)
+        db.folderAliases = folderAliases
+        db.bookmarkAliases = bookmarkAliases
+        try db.applyICloud(item, deleting: deleting, namespace: namespace, admission: admission, baseline: baseline, lifetime: lifetime)
+        folderAliases = db.folderAliases; bookmarkAliases = db.bookmarkAliases
     }
 }

@@ -2,6 +2,7 @@
 """Exercise release credentials, tags, and publication with disposable fixtures."""
 
 import json
+import base64
 import os
 from pathlib import Path
 import subprocess
@@ -103,10 +104,27 @@ def main():
     _, publish = step("Publish")
     assert '--latest=false' in publish, "Prereleases must not replace the stable download"
 
-    keys = ("CERT_B64", "CERT_PW", "KEY_ID", "ISSUER_ID", "KEY_B64")
+    keys = ("CERT_B64", "CERT_PW", "KEY_ID", "ISSUER_ID", "KEY_B64", "ICLOUD_PROFILE_B64", "ICLOUD_CONTAINER")
     with tempfile.TemporaryDirectory(prefix="vane-release-test-") as directory:
         temporary = Path(directory)
         test_publication(temporary)
+        profile = b"synthetic signed-profile envelope; validator tested separately"
+        install_environment = {**os.environ, "RUNNER_TEMP": str(temporary),
+                               "GITHUB_ENV": str(temporary / "icloud-env"),
+                               "ICLOUD_PROFILE_B64": base64.b64encode(profile).decode(),
+                               "ICLOUD_CONTAINER": "iCloud.io.github.notnaki.vane"}
+        run_step("Install iCloud provisioning profile", temporary, install_environment)
+        installed = temporary / "vane-icloud.provisionprofile"
+        assert installed.read_bytes() == profile
+        assert installed.stat().st_mode & 0o777 == 0o600
+        exported = (temporary / "icloud-env").read_text()
+        assert f"VANE_ICLOUD_PROFILE={installed}\n" in exported
+        assert "VANE_ICLOUD_ENVIRONMENT=Production\n" in exported
+        for invalid in ("", "not a container", "iCloud.valid\nINJECTED=value"):
+            run_step("Install iCloud provisioning profile", temporary,
+                     {**install_environment, "ICLOUD_CONTAINER": invalid}, succeeds=False)
+        run_step("Install iCloud provisioning profile", temporary,
+                 {**install_environment, "ICLOUD_PROFILE_B64": "invalid base64!"}, succeeds=False)
         remote = temporary / "remote.git"
         source = temporary / "source"
         command(["git", "init", "--bare", str(remote)], temporary)
