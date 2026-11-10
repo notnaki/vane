@@ -1,0 +1,2357 @@
+{
+  "schema": 1,
+  "originalHead": "43f819b2fa3a3cf5141b9c11c79a0bb37c0d8ac3",
+  "originalRun": 42914973873,
+  "originalJob": 130178255964,
+  "expected": [
+    {
+      "test": "VaneTests.AppLifecycleTests/testClosingTheLastMinimizedWindowRestoresThePreviousOne",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.AppLifecycleTests/testCommandQQuitsImmediatelyAfterTheLastWindowCloses",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.AppLifecycleTests/testCommandQStillWarnsWithAMinimizedWindow",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.AppLifecycleTests/testCommandQStillWarnsWithAnOpenWindow",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.AppLifecycleTests/testDockClickLeavesMinimizedWindowsAloneWhileAnotherWindowIsOpen",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.AppLifecycleTests/testDockClickRestoresAMinimizedWindowDespiteTheVisibleWindowsFlag",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.AppLifecycleTests/testDockClickRestoresOnlyTheLastMinimizedWindowRatherThanTheLastCreated",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.AppLifecycleTests/testFloatingPanelDoesNotPreventRestoringAMinimizedWindow",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.AppLifecycleTests/testMinimizingARestoredWindowMakesItTheMostRecentAgain",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.AppLifecycleTests/testOffscreenPreviewHostDoesNotCauseAQuitWarning",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.AppLifecycleTests/testOffscreenPreviewHostDoesNotPreventRestoringAMinimizedWindow",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ArcSplitRestorationTests/testImportedCachedTitlesFollowLivePagesWhileActualRenamesStayFixed",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ArcSplitRestorationTests/testImportedFirstSplitRestoresItsFocusedPaneAndOneSidebarRow",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ArchiveLibraryTests/testArchiveForwardsLiveChangesAndPrivateLibraryStaysSeparate",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ArchiveLibraryTests/testGlobalArchiveKeepsDuplicateSitesAndRoutesRemovalToTheirOwners",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupEncryptionTests/testEmptyPasswordCannotSilentlyProducePlaintext",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupEncryptionTests/testIndependentPythonAESGCMAndPBKDF2ReferenceCanBeRead",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupEncryptionTests/testPasswordProtectsAllArchiveContentsAndRequiresUnlock",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupEncryptionTests/testRepeatedEncryptionUsesFreshSaltAndNonce",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupEncryptionTests/testTamperedOrTruncatedEncryptedFilesCannotBePreviewed",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupEncryptionTests/testUnencryptedLegacyBackupsRemainReadable",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupRecoveryTests/testAsyncStorageUsesSameValidationAndRetention",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupRecoveryTests/testCorruptPointIsListedAsUnavailableWithoutHidingHealthyPoint",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupRecoveryTests/testDamagedPreRestorePointDoesNotPruneOnlyHealthyPoint",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupRecoveryTests/testFailedWriteKeepsLastUsablePoint",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupRecoveryTests/testIsolationAndHourlyBoundaries",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupRecoveryTests/testPruneFailureReportsErrorAndRetainsUsableNewPoint",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupRecoveryTests/testRetentionKeepsTenCompletedPointsIncludingMandatoryBeforeRestore",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupRecoveryTests/testSemanticFingerprintIgnoresDatesFileOrderAndSQLiteSnapshotHeaders",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupRecoveryTests/testTiedDatesAlwaysKeepTheNewlyCompletedPreRestorePoint",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupRecoveryTests/testUnchangedContentDoesNotCreateAnotherAutomaticPoint",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BackupRecoveryTests/testUnchangedRetryReconcilesFailedRetentionAndKeepsReportingFailure",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BlockerWebKitTests/testCaseAndNarrowedResourceOptionsActuallyControlScriptLoading",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BlockerWebKitTests/testExactSiteExceptionAllowsBlockedRequestsAndCosmeticsOnlyOnThatHost",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BlockerWebKitTests/testLinkedSettingsOperationsPublishPersistedSnapshotsIntoActualWebKitLoads",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.BookmarkPresentationTests/testFilteringKeepsTheFieldEditor",
+      "outcome": "skipped",
+      "skipReason": "Requires a logged-in desktop"
+    },
+    {
+      "test": "VaneTests.BookmarkPresentationTests/testWindowKeepsItsMinimumSizeAfterResultsArrive",
+      "outcome": "skipped",
+      "skipReason": "Requires a logged-in desktop"
+    },
+    {
+      "test": "VaneTests.BootstrapIngressGateTests/testRecoveryDefersAndDrainsExternalIngressInArrivalOrder",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CaptureEditorTests/testAnnotationUsesOriginalCoordinatesAfterCropAtTwoTimesScale",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CaptureEditorTests/testAspectFitMappingAccountsForLetterboxAndCrop",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CaptureEditorTests/testCropClampsBoundsRejectsTinyAndNonFiniteRectangles",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CaptureEditorTests/testCropPreservesRetinaPixelsAndTopLeftCoordinates",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CaptureEditorTests/testFixedZoomKeepsSmallCapturesAtTheirStatedScale",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CaptureEditorTests/testNativeSheetCropMarkupCancelAndApply",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CaptureEditorTests/testPenArrowAndTextRenderIntoExport",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CaptureEditorTests/testPreviewBoundsMemoryAndTracksCropWithoutReducingExportResolution",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CaptureEditorTests/testRejectsEmptyImageAndInvalidAnnotationsWithoutGrowingHistory",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CaptureEditorTests/testUndoRedoResetAndDiscardLeaveSourceUntouched",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CertificateEvaluationTests/testSameLeafAtDifferentVerifyDateDoesNotReuseSuccessfulOutcome",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CertificateEvaluationTests/testSameLeafWithDifferentAnchorsDoesNotReuseEitherOutcome",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeExtensionLifecycleTests/testAutomaticSameAccessUpdateAndDisabledState",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeExtensionLifecycleTests/testAutomaticUpdateDoesNotGrantAddedAccess",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeExtensionLifecycleTests/testExplicitSameVersionUpdateRepairsMissingCodeWithoutChangingOrigin",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeExtensionLifecycleTests/testExplicitStoreInstallRepairsUnreadableMetadataWithoutChangingOrigin",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeExtensionLifecycleTests/testPrivateProfileCannotFetchStorePackages",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeExtensionLifecycleTests/testRealStoreDownloadAndBackgroundWhenRequested",
+      "outcome": "skipped",
+      "skipReason": "Set VANE_STORE_LIVE_CHECK=1 for the real store download/runtime check."
+    },
+    {
+      "test": "VaneTests.ChromeExtensionLifecycleTests/testReinstallDoesNotInheritRemovedStoreExtensionData",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeExtensionLifecycleTests/testRemoveDuringDownloadCannotResurrectInstallation",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeExtensionLifecycleTests/testStoreIdentitySurvivesUpdateAndSourceDeletion",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeExtensionLifecycleTests/testSuccessfulUnchangedCheckClearsResolvedAttentionWithoutReplacingHealthyCode",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeMenuPresentationTests/testClickingTheCloseTriggerIsConsumedBeforeItsButtonCanReopenTheMenu",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeMenuPresentationTests/testEscapeClearsTheTriggersOpenState",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeMenuPresentationTests/testOpeningAMenuCancelsAPendingCustomTooltip",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeMenuPresentationTests/testOpeningAnotherMenuClearsThePreviousTriggersOpenState",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeMenuPresentationTests/testPressingTheSameMenuAnchorAgainClosesItsMenu",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeWebStoreTests/testBothIdentityAndPublisherProofMustVerify",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeWebStoreTests/testDownloadTrustRejectsNonGoogleAndCredentials",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeWebStoreTests/testMalformedHeadersFailWithoutReadingBeyondBounds",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeWebStoreTests/testOnlyStoreDetailURLsAndExactIDsAreAccepted",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromeWebStoreTests/testRealStorePackageWhenProvided",
+      "outcome": "skipped",
+      "skipReason": "Set VANE_STORE_PACKAGE_FIXTURE to verify a fresh Dark Reader CRX from Google."
+    },
+    {
+      "test": "VaneTests.ChromeWebStoreTests/testVersionOrderingUsesNumericChromeComponents",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ChromiumCookieWebKitTests/testNativePublicationKeepsSecurityLifetimeExistingSessionsAndOtherProfilePrivateStores",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ClientCertificateTests/testCancelMissingIdentityAndStaleDocumentNeverReturnOrRememberCredential",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ClientCertificateTests/testCandidateRejectsExpiredFutureAndWrongExtendedKeyUsage",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ClientCertificateTests/testChoicesDoNotCrossOriginProfilePrivateOrRejectedAttempt",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ClientCertificateTests/testForgettingAProfileDropsOnlyItsSessionChoices",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ClientCertificateTests/testIssuerQueryKeepsAllAcceptedAuthoritiesAndRequestsAllIdentities",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ClientCertificateTests/testNavigationReplacementWhileLoadingAndCancelledTaskDoNotPrompt",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ClientCertificateTests/testPrivateSelectionAlwaysPromptsAndDoesNotSeedNormalSession",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ClientCertificateTests/testRemovedOrNoLongerMatchingIdentityCannotBeReused",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ClientCertificateTests/testUserChoosesAmongMultipleCandidatesAndSessionReusesOnlyThatIdentity",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CommandFieldCompletionTests/testAcceptingWithRightOrEndKeepsTheOriginalOrigin",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CommandFieldCompletionTests/testHomeAndPointerSelectionReconcileTheDisplayedCompletion",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.CommandFieldCompletionTests/testMovingLeftReconcilesTheDisplayedCompletionBeforeEditing",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DockMenuTests/testCloseClosesNormalAndPrivateLittleWindowsButLeavesBrowserWindowsOpen",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DockMenuTests/testLittleWindowCommandsStayDisabledAfterMenuValidationWithoutLittleWindows",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DockMenuTests/testShowRestoresHiddenAndMinimizedLittleWindowsAndNeverHidesThem",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadFeedbackTests/testBrowserOnlyMeasuresDownloadAnchorsWhileFeedbackIsVisible",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadFeedbackTests/testFastConsecutiveStartsCannotBeLandedOrDismissedByOlderAnimation",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadFeedbackTests/testFeedbackStaysInOriginWindowAndPrivateDownloadsStayPrivate",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadFeedbackTests/testHiddenSidebarGetsVisibleDownloadTargetInsidePage",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithAnimation",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithBatterySaver",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadFeedbackTests/testReducedMotionShowsFileIconImmediatelyAndDetachedOriginCannotMatch",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadFeedbackTests/testVisibleSidebarUsesActualLibraryTarget",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadLibraryTests/testClearKeepsPausedTransfersAcrossProfilesAndLeavesFilesAlone",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadLibraryTests/testCombinesSavedProfilesAndRoutesRemovalToTheOwner",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadLibraryTests/testNewTransfersSortAheadOfOlderFilesAndKeepTheirStartDateAfterReload",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadLibraryTests/testPrivateLibraryExcludesRegularDownloadsAndNeverPersistsItsRows",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadLibraryTests/testProfileChangesAndTransferChangesInvalidateTheCombinedList",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadTabWebKitTests/testBackgroundDownloadTabClosesWithoutChangingSelection",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadTabWebKitTests/testBlankScriptWindowNavigatedToDownloadCloses",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadTabWebKitTests/testBlankTargetDownloadClosesTabAndCompletesTransfer",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadTabWebKitTests/testDelayedDownloadClosesItsTabAfterSwitchingSpaces",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadTabWebKitTests/testDownloadFromExistingDocumentKeepsItsTab",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadTabWebKitTests/testDownloadFromWrittenBlankDocumentKeepsItsTab",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadTabWebKitTests/testEmptyBlankDocumentWithBackHistoryKeepsItsTab",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadTabWebKitTests/testEmptyBlankDocumentWithForwardHistoryKeepsItsTab",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadTabWebKitTests/testRedirectedBlankTargetDownloadClosesTabAndCompletesTransfer",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DownloadTabWebKitTests/testTransferContinuesAfterItsBlankTabCloses",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DuplicateSearchScoringTests/testDuplicateScoresKeepPerVisitPopularityAndBestHistoricalTitle",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.DuplicateSearchScoringTests/testQueryCacheDoesNotLeakAcrossQueriesEngineScopesOrCommittedChanges",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testBoardAddressResolvesOnlyInTheTabsProfile",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testBoardRenamesUpdateBothTabAndPinnedSidebarTitle",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testCaptureSavesToChosenBoardWithSourceAndOpensItsNativeTab",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testCommandPaletteOffersEaselCreationAndLibraryInAnOrdinaryWindow",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testEaselMovesToAnotherSpaceAndSurvivesStashedSpaceSave",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testExplicitNavigationLeavesNativeCanvasAndCanReturnToItsPinnedHome",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testMalformedNativeAddressesAreNotLoadedByWebKit",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testNativeCanvasIgnoresWebpageCommandsWithoutCreatingAWebView",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testOpeningAndRestoringAnEaselKeepsNativeContentAndTheBoardAddress",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testPrivateTabsCannotOpenPersistentEaselContent",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testProfileMoveCannotStrandLocalEaselBoards",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTabTests/testRealSessionAndSpaceWritersPreserveEaselTabsFoldersAndSelection",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testAnnotationUsesExistingObjectsAndPreservesCaptureAcrossUndoAndReload",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testCanvasObjectsSurviveSaveExportAndImport",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testCaptureAndLinkControlsRemainClickableThroughThePointerSurface",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testCaptureImportPreservesNativePixelsRatherThanCanvasThumbnail",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testCustomColorsValidateAndSurviveImport",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testDrawingToolsKeepTheDraggedPositionInsteadOfViewportInsertionPoint",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testEveryResizeCornerKeepsTheOppositeCornerAnchored",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testExcalidrawHandwrittenFontIsBundledAndRegistersWithCoreText",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testFailedDeletionKeepsTheBoardAndUndoHistory",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testFailedSaveReturnsFailureAndPreservesCommittedContent",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testFractionalResizeKeepsBoundaryPointsValid",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testInvalidOpacityAndRoughnessDoNotReplaceTheSavedBoard",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testInvalidShapeStyleCannotReplaceSavedBoard",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testInvalidTextSizeCannotReplaceSavedBoard",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testLegacyTextSizeMatchesTheSelectedObjectControls",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testLiveNavigationHonorsHTTPSPolicyAndPreventsDowngradeLoops",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testLiveSourceChangesReloadButOrdinaryRerendersKeepNavigation",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testNewItemsFollowTheVisibleCanvasAndStayWithinItsBounds",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testObjectMovementUsesScreenTranslationAtEveryZoom",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testObjectSurfaceAcceptsInteriorHitsButEditingTextKeepsItsEditor",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testOldItemsDecodeWithoutTextSize",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testPNGExportIncludesItemsAtTheFarCanvasEdge",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testPointerDragUsesWindowCoordinatesAndCommitsOnce",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testRemovedCapturesReleaseTheirLiveViewSlots",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testResizeClampsAtCanvasEdgesAndScalesArrowPoints",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testRoundedDiamondSoftensAllFourCorners",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testSingleClickSelectsAndOnlyDoubleClickEdits",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testTextToolUsesTheDraggedBoxAndKeepsItOnCanvas",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.EaselTests/testZeroOpacityHidesTheEntireNoteInPNGExport",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testEscapedIdentifierPreservesClassicStrictFailure",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testLaunchClearsCrashStageBeforeAnyInstallationWasAccepted",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testLaunchPreservesRevisionsWhenIndexIsMissingCorruptOrRetainedForRecovery",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testLaunchSweepDoesNotFollowRevisionSymlinks",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testLaunchSweepsOnlyUnreferencedInactiveRevisionsForThisProfile",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testOnlyReportedRuntimeScriptErrorsAreNonblocking",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testPageScriptErrorDoesNotRejectWorkingBackgroundAndPopup",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testRemovalAfterCacheReplyCannotLeaveAnUntrackedLoadedContext",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testThrowingAcceptedWorkerRestoreLeavesVisibleFailureAndRetainsAcceptedCode",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testThrowingWorkerInstallFinishesAndDiscardsCandidate",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testThrowingWorkerUpdateFinishesAndRetainsAcceptedVersion",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testValidWorkerInstallAndRestoreComplete",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionBackgroundStartupTests/testVersionBumpedThrowingWorkerUpdateFinishesAndRetainsAcceptedVersion",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionCompatibilityTests/testApprovedContentScriptExecutesOnlyInItsProfileAndMatchingOrigin",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionCompatibilityTests/testBlockingWebRequestIsDisclosedEvenWhenWebKitRecognizesThePermission",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionCompatibilityTests/testDeletingProfileRemovesOnlyItsExtensionIdentities",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionCompatibilityTests/testLocalStorageAndRuntimeIdentitySurviveHostRestore",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionCompatibilityTests/testMV2BackgroundAndMV3WorkerMessagingStorageAndAction",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionFilterBridgeTests/testActualUBlockPackageUsesItsOwnCacheDecoderAndUserFilters",
+      "outcome": "skipped",
+      "skipReason": "Opt-in actual uBlock package fixture; synthetic compatibility remains required"
+    },
+    {
+      "test": "VaneTests.ExtensionFilterBridgeTests/testChromeAlarmCallbacksPreserveTheRealNamedAlarm",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionFilterBridgeTests/testDerivedNavigationTargetsUseTheActualOpenerTabIdentity",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionFilterBridgeTests/testRestrictedGrantsInvalidTrustAndHostRestoreCannotLeaveGlobalRulesAttached",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionFilterBridgeTests/testSelectedListsUserFiltersTrustedSitesAndDisableAffectOnlyOwningProfile",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testBrokenUpdateKeepsAcceptedCodeAndRecoverableConfiguration",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testConcurrentBackgroundInstallsDoNotOverwriteIdentities",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testDeclinedUpdateKeepsActiveContextAndOldApproval",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testDisableClosesOwnedOptionsAndIgnoresStaleControls",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testDisableSurvivesRestoreAndEnablePreservesIdentity",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testEmptyActionPopupIsValidForMV2AndMV3",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testExtensionPageURLsUseURLPathsInsteadOfLiteralFilenames",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testInvalidManifestEntryFailsBeforeConsent",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testManifestChangeDuringReviewCannotActivateUnreviewedCode",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testMissingContentScriptFailsBeforeConsentOrActivation",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testMovedDisabledFolderKeepsItsStateIdentityAndConsent",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testPinningAnotherExtensionPreservesInactivePins",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testRemovalDeletesAssociatedUnresolvableBookmarkOnly",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testRemovalDuringUpdateReviewCannotReactivateOrOverwriteConsent",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testRemovalOfFailedFolderDeletesIdentityConsentPinsAndDisabledState",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testResourceEscapingFolderFailsBeforeConsent",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagementTests/testRevokingAdditionalAccessPreservesManifestGrants",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagerModelTests/testAttentionCanIncludeEnabledOrDisabledExtensions",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagerModelTests/testCountsReflectTheProfileCollectionEvenWhenSearchHasNoResults",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagerModelTests/testSearchFindsInactiveMetadataAndFoldsCaseAndDiacritics",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ExtensionManagerModelTests/testSelectionClearsWhenFilteredOrRemovedAndPreservesVisibleSelection",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavoriteIconPaletteTests/testMissingMonochromeAndTemplateIconsUseInterfaceInk",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavoriteIconPaletteTests/testMulticolorLogoRetainsDistinctColorsInArtworkOrder",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavoriteIconPaletteTests/testOnlyOpenFavoriteHasColoredOutlineAndStrongerFill",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavoriteIconPaletteTests/testRedLogoIgnoresWhiteDetailsAndTransparentPadding",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavoriteIconPaletteTests/testTranslucentBrandColorIsNotMistakenForDarkInk",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouriteDragTests/testDroppedLinkLandsBesideTileAndKeepsCurrentPage",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouriteDragTests/testFavouriteLandingMovesRegularSplitTogetherButFavouriteTileIndependently",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouriteDragTests/testFirstFavouriteMovesExistingTabWithoutDuplicatingIt",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouriteDragTests/testGridGapDropAddsFavouriteAndTileCanMoveBackToLists",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouriteDragTests/testIncomingLinkRejectsExecutableAndProfileLocalAddresses",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouriteDragTests/testPreviewSlotCommitsSameOrderWithoutMutatingDuringHover",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouriteDragTests/testTilePayloadExportsPageLinkAndKeepsInternalIdentity",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouritePreviewHoverTests/testBriefHoverDoesNotOpenAndTransferKeepsCardOpen",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouritePreviewHoverTests/testKeyboardOpeningStaysUntilEscapeAndDismissCancelsDwell",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouritePreviewSizingTests/testLoadingNoticesAndResultsKeepTheSameCompactShellAcrossServices",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouritePreviewSizingTests/testLongResultsKeepTheSameScrollableShell",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouriteSessionFingerprintTests/testGoogleRotationAndExpiryRefreshKeepSessionButReplacementAndDeletionRetireIt",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouriteSessionFingerprintTests/testLoggedInFlagAloneCannotAuthorizeSessionCacheReuse",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouriteSessionFingerprintTests/testLookalikeHostsCannotSupplySessionProof",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FavouriteSessionFingerprintTests/testSessionCacheIsBoundToProfileAccountRouteAndSelectionCookies",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel03SearchTests/testAsyncInsertionsKeepSelectedResultPastTheDisplayCap",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel03SearchTests/testFieldTakesFocusOnMountAndDoesNotStealItAfterRemoval",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel03SearchTests/testHostedAddressPaletteSelectsSeedAndKeepsTypingFocus",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel03SearchTests/testLateSuggestionsReuseLayoutAndPreserveArrangement",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel03SearchTests/testRecentTabsMatchStableFullSortAcrossLargeCountsAndCaps",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel03SearchTests/testRetiringFieldCannotTakeFocusDuringDismissal",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel03SearchTests/testSelectedCompletionSurvivesHistoryCappingAndDeduplication",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel03SearchTests/testSharedTabRowsRetainTheirIntendedWindow",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel03SearchTests/testTabSnapshotIgnoresProgressAndTracksResultContent",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel04PreparationTests/testIntentSeparatesPreparationFromOpeningAndCancelsSweeps",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel04PreparationTests/testPrivateDisabledAndBatterySavingPreparationNeverLoads",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel04PreparationTests/testPromotionAndQuickReturnReusePreparationWithoutRestart",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel04SessionTests/testPreparationCannotSurviveSessionInvalidationOrReplaceAnotherOwnersReply",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel05ArchiveSearchTests/testCancelledPreparationAndProfileOwnedIdentity",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel05ArchiveSearchTests/testLargeCollectionSearchAndMutationDoNotReuseOldCache",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel05WindowContinuityTests/testBookmarkRefreshAndReopenRetainHostButProfileChangeReplacesIt",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel05WindowContinuityTests/testHistoryQueriesAndLiveMutationKeepTheNativeFieldEditor",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel05WindowContinuityTests/testHistoryReopeningRetainsHostButProfileChangeReplacesIt",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel05WindowContinuityTests/testRapidBookmarkQueriesAndRefreshKeepTheNativeFieldEditor",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel05WindowContinuityTests/testRefreshingPopulatedWindowsPreservesScrollHostsAndOffsets",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel06ManagementTests/testIdenticalProgressCallbacksDoNotInvalidateTheLibraryAgain",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel06ManagementTests/testUnknownLengthProgressStillCapturesWrittenBytes",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel08FindTests/testCancelledTypingDoesNotSelectOrPublishMatches",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel08FindTests/testFreshTypingBurstSelectsOnlyLatestQuery",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.Feel08FindTests/testSameURLReplacementRejectsOldFindResult",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FirstLaunchTests/testActualLogoAndScreenshotsAreBundledAndReadable",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FirstLaunchTests/testAIIsOptInAndOnboardingExplainsItBeforeImport",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FirstLaunchTests/testExistingInstallationSkipsWelcomeWithoutChangingBrowsingData",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FirstLaunchTests/testFreshInstallationResumesUntilFinishedThenNeverRepeats",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FirstLaunchTests/testLegacyInstallationSkipsWelcomeAndIsolatedInstallationIgnoresIt",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FirstLaunchTests/testMissingDirectoryIsFreshButUnreadableStorageIsNot",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FolderTraversalIndexTests/testCollapsedLiveArrivalsAndLockedDescendantsRetainVisibilityRules",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FolderTraversalIndexTests/testCyclesAndMissingParentsTerminateAndKeepProtectedRowsLocked",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.FolderTraversalIndexTests/testLargeShallowShapeUsesIndexedAncestry",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubProductionSignOutTests/testProductionSignOutDeletesRenewalSuccessorAfterWaitingForLock",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubProductionSignOutTests/testProductionSignOutPreservesReplacementSignInForSameAccount",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testConcurrentFoldersShareOneRenewal",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testCredentialRemovedDuringRequestCannotBeResurrected",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testEarly401RenewsAndRetriesExactlyOnce",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testExpiredRefreshTokenAndMissingSecretRetainCredential",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testFailedKeychainWriteDoesNotUseUnpersistedAccessToken",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testGrantKeepsExpiryAndRefreshTokenAcrossStoredRoundTrip",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testIncompleteOrErrorGrantsAreRejected",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testKeychainWriteRetriesRotatedPairWithoutSpendingOldRefreshToken",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testLegacyPATAndNonexpiringOAuthStillWork",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testOfflineRenewalRetainsPairAndCanRetry",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testRealFolderFetchRenewsBeforeSendingExpiredToken",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testRefreshReplyRequiresCompleteRotatingPair",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testRefreshRequestUsesFormBodyAndEscapesSecrets",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testRenewalPersistsRotatedPairBeforeReturningAccessToken",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testReplacementDuringRequestWinsOverRotatedOldToken",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testSeparateCoordinatorsRecheckCredentialAfterFileLock",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testSignOutDuringRenewalCompletesAndLateResponseCannotReconnect",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GitHubRenewalTests/testUnavailablePostRotationReadKeepsNewPairForPersistenceRetry",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GlobalEaselLibraryTests/testAggregatesSavedProfilesWithDistinctOwnerIdentitiesAndGlobalOrdering",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GlobalEaselLibraryTests/testExistingBoardResolutionAndDeletionUseTheOwnerWithCollidingBoardIDs",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GlobalEaselLibraryTests/testObservesRepositoryEditsAndProfileCreationRenameAndDeletion",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.GlobalEaselLibraryTests/testReportsAndRetriesErrorsForOnlyTheAffectedProfile",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testAcceptedCSVBatchBlocksLifecycleDrainUntilAllInjectedSavesComplete",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testAcceptedImportIntentDrainsAcrossPreServiceAwaitAndPauseRejectsNewIntent",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testArcImportedTitlesAwaitTheSessionLaneWithoutBlockingInputActor",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testBoundedSourceReadRejectsBeforeParsingOrCredentialWrites",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testCancellationRollsBackAndRetainsConcurrentNormalNavigation",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testCancelledArcCredentialStageNeverPublishesCookies",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testCommentAndQuotedMarkupDoNotCreateFalseBookmarkTokens",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testCommittedReplayPrefixReconcilesTemporaryIDsBeforeFailedSuffixEdits",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testCSVParserHonorsWorkerCancellationBeforeAnyCredentialSave",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testFailedAtomicImportRollsBackBothCategoriesAndStillReplaysNavigation",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testFailedReplayRetainsUncommittedSuffixForRetryWithoutDuplicatingPrefix",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testForgettingProfileWaitsForCancelledWorkerBeforeRemovingFiles",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testForgettingSQLiteArtifactsIsIdempotentWhenSidecarsAreAlreadyGone",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testHistoryExportReturnsSnapshotCountAndWritesEveryVisit",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testInvalidQueuedEditsRejectBeforeAdmissionAndDoNotBlockNavigationOrRetry",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testLifecyclePauseRejectsNewImportAndDrainsLateAcceptedWrites",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testPasswordCSVReadParseAndInjectedCredentialBatchRunAwayFromUIActor",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testQueuedClearAndFolderEditsKeepOrderWhenImportCreatesTheSameFolderName",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testQueuedDeleteAddAndURLEditAreVisibleToFollowingToggle",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testRepeatedUnclosedAnchorsRejectWithoutRepeatedSuffixScanning",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testReplayTerminalNameConflictReportsRejectionAndStillDrainsHistory",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testUnclosedQuotedAttributeRejectsWithoutRepeatedSuffixScanning",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.ImportWorkerTests/testWorkerLockWaitLeavesActorAvailableAndReplaysNavigationAndBookmarkEdits",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testClosingClickedPinKeepsOutlineHiddenAndKeyboardActivationRestoresIt",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testDeferredPageFocusDoesNotTakeFocusFromNewPalette",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testDisabledSidebarControlLeavesKeyboardNavigationAndRejectsActivation",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testF6EndpointRejectsWrongOwnerAndUnavailableTargets",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testF6LeavesTheLocalEaselForBrowserControls",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testF6MountedPillLeavesPageBeforeQueuedMainWork",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testF6MountedPillRoutesSpaceToAddressAtOriginalDeadline",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testF6MovesBetweenPageAndBrowserControls",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testF6SharedBrowserHostCommitsExactAddressAndNativeActions",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testFirstSearchResultReceivesFocusWhenTabIsCreatedOnNextTurn",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testLittleAddressEndpointRemainsAvailableWithoutSidebar",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testOpeningFindAgainReturnsFocusToExistingFindField",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testOptionLetterShortcutLeavesTextEditingWithTheField",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testPageFocusWaitsForDismissedFieldToLeaveTheWindow",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testPageFocusWaitsForPageToMountAfterDismissal",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testPaletteDismissalReturnsFocusWhenFindRemainsOpen",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testSearchResultHandsFocusFromOldPageToNewTab",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testShadowRootEditorKeepsCommandArrowForItsCaret",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testSidebarRowCanBeFocusedAndActivatedWithoutPointer",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testWebsitePriorityDoesNotRunBrowserThroughMenuFallback",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.KeyboardAccessibilityTests/testWebsitePriorityStillRunsWhileBrowserFieldHasFocus",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LibraryPreparationContinuityTests/testScrolledLibraryRoundTripKeepsPopulatedNeighbourPrepared",
+      "outcome": "skipped",
+      "skipReason": "Requires interactive Library presentation"
+    },
+    {
+      "test": "VaneTests.LibrarySpaceCatalogRenderingTests/testSavedTodayWaitsForCurrentProtectionWhileLiveOwnerRowsRemainAuthoritative",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LibrarySpaceCatalogRenderingTests/testStandalonePanelRendersItsCustomEnvironmentManagersSpaces",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LinkContextMenuTests/testEveryOpeningActionKeepsItsCapturedURLAndSplitCannotExceedCapacity",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LinkContextMenuTests/testImageAndSelectedTextActionsSurviveLinkMenuUpdate",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LinkContextMenuTests/testLateContextReplyRebuildsMenuAndClearingContextRestoresWebKitItems",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LinkContextMenuTests/testNonLinkMenuIsUntouched",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LinkContextMenuTests/testNormalLinkMenuMatchesReferenceWithoutDuplicateWebKitActions",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LinkContextMenuTests/testSaveActionUsesCapturedURLWithoutNavigating",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LinkContextMenuTests/testSaveFilenameKeepsExtensionAndHonorsServerFilename",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LinkContextMenuTests/testSaveMenuCapturesAnchorDownloadFilename",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LinkSplitTests/testOpeningAWebpageLinkSplitsBesideItsSourceAndFullSplitCreatesNoTab",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LiveFolderArrivalTests/testArrivalSurvivesSaveMappingButNeverLeaksThroughLocksOrAncestors",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LiveFolderArrivalTests/testCollapsedFolderShowsOnlyArrivalsUntilOpened",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.LiveFolderArrivalTests/testRestoringArrivalDoesNotExposeOlderDuplicateURL",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testAutomaticCustomPiPReturnsInlineWithoutPausing",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testClosingTabRemovesCustomPiPWindow",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testCollapsedInlineVideoStillGetsAVisiblePiPHost",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testCollapsedPiPKeepsItsVideoInsteadOfAPlayingMainFrame",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testContentProcessTerminationRemovesOnlyItsCustomHost",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testCustomPiPMinimizeButtonKeepsVideoPlaying",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testCustomPiPUsesNaturalAspectRatherThanInlineCSSBox",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testDecodedPlaybackPauseSeekResumeAndEndUpdateTray",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testDismissStopsPlaybackWithoutClosingTheTab",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testDRMProbeInvalidatesSamplesOnSeek",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testEmbeddedPiPReturnsToItsScrolledFrame",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testEmbeddedPlayerCanPauseAndResumeWithoutStartingMainFrameDecoy",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testEntryOriginMatchesInlineVideoInAFlippedBrowserHost",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testImmediateKeyboardExitAndRepeatedCustomEntryKeepPlayback",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testImmediateReentryDuringReturnDoesNotLeaveAnEmptyPanel",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testInventingDocumentTokensDoesNotBypassMediaMessageThrottle",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testLandingOnSourceTabKeepsTheMinimizedPlayerUntilExplicitlyOpened",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testNavigationClearsPlayingMediaAndFreshDocumentCanPlay",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testNavigationDuringPiPReturnDoesNotRevealReplacementPage",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testPageInlineExitRemovesCustomHostWithoutPausing",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testPausedTrayKeepsItsPlayerWhenAnotherFrameStartsPlaying",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testPendingEntryDoesNotReopenAfterPageReturnsInline",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testPiPCommandsControlSelectedVideoAndRejectInvalidSeek",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testPiPControlsHideOutsideVideoAndFollowItsFrame",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testPiPRestoreAnimatesToTheCurrentVideoPositionWithoutPausing",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testPiPUsesAVisibleCustomHostInsteadOfVisibleNativeChrome",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testRestoringSelectedTabKeepsAutomaticPiPEnabled",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testReturningReleasesCollapsedVideoSelectionForAnotherPlayer",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testSessionOnlyPlayerReportsStateAndUsesItsPauseAndPlayHandlers",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testSwiftPiPControlsKeepEmbeddedSourceAndRejectRemovedFrame",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaControlsWebKitTests/testTabSelectionDuringPiPReturnIsNotOverridden",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaTraySpaceTests/testOpeningPlayerInParkedProfileReturnsToItsStashedSpace",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.MediaTraySpaceTests/testPausedPlayerRemainsVisibleInAnotherProfileInTheSameWindow",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeCoveredSidebarLayoutTests/testNativeLandingKeepsTheCoveredLiveViewportAtRest",
+      "outcome": "skipped",
+      "skipReason": "Requires a native landing"
+    },
+    {
+      "test": "VaneTests.NativeFixtureActivationPolicyAdmissionTests/testDefaultPolicyDriftDuringStartupStillFailsImmediately",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureActivationPolicyAdmissionTests/testForeignOwnerIsRejectedBeforeAnyPolicyRequest",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureActivationPolicyAdmissionTests/testPermanentPolicyMismatchCannotAdmitFixtureBody",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureActivationPolicyAdmissionTests/testPolicyDriftAfterAdmissionStillFailsImmediately",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureActivationPolicyAdmissionTests/testPolicyRequestPendingBeforeEntryCannotReceiveANewFiveSecondBudget",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureActivationPolicyAdmissionTests/testRequestedPolicyIsObservedBeforeFixtureBodyIsAdmitted",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureRetirementManifestTests/testCompleteManifestMustMatchTokenAndSameHostNamespace",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureRetirementManifestTests/testDefaultAndIncognitoProfilesAreRejected",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureRetirementManifestTests/testEmptyRetirementDoesNotAttributeAmbientRegistryChangesToItsOwnRequest",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureRetirementManifestTests/testNonisolatedAndUnnormalizedNamespacesAreRejected",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureRetirementManifestTests/testOnlyExplicitOwnedDerivedIdentifierIsAccepted",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureRetirementManifestTests/testPhysicalManifestPathUsesSamePOSIXCanonicalizationAsWrapper",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureRetirementManifestTests/testRetirementDeletesOnlyOwnedExistingBackendAndPreservesUnrelatedStore",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureRetirementManifestTests/testSuccessfulRemovalCallbackStillRequiresObservedRegistryAbsence",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeFixtureRetirementManifestTests/testUnrelatedDisappearanceStillFailsWhenRetirementRemovesAnOwnedBackend",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testBlockedKeychainMetadataLeavesMainActorAvailable",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testCancelledSecretReadDoesNotPublishLateSecret",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testChangingInputDiscardsSecretWithinSameDocument",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testConfirmationWorkerKeepsDraftAndIgnoresDismissedOffer",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testCrossOriginNavigationPermanentlyRevokesDelayedSubmission",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testDelayedSubmittedSaveOfferSurvivesSameOriginRedirect",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testDismissalDiscardsMetadataBeforeItReopensChooser",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testExplicitChosenAccountSurvivesChooserBlurWhileReadingSecret",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testNativeWorkerCleanupReleasesExtensionControllerAndStore",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testNavigationDiscardsSecretBeforeItReachesWebKit",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testNewerSubmissionWinsWhileOldReadWaits",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testRejectedDelayedSubmissionDoesNotBecomeSaveOffer",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testViewSourceEscapesMarkupAndPreservesUnicode",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativePageWorkTests/testViewSourceRejectsOversizedInputBeforeEscaping",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeSidebarMotionTests/testBatterySaverMovesReorderedNativeRowImmediately",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeSidebarMotionTests/testClipScrollingDoesNotReplayThePreviousStructuralAnimation",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeSidebarMotionTests/testDisabledTransactionMovesReorderedNativeRowImmediately",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeSidebarMotionTests/testReduceMotionPolicySuppressesAnInheritedPlacementAnimation",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.NativeSidebarMotionTests/testReorderedRowTravelsContinuouslyInsideItsOriginalOwner",
+      "outcome": "skipped",
+      "skipReason": "Normal-motion interpolation is unavailable while system Reduce Motion is enabled"
+    },
+    {
+      "test": "VaneTests.NativeSidebarMotionTests/testStationaryRowDoesNotTravelWhenAnotherMemberMovesBeforeItsOwner",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testCaptureCancelsOnEscapeTabSwitchAndNavigation",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testCaptureIsDiscoverableAndHasArcsShortcut",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testCaptureModeDoesNotForwardPageScrollingKeys",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testCaptureSelectionAndResultCloseWhenTheirProfileIsParked",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testCaptureShortcutMatchesTheShiftedKeyboardEventAndNativeMenu",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testElementSelectionUsesVisibleCoordinatesAtPageZoom",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testFullPageCaptureHonorsPageZoom",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testFullPageCaptureIncludesOffscreenPixelsAndPreservesViewport",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testFullPageEntryPointPresentsActionsAndNavigationDismissesThem",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testFullPageRefusesAnUnboundedBitmap",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testNavigationWhileEditingClosesTheEditorAndCannotResurrectTheCapture",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testReturnCapturesPageAndOpensCompactActionsWithoutASheet",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testSelectionWorksInEveryDragDirectionAndClipsToPage",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageCaptureTests/testSnapshotCropsScrolledZoomedPageToActualPixels",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageRenderingTests/testBatterySaverCapsPopupEvenWhenOpenerAllowsHighRefresh",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageRenderingTests/testBatterySaverKeepsDefaultFrameRateForNewTabs",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PageRenderingTests/testNormalTabAllowsDisplayRefreshRate",
+      "outcome": "skipped",
+      "skipReason": "Reduce Motion is enabled"
+    },
+    {
+      "test": "VaneTests.PageRenderingTests/testPopupAllowsDisplayRefreshRateWithoutChangingOpenerPreferences",
+      "outcome": "skipped",
+      "skipReason": "Reduce Motion is enabled"
+    },
+    {
+      "test": "VaneTests.PaletteResultRenderingTests/testHoverStaysInResultSlotWhileKeyboardSelectionAndForgetRemainLive",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PaletteResultRenderingTests/testNativeHoverClearsWhileActualPaletteResultsScroll",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PaletteResultRenderingTests/testNativeHoverKeepsForgetKeyboardAndSlotReuseWhileScrollClearsPointerFeedback",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordClipboardTests/testExpiryClearsOnlyTheOwnedUnchangedClipboard",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordClipboardTests/testNewClipboardContentSurvivesEvenIfTheTextIsIdentical",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordKeychainTests/testEditingUpdatesOwnedItemInPlaceAndRefusesCollision",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordKeychainTests/testEnumerationFailureIsActionableAndDoesNotBecomeEmptyList",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordKeychainTests/testNewSaveCannotOverwriteAnExistingAccount",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordKeychainTests/testReadFailureIsNotAMissingCredential",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordManagerSearchTests/testNeverSavedSearchUsesTheSameWhitespaceRules",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordManagerSearchTests/testSearchCombinesSiteAndUsernameAndIgnoresExtraWhitespace",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordManagerSearchTests/testSortingUsesAccountNamesAndLastUseWithStableWebsiteTies",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testDeepFocusedUnrelatedInputRefusesCachedShadowLogin",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testExhaustedShadowTraversalRefusesFocusedFormWithoutUsingPartialControls",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testExplicitStepAssociationRequiresUniqueSameTreeRememberedIdentity",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testExplicitStepIdentityReplacementInvalidatesChooserTarget",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testExternalNativeFormAssociationCannotBypassComposedFormActions",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testExternalNativeFormAssociationsCannotExceedTraversalBudget",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testExternalNativeGenerationRechecksComposedFormBeforeEachWrite",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testFocusedShadowControlsCannotBypassOuterFormAction",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testFocusFreeOrdinaryLoginBaselineFillsAndCapturesWithoutSubmitting",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testLateAttachedNestedRootsAndFieldsNotifyDiscoveryWithoutLightDOMMutation",
+      "outcome": "failed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testLateRootFocusAdmitsImmediateNonComposedSubmission",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testNativeExternalUsernameRetainsItsPrecedingOrderWithShadowDiscovery",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testNestedOpenShadowLoginFillsComposedEventsAndCapturesLocalSubmit",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testRetainedSeparateUsernameFormExplicitlyLabelsNewPasswordStep",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testShadowClosedRootsAmbiguousPasswordsAndUnsafeActionsRefuse",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testShadowFormHostHonorsOuterActionAndSlottedVisibility",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testShadowGenerationRevalidatesFieldAndHostAfterComposedInput",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testShadowHostedOpaqueFrameCannotEnterBridge",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testShadowHostedSameOriginFrameRequiresDeepFrameFocus",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testShadowHostVisibilityAndInertBoundariesRefuseWriting",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testShadowLocalScrollDismissesFocusedChooser",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testShadowRootReplacementAndNavigationRefuseOldTarget",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testShadowSubmitRetractionAndPageLifecycleTeardown",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testShadowUsernameEventCannotReplacePasswordOrMoveIntoHiddenHost",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testSlottedControlCannotBypassItsShadowFormAction",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testSlottedUsernamePairsByComposedOrderBeforeShadowPassword",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PasswordShadowAutofillTests/testWindowScrollStillDismissesShadowChooser",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PinnedTabReturnTests/testOrdinaryReturnDoesNotCreateTodayTab",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PinnedTabReturnTests/testSeparateAtHomeOrOnTodayDoesNotCreateDuplicate",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PinnedTabReturnTests/testSeparateRestoresPinAndOpensAwayURLAtHeadOfToday",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PreviewLoadingPerformanceTests/testBriefHoverDoesNotVisitDestinationButSettledHoverDoes",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PreviewLoadingPerformanceTests/testCachedReplacementUnloadsThePreviousPreviewDocument",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PreviewLoadingPerformanceTests/testCancellationUnloadsThePreviewDocument",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PreviewLoadingPerformanceTests/testPreviewHostCannotAppearOrInterceptClicksWhenMovedOntoScreen",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PreviewLoadingPerformanceTests/testProfileReplacementReleasesPreviousPreviewViews",
+      "outcome": "passed",
+      "skipReason": null
+    },
+    {
+      "test": "VaneTests.PreviewLoadingPerformanceTests/testRetiredBlankNavigationAndFrameCannotMutateNewPreview",
+      "outcome": "failed",
+      "skipReason": null
+    }
+  ],
+  "targets": [
+    "VaneTests.PasswordShadowAutofillTests/testLateAttachedNestedRootsAndFieldsNotifyDiscoveryWithoutLightDOMMutation",
+    "VaneTests.PreviewLoadingPerformanceTests/testRetiredBlankNavigationAndFrameCannotMutateNewPreview"
+  ]
+}

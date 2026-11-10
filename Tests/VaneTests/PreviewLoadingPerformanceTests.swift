@@ -65,6 +65,20 @@ private final class PreviewServer: @unchecked Sendable {
 }
 
 @MainActor final class PreviewLoadingPerformanceTests: XCTestCase {
+    private func replacementState(_ web: WKWebView, _ previews: Previews, paths: [String]) -> String {
+        let owner = Mirror(reflecting: previews).children.compactMap { field -> String? in
+            guard let key = field.label, ["latest", "committed", "navigation", "metadataDocument", "showing"].contains(key) else { return nil }
+            return "\(key)=\(String(describing: field.value))"
+        }.joined(separator: " ")
+        return [
+            "web=\(ObjectIdentifier(web)) url=\(web.url?.absoluteString ?? "nil") loading=\(web.isLoading)",
+            "nativeTitle=\(previews.current?.title ?? "nil") webTitle=\(web.title ?? "nil") paths=\(paths)",
+            "appRunning=\(NSApp.isRunning) launched=\(NSRunningApplication.current.isFinishedLaunching) active=\(NSApp.isActive)",
+            "windowVisible=\(web.window?.isVisible ?? false) policy=\(web.configuration.preferences.inactiveSchedulingPolicy.rawValue)",
+            owner
+        ].joined(separator: " ")
+    }
+
     private var previousBatteryMode: BatterySaver.Mode?
     override func setUp() async throws {
         TestEnvironment.prepare()
@@ -236,7 +250,9 @@ private final class PreviewServer: @unchecked Sendable {
         let nextDeadline = ContinuousClock.now + .seconds(8)
         while web.url != base.appendingPathComponent("final") || web.isLoading
                 || previews.current?.title != "Current preview" {
-            guard ContinuousClock.now < nextDeadline else { return XCTFail("Replacement preview did not load") }
+            guard ContinuousClock.now < nextDeadline else {
+                return XCTFail("Replacement preview did not load: \(replacementState(web, previews, paths: server.requestedPaths))")
+            }
             try await Task.sleep(for: .milliseconds(20))
         }
         let pageHandler = try await web.evaluateJavaScript("typeof window.webkit?.messageHandlers?.vanepreviewmeta") as? String

@@ -1,0 +1,56 @@
+name: Recorded shadow and preview history diagnostic
+on:
+  push:
+    branches: [codex/shadow-preview-fullprefix-20261111]
+permissions:
+  contents: read
+jobs:
+  recorded-history:
+    runs-on: macos-26
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Preserve exact source and platform identity
+        run: |
+          set -euo pipefail
+          PREFIX_EVIDENCE="$RUNNER_TEMP/vane-shadow-preview-prefix"
+          mkdir -p "$PREFIX_EVIDENCE"
+          echo "PREFIX_EVIDENCE=$PREFIX_EVIDENCE" >> "$GITHUB_ENV"
+          {
+            git rev-parse HEAD
+            git diff --exit-code 43f819b2fa3a3cf5141b9c11c79a0bb37c0d8ac3 HEAD -- Sources Package.swift || exit 1
+            env | sort | grep -E '^(ImageOS|ImageVersion|RUNNER_OS|RUNNER_ARCH)='
+            sw_vers
+            swift --version
+            xcodebuild -version
+            xcrun --show-sdk-version
+            shasum -a 256 Sources/Vane/PasswordAutofill.swift Sources/Vane/Previews.swift
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' /System/Library/Frameworks/WebKit.framework/Resources/Info.plist || true
+          } 2>&1 | tee "$PREFIX_EVIDENCE/platform.log"
+      - name: Build exact history with outcome-only diagnostics
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          swift build --build-tests --disable-index-store 2>&1 | tee "$PREFIX_EVIDENCE/build.log"
+          swift test list --skip-build > "$PREFIX_EVIDENCE/inventory.txt"
+      - name: Separate original smoke then one recorded primary prefix
+        timeout-minutes: 26
+        run: python3 scripts/diagnose-shadow-preview-prefix.py --inventory "$PREFIX_EVIDENCE/inventory.txt" --output "$PREFIX_EVIDENCE"
+      - name: Preserve complete evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: shadow-preview-recorded-prefix
+          path: |
+            ${{ runner.temp }}/vane-shadow-preview-prefix/platform.log
+            ${{ runner.temp }}/vane-shadow-preview-prefix/build.log
+            ${{ runner.temp }}/vane-shadow-preview-prefix/inventory.txt
+            ${{ runner.temp }}/vane-shadow-preview-prefix/selection.json
+            ${{ runner.temp }}/vane-shadow-preview-prefix/smoke.log
+            ${{ runner.temp }}/vane-shadow-preview-prefix/prefix.log
+            ${{ runner.temp }}/vane-shadow-preview-prefix/result.json
+            ${{ runner.temp }}/vane-shadow-preview-prefix/retirement-manifests
+          if-no-files-found: error
+          retention-days: 7
