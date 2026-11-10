@@ -33,6 +33,21 @@ import XCTest
             SidebarRows.Row(visible: Pins.Visible(entry: .init(row: .folder(Folder(name: "Motion \(index)"))), depth: 0), tab: nil)
         }
     }
+    private func withApplicationLoop(_ body: @MainActor () async throws -> Void) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        // The body's fixture defers run before the owned AppKit loop closes.
+        do { try await body() } catch { failure = error }
+        do { try await loop.close() } catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Native motion fixture loop cleanup failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
     private func owner(of field: NSView, in container: NSView) -> NSView? {
         var current: NSView? = field
         while let candidate = current, candidate.superview !== container { current = candidate.superview }
@@ -50,9 +65,36 @@ import XCTest
         window.displayIfNeeded()
         CATransaction.flush()
     }
-    private func admitPresentationSampling(sentinel: NSView, root: NSView, window: NSWindow) async throws {
-        display(window)
-        try await Task.sleep(for: .milliseconds(80))
+    private func admitPresentationSampling(sentinel: NSView, root: NSView, window: NSWindow,
+                                          field: NSView, host: NSView, container: NSView) async throws {
+        XCTAssertTrue(NSApp.isRunning, "Native compositor sampling requires an owned AppKit loop")
+        try await compatibilityWait {
+            if NSApp.isHidden { NSApp.unhide(nil) }
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            self.display(window)
+            guard NSApp.isRunning, NSApp.isActive, !NSApp.isHidden,
+                  window.isKeyWindow, NSApp.keyWindow === window,
+                  window.isVisible, window.occlusionState.contains(.visible),
+                  window.contentView === root, root.window === window,
+                  sentinel.window === window, field.window === window, host.window === window,
+                  container.window === window, self.owner(of: field, in: container) === host,
+                  !field.isHiddenOrHasHiddenAncestor, !host.isHiddenOrHasHiddenAncestor,
+                  !field.visibleRect.intersection(field.bounds).isEmpty,
+                  host.layer?.presentation() != nil, container.layer?.presentation() != nil,
+                  let fieldLayer = field.layer?.presentation(),
+                  let sentinelLayer = sentinel.layer?.presentation(),
+                  let rootLayer = root.layer?.presentation() else { return false }
+            let presented = fieldLayer.convert(fieldLayer.bounds, to: rootLayer)
+            let model = field.convert(field.bounds, to: root)
+            let marker = sentinelLayer.convert(sentinelLayer.bounds, to: rootLayer)
+            // Admit only the resting initial owner, before starting the sentinel
+            // or the tested row mutation. No desired motion outcome is awaited.
+            return presented.intersection(root.bounds).height > 1
+                && abs(presented.minX - model.minX) < 0.5
+                && abs(presented.minY - model.minY) < 0.5
+                && abs(marker.minX - sentinel.convert(sentinel.bounds, to: root).minX) < 0.5
+        }
         let initial = try presentedRect(sentinel, in: root).minX
         let layer = try XCTUnwrap(sentinel.layer)
         let start = layer.position
@@ -66,17 +108,20 @@ import XCTest
         animation.toValue = NSValue(point: end)
         animation.duration = 0.24
         animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        let began = CACurrentMediaTime()
         layer.add(animation, forKey: "native-motion-admission")
         CATransaction.flush()
         var samples: [CGFloat] = []
+        var elapsed: [CFTimeInterval] = []
         for _ in 0..<8 {
             try await Task.sleep(for: .milliseconds(20))
             display(window)
             samples.append(try presentedRect(sentinel, in: root).minX)
+            elapsed.append(CACurrentMediaTime() - began)
         }
         layer.removeAnimation(forKey: "native-motion-admission")
         guard samples.contains(where: { $0 > initial + 2 && $0 < initial + 78 }) else {
-            XCTFail("Native presentation sampling must observe real intermediate motion; samples=\(samples)")
+            XCTFail("Native presentation sampling must observe real intermediate motion; samples=\(samples) elapsed=\(elapsed) running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow)")
             throw AdmissionError.noIntermediatePresentation
         }
     }
@@ -86,6 +131,10 @@ import XCTest
     /// child offset after jumping the native parent makes this stationary row
     /// visibly travel away and return, which must fail this actual-render gate.
     func testStationaryRowDoesNotTravelWhenAnotherMemberMovesBeforeItsOwner() async throws {
+        try await withApplicationLoop { try await assertStationaryRowDoesNotTravelWhenAnotherMemberMovesBeforeItsOwner() }
+    }
+
+    private func assertStationaryRowDoesNotTravelWhenAnotherMemberMovesBeforeItsOwner() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         var rows = rows(100)
@@ -128,9 +177,10 @@ import XCTest
         owner.reconcile(visible: owner.convert(scroll.contentView.bounds, from: scroll.contentView))
         display(window)
         try await compatibilityWait { controls.fields[original[41].id]?.value?.window === window }
-        try await admitPresentationSampling(sentinel: sentinel, root: root, window: window)
         let field = try XCTUnwrap(controls.fields[original[41].id]?.value)
         let originalHost = try XCTUnwrap(self.owner(of: field, in: owner))
+        try await admitPresentationSampling(sentinel: sentinel, root: root, window: window,
+                                           field: field, host: originalHost, container: owner)
         let initialRect = try presentedRect(field, in: root)
         XCTAssertGreaterThan(initialRect.intersection(root.bounds).height, 1, "Stationary native row must start in the actual viewport")
         let moving = rows.remove(at: 40)
@@ -153,6 +203,10 @@ import XCTest
     /// rows still but would make a reordered row teleport. Sample the actual
     /// moving native control, through all of its presentation ancestors.
     func testReorderedRowTravelsContinuouslyInsideItsOriginalOwner() async throws {
+        try await withApplicationLoop { try await assertReorderedRowTravelsContinuouslyInsideItsOriginalOwner() }
+    }
+
+    private func assertReorderedRowTravelsContinuouslyInsideItsOriginalOwner() async throws {
         TestEnvironment.prepare()
         let oldMode = BatterySaver.shared.mode
         BatterySaver.shared.setMode(.off)
@@ -163,10 +217,11 @@ import XCTest
         let fixture = Fixture(rows: rows(100))
         defer { fixture.close() }
         try await fixture.admit(row: 40)
-        try await admitPresentationSampling(sentinel: fixture.sentinel, root: fixture.root, window: fixture.window)
         let movingID = fixture.rows[40].id
         let field = try XCTUnwrap(fixture.controls.fields[movingID]?.value)
         let originalOwner = try XCTUnwrap(owner(of: field, in: fixture.owner))
+        try await admitPresentationSampling(sentinel: fixture.sentinel, root: fixture.root, window: fixture.window,
+                                           field: field, host: originalOwner, container: fixture.owner)
         let start = try presentedRect(field, in: fixture.root).minY
         let target = start + fixture.documentDisplacement(from: 40, to: 16)
         let moved = fixture.rows.remove(at: 40)
@@ -207,12 +262,16 @@ import XCTest
     /// boundary. Sample its real native control instead of the policy value.
     func testDisabledTransactionMovesReorderedNativeRowImmediately() async throws {
         TestEnvironment.prepare()
-        try await assertImmediateReorder(disablesAnimations: true, batterySaver: false)
+        try await withApplicationLoop {
+            try await assertImmediateReorder(disablesAnimations: true, batterySaver: false)
+        }
     }
 
     func testBatterySaverMovesReorderedNativeRowImmediately() async throws {
         TestEnvironment.prepare()
-        try await assertImmediateReorder(disablesAnimations: false, batterySaver: true)
+        try await withApplicationLoop {
+            try await assertImmediateReorder(disablesAnimations: false, batterySaver: true)
+        }
     }
 
     private func assertImmediateReorder(disablesAnimations: Bool, batterySaver: Bool) async throws {
@@ -223,10 +282,11 @@ import XCTest
         defer { fixture.close() }
         fixture.configure(Fixture.instant)
         try await fixture.admit(row: 40)
-        try await admitPresentationSampling(sentinel: fixture.sentinel, root: fixture.root, window: fixture.window)
         let movingID = fixture.rows[40].id
         let field = try XCTUnwrap(fixture.controls.fields[movingID]?.value)
         let originalOwner = try XCTUnwrap(owner(of: field, in: fixture.owner))
+        try await admitPresentationSampling(sentinel: fixture.sentinel, root: fixture.root, window: fixture.window,
+                                           field: field, host: originalOwner, container: fixture.owner)
         let start = try presentedRect(field, in: fixture.root).minY
         let target = start + fixture.documentDisplacement(from: 40, to: 16)
         let moved = fixture.rows.remove(at: 40)
@@ -249,6 +309,10 @@ import XCTest
     /// scroll must move its already-mounted controls by the clip delta at once;
     /// it must not replay that old structural motion on the native document.
     func testClipScrollingDoesNotReplayThePreviousStructuralAnimation() async throws {
+        try await withApplicationLoop { try await assertClipScrollingDoesNotReplayThePreviousStructuralAnimation() }
+    }
+
+    private func assertClipScrollingDoesNotReplayThePreviousStructuralAnimation() async throws {
         TestEnvironment.prepare()
         let oldMode = BatterySaver.shared.mode
         BatterySaver.shared.setMode(.off)
@@ -256,9 +320,10 @@ import XCTest
         let fixture = Fixture(rows: rows(100))
         defer { fixture.close() }
         try await fixture.admit(row: 41)
-        try await admitPresentationSampling(sentinel: fixture.sentinel, root: fixture.root, window: fixture.window)
         let field = try XCTUnwrap(fixture.controls.fields[fixture.rows[41].id]?.value)
         let originalOwner = try XCTUnwrap(owner(of: field, in: fixture.owner))
+        try await admitPresentationSampling(sentinel: fixture.sentinel, root: fixture.root, window: fixture.window,
+                                           field: field, host: originalOwner, container: fixture.owner)
         fixture.configure(Transaction(animation: .linear(duration: 1)))
         let start = try presentedRect(field, in: fixture.root).minY
         let documentOrigin = fixture.owner.convert(NSPoint.zero, to: fixture.root).y
