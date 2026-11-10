@@ -6,31 +6,21 @@
 <title>Privacy Policy · Vane</title>
 <meta name="description" content="How Vane stores browser data, handles passwords, makes network requests, and connects to optional services. Your controls and privacy contact.">
 <link rel="canonical" href="https://notnaki.github.io/vane/privacy.html">
-<link rel="icon" href="icon.png">
-<link rel="stylesheet" href="styles.css?v=26">
-<meta name="theme-color" content="#06090d">
-<style>
-.privacy-layout { max-width: 900px; text-align: left; }
-.privacy-layout h1 { font-size: clamp(2.25rem, 7vw, 4rem); }
-.privacy-layout .guide-toc { position: static; max-height: none; margin: 32px 0; padding: 16px; }
-.privacy-layout a { overflow-wrap: anywhere; }
-</style>
-</head>
-<body class="inner-page">
+<link rel="icon" href="icon-dark.png">
+<link rel="stylesheet" href="website.css?v=9">
+<meta name="theme-color" content="#101014">
+
+
+<script src="website.js?v=9" defer></script></head>
+<body class="inner-page website" data-page="privacy">
 <a class="skip-link" href="#main-content">Skip to content</a>
-<header class="site-nav">
-<a class="brand" href="./" aria-label="Vane home"><img src="icon-dark.png" alt="" width="32" height="32"><span class="brand-label">Vane</span></a>
-<nav class="links" aria-label="Main navigation">
-<a href="features.html">Features</a><a href="docs.html">Guide</a>
-<a class="primary" href="download.html" aria-label="Download for macOS">Download<span class="download-platform">&nbsp;for macOS</span></a>
-</nav>
-</header>
+<header class="site-header"><nav class="navigation" aria-label="Main navigation"><a class="brand" href="./" aria-label="Vane home"><img src="icon-dark.png" width="28" height="28" alt=""><span>Vane</span></a><div class="nav-links"><a href="features.html">Features</a><a href="docs.html">Guide</a><a href="https://github.com/notnaki/vane">Source</a></div><button class="site-search-trigger" type="button" data-site-search hidden aria-label="Search the Vane website"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><kbd aria-hidden="true">⌘ K</kbd></button><a class="nav-download" href="download.html">Download <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v15m-6-6 6 6 6-6"/></svg></a></nav></header>
 <main id="main-content" class="privacy-layout"><article class="guide-article">
 <h1>Vane Privacy Policy</h1>
 <p>Effective and last updated: <strong>23 October 2026</strong></p>
 <p>This policy covers the Vane macOS browser and its <a href="https://notnaki.github.io/vane/">project website</a>, maintained by <a href="https://github.com/notnaki">notnaki</a>. It describes the current implementation in this repository. Older releases and third-party builds may behave differently.</p>
 <p>Vane stores your browser library on your Mac. It has no Vane account, hosted browsing-history service, or built-in sync between Macs. Vane does not include app analytics or automatic crash-report uploads. Browsing and the features below still make network requests; local storage does not mean that nothing leaves your device.</p>
-<nav class="guide-toc" aria-label="Privacy policy contents"><a href="#data-stored-on-your-mac">Data stored on your Mac</a><a href="#browsing-searches-and-website-requests">Browsing, searches, and website requests</a><a href="#ai-features">AI features</a><a href="#updates-and-optional-connections">Updates and optional connections</a><a href="#private-browsing">Private browsing</a><a href="#retention-and-your-controls">Retention and your controls</a><a href="#website-diagnostics-and-public-support">Website, diagnostics, and public support</a><a href="#security-changes-and-contact">Security, changes, and contact</a></nav>
+<button type="button" class="guide-find" data-site-search data-search-scope="privacy.html" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>Find something in this policy</button><nav class="guide-toc" aria-label="Privacy policy contents"><a href="#data-stored-on-your-mac">Data stored on your Mac</a><a href="#browsing-searches-and-website-requests">Browsing, searches, and website requests</a><a href="#ai-features">AI features</a><a href="#updates-and-optional-connections">Updates and optional connections</a><a href="#private-browsing">Private browsing</a><a href="#retention-and-your-controls">Retention and your controls</a><a href="#website-diagnostics-and-public-support">Website, diagnostics, and public support</a><a href="#security-changes-and-contact">Security, changes, and contact</a></nav>
 <section id="data-stored-on-your-mac"><h2>Data stored on your Mac</h2>
 <p>Vane keeps history (including URLs, titles, and visit times), bookmarks, tabs, Spaces, settings, download records, saved articles and images, Easels, and recovery copies locally. WebKit manages cookies, website storage, caches, and website sign-ins. Regular profiles separate history, bookmarks, saved passwords, extensions, and website stores; download and media records are shared across regular profiles.</p>
 <p>Saved passwords, AI API keys, and GitHub connection credentials use the local macOS Keychain. Vane does not enable Keychain synchronization for these items. Passwords are used to fill matching HTTPS sign-in forms; submitting a form sends its contents to that website. Vane does not upload your password library to a Vane service.</p>
@@ -71,5 +61,5 @@
 <p>Policy changes will be published here with an updated date; repository history records revisions. For privacy questions or to request help managing your data, contact the maintainer through the <a href="https://github.com/notnaki/vane/issues">GitHub issue tracker</a>. Issues are public: do not include passwords, API keys, tokens, or private browsing details. If a question requires sensitive information, ask for a private contact method before sharing it.</p>
 </section>
 </article></main>
-<footer><a href="./">Vane · Made for the Mac.</a><div><a href="features.html">Features</a><a href="https://github.com/notnaki/vane">Source</a><a href="docs.html">Guide</a><a href="privacy.html" aria-current="page">Privacy</a><a href="https://github.com/notnaki/vane/issues">Feedback</a></div></footer>
+<footer class="site-footer"><a class="brand" href="./"><img src="icon-dark.png" width="28" height="28" alt=""><span>Vane</span></a><nav aria-label="Footer navigation"><a href="features.html">Features</a><a href="docs.html">Guide</a><a href="privacy.html">Privacy</a><a href="https://github.com/notnaki/vane/releases">Release notes</a><a href="https://github.com/notnaki/vane">Source</a></nav></footer>
 </body></html>

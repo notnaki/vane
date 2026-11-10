@@ -43,3 +43,41 @@ updating the source captures, and bump the image query versions in `index.html`,
 
 The website uses brief transitions and disables them with Reduce Motion. No generated
 or reconstructed app interface is used in these assets.
+
+
+## Current website captures — 10 November 2026
+
+The five primary website pages use these actual native captures:
+
+| Capture | Content |
+| --- | --- |
+| `vane-varied-spaces-v1.png` | NASA Science’s Mars page in a lilac Explore Space. |
+| `vane-varied-split-v1.png` | NASA and a Creative Independent interview side by side. |
+| `vane-varied-little-v1.png` | Figma’s homepage in a native Little Vane window. |
+| `vane-command-v1.png` | Vane’s address/search bar over NASA’s Mars page. |
+| `vane-library-v1.png` | Native Library with three disposable demo Spaces. |
+| `vane-home-spaces-v3.png` | Apple’s MacBook Pro page with Apple, GitHub, and Linear favourites and a Figma pin. |
+
+These full, unretouched PNGs were captured from installed Vane 0.1.0 build 612;
+its exact source revision was not verified. Main windows are 2560 × 1680 and
+Little Vane is 2000 × 1400. They preserve transparent native corners, complete
+toolbar controls, and genuine active, resting colored-outline traffic lights.
+The newer pages reference these native files directly without extra CSS corner
+rounding. The older Wikipedia/MDN images and display exports remain historical
+assets and are not referenced by the five primary website pages.
+
+The homepage sidebar keeps the complete native window fixed. Selected controls
+are magnified inside a rounded annotation using a second copy of the same
+image; source pixels are unchanged. Spaces and Split View captures share native
+window bounds, theme, sidebar width, and loaded NASA page; the page responds
+naturally to the split layout.
+
+Captures used isolated disposable profiles in uniquely identified app copies
+with launchers enforcing `VANE_DATA_DIR`. Tracked processes were verified exited
+and their disposable apps/profiles removed. NASA, The Creative Independent,
+Figma, Apple, GitHub, and Linear retain their own branding and content. Their
+appearance demonstrates ordinary browsing and does not imply endorsement.
+
+The self-hosted Cormorant Garamond variable font comes from the Google Fonts
+repository (`ofl/cormorantgaramond`). Its SIL Open Font License is preserved in
+`../fonts/OFL.txt`.
