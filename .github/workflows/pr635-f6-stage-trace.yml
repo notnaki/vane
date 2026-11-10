@@ -1,0 +1,79 @@
+name: PR 635 focused F6 stage trace
+on:
+  push:
+    branches: [codex/pr635-f6-stage-trace]
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: pr635-f6-trace-${{ github.sha }}
+          restore-keys: swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore matching source timestamps
+        run: python3 scripts/ci-source-state.py restore
+      - name: Compile passive diagnostics
+        run: swift build -c debug --build-tests --disable-index-store
+      - name: Run the approved 14-case sequence once
+        env:
+          VANE_F6_STAGE_TRACE: '1'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '120'
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, sys
+          directory = pathlib.Path(os.environ['RUNNER_TEMP'])
+          expected = [
+              'VaneTests.EdgeSidebarScrollContinuityTests/testClickingCurrentSpaceAtCreateEdgeAnimatesTheLiveViewportHome',
+              'VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCancellationAnimatesTheLiveViewportHome',
+              'VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCommitKeepsScrolledViewportUntilFormTakesOver',
+              'VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeNeverShowsAnOutgoingViewportAtTheTop',
+              'VaneTests.EdgeSidebarScrollContinuityTests/testLibraryDiagonalStartupAndMomentumKeepTheClaimedViewportSteady',
+              'VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgeCommitAndCloseRestoreTheScrolledViewport',
+              'VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgePreservesScrolledLiveViewportThroughClaimReversalAndCancel',
+              'VaneTests.EdgeSidebarScrollContinuityTests/testLibraryWithAnActivePageKeepsTheScrolledViewportAndPageWidthSteady',
+              'VaneTests.ExtensionBackgroundStartupTests/testPageScriptErrorDoesNotRejectWorkingBackgroundAndPopup',
+              'VaneTests.Feel01RestorationTests/testLargeSessionKeepsIdentityStateTitlesAndBackgroundRowsParked',
+              'VaneTests.KeyboardAccessibilityTests/testClosingClickedPinKeepsOutlineHiddenAndKeyboardActivationRestoresIt',
+              'VaneTests.KeyboardAccessibilityTests/testDeferredPageFocusDoesNotTakeFocusFromNewPalette',
+              'VaneTests.KeyboardAccessibilityTests/testDisabledSidebarControlLeavesKeyboardNavigationAndRejectsActivation',
+              'VaneTests.KeyboardAccessibilityTests/testF6LeavesTheLocalEaselForBrowserControls',
+          ]
+          inventory = subprocess.run(['swift', 'test', 'list', '--skip-build'], text=True, capture_output=True, check=True)
+          (directory / 'pr635-f6-inventory.txt').write_text(inventory.stdout + inventory.stderr)
+          available = set(inventory.stdout.splitlines())
+          assert len(expected) == 14 and len(set(expected)) == 14
+          assert set(expected) <= available, sorted(set(expected) - available)
+          selector = '^(?:' + '|'.join(map(re.escape, expected)) + ')$'
+          manifest = {'head': os.environ['GITHUB_SHA'], 'expected': expected, 'selector': selector, 'attempts': 1}
+          manifest_path = directory / 'pr635-f6-manifest.json'
+          manifest_path.write_text(json.dumps(manifest, indent=2))
+          log_path = directory / 'pr635-f6-stage-raw.log'
+          with log_path.open('w') as log:
+              result = subprocess.run(['python3', 'scripts/run-native-tests.py', '--skip-build', '--jobs', '1', '--filter', selector], stdout=log, stderr=subprocess.STDOUT)
+          raw = log_path.read_text()
+          print(raw, flush=True)
+          events = re.findall(r"Test Case '-\[(VaneTests[.]\w+) (\w+)\]' (started|passed|failed|skipped)", raw)
+          manifest['events'] = [{'test': owner + '/' + name, 'event': event} for owner, name, event in events]
+          started = {owner + '/' + name for owner, name, event in events if event == 'started'}
+          completed = {owner + '/' + name for owner, name, event in events if event in {'passed', 'failed', 'skipped'}}
+          manifest['missing_started'] = sorted(set(expected) - started)
+          manifest['missing_completed'] = sorted(set(expected) - completed)
+          manifest['driver_status'] = result.returncode
+          manifest['cleanup_verified'] = bool(re.search(r'Native suite primary status=-?\d+; cleanup status=0', raw))
+          manifest_path.write_text(json.dumps(manifest, indent=2))
+          print(json.dumps(manifest, indent=2), flush=True)
+          incomplete = manifest['missing_started'] or manifest['missing_completed'] or not manifest['cleanup_verified']
+          fatal = re.search(r'^\*\*\* Signal \d+: Backtracing', raw, re.M)
+          sys.exit(result.returncode if result.returncode else (1 if incomplete or fatal else 0))
+          PY
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: pr635-f6-stage-evidence
+          path: ${{ runner.temp }}/pr635-f6-*
+          retention-days: 7

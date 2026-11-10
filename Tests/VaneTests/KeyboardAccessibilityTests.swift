@@ -544,11 +544,31 @@ private struct DisabledKeyboardSurface: View {
             let sidebarUpdates = store.$sidebarShown.dropFirst().sink { _ in visibilityPublications += 1 }
             let libraryUpdates = store.$libraryOpen.dropFirst().sink { _ in visibilityPublications += 1 }
             defer { sidebarUpdates.cancel(); libraryUpdates.cancel() }
+            let observations: [(Notification.Name, AnyObject)] = [
+                (NSWindow.didBecomeKeyNotification, window),
+                (NSWindow.didResignKeyNotification, window),
+                (NSWindow.didUpdateNotification, window),
+                (NSApplication.didBecomeActiveNotification, NSApp),
+                (NSApplication.didResignActiveNotification, NSApp)
+            ]
+            let observers = observations.map { name, object in
+                NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak window, weak store] notice in
+                    let notificationName = notice.name.rawValue
+                    MainActor.assumeIsolated {
+                        F6StageTrace.record("notification", "name=\(notificationName) active=\(NSApp.isActive) key=\(window?.isKeyWindow == true) holder=\(F6StageTrace.identity(window?.firstResponder)) request=\(String(describing: store?.chromeFocusRequested))")
+                    }
+                }
+            }
+            defer { observers.forEach(NotificationCenter.default.removeObserver) }
+            F6StageTrace.record("fixture", "window=\(F6StageTrace.identity(window)) chrome=\(F6StageTrace.identity(chrome)) page=\(F6StageTrace.identity(page)) tokens=\(pillAnchors(in: chrome).compactMap(\.token).map(\.uuidString))")
             store.focusNextArea()
+            F6StageTrace.record("action-return", "request=\(store.chromeFocusRequested) holder=\(F6StageTrace.identity(window.firstResponder))")
             try await Task.sleep(for: .milliseconds(150))
+            F6StageTrace.record("endpoint", "request=\(store.chromeFocusRequested) holder=\(F6StageTrace.identity(window.firstResponder)) page=\(F6StageTrace.identity(page)) active=\(NSApp.isActive) key=\(window.isKeyWindow) visibilityPublications=\(visibilityPublications)")
             XCTAssertFalse(window.firstResponder === page, "F6 must leave the canvas for the address pill")
             XCTAssertFalse(window.firstResponder === window)
             store.focusNextArea()
+            F6StageTrace.record("return-to-page", "request=\(store.chromeFocusRequested) holder=\(F6StageTrace.identity(window.firstResponder))")
             XCTAssertTrue(window.firstResponder === page)
             XCTAssertEqual(visibilityPublications, 0,
                            "F6 must reuse the visible chrome without invalidating it before its focus request")
