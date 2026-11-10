@@ -141,6 +141,8 @@ extension EnvironmentValues {
     private var remaining = 0
     private var nextScheduled = false
     private var watchdog: Timer?
+    private var recoveryToken: UUID?
+    private var recoveryRemaining = 0
     private(set) var bypassForDrag = false
     var isPreparing: Bool { active != nil || nextScheduled }
 
@@ -152,7 +154,11 @@ extension EnvironmentValues {
         self.commit = commit
     }
 
-    func endLiveResize() { bypassForDrag = false }
+    func endLiveResize() {
+        bypassForDrag = false
+        recoveryToken = nil
+        recoveryRemaining = 0
+    }
 
     @discardableResult func request(frame: NSRect, display: Bool) -> Bool {
         guard !bypassForDrag, let window, window.isVisible, let root = window.contentView else { return false }
@@ -193,7 +199,9 @@ extension EnvironmentValues {
         let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
         if let deadline { deadline(timeout) }
         else if generation == token, active != nil {
-            let timer = Timer(timeInterval: 0.1, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
+            // A real GitHub resize can paint after116ms. Treating that as a
+            // stalled process exposed unpainted queued width for the whole drag.
+            let timer = Timer(timeInterval: 0.25, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
             watchdog = timer
             RunLoop.main.add(timer, forMode: .common)
         }
@@ -209,13 +217,26 @@ extension EnvironmentValues {
         startingFrame = nil
         remaining = 0
         nextScheduled = false
+        recoveryToken = nil
+        recoveryRemaining = 0
         pages.forEach { $0.restore(committed: false) }
         pages = []
         root = nil
     }
 
     private func presented(_ token: UUID) {
-        guard generation == token, let active else { return }
+        guard generation == token, let active else {
+            // A fallback must not stay latched after WebKit becomes responsive.
+            // Its old callback only readmits coordination; it never commits a frame.
+            if recoveryToken == token, recoveryRemaining > 0 {
+                recoveryRemaining -= 1
+                if recoveryRemaining == 0 {
+                    recoveryToken = nil
+                    bypassForDrag = false
+                }
+            }
+            return
+        }
         remaining -= 1
         guard remaining == 0 else { return }
         watchdog?.invalidate()
@@ -278,8 +299,13 @@ extension EnvironmentValues {
               pages.allSatisfy({ $0.stillOwned && $0.web.window === window })
         else { cancel(); return }
         let latest = pending ?? active
+        let outstanding = remaining
         cancel()
         bypassForDrag = window.inLiveResize
+        if bypassForDrag {
+            recoveryToken = token
+            recoveryRemaining = outstanding
+        }
         if window.isVisible { commit(latest.frame, latest.display) }
     }
 

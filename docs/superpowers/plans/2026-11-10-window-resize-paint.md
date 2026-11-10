@@ -21,7 +21,7 @@
 ## Review Focus
 
 - Rapid requests: only the latest queued frame remains pending; callbacks cannot commit stale generations.
-- Slow/terminated WebContent: a 100ms watchdog restores native sizing and falls back for that drag.
+- Slow/terminated WebContent: a250ms watchdog restores native sizing and temporarily falls back; coordination resumes after every outstanding page paints.
 - Page/profile replacement: restore original native flags and reject a detached presentation owner.
 - Split pages and Library: predict viewport deltas from current pane weights and the same navigation-width formula as SwiftUI.
 - Window closure/fullscreen/programmatic geometry: cancel preparation without moving a closed/replaced window.
@@ -34,7 +34,7 @@
 
 - [x] Capture the ordinary path failing the right-edge assertion with valid SCStream bounds.
 - [x] Prove native child-view preparation against that same assertion in the isolated diagnostic.
-- [x] Implement one in-flight batch, one latest queued request, owner/generation checks, and the 100ms fallback.
+- [x] Implement one in-flight batch, one latest queued request, owner/generation checks, and the bounded fallback.
 - [x] Add deterministic queue/cleanup tests and verify that a late callback cannot commit a canceled request.
 
 ### Task 2: Viewport sizing and production capture
@@ -79,3 +79,22 @@ in16.19s: original RED, candidate13/13PASS, second candidate pixel PASS. Browser
 maximum gap1.86pt versus1.71pt settled gutter; native maximum0.0/0.86pt versus0.0pt.
 Every wrapper verified cleanup0. Logs: `/tmp/vane-resize-shrink-validation-0.log`,
 `-1.log`, `-2.log`; pure checks also pass. Personal native-drag preview remains open.
+
+## Actual native-drag failure and recovery policy
+
+The user rejected candidate02f7b73b: widening still exposed a bar. An opt-in
+geometry-only trace of the real GitHub drag is retained at
+`/tmp/vane-resize-actual-native-drag-red.log`. The second paint arrived116ms
+after preparation. The100ms watchdog had already exposed a queued1274pt frame
+while preparing1052pt;854 subsequent requests bypassed coordination over the
+remaining11seconds. Event-tracking paint callbacks were delivered, so a missing
+tracking-mode callback was not established as the cause.
+
+Both new regressions failed on that source: normally late150ms paint must not
+expose queued unpainted width; a genuine timeout must recover on late paint
+without committing stale geometry. The candidate uses a250ms normal-paint budget
+and tracks every outstanding split callback before clearing temporary fallback.
+All13 preparation tests and pure checks pass on merged main8f0a6ef9. Read-only
+independent review of this timeout/recovery diff found no actionable issues.
+A real120ms busy resize-handler pixel fixture is compiled; its foreground
+validation and the user's fresh native-drag preview remain pending.

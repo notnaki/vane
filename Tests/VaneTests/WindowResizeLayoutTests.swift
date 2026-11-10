@@ -15,7 +15,11 @@ import XCTest
         try await resizeFixture(capture: true)
     }
 
-    private func resizeFixture(capture: Bool) async throws {
+    func testSlowPagePaintStaysCoordinatedDuringResize() async throws {
+        try await resizeFixture(capture: true, slowResize: true)
+    }
+
+    private func resizeFixture(capture: Bool, slowResize: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -57,7 +61,8 @@ import XCTest
                     && window.occlusionState.contains(.visible) && tab.web.window === window
                     && tab.web.bounds.width > 100
             }
-            let html = "<html><title>Resize ready</title><style>body{margin:0;background:#17324d}aside{position:fixed;right:0;top:0;width:100px;height:100vh;background:#f04020}</style><body><aside></aside></body></html>"
+            let delay = slowResize ? "<script>addEventListener('resize',()=>{let end=performance.now()+120;while(performance.now()<end){}})</script>" : ""
+            let html = "<html><title>Resize ready</title><style>body{margin:0;background:#17324d}aside{position:fixed;right:0;top:0;width:100px;height:100vh;background:#f04020}</style><body><aside></aside>\(delay)</body></html>"
             tab.web.loadHTMLString(html, baseURL: nil)
             try await compatibilityWait { !tab.web.isLoading && tab.web.title == "Resize ready" }
             for direct in [false, true] {
@@ -87,7 +92,8 @@ import XCTest
                 }
                 try await presentation(page)
                 if capture {
-                    try await captureResizePixels(window, web: page, direct: direct)
+                    try await captureResizePixels(window, web: page, direct: direct,
+                                                  proposalInterval: slowResize ? .milliseconds(40) : .milliseconds(8))
                 } else {
                     for width: CGFloat in [1100, 800, 1200, 900, 1100, 900] {
                         window.setContentSize(NSSize(width: width, height: 600))
@@ -111,7 +117,8 @@ import XCTest
         if let failure { throw failure }
     }
 
-    private func captureResizePixels(_ window: VaneWindow, web: WKWebView, direct: Bool) async throws {
+    private func captureResizePixels(_ window: VaneWindow, web: WKWebView, direct: Bool,
+                                     proposalInterval: Duration) async throws {
         // Diagnostic reference: the original geometry-only path must remain RED.
         let baselineControl = ProcessInfo.processInfo.environment["VANE_RESIZE_BASELINE"] == "1"
         try await compatibilityWait { NSApp.isActive && window.isKeyWindow }
@@ -140,7 +147,7 @@ import XCTest
             let widths = Array(stride(from: 900, through: 1300, by: 40))
                 + Array(stride(from: 1260, through: 900, by: -40))
             for width in widths {
-                let deadline = ContinuousClock.now + .milliseconds(8)
+                let deadline = ContinuousClock.now + proposalInterval
                 let size = NSSize(width: width, height: 600)
                 let accepted = baselineControl ? size : window.proposedPageResize(size)
                 window.setContentSize(accepted)

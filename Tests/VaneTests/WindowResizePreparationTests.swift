@@ -105,7 +105,7 @@ import XCTest
         XCTAssertTrue(web.autoresizesSubviews)
     }
 
-    func testTimeoutRestoresNativeSizingAndIgnoresLatePaint() {
+    func testTimeoutRestoresNativeSizingAndLatePaintReenablesCoordination() {
         let (host, web) = fixture()
         let window = modelWindow(host)
         defer { window.contentView = nil; host.removePage(); window.close() }
@@ -125,11 +125,71 @@ import XCTest
         XCTAssertTrue(web.autoresizesSubviews)
         XCTAssertEqual(web.autoresizingMask, [.width, .height])
         XCTAssertTrue(resize.bypassForDrag)
+        XCTAssertFalse(resize.request(frame: NSRect(x: 0, y: 0, width: 1050, height: 700), display: true))
         paints.removeFirst()()
         XCTAssertEqual(commits, 1, "A late paint cannot restore the stale frame")
-        XCTAssertFalse(resize.request(frame: NSRect(x: 0, y: 0, width: 1100, height: 700), display: true))
+        XCTAssertFalse(resize.bypassForDrag, "One slow paint cannot bypass coordination for the entire drag")
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 1100, height: 700), display: true))
+        resize.cancel()
         resize.endLiveResize()
         XCTAssertFalse(resize.bypassForDrag)
+    }
+
+    func testNormallyLatePaintDoesNotExposeAnUnpaintedQueuedFrame() async throws {
+        let (host, _) = fixture()
+        let window = modelWindow(host)
+        defer { window.contentView = nil; host.removePage(); window.close() }
+        var paints: [@MainActor @Sendable () -> Void] = []
+        var commits: [NSSize] = []
+        let resize = WindowResizePreparation(window: window,
+            presenter: { _, callback in paints.append(callback) }) { frame, display in
+                commits.append(frame.size)
+                window.setFrame(frame, display: display)
+            }
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 800, height: 500), display: true))
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), display: true))
+        // The user's real drag delivered its paint at116ms. A150ms page is still
+        // responsive; keep the painted window rather than expose the queued size.
+        let elapsed = XCTestExpectation(description: "Ordinarily late paint interval")
+        let timer = Timer(timeInterval: 0.15, repeats: false) { _ in elapsed.fulfill() }
+        RunLoop.main.add(timer, forMode: .common)
+        await fulfillment(of: [elapsed], timeout: 2)
+        XCTAssertTrue(commits.isEmpty, "A responsive but late page must not expose unpainted width")
+        XCTAssertFalse(resize.bypassForDrag)
+        paints.removeFirst()()
+        XCTAssertEqual(commits, [NSSize(width: 800, height: 500)])
+        resize.cancel()
+    }
+
+    func testRecoveryWaitsForEverySplitPageWithoutCommittingItsStaleFrame() {
+        let (left, _) = fixture()
+        let (right, _) = fixture()
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        left.frame = NSRect(x: 0, y: 0, width: 300, height: 400)
+        right.frame = NSRect(x: 300, y: 0, width: 300, height: 400)
+        left.resizeFraction.width = 0.5
+        right.resizeFraction.width = 0.5
+        root.addSubview(left)
+        root.addSubview(right)
+        let window = modelWindow(root)
+        defer { window.contentView = nil; left.removePage(); right.removePage(); window.close() }
+        var paints: [@MainActor @Sendable () -> Void] = []
+        var deadline: (@MainActor @Sendable () -> Void)?
+        var commits = 0
+        let resize = WindowResizePreparation(window: window,
+            presenter: { _, callback in paints.append(callback) }, deadline: { deadline = $0 }) { frame, display in
+                commits += 1
+                window.setFrame(frame, display: display)
+            }
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 800, height: 500), display: true))
+        XCTAssertEqual(paints.count, 2)
+        deadline?()
+        paints.removeFirst()()
+        XCTAssertTrue(resize.bypassForDrag, "The other split page is still unresponsive")
+        paints.removeFirst()()
+        XCTAssertFalse(resize.bypassForDrag)
+        XCTAssertEqual(commits, 1, "Recovery callbacks cannot commit the old prepared frame")
+        XCTAssertEqual(window.frame.size, NSSize(width: 800, height: 500))
     }
 
     func testProgrammaticFrameSupersedesPendingNativeResize() {
@@ -231,7 +291,7 @@ import XCTest
         }
     }
 
-    private func modelWindow(_ host: WebHost) -> ResizeModelWindow {
+    private func modelWindow(_ host: NSView) -> ResizeModelWindow {
         let window = ResizeModelWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
                                        styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
