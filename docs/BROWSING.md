@@ -256,6 +256,14 @@ windows share Library contents across all profiles and Spaces, including Easels,
 Boosts, Archived Tabs, and Reading Queue. Items keep their owning profile for
 opening, restoring, and other actions; profile labels distinguish matching items.
 
+In Downloads, Archived Tabs, and Reading Queue, **Filter** opens inline controls
+above the results. Select one or more profile chips to narrow the list; **All**
+clears the profile selection. Search and the section's other filters still apply.
+**Done** returns to search. Profile choices stay with each section while Library is
+open and reset when you reopen it. Private windows show only their own items and
+omit the regular profile controls. The filter panel's **…** menu holds section
+actions such as Clear Downloads or Clear Archive.
+
 **Reopen Closed Tab** (`⇧⌘T`) remembers the last 32 closed regular tabs
 until Vane quits. Reopening in the same profile restores the page's Back/Forward
 history when WebKit state is available; another profile or a private window opens

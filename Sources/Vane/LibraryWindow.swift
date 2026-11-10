@@ -88,11 +88,14 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// showing: it is the same box in the same place, and a query left behind from the
     /// section before would silently hide rows.
     @Published var query = ""
-    /// The Filter menu's toggle on Archived Tabs: only the tabs that were archived out of
+    /// The filter panel's toggle on Archived Tabs: only the tabs that were archived out of
     /// a Little Vane window.
     @Published var littleArcOnly = false
-    /// The Filter menu's toggle on Downloads: only the rows that are a finished file.
+    /// The filter panel's toggle on Downloads: only the rows that are a finished file.
     @Published var completedOnly = false
+    /// An empty selection means all profiles. Each section keeps its own choices for this visit.
+    @Published var profileFilters: [LibrarySection: Set<UUID>] = [:]
+    @Published var filterSection: LibrarySection?
     /// The Space whose card should open its naming panel: set by the Library's own `+`, read
     /// and cleared by the card that turns up for it. `TabStore.editingSpace` cannot be used
     /// — its popover hangs off the sidebar's footer `+`, which is not in the tree while the
@@ -103,7 +106,10 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// Each explicit request is heard once, including consecutive requests in one section.
     @Published private(set) var focusToken = 0
 
-    func focusSearch() { focusToken &+= 1 }
+    func focusSearch() {
+        if filterSection != nil { filterSection = nil }
+        focusToken &+= 1
+    }
 
     /// ⌘F while the Library is over the page. Its own entry point so `TabStore.openFind`
     /// does not have to reach into the singleton.
@@ -127,6 +133,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
         if !store.libraryOpen {
             if shared.littleArcOnly { shared.littleArcOnly = false }
             if shared.completedOnly { shared.completedOnly = false }
+            if !shared.profileFilters.isEmpty { shared.profileFilters = [:] }
         }
         // …and the one search field is shared by every section, so a query typed at the
         // downloads must not still be filtering the archive a click later.
@@ -158,6 +165,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
            let window = store.window, window.attachedSheet == nil {
             window.makeFirstResponder(nil)
         }
+        if shared.filterSection != nil { shared.filterSection = nil }
         if store.libraryOpen { store.libraryOpen = false }
         store.focusPage()
     }
@@ -913,10 +921,7 @@ private struct LibraryTile: View {
 
 // MARK: - The list column
 
-/// The head of a column: Arc's rounded search field, the Filter menu beside it on the two
-/// sections that have anything to filter, and the "…" that holds what is done to the whole
-/// list. Filter filters and nothing else — Clear under a menu called Filter is a destructive
-/// verb nobody would look for there.
+/// Search gives way to inline filters, leaving the matching rows visible below.
 struct LibraryHead<Filter: View, Actions: View>: View {
     @EnvironmentObject private var store: TabStore
     @Environment(\.spaceChromeTheme) private var chromeTheme
@@ -925,21 +930,101 @@ struct LibraryHead<Filter: View, Actions: View>: View {
     @Binding var query: String
     @ViewBuilder let filter: () -> Filter
     @ViewBuilder let actions: () -> Actions
+    @ObservedObject var profiles: ProfileManager = .shared
     @ObservedObject private var library = Library.shared
 
+    private var expanded: Bool { library.filterSection == section }
+    private var selectedProfiles: Set<UUID> { library.profileFilters[section, default: []] }
+    private var hasFilters: Bool { filtering || (!store.isPrivate && !selectedProfiles.isEmpty) }
+
     var body: some View {
+        VStack(alignment: .leading, spacing: Look.sectionGap) {
+            if expanded {
+                HStack {
+                    Text("Filter \(section == .archived ? "Archive" : section.title)…")
+                        .font(Look.small.weight(.semibold))
+                        .foregroundStyle(Look.inkPrimary)
+                        .lineLimit(1)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: Look.captionGap)
+                    Button("Done") { Motion.animate(Look.quick) { library.focusSearch() } }
+                        .buttonStyle(LibraryFilterButtonStyle())
+                }
+                .frame(height: Look.libraryField)
+                if !store.isPrivate {
+                    VStack(alignment: .leading, spacing: Look.inset) {
+                        HStack {
+                            Text("Profiles").font(Look.sectionCaption).foregroundStyle(Look.inkSecondary)
+                                .accessibilityAddTraits(.isHeader)
+                            Spacer()
+                            if !selectedProfiles.isEmpty {
+                                Button("All") { Motion.animate(Look.quick) { library.profileFilters[section] = nil } }
+                                    .buttonStyle(.plain).font(Look.caption)
+                                    .accessibilityLabel("Show all profiles")
+                            }
+                        }
+                        ScrollView {
+                            LibraryFilterFlow {
+                                ForEach(profiles.profiles) { profile in
+                                    Button {
+                                        Motion.animate(Look.quick) {
+                                            var selection = selectedProfiles
+                                            if !selection.insert(profile.id).inserted { selection.remove(profile.id) }
+                                            library.profileFilters[section] = selection.isEmpty ? nil : selection
+                                        }
+                                    } label: {
+                                        Text(profile.name).lineLimit(1).truncationMode(.middle)
+                                    }
+                                    .buttonStyle(LibraryFilterButtonStyle(selected: selectedProfiles.contains(profile.id)))
+                                    .accessibilityValue(selectedProfiles.contains(profile.id) ? "Selected" : "Not selected")
+                                    .accessibilityAddTraits(selectedProfiles.contains(profile.id) ? .isSelected : [])
+                                    .help("Filter by \(profile.name). Clear all selections to show every profile.")
+                                }
+                            }
+                        }
+                        .scrollBounceBehavior(.basedOnSize)
+                        .frame(maxHeight: 132)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                HStack(alignment: .top) {
+                    filter().font(Look.small).toggleStyle(.checkbox)
+                    Spacer(minLength: Look.captionGap)
+                    Menu { actions() } label: {
+                        Image(systemName: "ellipsis").font(Look.small)
+                    }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .accessibilityLabel("More")
+                }
+                .foregroundStyle(Look.inkSecondary)
+            } else {
+                searchRow
+            }
+        }
+        .padding(.horizontal, Look.inset)
+        .padding(.top, Look.libraryHead)
+        .padding(.bottom, Look.inset)
+        .onChange(of: profiles.profiles.map(\.id), initial: true) { _, ids in
+            guard !store.isPrivate, !selectedProfiles.isEmpty else { return }
+            let remaining = selectedProfiles.intersection(ids)
+            if remaining != selectedProfiles {
+                library.profileFilters[section] = remaining.isEmpty ? nil : remaining
+            }
+        }
+        .vaneMotionPolicy()
+    }
+
+    private var searchRow: some View {
         HStack(spacing: Look.inset - 2) {
             HStack(spacing: Look.inset - 3) {
                 Image(systemName: "magnifyingglass").font(Look.caption)
                     .foregroundStyle(Look.inkTertiary)
-                // Keep the request pending until AppKit attaches the native field.
-                // Retiring sections have no authority over the arriving editor.
                 CommandField(text: $query, prompt: section.searchPrompt,
                              selectAll: false, label: section.searchPrompt, hint: "",
                              font: Look.Typography.secondary.native,
                              textColor: Look.nsInk(0.80),
                              focusRequest: library.focusToken,
-                             canFocus: { store.libraryOpen && library.section == section },
+                             canFocus: { store.libraryOpen && library.section == section && !expanded },
                              onKey: { _ in false })
                     .foregroundStyle(Look.inkPrimary)
             }
@@ -950,47 +1035,63 @@ struct LibraryHead<Filter: View, Actions: View>: View {
             .accessibilityLabel(section.searchPrompt)
 
             if section.filterable {
-                // The pill is on the Menu, not inside its label: a borderless menu lays its
-                // label out at the label's own size, so a background put in there is drawn
-                // at the size of the words rather than at the field's.
-                pill(filling: filtering) {
-                    Menu { filter() } label: {
-                        // Keep room for the full search prompt in the narrow list column.
-                        Image(systemName: "line.3.horizontal.decrease.circle")
-                            .font(Look.small)
-                            .foregroundStyle(filtering ? Look.inkPrimary : Look.inkSecondary)
-                    }
-                    .accessibilityLabel("Filter")
-                    .accessibilityValue(filtering ? "On" : "Off")
-                    .vaneTooltip("Filter")
+                Button {
+                    // End native editing before retiring the search field.
+                    store.window?.makeFirstResponder(nil)
+                    Motion.animate(Look.quick) { library.filterSection = section }
+                } label: {
+                    Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
+                        .labelStyle(.titleAndIcon)
                 }
-                // Its own control, beside Filter and not inside it. Clear is a destructive
-                // verb, and nobody goes looking for one in a menu called Filter.
-                pill(filling: false) {
-                    Menu { actions() } label: {
-                        Image(systemName: "ellipsis").font(Look.small)
-                            .foregroundStyle(Look.inkSecondary)
-                    }
-                    .accessibilityLabel("More")
-                    .accessibilityActions { actions() }
-                }
+                .buttonStyle(LibraryFilterButtonStyle(selected: hasFilters))
+                .accessibilityValue(hasFilters ? "On" : "Off")
             }
         }
-        .padding(.horizontal, Look.inset)
-        .padding(.top, Look.libraryHead)
-        .padding(.bottom, Look.inset)
-        .animation(Motion.reduced ? nil : Look.quick, value: filtering)
+    }
+}
+
+private struct LibraryFilterButtonStyle: ButtonStyle {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
+    var selected = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        TactileButtonStyle(scales: false).makeBody(configuration: configuration)
+            .font(Look.small.weight(.medium))
+            .foregroundStyle(selected ? Look.inkPrimary : Look.inkSecondary)
+            .padding(.horizontal, Look.rowInset)
+            .frame(height: Look.libraryField)
+            .background(selected || configuration.isPressed ? chromeTheme.selected : chromeTheme.controlFill,
+                        in: .rect(cornerRadius: Look.pillRadius))
+    }
+}
+
+/// Content-sized chips wrap within the existing narrow Library column.
+private struct LibraryFilterFlow: Layout {
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> (size: CGSize, origins: [CGPoint]) {
+        var origins: [CGPoint] = []
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.init(width: width, height: nil))
+            if x > 0 && x + size.width > width {
+                x = 0; y += rowHeight + Look.captionGap; rowHeight = 0
+            }
+            origins.append(CGPoint(x: x, y: y))
+            x += size.width + Look.captionGap
+            rowHeight = max(rowHeight, size.height)
+        }
+        return (CGSize(width: width, height: y + rowHeight), origins)
     }
 
-    private func pill<Label: View>(filling: Bool, @ViewBuilder _ label: () -> Label) -> some View {
-        label()
-            .menuStyle(.borderlessButton).tint(Look.inkSecondary)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .padding(.horizontal, Look.inset)
-            .frame(height: Look.libraryField)
-            .background(filling ? chromeTheme.selected : chromeTheme.controlFill,
-                        in: .rect(cornerRadius: Look.pillRadius))
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(subviews, width: proposal.width ?? Look.libraryList - Look.inset * 2).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let layout = arrange(subviews, width: bounds.width)
+        for (view, origin) in zip(subviews, layout.origins) {
+            view.place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y), anchor: .topLeading,
+                       proposal: .init(width: bounds.width, height: nil))
+        }
     }
 }
 
@@ -1126,9 +1227,11 @@ private struct ArchivedTabsPane: View {
         let revision: Int
         let query: String
         let littleOnly: Bool
+        let profileIDs: Set<UUID>
     }
     private var request: Request {
-        Request(revision: archives.revision, query: library.query, littleOnly: library.littleArcOnly)
+        Request(revision: archives.revision, query: library.query, littleOnly: library.littleArcOnly,
+                profileIDs: store.isPrivate ? [] : library.profileFilters[.archived, default: []])
     }
 
     var body: some View {
@@ -1170,7 +1273,7 @@ private struct ArchivedTabsPane: View {
                 do { try await Task.sleep(for: LocalSuggestionReader.debounce) } catch { return }
             }
             let found = await archives.search.groups(archives.entries, revision: asked.revision,
-                query: asked.query, littleOnly: asked.littleOnly)
+                query: asked.query, littleOnly: asked.littleOnly, profileIDs: asked.profileIDs)
             guard !Task.isCancelled, asked == request else { return }
             groups = found
             resultGate.present(asked)
@@ -1350,7 +1453,8 @@ private struct DownloadsPane: View {
     }
 
     private func refresh() {
-        groups = presentation.groups(query: library.query, completedOnly: library.completedOnly)
+        groups = presentation.groups(query: library.query, completedOnly: library.completedOnly,
+                                     profileIDs: store.isPrivate ? [] : library.profileFilters[.downloads, default: []])
     }
 
     var body: some View {
@@ -1384,6 +1488,7 @@ private struct DownloadsPane: View {
         .onChange(of: presentation.rows) { refresh() }
         .onChange(of: library.query) { refresh() }
         .onChange(of: library.completedOnly) { refresh() }
+        .onChange(of: library.profileFilters[.downloads]) { refresh() }
     }
 
 }
