@@ -8,6 +8,26 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceHandoffFlashTests: XCTestCase {
+    func testTrackingResetCannotRetireTheReleasedHandoffCapture() {
+        let frames = HandoffCaptureFrames()
+        frames.append(time: 1, edges: 20)
+        // Losing the gesture while fingers are still down is not the final
+        // released landing. A subsequent claimed packet can start tracking again.
+        frames.reachedEndpoint(at: 2)
+        frames.retired(at: 3)
+        frames.append(time: 4, edges: 30)
+        XCTAssertTrue(frames.samples.isEmpty,
+                      "Pre-release tracking must not be classified as landing/retirement")
+        frames.release()
+        frames.reachedEndpoint(at: 5)
+        frames.append(time: 6, edges: 40)
+        frames.retired(at: 7)
+        frames.append(time: 8, edges: 50)
+        XCTAssertEqual(frames.samples.count, 2)
+        XCTAssertEqual(frames.samples.map(\.0), [true, false])
+        XCTAssertEqual(frames.samples.map(\.1), [40, 50])
+    }
+
     func testCommittedSidebarHandoffDoesNotDoubleCompositeText() async throws {
         try await assertHandoff(returning: false)
     }
@@ -72,7 +92,7 @@ import XCTest
         store.palette = nil
         var admitted = "not sampled"
         defer { print("HANDOFF_ADMISSION \(admitted)") }
-        try await compatibilityWait {
+        func readyForInput() -> Bool {
             admitted = "running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) anchor=\(store.spaceGesture.sectionsView?.window === window)"
             if !NSApp.isActive || NSApp.keyWindow !== window {
                 NSApp.activate(ignoringOtherApps: true)
@@ -90,9 +110,13 @@ import XCTest
                 SidebarNativeReadinessScope(store: store, spaceID: spaces[0].id),
                 allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)
         }
+        try await compatibilityWait { readyForInput() }
         let sampler = PresentedSidebarSampler(host: host, store: store)
         try await sampler.start(in: window)
         do {
+        // Starting ScreenCaptureKit yields to AppKit. Its admission cannot stand
+        // in for foreground/presentation ownership at the actual input boundary.
+        try await compatibilityWait { readyForInput() }
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
         if returning {
             NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -12))
@@ -104,6 +128,9 @@ import XCTest
                 try await Task.sleep(for: .milliseconds(8))
             }
         }
+        XCTAssertFalse(sampler.interruptedDuringTracking,
+                       "An admitted tracking gesture must not reset before its release")
+        sampler.release()
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
         let animationDeadline = ProcessInfo.processInfo.systemUptime + 1
         while store.spaceSwiping, ProcessInfo.processInfo.systemUptime < animationDeadline {
@@ -151,6 +178,8 @@ import XCTest
     private weak var host: BrowserWindowHost?
     private weak var store: TabStore?
     private(set) var observedGesture = false
+    private(set) var interruptedDuringTracking = false
+    private var released = false
     private var link: CADisplayLink?
     private var stream: SCStream?
     private var capturePulse: NSView?
@@ -159,6 +188,7 @@ import XCTest
     private var ticks = 0
     var diagnostics: String { "ticks=\(ticks) \(frames.diagnostics)" }
     var samples: [Sample] { frames.samples.map { Sample(covered: $0.0, edges: $0.1) } }
+    func release() { released = true; frames.release() }
     init(host: BrowserWindowHost, store: TabStore) {
         self.host = host
         self.store = store
@@ -215,7 +245,10 @@ import XCTest
         observation = store?.spaceGesture.$presentation.sink { [weak self] state in
             guard let self else { return }
             if state.swiping { self.observedGesture = true }
-            else if self.observedGesture { self.frames.reachedEndpoint(at: CACurrentMediaTime()) }
+            else if self.observedGesture {
+                if !self.released { self.interruptedDuringTracking = true }
+                self.frames.reachedEndpoint(at: CACurrentMediaTime())
+            }
         }
         let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
         let rate = Float(screen.maximumFramesPerSecond)
@@ -277,6 +310,7 @@ private final class HandoffCaptureFrames: @unchecked Sendable {
     private let lock = NSLock()
     private var endpoint: Double?
     private var retirement: Double?
+    private var released = false
     private var recorded: [(Double, Double)] = []
     private var raw: [(Int, Double, Double)] = []
     var diagnostics: String {
@@ -298,8 +332,16 @@ private final class HandoffCaptureFrames: @unchecked Sendable {
             }
         }
     }
-    func reachedEndpoint(at time: Double) { lock.withLock { if endpoint == nil { endpoint = time } } }
-    func retired(at time: Double) { lock.withLock { if retirement == nil { retirement = time } } }
+    // Observe only the release being exercised. Native gesture cancellation can
+    // publish a resting state before a later tracking packet reclaims the swipe.
+    // That earlier reset cannot timestamp this release's landing or retirement.
+    func release() { lock.withLock { released = true } }
+    func reachedEndpoint(at time: Double) {
+        lock.withLock { if released, endpoint == nil { endpoint = time } }
+    }
+    func retired(at time: Double) {
+        lock.withLock { if endpoint != nil, retirement == nil { retirement = time } }
+    }
     func append(time: Double, edges: Double) { lock.withLock { recorded.append((time, edges)) } }
     func repeatFrame(at time: Double) {
         lock.withLock { if let last = recorded.last { recorded.append((time, last.1)) } }
