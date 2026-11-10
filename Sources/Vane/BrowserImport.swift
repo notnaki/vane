@@ -11,14 +11,8 @@ struct BrowserProfile: Sendable {
     var hasBookmarks: Bool
 }
 
-/// Pull history and bookmarks out of the browsers already on this Mac.
-///
-/// Everything here is read-only and unencrypted: Chromium's `History` is plain SQLite,
-/// its `Bookmarks` is plain JSON, Safari's bookmarks are a plist, Firefox's are SQLite.
-/// ponytail: no keychain, no Safe Storage key, no NSS — those are only needed for cookies
-/// and passwords, and passwords already have their own CSV path in Import.swift. The
-/// ceiling is that session cookies do not come across; the upgrade path is the same
-/// Safe Storage decryption PasswordImport deliberately avoids.
+/// Read-only browser snapshots. History/bookmarks remain atomic; supported Chromium
+/// cookies have their own explicit opt-in review and best-effort verified publication.
 enum BrowserImport {
 
     /// `nonisolated` along with `query` and `guardReadable` below: those three are a file
@@ -52,11 +46,7 @@ enum BrowserImport {
 
         for (name, vendor) in chromiumVendors {
             let root = appSupport.appendingPathComponent(vendor)
-            let kids = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-            var found = kids.compactMap { chromiumProfile(name, $0, $0.lastPathComponent) }
-            // Opera writes History straight into the vendor directory, with no profile level.
-            if found.isEmpty, let bare = chromiumProfile(name, root, "Default") { found = [bare] }
-            out += found
+            out += chromiumProfiles(browser: name, root: root)
         }
 
         let firefox = appSupport.appendingPathComponent("Firefox/Profiles")
@@ -78,11 +68,21 @@ enum BrowserImport {
         return out
     }
 
+    static func chromiumProfiles(browser: String, root: URL) -> [BrowserProfile] {
+        let kids = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        // Opera has a profile directly at its vendor root. Its Network/Cookies file
+        // must not turn Network into a fictitious profile and hide root History.
+        if let bare = chromiumProfile(browser, root, "Default") { return [bare] }
+        return kids.filter { $0.lastPathComponent != "Network" }
+            .compactMap { chromiumProfile(browser, $0, $0.lastPathComponent) }
+            .sorted { $0.profile < $1.profile }
+    }
+
     private static func chromiumProfile(_ browser: String, _ dir: URL, _ profile: String) -> BrowserProfile? {
         let fm = FileManager.default
         let h = fm.fileExists(atPath: dir.appendingPathComponent("History").path)
         let b = fm.fileExists(atPath: dir.appendingPathComponent("Bookmarks").path)
-        guard h || b else { return nil }
+        guard h || b || ChromiumCookies.file(at: dir) != nil else { return nil }
         return BrowserProfile(browser: browser, profile: profile, path: dir,
                               hasHistory: h, hasBookmarks: b)
     }
@@ -188,6 +188,82 @@ enum BrowserImport {
         }
     }
 
+    struct ReviewedResult {
+        var history = 0
+        var bookmarks = 0
+        var sessions: ChromiumCookies.Report?
+        var sessionsIssue: String?
+    }
+
+    /// One lifecycle admission covers the source worker, atomic library transaction and
+    /// optional cookie publication. Cookies are a separately reported best-effort category.
+    @MainActor static func importReviewed(from source: BrowserProfile, profileID: UUID, includeSessions: Bool = false,
+        validateDestination: @escaping @MainActor () -> Bool,
+        readKey: @escaping @Sendable (ChromiumCookies.Identity) -> Data? = { ChromiumCookies.key(identity: $0) },
+        cookieAccess: (@MainActor () -> ChromiumCookies.Access)? = nil) async throws -> ReviewedResult {
+        try await ImportOperations.run { admission in
+            guard profileID != Profile.incognito.id, validateDestination() else { throw CancellationError() }
+            let data = try await ImportWork.run { try readSource(from: source) }
+            try Task.checkCancellation()
+            guard validateDestination() else { throw CancellationError() }
+            let destination = Store.store(for: profileID)
+            let committed = try await destination.importBrowserDataAsync(visits: data.visits, bookmarks: data.bookmarks, admission: admission)
+            var result = ReviewedResult(history: committed.history, bookmarks: committed.bookmarks.imported)
+            guard includeSessions else { return result }
+            guard let identity = ChromiumCookies.identity(browser: source.browser) else {
+                result.sessionsIssue = "Session import is not supported for this source browser."
+                return result
+            }
+            var rowCount = 0
+            do {
+                let read = try await ImportWork.run {
+                    let snapshot = try ChromiumCookies.read(at: source.path)
+                    let needsKey = snapshot.rows.contains {
+                        ChromiumCookies.cookie($0, value: "") != nil && $0.value.starts(with: SafeStorage.prefix)
+                    }
+                    return (snapshot, needsKey)
+                }
+                let snapshot = read.0
+                rowCount = snapshot.rows.count
+                guard !Task.isCancelled, validateDestination(), !destination.isRetired else {
+                    result.sessions = .init(skipped: rowCount, stopped: true); return result
+                }
+                // No Keychain prompt for plaintext-only or unsupported encrypted rows.
+                let needsKey = read.1
+                let key = needsKey ? try await ImportWork.run { readKey(identity) } : nil
+                guard !Task.isCancelled, validateDestination(), !destination.isRetired else {
+                    result.sessions = .init(skipped: rowCount, stopped: true); return result
+                }
+                let opened = try await ImportWork.run { ChromiumCookies.open(snapshot, key: key) }
+                guard !Task.isCancelled, validateDestination(), !destination.isRetired else {
+                    result.sessions = .init(skipped: rowCount, stopped: true); return result
+                }
+                guard !opened.cookies.isEmpty else {
+                    result.sessions = .init(skipped: opened.skipped, failed: opened.failed,
+                        unsupportedEncryption: opened.unsupportedEncryption)
+                    if needsKey && key == nil { result.sessionsIssue = "The source browser's Safe Storage key was unavailable. Encrypted cookies could not be decrypted." }
+                    return result
+                }
+                let access = cookieAccess?() ?? ChromiumCookies.Access(store: ProfileManager.dataStore(for: profileID).httpCookieStore)
+                var report = await ChromiumCookies.publish(opened.cookies, validate: {
+                    validateDestination() && !destination.isRetired && ImportOperations.isActive(admission)
+                }, fetch: access.fetch, set: access.set, remove: access.remove)
+                report.skipped += opened.skipped
+                report.failed += opened.failed
+                report.unsupportedEncryption = opened.unsupportedEncryption
+                result.sessions = report
+                if needsKey && key == nil {
+                    result.sessionsIssue = "The source browser's Safe Storage key was unavailable. Encrypted cookies could not be decrypted."
+                }
+            } catch is CancellationError {
+                result.sessions = .init(skipped: rowCount, stopped: true)
+            } catch {
+                result.sessionsIssue = "Cookies were not imported. " + error.localizedDescription
+            }
+            return result
+        }
+    }
+
     /// A folder the user picked in the panel. Its family is sniffed from what is inside it,
     /// since the path tells us nothing reliable.
     @MainActor private static func pickProfileFolder() -> BrowserProfile? {
@@ -202,20 +278,34 @@ enum BrowserImport {
         let history = fm.fileExists(atPath: folder.appendingPathComponent("History").path)
         let places = fm.fileExists(atPath: folder.appendingPathComponent("places.sqlite").path)
         let marks = fm.fileExists(atPath: folder.appendingPathComponent("Bookmarks").path)
-        guard history || places || marks else {
+        let cookies = ChromiumCookies.file(at: folder) != nil
+        guard history || places || marks || cookies else {
             let a = NSAlert()
             a.alertStyle = .warning
             a.messageText = "That folder doesn't look like a browser profile."
             a.informativeText = "Vane looked for a History, Bookmarks or places.sqlite file "
-                + "in \(folder.lastPathComponent) and found none."
+                + "or Cookies file in \(folder.lastPathComponent) and found none."
             a.runModal()
             return nil
         }
-        return BrowserProfile(browser: places ? "Firefox" : "Chromium",
-                              profile: folder.lastPathComponent,
-                              path: folder,
-                              hasHistory: history || places,
-                              hasBookmarks: marks || places)
+        var browser = places ? "Firefox" : "Unidentified Chromium"
+        if !places && cookies {
+            // A powerbox-selected folder says nothing about its vendor. The user must
+            // explicitly choose the matching identity before any foreign Keychain read.
+            let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 25))
+            popup.addItems(withTitles: ["History and bookmarks only"] + ChromiumCookies.browsers)
+            let identity = NSAlert()
+            identity.messageText = "Which browser wrote this profile?"
+            identity.informativeText = "Choose the source browser to make optional session import available. "
+                + "Vane will use only that browser's Safe Storage identity."
+            identity.accessoryView = popup
+            identity.addButton(withTitle: "Use Profile")
+            identity.addButton(withTitle: "Cancel")
+            guard identity.runModal() == .alertFirstButtonReturn else { return nil }
+            if popup.indexOfSelectedItem > 0 { browser = ChromiumCookies.browsers[popup.indexOfSelectedItem - 1] }
+        }
+        return BrowserProfile(browser: browser, profile: folder.lastPathComponent, path: folder,
+                              hasHistory: history || places, hasBookmarks: marks || places)
     }
 
     private enum Family { case chromium, firefox, safari }
@@ -510,6 +600,19 @@ enum BrowserImport {
         sqlite3_column_text(st, col).map { String(cString: $0) } ?? ""
     }
 
+    @MainActor struct SessionReview {
+        let option = NSButton(checkboxWithTitle: "Also copy cookies / sessions", target: nil, action: nil)
+        var includeSessions: Bool { option.isEnabled && option.state == .on }
+        init(source: BrowserProfile) {
+            option.state = .off
+            option.isEnabled = ChromiumCookies.identity(browser: source.browser) != nil
+                && ChromiumCookies.file(at: source.path) != nil
+            option.toolTip = option.isEnabled
+                ? "Optional. macOS may ask to read this browser's Safe Storage key. Existing Vane cookies are kept."
+                : "Session import requires a supported Chromium browser and its cookie database."
+        }
+    }
+
     // MARK: UI
 
     @MainActor static func chooseAndImport() {
@@ -544,6 +647,7 @@ enum BrowserImport {
             var parts: [String] = []
             if p.hasHistory { parts.append("history") }
             if p.hasBookmarks { parts.append("bookmarks") }
+            if ChromiumCookies.file(at: p.path) != nil { parts.append("optional sessions") }
             popup.addItem(withTitle: "\(p.browser) — \(p.profile) (\(parts.joined(separator: " + ")))")
         }
 
@@ -559,22 +663,94 @@ enum BrowserImport {
         report(importing: found[max(0, popup.indexOfSelectedItem)])
     }
 
-    /// Shared by the detected-profile path and the pick-a-folder path.
+    /// Shared by detected and explicitly identified folder imports. The checkbox starts
+    /// off on every review; only this reviewed choice can authorize Safe Storage access.
     @MainActor private static func report(importing chosen: BrowserProfile) {
-        let profileID = ProfileManager.activeProfileID
-        Task {
+        let owner = Windows.current
+        let profileID = owner?.profileID ?? ProfileManager.activeProfileID
+        guard owner?.isPrivate != true, profileID != Profile.incognito.id,
+              let profile = ProfileManager.shared.profiles.first(where: { $0.id == profileID }) else {
+            let refused = NSAlert()
+            refused.messageText = "Choose a regular browsing profile before importing."
+            refused.runModal()
+            return
+        }
+        let scoped = chosen.path.startAccessingSecurityScopedResource()
+        let review = SessionReview(source: chosen)
+        let alert = NSAlert()
+        alert.messageText = "Import from \(chosen.browser) — \(chosen.profile)"
+        alert.informativeText = "Destination: \(profile.name). History and bookmarks are copied together. "
+            + "Existing Vane cookies are kept. Optional cookies may carry sessions, but do not guarantee a completed sign-in; "
+            + "site storage, passkeys and device-bound credentials are not copied. "
+            + "Unsupported encryption, expired and partitioned cookies are skipped."
+        alert.accessoryView = review.option
+        alert.addButton(withTitle: "Import")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            if scoped { chosen.path.stopAccessingSecurityScopedResource() }
+            return
+        }
+        let includeSessions = review.includeSessions
+        let hadOwner = owner != nil
+        let validate: @MainActor () -> Bool = { [weak owner] in
+            ChromiumCookies.destinationAllowed(profileID: profileID, currentProfileID: ProfileManager.activeProfileID,
+                isPrivate: owner?.isPrivate == true || Windows.current?.isPrivate == true,
+                profiles: ProfileManager.shared.profiles.map(\.id))
+                && (!hadOwner || (owner?.profileID == profileID && owner?.window != nil))
+        }
+        let progress = ImportProgress()
+        progress.task = Task {
+            defer { if scoped { chosen.path.stopAccessingSecurityScopedResource() } }
             let done = NSAlert()
             do {
-                let (h, b) = try await importAllAsync(from: chosen, profileID: profileID)
-                done.messageText = "Imported \(h) history entr\(h == 1 ? "y" : "ies") "
-                    + "and \(b) bookmark\(b == 1 ? "" : "s") from \(chosen.browser)."
+                let result = try await importReviewed(from: chosen, profileID: profileID,
+                    includeSessions: includeSessions, validateDestination: validate)
+                done.messageText = "Imported \(result.history) history entries and \(result.bookmarks) bookmarks from \(chosen.browser)."
+                var details: [String] = []
+                if let sessions = result.sessions {
+                    details.append("Cookies: \(sessions.imported) imported, \(sessions.skipped) skipped, \(sessions.failed) failed.")
+                    if sessions.unsupportedEncryption > 0 {
+                        details.append("\(sessions.unsupportedEncryption) cookies used unsupported encryption (only macOS v10 is supported).")
+                    }
+                    if sessions.stopped { details.append("Session import stopped. Completed writes were kept; remaining cookies were skipped.") }
+                    if sessions.failed > 0 { done.alertStyle = .warning }
+                }
+                if let issue = result.sessionsIssue { details.append(issue); done.alertStyle = .warning }
+                if includeSessions { details.append("Cookies do not guarantee sign-in. Some sites require signing in again.") }
+                done.informativeText = details.joined(separator: "\n\n")
+            } catch is CancellationError {
+                done.messageText = "Import stopped."
+                done.informativeText = "The destination changed or the import was cancelled. Completed changes were kept."
             } catch {
                 done.alertStyle = .warning
                 done.messageText = "Could not import from \(chosen.browser)."
                 done.informativeText = error.localizedDescription
             }
+            progress.close()
             done.runModal()
-            rebuild()   // the Bookmarks and History menus are snapshots taken at build time
+            rebuild()
+            BookmarkManager.refresh(profileID: profileID)
+        }
+        progress.show(in: owner?.window)
+    }
+
+    @MainActor private final class ImportProgress {
+        let alert = NSAlert()
+        var task: Task<Void, Never>?
+        var finishing = false
+        func show(in window: NSWindow?) {
+            guard let window else { return }
+            alert.messageText = "Importing browser data…"
+            alert.informativeText = "Cancel keeps completed history/bookmark batches and verified cookies."
+            alert.addButton(withTitle: "Cancel Import")
+            alert.beginSheetModal(for: window) { [self] _ in
+                if !finishing { task?.cancel() }
+            }
+        }
+        func close() {
+            finishing = true
+            if let parent = alert.window.sheetParent { parent.endSheet(alert.window) }
+            task = nil
         }
     }
 
