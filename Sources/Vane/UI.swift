@@ -623,7 +623,7 @@ struct BrowserPaletteOverlay: View {
     var body: some View {
         ZStack {
             if let mode = store.palette {
-                PaletteView(mode: mode) {
+                PaletteView(ownsAccessibilityModal: false, mode: mode) {
                     store.palette = nil
                     store.focusPage()
                 }
@@ -643,6 +643,9 @@ struct BrowserPaletteOverlay: View {
                              ? Look.footer + Look.footerInset + 2 * Look.inset : 16)
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(store.palette == nil ? [] : .isModal)
+        .accessibilityHidden(store.palette == nil)
         // Keep search's fade out of the sidebar's disabled-state transaction.
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
                    value: store.palette == nil)

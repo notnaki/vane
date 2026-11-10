@@ -923,6 +923,7 @@ private struct PaletteResultHover: ViewModifier {
     @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var batterySaver = BatterySaver.shared
     private var sidebarLayout: SidebarChromeLayout { SidebarChromeLayout(width: sidebar.width) }
+    var ownsAccessibilityModal = true
     let mode: PaletteMode
     let dismiss: () -> Void
 
@@ -1314,7 +1315,7 @@ private struct PaletteResultHover: ViewModifier {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(mode.title)
         // The bar owns the window while it is up, so everything behind it is noise.
-        .accessibilityAddTraits(.isModal)
+        .accessibilityAddTraits(ownsAccessibilityModal ? .isModal : [])
     }
 
     private var list: some View {
