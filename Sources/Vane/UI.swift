@@ -392,6 +392,9 @@ private struct PageRecoveryView: View {
 /// tinted by the current space. Nothing here is opaque — `WindowGlass` is the only ground,
 /// so the desktop shows through everything the sidebar does not cover.
 struct BrowserWindow: View {
+    // BrowserWindowHost presents search above its native Space-swipe surfaces.
+    // Standalone SwiftUI hosts retain the inline presentation.
+    var presentsPalette = true
     @ObservedObject private var batterySaver = BatterySaver.shared
     @EnvironmentObject var store: TabStore
     @EnvironmentObject var profiles: ProfileManager
@@ -449,21 +452,7 @@ struct BrowserWindow: View {
                 SidebarHandle().offset(x: sidebar.width - SidebarHandle.hitTestWidth / 2)
                     .zIndex(1)
             }
-            // Last, so the search bar composites over the sidebar as well as the page.
-            ZStack {
-                if let mode = store.palette {
-                    PaletteView(mode: mode) { dismissPalette() }
-                        // The bar fades itself in; this is the way out — Escape and a click
-                        // on the scrim dissolve it rather than cutting to the page.
-                        .transition(.opacity)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Keep the fade transaction inside the persistent overlay. Opening search
-            // also disables the sidebar; those controls do not need to animate with it.
-            .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
-                       value: store.palette == nil)
-            .zIndex(2)
+            if presentsPalette { BrowserPaletteOverlay().zIndex(2) }
         }
         // The window is `.fullSizeContentView`, but SwiftUI still keeps a titlebar-sized
         // safe area at the top. Without this the sidebar's first row sits *below* the
@@ -621,11 +610,28 @@ struct BrowserWindow: View {
         window?.centreTrafficLights()
     }
 
-    /// Nothing to undo on dismiss: ⌘T makes no tab until the bar is submitted. The page takes
-    /// the keyboard back as the bar's field goes — see `TabStore.focusPage`.
-    private func dismissPalette() {
-        store.palette = nil
-        store.focusPage()
+}
+
+/// Shared by standalone SwiftUI windows and the native overlay above Space travel.
+struct BrowserPaletteOverlay: View {
+    @EnvironmentObject var store: TabStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    var body: some View {
+        ZStack {
+            if let mode = store.palette {
+                PaletteView(mode: mode) {
+                    store.palette = nil
+                    store.focusPage()
+                }
+                .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Keep search's fade out of the sidebar's disabled-state transaction.
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
+                   value: store.palette == nil)
     }
 }
 
