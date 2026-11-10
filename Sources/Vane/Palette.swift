@@ -1057,7 +1057,6 @@ private struct PaletteResultHover: ViewModifier {
                                            ? min(sidebarLayout.addressTop,
                                                  geo.size.height - barHeight - Look.inset)
                                            : searchTop(geo.size.height)))
-                    .animation(motion(Look.list), value: sidebarLayout.stacked)
                     .transaction(value: CGSize(width: width, height: barHeight)) {
                         // Native Space handoff keeps covered sidebar rows immediate.
                         // The floating search surface still owns its resize spring.
