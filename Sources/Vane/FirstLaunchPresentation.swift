@@ -13,7 +13,7 @@ import SwiftUI
     init(host: NSWindow, content: AnyView, onHostClose: @escaping () -> Void = {}) {
         self.host = host
         self.onHostClose = onHostClose
-        welcome = NSHostingView(rootView: content)
+        welcome = WelcomeHostingView(rootView: content)
         // Setup adapts to the saved browser size rather than imposing its ideal size.
         welcome.sizingOptions = []
         super.init()
@@ -46,8 +46,26 @@ import SwiftUI
         }
     }
 
+    /// Consent dialogs belong to the restored browser, after its dismissal event.
+    func closeAndContinue(_ action: @escaping @MainActor () -> Void) {
+        guard browser != nil else { return }
+        close()
+        Task { @MainActor in action() }
+    }
+
     @objc private func hostWillClose() {
         close()
         onHostClose()
+    }
+}
+
+/// Escape belongs to the guided screen, never to window/setup dismissal.
+private final class WelcomeHostingView: NSHostingView<AnyView> {
+    override func cancelOperation(_ sender: Any?) {}
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.type == .keyDown, event.keyCode == 53,
+           event.modifierFlags.intersection([.command, .control, .option]).isEmpty { return true }
+        return super.performKeyEquivalent(with: event)
     }
 }
