@@ -43,4 +43,33 @@ import XCTest
         XCTAssertNil(view.layer?.animation(forKey: SidebarResizeHighlightView.fadeKey))
         XCTAssertEqual(view.layer?.opacity, 1)
     }
+
+    func testHoverWaitsBeforeRevealingAndLeavingCancelsIt() async throws {
+        let view = fixture()
+        view.setActive(true, animated: true, delay: 0.25)
+        XCTAssertEqual(view.layer?.opacity, 0, "Passing over the seam must not reveal it immediately")
+        XCTAssertNil(view.layer?.animation(forKey: SidebarResizeHighlightView.fadeKey))
+        view.setActive(false, animated: true)
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(view.layer?.opacity, 0, "An exited hover must never flash later")
+    }
+
+    func testHoverRevealsAfterDwell() async throws {
+        let view = fixture()
+        view.setActive(true, animated: true, delay: 0.25)
+        XCTAssertEqual(view.layer?.opacity, 0)
+        try await compatibilityWait { view.layer?.opacity == 1 }
+    }
+
+    func testDraggingAndReducedMotionBypassTheHoverDelay() {
+        let view = fixture()
+        view.setActive(true, animated: true, delay: 0.25)
+        view.setActive(true, animated: true)
+        XCTAssertEqual(view.layer?.opacity, 1)
+        XCTAssertNotNil(view.layer?.animation(forKey: SidebarResizeHighlightView.fadeKey))
+        view.setActive(false, animated: false)
+        view.setActive(true, animated: false, delay: 0.25)
+        XCTAssertEqual(view.layer?.opacity, 1)
+        XCTAssertNil(view.layer?.animation(forKey: SidebarResizeHighlightView.fadeKey))
+    }
 }

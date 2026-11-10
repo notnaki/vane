@@ -123,6 +123,7 @@ struct SidebarResizeDetent {
 /// animation and must not cut short the resize affordance's entrance or exit.
 private struct SidebarResizeHighlight: NSViewRepresentable {
     var active: Bool
+    var dragging: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
@@ -131,12 +132,18 @@ private struct SidebarResizeHighlight: NSViewRepresentable {
     }
 
     func updateNSView(_ view: SidebarResizeHighlightView, context: Context) {
-        view.setActive(active, animated: !reduceMotion && !batterySaver.isActive)
+        view.setActive(active, animated: !reduceMotion && !batterySaver.isActive,
+                       delay: dragging ? 0 : 0.25)
+    }
+
+    static func dismantleNSView(_ view: SidebarResizeHighlightView, coordinator: ()) {
+        view.setActive(false, animated: false)
     }
 }
 
 final class SidebarResizeHighlightView: NSView {
     static let fadeKey = "resize-highlight-opacity"
+    private var revealTask: Task<Void, Never>?
 
     init() {
         super.init(frame: .zero)
@@ -162,7 +169,26 @@ final class SidebarResizeHighlightView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func setActive(_ active: Bool, animated: Bool) {
+    func setActive(_ active: Bool, animated: Bool, delay: TimeInterval = 0) {
+        guard active && animated && delay > 0 else {
+            revealTask?.cancel()
+            revealTask = nil
+            applyActive(active, animated: animated)
+            return
+        }
+        // Repeated layout updates must not restart an already pending hover dwell.
+        guard layer?.opacity == 0, revealTask == nil else { return }
+        let wait = UIAnimation.feedback.duration(delay)
+        revealTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(wait)) }
+            catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.revealTask = nil
+            self.applyActive(true, animated: true)
+        }
+    }
+
+    private func applyActive(_ active: Bool, animated: Bool) {
         guard let layer else { return }
         let target: Float = active ? 1 : 0
         let changed = layer.opacity != target
@@ -208,7 +234,7 @@ struct SidebarHandle: View {
             .frame(width: Self.hitTestWidth)
             .frame(maxHeight: .infinity)
             .overlay {
-                SidebarResizeHighlight(active: hovered || start != nil)
+                SidebarResizeHighlight(active: hovered || start != nil, dragging: start != nil)
                     .frame(width: 4)
                     .padding(.vertical, 14)
                     .allowsHitTesting(false)
