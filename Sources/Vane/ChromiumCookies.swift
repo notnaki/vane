@@ -187,10 +187,14 @@ enum ChromiumCookies {
                 }
                 let numbersValid = sqlite3_column_type(row, 4) == SQLITE_INTEGER && sqlite3_column_int64(row, 4) >= 0
                     && sqlite3_column_type(row, 7) == SQLITE_INTEGER && (-1...2).contains(sqlite3_column_int64(row, 7))
-                let malformed = !textValid || !flagsValid || !numbersValid || sqlite3_column_type(row, 3) != SQLITE_BLOB
-                let persistent = sqlite3_column_int($0, 10) != 0 && sqlite3_column_int($0, 11) != 0
+                let hasExpiry = sqlite3_column_int64(row, 10) == 1
+                let persistent = sqlite3_column_int64(row, 11) == 1
+                let expiry = sqlite3_column_int64(row, 4)
+                let lifetimeValid = hasExpiry == persistent && (expiry > 0) == persistent
+                let malformed = !textValid || !flagsValid || !numbersValid || !lifetimeValid
+                    || sqlite3_column_type(row, 3) != SQLITE_BLOB
                 rows.append(.init(host: text($0, 0), name: text($0, 1), path: text($0, 2), value: blob($0, 3),
-                                  expires: persistent ? sqlite3_column_int64($0, 4) : 0,
+                                  expires: expiry,
                                   secure: sqlite3_column_int($0, 5) != 0, httpOnly: sqlite3_column_int($0, 6) != 0,
                                   sameSite: Int(sqlite3_column_int($0, 7)),
                                   partitioned: !text($0, 8).isEmpty || sqlite3_column_int($0, 12) != 0,
@@ -350,6 +354,7 @@ enum ChromiumCookies {
     /// accepting Foundation's normalization of security, scope or lifetime.
     nonisolated static func cookie(_ row: Row, value: String) -> HTTPCookie? {
         guard !row.partitioned, !row.malformed, row.expires >= 0, !row.host.isEmpty, !row.name.isEmpty,
+              row.value.isEmpty || row.plaintext.isEmpty,
               row.path.hasPrefix("/"),
               (-1...2).contains(row.sameSite) else { return nil }
         if row.name.hasPrefix("__Secure-"), !row.secure { return nil }

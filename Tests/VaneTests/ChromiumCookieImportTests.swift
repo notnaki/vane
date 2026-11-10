@@ -90,7 +90,7 @@ import CryptoKit
         INSERT INTO cookies VALUES ('example.invalid', 'session', '/', X'', 0, 0, 1, 1, '', 'plain', 0, 0);
         INSERT INTO cookies VALUES ('example.invalid', 'expired', '/', X'', 11644473600000001, 1, 0, -1, '', 'old', 1, 1);
         INSERT INTO cookies VALUES ('example.invalid', 'partitioned', '/', X'', 0, 1, 0, -1, 'https://other.invalid', 'partition', 0, 0);
-        INSERT INTO cookies VALUES ('example.invalid', 'modern', '/', X'763230aabbcc', 0, 1, 0, -1, '', 'no-fallback', 0, 0);
+        INSERT INTO cookies VALUES ('example.invalid', 'modern', '/', X'763230aabbcc', 0, 1, 0, -1, '', '', 0, 0);
         INSERT INTO cookies VALUES ('example.invalid', 'damaged', '/', X'763130aabbcc', 0, 1, 0, -1, '', '', 0, 0);
         """, network: true)
         let snapshot = try ChromiumCookies.read(at: folder)
@@ -126,6 +126,53 @@ import CryptoKit
         XCTAssertThrowsError(try ChromiumCookies.read(at: future))
         let old = try fixture(version: 22)
         XCTAssertThrowsError(try ChromiumCookies.read(at: old))
+    }
+
+    func testContradictoryLifetimeFieldsCannotReviveExpiredCookiesAsSessions() throws {
+        let future = (Int64(Date.now.timeIntervalSince1970) + 3600 + 11_644_473_600) * 1_000_000
+        let folder = try fixture(version: 23, rows: """
+        INSERT INTO cookies VALUES ('example.invalid','expired-flags','/',X'',11644473600000001,1,1,2,'','old',1,0);
+        INSERT INTO cookies VALUES ('example.invalid','inverse-flags','/',X'',\(future),1,1,2,'','wrong',0,1);
+        INSERT INTO cookies VALUES ('example.invalid','session-with-expiry','/',X'',\(future),1,1,2,'','wrong',0,0);
+        INSERT INTO cookies VALUES ('example.invalid','persistent-without-expiry','/',X'',0,1,1,2,'','wrong',1,1);
+        INSERT INTO cookies VALUES ('example.invalid','valid-session','/',X'',0,1,1,2,'','keep',0,0);
+        """)
+        let result = ChromiumCookies.open(try ChromiumCookies.read(at: folder), key: nil)
+        XCTAssertEqual(result.cookies.map(\.name), ["valid-session"])
+        XCTAssertEqual(result.skipped, 4)
+        XCTAssertEqual(result.failed, 0)
+    }
+
+    func testConflictingPlaintextAndValidCiphertextAreRejectedBeforeDecryption() throws {
+        for version in [23, 24] {
+            let host = "example.invalid"
+            let prefix = version == 24 ? Data(SHA256.hash(data: Data(host.utf8))) : Data()
+            let encrypted = seal(prefix + Data("encrypted-choice".utf8))
+            let row = ChromiumCookies.Row(host: host, name: "sid", path: "/", value: encrypted,
+                expires: 0, secure: true, plaintext: "conflicting-choice")
+            for key in [nil, SafeStorage.key(secret: secret)] as [Data?] {
+                let opened = ChromiumCookies.open(.init(version: version, rows: [row]), key: key)
+                XCTAssertTrue(opened.cookies.isEmpty)
+                XCTAssertEqual(opened.skipped, 1)
+                XCTAssertEqual(opened.failed, 0)
+            }
+        }
+    }
+
+    func testAmbiguousEncryptedSourceDoesNotRequestAKeychainSecret() async throws {
+        TestEnvironment.prepare()
+        let encrypted = seal(Data("encrypted-choice".utf8)).map { String(format: "%02x", $0) }.joined()
+        let folder = try fixture(version: 23, rows: """
+        INSERT INTO cookies VALUES ('example.invalid','sid','/',X'\(encrypted)',0,1,1,2,'','conflicting-choice',0,0);
+        """)
+        let id = UUID()
+        addTeardownBlock { await MainActor.run { Store.forget(id) } }
+        let result = try await BrowserImport.importReviewed(from: .init(browser: "Chrome", profile: "Fixture", path: folder,
+            hasHistory: false, hasBookmarks: false), profileID: id, includeSessions: true, validateDestination: { true },
+            readKey: { _ in XCTFail("Malformed ambiguous rows must not request a browser secret"); return nil },
+            cookieAccess: { .init(fetch: { [] }, set: { _ in XCTFail("Malformed rows cannot be published") }) })
+        XCTAssertEqual(result.sessions?.skipped, 1)
+        XCTAssertEqual(result.sessions?.failed, 0)
     }
 
     func testMissingSecurityColumnFailsClosedAndArcUsesSharedSnapshot() throws {

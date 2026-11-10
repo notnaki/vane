@@ -226,7 +226,7 @@ import CryptoKit
                                   samesite INTEGER, top_frame_site_key TEXT, value TEXT,
                                   has_expires INTEGER, is_persistent INTEGER);
             INSERT INTO cookies VALUES ('example.com', 'sid', '/', X'\(sealed)',
-                                        14000000000000000, 1, 1, 2, '', '', 1, 0);
+                                        0, 1, 1, 2, '', '', 0, 0);
             INSERT INTO cookies VALUES ('example.com', 'partitioned', '/', X'\(sealed)',
                                         0, 1, 1, 2, 'https://other.com', '', 0, 0);
             """)
