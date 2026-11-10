@@ -1601,9 +1601,15 @@ extension TabStore {
             window.makeFirstResponder(page)
             return
         }
-        Motion.list {
-            libraryOpen = false
-            sidebarShown = true
+        if libraryOpen || !sidebarShown {
+            Motion.list {
+                libraryOpen = false
+                sidebarShown = true
+            }
+        } else {
+            // Keep an explicit F6 ahead of a released Library swipe without
+            // invalidating the already-visible address pill before its request.
+            librarySwipeMonitor.cancelPendingActivation(toward: false)
         }
         DispatchQueue.main.async { [weak self, weak holder] in
             if NativeSidebarNavigation.diagnosticsEnabled {

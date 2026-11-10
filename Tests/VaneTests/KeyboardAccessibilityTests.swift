@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import WebKit
 import XCTest
@@ -539,6 +540,10 @@ private struct DisabledKeyboardSurface: View {
             print("F6_EASEL before-action running=\(NSApp.isRunning) active=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) key=\(window.isKeyWindow) visible=\(window.isVisible) pageOwner=\(store.activePageResponder === page) holder=\(String(describing: window.firstResponder))")
             XCTAssertTrue(NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window,
                           "F6 must start in an admitted foreground AppKit window")
+            var visibilityPublications = 0
+            let sidebarUpdates = store.$sidebarShown.dropFirst().sink { _ in visibilityPublications += 1 }
+            let libraryUpdates = store.$libraryOpen.dropFirst().sink { _ in visibilityPublications += 1 }
+            defer { sidebarUpdates.cancel(); libraryUpdates.cancel() }
             store.focusNextArea()
             try await Task.sleep(for: .milliseconds(150))
             print("F6_TRACE endpoint at=\(ProcessInfo.processInfo.systemUptime) request=\(store.chromeFocusRequested) holder=\(String(describing: window.firstResponder)) chrome=\(chrome) page=\(page)")
@@ -547,6 +552,8 @@ private struct DisabledKeyboardSurface: View {
             store.focusNextArea()
             print("F6_TRACE return at=\(ProcessInfo.processInfo.systemUptime) holder=\(String(describing: window.firstResponder))")
             XCTAssertTrue(window.firstResponder === page)
+            XCTAssertEqual(visibilityPublications, 0,
+                           "F6 must reuse the visible chrome without invalidating it before its focus request")
         }
     }
 
