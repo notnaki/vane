@@ -256,7 +256,7 @@ certificate needs another decision.
 
 [Crash recovery](CRASH-RECOVERY.md) describes previous generations, preserved originals, and manual recovery precautions. [Draft protection](DRAFT-PROTECTION.md) keeps eligible live forms awake; drafts are not written to disk or backed up.
 
-For what leaves the Mac, see [AI provider metadata and
-keys](INTEGRATIONS.md#ai-providers-and-your-own-keys), [filter
+For what leaves the Mac, see [AI connections, shared metadata and
+credentials](INTEGRATIONS.md#ai-connections-and-feature-routing), [filter
 subscriptions](INTEGRATIONS.md#content-blocking-and-filter-subscriptions), and [GitHub
 Live Folders](INTEGRATIONS.md#github-live-folders).

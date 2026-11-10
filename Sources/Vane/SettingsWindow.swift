@@ -982,9 +982,9 @@ private struct MaxPane: View {
     @AppStorage("instantLinks") private var instant = true
     @AppStorage("aiSettingsRevision") private var aiRevision = 0
 
-    private var off: Bool {
+    private func off(_ feature: AIFeature) -> Bool {
         _ = aiRevision
-        return !appleAI || !BrowserAI.ready
+        return !appleAI || !BrowserAI.ready(for: feature)
     }
 
     var body: some View {
@@ -992,26 +992,25 @@ private struct MaxPane: View {
             AIProviderSettings()
             SettingsCard {
                 SettingsRow("AI features") {
-                    Toggle("", isOn: $appleAI).labelsHidden()
+                    Toggle("", isOn: BrowserAI.enabledBinding).labelsHidden()
                 }
                 // Each feature is separately switchable, because they do not cost the same.
                 // Grouping tabs is ~12 seconds of model time; the others are far cheaper or
                 // usually answered without the model at all.
                 SettingsRow("Group tabs by topic") {
-                    Toggle("", isOn: $tidyTabs).labelsHidden().disabled(off)
+                    Toggle("", isOn: $tidyTabs).labelsHidden().disabled(off(.tabGroups))
                 }
                 SettingsRow("Preview before tidying") {
                     Toggle("Preview before tidying", isOn: $tidyPreview).labelsHidden()
                 }
                 Footnote("Turn off to apply Tidy groups immediately. You can undo the grouping afterward.")
                 SettingsRow("Rename messy downloads") {
-                    Toggle("", isOn: $tidyDownloads).labelsHidden().disabled(off)
+                    Toggle("", isOn: $tidyDownloads).labelsHidden().disabled(off(.downloads))
                 }
                 SettingsRow("Rename favorite and pinned tab titles") {
-                    Toggle("", isOn: $tidyTitles).labelsHidden().disabled(off)
+                    Toggle("", isOn: $tidyTitles).labelsHidden().disabled(off(.tabTitles))
                 }
-                Footnote(BrowserAI.unavailableReason
-                         ?? "Names and groups use your selected AI provider. Grouping runs when you choose Tidy Tabs. The switches above control download naming and favorite and pinned tab naming.")
+                Footnote("Each feature uses the connection selected above. Grouping runs when you choose Tidy Tabs. These switches control download naming and favorite and pinned tab naming.")
             }
 
             SettingsCard {

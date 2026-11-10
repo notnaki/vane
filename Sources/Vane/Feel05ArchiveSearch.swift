@@ -8,6 +8,7 @@ actor Feel05ArchiveSearch {
         let revision: Int
         let query: String
         let littleOnly: Bool
+        let profileIDs: Set<UUID>
         let day: Date
         let calendar: Calendar
     }
@@ -17,19 +18,20 @@ actor Feel05ArchiveSearch {
     private var retainedRows = 0
 
     func groups(_ entries: [ArchiveLibrary.Entry], revision: Int, query: String,
-                littleOnly: Bool, now: Date = .now, calendar: Calendar = .current) -> Groups {
+                littleOnly: Bool, profileIDs: Set<UUID> = [], now: Date = .now, calendar: Calendar = .current) -> Groups {
         guard !Task.isCancelled else { return [] }
         if generation != revision {
             cache.removeAll(); order.removeAll(); retainedRows = 0
             generation = revision
         }
-        let key = Key(revision: revision, query: query, littleOnly: littleOnly,
+        let key = Key(revision: revision, query: query, littleOnly: littleOnly, profileIDs: profileIDs,
                       day: calendar.startOfDay(for: now), calendar: calendar)
         if let hit = cache[key] { return hit }
         var found: [ArchiveLibrary.Entry] = []
         for row in entries {
             guard !Task.isCancelled else { return [] }
-            if (!littleOnly || row.entry.isLittleArc)
+            if (profileIDs.isEmpty || profileIDs.contains(row.profile.id))
+                && (!littleOnly || row.entry.isLittleArc)
                 && Library.matches([row.entry.title, row.entry.url, row.profile.name], query) {
                 found.append(row)
             }

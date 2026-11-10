@@ -55,7 +55,9 @@ import XCTest
     private func load(_ path: String, in tab: Tab) async throws {
         let url = try server.url(path)
         tab.navigate(to: url)
-        try await compatibilityWait { !tab.web.isLoading && tab.web.url == url && tab.title == "Page \(path)" }
+        // WebKit clears isLoading before didFinish republishes the title. Admit
+        // Vane's owned navigation completion before tests mutate the model title.
+        try await compatibilityWait { !tab.web.isLoading && !tab.loading && tab.web.url == url && tab.title == "Page \(path)" }
     }
 
     private func title(_ expected: String, in store: TabStore,
