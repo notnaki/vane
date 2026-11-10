@@ -296,7 +296,12 @@ jobs:
         run: bash scripts/test-cli-import.sh .build/debug/vane
 
       - name: Cloud AI transport and privacy checks
-        run: scripts/check-cloud-ai.sh
+        run: |
+          scripts/check-cloud-ai.sh
+          scripts/check-ai-connections.sh
+          scripts/check-ai-routing.sh
+          scripts/check-chatgpt.sh
+          scripts/check-chatgpt-session.sh
 
       - name: DMG package
         run: ./scripts/test-build-dmg.sh

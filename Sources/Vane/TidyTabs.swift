@@ -215,7 +215,7 @@ import Foundation
         let tabs = candidates(in: store)
         guard tabs.count >= 2 else { return nil }
 
-        if BrowserAI.ready,
+        if BrowserAI.ready(for: .tabGroups),
            let raw = await BrowserAI.group(tabs.map { (id: $0.id.uuidString, title: $0.title, host: $0.host) }, isPrivate: store.isPrivate) {
             // AppleAI.group already dropped invented ids and tidied the names. This is the
             // second gate: shape, not hygiene — see `sanitize`.
