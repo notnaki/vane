@@ -150,6 +150,54 @@ import XCTest
         XCTAssertFalse(resize.isPreparing)
     }
 
+    func testProgrammaticFrameSupersedesScheduledContinuation() async throws {
+        let (host, _) = fixture()
+        let window = modelWindow(host)
+        defer { window.contentView = nil; host.removePage(); window.close() }
+        var paints: [@MainActor @Sendable () -> Void] = []
+        var commits = 0
+        let resize = WindowResizePreparation(window: window,
+            presenter: { _, callback in paints.append(callback) }, deadline: { _ in }) { frame, display in
+                commits += 1
+                window.setFrame(frame, display: display)
+            }
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 800, height: 500), display: true))
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), display: true))
+        paints.removeFirst()()
+        let newer = NSRect(x: 20, y: 30, width: 700, height: 450)
+        window.setFrame(newer, display: false)
+        let drained = XCTestExpectation(description: "Scheduled handoff inspected")
+        RunLoop.main.perform(inModes: [.common]) { drained.fulfill() }
+        await fulfillment(of: [drained], timeout: 2)
+        XCTAssertTrue(paints.isEmpty, "Do not prepare the stale queued drag")
+        paints.forEach { $0() }
+        XCTAssertEqual(commits, 1)
+        XCTAssertEqual(window.frame, newer)
+        XCTAssertFalse(resize.isPreparing)
+    }
+
+    func testReplacedRootRejectsPaintAndTimeoutCommits() {
+        for useTimeout in [false, true] {
+            let (host, web) = fixture()
+            let window = modelWindow(host)
+            defer { window.contentView = nil; host.removePage(); window.close() }
+            var paint: (@MainActor @Sendable () -> Void)?
+            var timeout: (@MainActor @Sendable () -> Void)?
+            var commits = 0
+            let resize = WindowResizePreparation(window: window,
+                presenter: { _, callback in paint = callback }, deadline: { timeout = $0 }) { _, _ in commits += 1 }
+            let original = window.frame
+            XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 800, height: 500), display: true))
+            window.contentView = NSView(frame: host.frame)
+            if useTimeout { timeout?() } else { paint?() }
+            XCTAssertEqual(commits, 0, "A retired presentation cannot resize its replacement")
+            XCTAssertEqual(window.frame, original)
+            XCTAssertFalse(resize.isPreparing)
+            XCTAssertTrue(web.autoresizesSubviews)
+            XCTAssertEqual(web.autoresizingMask, [.width, .height])
+        }
+    }
+
     private func modelWindow(_ host: WebHost) -> ResizeModelWindow {
         let window = ResizeModelWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
                                        styleMask: .borderless, backing: .buffered, defer: false)

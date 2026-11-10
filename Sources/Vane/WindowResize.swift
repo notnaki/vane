@@ -222,9 +222,7 @@ extension EnvironmentValues {
         }
         guard window.isVisible, window.contentView === root,
               pages.allSatisfy({ $0.stillOwned && $0.web.window === window }) else {
-            let latest = pending ?? active
             cancel()
-            if window.isVisible { commit(latest.frame, latest.display) }
             return
         }
         // WebKit invokes this inside its layer-tree transaction, after the new
@@ -246,11 +244,18 @@ extension EnvironmentValues {
         if pending != nil {
             nextScheduled = true
             let nextToken = generation
+            let committedFrame = window.frame
+            let committedRootID = root.map(ObjectIdentifier.init)
             // Finish this paint transaction before preparing another viewport.
             // Otherwise its native clips can enter the previous size's commit.
             RunLoop.main.perform(inModes: [.common]) { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self, self.generation == nextToken, self.nextScheduled else { return }
+                    guard let window = self.window, window.frame == committedFrame,
+                          window.contentView.map(ObjectIdentifier.init) == committedRootID else {
+                        self.cancel()
+                        return
+                    }
                     CATransaction.flush()
                     self.nextScheduled = false
                     guard let next = self.pending else { return }
@@ -263,7 +268,10 @@ extension EnvironmentValues {
 
     private func timedOut(_ token: UUID) {
         guard generation == token, let active else { return }
-        guard let window, window.frame == startingFrame else { cancel(); return }
+        guard let window, window.frame == startingFrame, window.isVisible,
+              window.contentView === root,
+              pages.allSatisfy({ $0.stillOwned && $0.web.window === window })
+        else { cancel(); return }
         let latest = pending ?? active
         cancel()
         bypassForDrag = window.inLiveResize
