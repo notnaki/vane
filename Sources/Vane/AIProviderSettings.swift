@@ -106,7 +106,9 @@ private struct AIConnectionEditor: View {
         }
         if connection.provider == .custom {
             SettingsRow("API base URL") {
-                TextField("https://api.example.com/v1", text: Binding(get: { connection.baseURL }, set: changeEndpoint))
+                // Swift 6.3 crashes in IRGen when the isolated setter is a method reference.
+                TextField("https://api.example.com/v1", text: Binding(
+                    get: { connection.baseURL }, set: { value in changeEndpoint(value) }))
                     .textFieldStyle(.roundedBorder).frame(width: 270).accessibilityLabel("API base URL").disabled(busy)
             }
         }
