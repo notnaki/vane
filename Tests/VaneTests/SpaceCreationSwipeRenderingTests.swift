@@ -103,7 +103,7 @@ import XCTest
         } else {
             try await compatibilityWait { !store.spaceGesture.monitor.preparedSlides.isEmpty }
         }
-        print("RECORDED_CREATION_PREREQUISITES reducedMotion=\(Motion.spaceReduced) prepared=\(store.spaceGesture.monitor.preparedSlides.count)")
+        print("RECORDED_CREATION_PREREQUISITES reducedMotion=\(Motion.spaceReduced) prepared=\(store.spaceGesture.monitor.preparedSlides.count) actualStripCount=\(store.strip.count) fixtureSpaceCount=\(spaces.count)")
         // Real trackpad packets from the reported failure: drift grows only after axis lock.
         let samples: [(TimeInterval, CGFloat, CGFloat)] = [
             (0.000000000, -1, 0),
@@ -177,12 +177,16 @@ import XCTest
             return result
         }
         var baseline: [UUID: CGFloat] = [:]
+        var footerAdmission = "not sampled"
+        defer { print("RECORDED_FOOTER_ADMISSION \(footerAdmission)") }
         // Admit the already-expanded footer before release, not its post-release outcome.
         try await compatibilityWait {
             host.layoutSubtreeIfNeeded()
             CATransaction.flush()
             let model = footerCenters(presented: false)
             let visible = footerCenters(presented: true)
+            let markers = footerViews(in: host).filter { $0.owner === store }
+            footerAdmission = "actualStripCount=\(store.strip.count) expected=\(spaces.count) model=\(model.count) presented=\(visible.count) rootPresented=\(host.layer?.presentation() != nil) active=\(NSApp.isActive) key=\(window.isKeyWindow) layouts=\(markers.compactMap { $0.configuration?.layout.count }) hidden=\(markers.map(\.isHiddenOrHasHiddenAncestor)) centers=\(model) presentedCenters=\(visible)"
             guard model.count == spaces.count, visible.count == spaces.count,
                   model.allSatisfy({ id, x in abs((visible[id] ?? .infinity) - x) < 0.1 }) else { return false }
             baseline = visible
