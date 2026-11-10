@@ -64,6 +64,68 @@ private final class PreviewServer: @unchecked Sendable {
     func stop() { listener.cancel() }
 }
 
+/// Observes real callbacks without changing their order, policy, or owner. Installed
+/// only in synthetic replacement fixtures; the production bridge still handles all work.
+@MainActor private final class PreviewTrace: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    let downstream: WKNavigationDelegate
+    weak var previews: Previews?
+    private(set) var events: [String] = []
+    init(web: WKWebView, previews: Previews) throws {
+        downstream = try XCTUnwrap(web.navigationDelegate)
+        self.previews = previews
+        super.init()
+        web.navigationDelegate = self
+        let controller = web.configuration.userContentController
+        let world = WKContentWorld.world(name: "VanePreviewMetadata")
+        controller.removeScriptMessageHandler(forName: "vanepreviewmeta", contentWorld: world)
+        controller.add(self, contentWorld: world, name: "vanepreviewmeta")
+        record("installed", web)
+    }
+    override func responds(to selector: Selector!) -> Bool {
+        super.responds(to: selector) || MainActor.assumeIsolated { (downstream as? NSObject)?.responds(to: selector) == true }
+    }
+    override func forwardingTarget(for selector: Selector!) -> Any? { MainActor.assumeIsolated { downstream } }
+    private func identity(_ navigation: WKNavigation?) -> String {
+        navigation.map { String(describing: ObjectIdentifier($0)) } ?? "nil"
+    }
+    func record(_ event: String, _ web: WKWebView, navigation: WKNavigation? = nil) {
+        guard events.count < 96 else { return }
+        let fields = previews.map { Mirror(reflecting: $0).children }
+        let state = fields?.compactMap { field -> String? in
+            guard let key = field.label, ["latest", "committed", "navigation", "metadataDocument", "showing"].contains(key) else { return nil }
+            if let nav = field.value as? WKNavigation { return "\(key)=\(identity(nav))" }
+            return "\(key)=\(String(describing: field.value))"
+        }.joined(separator: " ") ?? "owner=nil"
+        events.append("\(event) callback=\(identity(navigation)) url=\(web.url?.absoluteString ?? "nil") loading=\(web.isLoading) title=\(previews?.current?.title ?? "nil") \(state)")
+    }
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        if let web = message.webView { record("metadata before frame=\(message.frameInfo.request.url?.absoluteString ?? "nil") main=\(message.frameInfo.isMainFrame)", web) }
+        (downstream as? WKScriptMessageHandler)?.userContentController(controller, didReceive: message)
+        if let web = message.webView { record("metadata after", web) }
+    }
+    func webView(_ web: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        record("start before", web, navigation: navigation)
+        downstream.webView?(web, didStartProvisionalNavigation: navigation)
+        record("start after", web, navigation: navigation)
+    }
+    func webView(_ web: WKWebView, didCommit navigation: WKNavigation!) {
+        downstream.webView?(web, didCommit: navigation)
+        record("commit after", web, navigation: navigation)
+    }
+    func webView(_ web: WKWebView, didFinish navigation: WKNavigation!) {
+        downstream.webView?(web, didFinish: navigation)
+        record("finish after", web, navigation: navigation)
+    }
+    func webView(_ web: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        downstream.webView?(web, didFail: navigation, withError: error)
+        record("fail \((error as NSError).code)", web, navigation: navigation)
+    }
+    func webView(_ web: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        downstream.webView?(web, didFailProvisionalNavigation: navigation, withError: error)
+        record("provisional fail \((error as NSError).code)", web, navigation: navigation)
+    }
+}
+
 @MainActor final class PreviewLoadingPerformanceTests: XCTestCase {
     private var previousBatteryMode: BatterySaver.Mode?
     override func setUp() async throws {
@@ -230,15 +292,24 @@ private final class PreviewServer: @unchecked Sendable {
             try await Task.sleep(for: .milliseconds(20))
         }
         let web = try XCTUnwrap(host?.contentView as? WKWebView)
+        let trace = try PreviewTrace(web: web, previews: previews)
         let blank = try XCTUnwrap(web.load(URLRequest(url: URL(string: "about:blank")!)))
+        trace.record("issued external blank", web, navigation: blank)
         let next = base.appendingPathComponent("next")
         previews.request(next, from: tab)
         let nextDeadline = ContinuousClock.now + .seconds(8)
+        trace.record("requested replacement", web)
         while web.url != base.appendingPathComponent("final") || web.isLoading
                 || previews.current?.title != "Current preview" {
-            guard ContinuousClock.now < nextDeadline else { return XCTFail("Replacement preview did not load") }
+            guard ContinuousClock.now < nextDeadline else {
+                trace.record("timeout appRunning=\(NSApp.isRunning) launched=\(NSRunningApplication.current.isFinishedLaunching) paths=\(server.requestedPaths)", web)
+                print(trace.events.joined(separator: "\n"))
+                return XCTFail("Replacement preview did not load: url=\(web.url?.absoluteString ?? "nil") loading=\(web.isLoading) nativeTitle=\(previews.current?.title ?? "nil") webTitle=\(web.title ?? "nil")")
+            }
             try await Task.sleep(for: .milliseconds(20))
         }
+        trace.record("replacement completed appRunning=\(NSApp.isRunning) launched=\(NSRunningApplication.current.isFinishedLaunching)", web)
+        print("Preview replacement trace:\n" + trace.events.joined(separator: "\n"))
         let pageHandler = try await web.evaluateJavaScript("typeof window.webkit?.messageHandlers?.vanepreviewmeta") as? String
         XCTAssertEqual(pageHandler, "undefined", "Previewed pages must not be able to fabricate native metadata")
         // An about:blank child provides an actual WKScriptMessage with a blank

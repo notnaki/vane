@@ -1,0 +1,55 @@
+name: Shadow and preview staged diagnostic
+
+# A single explicitly released branch push runs one attempt. No required-check
+# workflow, PR, main, protection, or release behavior is changed.
+on:
+  push:
+    branches: [codex/shadow-preview-ci-diagnostic-20261111]
+
+permissions:
+  contents: read
+
+jobs:
+  staged-diagnostic:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Record exact platform and unchanged production
+        run: |
+          set -euo pipefail
+          DIAGNOSTIC_DIR="$RUNNER_TEMP/vane-shadow-preview-diagnostic"
+          echo "DIAGNOSTIC_DIR=$DIAGNOSTIC_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$DIAGNOSTIC_DIR"
+          {
+            git rev-parse HEAD
+            sw_vers
+            uname -m
+            swift --version
+            xcodebuild -version
+            xcode-select -p
+            xcrun --show-sdk-version
+            shasum -a 256 Sources/Vane/PasswordAutofill.swift Sources/Vane/Previews.swift
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' /System/Library/Frameworks/WebKit.framework/Resources/Info.plist || true
+            xcrun dwarfdump --uuid /System/Library/Frameworks/WebKit.framework/Versions/A/WebKit || echo 'WebKit UUID unavailable from the on-disk binary (may reside in the dyld shared cache)'
+          } 2>&1 | tee "$DIAGNOSTIC_DIR/platform.log"
+
+      - name: Build the exact diagnostic revision
+        run: |
+          set -euo pipefail
+          swift build -c debug --build-tests --disable-index-store 2>&1 | tee "$DIAGNOSTIC_DIR/build.log"
+          swift test list --skip-build > "$DIAGNOSTIC_DIR/inventory.txt"
+
+      - name: One warm-process staged attempt with owned retirement
+        timeout-minutes: 5
+        run: python3 scripts/diagnose-shadow-preview-ci.py --inventory "$DIAGNOSTIC_DIR/inventory.txt" --output "$DIAGNOSTIC_DIR"
+
+      - name: Preserve every result including failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: shadow-preview-staged-diagnostic
+          path: ${{ runner.temp }}/vane-shadow-preview-diagnostic
+          if-no-files-found: error
+          retention-days: 7

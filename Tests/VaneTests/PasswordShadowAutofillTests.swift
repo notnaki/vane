@@ -24,19 +24,24 @@ import XCTest
         }
         return try data.map { try JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
     }
-    private func wait(_ condition: () async throws -> Bool) async throws {
+    private func wait(_ stage: String = "fixture outcome", diagnostics: (() async -> String)? = nil,
+                      file: StaticString = #filePath, line: UInt = #line,
+                      _ condition: () async throws -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while ContinuousClock.now < deadline {
             if try await condition() { return }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTFail("Focus-free WebKit fixture prerequisite timed out")
+        let detail = await diagnostics?() ?? ""
+        XCTFail("Focus-free WebKit fixture timed out: \(stage); \(detail)", file: file, line: line)
         throw NSError(domain: "PasswordShadowFixtureTimeout", code: 1)
     }
     private func fixture(_ html: String) async throws -> (WKWebView, Capture) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         WebKitStartup.prepare()
+        let framework = Bundle(for: WKWebView.self)
+        print("Shadow fixture WebKit: path=\(framework.bundlePath) version=\(framework.object(forInfoDictionaryKey: "CFBundleVersion") ?? "unavailable")")
         let config = WKWebViewConfiguration(), capture = Capture()
         config.websiteDataStore = .nonPersistent()
         config.userContentController.add(capture, contentWorld: Autofill.world, name: "vanepw")
@@ -54,11 +59,28 @@ import XCTest
         }
         web.loadSimulatedRequest(URLRequest(url: URL(string: "https://login.example.test/signin")!),
             responseHTML: "<!doctype html><body>" + html + "</body>")
-        try await wait {
+        try await wait("document load and isolated API", diagnostics: { await self.discoveryState(web, capture) }) {
             guard !web.isLoading else { return false }
             return try await self.js(web, "typeof __vaneFill", isolated: true) as? String == "function"
         }
         return (web, capture)
+    }
+    // Only structural state from this synthetic page: never input values or credentials.
+    private func discoveryState(_ web: WKWebView, _ capture: Capture) async -> String {
+        let page = try? await js(web, """
+        (() => { var roots=[document], fields=[];
+          for(var i=0;i<roots.length && i<64;i++) for(var el of roots[i].querySelectorAll('*')) {
+            if(el.shadowRoot) roots.push(el.shadowRoot);
+            if(el.tagName==='INPUT') fields.push({id:el.id,type:el.type,connected:el.isConnected,
+              width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height});
+          }
+          return {url:location.href,ready:document.readyState,visibility:document.visibilityState,
+            timerTicks:window.fixtureTimerTicks,roots:roots.length,fields:fields,
+            oldFieldConnected:typeof previousPassword==='undefined'?null:previousPassword.isConnected,
+            replacementIsOld:typeof previousPassword==='undefined'?null:nested.getElementById('password')===previousPassword}; })()
+        """)
+        let api = try? await js(web, "typeof __vaneFill", isolated: true)
+        return "url=\(web.url?.absoluteString ?? "nil") loading=\(web.isLoading) API=\(String(describing: api)) readyCount=\(capture.messages.filter { $0["ready"] as? Bool == true }.count) readyTargets=\(capture.messages.filter { $0["ready"] as? Bool == true }.compactMap { $0["target"] as? String }) appRunning=\(NSApp.isRunning) launched=\(NSRunningApplication.current.isFinishedLaunching) windowVisible=\(web.window?.isVisible ?? false) page=\(String(describing: page))"
     }
     private func expectEqual<T: Equatable>(_ value: T, _ expected: T, _ message: String = "", file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(value, expected, message, file: file, line: line)
@@ -108,14 +130,15 @@ import XCTest
     }
 
     func testLateAttachedNestedRootsAndFieldsNotifyDiscoveryWithoutLightDOMMutation() async throws {
-        let (web, capture) = try await fixture("<div id=host></div>")
+        let (web, capture) = try await fixture("<div id=host></div><script>window.fixtureTimerTicks=0; setInterval(()=>window.fixtureTimerTicks++,1000)</script>")
         _ = try await js(web, "var root=host.attachShadow({mode:'open'}); root.innerHTML='<div id=inner></div>'; var inner=root.getElementById('inner'); var nested=inner.attachShadow({mode:'open'}); nested.innerHTML='<form><input autocomplete=username><input id=password type=password></form>'")
-        try await wait { capture.messages.contains { $0["ready"] as? Bool == true } }
+        try await wait("late shadow root discovery", diagnostics: { await self.discoveryState(web, capture) }) { capture.messages.contains { $0["ready"] as? Bool == true } }
         let originalAnchor = try await anchor(web)
         let old = try XCTUnwrap(originalAnchor?["target"] as? String)
         let count = capture.messages.filter { $0["ready"] as? Bool == true }.count
-        _ = try await js(web, "nested.getElementById('password').outerHTML='<input id=password type=password autocomplete=current-password>'")
-        try await wait { capture.messages.filter { $0["ready"] as? Bool == true }.count > count }
+        _ = try await js(web, "var previousPassword=nested.getElementById('password'); previousPassword.outerHTML='<input id=password type=password autocomplete=current-password>'")
+        try await wait("replacement shadow field discovery", diagnostics: { await self.discoveryState(web, capture) }) { capture.messages.filter { $0["ready"] as? Bool == true }.count > count }
+        print("Shadow discovery stages passed: \(await discoveryState(web, capture))")
         let stale = try await fill(web, target: old)
         XCTAssertFalse(stale)
         let current = try await fill(web)
