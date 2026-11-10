@@ -449,7 +449,8 @@ struct BrowserWindow: View {
             // resize handle is, and it has to be above the web view to see a drag at all.
             // Not while the Library is up: the rail is not the sidebar, and is not dragged.
             if store.sidebarShown && !store.libraryOpen {
-                SidebarHandle().offset(x: sidebar.width - SidebarHandle.hitTestWidth / 2)
+                // Arc's rounded rule sits 4pt inside the sidebar's trailing edge.
+                SidebarHandle().offset(x: sidebar.width - SidebarHandle.hitTestWidth)
                     .zIndex(1)
             }
             if presentsPalette { BrowserPaletteOverlay().zIndex(2) }

@@ -109,6 +109,62 @@ struct SidebarResizeDetent {
     }
 }
 
+/// Keep the fade on its own layer: live-width transactions deliberately disable SwiftUI
+/// animation and must not cut short the resize affordance's entrance or exit.
+private struct SidebarResizeHighlight: NSViewRepresentable {
+    var active: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    func makeNSView(context: Context) -> SidebarResizeHighlightView {
+        SidebarResizeHighlightView()
+    }
+
+    func updateNSView(_ view: SidebarResizeHighlightView, context: Context) {
+        view.setActive(active, animated: !reduceMotion && !batterySaver.isActive)
+    }
+}
+
+final class SidebarResizeHighlightView: NSView {
+    static let fadeKey = "resize-highlight-opacity"
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        // Arc's 4pt pill uses a 40% white overlay, including in light Spaces.
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.4).cgColor
+        layer?.cornerRadius = 2
+        layer?.opacity = 0
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func setActive(_ active: Bool, animated: Bool) {
+        guard let layer else { return }
+        let target: Float = active ? 1 : 0
+        let changed = layer.opacity != target
+        let presented = layer.presentation()?.opacity ?? layer.opacity
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.opacity = target
+        CATransaction.commit()
+        guard animated else {
+            layer.removeAnimation(forKey: Self.fadeKey)
+            return
+        }
+        // Width updates must keep an in-flight fade's original clock.
+        guard changed else { return }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = presented
+        fade.toValue = target
+        fade.duration = UIAnimation.feedback.duration(0.2)
+        fade.timingFunction = CAMediaTimingFunction(name: .linear)
+        layer.add(fade, forKey: Self.fadeKey)
+    }
+}
+
 /// The seam between the sidebar and the page card, as a thing you can grab.
 /// Its rule appears only while hovering or dragging. The forgiving hit area stays wider
 /// than the rule, centred on the seam like AppKit's split-view divider.
@@ -131,16 +187,14 @@ struct SidebarHandle: View {
             .frame(width: Self.hitTestWidth)
             .frame(maxHeight: .infinity)
             .overlay {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(.primary.opacity(0.45))
+                SidebarResizeHighlight(active: hovered || start != nil)
                     .frame(width: 4)
-                    .padding(.vertical, Look.inset)
-                    .opacity(hovered || start != nil ? 1 : 0)
+                    .padding(.vertical, 14)
                     .allowsHitTesting(false)
             }
             .contentShape(.rect)
             .onHover { inside in
-                Motion.animate(Look.quick) { hovered = inside }
+                hovered = inside
             }
             // macOS's own column-resize pointer, so the affordance is the system's rather
             // than a cursor we drew.
@@ -158,14 +212,14 @@ struct SidebarHandle: View {
                         let grab = start ?? (sidebar.width - value.startLocation.x)
                         if start == nil {
                             detent = SidebarResizeDetent()
-                            Motion.animate(Look.quick) { start = grab }
+                            start = grab
                         }
                         sidebar.setLiveWidth(detent.width(for: value.location.x + grab))
                     }
                     .onEnded { value in
                         let proposed = value.location.x + (start ?? 0)
                         sidebar.setLiveWidth(detent.width(for: proposed))
-                        Motion.animate(Look.quick) { start = nil }
+                        start = nil
                         detent = SidebarResizeDetent()
                         sidebar.save()
                         if SidebarWidth.shouldCollapse(proposed) {
