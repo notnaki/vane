@@ -196,6 +196,24 @@ extension BlockerTests {
             XCTAssertEqual(Blocker.convert(source).skipped, 1)
         }
     }
+
+    func testBadfilterCanonicalizesSupportedPartyAliasesDomainsAndInsensitivePatterns() {
+        for (rule, modifier) in [
+            ("/ad.js$3p", "/ad.js$third-party,badfilter"),
+            ("/ad.js$first-party", "/ad.js$1p,badfilter"),
+            ("@@/ad.js$1p", "@@/ad.js$~third-party,badfilter"),
+            ("/Ad.js$domain=a.example|b.example", "/ad.js$domain=B.EXAMPLE|a.example,badfilter"),
+            ("/ad.js$domain=~a.example|~b.example", "/ad.js$domain=~b.example|~a.example,badfilter")
+        ] {
+            let result = Blocker.convertSources([rule, modifier])
+            XCTAssertEqual(result.rules, 0, rule)
+            XCTAssertEqual(result.skipped, 0, modifier)
+        }
+        let sensitive = Blocker.convertSources(["/Ad.js$match-case", "/ad.js$match-case,badfilter"])
+        XCTAssertEqual(sensitive.rules, 1, "A case-sensitive pattern is a different filter")
+        let distinctTypes = Blocker.convertSources(["/ad.js$xmlhttprequest", "/ad.js$websocket,badfilter"])
+        XCTAssertEqual(distinctTypes.rules, 1, "WebKit's shared raw bucket does not make these EasyList types equivalent")
+    }
 }
 
 extension BlockerTests {

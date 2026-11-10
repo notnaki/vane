@@ -27,6 +27,7 @@ import XCTest
                                           ("/ad.js$script\n/ad.js$script,badfilter", true),
                                           ("/ad.js$script\n/ad.js$image,badfilter", false),
                                           ("/ad.js$script\n@@/ad.js$script\n@@/ad.js$script,badfilter", false),
+                                          ("/ad.js$script\n@@/ad.js$script,1p\n@@/ad.js$script,~third-party,badfilter", false),
                                           ("/ad.js$script\n@@/ad.js$script\n/ad.js$script,badfilter", true),
                                           ("/ad.js$script\n/ad.js$script,badfilter\n.js$script", false)] {
             let conversion = Blocker.convert(source + "\n||unused.invalid^")

@@ -274,10 +274,12 @@ WebKit's canonical ASCII URL and defaults to case-insensitive matching.
 The `$badfilter` preprocessing modifier discards its exact supported network-filter
 counterpart across all source lists, including `@@` exception filters, without creating
 a broad WebKit exception. For example, `/ad.js$script,badfilter` disables `/ad.js$script`
-but leaves `/ad.js$image` and other overlapping blocks intact. Pattern identity remains
-case-sensitive; option names are case-insensitive and option ordering is ignored. This
-is whole-filter identity: alias rewriting and uBlock's special domain-list decomposition
-are not implemented. Unsupported target options, repeated semantic options, duplicate `badfilter`, cosmetic variants
+but leaves `/ad.js$image` and other overlapping blocks intact. Ordinary case-insensitive
+patterns, supported first/third-party aliases and domain-list ordering are normalized;
+`$match-case` patterns retain their case. Different EasyList resource types remain
+distinct even when WebKit puts them in one bucket. This is whole-filter identity;
+uBlock's special domain-list decomposition is not implemented. Unsupported target
+options, repeated semantic options, duplicate `badfilter`, cosmetic variants
 and conditional branches remain reported. A list containing only disabled/modifier rules
 has no usable rules and cannot replace an accepted local/subscription source.
 

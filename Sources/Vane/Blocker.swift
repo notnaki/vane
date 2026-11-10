@@ -658,8 +658,21 @@ private struct BlockRule: Codable, Equatable {
     private nonisolated static func networkIdentity(_ line: String) -> String {
         let parts = networkParts(line.hasPrefix("@@") ? String(line.dropFirst(2)) : line)
         let options = parts.options.map { $0.split(separator: ",", omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.sorted().joined(separator: ",") }
-        return (line.hasPrefix("@@") ? "@@" : "") + parts.pattern + (options.map { "$" + $0 } ?? "")
+            .map { value -> String in
+                let option = value.trimmingCharacters(in: .whitespaces).lowercased()
+                switch option {
+                case "3p", "third-party": return "third-party"
+                case "1p", "first-party", "~third-party": return "first-party"
+                default:
+                    if option.hasPrefix("domain=") {
+                        return "domain=" + Set(option.dropFirst(7).split(separator: "|").map(String.init)).sorted().joined(separator: "|")
+                    }
+                    return option
+                }
+            }.sorted().joined(separator: ",") }
+        let matchCase = options?.split(separator: ",").contains("match-case") == true
+        let pattern = matchCase ? parts.pattern : parts.pattern.lowercased()
+        return (line.hasPrefix("@@") ? "@@" : "") + pattern + (options.map { "$" + $0 } ?? "")
     }
 
     private nonisolated static func badfilterTarget(_ line: String) -> String? {
