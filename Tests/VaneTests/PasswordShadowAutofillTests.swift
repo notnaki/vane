@@ -329,6 +329,33 @@ import XCTest
         expectEqual(try await js(web, "password.value") as? String, "")
     }
 
+    func testExternalNativeFormAssociationCannotBypassComposedFormActions() async throws {
+        for changesAfterUsername in [false, true] {
+            let (web, capture) = try await fixture("<form id=login></form><div id=host><input id=user autocomplete=username form=login><input id=password type=password autocomplete=current-password form=login></div>")
+            _ = try await js(web, "var root=host.attachShadow({mode:'open'}); root.innerHTML='<form><slot></slot></form>'; var inner=root.querySelector('form'); password.focus();" + (changesAfterUsername
+                ? "user.addEventListener('input',()=>inner.action='https://other.example.test',{once:true});"
+                : "inner.action='https://other.example.test';"))
+            let filled = try await fill(web)
+            XCTAssertFalse(filled, "External native form associations must retain composed action checks")
+            expectEqual(try await js(web, "password.value") as? String, "")
+            _ = try await js(web, "inner.action='https://other.example.test'; user.value='ada'; password.value='blocked-fixture'; login.dispatchEvent(new Event('submit',{bubbles:true}));")
+            // Observe the bridge's normal delivery window without native input.
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertFalse(capture.messages.contains { $0["password"] as? String == "blocked-fixture" })
+        }
+    }
+
+    func testExternalNativeGenerationRechecksComposedFormBeforeEachWrite() async throws {
+        let (web, capture) = try await fixture("<form id=login></form><div id=host><input id=password type=password autocomplete=new-password form=login><input id=confirmation type=password autocomplete=new-password form=login></div>")
+        _ = try await js(web, "var root=host.attachShadow({mode:'open'}); root.innerHTML='<form><slot></slot></form>'; var inner=root.querySelector('form'); password.focus();")
+        try await wait { capture.messages.contains { $0["generate"] as? Bool == true } }
+        let target = try XCTUnwrap(capture.messages.last { $0["generate"] as? Bool == true }?["target"] as? String)
+        _ = try await js(web, "host.addEventListener('input',()=>inner.action='https://other.example.test',{once:true})")
+        let generated = try await js(web, Autofill.generateJS(password: "generated-fixture", target: target), isolated: true) as? Bool
+        XCTAssertEqual(generated, false)
+        expectEqual(try await js(web, "confirmation.value") as? String, "")
+    }
+
     func testWindowScrollStillDismissesShadowChooser() async throws {
         let (web, capture) = try await fixture(shadow(login))
         _ = try await js(web, "password.focus()")

@@ -33,6 +33,11 @@ on page exit, resumes on page-cache restore and removes listeners from detached 
 budget (20,000 elements, 128 tree scopes, 32 shadow levels per scan) refuses incomplete
 scans. Closed shadow-root controls remain inaccessible.
 
+Controls linked to an external native form with `form=` must also pass the action
+checks of every composed ancestor form, including forms reached through slots.
+These checks repeat after username events and before each generated-password field
+write; the same boundary applies to submission capture.
+
 A retained separate username form can also identify a later password-only form when the
 password's sole `aria-labelledby` reference uniquely names that previously chosen
 `autocomplete=username` input in the same document/tree scope. The input must retain

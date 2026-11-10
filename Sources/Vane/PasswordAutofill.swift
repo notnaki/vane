@@ -187,14 +187,24 @@ import WebKit
         }
         function safeRoot(root) {
           try {
-            // Include composed enclosing forms and nested shadow forms. In particular,
-            // a slotted input's native .form can differ from its composed form.
-            var forms = [];
-            for (var parent = root; parent; parent = composedParent(parent)) {
-              if (parent.tagName !== 'FORM') continue;
-              var nested = deepQuery(parent, 'form');
-              if (!nested.complete) return false;
-              forms.push(parent); forms = forms.concat(nested);
+            // A form= control may live outside its native form and be slotted into
+            // a different composed form. Inspect both routes, including external
+            // controls, before discovery, capture, generation and each secret write.
+            var forms = [], starts = [root], visited = new Set();
+            if (root.tagName === 'FORM') {
+              if (root.elements.length > 20000) return false;
+              starts = starts.concat(Array.from(root.elements));
+            }
+            for (var start of starts) {
+              for (var parent = start; parent; parent = composedParent(parent)) {
+                if (visited.has(parent)) break;
+                visited.add(parent);
+                if (visited.size > 20000) return false;
+                if (parent.tagName !== 'FORM') continue;
+                var nested = deepQuery(parent, 'form');
+                if (!nested.complete) return false;
+                forms.push(parent); forms = forms.concat(nested);
+              }
             }
             return Array.from(new Set(forms)).every(function (form) {
               if (form.elements.length > 20000) return false;
