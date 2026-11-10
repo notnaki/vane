@@ -175,6 +175,20 @@ owned backends respectively. Evidence: `integration-regex-red.log`,
 artifact directory. The superseded baseline build was stopped before tests;
 its preserved `integration-core.log` records primary -15 / cleanup 0.
 
+Final current-base review additionally found whitespace-normalized resource
+options bypassing admission, and duplicate badfilter preprocessing losing the
+compiler's domain-member canonicalization and repeated-option safeguards. Both
+were reproduced before repair (`integration-whitespace-red.log` and
+`integration-badfilter-red.log`). The bridge now shares option normalization and
+delegates badfilter validation/canonicalization to the compiler separately for
+ordinary and important rules. Fixtures also verify priority isolation. Conditional
+badfilters are now counted in skipped-rule diagnostics; the original expected
+count failed in `integration-preflight-count-failure.log`, then its assertions
+were strengthened to require both exact skip reasons. Final combined validation
+completed 87 cases, with one existing live-store opt-in skip and zero failures;
+`integration-final-green.log` records primary 0 / cleanup 0 and verifies all 39
+exact owned backends retired.
+
 The actual package still reports the explicit privacy denial, a missing local
 fallback asset (`pgl.yoyo.org/as/serverlist.txt`), and WebKit rejecting an `abp:*`
 context-menu target pattern. These diagnostics remain visible; this work does

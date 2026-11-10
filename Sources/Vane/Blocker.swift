@@ -660,6 +660,11 @@ private struct BlockRule: Codable, Equatable {
         return (body, nil)
     }
 
+    nonisolated static func networkOptions(_ options: String) -> [String] {
+        options.split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+    }
+
     private nonisolated static func networkIdentity(_ line: String) -> String {
         let parts = networkParts(line.hasPrefix("@@") ? String(line.dropFirst(2)) : line)
         let options = parts.options.map { $0.split(separator: ",", omittingEmptySubsequences: false)
@@ -795,8 +800,7 @@ private struct BlockRule: Codable, Equatable {
                                                  to trigger: inout BlockRule.Trigger) -> Bool {
         var types: [String] = []
         var excluded = Set<String>()
-        for part in options.split(separator: ",", omittingEmptySubsequences: false) {
-            let option = part.trimmingCharacters(in: .whitespaces).lowercased()
+        for option in networkOptions(options) {
             switch option {
             case "match-case":
                 trigger.urlFilterIsCaseSensitive = true

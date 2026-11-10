@@ -74,6 +74,43 @@ final class ExtensionFilterRulesTests: XCTestCase {
         }
     }
 
+    func testWhitespaceCannotHideUnrepresentableResourceOptions() throws {
+        let types = ["document", "subdocument", "xmlhttprequest", "xhr", "websocket", "ping", "other", "popup"]
+        let result = try ExtensionFilterRules.compile(texts: [types.map { "/blocked$ \t\($0.uppercased()) \t,image" }.joined(separator: "\n")], trustedSites: [])
+        XCTAssertEqual(result.report.rules, 0)
+        XCTAssertEqual(result.report.skipped, types.count)
+        XCTAssertTrue(result.chunks.isEmpty)
+    }
+
+    func testWhitespaceAroundImportantAndBadfilterKeepsTheirSemantics() throws {
+        let result = try ExtensionFilterRules.compile(texts: ["/ads$image\n/critical$image, important\n@@/critical$image", "/ads$ image , badfilter"], trustedSites: [])
+        XCTAssertEqual(result.report.rules, 2)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.chunks[0].utf8)) as? [[String: Any]])
+        XCTAssertEqual(rules.compactMap { ($0["action"] as? [String: Any])?["type"] as? String }, ["ignore-previous-rules", "block"])
+        XCTAssertTrue(rules.allSatisfy { ($0["trigger"] as? [String: Any])?["url-filter"] as? String == "/critical" })
+    }
+
+    func testBadfilterCanonicalizesDomainMembersForOrdinaryAndImportantRules() throws {
+        for modifier in ["", ",important"] {
+            let result = try ExtensionFilterRules.compile(texts: ["/Ad.js$domain=a.example|b.example\(modifier)", "/ad.js$domain=B.EXAMPLE|a.example\(modifier),badfilter"], trustedSites: [])
+            XCTAssertEqual(result.report.rules, 0)
+            XCTAssertTrue(result.chunks.isEmpty)
+        }
+    }
+
+    func testBadfilterDoesNotConflateRepeatedOrderSensitiveOptions() throws {
+        let result = try ExtensionFilterRules.compile(texts: ["/ad.js$domain=a.example,domain=b.example\n/ad.js$domain=b.example,domain=a.example,badfilter"], trustedSites: [])
+        XCTAssertEqual(result.report.rules, 1)
+        XCTAssertEqual(result.report.skipped, 1)
+    }
+
+    func testBadfilterCannotCancelARuleInAnotherPriorityTier() throws {
+        let result = try ExtensionFilterRules.compile(texts: ["/critical$important\n/critical$badfilter\n/normal\n/normal$important,badfilter"], trustedSites: [])
+        XCTAssertEqual(result.report.rules, 2)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.chunks[0].utf8)) as? [[String: Any]])
+        XCTAssertEqual(rules.compactMap { ($0["trigger"] as? [String: Any])?["url-filter"] as? String }, ["/normal", "/critical"])
+    }
+
     func testUntranslatableTrustedDirectivesAndOversizedPoliciesFailAsAWhole() {
         XCTAssertThrowsError(try ExtensionFilterRules.compile(texts: ["/ads"], trustedSites: ["/arbitrary-regex/"]))
         XCTAssertThrowsError(try ExtensionFilterRules.compile(texts: [String(repeating: "x", count: 65537)], trustedSites: []))
@@ -83,7 +120,9 @@ final class ExtensionFilterRulesTests: XCTestCase {
     func testConditionalBadfiltersCannotDisableRulesAndStateStopsAtSourceBoundary() throws {
         let result = try ExtensionFilterRules.compile(texts: ["/ads\n!#if env_other\n/ads$badfilter", "/image$IMAGE\n/xhr$XMLHTTPREQUEST"], trustedSites: [])
         XCTAssertEqual(result.report.rules, 2)
-        XCTAssertEqual(result.report.skipped, 1)
+        XCTAssertEqual(result.report.skipped, 2)
+        XCTAssertEqual(result.report.reasonCounts["Conditional rule"], 1)
+        XCTAssertEqual(result.report.reasonCounts["Resource type cannot be represented precisely"], 1)
     }
 
     func testTrustedWildcardHostsCannotMatchAHostEmbeddedInAnotherSitesPath() throws {

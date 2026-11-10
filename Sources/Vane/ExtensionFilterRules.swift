@@ -20,16 +20,6 @@ enum ExtensionFilterRules {
         let exclusions = try trustedSites.compactMap(trustedPattern)
         // A conditional in one list cannot change the meaning of the next list.
         let lines = texts.enumerated().flatMap { source, text in text.components(separatedBy: .newlines).map { (source, $0) } }
-        var badfilterDepth = 0, badfilterSource = -1
-        let disabled = Set(lines.compactMap { source, raw -> String? in
-            if source != badfilterSource { badfilterDepth = 0; badfilterSource = source }
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("!#if") { badfilterDepth += 1; return nil }
-            if line.hasPrefix("!#endif") { badfilterDepth = max(0, badfilterDepth - 1); return nil }
-            guard badfilterDepth == 0 else { return nil }
-            guard options(line).contains("badfilter") else { return nil }
-            return signature(line)
-        })
         var ordinary: [String] = [], important: [String] = []
         var report = BlockerReport(), conditionalDepth = 0, currentSource = -1
         for (source, raw) in lines {
@@ -39,7 +29,6 @@ enum ExtensionFilterRules {
             if line.hasPrefix("!#endif") { conditionalDepth = max(0, conditionalDepth - 1); continue }
             if line.isEmpty || line.hasPrefix("!") || line.hasPrefix("[") { continue }
             let opts = options(line)
-            if opts.contains("badfilter") || disabled.contains(signature(line)) { continue }
             if line.contains("##") || (line.hasPrefix("@@") && opts.contains("important")) {
                 report.skipped += 1
                 report.reasonCounts[line.contains("##") ? "Cosmetic filtering remains controlled by uBlock" : "Invalid important exception", default: 0] += 1
@@ -60,7 +49,7 @@ enum ExtensionFilterRules {
             }
             let parts = networkParts(line)
             if opts.contains("important"), let declared = parts.options {
-                let rest = declared.split(separator: ",").filter { $0.lowercased() != "important" }
+                let rest = Blocker.networkOptions(declared).filter { $0 != "important" }
                 line = parts.pattern + (rest.isEmpty ? "" : "$" + rest.joined(separator: ","))
                 important.append(line)
             } else { ordinary.append(line) }
@@ -81,6 +70,8 @@ enum ExtensionFilterRules {
             }
             return rules
         }
+        // Let the shared compiler canonicalize and validate badfilters within
+        // each priority tier; a modifier cannot disable a different tier's rule.
         let normal = try convert(ordinary), high = try convert(important)
         func exception(_ rule: [String: Any]) -> Bool {
             (rule["action"] as? [String: Any])?["type"] as? String == "ignore-previous-rules"
@@ -121,19 +112,7 @@ enum ExtensionFilterRules {
 
     private static func options(_ line: String) -> Set<String> {
         guard !line.contains("##"), let declared = networkParts(line).options else { return [] }
-        return Set(declared.split(separator: ",").map { $0.lowercased() })
-    }
-
-    private static func signature(_ line: String) -> String {
-        let parts = networkParts(line)
-        guard parts.options != nil else { return line.lowercased() }
-        let declared = options(line).subtracting(["badfilter"])
-        let opts = Set(declared.map { option in
-            switch option { case "3p": "third-party"; case "1p", "~third-party": "first-party"; default: option }
-        }).sorted()
-        let body = parts.pattern
-        return (declared.contains("match-case") ? body : body.lowercased())
-            + (opts.isEmpty ? "" : "$" + opts.joined(separator: ","))
+        return Set(Blocker.networkOptions(declared))
     }
 
     private static func validHost(_ host: String) -> Bool {
