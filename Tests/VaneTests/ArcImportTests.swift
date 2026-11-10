@@ -158,6 +158,33 @@ import CryptoKit
         XCTAssertEqual(unopened.cookiesSkipped, 1)
     }
 
+    func testUnknownCookieSchemaAndEncryptionAreSkippedWithoutTryingLegacyFallback() {
+        var vault = ArcImport.Vault(directory: "Default", path: URL(fileURLWithPath: "/fixture"))
+        vault.cookieVersion = 25
+        vault.cookies = [.init(host: "example.com", name: "sid", path: "/", value: seal("token"),
+                               expires: 0, secure: true)]
+        let future = ArcImport.open(vault, key: key)
+        XCTAssertTrue(future.cookies.isEmpty)
+        XCTAssertEqual(future.cookiesSkipped, 1)
+        vault.cookieVersion = 24
+        vault.cookies = [.init(host: "example.com", name: "sid", path: "/", value: Data("v20unsupported".utf8),
+                               expires: 0, secure: true, plaintext: "must-not-fall-back")]
+        let modern = ArcImport.open(vault, key: key)
+        XCTAssertTrue(modern.cookies.isEmpty)
+        XCTAssertEqual(modern.cookiesSkipped, 1)
+        XCTAssertEqual(modern.locked, 0)
+    }
+
+    func testExistingOrUnverifiedCookieDoesNotMisreportAnOtherwiseReadKeyAsWrong() {
+        var counts = ArcImport.Counts()
+        counts.locked = 1
+        counts.cookiesSkipped = 1
+        XCTAssertFalse(ArcImport.report(counts).contains("keychain key opened none"))
+        counts.cookiesSkipped = 0
+        counts.cookiesFailed = 1
+        XCTAssertFalse(ArcImport.report(counts).contains("keychain key opened none"))
+    }
+
     func testSnapshotIncludesCommittedWALButNotUncommittedRows() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
