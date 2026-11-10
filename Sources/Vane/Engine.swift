@@ -405,6 +405,8 @@ struct TitleReveal: Equatable, Sendable {
 @MainActor final class Tab: NSObject, ObservableObject, Identifiable, WKUIDelegate,
                             WKNavigationDelegate, WKScriptMessageHandler {
     let id: UUID
+    /// Live opener metadata for extension APIs; never retains or restores a tab.
+    weak var extensionParent: Tab?
     /// One live page can be mounted in one window. Other windows draw its last snapshot.
     @Published var presentationOwner: UUID?
     @Published var windowSnapshot: NSImage?
@@ -3348,9 +3350,10 @@ struct Stash {
     /// Deliberately after `kind`: its didSet reads `currentURL` to decide a row's home, and
     /// a load in flight is exactly the thing that would change the answer.
     func newBlankTab(focus: Bool = true, as kind: TabKind = .today,
-                     id: UUID = UUID(), loading url: URL? = nil) -> Tab {
+                     id: UUID = UUID(), loading url: URL? = nil, parent: Tab? = nil) -> Tab {
         if sharingReady { SharedTabs.flush() }
         let t = makeBlankTab(as: kind, id: id)
+        if parent?.profileID == profileID, parent?.isPrivate == isPrivate { t.extensionParent = parent }
         if let url { t.go(url) }
         // Into its own section, not onto the end of the strip: the sections are contiguous
         // runs (see `clampedDestination`), and a pinned row appended past the Today tabs

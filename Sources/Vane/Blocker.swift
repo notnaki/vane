@@ -130,6 +130,7 @@ private struct BlockRule: Codable, Equatable {
         let next = enabled(for: profileID) ? list(for: profileID) : nil
         if let next { controller.add(next) }
         controllers.setObject(Attachment(profileID: profileID, list: next), forKey: controller)
+        ExtensionFilterBridge.apply(to: controller, profileID: profileID)
     }
 
     /// Recompile from the current sources and reattach to every live web view. Cheap after
@@ -525,6 +526,11 @@ private struct BlockRule: Codable, Equatable {
     /// Admission before allocating line arrays/rules. Reject the whole candidate so a
     /// limit never silently drops part of an installed blocking policy.
     nonisolated static func convertBoundedSources(_ texts: [String]) throws -> BlockerConversion {
+        try validateSourceBounds(texts)
+        return convertSources(texts)
+    }
+
+    nonisolated static func validateSourceBounds(_ texts: [String]) throws {
         var bytes = 0
         var lines = 0
         for text in texts {
@@ -547,7 +553,6 @@ private struct BlockRule: Codable, Equatable {
             lines += 1
         }
         guard lines <= 1_000_000 else { throw BlockerFiles.Failure("Combined filter lists exceed the one million line limit. Previous rules remain active.") }
-        return convertSources(texts)
     }
 
     nonisolated static func convertSources(_ texts: [String], excludingHosts: [String] = []) -> BlockerConversion {

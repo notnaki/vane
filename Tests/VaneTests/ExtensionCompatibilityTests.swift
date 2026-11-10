@@ -67,6 +67,16 @@ import XCTest
         return try XCTUnwrap(host.installed.first)
     }
 
+    func testBlockingWebRequestIsDisclosedEvenWhenWebKitRecognizesThePermission() async throws {
+        let manifest: [String: Any] = ["manifest_version": 2, "name": "Request filter", "version": "1",
+            "permissions": ["webRequest", "webRequestBlocking", "<all_urls>"]]
+        try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
+        let ext = try await WKWebExtension(resourceBaseURL: folder)
+        let limitations = ExtensionDiagnostics.limitations(manifest, extension: ext)
+        XCTAssertTrue(limitations.contains { $0.contains("webRequestBlocking") && $0.contains("cannot cancel") },
+            "Recognizing MV2 is insufficient: consent must disclose ineffective request cancellation")
+    }
+
     private func options(_ context: WKWebExtensionContext) async throws -> WKWebView {
         let config = try XCTUnwrap(context.webViewConfiguration)
         let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 500, height: 300), configuration: config)
