@@ -1,6 +1,6 @@
 # Browser readiness: completed work and remaining gaps
 
-Updated against merged work and recorded validation on 9 October 2026. This is a
+Updated against merged work and recorded validation on 10 November 2026. This is a
 current tracker, not a claim that every browser issue is solved. Historical plans
 remain under `superpowers/`; detailed evidence stays in the linked audits.
 
@@ -12,12 +12,15 @@ local recovery points, interruption rollback, and populated cross-feature restor
 See [data integration](DATA-INTEGRATION.md), [import/export fidelity](audits/browser-data-fidelity.md),
 and [crash recovery](CRASH-RECOVERY.md). Profile-owned website-data deletion has
 [focused isolation and WebKit checks](DEVELOPMENT.md#testing); the UI waits for
-completion and reports retained or unverified data.
+completion and reports retained or unverified data. Navigation visits and title updates
+retain failed writes in order, expose Retry Save in History, and participate in
+quit/backup draining; see [history save recovery](audits/history-save-recovery.md).
 
 Remaining:
 
-- Extend surfaced save failures to remaining history and UserDefaults settings
-  writes; backup/restore verification does not establish per-edit write feedback.
+- Extend surfaced save failures to remaining UserDefaults settings writes;
+  backup/restore verification does not establish per-edit write feedback. Pending
+  history retries are in memory and cannot survive a process crash.
 - Broaden unavailable/corrupt/full-storage and bulk-write checks beyond covered
   paths. Physical disk loss, removal, and power failure are not certified by
   injected errors or process interruption.
