@@ -295,8 +295,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 try (presentationLoop?.isReadyForInteraction() ?? true) && self.nativeContinuationReady(window, document: web)
             }
         } else {
+            // DOM-only fixtures need attachment and viewport geometry, not native
+            // presentation. Leave foreground ownership to the active UI task.
             window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
-            window.orderFront(nil)
         }
         web.loadSimulatedRequest(URLRequest(url: url),
                                  responseHTML: "<!doctype html><body>" + html + "</body>")
