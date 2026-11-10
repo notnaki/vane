@@ -53,7 +53,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
 
     /// The column's search field. Arc names the section in the placeholder rather than
     /// putting a title above the field, which is a whole row of chrome saved — and it says
-    /// "Archive", not "Archived Tabs", because that is what fits a 246pt column.
+    /// "Archive", not "Archived Tabs", to keep the prompt compact.
     var searchPrompt: String { "Search \(self == .archived ? "Archive" : title)…" }
 
     /// Whether the column has anything to filter. Media is every picture there is, so a
@@ -672,7 +672,7 @@ extension Look {
     /// The list column beside it. Arc's is narrow on purpose: a row is a favicon, a title
     /// and one grey line, and a title that runs half a window wide is not read, it is
     /// scanned past.
-    static let libraryList: CGFloat = 246
+    static let libraryList: CGFloat = 304
     static let easelLibraryList: CGFloat = 330
     /// What the page keeps, however many Spaces the Spaces section wants to show side by
     /// side. Past this the cards scroll instead of the panel growing. The card's own gaps are
@@ -685,10 +685,26 @@ extension Look {
     static let libraryTileIcon = Font.system(size: 19)
     static let libraryTileLabel = Typography.tileLabel.font
     /// A Library row: a favicon or a file icon, a title, and one grey line under it.
-    static let libraryRow: CGFloat = 44
-    static let libraryThumb: CGFloat = 20
+    static let libraryRow: CGFloat = 56
+    static let libraryThumb: CGFloat = 24
     /// The search field and the Filter chip over the list.
-    static let libraryField: CGFloat = 30
+    static let libraryField: CGFloat = 36
+    static let libraryChip: CGFloat = 32
+    /// The reference's rounded SF design also applies to the native search editor.
+    struct LibraryTextStyle {
+        let size: CGFloat
+        let weight: NSFont.Weight
+        var native: NSFont {
+            let base = NSFont.systemFont(ofSize: size, weight: weight)
+            guard let descriptor = base.fontDescriptor.withDesign(.rounded) else { return base }
+            return NSFont(descriptor: descriptor, size: size) ?? base
+        }
+        var font: Font { Font(native) }
+    }
+    static let libraryControlText = LibraryTextStyle(size: 14, weight: .semibold)
+    static let libraryGroupText = LibraryTextStyle(size: 13, weight: .semibold)
+    static let libraryTitleText = LibraryTextStyle(size: 14, weight: .medium)
+    static let librarySubtitleText = LibraryTextStyle(size: 13, weight: .medium)
     /// Above that field, so its centre lands on the traffic lights' own line — the column
     /// runs to the window's top edge, so this is measured from there. `Look.check` pins it.
     static let libraryHead: CGFloat = lightsCentre - libraryField / 2
@@ -942,11 +958,12 @@ struct LibraryHead<Filter: View, Actions: View>: View {
             if expanded {
                 HStack {
                     Text("Filter \(section == .archived ? "Archive" : section.title)…")
-                        .font(Look.small.weight(.semibold))
-                        .foregroundStyle(Look.inkPrimary)
+                        .font(Look.libraryControlText.font)
+                        .foregroundStyle(Look.inkSecondary)
                         .lineLimit(1)
                         .accessibilityAddTraits(.isHeader)
                     Spacer(minLength: Look.captionGap)
+                    if store.isPrivate { optionsMenu }
                     Button("Done") { Motion.animate(Look.quick) { library.focusSearch() } }
                         .buttonStyle(LibraryFilterButtonStyle())
                 }
@@ -954,7 +971,7 @@ struct LibraryHead<Filter: View, Actions: View>: View {
                 if !store.isPrivate {
                     VStack(alignment: .leading, spacing: Look.inset) {
                         HStack {
-                            Text("Profiles").font(Look.sectionCaption).foregroundStyle(Look.inkSecondary)
+                            Text("Profiles").font(Look.libraryGroupText.font).foregroundStyle(Look.inkSecondary)
                                 .accessibilityAddTraits(.isHeader)
                             Spacer()
                             if !selectedProfiles.isEmpty {
@@ -962,6 +979,7 @@ struct LibraryHead<Filter: View, Actions: View>: View {
                                     .buttonStyle(.plain).font(Look.caption)
                                     .accessibilityLabel("Show all profiles")
                             }
+                            optionsMenu
                         }
                         ScrollView {
                             LibraryFilterFlow {
@@ -975,7 +993,7 @@ struct LibraryHead<Filter: View, Actions: View>: View {
                                     } label: {
                                         Text(profile.name).lineLimit(1).truncationMode(.middle)
                                     }
-                                    .buttonStyle(LibraryFilterButtonStyle(selected: selectedProfiles.contains(profile.id)))
+                                    .buttonStyle(LibraryFilterButtonStyle(selected: selectedProfiles.contains(profile.id), height: Look.libraryChip))
                                     .accessibilityValue(selectedProfiles.contains(profile.id) ? "Selected" : "Not selected")
                                     .accessibilityAddTraits(selectedProfiles.contains(profile.id) ? .isSelected : [])
                                     .help("Filter by \(profile.name). Clear all selections to show every profile.")
@@ -987,23 +1005,13 @@ struct LibraryHead<Filter: View, Actions: View>: View {
                         .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                HStack(alignment: .top) {
-                    filter().font(Look.small).toggleStyle(.checkbox)
-                    Spacer(minLength: Look.captionGap)
-                    Menu { actions() } label: {
-                        Image(systemName: "ellipsis").font(Look.small)
-                    }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                    .accessibilityLabel("More")
-                }
-                .foregroundStyle(Look.inkSecondary)
             } else {
                 searchRow
             }
         }
         .padding(.horizontal, Look.inset)
         .padding(.top, Look.libraryHead)
-        .padding(.bottom, Look.inset)
+        .padding(.bottom, expanded ? Look.inset * 2 : Look.inset)
         .onChange(of: profiles.profiles.map(\.id), initial: true) { _, ids in
             guard !store.isPrivate, !selectedProfiles.isEmpty else { return }
             let remaining = selectedProfiles.intersection(ids)
@@ -1014,21 +1022,34 @@ struct LibraryHead<Filter: View, Actions: View>: View {
         .vaneMotionPolicy()
     }
 
+    private var optionsMenu: some View {
+        Menu {
+            filter()
+            Divider()
+            actions()
+        } label: {
+            Image(systemName: "ellipsis").font(Look.small)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .foregroundStyle(Look.inkSecondary)
+        .accessibilityLabel("More")
+    }
+
     private var searchRow: some View {
-        HStack(spacing: Look.inset - 2) {
-            HStack(spacing: Look.inset - 3) {
-                Image(systemName: "magnifyingglass").font(Look.caption)
+        HStack(spacing: 4) {
+            HStack(spacing: 14) {
+                Image(systemName: "magnifyingglass").font(.system(size: 15))
                     .foregroundStyle(Look.inkTertiary)
                 CommandField(text: $query, prompt: section.searchPrompt,
                              selectAll: false, label: section.searchPrompt, hint: "",
-                             font: Look.Typography.secondary.native,
-                             textColor: Look.nsInk(0.80),
+                             font: Look.libraryControlText.native,
+                             textColor: Look.nsInk(0.60),
                              focusRequest: library.focusToken,
                              canFocus: { store.libraryOpen && library.section == section && !expanded },
                              onKey: { _ in false })
                     .foregroundStyle(Look.inkPrimary)
             }
-            .padding(.horizontal, Look.captionGap * 3)
+            .padding(.horizontal, Look.rowInset + 2)
             .frame(height: Look.libraryField)
             .frame(maxWidth: .infinity)
             .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.pillRadius))
@@ -1040,10 +1061,14 @@ struct LibraryHead<Filter: View, Actions: View>: View {
                     store.window?.makeFirstResponder(nil)
                     Motion.animate(Look.quick) { library.filterSection = section }
                 } label: {
-                    Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
-                        .labelStyle(.titleAndIcon)
+                    HStack(spacing: 4) {
+                        Image(systemName: "line.3.horizontal.decrease.circle").font(.system(size: 15))
+                        Text("Filter")
+                    }
                 }
-                .buttonStyle(LibraryFilterButtonStyle(selected: hasFilters))
+                .buttonStyle(LibraryFilterButtonStyle(selected: hasFilters, horizontalInset: Look.rowInset))
+                .fixedSize()
+                .accessibilityLabel("Filter")
                 .accessibilityValue(hasFilters ? "On" : "Off")
             }
         }
@@ -1053,13 +1078,15 @@ struct LibraryHead<Filter: View, Actions: View>: View {
 private struct LibraryFilterButtonStyle: ButtonStyle {
     @Environment(\.spaceChromeTheme) private var chromeTheme
     var selected = false
+    var height: CGFloat = Look.libraryField
+    var horizontalInset: CGFloat = 12
 
     func makeBody(configuration: Configuration) -> some View {
         TactileButtonStyle(scales: false).makeBody(configuration: configuration)
-            .font(Look.small.weight(.medium))
+            .font(Look.libraryControlText.font)
             .foregroundStyle(selected ? Look.inkPrimary : Look.inkSecondary)
-            .padding(.horizontal, Look.rowInset)
-            .frame(height: Look.libraryField)
+            .padding(.horizontal, horizontalInset)
+            .frame(height: height)
             .background(selected || configuration.isPressed ? chromeTheme.selected : chromeTheme.controlFill,
                         in: .rect(cornerRadius: Look.pillRadius))
     }
@@ -1073,10 +1100,10 @@ private struct LibraryFilterFlow: Layout {
         for view in subviews {
             let size = view.sizeThatFits(.init(width: width, height: nil))
             if x > 0 && x + size.width > width {
-                x = 0; y += rowHeight + Look.captionGap; rowHeight = 0
+                x = 0; y += rowHeight + 6; rowHeight = 0
             }
             origins.append(CGPoint(x: x, y: y))
-            x += size.width + Look.captionGap
+            x += size.width + 6
             rowHeight = max(rowHeight, size.height)
         }
         return (CGSize(width: width, height: y + rowHeight), origins)
@@ -1099,10 +1126,10 @@ private struct LibraryFilterFlow: Layout {
 private struct LibraryGroupHeader: View {
     let title: String
     var body: some View {
-        Text(title).font(Look.sectionCaption).foregroundStyle(Look.inkQuiet)
-            .padding(.horizontal, Look.rowInset)
+        Text(title).font(Look.libraryGroupText.font).foregroundStyle(Look.inkSecondary)
+            .padding(.horizontal, Look.inset / 2)
             .padding(.top, Look.inset)
-            .padding(.bottom, Look.captionGap)
+            .padding(.bottom, Look.inset / 2)
             .accessibilityAddTraits(.isHeader)
     }
 }
@@ -1134,14 +1161,14 @@ private struct LibraryRow<Leading: View, Actions: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: Look.inset) {
+        HStack(spacing: Look.rowInset + 2) {
             leading().frame(width: Look.libraryThumb, height: Look.libraryThumb)
             VStack(alignment: .leading, spacing: 0) {
                 // Tail, not middle: the column is narrow enough that most titles are cut,
                 // and a title read from the front is still recognisable where one with its
                 // middle missing is not.
-                Text(title).font(Look.small).foregroundStyle(Look.inkPrimary).lineLimit(1)
-                Text(subtitle).font(Look.caption).foregroundStyle(Look.inkQuiet).lineLimit(1)
+                Text(title).font(Look.libraryTitleText.font).foregroundStyle(Look.inkSecondary).lineLimit(1)
+                Text(subtitle).font(Look.librarySubtitleText.font).foregroundStyle(Look.inkSecondary).lineLimit(1)
             }
             Spacer(minLength: Look.captionGap)
             // Always in the layout at its own fixed size, drawn only when the pointer is on

@@ -49,10 +49,11 @@ import XCTest
         Library.open(.downloads, in: store)
         let host = NSHostingView(rootView:
             VStack(spacing: 0) {
-                LibraryHead(section: .downloads, filtering: false, query: .constant(""),
+                LibraryHead(section: .downloads, filtering: false, query: Binding(get: { library.query }, set: { library.query = $0 }),
                             filter: { Toggle("Completed only", isOn: .constant(false)) },
                             actions: { Button("Clear Downloads") {} }, profiles: profiles)
-                Text("Today").frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Look.rowInset)
+                Text("Today").font(Look.libraryGroupText.font).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Look.inset + 4).padding(.top, Look.inset)
                 Spacer()
             }.background(Look.panelFill).environmentObject(store).preferredColorScheme(.dark)
         )
@@ -70,9 +71,10 @@ import XCTest
         library.filterSection = .downloads
         try await compatibilityWait { try await self.strings(host).contains { $0.contains("Filter Downloads") } }
         let words = try await strings(host).joined(separator: " ")
-        for expected in ["Filter Downloads", "Done", "Today", "Completed only"] + (isPrivate ? [] : ["Profiles", "Personal", "school", "sparc dev"]) {
+        for expected in ["Filter Downloads", "Done", "Today"] + (isPrivate ? [] : ["Profiles", "Personal", "school", "sparc dev"]) {
             XCTAssertTrue(words.contains(expected), "Missing or clipped \(expected): \(words)")
         }
+        XCTAssertFalse(words.contains("Completed only"), "Additional filters belong in More, leaving results below Profiles")
         if isPrivate {
             for hidden in ["Profiles", "Personal", "school", "sparc dev"] {
                 XCTAssertFalse(words.contains(hidden), "Private Library leaked \(hidden): \(words)")
@@ -84,6 +86,11 @@ import XCTest
             editorPrompt() == LibrarySection.downloads.searchPrompt && library.filterSection == nil
         }
         try await compatibilityWait { try await self.strings(host).contains { $0.contains("Filter") } }
+        // Text input from the shared desktop must not enter the delivered capture.
+        library.query = ""
+        try await LibraryFocusFixture.wait("empty preview search", in: window) {
+            ((window.firstResponder as? NSTextView)?.delegate as? NSTextField)?.stringValue == ""
+        }
         let returnedWords = try await strings(host)
         XCTAssertFalse(returnedWords.contains { $0.contains("Filter Downloads") })
         try capture(host, name: isPrivate ? "private-search" : "search")

@@ -261,8 +261,9 @@ above the results. Select one or more profile chips to narrow the list; **All**
 clears the profile selection. Search and the section's other filters still apply.
 **Done** returns to search. Profile choices stay with each section while Library is
 open and reset when you reopen it. Private windows show only their own items and
-omit the regular profile controls. The filter panel's **…** menu holds section
-actions such as Clear Downloads or Clear Archive.
+omit the regular profile controls. The filter panel's **…** menu holds additional
+filters such as Completed only and section actions such as Clear Downloads or
+Clear Archive.
 
 **Reopen Closed Tab** (`⇧⌘T`) remembers the last 32 closed regular tabs
 until Vane quits. Reopening in the same profile restores the page's Back/Forward
