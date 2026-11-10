@@ -209,6 +209,7 @@ import SwiftUI
         let (stream, continuation) = AsyncStream<String>.makeStream()
         let work = Task {
             defer { continuation.finish() }
+            guard !Task.isCancelled, enabled, revision == self.revision else { return }
             if local {
                 for await element in AppleAI.summarizeStream(text, sentences: sentences) {
                     guard !Task.isCancelled, enabled, revision == self.revision else { continuation.yield(""); return }

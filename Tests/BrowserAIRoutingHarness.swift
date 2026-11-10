@@ -87,6 +87,36 @@ extension UserDefaults {
         }
         let url = URL(string: "https://fixture.example/article")!
         _ = setup(.summaries, cloud: true)
+        let queuedMasterStream = BrowserAI.summarizeStream("Page text queued before master off/on", sentences: 2)
+        let queuedMasterRevision = BrowserAI.revision
+        let beforeQueuedMasterUploads = Boundary.requests
+        BrowserAI.enabledBinding.wrappedValue = false
+        BrowserAI.enabledBinding.wrappedValue = true
+        var queuedMasterResults: [String] = []
+        for await value in queuedMasterStream { queuedMasterResults.append(value) }
+        print("EVIDENCE queued master: beforeUploads=\(beforeQueuedMasterUploads) revision=\(queuedMasterRevision)->\(BrowserAI.revision) uploads=\(Boundary.requests) results=\(queuedMasterResults.count)")
+        checks.append(("master off/on before producer starts prevents queued page-text upload", beforeQueuedMasterUploads == 0 && Boundary.requests == 0 && queuedMasterResults.isEmpty))
+        let queuedFirst = setup(.summaries, cloud: true)
+        var queuedSecond = queuedFirst
+        queuedSecond.id = UUID(); queuedSecond.name = "Second account"
+        AIKeys.values[queuedSecond.credentialAccount] = AIKeys.values[queuedFirst.credentialAccount]
+        var queuedState = BrowserAI.state; queuedState.connections.append(queuedSecond); BrowserAI.save(queuedState)
+        let queuedRouteStream = BrowserAI.summarizeStream("Page text authorized for the earlier account", sentences: 2)
+        let queuedRouteRevision = BrowserAI.revision
+        let beforeQueuedRouteUploads = Boundary.requests
+        queuedState.route(.summaries, to: queuedSecond.id); BrowserAI.save(queuedState)
+        var queuedRouteResults: [String] = []
+        for await value in queuedRouteStream { queuedRouteResults.append(value) }
+        print("EVIDENCE queued route: beforeUploads=\(beforeQueuedRouteUploads) revision=\(queuedRouteRevision)->\(BrowserAI.revision) uploads=\(Boundary.requests) results=\(queuedRouteResults.count)")
+        checks.append(("route switch before producer starts cannot upload old text to new account", beforeQueuedRouteUploads == 0 && Boundary.requests == 0 && queuedRouteResults.isEmpty))
+        _ = setup(.summaries, cloud: true)
+        let queuedFreshStream = BrowserAI.summarizeStream("Fresh queued text without a settings edge", sentences: 2)
+        let queuedFreshRevision = BrowserAI.revision
+        BrowserAI.enabledBinding.wrappedValue = true
+        var queuedFreshResults: [String] = []
+        for await value in queuedFreshStream { queuedFreshResults.append(value) }
+        checks.append(("same-value master write preserves fresh queued summary", BrowserAI.revision == queuedFreshRevision && Boundary.requests == 1 && queuedFreshResults.count == 1))
+        _ = setup(.summaries, cloud: true)
         let refresh = Gate(); Boundary.gate = refresh
         let summary = Task { @MainActor in
             var values: [String] = []
