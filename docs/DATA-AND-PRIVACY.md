@@ -67,8 +67,28 @@ The bookmark manager supports folders, search, bulk actions and HTML import/expo
 Use **Vane → Import History & Bookmarks…** for supported Chromium-family browsers,
 Firefox, or Safari, and **Import Passwords…** in the Passwords UI for CSV. The dedicated
 **Vane → Import from Arc…** flow can also migrate supported local Arc data, including sessions;
-it is separate from the general bookmark/history importer. Review its selections and
-confirmation before importing.
+it is separate from the general importer. Review the source and destination before importing.
+
+The general importer offers **Also copy cookies / sessions**, off by default, for Chrome,
+Chromium, Edge, Brave, Vivaldi, Opera, and Arc profiles with a `Cookies` or `Network/Cookies`
+database. If you choose a profile folder yourself, identify the browser explicitly to enable
+session import; Vane does not guess a Safe Storage identity from the folder name. macOS may
+ask to read that browser's Safe Storage key. Only the selected browser's exact service/account
+pair is read; Vane never tries other browsers' keys or creates a source Keychain item.
+Firefox and Safari session extraction are not supported.
+
+Supported session migration reads cookie database schemas 23/24 and macOS `v10` AES-CBC
+values, including the host-bound format in schema 24. Other schema/encryption versions,
+including `v11`/`v20`, are unsupported and reported. Cookie reads use consistent read-only
+SQLite snapshots in memory, including committed WAL data. No plaintext import copy is made.
+The result reports cookies imported, skipped, and failed separately; a cookie is counted as
+imported only after readback verifies its value and attributes. Existing destination cookies
+are kept, including host-only/domain collisions. Cancel keeps completed library batches and
+verified cookie writes. A changed/deleted destination or private context stops later writes.
+
+Cookies can carry sessions, but copying them does **not** guarantee a completed sign-in.
+Site storage, device-bound credentials, passkeys and server-side session decisions can require
+signing in again. Keep source browsers' existing data until you have checked the sites you use.
 
 Import from Arc reads local SQLite snapshots and decrypts supported `v10` credentials
 using Arc's Keychain Safe Storage key. Passwords keep their scheme and port; autofill
@@ -86,7 +106,8 @@ Missing or unreadable routing files preserve existing link settings. An explicit
 as the default cannot be represented by Vane's current-Space/Little Vane preference;
 it is reported as unsupported and the existing default is kept.
 Session imports preserve HttpOnly, SameSite, Secure, domain, path, and lifetime.
-Expired, partitioned, or unsupported cookies are skipped and reported; those sessions
+Expired, partitioned, malformed, or unsupported cookies are skipped and reported. Cookies whose
+lifetime or attributes cannot be represented unchanged are also rejected; those sessions
 may need a fresh sign-in. No decrypted value is logged or written to an import file.
 
 ### Export files
@@ -120,7 +141,9 @@ deduplicate by URL and timestamp, so repeated imports add nothing. A failure rea
 saving either selected browser category leaves both categories unchanged. History
 CSV/JSON files are export formats; they have no user-facing file importer. See [browser
 data fidelity and unsupported fields](audits/browser-data-fidelity.md) for
-normalization, duplicate rules, synthetic coverage and failure behavior.
+normalization, duplicate rules, synthetic coverage and failure behavior. See also the
+[Chromium session import coverage](audits/chromium-session-import.md) for browser identities,
+synthetic decryption and cookie-store tests, and remaining UI/account compatibility checks.
 
 ## Website data
 
