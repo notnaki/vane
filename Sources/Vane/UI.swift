@@ -3513,6 +3513,12 @@ private struct FolderRow: View {
     @ObservedObject private var dragging = Dragging.shared
     private var locked: Bool { store.isFolderLocked(folder.id) }
     private var receiving: Bool { isEnabled && dragging.active && zone == .inside }
+    private var showsArrivals: Bool {
+        !locked && folder.collapsed && folder.live != nil
+            && store[keyPath: shape].entries.contains {
+                $0.parent == folder.id && $0.tab != nil && $0.liveArrival == true
+            }
+    }
 
     var body: some View {
         dropRow
@@ -3592,7 +3598,7 @@ private struct FolderRow: View {
         SidebarRow(selected: false, held: held,
                    keyboardEnabled: store.renamingFolder != folder.id, action: { store.toggleFolder(folder.id, in: shape) }) {
             FolderGlyph(folder: folder, live: LiveFolders.shared(for: store.profileID), dropOpen: receiving,
-                        allowsHoverPreview: !held && !locked)
+                        allowsHoverPreview: !held && !locked, showsArrivals: showsArrivals)
         } label: {
             if !held && store.renamingFolder == folder.id {
                 FolderNameField(store: store, folder: folder, shape: shape)
@@ -3612,6 +3618,7 @@ private struct FolderRow: View {
         return (folder.live == nil ? "Folder, " : "Live folder, ")
             + "\(store[keyPath: shape].tabs(in: folder.id).count) tabs, "
             + (locked ? "locked" : (folder.collapsed ? "collapsed" : "expanded"))
+            + (showsArrivals ? ", new pull requests shown below" : "")
             + (failed ? ", last refresh failed" : "")
     }
 }
@@ -3660,6 +3667,9 @@ struct FolderGlyph: View {
     var live: LiveFolders? = nil
     var dropOpen = false
     var allowsHoverPreview = true
+    var showsArrivals = false
+    private var arrivalMark: Bool { showsArrivals && folder.collapsed && !dropOpen }
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
     var body: some View {
         Group {
             if folder.icon == Folder.defaultIcon {
@@ -3674,6 +3684,16 @@ struct FolderGlyph: View {
             }
         }
         .frame(width: Look.tileIcon)
+        .overlay {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 9, weight: .bold))
+                .offset(y: 1.5)
+                .opacity(arrivalMark ? 1 : 0)
+                .animation(reduced ? nil : Look.quick, value: arrivalMark)
+                .transaction { if reduced { $0.disablesAnimations = true } }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         // A live folder wears its source in the corner of its own glyph, so a folded folder
         // still says it fills itself.
         .overlay(alignment: .bottomTrailing) {
