@@ -45,13 +45,21 @@ jobs:
           target = 'VaneTests.SpaceCreationSwipeRenderingTests/testPacedRecordedPullOpensCreationAfterSwipingAcrossThreeProfiles'
           prefix = original['tests'][:original['tests'].index(target) + 1]
           current = set(subprocess.check_output(['swift', 'test', 'list', '--skip-build'], text=True).splitlines())
+          assert len(prefix) == 629
           assert set(prefix) <= current, sorted(set(prefix) - current)
           original['tests'] = prefix
           Path('footer-prefix.json').write_text(json.dumps(original, indent=2))
           Path('footer-prefix.filter').write_text('^(' + '|'.join(re.escape(t) for t in prefix) + ')$')
           print('Predetermined original prefix:', len(prefix), 'cases, last:', prefix[-1])
+          creation = sorted(t for t in current if t.startswith('VaneTests.SpaceCreationSwipeRenderingTests/'))
+          assert len(creation) == 3, creation
+          assert 'VaneTests.SpaceCreationSwipeRenderingTests/testRecordedPullKeepsTheExistingProfilesFooterMarkers' in creation
+          focused = dict(original, tests=creation)
+          Path('footer-creation.json').write_text(json.dumps(focused, indent=2))
+          Path('footer-creation.filter').write_text('^(' + '|'.join(re.escape(t) for t in creation) + ')$')
+          print('Predetermined creation/ambient class:', creation)
           PYCODE
-      - name: Original prefix diagnostic
+      - name: Validate original 629-case predecessor prefix
         env:
           NSUnbufferedIO: 'YES'
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '600'
@@ -62,6 +70,20 @@ jobs:
               --filter "$(cat footer-prefix.filter)" 2>&1 | tee "footer-attempt-$attempt.log"
             python3 scripts/native-test-shards.py verify \
               --manifest footer-prefix.json --log "footer-attempt-$attempt.log"
+            grep -Fq "Test Case '-[VaneTests.SpaceCreationSwipeRenderingTests testPacedRecordedPullOpensCreationAfterSwipingAcrossThreeProfiles]' passed" "footer-attempt-$attempt.log"
+          done
+      - name: Three predetermined creation and ambient-profile passes
+        env:
+          NSUnbufferedIO: 'YES'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 \
+              --filter "$(cat footer-creation.filter)" 2>&1 | tee "creation-attempt-$attempt.log"
+            python3 scripts/native-test-shards.py verify \
+              --manifest footer-creation.json --log "creation-attempt-$attempt.log"
+            grep -Fq "Test Case '-[VaneTests.SpaceCreationSwipeRenderingTests testRecordedPullKeepsTheExistingProfilesFooterMarkers]' passed" "creation-attempt-$attempt.log"
           done
       - uses: actions/upload-artifact@v6
         if: always()
@@ -71,4 +93,7 @@ jobs:
             footer-attempt-*.log
             footer-prefix.json
             footer-prefix.filter
+            creation-attempt-*.log
+            footer-creation.json
+            footer-creation.filter
           retention-days: 7
