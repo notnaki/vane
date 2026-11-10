@@ -19,23 +19,20 @@ jobs:
         run: python3 scripts/ci-source-state.py restore
       - name: Build focused diagnostics
         run: swift build -c debug --build-tests --disable-index-store
-      - name: Run three focused preflights
+      - name: Replay the omitted AppKit loop predecessor once
         env:
           VANE_NATIVE_NAV_DIAGNOSTICS: '1'
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '120'
         run: |
           python3 - <<'PY'
           import os, pathlib, subprocess, sys
-          results = []
-          for attempt in range(1, 4):
-              path = pathlib.Path(os.environ['RUNNER_TEMP']) / f'pr630-f6-{attempt}.log'
-              selector = '^VaneTests[.](FolderDisclosureTests|GlobalEaselLibraryTests|InspectorWebKitTests|InstantLinksTests|KeyboardAccessibilityTests)/'
-              with path.open('w') as log:
-                  result = subprocess.run(['python3', 'scripts/run-native-tests.py', '--skip-build', '--jobs', '1', '--filter', selector], stdout=log, stderr=subprocess.STDOUT)
-              print(path.read_text(), flush=True)
-              print(f'F6 preflight {attempt}: status={result.returncode}', flush=True)
-              results.append(result.returncode)
-          sys.exit(1 if any(results) else 0)
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'pr630-f6-warm-loop.log'
+          selector = '^VaneTests[.](CompactControlTests|FolderDisclosureTests|GlobalEaselLibraryTests|InspectorWebKitTests|InstantLinksTests|KeyboardAccessibilityTests)/'
+          with path.open('w') as log:
+              result = subprocess.run(['python3', 'scripts/run-native-tests.py', '--skip-build', '--jobs', '1', '--filter', selector], stdout=log, stderr=subprocess.STDOUT)
+          print(path.read_text(), flush=True)
+          print(f'F6 warm-loop predecessor preflight: status={result.returncode}', flush=True)
+          sys.exit(result.returncode)
           PY
       - uses: actions/upload-artifact@v6
         if: always()
