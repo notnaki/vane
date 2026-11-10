@@ -5374,6 +5374,7 @@ private struct TabHomeIcon: View {
 /// tooltip, the VoiceOver label and the row's own accessibility action are all these.
 private struct GoHomeGlyph: View {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.rowHovering) private var rowHovering
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let store: TabStore
     let tab: Tab
@@ -5399,7 +5400,8 @@ private struct GoHomeGlyph: View {
                         .frame(width: Look.returnMarkerWidth)
                         .padding(.trailing, 2)
                         .offset(y: -1)
-                        .opacity(returnHovering.wrappedValue ? 0 : 1)
+                        // Only an inactive row's inset hover highlight hides the marker.
+                        .opacity((rowHovering && !rowSelected) || returnHovering.wrappedValue ? 0 : 1)
                         .accessibilityHidden(true)
                     }
                 .background(returnHovering.wrappedValue ? chromeTheme.hovered : .clear,
