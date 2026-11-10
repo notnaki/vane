@@ -25,18 +25,15 @@ import XCTest
         return try XCTUnwrap(renderer.nsImage).size.height
     }
 
-    func testHeaderKeepsOneRowOnceCompactControlsFit() throws {
+    func testHeaderKeepsOneRowAcrossTheResizeRange() throws {
         let store = fixture()
-        for width: CGFloat in [188, 192, 219, 220, 227, 228, 300, 500] {
+        for width: CGFloat in [164, 173, 174, 180, 187, 188, 192, 219, 220, 227, 228, 300, 500] {
             XCTAssertEqual(try headerHeight(width: width, store: store), Look.topRow,
-                           "Navigation must not wrap again when leaving compact mode at \(width)pt")
-        }
-        for width: CGFloat in [164, 180, 187] {
-            XCTAssertEqual(try headerHeight(width: width, store: store), Look.topRow * 2)
+                           "Navigation overflow must preserve the header height at \(width)pt")
         }
     }
 
-    func testAddressEditorFollowsPillWhenHeaderWraps() async throws {
+    func testAddressEditorStaysOverPillWhenHeaderOverflows() async throws {
         let store = fixture()
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
                               styleMask: [.borderless], backing: .buffered, defer: false)
@@ -67,6 +64,6 @@ import XCTest
         hosting.layoutSubtreeIfNeeded()
         XCTAssertEqual(try fieldTop() - inlineTop,
                        try headerHeight(width: 164, store: store) - inlineHeight, accuracy: 1,
-                       "Address editing must move down by the same amount as the pill")
+                       "Address editing must stay aligned with the pill across overflow")
     }
 }
