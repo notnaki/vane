@@ -149,7 +149,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case newEasel, captureToEasel, showEasels
     case newLittleArc
     case printPage, settings
-    case openFile, savePageAs, sharePage, capturePage
+    case openFile, savePageAs, sharePage, capturePage, captureFullPage
     // View
     case reload, hardReload, openLocation, find, toggleSidebar
     case nextFocusArea
@@ -219,6 +219,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .savePageAs: "Save Page As…"
         case .sharePage: "Share…"
         case .capturePage: "Capture a Portion of This Page"
+        case .captureFullPage: "Capture Full Page"
         case .reload: "Reload Page"
         case .hardReload: "Reload Ignoring Cache"
         case .openLocation: "Open Location…"
@@ -313,7 +314,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         switch self {
         case .newEasel, .captureToEasel, .showEasels, .newWindow, .newPrivateWindow, .newTab, .newLittleArc, .reopenClosedTab,
              .closeTab, .closeWindow, .printPage, .settings, .openFile, .savePageAs,
-             .sharePage, .capturePage: .file
+             .sharePage, .capturePage, .captureFullPage: .file
         case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious, .nextFocusArea,
              .toggleSidebar, .actualSize,
              .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,

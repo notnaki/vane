@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
@@ -8,6 +9,7 @@ import WebKit
 /// WebKit supplies page pixels, so no macOS screen-recording permission is needed.
 @MainActor enum PageCapture {
     private static var session: CaptureSession?
+    private static var result: CaptureResultController?
 
     static func available(_ tab: Tab?) -> Bool {
         guard let tab, tab.easelID == nil, !tab.needsRecovery,
@@ -16,15 +18,29 @@ import WebKit
             && !web.isLoading && web.url != nil && !web.bounds.isEmpty
     }
 
-    static func start(_ tab: Tab?) {
+    static func start(_ tab: Tab?, fullPage: Bool = false) {
         session?.cancel()
+        result?.close()
         guard let tab, available(tab), let window = tab.web.window, window.attachedSheet == nil else {
             Toasts.show("Load a page before capturing it.")
             return
         }
         let capture = CaptureSession(tab: tab, window: window)
         session = capture
-        capture.begin()
+        capture.begin(fullPage: fullPage)
+    }
+
+    static func present(image: NSImage, png: Data, title: String, source: URL?,
+                        in window: NSWindow, store: TabStore?, tab: Tab?, region: CGRect?) {
+        result?.close()
+        let controller = CaptureResultController(image: image, png: png, title: title, source: source,
+            window: window, store: store, tab: tab, region: region)
+        result = controller
+        controller.begin()
+    }
+
+    static func releaseResult(_ controller: CaptureResultController) {
+        if result === controller { result = nil }
     }
 
     fileprivate static func release(_ capture: CaptureSession) {
@@ -83,6 +99,69 @@ import WebKit
         return try await web.takeSnapshot(configuration: configuration)
     }
 
+    /// PDF rendering includes the document outside the viewport without moving the live page.
+    static func fullPage(in web: WKWebView) async throws -> NSImage {
+        let dimensions: [Double] = try await withCheckedThrowingContinuation { continuation in
+            web.evaluateJavaScript("""
+            (() => {
+              const d = document.documentElement, b = document.body;
+              return [Math.max(d.scrollWidth, b?.scrollWidth || 0, innerWidth),
+                      Math.max(d.scrollHeight, b?.scrollHeight || 0, innerHeight)];
+            })()
+            """, in: nil, in: .defaultClient) { result in
+                switch result {
+                case .success(let value):
+                    if let values = value as? [Double], values.count == 2 { continuation.resume(returning: values) }
+                    else { continuation.resume(throwing: Failure.rendering) }
+                case .failure(let error): continuation.resume(throwing: error)
+                }
+            }
+        }
+        let zoom = web.pageZoom
+        let size = CGSize(width: max(web.bounds.width, dimensions[0] * zoom),
+                          height: max(web.bounds.height, dimensions[1] * zoom))
+        let scale = web.window?.backingScaleFactor ?? 2
+        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0,
+              size.width * scale <= 32768, size.height * scale <= 32768,
+              size.width * size.height * scale * scale <= 64_000_000 else { throw Failure.tooLarge }
+        let configuration = WKPDFConfiguration()
+        configuration.rect = CGRect(origin: .zero, size: size)
+        let data = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+            web.createPDF(configuration: configuration) { continuation.resume(with: $0) }
+        }
+        try Task.checkCancellation()
+        guard let document = PDFDocument(data: data), document.pageCount == 1,
+              let page = document.page(at: 0),
+              let cg = CGContext(data: nil, width: Int(ceil(size.width * scale)), height: Int(ceil(size.height * scale)),
+                bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw Failure.rendering }
+        cg.scaleBy(x: scale, y: scale)
+        cg.setFillColor(NSColor.white.cgColor)
+        cg.fill(CGRect(origin: .zero, size: size))
+        let box = page.bounds(for: .mediaBox)
+        guard box.width > 0, box.height > 0 else { throw Failure.rendering }
+        cg.scaleBy(x: size.width / box.width, y: size.height / box.height)
+        cg.translateBy(x: -box.minX, y: -box.minY)
+        page.draw(with: .mediaBox, to: cg)
+        guard let pixels = cg.makeImage() else { throw Failure.rendering }
+        let bitmap = NSBitmapImageRep(cgImage: pixels)
+        bitmap.size = size
+        let image = NSImage(size: size)
+        image.addRepresentation(bitmap)
+        return image
+    }
+
+    enum Failure: LocalizedError {
+        case tooLarge, rendering, encoding
+        var errorDescription: String? {
+            switch self {
+            case .tooLarge: "This page is too large to capture at full resolution. Capture a smaller region instead."
+            case .rendering: "The page could not be rendered. Try capturing a region instead."
+            case .encoding: "The captured image could not be converted to PNG. Please try again."
+            }
+        }
+    }
+
     static func png(_ image: NSImage) -> Data? {
         guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
         return bitmap.representation(using: .png, properties: [:])
@@ -96,8 +175,15 @@ import WebKit
     private let overlay = CaptureOverlay(frame: .zero)
     private var observations: [NSKeyValueObservation] = []
     private var subscriptions: Set<AnyCancellable> = []
-    private var hoverTask: Task<Void, Never>?
+    private lazy var elementHover = CaptureElementHover(query: { [weak self] point in
+        guard let self, self.live, !self.taking else { return nil }
+        return await PageCapture.element(at: point, in: self.tab.web)
+    }, update: { [weak self] rect in
+        guard let self, self.live, !self.taking else { return }
+        if self.overlay.region != rect { self.overlay.region = rect }
+    })
     private var captureTask: Task<Void, Never>?
+    private var captureInputMonitor: Any?
     private var live = true
     private var taking = false
 
@@ -107,13 +193,14 @@ import WebKit
         previousResponder = window.firstResponder
     }
 
-    func begin() {
+    func begin(fullPage: Bool) {
         let web = tab.web
         overlay.frame = web.bounds
         overlay.autoresizingMask = [.width, .height]
         overlay.hover = { [weak self] point in self?.hover(point) }
         overlay.select = { [weak self] rect, point in self?.select(rect, point: point) }
         overlay.cancel = { [weak self] in self?.cancel() }
+        overlay.fullPage = { [weak self] in self?.select(nil, point: nil, fullPage: true) }
         web.addSubview(overlay, positioned: .above, relativeTo: nil)
         window?.makeFirstResponder(overlay)
         // Same-URL reloads, zoom, tab switches and window dismissal invalidate the region.
@@ -125,6 +212,9 @@ import WebKit
             web.observe(\.pageZoom) { [weak self] _, _ in MainActor.assumeIsolated { self?.cancel() } },
         ]
         if let store = TabStore.all.first(where: { $0.window === window && $0.active === tab }) {
+            store.$profileVisible.sink { [weak self] visible in
+                if !visible { self?.cancel() }
+            }.store(in: &subscriptions)
             let tabID = tab.id
             store.$current.sink { [weak self] id in
                 if id != tabID { self?.cancel() }
@@ -140,28 +230,22 @@ import WebKit
         }
         NSAccessibility.post(element: overlay, notification: .announcementRequested,
             userInfo: [.announcement: "Capture mode. Click an element or drag a region. Return captures the highlighted region or visible page. Escape cancels.", .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        if fullPage { select(nil, point: nil, fullPage: true) }
     }
 
     private func hover(_ point: CGPoint) {
-        hoverTask?.cancel()
-        guard point.x >= 0, point.y >= 0 else { return }
-        hoverTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(35))
-            guard let self, self.live, !self.taking, !Task.isCancelled else { return }
-            let rect = await PageCapture.element(at: point, in: self.tab.web)
-            guard self.live, !self.taking, !Task.isCancelled else { return }
-            self.overlay.region = rect
-        }
+        elementHover.move(to: point)
     }
 
-    private func select(_ rect: CGRect?, point: CGPoint?) {
+    private func select(_ rect: CGRect?, point: CGPoint?, fullPage: Bool = false) {
         guard live, !taking else { return }
         taking = true
-        hoverTask?.cancel()
+        elementHover.cancel()
         captureTask = Task { [weak self] in
             guard let self else { return }
             let chosen: CGRect?
-            if let point { chosen = await PageCapture.element(at: point, in: self.tab.web) }
+            if fullPage { chosen = self.tab.web.bounds }
+            else if let point { chosen = await PageCapture.element(at: point, in: self.tab.web) }
             else { chosen = rect }
             guard self.live, !Task.isCancelled else { return }
             guard let chosen else {
@@ -176,27 +260,24 @@ import WebKit
                 self.window?.makeFirstResponder(self.previousResponder)
             }
             self.overlay.removeFromSuperview()
+            let viewport = self.tab.web.bounds
+            // Keep the selected document stable while WebKit produces its pixels.
+            self.captureInputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .scrollWheel, .leftMouseDown, .leftMouseUp, .rightMouseDown]) { [weak self] event in
+                guard let self, self.live, self.taking, event.window === self.window else { return event }
+                if event.type == .keyDown && event.keyCode == 53 { self.cancel() }
+                return nil
+            }
             do {
                 let source = self.tab.currentURL
                 let title = self.tab.title
-                let image = try await PageCapture.snapshot(chosen, in: self.tab.web)
+                let image = try await (fullPage ? PageCapture.fullPage(in: self.tab.web) : PageCapture.snapshot(chosen, in: self.tab.web))
                 guard self.live, !Task.isCancelled, let window = self.window else { return }
-                guard let png = PageCapture.png(image) else { throw CaptureError.encoding }
+                guard self.tab.web.bounds == viewport else { self.cancel(); return }
+                guard let png = PageCapture.png(image) else { throw PageCapture.Failure.encoding }
                 self.cancel()
                 let store = TabStore.all.first { $0.window === window && $0.profileID == self.tab.profileID }
-                var boards: [EaselBoard] = []
-                var add: (@MainActor (UUID?) async -> Bool)?
-                if let store, !store.isPrivate, !store.isLittle, let source,
-                   EaselItem.webURL(source.absoluteString) != nil {
-                    let repository = EaselStore.shared(profileID: self.tab.profileID, directory: Store.directory)
-                    await repository.waitUntilReady()
-                    boards = repository.boards
-                    add = { @MainActor [weak store] id in
-                        guard let store else { return false }
-                        return await EaselWindow.addCapture(image, title: title, source: source.absoluteString, to: id, in: store)
-                    }
-                }
-                CapturePreviewController.present(image: image, png: png, in: window, boards: boards, addToEasel: add)
+                PageCapture.present(image: image, png: png, title: title, source: source,
+                    in: window, store: store, tab: self.tab, region: fullPage ? nil : chosen)
             } catch {
                 guard self.live, !Task.isCancelled else { return }
                 let window = self.window
@@ -212,8 +293,10 @@ import WebKit
     func cancel() {
         guard live else { return }
         live = false
-        hoverTask?.cancel()
+        elementHover.cancel()
         captureTask?.cancel()
+        if let captureInputMonitor { NSEvent.removeMonitor(captureInputMonitor) }
+        captureInputMonitor = nil
         observations.removeAll()
         subscriptions.removeAll()
         if window?.firstResponder === overlay { window?.makeFirstResponder(previousResponder) }
@@ -221,10 +304,7 @@ import WebKit
         PageCapture.release(self)
     }
 
-    private enum CaptureError: LocalizedError {
-        case encoding
-        var errorDescription: String? { "The captured image could not be converted to PNG. Please try again." }
-    }
+
 }
 
 @MainActor private final class CaptureOverlay: NSView {
@@ -234,6 +314,8 @@ import WebKit
     var hover: ((CGPoint) -> Void)?
     var select: ((CGRect?, CGPoint?) -> Void)?
     var cancel: (() -> Void)?
+    var fullPage: (() -> Void)?
+    private var instructions: NSView?
     private var origin: CGPoint?
     private var dragged = false
     private var tracking: NSTrackingArea?
@@ -242,7 +324,8 @@ import WebKit
         super.init(frame: frame)
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
-        setAccessibilityLabel("Page capture. Return captures the visible page. Escape cancels.")
+        setAccessibilityLabel("Page capture. Click an element, drag a region, or choose Full Page. Return captures the visible page. Escape cancels.")
+        identifier = NSUserInterfaceItemIdentifier("page-capture-selection")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -290,114 +373,37 @@ import WebKit
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil { cancel?() }
+        else if instructions == nil {
+            let host = NSHostingView(rootView: CaptureInstructions(
+                fullPage: { [weak self] in self?.fullPage?() }, cancel: { [weak self] in self?.cancel?() }))
+            instructions = host
+            addSubview(host)
+            needsLayout = true
+            if !Motion.reduced {
+                host.alphaValue = 0
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.15
+                    host.animator().alphaValue = 1
+                }
+            }
+        }
+    }
+    override func layout() {
+        super.layout()
+        guard let instructions else { return }
+        let width = max(0, min(520, bounds.width - 24))
+        instructions.frame = CGRect(x: (bounds.width - width) / 2, y: max(0, bounds.height - 88), width: width, height: 72)
     }
     override func draw(_ dirtyRect: NSRect) {
         let mask = NSBezierPath(rect: bounds)
-        if let region { mask.append(NSBezierPath(rect: region)); mask.windingRule = .evenOdd }
+        if let region { mask.append(NSBezierPath(roundedRect: region, xRadius: 8, yRadius: 8)); mask.windingRule = .evenOdd }
         NSColor.black.withAlphaComponent(0.36).setFill()
         mask.fill()
         if let region {
-            NSColor.white.setStroke()
-            let border = NSBezierPath(rect: region.insetBy(dx: -0.5, dy: -0.5))
-            border.lineWidth = 1.5
+            NSColor.controlAccentColor.setStroke()
+            let border = NSBezierPath(roundedRect: region.insetBy(dx: -0.5, dy: -0.5), xRadius: 8.5, yRadius: 8.5)
+            border.lineWidth = 3
             border.stroke()
         }
-        let text = "Click an element or drag to capture · Esc to cancel"
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: .medium), .foregroundColor: NSColor.white]
-        let size = (text as NSString).size(withAttributes: attributes)
-        let box = CGRect(x: max(8, (bounds.width - size.width - 24) / 2), y: 16, width: size.width + 24, height: 32)
-        NSColor.black.withAlphaComponent(0.75).setFill()
-        NSBezierPath(roundedRect: box, xRadius: 8, yRadius: 8).fill()
-        (text as NSString).draw(at: CGPoint(x: box.minX + 12, y: box.minY + 8), withAttributes: attributes)
-    }
-}
-
-@MainActor private final class CapturePreviewController {
-    private let panel: NSPanel
-    private let image: NSImage
-    private let png: Data
-    private var picker: NSSharingServicePicker?
-
-    static func present(image: NSImage, png: Data, in window: NSWindow,
-                        boards: [EaselBoard] = [], addToEasel: (@MainActor (UUID?) async -> Bool)? = nil) {
-        let controller = CapturePreviewController(image: image, png: png, boards: boards, addToEasel: addToEasel)
-        window.beginSheet(controller.panel) { _ in _ = controller }
-    }
-
-    init(image: NSImage, png: Data, boards: [EaselBoard], addToEasel: (@MainActor (UUID?) async -> Bool)?) {
-        self.image = image
-        self.png = png
-        panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 640, height: 480),
-                        styleMask: [.titled], backing: .buffered, defer: false)
-        panel.title = "Page Capture"
-        panel.contentView = NSHostingView(rootView: CapturePreview(image: image,
-            copy: { [weak self] in self?.copy() }, save: { [weak self] in self?.save() },
-            share: { [weak self] in self?.share() }, close: { [weak self] in self?.close() },
-            boards: boards, addToEasel: addToEasel.map { add in { [weak self] id in
-                Task { @MainActor in if await add(id) { self?.close() } }
-            } }))
-    }
-
-    private func copy() {
-        NSPasteboard.general.clearContents()
-        if NSPasteboard.general.setData(png, forType: .png) { close(); Toasts.show("Copied capture") }
-    }
-    private func save() {
-        let save = NSSavePanel()
-        save.allowedContentTypes = [.png]
-        save.nameFieldStringValue = "Vane Capture.png"
-        save.canCreateDirectories = true
-        save.beginSheetModal(for: panel) { [self] response in
-            guard response == .OK, let url = save.url else { return }
-            do { try png.write(to: url, options: .atomic); close() }
-            catch {
-                let alert = NSAlert()
-                alert.messageText = "Couldn’t save the capture"
-                alert.informativeText = error.localizedDescription
-                alert.beginSheetModal(for: panel)
-            }
-        }
-    }
-    private func share() {
-        guard let view = panel.contentView else { return }
-        picker = NSSharingServicePicker(items: [image])
-        picker?.show(relativeTo: CGRect(x: view.bounds.midX, y: 24, width: 1, height: 1), of: view, preferredEdge: .minY)
-    }
-    private func close() {
-        panel.sheetParent?.endSheet(panel)
-        panel.orderOut(nil)
-    }
-}
-
-private struct CapturePreview: View {
-    let image: NSImage
-    let copy: () -> Void
-    let save: () -> Void
-    let share: () -> Void
-    let close: () -> Void
-    var boards: [EaselBoard] = []
-    var addToEasel: ((UUID?) -> Void)?
-    var body: some View {
-        VStack(spacing: 20) {
-            Image(nsImage: image).resizable().scaledToFit()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityLabel("Captured page region")
-            HStack {
-                Button("Close", action: close).keyboardShortcut(.cancelAction)
-                Spacer()
-                if let addToEasel {
-                    Menu("Add to Easel") {
-                        Button("New Easel") { addToEasel(nil) }
-                        if !boards.isEmpty { Divider() }
-                        ForEach(boards) { board in
-                            Button(board.title.isEmpty ? "Untitled Easel" : board.title) { addToEasel(board.id) }
-                        }
-                    }.fixedSize()
-                }
-                Button("Share…", action: share)
-                Button("Save PNG…", action: save)
-                Button("Copy", action: copy).keyboardShortcut(.defaultAction)
-            }
-        }.padding(24).frame(width: 640, height: 440)
     }
 }

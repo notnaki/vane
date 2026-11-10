@@ -771,6 +771,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         validated(item(.capturePage) { PageCapture.start(Windows.current?.active) }) {
             PageCapture.available(Windows.current?.active)
         },
+        validated(item(.captureFullPage) { PageCapture.start(Windows.current?.active, fullPage: true) }) {
+            PageCapture.available(Windows.current?.active)
+        },
         item(.savePageAs) { savePageAs() },
         item(.printPage) { printPage() },
         item(.sharePage) { sharePage() },

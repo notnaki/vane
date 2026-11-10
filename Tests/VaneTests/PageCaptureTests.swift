@@ -75,11 +75,13 @@ import XCTest
         web.stopLoading()
     }
 
-    private func visiblePage() async throws -> (TabStore, Tab, NSWindow) {
+    private func visiblePage(isPrivate: Bool = true) async throws -> (TabStore, Tab, NSWindow) {
         TestEnvironment.prepare()
+        // XCTest pumps WebKit completions for these direct API/responder regressions.
+        // Physical foreground input is covered separately by the packaged-app smoke.
         _ = NSApplication.shared
-        let store = TabStore(isPrivate: true, session: [])
-        let tab = Tab(isPrivate: true, profileID: store.profileID)
+        let store = TabStore(isPrivate: isPrivate, profileID: UUID(), session: [])
+        let tab = Tab(isPrivate: isPrivate, profileID: store.profileID)
         store.tabs = [tab]
         store.current = tab.id
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 500, height: 300),
@@ -87,7 +89,7 @@ import XCTest
         window.isReleasedWhenClosed = false
         store.window = window
         window.contentView = tab.web
-        window.makeKeyAndOrderFront(nil)
+        window.orderFront(nil)
         tab.web.loadHTMLString("""
         <style>body{margin:0;height:2000px;background:blue}#card{position:absolute;left:20px;top:400px;width:100px;height:80px;background:red}</style>
         <div id='card'></div>
@@ -95,6 +97,7 @@ import XCTest
         let deadline = Date.now.addingTimeInterval(10)
         while tab.web.isLoading && Date.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertFalse(tab.web.isLoading)
+        try await compatibilityWait { window.isVisible && tab.web.window === window }
         addTeardownBlock { @MainActor in
             window.close()
             tab.web.stopLoading()
@@ -121,6 +124,50 @@ import XCTest
         XCTAssertLessThan(color.blueComponent, 0.1, "Snapshot must crop the red element, excluding the blue page")
     }
 
+    func testFullPageCaptureIncludesOffscreenPixelsAndPreservesViewport() async throws {
+        let (_, tab, window) = try await visiblePage()
+        _ = try await tab.web.evaluateJavaScript("""
+        document.body.style.width = '700px';
+        document.body.insertAdjacentHTML('beforeend', '<div style="position:absolute;left:600px;top:1850px;width:100px;height:150px;background:lime"></div>');
+        window.scrollTo(100, 700);
+        """)
+        let before = try await tab.web.evaluateJavaScript("[scrollX, scrollY]") as! [Double]
+        let sizeBefore = tab.web.frame
+        let image = try await PageCapture.fullPage(in: tab.web)
+        XCTAssertEqual(image.size.width, 700, accuracy: 1)
+        XCTAssertEqual(image.size.height, 2000, accuracy: 1)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(PageCapture.png(image))))
+        XCTAssertEqual(CGFloat(bitmap.pixelsWide) / image.size.width, window.backingScaleFactor, accuracy: 0.01)
+        let top = try XCTUnwrap(bitmap.colorAt(x: 10, y: 10)?.usingColorSpace(.deviceRGB))
+        let bottom = try XCTUnwrap(bitmap.colorAt(x: Int(650 * window.backingScaleFactor),
+            y: Int(1920 * window.backingScaleFactor))?.usingColorSpace(.deviceRGB))
+        XCTAssertGreaterThan(top.blueComponent, 0.9)
+        XCTAssertGreaterThan(bottom.greenComponent, 0.9, "Full-page capture must include offscreen document content")
+        XCTAssertLessThan(bottom.blueComponent, 0.1)
+        let after = try await tab.web.evaluateJavaScript("[scrollX, scrollY]") as! [Double]
+        XCTAssertEqual(after, before)
+        XCTAssertEqual(tab.web.frame, sizeBefore)
+    }
+
+    func testFullPageCaptureHonorsPageZoom() async throws {
+        let (_, tab, _) = try await visiblePage()
+        tab.web.pageZoom = 1.5
+        let image = try await PageCapture.fullPage(in: tab.web)
+        XCTAssertEqual(image.size.height, 3000, accuracy: 1)
+        XCTAssertEqual(image.size.width, tab.web.bounds.width, accuracy: 1)
+    }
+
+    func testFullPageRefusesAnUnboundedBitmap() async throws {
+        let (_, tab, _) = try await visiblePage()
+        _ = try await tab.web.evaluateJavaScript("document.body.style.height = '10000000px'")
+        do {
+            _ = try await PageCapture.fullPage(in: tab.web)
+            XCTFail("An enormous page should fail before allocating a bitmap")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("large"))
+        }
+    }
+
     func testCaptureCancelsOnEscapeTabSwitchAndNavigation() async throws {
         let (store, tab, window) = try await visiblePage()
         let initial = tab.web.subviews.count
@@ -141,23 +188,74 @@ import XCTest
         XCTAssertEqual(tab.web.subviews.count, initial)
     }
 
-    func testReturnCapturesPageAndOpensOutputPreview() async throws {
+    func testReturnCapturesPageAndOpensCompactActionsWithoutASheet() async throws {
         let (_, tab, window) = try await visiblePage()
-        let initial = tab.web.subviews.count
         PageCapture.start(tab)
         let enter = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
             modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
             characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
         window.firstResponder?.keyDown(with: enter)
-        let deadline = Date.now.addingTimeInterval(10)
-        while window.attachedSheet == nil && Date.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
+        try await compatibilityWait {
+            tab.web.subviews.contains { $0.identifier?.rawValue == "page-capture-result" }
         }
-        let preview = try XCTUnwrap(window.attachedSheet)
-        XCTAssertEqual(preview.title, "Page Capture")
-        XCTAssertEqual(tab.web.subviews.count, initial, "The selection overlay must be removed before capture")
-        window.endSheet(preview)
-        preview.orderOut(nil)
+        XCTAssertNil(window.attachedSheet, "Capture actions should stay beside the selection")
+        let result = try XCTUnwrap(tab.web.subviews.first { $0.identifier?.rawValue == "page-capture-result" })
+        result.layoutSubtreeIfNeeded()
+        let menu = try XCTUnwrap(result.subviews.first)
+        XCTAssertLessThan(menu.frame.height, 280, "The private capture menu must fit its rows without a large empty footer")
+        XCTAssertFalse(tab.web.subviews.contains { $0.identifier?.rawValue == "page-capture-selection" })
+        if let path = ProcessInfo.processInfo.environment["VANE_CAPTURE_ACTIONS_SCREENSHOT"] {
+            let host = tab.web
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: path))
+        }
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        window.firstResponder?.keyDown(with: escape)
+        XCTAssertFalse(tab.web.subviews.contains { $0.identifier?.rawValue == "page-capture-result" })
+    }
+
+    func testFullPageEntryPointPresentsActionsAndNavigationDismissesThem() async throws {
+        let (_, tab, _) = try await visiblePage()
+        PageCapture.start(tab, fullPage: true)
+        try await compatibilityWait {
+            tab.web.subviews.contains { $0.identifier?.rawValue == "page-capture-result" }
+        }
+        tab.web.loadHTMLString("<p>New document</p>", baseURL: URL(string: "https://other.test"))
+        try await compatibilityWait {
+            !tab.web.subviews.contains { $0.identifier?.rawValue == "page-capture-result" }
+        }
+    }
+
+    func testNavigationWhileEditingClosesTheEditorAndCannotResurrectTheCapture() async throws {
+        let (_, tab, window) = try await visiblePage()
+        window.setContentSize(NSSize(width: 1000, height: 760))
+        PageCapture.start(tab, fullPage: true)
+        try await compatibilityWait { tab.web.subviews.contains { $0.identifier?.rawValue == "page-capture-result" } }
+        let edit = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: .command, timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            characters: "e", charactersIgnoringModifiers: "e", isARepeat: false, keyCode: 14))
+        window.firstResponder?.keyDown(with: edit)
+        try await compatibilityWait { window.attachedSheet?.title == "Edit Capture" }
+        tab.web.loadHTMLString("<p>A new page</p>", baseURL: URL(string: "https://new.test"))
+        try await compatibilityWait {
+            window.attachedSheet == nil && !tab.web.subviews.contains { $0.identifier?.rawValue == "page-capture-result" }
+        }
+    }
+
+    func testCaptureSelectionAndResultCloseWhenTheirProfileIsParked() async throws {
+        let (store, tab, _) = try await visiblePage()
+        PageCapture.start(tab, fullPage: true)
+        try await compatibilityWait { tab.web.subviews.contains { $0.identifier?.rawValue == "page-capture-result" } }
+        store.profileVisible = false
+        XCTAssertFalse(tab.web.subviews.contains { $0.identifier?.rawValue == "page-capture-result" })
+        store.profileVisible = true
+        PageCapture.start(tab)
+        store.profileVisible = false
+        XCTAssertFalse(tab.web.subviews.contains { $0.identifier?.rawValue == "page-capture-selection" })
     }
 
     func testCaptureModeDoesNotForwardPageScrollingKeys() async throws {
