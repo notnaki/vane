@@ -187,6 +187,9 @@ download loses its connection, **Retry** starts a fresh download after you recon
 partial archives are removed rather than installed. An update already installed and
 waiting for **Restart** can finish without another update download. Manual checks and
 retries do not wait for the automatic check's backoff interval.
+The update status pill is shared across Spaces and profiles, including when the
+destination has an open command bar. Its current Update, Retry, or Restart action
+remains available there.
 
 ## Search and history
 

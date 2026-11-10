@@ -238,6 +238,7 @@ struct ToastPresentation: ViewModifier {
 /// or Library footer when visible, and the page corner when all chrome is hidden.
 /// Dark whatever the appearance, like the command bar, with the space's colour washed over it.
 struct ToastHost: View {
+    var stickyOnly = false
     @EnvironmentObject var store: TabStore
     @ObservedObject private var toasts = Toasts.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -268,7 +269,9 @@ struct ToastHost: View {
     /// The toasts this window is the one to draw: its own, plus the ones about the app
     /// itself, which have no window of their own.
     private var mine: [Toasts.Toast] {
-        toasts.showing.filter { $0.owner == nil || $0.owner == ObjectIdentifier(store) }
+        toasts.showing.filter {
+            (!stickyOnly || $0.sticky) && ($0.owner == nil || $0.owner == ObjectIdentifier(store))
+        }
     }
 
     /// The space's colour, or the profile's outside any space.
