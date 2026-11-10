@@ -97,11 +97,21 @@ struct SidebarChromeLayout {
     }
 }
 
+/// A small magnetic catch at the default width. A wider release band prevents jitter
+/// while the pointer moves around the catch; widths outside it still follow the hand.
+struct SidebarResizeDetent {
+    private var engaged = false
+
+    mutating func width(for proposed: CGFloat) -> CGFloat {
+        let distance = abs(proposed - SidebarWidth.standard)
+        engaged = distance <= (engaged ? 12 : 6)
+        return engaged ? SidebarWidth.standard : SidebarWidth.clamp(proposed)
+    }
+}
+
 /// The seam between the sidebar and the page card, as a thing you can grab.
-///
-/// It draws nothing: Arc's divider is the gap that is already there, and a visible rule would
-/// be one more line in a window whose whole point is that it has none. It is `hitTestWidth`
-/// wide, centred on the seam, which is the same forgiveness AppKit gives a split view.
+/// Its rule appears only while hovering or dragging. The forgiving hit area stays wider
+/// than the rule, centred on the seam like AppKit's split-view divider.
 struct SidebarHandle: View {
     @EnvironmentObject private var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
@@ -109,6 +119,8 @@ struct SidebarHandle: View {
     /// for the rest of it, so the seam does not jump to the pointer when the grab was a few
     /// points off centre.
     @State private var start: CGFloat?
+    @State private var hovered = false
+    @State private var detent = SidebarResizeDetent()
 
     /// Wide enough to hit without aiming, narrow enough that the first sidebar row's close
     /// button is still clickable.
@@ -118,7 +130,18 @@ struct SidebarHandle: View {
         Color.clear
             .frame(width: Self.hitTestWidth)
             .frame(maxHeight: .infinity)
+            .overlay {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(.primary.opacity(0.45))
+                    .frame(width: 4)
+                    .padding(.vertical, Look.inset)
+                    .opacity(hovered || start != nil ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
             .contentShape(.rect)
+            .onHover { inside in
+                Motion.animate(Look.quick) { hovered = inside }
+            }
             // macOS's own column-resize pointer, so the affordance is the system's rather
             // than a cursor we drew.
             .pointerStyle(.columnResize)
@@ -132,13 +155,18 @@ struct SidebarHandle: View {
                         // is in the window's own space and cannot drift, so the drag is
                         // "the seam is wherever the pointer is", plus the grab offset taken
                         // on the first frame.
-                        let grab = start ?? (sidebar.width - value.location.x)
-                        if start == nil { start = grab }
-                        sidebar.setLiveWidth(value.location.x + grab)
+                        let grab = start ?? (sidebar.width - value.startLocation.x)
+                        if start == nil {
+                            detent = SidebarResizeDetent()
+                            Motion.animate(Look.quick) { start = grab }
+                        }
+                        sidebar.setLiveWidth(detent.width(for: value.location.x + grab))
                     }
                     .onEnded { value in
                         let proposed = value.location.x + (start ?? 0)
-                        start = nil
+                        sidebar.setLiveWidth(detent.width(for: proposed))
+                        Motion.animate(Look.quick) { start = nil }
+                        detent = SidebarResizeDetent()
                         sidebar.save()
                         if SidebarWidth.shouldCollapse(proposed) {
                             store.sidebarShown = false
