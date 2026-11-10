@@ -13,6 +13,7 @@ import Combine
 private struct BlockRule: Codable, Equatable {
     struct Trigger: Codable, Equatable {
         var urlFilter: String
+        var urlFilterIsCaseSensitive: Bool?
         var ifDomain: [String]?
         var unlessDomain: [String]?
         var resourceType: [String]?
@@ -21,6 +22,7 @@ private struct BlockRule: Codable, Equatable {
 
         enum CodingKeys: String, CodingKey {
             case urlFilter     = "url-filter"
+            case urlFilterIsCaseSensitive = "url-filter-is-case-sensitive"
             case ifDomain      = "if-domain"
             case unlessDomain  = "unless-domain"
             case resourceType  = "resource-type"
@@ -47,7 +49,7 @@ private struct BlockRule: Codable, Equatable {
 ///
 /// ponytail: this converts a documented *subset* of EasyList syntax, not all of it.
 /// WebKit's trigger vocabulary genuinely cannot express the rest (no `$important`, no
-/// `$redirect`, no negated resource types, no procedural selectors), so anything outside
+/// `$redirect`, or procedural selectors), so anything outside
 /// the subset is counted and dropped rather than half-translated into a rule that quietly
 /// blocks the wrong thing. Upgrade path the day that stops being enough: vendor AdGuard's
 /// SafariConverter instead of growing this file.
@@ -490,10 +492,11 @@ private struct BlockRule: Codable, Equatable {
     /// `@@` exceptions, `$third-party` / `$~third-party`, the resource-type options
     /// (`script`, `image`, `stylesheet`, `document`, `subdocument`, `font`, `media`,
     /// `xmlhttprequest`, `websocket`, `ping`, `popup`), positive-only or negative-only `$domain` restrictions, and
-    /// `domains##selector` cosmetic rules.
+    /// `domains##selector` cosmetic rules, `$match-case`, and exact resource exclusions
+    /// within an explicit positive resource set.
     ///
     /// Skipped and counted: `/regex/` rules, `#@#` / `#?#` / `#$#` cosmetic variants,
-    /// scriptlets, procedural selectors, negated resource types, `$important`,
+    /// scriptlets, procedural selectors, negative-only or aggregated resource exclusions, `$important`,
     /// `$redirect`, `$csp`, `$removeparam`, non-ASCII patterns, and anything with an
     /// option this does not know — an unknown option can invert a rule's meaning, so an
     /// unrecognised one drops the whole line.
@@ -600,7 +603,7 @@ private struct BlockRule: Codable, Equatable {
             body = String(body[..<dollar])
             guard applyOptions(options, to: &trigger) else { return nil }
         }
-        guard let filter = urlFilter(body) else { return nil }
+        guard let filter = urlFilter(body, matchCase: trigger.urlFilterIsCaseSensitive == true) else { return nil }
         trigger.urlFilter = filter
         return BlockRule(trigger: trigger,
                          action: .init(type: exception ? "ignore-previous-rules" : "block"))
@@ -639,9 +642,12 @@ private struct BlockRule: Codable, Equatable {
     private nonisolated static func applyOptions(_ options: String,
                                                  to trigger: inout BlockRule.Trigger) -> Bool {
         var types: [String] = []
+        var excluded = Set<String>()
         for part in options.split(separator: ",", omittingEmptySubsequences: false) {
             let option = part.trimmingCharacters(in: .whitespaces).lowercased()
             switch option {
+            case "match-case":
+                trigger.urlFilterIsCaseSensitive = true
             case "third-party", "3p":
                 trigger.loadType = ["third-party"]
             case "~third-party", "first-party", "1p":
@@ -649,15 +655,26 @@ private struct BlockRule: Codable, Equatable {
             default:
                 if let type = resourceTypes[option] {
                     if !types.contains(type) { types.append(type) }
+                } else if option.hasPrefix("~"),
+                          ["script", "image", "stylesheet", "font", "media", "popup"].contains(String(option.dropFirst())),
+                          let type = resourceTypes[String(option.dropFirst())] {
+                    excluded.insert(type)
                 } else if option.hasPrefix("domain=") {
                     guard let list = domainLists(option.dropFirst(7).split(separator: "|", omittingEmptySubsequences: false)) else { return false }
                     guard list.yes != nil || list.no != nil else { return false }
                     trigger.ifDomain = list.yes
                     trigger.unlessDomain = list.no
                 } else {
-                    return false      // unknown, or a negated type: cannot be expressed
+                    return false
                 }
             }
+        }
+        if !excluded.isEmpty {
+            // Narrow an explicit set only. WebKit's raw/document buckets combine
+            // several EasyList types; subtracting one of those would lose meaning.
+            guard !types.isEmpty else { return false }
+            types.removeAll { excluded.contains($0) }
+            guard !types.isEmpty else { return false }
         }
         if !types.isEmpty { trigger.resourceType = types }
         return true
@@ -683,11 +700,10 @@ private struct BlockRule: Codable, Equatable {
 
     /// Translate an EasyList pattern into WebKit's url-filter regex, or nil if it uses
     /// something the regex subset has no answer for.
-    private nonisolated static func urlFilter(_ pattern: String) -> String? {
-        // Matching is case-insensitive by default and an uppercase literal in the filter
-        // would simply never match, so everything is lowered. Filter patterns have no
-        // character classes of their own, so nothing is lost.
-        var p = pattern.lowercased()
+    private nonisolated static func urlFilter(_ pattern: String, matchCase: Bool = false) -> String? {
+        // WebKit requires lowercase filter literals in its default insensitive mode;
+        // match-case opts into sensitive matching and keeps the original pattern.
+        var p = matchCase ? pattern : pattern.lowercased()
         guard !p.isEmpty, p.allSatisfy({ $0.isASCII && !$0.isWhitespace }) else { return nil }
         // /regex/ rules: full regex, not the subset WebKit accepts.
         if p.hasPrefix("/") && p.hasSuffix("/") && p.count > 2 { return nil }
@@ -714,7 +730,7 @@ private struct BlockRule: Codable, Equatable {
             // The separator `^`: anything that cannot appear in a hostname or path atom.
             // A trailing one still matches because WebKit canonicalises URLs to have a
             // path, so there is always at least a `/` to consume.
-            case "^": out += "[^a-z0-9_.%-]"
+            case "^": out += matchCase ? "[^a-zA-Z0-9_.%-]" : "[^a-z0-9_.%-]"
             case ".", "?", "+", "$", "(", ")", "[", "]", "{", "}", "\\":
                 out += "\\" + String(c)
             default: out.append(c)

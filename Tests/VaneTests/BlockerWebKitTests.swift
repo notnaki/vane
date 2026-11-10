@@ -5,6 +5,40 @@ import XCTest
 @testable import vane
 
 @MainActor final class BlockerWebKitTests: XCTestCase {
+    func testCaseAndNarrowedResourceOptionsActuallyControlScriptLoading() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let server = try BlockerFixtureServer()
+        let base = try await server.start()
+        defer { server.stop() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try XCTUnwrap(WKContentRuleListStore(url: directory))
+        for (source, expectedLoaded) in [("/ad.js$match-case,script,image,~image", false),
+                                          ("/Ad.js$match-case", true), ("/Ad.js", false)] {
+            let conversion = Blocker.convert(source)
+            XCTAssertEqual(conversion.rules, 1)
+            let compiled = try await store.compileContentRuleList(
+                forIdentifier: UUID().uuidString, encodedContentRuleList: conversion.json)
+            let rules = try XCTUnwrap(compiled)
+            let configuration = WKWebViewConfiguration()
+            configuration.websiteDataStore = .nonPersistent()
+            configuration.userContentController.add(rules)
+            let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 500, height: 300), configuration: configuration)
+            let delegate = BlockerNavigationFixture()
+            web.navigationDelegate = delegate
+            defer { web.stopLoading(); web.navigationDelegate = nil }
+            web.load(URLRequest(url: base))
+            let deadline = Date().addingTimeInterval(10)
+            while !delegate.finished, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            XCTAssertTrue(delegate.finished, source)
+            let loaded = try await web.evaluateJavaScript("window.adLoaded === true") as? Bool
+            XCTAssertEqual(loaded, expectedLoaded, source)
+            try await store.removeContentRuleList(forIdentifier: rules.identifier)
+        }
+    }
+
     func testExactSiteExceptionAllowsBlockedRequestsAndCosmeticsOnlyOnThatHost() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared

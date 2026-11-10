@@ -54,7 +54,8 @@ restore rollback preserves the original library's decisions.
 
 The attack requires a user to restore an attacker-supplied backup. Merely downloading
 a backup does not execute its scripts. Ordinary browser preferences still restore;
-the archive remains unencrypted and should be treated as sensitive.
+exports now offer optional password encryption; local recovery points and exports
+made without a password remain unencrypted and should be treated as sensitive.
 
 ### Update preparation
 

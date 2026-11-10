@@ -102,7 +102,7 @@ enum BrowserImport {
 
     static func readSource(from p: BrowserProfile) throws -> Source {
         var visits: [(url: String, title: String, at: Date)] = []
-        var marks: [(url: String, title: String)] = []
+        var marks: [NativeBookmark] = []
 
         switch family(of: p) {
         case .safari:
@@ -127,11 +127,7 @@ enum BrowserImport {
                 }
             }
             if p.hasBookmarks {
-                // type 1 is a bookmark; 2 and 3 are folders and separators.
-                try query(places, """
-                    SELECT p.url, b.title FROM moz_bookmarks b
-                    JOIN moz_places p ON p.id = b.fk WHERE b.type = 1
-                    """) { marks.append((text($0, 0), text($0, 1))) }
+                marks = try firefoxBookmarks(places)
             }
 
         case .chromium:
@@ -164,7 +160,7 @@ enum BrowserImport {
         let bookmarks = marks.compactMap { mark -> BookmarkImportItem? in
             guard let url = URL(string: mark.url), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
                   url.host?.isEmpty == false else { return nil }
-            return BookmarkImportItem(url: url, title: mark.title, folder: nil)
+            return BookmarkImportItem(url: url, title: mark.title, folder: mark.folder, at: mark.at)
         }
         return Source(visits: history, bookmarks: bookmarks)
     }
@@ -267,20 +263,104 @@ enum BrowserImport {
 
     // MARK: Bookmark parsing
 
+    private struct NativeBookmark {
+        var url: String
+        var title: String
+        var folder: String?
+        var at: Date?
+    }
+
+    private static func folderPath(_ parts: [String]) -> String? {
+        parts.isEmpty ? nil : parts.joined(separator: " / ")
+    }
+
+    private static func bookmarkDate(_ date: Date) -> Date? {
+        let epoch = date.timeIntervalSince1970
+        return epoch.isFinite && epoch >= -62_135_596_800 && epoch < 253_402_300_800 ? date : nil
+    }
+
+    private static func firefoxBookmarks(_ file: URL) throws -> [NativeBookmark] {
+        try snapshot(file) { db in
+            var columns = Set<String>()
+            try query(db: db, file: file, sql: "PRAGMA table_info(moz_bookmarks)") { columns.insert(text($0, 1)) }
+            let dateColumn = columns.contains("dateAdded") ? "b.dateAdded" : "NULL"
+            guard columns.isSuperset(of: ["id", "parent", "position"]) else {
+                var out: [NativeBookmark] = []
+                try query(db: db, file: file, sql: """
+                    SELECT p.url, b.title, \(dateColumn) FROM moz_bookmarks b
+                    JOIN moz_places p ON p.id = b.fk WHERE b.type = 1
+                    """) { row in
+                    let micro = sqlite3_column_int64(row, 2)
+                    out.append(NativeBookmark(url: text(row, 0), title: text(row, 1), folder: nil,
+                                              at: micro > 0 ? bookmarkDate(firefoxTime(micro)) : nil))
+                }
+                return out
+            }
+            struct Node {
+                var id: Int64, parent: Int64, type: Int
+                var title: String, url: String, guid: String
+                var at: Date?
+            }
+            var nodes: [Int64: Node] = [:], ordered: [Int64] = []
+            let guidColumn = columns.contains("guid") ? "b.guid" : "''"
+            try query(db: db, file: file, sql: """
+                SELECT b.id, b.parent, b.type, b.title, p.url, \(dateColumn), \(guidColumn)
+                FROM moz_bookmarks b LEFT JOIN moz_places p ON p.id = b.fk ORDER BY b.position, b.id
+                """) { row in
+                let id = sqlite3_column_int64(row, 0), micro = sqlite3_column_int64(row, 5)
+                nodes[id] = Node(id: id, parent: sqlite3_column_int64(row, 1), type: Int(sqlite3_column_int(row, 2)),
+                    title: text(row, 3), url: text(row, 4), guid: text(row, 6),
+                    at: micro > 0 ? bookmarkDate(firefoxTime(micro)) : nil)
+                ordered.append(id)
+            }
+            let containers: Set<String> = ["root________", "menu________", "toolbar_____", "unfiled_____", "mobile______"]
+            var marks: [Int64: NativeBookmark] = [:]
+            for id in ordered {
+                guard let node = nodes[id], node.type == 1 else { continue }
+                var parent = node.parent, seen: Set<Int64> = [id], path: [String] = []
+                while parent != 0 {
+                    guard seen.insert(parent).inserted, seen.count <= 256,
+                          let folder = nodes[parent], folder.type == 2 else {
+                        throw Failure("The Firefox bookmark folder tree is damaged.")
+                    }
+                    let name = folder.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if folder.parent != 0 && !containers.contains(folder.guid) && !name.isEmpty { path.append(name) }
+                    parent = folder.parent
+                }
+                marks[id] = NativeBookmark(url: node.url, title: node.title, folder: folderPath(path.reversed()), at: node.at)
+            }
+            // Positions belong to siblings, not to the whole database. Preserve
+            // depth-first source order so the existing first-URL-wins policy keeps
+            // the first bookmark's title, folder and date across different folders.
+            let children = Dictionary(grouping: ordered) { nodes[$0]!.parent }
+            var out: [NativeBookmark] = []
+            func walk(_ id: Int64, depth: Int) throws {
+                guard depth <= 256 else { throw Failure("The Firefox bookmark folder tree is too deeply nested.") }
+                if let mark = marks[id] { out.append(mark) }
+                if nodes[id]?.type == 2 {
+                    for child in children[id] ?? [] { try walk(child, depth: depth + 1) }
+                }
+            }
+            for root in children[0] ?? [] { try walk(root, depth: 0) }
+            return out
+        }
+    }
+
     /// Chromium's Bookmarks file: a tree under `roots`, where only `type == "url"` nodes are
     /// real bookmarks. Folders carry the same shape, so keying off the presence of a `url`
     /// field instead of the type would import folders too.
     static func chromiumBookmarks(_ data: Data) -> [(url: String, title: String)] {
-        (try? checkedChromiumBookmarks(data)) ?? []
+        (try? checkedChromiumBookmarks(data).map { ($0.url, $0.title) }) ?? []
     }
 
-    private static func checkedChromiumBookmarks(_ data: Data) throws -> [(url: String, title: String)] {
+    private static func checkedChromiumBookmarks(_ data: Data) throws -> [NativeBookmark] {
         guard let top = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let roots = top["roots"] as? [String: Any] else {
             throw Failure("The Bookmarks file has no supported bookmark roots.")
         }
-        var out: [(url: String, title: String)] = []
-        func walk(_ node: Any) throws {
+        var out: [NativeBookmark] = []
+        func walk(_ node: Any, path: [String], depth: Int) throws {
+            guard depth <= 256 else { throw Failure("The bookmark folder tree is too deeply nested.") }
             guard let n = node as? [String: Any], let type = n["type"] as? String else {
                 throw Failure("The Bookmarks file contains a malformed node.")
             }
@@ -288,28 +368,34 @@ enum BrowserImport {
             case "url":
                 guard let url = n["url"] as? String else { throw Failure("A bookmark is missing its URL.") }
                 if let name = n["name"], !(name is String) { throw Failure("A bookmark has a malformed title.") }
-                out.append((url, n["name"] as? String ?? ""))
-            case "folder": break
+                let micro = (n["date_added"] as? String).flatMap(Int64.init)
+                out.append(NativeBookmark(url: url, title: n["name"] as? String ?? "",
+                    folder: folderPath(path), at: micro.flatMap { $0 > 0 ? bookmarkDate(chromiumTime($0)) : nil }))
+            case "folder":
+                if let name = n["name"], !(name is String) { throw Failure("A bookmark folder has a malformed title.") }
             case "separator": return
             default: throw Failure("The Bookmarks file contains an unsupported node type.")
             }
             if let children = n["children"] {
                 guard let children = children as? [Any] else { throw Failure("A bookmark folder has malformed children.") }
-                for child in children { try walk(child) }
+                let name = (n["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let next = depth > 0 && type == "folder" && !name.isEmpty ? path + [name] : path
+                for child in children { try walk(child, path: next, depth: depth + 1) }
             }
         }
         for key in ["bookmark_bar", "other", "synced"] {
-            if let node = roots[key] { try walk(node) }
+            if let node = roots[key] { try walk(node, path: [], depth: 0) }
         }
         return out
     }
 
     /// Safari proxies are unsupported, while damaged leaves/list structures fail closed.
     static func safariBookmarks(_ node: Any?) -> [(url: String, title: String)] {
-        (try? checkedSafariBookmarks(node)) ?? []
+        (try? checkedSafariBookmarks(node).map { ($0.url, $0.title) }) ?? []
     }
 
-    private static func checkedSafariBookmarks(_ node: Any?) throws -> [(url: String, title: String)] {
+    private static func checkedSafariBookmarks(_ node: Any?, path: [String] = [], depth: Int = 0) throws -> [NativeBookmark] {
+        guard depth <= 256 else { throw Failure("The bookmark folder tree is too deeply nested.") }
         guard let n = node as? [String: Any], let type = n["WebBookmarkType"] as? String else {
             throw Failure("The bookmarks plist contains a malformed node.")
         }
@@ -324,17 +410,20 @@ enum BrowserImport {
                     title = text
                 }
             }
-            return [(url, title)]
+            return [NativeBookmark(url: url, title: title, folder: folderPath(path), at: nil)]
         case "WebBookmarkTypeProxy": return []
         case "WebBookmarkTypeList":
             guard let raw = n["Children"] else { return [] }
             guard let children = raw as? [Any] else { throw Failure("A bookmark folder has malformed children.") }
-            return try children.flatMap { try checkedSafariBookmarks($0) }
+            if let title = n["Title"], !(title is String) { throw Failure("A bookmark folder has a malformed title.") }
+            let title = (n["Title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let next = depth > 0 && !title.isEmpty ? path + [title] : path
+            return try children.flatMap { try checkedSafariBookmarks($0, path: next, depth: depth + 1) }
         default: throw Failure("The bookmarks plist contains an unsupported node type.")
         }
     }
 
-    private static func safariBookmarksFile(_ file: URL) throws -> [(url: String, title: String)] {
+    private static func safariBookmarksFile(_ file: URL) throws -> [NativeBookmark] {
         try checkedSafariBookmarks(PropertyListSerialization.propertyList(from: try read(file), format: nil))
     }
 
@@ -377,7 +466,7 @@ enum BrowserImport {
         try snapshot(file) { db in try query(db: db, file: file, sql: sql, row) }
     }
 
-    nonisolated static func snapshot(_ file: URL, _ read: (OpaquePointer) throws -> Void) throws {
+    nonisolated static func snapshot<Value>(_ file: URL, _ read: (OpaquePointer) throws -> Value) throws -> Value {
         try guardReadable(file)
         var source: OpaquePointer?
         defer { sqlite3_close(source) }
@@ -396,7 +485,7 @@ enum BrowserImport {
         guard copied == SQLITE_DONE, finished == SQLITE_OK else {
             throw Failure("Could not snapshot \(file.lastPathComponent): \(String(cString: sqlite3_errmsg(db)))")
         }
-        try read(db!)
+        return try read(db!)
     }
 
     nonisolated static func query(db: OpaquePointer, file: URL, sql: String,

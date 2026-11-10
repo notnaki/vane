@@ -225,6 +225,11 @@ starter list stays available offline. Existing imported snapshots and legacy fil
 references are preserved. Sources are shared across profiles; the main blocking switch
 and site exceptions belong to each profile.
 
+Case-sensitive URL rules (`$match-case`) are supported. Explicit positive resource sets can
+exclude `script`, `image`, `stylesheet`, `font`, `media`, or `popup` with `~`; for example,
+`$script,image,~image` applies only to scripts. Negative-only sets and exclusions of types
+that WebKit combines into shared buckets remain unsupported and are reported.
+
 ### Subscription updates
 
 URL subscriptions update daily while Vane is running. Vane checks overdue lists at

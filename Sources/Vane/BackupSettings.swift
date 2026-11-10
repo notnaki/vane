@@ -11,7 +11,7 @@ struct BackupSettings: View {
                 }
                 .disabled(controller.busy)
             }
-            Footnote("Includes all profiles, Spaces, tabs, bookmarks, history, settings, Easels, and the offline Reading Queue with saved images. Exported backups are not encrypted. Passwords, cookies, sign-ins, downloaded files, and extension code (including managed copies) and extension data are excluded.")
+            Footnote("Includes all profiles, Spaces, tabs, bookmarks, history, settings, Easels, and the offline Reading Queue with saved images. Exports offer password encryption; keep the password safe because Vane cannot recover it. Passwords, cookies, sign-ins, downloaded files, and extension code (including managed copies) and extension data are excluded.")
             Feel06ActivityLine(busy: controller.busy,
                 text: controller.progress.isEmpty ? "Saving a recovery point…" : controller.progress)
                 .padding(.horizontal, Look.cardInset).padding(.vertical, Look.inset)
@@ -47,7 +47,7 @@ struct BackupSettings: View {
                         .accessibilityLabel("Preview recovery point from \(point.date.formatted())")
                 }.padding(Look.cardInset)
             }
-            Footnote("A recovery point is saved after startup and hourly when saved data changes, and before every restore. Local points share this Mac's disk; export a backup to another disk for protection against disk loss. Erase Everything also removes local recovery points.")
+            Footnote("A recovery point is saved after startup and hourly when saved data changes, and before every restore. Local points are unencrypted and share this Mac's disk; export an encrypted backup to another disk for protection against disk loss. Erase Everything also removes local recovery points.")
         }
         .onAppear { controller.reloadPoints() }
         .sheet(item: Binding(get: { controller.preview }, set: { if $0 == nil { controller.cancelPreview() } })) { candidate in

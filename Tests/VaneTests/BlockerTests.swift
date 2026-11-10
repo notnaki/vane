@@ -14,6 +14,44 @@ import WebKit
         XCTAssertEqual(result.reasonCounts["Scriptlet or procedural selector"], 1)
     }
 
+    func testCaseSensitiveRulesPreservePatternCase() throws {
+        let converted = Blocker.convert("/BannerAd.gif$match-case\n/BannerAd.gif")
+        XCTAssertEqual(converted.rules, 2)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(converted.json.utf8)) as? [[String: Any]])
+        guard rules.count == 2 else { return }
+        let sensitive = try XCTUnwrap(rules[0]["trigger"] as? [String: Any])
+        let insensitive = try XCTUnwrap(rules[1]["trigger"] as? [String: Any])
+        XCTAssertEqual(sensitive["url-filter-is-case-sensitive"] as? Bool, true)
+        XCTAssertEqual(sensitive["url-filter"] as? String, #"/BannerAd\.gif"#)
+        XCTAssertEqual(insensitive["url-filter"] as? String, #"/bannerad\.gif"#)
+    }
+
+    func testNegatedTypesNarrowExplicitPositiveTypes() throws {
+        let converted = Blocker.convert("||ads.example^$script,image,~image\n||ads.example^$image,~image")
+        XCTAssertEqual(converted.rules, 1)
+        XCTAssertEqual(converted.skipped, 1)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(converted.json.utf8)) as? [[String: Any]])
+        let trigger = try XCTUnwrap(rules.first?["trigger"] as? [String: Any])
+        XCTAssertEqual(trigger["resource-type"] as? [String], ["script"])
+    }
+
+    func testUnsupportedNegationsCannotBroadenOrInvertRules() {
+        for options in ["~image", "script,~script", "xmlhttprequest,~ping", "image,~other", "script,~document"] {
+            let converted = Blocker.convert("||ads.example^$" + options)
+            XCTAssertEqual(converted.rules, 0, options)
+            XCTAssertEqual(converted.skipped, 1, options)
+        }
+    }
+
+    func testCaseSensitiveSeparatorStillTreatsUppercaseLettersAsWordCharacters() throws {
+        let converted = Blocker.convert("Banner^$match-case")
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(converted.json.utf8)) as? [[String: Any]])
+        let trigger = try XCTUnwrap(rules.first?["trigger"] as? [String: Any])
+        let pattern = try XCTUnwrap(trigger["url-filter"] as? String)
+        XCTAssertNil("https://example.invalid/BannerAd".range(of: pattern, options: .regularExpression))
+        XCTAssertNotNil("https://example.invalid/Banner/Ad".range(of: pattern, options: .regularExpression))
+    }
+
     func testMixedAndMalformedDomainsNeverBecomeBroaderRules() {
         for text in ["||ads.example^$domain=a.com|~b.a.com", "invalid##.ad", "||ads.example^$domain=valid.com|bad/path", "a.com,~b.a.com##.ad"] {
             XCTAssertEqual(Blocker.convert(text).rules, 0, text)
