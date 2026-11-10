@@ -11,6 +11,55 @@ import WebKit
 /// close is what the user saw as "the traffic lights aren't in the same place as the others".
 /// So the buttons are moved back onto the line after every layout pass, whatever AppKit did.
 final class VaneWindow: NSWindow {
+    private var resizePreparation: WindowResizePreparation?
+    private var committingResize = false
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        if !committingResize, isVisible, !styleMask.contains(.fullScreen),
+           inLiveResize || resizePreparation?.isPreparing == true {
+            if preparePageResize(frame: frameRect, display: flag) { return }
+        }
+        super.setFrame(frameRect, display: flag)
+    }
+
+    var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true }
+
+    @discardableResult func preparePageResize(frame: NSRect, display: Bool) -> Bool {
+        if resizePreparation == nil {
+            resizePreparation = WindowResizePreparation(window: self) { [weak self] frame, display in
+                self?.commitPreparedResize(frame, display: display)
+            }
+            NotificationCenter.default.addObserver(self, selector: #selector(nativeResizeEnded),
+                name: NSWindow.didEndLiveResizeNotification, object: self)
+        }
+        return resizePreparation?.request(frame: frame, display: display) == true
+    }
+
+    private func commitPreparedResize(_ frame: NSRect, display: Bool) {
+        committingResize = true
+        defer { committingResize = false }
+        super.setFrame(frame, display: display)
+    }
+
+    @objc private func nativeResizeEnded(_ notification: Notification) {
+        resizePreparation?.endLiveResize()
+    }
+
+    override func close() {
+        resizePreparation?.cancel()
+        super.close()
+    }
+
+    override func miniaturize(_ sender: Any?) {
+        resizePreparation?.cancel()
+        super.miniaturize(sender)
+    }
+
+    override func toggleFullScreen(_ sender: Any?) {
+        resizePreparation?.cancel()
+        super.toggleFullScreen(sender)
+    }
+
     /// Where a light's frame origin has to sit for its centre to land `Look.lightsCentre`
     /// below the window's top edge. `top` is that top edge in the button's superview's own
     /// (unflipped, y-up) coordinates, so this is the same arithmetic whatever titlebar view

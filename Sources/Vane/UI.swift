@@ -33,6 +33,7 @@ import Combine
 /// when the sidebar was last shown. Returning the proposal says "I take whatever you give
 /// me", which is what a page inside a card actually wants.
 struct WebView: NSViewRepresentable {
+    @Environment(\.pageResizeLayout) private var resizeLayout
     let web: WKWebView
     /// Every page the window still has, so the host can tell a page that is merely not on
     /// screen from one whose tab has been closed. Only the card passes it — see `WebCard`
@@ -58,6 +59,15 @@ struct WebView: NSViewRepresentable {
     func updateNSView(_ host: WebHost, context: Context) {
         if mayMount { host.show(web, keeping: live) } else { host.removePage() }
         host.offscreen = offscreen
+        host.resizeLayout = resizeLayout
+        host.resizeFraction = NSSize(width: 1, height: 1)
+        if pane, let split = store?.activeSplit,
+           let id = tab?.id, let index = split.tabs.firstIndex(of: id),
+           split.weights.indices.contains(index) {
+            let weight = CGFloat(split.weights[index])
+            host.resizeFraction = NSSize(width: split.vertical ? 1 : weight,
+                                         height: split.vertical ? weight : 1)
+        }
     }
     static func dismantleNSView(_ host: WebHost, coordinator: ()) {
         host.removePage()
@@ -85,6 +95,8 @@ struct WebView: NSViewRepresentable {
 /// a page is still a fresh attach, and still arrives a frame late; there is nothing to
 /// unhide that has never been shown.
 final class WebHost: NSView {
+    var resizeLayout = PageResizeLayout()
+    var resizeFraction = NSSize(width: 1, height: 1)
     private(set) var web: WKWebView?
     /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
     /// of the window's key loop and out of the accessibility tree, so an invisible page is
@@ -533,6 +545,11 @@ struct BrowserWindow: View {
         .librarySwipe(store)
         .onAppear { store.applySpaceAppearance() }
         .environmentObject(store.spaceGesture)
+        .environment(\.pageResizeLayout, PageResizeLayout(
+            sidebarWidth: store.sidebarShown ? sidebar.width : 0,
+            librarySection: store.libraryOpen ? library.section : nil,
+            spaces: spaceCount, isPrivate: store.isPrivate,
+            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping))
         // A cached profile adopts the window's current presentation at rest. The
         // revision survives detachment, unlike the transaction used to write the model.
         .transaction(value: store.sidebarPresentationRevision) {
