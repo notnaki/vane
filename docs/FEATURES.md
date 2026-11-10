@@ -106,16 +106,25 @@ pixels. Easels do not include cloud sharing or collaboration.
 
 ## Page capture
 
-Capture part of a page with **⌘⇧2**, **File → Capture a Portion of This Page**, the
-camera row in Site Controls, or by searching for **Capture** in the command palette.
-Click a highlighted element or drag a rectangle over the visible page; **Escape**
-cancels. **Return** captures the highlighted region or the visible page. The preview
-offers **Copy**, **Save PNG**, **Share**, and **Add to Easel**. In an ordinary browser
-window, **Add to Easel** saves the region with its source link to a new or existing
-board and opens that board's tab. Captures use WebKit's page pixels at the display's
-resolution and need no screen-recording permission. An embedded frame is selected as a
-whole; custom drags can crop inside it. Captures are saved only when you choose an
-output action, including in private windows.
+Press **⌘⇧2**, choose **File → Capture a Portion of This Page**, use the camera row in
+Site Controls, or search for **Capture** in the command palette. Click a highlighted
+element or drag a rectangle; **Return** captures the highlight or visible page and
+**Escape** cancels. **Full Page** captures the rendered document, including content
+below the viewport, without scrolling the live tab. Unloaded infinite-scroll content
+is not included, and very large pages may require a smaller region.
+
+A compact menu beside the capture offers **Copy**, **Save PNG…**, **Share…**, **Edit…**,
+**Retake**, and **Save to Library**. Normal browser windows also offer a new or existing
+Easel, preserving the source link. The editor supports crop, pen, arrows, rectangles,
+text, color and thickness, with undo/redo and reset. Apply returns the edited image to
+the action menu; Cancel keeps the original. Fit, 100% and 200% zoom make long captures
+practical to edit.
+
+Explicitly saved captures appear in **Library → Media**, searchable by page title
+or source, with preview, copy and delete actions. Captures use the existing saved-file history, storage and media actions. Private captures support temporary editing, copy, PNG export
+and sharing; the persistent capture library and Easels are unavailable there. WebKit
+supplies the pixels at display resolution, so no screen-recording permission is needed.
+Embedded frames are selected whole; custom drags can crop inside them.
 
 ## Site Boosts
 

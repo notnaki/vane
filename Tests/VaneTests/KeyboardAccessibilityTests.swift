@@ -497,6 +497,210 @@ private struct DisabledKeyboardSurface: View {
         XCTAssertTrue(window.firstResponder === web)
     }
 
+    /// Use the original Easel/pill admission and ownership; never render after F6.
+    private func withAdmittedEaselPillForHandoffContract(
+        _ body: @MainActor (TabStore, NSWindow, EaselHostingView) async throws -> Void
+    ) async throws {
+        try await withNativePageFixture(isPrivate: false) { store, window, _ in
+            let opened = await store.openEaselAsync(create: true)
+            let tab = try XCTUnwrap(opened)
+            let session = try XCTUnwrap(tab.easelSession)
+            let page = EaselHostingView(rootView: EaselWorkspace(session: session, browser: store))
+            let chrome = NSHostingView(rootView: AddressPill(tab: tab).environmentObject(store))
+            let container = NSView(frame: window.contentView!.frame)
+            page.frame = NSRect(x: 250, y: 0, width: 550, height: 600)
+            chrome.frame = NSRect(x: 0, y: 520, width: 250, height: 80)
+            container.addSubview(chrome)
+            container.addSubview(page)
+            window.contentView = container
+            chrome.layoutSubtreeIfNeeded()
+            @MainActor func pillAnchors(in view: NSView) -> [NativeSidebarNavigationControl.Anchor] {
+                (view as? NativeSidebarNavigationControl.Anchor).map { [$0] } ?? view.subviews.flatMap { pillAnchors(in: $0) }
+            }
+            // Attachment can precede the first SwiftUI render. Admit the actual
+            // pill control and painted surfaces before the unchanged 150ms F6
+            // deadline; do not request or await the desired focus during setup.
+            try await compatibilityWait {
+                page.layoutSubtreeIfNeeded()
+                chrome.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                let registeredPill = pillAnchors(in: chrome).contains {
+                    $0.token != nil && $0.refresh != nil && $0.navigation == nil
+                        && $0.window === window && !$0.isHiddenOrHasHiddenAncestor
+                        && $0.bounds.width > 0 && $0.bounds.height > 0
+                }
+                return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
+                    && window.isVisible && window.occlusionState.contains(.visible)
+                    && NSApp.modalWindow == nil && window.attachedSheet == nil
+                    && page.window === window && chrome.window === window
+                    && store.activePageResponder === page
+                    && registeredPill && !page.needsDisplay && !chrome.needsDisplay
+                    && page.layer?.presentation() != nil && chrome.layer?.presentation() != nil
+            }
+            XCTAssertTrue(window.makeFirstResponder(page))
+            try await body(store, window, page)
+        }
+    }
+
+    /// Mutation caught: moving mounted-control delivery behind a main-queue
+    /// publication or SwiftUI onChange leaves the page holding the keyboard.
+    func testF6MountedPillLeavesPageBeforeQueuedMainWork() async throws {
+        try await withAdmittedEaselPillForHandoffContract { store, window, page in
+            var queuedWorkRan = false
+            DispatchQueue.main.async { queuedWorkRan = true }
+
+            store.focusNextArea()
+            // No await or run-loop pumping: queued work and published-state
+            // consumption cannot perform the proposed mounted fast path for us.
+            XCTAssertFalse(queuedWorkRan)
+            XCTAssertFalse(window.firstResponder === page,
+                           "A mounted F6 target must acquire native ownership before queued work")
+            XCTAssertFalse(window.firstResponder === window)
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertFalse(window.firstResponder === page, "F6 must leave the canvas for the address pill")
+            XCTAssertFalse(window.firstResponder === window)
+            store.focusNextArea()
+            XCTAssertTrue(window.firstResponder === page)
+        }
+    }
+
+    /// Mutation caught: taking an enclosing host as a successful handoff while
+    /// the actual address control still cannot receive the next keyboard action.
+    func testF6MountedPillRoutesSpaceToAddressAtOriginalDeadline() async throws {
+        try await withAdmittedEaselPillForHandoffContract { store, window, _ in
+            store.focusNextArea()
+            try await Task.sleep(for: .milliseconds(150))
+            let space = try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, characters: " ",
+                charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49))
+            window.sendEvent(space)
+            XCTAssertTrue(store.palette == .address,
+                          "F6 must route the next Space action to the real address pill at its original deadline")
+        }
+    }
+
+    func testF6EndpointRejectsWrongOwnerAndUnavailableTargets() async throws {
+        try await withAdmittedEaselPillForHandoffContract { store, window, page in
+            let endpoint = try XCTUnwrap(store.mountedAddressEndpoint)
+            XCTAssertFalse(endpoint.takeFocus(from: window), "A different input responder must retire the request")
+            XCTAssertTrue(window.firstResponder === page)
+            endpoint.isHidden = true
+            XCTAssertFalse(endpoint.takeFocus(from: page))
+            endpoint.isHidden = false
+            endpoint.isEnabled = false
+            XCTAssertFalse(endpoint.takeFocus(from: page))
+            endpoint.isEnabled = true
+            store.profileVisible = false
+            XCTAssertFalse(endpoint.takeFocus(from: page), "Parked profiles cannot take the keyboard")
+            store.profileVisible = true
+            store.sidebarShown = false
+            XCTAssertFalse(endpoint.takeFocus(from: page))
+            store.sidebarPeeking = true
+            XCTAssertTrue(endpoint.takeFocus(from: page), "Hover-revealed chrome must retain its address actions")
+            XCTAssertTrue(window.firstResponder === endpoint)
+            XCTAssertTrue(window.makeFirstResponder(page))
+            store.sidebarPeeking = false
+            store.sidebarShown = true
+            let other = NSWindow(contentRect: .zero, styleMask: [], backing: .buffered, defer: false)
+            other.isReleasedWhenClosed = false
+            store.window = other
+            XCTAssertFalse(endpoint.takeFocus(from: page), "A store cannot borrow another window's endpoint")
+            store.window = window
+            other.close()
+            store.palette = .all
+            store.focusNextArea()
+            XCTAssertTrue(window.firstResponder === page)
+            XCTAssertFalse(endpoint.takeFocus(from: page))
+            store.palette = nil
+            XCTAssertTrue(endpoint.takeFocus(from: page))
+            XCTAssertTrue(window.firstResponder === endpoint, "Commit means the exact registered native control")
+            window.contentView = nil
+            XCTAssertNil(store.mountedAddressEndpoint, "Detachment must revoke the store's weak target")
+            XCTAssertFalse(endpoint.takeFocus(from: page))
+        }
+    }
+
+    func testLittleAddressEndpointRemainsAvailableWithoutSidebar() async throws {
+        try await withNativePageFixture(isPrivate: false) { owner, window, _ in
+            let store = LittleArc.floatingStore(URL(string: "about:blank"), profileID: owner.profileID)
+            store.window = window
+            defer {
+                store.window = nil
+                store.dropStashes()
+                SharedTabs.release(store.tabs)
+                TabStore.all.removeAll { $0 === store }
+            }
+            let host = NSHostingView(rootView: LittleArcBar()
+                .environmentObject(store).environmentObject(ProfileManager.shared))
+            host.frame = try XCTUnwrap(window.contentView).frame
+            window.contentView = host
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                return store.mountedAddressEndpoint?.window === window
+                    && (store.mountedAddressEndpoint?.bounds.width ?? 0) > 0
+                    && !host.needsDisplay && host.layer?.presentation() != nil
+            }
+            let endpoint = try XCTUnwrap(store.mountedAddressEndpoint)
+            XCTAssertFalse(store.sidebarShown)
+            XCTAssertTrue(endpoint.takeFocus(from: window.firstResponder))
+            XCTAssertTrue(window.firstResponder === endpoint)
+            XCTAssertTrue(endpoint.accessibilityPerformPress())
+            XCTAssertTrue(store.palette == .address)
+        }
+    }
+
+    func testF6SharedBrowserHostCommitsExactAddressAndNativeActions() async throws {
+        try await withNativePageFixture(isPrivate: false) { store, window, _ in
+            let opened = await store.openEaselAsync(create: true)
+            _ = try XCTUnwrap(opened)
+            let shown = ShownStore(store)
+            let host = BrowserWindowHost(shown: shown)
+            host.frame = try XCTUnwrap(window.contentView).frame
+            window.contentView = host
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                return store.mountedAddressEndpoint?.window === window
+                    && (store.mountedAddressEndpoint?.bounds.width ?? 0) > 0
+                    && store.activePageResponder?.window === window
+                    && window.isKeyWindow && NSApp.keyWindow === window && NSApp.isActive
+                    && !host.needsDisplay && host.layer?.presentation() != nil
+            }
+            let endpoint = try XCTUnwrap(store.mountedAddressEndpoint)
+            let page = try XCTUnwrap(store.activePageResponder)
+            XCTAssertTrue(window.makeFirstResponder(page))
+            var queuedWorkRan = false
+            DispatchQueue.main.async { queuedWorkRan = true }
+            store.focusNextArea()
+            XCTAssertFalse(queuedWorkRan)
+            XCTAssertTrue(window.firstResponder === endpoint,
+                          "The shared browser root must commit the registered address endpoint, never its ancestor")
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertTrue(window.firstResponder === endpoint)
+            XCTAssertTrue(endpoint.isAccessibilityFocused())
+            store.focusNextArea()
+            XCTAssertTrue(window.firstResponder === page)
+            store.focusNextArea()
+            XCTAssertTrue(window.firstResponder === endpoint)
+            XCTAssertEqual(Set(endpoint.accessibilityCustomActions()?.map(\.name) ?? []),
+                           Set(["Copy Link", "Site Controls", "Actual Size"]))
+            let modifiedSpace = try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: .shift, timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: " ",
+                charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49))
+            endpoint.keyDown(with: modifiedSpace)
+            XCTAssertNil(store.palette, "Modified Space must not activate the address")
+            XCTAssertTrue(endpoint.accessibilityPerformPress())
+            XCTAssertTrue(store.palette == .address, "The actual native AX action must open the existing address palette")
+        }
+    }
+
     func testF6LeavesTheLocalEaselForBrowserControls() async throws {
         try await withNativePageFixture(isPrivate: false) { store, window, _ in
             let opened = await store.openEaselAsync(create: true)

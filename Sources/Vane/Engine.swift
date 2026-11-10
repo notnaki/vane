@@ -2926,6 +2926,8 @@ struct Stash {
     @Published var sidebarPresentationRevision: UInt = 0
     /// One-shot handoff from the webpage to the sidebar address pill.
     @Published var chromeFocusRequested = false
+    /// The actual mounted address control; cached/profile roots never retain it here.
+    weak var mountedAddressEndpoint: MountedAddressButton?
     /// Presentation only, per Space and window: hiding pins never changes their contents.
     @Published private(set) var collapsedPinnedSpaces: Set<UUID> = []
     var pinnedSectionCollapsed: Bool {
