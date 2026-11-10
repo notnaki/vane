@@ -23,21 +23,30 @@ import UniformTypeIdentifiers
     @Published private(set) var presentation = Presentation()
     private var pendingPresentation: Presentation?
     private var presentationDepth = 0
+    private var publishingPresentation = false
 
     /// A native input mounts its overlay before publishing one complete state.
     /// Publishing each flag separately makes SwiftUI synchronously flush several
     /// intermediate browser layouts while the same input is still being handled.
     func beginPresentationUpdate() {
-        if presentationDepth == 0 { pendingPresentation = presentation }
+        if presentationDepth == 0, pendingPresentation == nil { pendingPresentation = presentation }
         presentationDepth += 1
     }
 
     func endPresentationUpdate() {
         precondition(presentationDepth > 0)
         presentationDepth -= 1
-        guard presentationDepth == 0, let next = pendingPresentation else { return }
-        pendingPresentation = nil
-        if next != presentation { presentation = next }
+        guard presentationDepth == 0, !publishingPresentation else { return }
+        // @Published notifies before assignment. A native host can synchronously
+        // lay out during that notification, so keep the completed values readable
+        // until assignment finishes. A callback's follow-up writes remain staged
+        // and publish after this assignment, rather than being overwritten by it.
+        publishingPresentation = true
+        defer { publishingPresentation = false }
+        while presentationDepth == 0, let next = pendingPresentation {
+            if next != presentation { presentation = next }
+            if presentationDepth == 0, pendingPresentation == next { pendingPresentation = nil }
+        }
     }
 
     func withPresentationUpdate<Result>(_ body: () throws -> Result) rethrows -> Result {
@@ -54,9 +63,7 @@ import UniformTypeIdentifiers
         guard read(key) != value else { return }
         if pendingPresentation != nil { pendingPresentation?[keyPath: key] = value }
         else {
-            var next = presentation
-            next[keyPath: key] = value
-            presentation = next
+            withPresentationUpdate { pendingPresentation?[keyPath: key] = value }
         }
     }
 
@@ -1731,12 +1738,16 @@ private struct SpaceSwipe: ViewModifier {
             if let offset = out.offset {
                 self.track(offset, width: width, in: store)
             }
-            store.spacePull = out.pull
+            let opensCreation = creatable && (out.commit ?? 0) > 0 && index == self.list.count - 1
+            // A committed creation keeps its filled footer slot until the form
+            // owns it. Publishing the verdict's zero pull first removes that
+            // slot for one layout and makes the existing markers hop sideways.
+            if !opensCreation { store.spacePull = out.pull }
             if let direction = out.commit {
                 if let window = store.window {
                     Self.committedSwipes.add(window)
                 }
-                if creatable, direction > 0, index == self.list.count - 1 {
+                if opensCreation {
                     self.create(store)
                 } else {
                     if self.list.indices.contains(index + direction) {
@@ -1954,21 +1965,26 @@ private struct SpaceSwipe: ViewModifier {
                 store.spaceSwiping = false
             }
         }
-        if let host = store.window?.contentView as? BrowserWindowHost,
-           let anchor = (includesFavorites ? store.spaceGesture.stripView : store.spaceGesture.sectionsView),
-           let origin = store.spaceGesture.outgoing?.space ?? store.swipeSpace {
+        let host = store.window?.contentView as? BrowserWindowHost
+        let active = host?.spaceSlide.flatMap { $0.isActive ? $0 : nil }
+        let origin = store.spaceGesture.outgoing?.space ?? store.swipeSpace
+        let nativeSlide: ProfileSpaceSlide?
+        // A profile can already own captured rows before its replacement live
+        // anchor mounts. Reusing that cover needs no new geometry or fallback.
+        if let active, origin != nil, active.follows(destination, direction: direction) {
+            nativeSlide = active
+        } else if let host,
+                  let anchor = (includesFavorites ? store.spaceGesture.stripView : store.spaceGesture.sectionsView),
+                  let origin {
             let frame = anchor.convert(anchor.bounds, to: host)
             let presentationOffset = store.spaceGesture.outgoingView?.layer?.presentation().map {
                 $0.convert(.zero, to: host.layer?.presentation()).x - frame.minX
             }
-            let active = host.spaceSlide.flatMap { $0.isActive ? $0 : nil }
             let drag = active?.offset ?? presentationOffset ?? store.spaceDrag
             let slide: ProfileSpaceSlide
-            if let tracking = active, tracking.follows(destination, direction: direction) {
-                slide = tracking
-            } else if drag == 0,
-                      let prepared = takePreparedSlide(origin: origin, target: destination, direction: direction,
-                                                       frame: frame, width: width, in: store) {
+            if drag == 0,
+               let prepared = takePreparedSlide(origin: origin, target: destination, direction: direction,
+                                                frame: frame, width: width, in: store) {
                 slide = prepared
                 host.beginSpaceSlide(slide, preservingGround: true)
                 slide.isHidden = false
@@ -1982,6 +1998,11 @@ private struct SpaceSwipe: ViewModifier {
                     travelWidth: width)
                 host.beginSpaceSlide(slide, preservingGround: true)
             }
+            nativeSlide = slide
+        } else {
+            nativeSlide = nil
+        }
+        if let slide = nativeSlide {
             // Keep native presentation as the footer/tint source across release. Updating
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
             Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }
