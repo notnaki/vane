@@ -19,15 +19,23 @@ import SwiftUI
         defer { app.setActivationPolicy(policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
-        do { try await exerciseProfileHops(savingBattery: savingBattery, sidebarShown: sidebarShown) }
+        var ownedProfiles = Set<UUID>()
+        do {
+            try await exerciseProfileHops(savingBattery: savingBattery, sidebarShown: sidebarShown,
+                                         ownedProfiles: &ownedProfiles)
+        }
         catch { failure = error }
+        do { try await NativeFixtureProfileCleanup.release(ownedProfiles) } catch {
+            if failure == nil { failure = error } else { XCTFail("Profile cleanup failed: \(error)") }
+        }
         do { try await loop.close() } catch {
             if failure == nil { failure = error } else { XCTFail("Loop cleanup failed: \(error)") }
         }
         if let failure { throw failure }
     }
 
-    private func exerciseProfileHops(savingBattery: Bool, sidebarShown: Bool) async throws {
+    private func exerciseProfileHops(savingBattery: Bool, sidebarShown: Bool,
+                                     ownedProfiles: inout Set<UUID>) async throws {
         let manager = ProfileManager.shared
         let previous = manager.active
         let mode = BatterySaver.shared.mode
@@ -36,6 +44,7 @@ import SwiftUI
         SidebarWidth.shared.width = 228
         let firstProfile = manager.create(name: "Update source")
         let secondProfile = manager.create(name: "Update destination")
+        ownedProfiles.formUnion([firstProfile.id, secondProfile.id])
         let first = manager.createSpace(name: "First", in: firstProfile.id)
         let second = manager.createSpace(name: "Second", in: secondProfile.id)
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
