@@ -51,8 +51,8 @@ Interfaces: BrowserAI.ready(for:), unavailableReason(for:), per-feature request 
 
 - [x] Open/link PR with checks and offline/live-validation limits.
 - [x] Obtain independent final diff review; fix actionable findings and rerun affected checks.
-- [x] Verify latest main integration, checks, approvals, and all main runs before squash-merge.
-- [x] Verify merge and safely clean task worktree/test apps according to project policy.
+- [ ] Verify latest main integration, checks, approvals, and all main runs before squash-merge.
+- [ ] Verify merge and safely clean task worktree/test apps according to project policy.
 
 ## Execution ledger
 
@@ -66,3 +66,7 @@ Interfaces: BrowserAI.ready(for:), unavailableReason(for:), per-feature request 
 - Independent review found six lifecycle/documentation issues; fixed request-context cancellation, sign-out admission, metadata-before-refresh ordering, stale local answers, operation generations, and erasure copy.
 - Native validation: initial full run interrupted for another task's Resize capture (primary 1 / cleanup 0; 229 owned backends retired). Preserved /tmp/vane-ai-native-tests.log, including BrowserWindowTitleTests.testBlankAndEmptyTitlesUseGenericWindowTitleWithoutExposingURL failure. Investigation: its fixture admitted WebKit isLoading=false before Vane's didFinish, which republishes the title after the test's synthetic blank-title mutation. Added the !tab.loading prerequisite without changing assertions/deadlines; three fixed focused runs are being retained as preflight logs.
 - Ruling: repair the native title fixture prerequisite as part of validation — an unchanged passing retry would not explain the original assertion failure.
+
+- Fresh independent review approved implementation commit e2c1a3e67db51a24396839063bb0de2cb834f92d with no actionable findings and independently reran all five offline harnesses. PR: https://github.com/notnaki/vane/pull/633. Required CI and merge remain pending.
+- The second full local run was stopped for the next requested Resize capture (primary 1 / cleanup 0); exact host retirement verified at 18:58:03 +03. Keep local desktop input clear; full native coverage will run in required CI.
+- Title preflight: three fixed runs (/tmp/vane-ai-title-preflight-{2,3,4}.log), each 8 cases passed plus verified retirement.
