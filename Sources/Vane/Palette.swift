@@ -1004,8 +1004,10 @@ private struct PaletteResultHover: ViewModifier {
 
     /// Nil under Reduce Motion, Battery Saver or the Search Settings switch, which SwiftUI
     /// reads as "just change".
+    private var motionDisabled: Bool { reduceMotion || batterySaver.isActive || !animations }
+
     private func motion(_ a: Animation) -> Animation? {
-        reduceMotion || batterySaver.isActive || !animations ? nil : a
+        motionDisabled ? nil : a
     }
 
     private var bangCandidate: Bangs.Activation? {
@@ -1028,6 +1030,8 @@ private struct PaletteResultHover: ViewModifier {
 
     var body: some View {
         GeometryReader { geo in
+            let width = min(sidebarAddress ? Look.sidebarSearchWidth : Look.barWidth,
+                            geo.size.width - Look.inset * 2)
             ZStack(alignment: sidebarAddress ? .topLeading : .top) {
                 // Click-off to dismiss. Decoration only — Esc is the accessible route out,
                 // and VoiceOver should never land on a full-screen unlabelled rectangle.
@@ -1042,8 +1046,7 @@ private struct PaletteResultHover: ViewModifier {
                     .accessibilityHidden(true)
 
                 bar
-                    .frame(width: min(sidebarAddress ? Look.sidebarSearchWidth : Look.barWidth,
-                                      geo.size.width - Look.inset * 2))
+                    .frame(width: width)
                     .scaleEffect(shown ? 1 : Look.appearScale)
                     .opacity(shown ? 1 : 0)
                     // Editing the current address opens over the sidebar pill. Other
@@ -1054,8 +1057,13 @@ private struct PaletteResultHover: ViewModifier {
                                            ? min(sidebarLayout.addressTop,
                                                  geo.size.height - barHeight - Look.inset)
                                            : searchTop(geo.size.height)))
-                    .animation(motion(Look.quick), value: rows.count)
-                    .animation(motion(Look.quick), value: sidebarLayout.stacked)
+                    .animation(motion(Look.list), value: sidebarLayout.stacked)
+                    .transaction(value: CGSize(width: width, height: barHeight)) {
+                        // Native Space handoff keeps covered sidebar rows immediate.
+                        // The floating search surface still owns its resize spring.
+                        $0.disablesAnimations = motionDisabled
+                        $0.animation = motion(Look.list)
+                    }
             }
             .onChange(of: geo.size.height, initial: true) { _, height in windowHeight = height }
         }
@@ -1288,7 +1296,16 @@ private struct PaletteResultHover: ViewModifier {
         // Arc's bar is one flat surface, not glass: a blur of whatever is behind it,
         // darkened almost to opaque, and a single hairline. No specular edge, no
         // refraction — the shadow is what lifts it off the page.
-        .background(chromeTheme.barFill, in: .rect(cornerRadius: Look.barRadius))
+        .background {
+            RoundedRectangle(cornerRadius: Look.barRadius)
+                .fill(chromeTheme.barFill)
+                .transaction(value: chromeTheme) {
+                    // Search sits above the native handoff, so its colour must not
+                    // inherit that covered content's animation suppression.
+                    $0.disablesAnimations = motionDisabled
+                    $0.animation = motion(Look.spaceSlide)
+                }
+        }
         .background(Look.barMaterial, in: .rect(cornerRadius: Look.barRadius))
         .hairline(radius: Look.barRadius, Look.barStroke)
         .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
