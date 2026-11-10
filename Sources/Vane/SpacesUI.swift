@@ -1965,21 +1965,26 @@ private struct SpaceSwipe: ViewModifier {
                 store.spaceSwiping = false
             }
         }
-        if let host = store.window?.contentView as? BrowserWindowHost,
-           let anchor = (includesFavorites ? store.spaceGesture.stripView : store.spaceGesture.sectionsView),
-           let origin = store.spaceGesture.outgoing?.space ?? store.swipeSpace {
+        let host = store.window?.contentView as? BrowserWindowHost
+        let active = host?.spaceSlide.flatMap { $0.isActive ? $0 : nil }
+        let origin = store.spaceGesture.outgoing?.space ?? store.swipeSpace
+        let nativeSlide: ProfileSpaceSlide?
+        // A profile can already own captured rows before its replacement live
+        // anchor mounts. Reusing that cover needs no new geometry or fallback.
+        if let active, origin != nil, active.follows(destination, direction: direction) {
+            nativeSlide = active
+        } else if let host,
+                  let anchor = (includesFavorites ? store.spaceGesture.stripView : store.spaceGesture.sectionsView),
+                  let origin {
             let frame = anchor.convert(anchor.bounds, to: host)
             let presentationOffset = store.spaceGesture.outgoingView?.layer?.presentation().map {
                 $0.convert(.zero, to: host.layer?.presentation()).x - frame.minX
             }
-            let active = host.spaceSlide.flatMap { $0.isActive ? $0 : nil }
             let drag = active?.offset ?? presentationOffset ?? store.spaceDrag
             let slide: ProfileSpaceSlide
-            if let tracking = active, tracking.follows(destination, direction: direction) {
-                slide = tracking
-            } else if drag == 0,
-                      let prepared = takePreparedSlide(origin: origin, target: destination, direction: direction,
-                                                       frame: frame, width: width, in: store) {
+            if drag == 0,
+               let prepared = takePreparedSlide(origin: origin, target: destination, direction: direction,
+                                                frame: frame, width: width, in: store) {
                 slide = prepared
                 host.beginSpaceSlide(slide, preservingGround: true)
                 slide.isHidden = false
@@ -1993,6 +1998,11 @@ private struct SpaceSwipe: ViewModifier {
                     travelWidth: width)
                 host.beginSpaceSlide(slide, preservingGround: true)
             }
+            nativeSlide = slide
+        } else {
+            nativeSlide = nil
+        }
+        if let slide = nativeSlide {
             // Keep native presentation as the footer/tint source across release. Updating
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
             Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }

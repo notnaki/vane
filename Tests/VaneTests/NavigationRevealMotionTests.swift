@@ -1,4 +1,6 @@
 import AppKit
+import CoreVideo
+@preconcurrency import ScreenCaptureKit
 import SwiftUI
 import XCTest
 @testable import vane
@@ -27,18 +29,35 @@ private struct NavigationRevealFixture: View {
 /// Sample the actual glyph paint: layout frames alone miss per-button transaction
 /// overrides that make disabled controls travel differently from enabled controls.
 @MainActor final class NavigationRevealMotionTests: XCTestCase {
-    private func glyphCenters(_ host: NSView) throws -> [CGFloat] {
-        host.layoutSubtreeIfNeeded()
-        host.displayIfNeeded()
-        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: bitmap)
-        let scale = CGFloat(bitmap.pixelsWide) / host.bounds.width
+    private func glyphCenters(_ host: NSView) async throws -> [CGFloat] {
+        let window = try XCTUnwrap(host.window)
+        let content = try await SCShareableContent.currentProcess
+        let target = try XCTUnwrap(content.windows.first { $0.windowID == CGWindowID(window.windowNumber) })
+        let filter = SCContentFilter(desktopIndependentWindow: target)
+        let configuration = SCStreamConfiguration()
+        let screenRect = window.convertToScreen(host.convert(host.bounds, to: nil))
+        configuration.sourceRect = CGRect(x: screenRect.minX - window.frame.minX,
+            y: window.frame.maxY - screenRect.maxY, width: host.bounds.width, height: host.bounds.height)
+        configuration.width = Int(host.bounds.width * window.backingScaleFactor)
+        configuration.height = Int(host.bounds.height * window.backingScaleFactor)
+        configuration.showsCursor = false
+        configuration.ignoreShadowsSingleWindow = true
+        configuration.captureDynamicRange = .SDR
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        // cacheDisplay can paint a model-layer endpoint before the compositor's
+        // intermediate frame. Read the actual displayed glyphs instead.
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        let data = try XCTUnwrap(image.dataProvider?.data)
+        defer { withExtendedLifetime(data) {} }
+        guard image.bitsPerPixel == 32, image.bitsPerComponent == 8,
+              CFDataGetLength(data) >= image.bytesPerRow * image.height else {
+            throw NSError(domain: "NavigationCaptureFormat", code: 1)
+        }
+        let bytes = try XCTUnwrap(CFDataGetBytePtr(data))
+        let scale = CGFloat(image.width) / host.bounds.width
         var ranges: [ClosedRange<Int>] = []
-        for x in 0..<bitmap.pixelsWide {
-            let painted = (0..<bitmap.pixelsHigh).contains { y in
-                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
-                return color.redComponent > 0.2
-            }
+        for x in 0..<image.width {
+            let painted = (0..<image.height).contains { y in bytes[y * image.bytesPerRow + x * 4 + 2] > 51 }
             guard painted else { continue }
             if let last = ranges.last, x - last.upperBound <= 2 {
                 ranges[ranges.count - 1] = last.lowerBound...x
@@ -75,19 +94,22 @@ private struct NavigationRevealFixture: View {
             NSApp.activate(ignoringOtherApps: true)
             defer { window.orderOut(nil); window.contentView = nil; window.close() }
             try await compatibilityWait {
-                NSApp.isRunning && NSApp.isActive && window.isKeyWindow
-                    && window.occlusionState.contains(.visible) && host.window === window
-                    && (try? self.glyphCenters(host).count) == 3
+                host.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                guard NSApp.isRunning && NSApp.isActive && window.isKeyWindow
+                    && window.occlusionState.contains(.visible) && host.window === window else { return false }
+                return try await self.glyphCenters(host).count == 3
             }
-            let initial = try glyphCenters(host)
+            let initial = try await glyphCenters(host)
             state.revealed = true
             var frames: [[CGFloat]] = []
             for _ in 0..<16 {
                 try await Task.sleep(for: .milliseconds(20))
-                frames.append(try glyphCenters(host))
+                frames.append(try await glyphCenters(host))
             }
             try await Task.sleep(for: .milliseconds(150))
-            let final = try glyphCenters(host)
+            let final = try await glyphCenters(host)
             XCTAssertEqual(final.count, 3)
             guard initial.count == 3, final.count == 3 else {
                 throw NSError(domain: "NavigationRevealGlyphCount", code: 1)
