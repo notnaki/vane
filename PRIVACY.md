@@ -12,7 +12,7 @@ Vane keeps history (including URLs, titles, and visit times), bookmarks, tabs, S
 
 Saved passwords, AI API keys and ChatGPT tokens, and GitHub connection credentials use the local macOS Keychain. Vane does not enable Keychain synchronization for these items. Passwords are used to fill matching HTTPS sign-in forms; submitting a form sends its contents to that website. Vane does not upload your password library to a Vane service.
 
-Browser imports read the local data you select and, where required, use Keychain access to import supported credentials. Library files and recovery copies are not encrypted by Vane. Folder locks limit access within the app; they do not encrypt browser data. Password CSV exports are plaintext, and `.vanebackup` exports offer optional password encryption. Vane cannot recover backup passwords. Exports made without a password and automatic local recovery points remain unencrypted. Protect these files and any device or system backups containing them.
+Browser imports scan known local browser locations when you open import or reach the onboarding import step, show the items found, and copy the selected source only after you confirm. Known browser locations have read-only sandbox access; macOS privacy controls still apply. Where required, importing supported credentials uses separate Keychain consent. Library files and recovery copies are not encrypted by Vane. Folder locks limit access within the app; they do not encrypt browser data. Password CSV exports are plaintext, and `.vanebackup` exports offer optional password encryption. Vane cannot recover backup passwords. Exports made without a password and automatic local recovery points remain unencrypted. Protect these files and any device or system backups containing them.
 
 ## Browsing, searches, and website requests
 
@@ -31,11 +31,11 @@ Network recipients may keep their own logs. Vane cannot delete information alrea
 
 ## AI features
 
-**Apple's on-device model is the default provider.** Settings → Max lets you save multiple AI connections and choose one separately for tab titles, tab grouping, download names, and page summaries. Cloud connections use your own Groq, OpenAI, OpenRouter, or custom HTTPS API key, or **Continue with ChatGPT** to authorize eligible ChatGPT plan usage. Page summaries remain on-device until you explicitly select a cloud connection for them. Requests go directly to the selected provider, without a Vane server in between.
+**AI features are off by default.** Enable them during onboarding or in Settings → Max; existing explicit choices are preserved. Apple's on-device model is the default provider. Settings → Max lets you save multiple AI connections and choose one separately for tab titles, tab grouping, download names, and page summaries. Cloud connections use your own Groq, OpenAI, OpenRouter, or custom HTTPS API key, or **Continue with ChatGPT** to authorize eligible ChatGPT plan usage. Page summaries remain on-device until you explicitly select a cloud connection for them. Requests go directly to the selected provider, without a Vane server in between.
 
 Cloud requests include the selected connection’s API key or ChatGPT OAuth access token, configured model, task instructions, and the data needed for the task:
 
-- Pinned tab naming sends the page title and hostname. Tidy Titles is on by default and can request cloud naming automatically after you configure a cloud provider.
+- Pinned tab naming sends the page title and hostname. After you enable AI features, Tidy Titles is selected by default and can request cloud naming automatically after you configure a cloud provider.
 - Tab grouping sends tab titles and hostnames when you use Tidy Tabs.
 - Download naming sends the suggested filename, page title, and source hostname and path. Tidy Downloads is off by default; enabling it can trigger requests as downloads complete. These naming requests do not upload downloaded file contents.
 - Page summaries send a bounded extract of the page title and article text when a link preview requests a summary, only if you explicitly route summaries to a cloud connection. This text may contain private page content.

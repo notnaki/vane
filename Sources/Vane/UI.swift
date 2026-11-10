@@ -794,23 +794,7 @@ struct WebCard: View {
         }
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
-        .clipShape(.rect(cornerRadius: radius))
-        .background {
-            RoundedRectangle(cornerRadius: radius)
-                .stroke(Look.pageShadow, lineWidth: 1)
-                .blur(radius: Look.pageShadowRadius)
-                .offset(y: 1)
-                .opacity(edgeToEdge ? 0 : 1)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: radius)
-                .strokeBorder(Look.pageRim, lineWidth: 1)
-                .opacity(edgeToEdge ? 0 : 1)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-        }
+        .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
@@ -926,7 +910,7 @@ private struct Sidebar: View {
     }
 
     var body: some View {
-        VStack(spacing: Look.inset) {
+        SidebarChrome {
             TopRow()
             AddressPill(tab: store.active)
             ZStack {
@@ -972,11 +956,6 @@ private struct Sidebar: View {
                       preparePreview: preparePreview)
         }
         .environment(\.sidebarDropMarker, dropMarker)
-        // SwiftUI's accessibility motion environment is read-only. Stop decorative
-        // animations here without changing the user's system accessibility setting.
-        .padding(.horizontal, Look.inset)
-        .padding(.bottom, Look.footerInset)
-        .padding(.top, Look.topInset)
         // Toasts and the mini audio player fade in above the footer and sit just
         // above it, over the list — the toast above the player, so neither covers the other.
         .overlay(alignment: .bottom) {
@@ -1092,7 +1071,8 @@ private struct Sidebar: View {
 struct TopRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
-    private var layout: SidebarChromeLayout { SidebarChromeLayout(width: sidebar.width) }
+    var layoutWidth: CGFloat? = nil
+    private var layout: SidebarChromeLayout { SidebarChromeLayout(width: layoutWidth ?? sidebar.width) }
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1256,6 +1236,8 @@ private struct NavigationTarget: ViewModifier {
 struct AddressPill: View {
     let tab: Tab?
     var showsProfile = false
+    var displayAddress: String? = nil
+    var layoutWidth: CGFloat? = nil
     @ObservedObject private var changes = SiteChanges.shared
     @State private var tabRevision: UInt = 0
 
@@ -1264,8 +1246,8 @@ struct AddressPill: View {
         // and keyboard owner must survive a page → empty → page round trip.
         let _ = tabRevision
         let site = tab.map { SiteControlModel($0) } ?? SiteControlModel()
-        PillBody(tab: tab, host: host, address: tab?.address ?? "", site: site,
-                 zoom: PillState.zoomLabel(tab?.zoom ?? 1), showsProfile: showsProfile)
+        PillBody(tab: tab, host: host, address: displayAddress ?? tab?.address ?? "", site: site,
+                 zoom: PillState.zoomLabel(tab?.zoom ?? 1), showsProfile: showsProfile, layoutWidth: layoutWidth)
             .onReceive(tab?.objectWillChange.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) {
                 tabRevision &+= 1
             }
@@ -1273,6 +1255,7 @@ struct AddressPill: View {
 
     /// Read metadata here on every page notification, including permission changes.
     private var host: String {
+        if let displayAddress { return displayAddress }
         guard let tab else { return "" }
         if tab.easelID != nil { return "Local Easel" }
         if let label = Files.pillLabel(tab.currentURL) { return label }
@@ -1287,7 +1270,7 @@ private struct PillBody: View {
     @Environment(\.sidebarDragPreview) private var dragPreview
     @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var batterySaver = BatterySaver.shared
-    private var compact: Bool { SidebarChromeLayout(width: sidebar.width).compact }
+    private var compact: Bool { SidebarChromeLayout(width: layoutWidth ?? sidebar.width).compact }
     let tab: Tab?
     let host: String
     let address: String
@@ -1296,6 +1279,7 @@ private struct PillBody: View {
     /// "125%" while the page is zoomed, nil at 100 %. Clicking it puts the page back.
     var zoom: String?
     var showsProfile = false
+    var layoutWidth: CGFloat? = nil
     @State private var hovering = false
     @State private var showingSiteControls = false
     @State private var pillFocused = false
@@ -3272,6 +3256,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     var animatesCutoffs = true
     var retainsRows = false
     var tracesLiveInput = false
+    var allowsWindowDrag = true
     var reportOffset: (CGFloat) -> Void = { _ in }
     @ViewBuilder let header: () -> Header
     @ViewBuilder let rows: () -> Rows
@@ -3289,7 +3274,9 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
             ScrollView {
                 rowStack
                     .frame(minHeight: scrollHeight, alignment: .top)
-                    .background(WindowDragArea())
+                    .background {
+                        if allowsWindowDrag { WindowDragArea() }
+                    }
                     .background(SidebarSectionsViewport(tracesLiveInput: tracesLiveInput))
             }
             .scrollIndicators(.never)
@@ -4838,7 +4825,7 @@ private struct LivePullRequestMenu: View {
 
 private struct RegenerateTitleItem: View {
     @ObservedObject var tab: Tab
-    @AppStorage("appleAI", store: .vane) private var aiEnabled = true
+    @AppStorage("appleAI", store: .vane) private var aiEnabled = false
     @AppStorage("tidyTitles", store: .vane) private var titlesEnabled = true
 
     var body: some View {

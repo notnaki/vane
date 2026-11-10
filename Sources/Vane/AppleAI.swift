@@ -76,12 +76,10 @@ import FoundationModels
 
     /// Master switch, one key, no settings object.
     ///
-    /// Defaults ON whenever the model is available. Inference happens on this Mac's neural
-    /// engine: no request leaves the machine, there is no account, no API key and nothing to
-    /// bill, so there is no privacy trade for the user to opt into. Off is honoured
-    /// instantly and everywhere, because every feature routes through `ready` below.
+    /// Defaults off until the user opts in during onboarding or Settings.
+    /// Existing explicit choices survive upgrades. Every feature routes through `ready`.
     static var enabled: Bool {
-        get { UserDefaults.vane.object(forKey: "appleAI") as? Bool ?? isAvailable }
+        get { UserDefaults.vane.object(forKey: "appleAI") as? Bool ?? false }
         set { UserDefaults.vane.set(newValue, forKey: "appleAI") }
     }
 
@@ -665,8 +663,8 @@ import FoundationModels
         let readyWhenOff = ready
         enabled = true
 
-        assert("with nothing stored the switch follows model availability",
-               byDefault == isAvailable)
+        assert("with nothing stored AI stays off until explicitly enabled",
+               byDefault == false)
         assert("the switch round-trips through UserDefaults",
                onRoundTrip == true && offRoundTrip == false)
         assert("switching off makes the module not ready, whatever the hardware says",
