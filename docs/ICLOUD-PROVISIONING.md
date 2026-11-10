@@ -167,3 +167,12 @@ account can overwrite a device-local ChatGPT credential. Damaged local connectio
 metadata fails closed rather than becoming an empty credential inventory. Applying
 AI settings uses the current enabled binding and invalidates stale AI requests;
 fresh installs retain the current default-off behavior.
+
+Synced API definitions that are new or change provider/effective endpoint use a
+separate destination-bound local credential slot. The old local key is retained,
+not forwarded to the new destination, even with API-key sync disabled. Cloud key
+identities also include the provider/endpoint digest, so an old-endpoint cloud key
+cannot be replayed into a changed definition. Matching definitions and model-only
+edits preserve existing local credentials. The local slot-selection flag is never
+exported in portable metadata. Typed preference JSON is canonicalized with sorted
+keys before causal byte comparison and readback.

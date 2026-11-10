@@ -29,6 +29,7 @@ enum ICloudAIConnections {
                 throw ICloudFailure.invalid("An AI connection contains nonportable endpoint or credential metadata.")
             }
             connection.registration = nil
+            connection.credentialUsesEndpointScope = nil
             result.connections.append(connection)
         }
         let ids = Set(result.connections.map(\.id))
@@ -39,7 +40,16 @@ enum ICloudAIConnections {
     }
 
     static func accounts(in state: AIConnections) throws -> Set<String> {
-        Set(try portable(state).connections.map(\.credentialAccount))
+        Set(try cloudAccounts(in: state).values)
+    }
+
+    /// Cloud identities always bind provider and endpoint; local originals may
+    /// still use a legacy account until an imported definition changes destination.
+    static func cloudAccounts(in state: AIConnections) throws -> [String: String] {
+        let approved = Set(try portable(state).connections.map(\.id))
+        return Dictionary(uniqueKeysWithValues: state.connections.filter { approved.contains($0.id) }.map {
+            ($0.endpointCredentialAccount, $0.credentialAccount)
+        })
     }
 
     static func merge(_ incoming: AIConnections, into local: AIConnections) throws -> AIConnections {
@@ -50,7 +60,18 @@ enum ICloudAIConnections {
         }
         var result = local
         for connection in local.connections where isAPI(connection.provider) { result.remove(connection.id) }
-        result.connections += incoming.connections
+        for var connection in incoming.connections {
+            if let old = local.connections.first(where: { $0.id == connection.id }),
+               old.credentialEndpointScope == connection.credentialEndpointScope {
+                connection.credentialUsesEndpointScope = old.credentialUsesEndpointScope
+                connection.legacyCredentialAccount = old.legacyCredentialAccount
+            } else {
+                // A new/changed destination gets a distinct empty credential slot.
+                // Retain the old local key; never forward it or silently delete it.
+                connection.credentialUsesEndpointScope = true
+            }
+            result.connections.append(connection)
+        }
         for feature in AIFeature.allCases {
             if let current = local.connection(for: feature), retained.contains(where: { $0.id == current.id }) { continue }
             result.route(feature, to: incoming.connection(for: feature)?.id)

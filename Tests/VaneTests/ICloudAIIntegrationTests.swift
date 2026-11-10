@@ -3,6 +3,69 @@ import XCTest
 @testable import vane
 
 final class ICloudAIIntegrationTests: XCTestCase {
+    func testSyncedEndpointChangeCannotReuseExistingLocalCredentialAccount() throws {
+        var existing = AIConnection(provider: .custom); existing.baseURL = "https://old.example.test/v1"
+        var incoming = existing; incoming.baseURL = "https://new.example.test/v1"
+        var local = AIConnections(); local.connections = [existing]
+        var remote = AIConnections(); remote.connections = [incoming]
+        let merged = try ICloudAIConnections.merge(remote, into: local)
+        let changed = try XCTUnwrap(merged.connections.first)
+        XCTAssertEqual(changed.baseURL, incoming.baseURL)
+        XCTAssertNotEqual(changed.credentialAccount, existing.credentialAccount,
+            "An endpoint edit cannot forward a key saved for another destination")
+        let oldVault = [existing.credentialAccount: "old-endpoint-key"]
+        XCTAssertNil(oldVault[changed.credentialAccount])
+        XCTAssertEqual(oldVault[existing.credentialAccount], "old-endpoint-key", "The local original is retained")
+        let oldCloud = try ICloudAIConnections.cloudAccounts(in: local)
+        let newCloud = try ICloudAIConnections.cloudAccounts(in: merged)
+        XCTAssertTrue(Set(oldCloud.keys).isDisjoint(with: newCloud.keys),
+            "Old-endpoint cloud credentials cannot be admitted to the new destination")
+        XCTAssertEqual(Set(newCloud.values), [changed.credentialAccount])
+    }
+
+    func testNewImportedDefinitionIgnoresLegacyOrphanAndModelOnlyEditsKeepMatchingKey() throws {
+        let existing = AIConnection(provider: .openAI)
+        var remote = AIConnections(); remote.connections = [existing]
+        let imported = try ICloudAIConnections.merge(remote, into: AIConnections())
+        XCTAssertNotEqual(imported.connections.first?.credentialAccount, existing.credentialAccount)
+        XCTAssertEqual(imported.connections.first?.credentialAccount, existing.endpointCredentialAccount)
+        var local = AIConnections(); local.connections = [existing]
+        remote.connections[0].model = "another-model"
+        let modelOnly = try ICloudAIConnections.merge(remote, into: local)
+        XCTAssertEqual(modelOnly.connections.first?.credentialAccount, existing.credentialAccount)
+        XCTAssertEqual(Set(try ICloudAIConnections.cloudAccounts(in: modelOnly).keys),
+                       Set(try ICloudAIConnections.cloudAccounts(in: local).keys))
+        let bytes = try JSONEncoder().encode(ICloudAIConnections.portable(imported))
+        XCTAssertFalse(String(decoding: bytes, as: UTF8.self).contains("credentialUsesEndpointScope"),
+            "A remote definition cannot choose this Mac's credential storage slot")
+    }
+
+    @MainActor func testTypedPreferenceCaptureUsesCanonicalBytesAndBaselineApplyAcceptsRemoteEdit() async throws {
+        let suite = "icloud-ai-canonical-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        defer { UserDefaults.dropScratchSuite(suite); try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var api = AIConnection(provider: .groq); api.id = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        var state = AIConnections(); state.connections = [api]; state.route(.downloads, to: api.id); state.save(defaults)
+        let adapter = ICloudPreferencesAdapter(directory: root, defaults: defaults, profileIDs: { [] })
+        let initial = try await adapter.capture([.portablePreferences])
+        let baseline = try XCTUnwrap(initial.first(where: { $0.id == AIConnections.preferenceKey }))
+        let canonical = Data(#"{"connections":[{"baseURL":"https:\/\/api.groq.com\/openai\/v1","id":"00000000-0000-0000-0000-000000000002","model":"openai\/gpt-oss-20b","name":"Groq","provider":"groq"}],"routes":{"downloads":"00000000-0000-0000-0000-000000000002"}}"#.utf8)
+        let plist = try PropertyListSerialization.propertyList(from: XCTUnwrap(baseline.fields["value"]), format: nil)
+        XCTAssertEqual(plist as? Data, canonical)
+        for _ in 0..<8 {
+            let captured = try await adapter.capture([.portablePreferences])
+            XCTAssertEqual(captured.first(where: { $0.id == AIConnections.preferenceKey })?.fields, baseline.fields)
+        }
+        var edited = state; edited.connections[0].model = "remote-model"
+        var incoming = baseline
+        incoming.fields["value"] = try PropertyListSerialization.data(fromPropertyList: JSONEncoder().encode(edited), format: .binary, options: 0)
+        try await ICloudApplyContext.$baseline.withValue([baseline.key: baseline]) {
+            try await adapter.apply([incoming], deleted: [], enabled: [.portablePreferences])
+        }
+        XCTAssertEqual(AIConnections.load(defaults).connections.first?.model, "remote-model")
+    }
     func testDamagedMetadataCannotBecomeAnEmptyCredentialInventory() throws {
         let suite = "icloud-ai-corrupt-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

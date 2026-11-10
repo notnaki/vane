@@ -191,7 +191,7 @@ import WebKit
                 try ICloudApplyContext.check()
                 if write.baseKey == AIConnections.preferenceKey {
                     let retained = try ICloudAIConnections.merge(AIConnections(), into: ICloudAIConnections.local(defaults))
-                    defaults.set(try JSONEncoder().encode(retained), forKey: local)
+                    defaults.set(try Self.json(retained), forKey: local)
                     if updatesOwners { BrowserAI.settingsChanged() }
                 } else {
                     defaults.removeObject(forKey: local)
@@ -208,7 +208,7 @@ import WebKit
                 if write.baseKey == AIConnections.preferenceKey, let data = decoded as? Data {
                     let incoming = try JSONDecoder().decode(AIConnections.self, from: data)
                     let merged = try ICloudAIConnections.merge(incoming, into: ICloudAIConnections.local(defaults))
-                    defaults.set(try JSONEncoder().encode(merged), forKey: local)
+                    defaults.set(try Self.json(merged), forKey: local)
                     if updatesOwners { BrowserAI.settingsChanged() }
                 } else if updatesOwners, write.baseKey == "appleAI", let value = decoded as? NSNumber {
                     BrowserAI.enabledBinding.wrappedValue = value.boolValue
@@ -257,6 +257,11 @@ import WebKit
         return value
     }
 
+    private static func json<Value: Encodable>(_ value: Value) throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(value)
+    }
+
     private struct ShortcutTable: Codable {
         var bindings: [String: Keybinding]?
         var priorities: [String: Keybindings.Priority]?
@@ -265,19 +270,19 @@ import WebKit
     private static func normalizedPreference(_ value: Any, key: String) throws -> Any {
         if key == AIConnections.preferenceKey, let data = value as? Data {
             guard data.count <= ICloudLimits.inlineBytes else { throw ICloudFailure.limitExceeded }
-            return try JSONEncoder().encode(ICloudAIConnections.portable(JSONDecoder().decode(AIConnections.self, from: data)))
+            return try Self.json(ICloudAIConnections.portable(JSONDecoder().decode(AIConnections.self, from: data)))
         }
         // Re-encode typed blobs so future/unknown fields cannot smuggle paths, grants
         // or credentials through an otherwise allowlisted data-valued preference.
         if key == "customSearchEngines", let data = value as? Data {
-            return try JSONEncoder().encode(JSONDecoder().decode([SearchEngine].self, from: data))
+            return try Self.json(JSONDecoder().decode([SearchEngine].self, from: data))
         }
         if key == "keybindings.v1", let data = value as? Data {
             var table = try JSONDecoder().decode(ShortcutTable.self, from: data)
             table.bindings = table.bindings?.filter { Command(rawValue: $0.key) != nil }
             table.priorities = table.priorities?.filter { Command(rawValue: $0.key) != nil }
             table.migrated = min(max(table.migrated ?? 0, 0), Keybindings.migration)
-            return try JSONEncoder().encode(table)
+            return try Self.json(table)
         }
         return value
     }

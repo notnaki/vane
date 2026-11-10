@@ -761,8 +761,14 @@ extension Notification.Name {
                 return try await Passwords.perform { try Passwords.iCloudSnapshot(admission: admission) }
             case .aiKeys:
                 let namespace = Store.overrideDirectory.map { UserDefaults.suiteName(forDataDir: $0) }
-                let accounts = try ICloudAIConnections.accounts(in: ICloudAIConnections.local(UserDefaults.vane))
-                return try await Task.detached { try AIKeys.iCloudSnapshot(namespace: namespace, accounts: accounts, admission: admission) }.value
+                let mapping = try ICloudAIConnections.cloudAccounts(in: ICloudAIConnections.local(UserDefaults.vane))
+                let accounts = Set(mapping.values)
+                let local = try await Task.detached { try AIKeys.iCloudSnapshot(namespace: namespace, accounts: accounts, admission: admission) }.value
+                var result: [Identity: Data] = [:]
+                for (cloud, account) in mapping {
+                    if let value = local[.aiKey(account: account)] { result[.aiKey(account: cloud)] = value }
+                }
+                return result
             }
         }
         func apply(_ identity: Identity, value: Data?, expected: Data?, admission: @escaping @Sendable () throws -> Void) async throws -> Bool {
@@ -784,11 +790,11 @@ extension Notification.Name {
                 }
             case .aiKeys:
                 let namespace = Store.overrideDirectory.map { UserDefaults.suiteName(forDataDir: $0) }
-                let accounts = try ICloudAIConnections.accounts(in: ICloudAIConnections.local(UserDefaults.vane))
-                guard accounts.contains(identity.account) else {
+                let accounts = try ICloudAIConnections.cloudAccounts(in: ICloudAIConnections.local(UserDefaults.vane))
+                guard let localAccount = accounts[identity.account] else {
                     throw ICloudFailure.unavailable("This AI key awaits its API connection. Enable portable preferences or restore that connection before retrying. ChatGPT credentials stay local.")
                 }
-                let applied = try await Task.detached { try AIKeys.iCloudApply(account: identity.account, namespace: namespace, value: value, expected: expected, admission: admission) }.value
+                let applied = try await Task.detached { try AIKeys.iCloudApply(account: localAccount, namespace: namespace, value: value, expected: expected, admission: admission) }.value
                 if applied { BrowserAI.settingsChanged() }
                 return applied
             }
