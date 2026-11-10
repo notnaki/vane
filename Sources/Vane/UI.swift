@@ -1340,8 +1340,11 @@ private struct PillBody: View {
         }
         .onHover { hovering = $0 }
         .onTapGesture { open() }
-        .vaneKeyboardAction(requestFocus: $store.chromeFocusRequested,
-                            focusChanged: { pillFocused = $0 }, action: open)
+        .addressKeyboardAction(store: store, value: axValue, customActions: [
+            ("Copy Link", copyLink),
+            ("Site Controls", { if tab != nil, tab?.easelID == nil, !address.isEmpty { showingSiteControls = true } }),
+            ("Actual Size", { if let tab, zoom != nil { Zoom.reset(tab) } })
+        ], focusChanged: { pillFocused = $0 }, action: open)
         // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is
         // the top of the sidebar, and it is what the empty grid used to be dropped on.
         .onDrop(of: [.plainText, .url],
@@ -1350,20 +1353,8 @@ private struct PillBody: View {
                                   favouritePreview: dragPreview))
 
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Address and Search")
-        .accessibilityValue(axValue)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Opens the search bar to type a website address or a search.")
-        .accessibilityAction { open() }
-        // The two glyphs are only drawn on hover, so the actions they stand for have to be
-        // on the pill itself — a pointer gesture is not a route VoiceOver has.
-        .accessibilityAction(named: "Copy Link") { copyLink() }
-        .accessibilityAction(named: "Site Controls") {
-            if tab != nil, tab?.easelID == nil, !address.isEmpty { showingSiteControls = true }
-        }
         .onChange(of: tab?.id) { showingSiteControls = false }
         .onChange(of: address) { showingSiteControls = false }
-        .accessibilityAction(named: "Actual Size") { if let tab, zoom != nil { Zoom.reset(tab) } }
     }
 
     @ViewBuilder private var content: some View {
@@ -1373,9 +1364,10 @@ private struct PillBody: View {
             HStack(spacing: Look.pillGlyphGap) {
                 if address.isEmpty {
                     Image(systemName: "magnifyingglass").accessibilityHidden(true)
-                    Text("Search").font(Look.heading).lineLimit(1)
+                    Text("Search").font(Look.heading).lineLimit(1).accessibilityHidden(true)
                 } else {
                     Text(host).font(Look.text).lineLimit(1)
+                    .accessibilityHidden(true)
                     .vaneTooltip(address)
                 }
                 Spacer(minLength: 0)
@@ -1417,6 +1409,7 @@ private struct PillBody: View {
             .accessibilityLabel("\(store.profile.name) profile and navigation")
 
             Text(address.isEmpty ? "Search or Enter URL…" : host)
+                .accessibilityHidden(true)
                 .font(Look.text).lineLimit(1).truncationMode(.middle)
                 .vaneTooltip(address)
             HStack(spacing: Look.pillGlyphGap) {
@@ -1486,6 +1479,7 @@ private struct PillBody: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityHidden(true)
             // Rebuild only the label when policy changes, settling a running transition
             // without replacing the pill's keyboard owner or its native buttons.
             .id(reduced)
