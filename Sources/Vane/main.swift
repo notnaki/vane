@@ -90,6 +90,7 @@ if args.first == "import" {
     Task.detached(priority: .utility) { try? BlockerPrivateCache.sweep() }
     Blocker.refresh()
     FilterSubscriptions.shared.start()
+    LocalFilterSources.shared.start()
 
     // `vane <url>` beats a restored session; otherwise pick up where the user left off. The url
     // is routed exactly as a link from any other app is, so `open -a Vane <url>` and a click in

@@ -223,7 +223,8 @@ swift test --filter 'Extension.*Tests'
 ## Content blocking and filter subscriptions
 
 Settings → Privacy and Security → Content Blocking separates **Import from Disk** (local
-snapshots, never downloaded again) from **Subscribe by URL** (HTTPS lists). The built-in
+snapshots, never refreshed), **Link Local File** (explicit local refresh), and
+**Subscribe by URL** (HTTPS lists). The built-in
 starter list stays available offline. Existing imported snapshots and legacy file
 references are preserved. Sources are shared across profiles; the main blocking switch
 and site exceptions belong to each profile.
@@ -232,6 +233,65 @@ Case-sensitive URL rules (`$match-case`) are supported. Explicit positive resour
 exclude `script`, `image`, `stylesheet`, `font`, `media`, or `popup` with `~`; for example,
 `$script,image,~image` applies only to scripts. Negative-only sets and exclusions of types
 that WebKit combines into shared buckets remain unsupported and are reported.
+
+### Linked local files
+
+**Link Local File…** opts into reopening the chosen path every 30 seconds while Vane
+runs, at startup, and after wake. Observation, security-scoped resolution, bounded reads,
+and conversion run off the UI actor. Reopening the path handles editors that save by
+atomic replacement and files that disappear and later return. Links are limited to 64
+regular files, 8 MB each; symbolic links, pipes, devices, invalid UTF-8, HTML/error pages,
+unbalanced conditionals and updates with no usable rules are rejected. The combined
+policy retains its 64 MB, one-million-line and 64 KB-per-line admission bounds.
+
+Each row exposes **Use these rules**, **Refresh automatically**, **Retry / Check Now**,
+**Relink…**, **Unsupported Rules…**, and **Remove**. Pausing automatic refresh retains the
+snapshot; pausing can save even when another source is unavailable. Disabling rules removes
+that source from the active candidate and stops its automatic checks. Explicit Check Now still works while paused/disabled. Removal deletes
+the owned snapshot and its access grant only after the remaining policy compiles.
+Failures display in Settings and retain the accepted text. Repair the original path and
+retry, or Relink when access has expired or moved. Reload open pages after an update.
+
+Accepted text, diagnostics and status persist together in the `blockerLinkedSnapshots`
+preferences document. The complete candidate, including other local sources, subscriptions
+and profile exception variants, must compile under the shared source gate before a
+changed snapshot is published. Compilation or persistence failure keeps the old policy.
+The owned snapshots survive relaunch and are included in ordinary backups. File paths
+and security-scoped bookmarks live separately in `LocalFilterSources`, outside the backup
+owned-file allowlist; exporting/restoring a backup never carries a source access grant.
+A restored snapshot with no existing local grant needs **Relink…** before it can refresh.
+Import from Disk keeps its existing snapshot-only behavior.
+
+### Additional EasyList syntax
+
+Slash-delimited regex network filters support a deliberately conservative ASCII subset:
+literals, escaped regex punctuation, `.`, alphanumeric/underscore character classes
+(including same-category ranges such as `[0-9]` and negated classes), `?`, `+`, `*`, and
+`^`/`$` only at the beginning/end. For example, `/\/ad[0-9]+\.js$/$script` blocks numbered
+ad scripts. `$match-case`, resource restrictions and network exceptions also apply to
+these regexes. Patterns are limited to 4096 characters. Groups, alternation, lookarounds,
+backreferences, shorthand escapes (`\d`), counted or lazy quantifiers, and other regex
+syntax remain unsupported and reported; they are never approximated. Matching uses
+WebKit's canonical ASCII URL and defaults to case-insensitive matching.
+
+The `$badfilter` preprocessing modifier discards its exact supported network-filter
+counterpart across all source lists, including `@@` exception filters, without creating
+a broad WebKit exception. For example, `/ad.js$script,badfilter` disables `/ad.js$script`
+but leaves `/ad.js$image` and other overlapping blocks intact. Ordinary case-insensitive
+patterns, supported first/third-party aliases and domain-list ordering are normalized;
+`$match-case` patterns retain their case. Different EasyList resource types remain
+distinct even when WebKit puts them in one bucket. This is whole-filter identity;
+uBlock's special domain-list decomposition is not implemented. Unsupported target
+options, repeated semantic options, duplicate `badfilter`, cosmetic variants
+and conditional branches remain reported. A list containing only disabled/modifier rules
+has no usable rules and cannot replace an accepted local/subscription source.
+
+The subset follows [ABP regex syntax](https://help.adblockplus.org/adblock-plus-help-center/how-to-write-filters),
+[WebKit's public regex grammar](https://webkit.org/blog/3476/content-blockers-first-look/),
+and the [upstream badfilter definition](https://github.com/gorhill/uBlock/wiki/Static-filter-syntax#badfilter).
+Real WebKit loopback fixtures verify matching/nonmatching regexes, case options, exact
+badfilter removal, and overlapping blocks that must remain active, using ephemeral data
+stores and no foreground window activation.
 
 ### Subscription updates
 
@@ -265,8 +325,9 @@ sweeps crash leftovers while preserving other live Vane instances.
 
 The converter supports a subset of EasyList: host/start/end anchors, wildcards, network
 exceptions, supported resource/party options, positive-only or negative-only domain
-restrictions, and ordinary CSS hiding. Resource types follow WebKit's vocabulary:
-subdocuments use `document`, and XHR/WebSocket/ping use `raw`. Regex rules, scriptlets,
+restrictions, ordinary CSS hiding, the safe regex subset and exact network `$badfilter`
+preprocessing described above. Resource types follow WebKit's vocabulary:
+subdocuments use `document`, and XHR/WebSocket/ping use `raw`. Other regex constructs, scriptlets,
 procedural selectors, cosmetic exception variants, unknown options, mixed/invalid domain
 restrictions, and rules inside conditional branches are skipped. Unbalanced conditional
 directives reject a subscription update, and each source has independent preprocessing
@@ -277,7 +338,7 @@ Origin or AdGuard compatibility or expose request-by-request block counts.
 Focused regression checks (including real WebKit network and cosmetic behavior):
 
 ```sh
-swift test --filter 'BlockerTests|BlockerSubscriptionTests|BlockerWebKitTests'
+python3 scripts/run-native-tests.py --jobs 1 --filter 'BlockerTests|BlockerLocalSourceTests|BlockerSubscriptionTests|BlockerWebKitTests'
 ./.build/debug/vane selfcheck --pure
 ```
 

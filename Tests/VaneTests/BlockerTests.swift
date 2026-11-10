@@ -6,7 +6,7 @@ import WebKit
     override func setUp() async throws { TestEnvironment.prepare() }
 
     func testDiagnosticsKeepLineNumbersAndCountReasons() {
-        let result = Blocker.convert("! comment\n\n||ads.example^\n/regex/\nexample.com##+js(foo)\n||x.example^$redirect=noop\n")
+        let result = Blocker.convert("! comment\n\n||ads.example^\n/(regex|alternative)/\nexample.com##+js(foo)\n||x.example^$redirect=noop\n")
         XCTAssertEqual(result.rules, 1)
         XCTAssertEqual(result.skipped, 3)
         XCTAssertEqual(result.diagnostics.map(\.line), [4, 5, 6])
@@ -66,7 +66,7 @@ import WebKit
     }
 
     func testDiagnosticSamplesAreBoundedButCountsAreComplete() {
-        let result = Blocker.convert(Array(repeating: "/regex/", count: 100).joined(separator: "\n"))
+        let result = Blocker.convert(Array(repeating: "/(regex|alternative)/", count: 100).joined(separator: "\n"))
         XCTAssertEqual(result.skipped, 100)
         XCTAssertEqual(result.diagnostics.count, 20)
         XCTAssertEqual(result.reasonCounts["Regular expression"], 100)
@@ -108,7 +108,7 @@ extension BlockerTests {
 
 extension BlockerTests {
     func testCRLFReportsOriginalLineNumbers() {
-        let result = Blocker.convert("! heading\r\n||ads.example^\r\n/regex/\r\n")
+        let result = Blocker.convert("! heading\r\n||ads.example^\r\n/(regex|alternative)/\r\n")
         XCTAssertEqual(result.diagnostics.first?.line, 3)
     }
 }
@@ -168,5 +168,96 @@ extension BlockerTests {
         cache = nil
         try BlockerPrivateCache.sweep(root: root)
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+}
+
+extension BlockerTests {
+    func testSafeRegularExpressionsPreserveAnchorsClassesEscapesAndOptions() throws {
+        for source in [#"/\/ad[0-9]+\.js$/$script,match-case"#, #"/^https?:\/\/ads\.example\//"#, #"@@/ad[abc]?.js/$image"#] {
+            XCTAssertEqual(Blocker.convert(source).rules, 1, source)
+            XCTAssertEqual(Blocker.convert(source).skipped, 0, source)
+        }
+        for source in [#"/(ad|tracker)/"#, #"/ad\d+/"#, #"/ad{2}/"#, #"/(?=ad)/"#, #"/ad^x/"#, #"/ad[Z-a]/"#, #"/ad.*?/"#, #"/ad/$unknown"#] {
+            XCTAssertEqual(Blocker.convert(source).rules, 0, source)
+            XCTAssertEqual(Blocker.convert(source).skipped, 1, source)
+        }
+    }
+
+    func testBadfilterDisablesOnlyMatchingSupportedNetworkRuleAcrossSources() {
+        let result = Blocker.convertSources(["/ad.js$script\n/ad.js$image\n@@/allowed.js$script", "/ad.js$badfilter,script\n@@/allowed.js$script,badfilter"])
+        XCTAssertEqual(result.rules, 1)
+        XCTAssertEqual(result.skipped, 0)
+        XCTAssertTrue(result.json.contains("image"))
+        XCTAssertFalse(result.json.contains("ignore-previous-rules"))
+        let conditional = Blocker.convert("/ad.js\n!#if unknown\n/ad.js$badfilter\n!#endif")
+        XCTAssertEqual(conditional.rules, 1)
+        XCTAssertEqual(conditional.skipped, 1)
+        for source in ["/ad.js$redirect=noop,badfilter", "example.com#@#.ad$badfilter", "/ad.js$badfilter,badfilter"] {
+            XCTAssertEqual(Blocker.convert(source).skipped, 1)
+        }
+    }
+
+    func testBadfilterCanonicalizesSupportedPartyAliasesDomainsAndInsensitivePatterns() {
+        for (rule, modifier) in [
+            ("/ad.js$3p", "/ad.js$third-party,badfilter"),
+            ("/ad.js$first-party", "/ad.js$1p,badfilter"),
+            ("@@/ad.js$1p", "@@/ad.js$~third-party,badfilter"),
+            ("/Ad.js$domain=a.example|b.example", "/ad.js$domain=B.EXAMPLE|a.example,badfilter"),
+            ("/ad.js$domain=~a.example|~b.example", "/ad.js$domain=~b.example|~a.example,badfilter")
+        ] {
+            let result = Blocker.convertSources([rule, modifier])
+            XCTAssertEqual(result.rules, 0, rule)
+            XCTAssertEqual(result.skipped, 0, modifier)
+        }
+        let sensitive = Blocker.convertSources(["/Ad.js$match-case", "/ad.js$match-case,badfilter"])
+        XCTAssertEqual(sensitive.rules, 1, "A case-sensitive pattern is a different filter")
+        let distinctTypes = Blocker.convertSources(["/ad.js$xmlhttprequest", "/ad.js$websocket,badfilter"])
+        XCTAssertEqual(distinctTypes.rules, 1, "WebKit's shared raw bucket does not make these EasyList types equivalent")
+    }
+}
+
+extension BlockerTests {
+    func testBadfilterDomainDecompositionIsReportedInsteadOfPretendingToDisableSubset() {
+        let conversion = Blocker.convert("*$domain=a.example|b.example\n*$domain=b.example,badfilter")
+        XCTAssertEqual(conversion.rules, 1)
+        XCTAssertEqual(conversion.skipped, 1)
+    }
+}
+
+extension BlockerTests {
+    func testLinkedSourcePublicationValidatesAllOtherSourcesBeforeSaving() async throws {
+        let defaults = UserDefaults.vane
+        let savedSnapshots = defaults.object(forKey: LocalFilterSources.snapshotsKey)
+        let savedLegacy = defaults.object(forKey: "blockerLists")
+        defer {
+            if let savedSnapshots { defaults.set(savedSnapshots, forKey: LocalFilterSources.snapshotsKey) }
+            else { defaults.removeObject(forKey: LocalFilterSources.snapshotsKey) }
+            if let savedLegacy { defaults.set(savedLegacy, forKey: "blockerLists") }
+            else { defaults.removeObject(forKey: "blockerLists") }
+        }
+        let source = LocalFilterSource(name: "synthetic.txt", text: "||linked.example^", report: Blocker.convert("||linked.example^").report)
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defaults.set([missing.path], forKey: "blockerLists")
+        do { try await Blocker.commitLinkedSources([source]); XCTFail("Must include unavailable legacy sources in candidate admission") } catch { }
+        XCTAssertEqual(defaults.data(forKey: LocalFilterSources.snapshotsKey), savedSnapshots as? Data)
+        defaults.set([], forKey: "blockerLists")
+        try await Blocker.commitLinkedSources([source])
+        XCTAssertEqual(try LocalFilterSources.read(defaults: defaults), [source])
+        defaults.set([missing.path], forKey: "blockerLists")
+        do { try await Blocker.commitLinkedSources([]); XCTFail("Removal must validate remaining sources") } catch { }
+        XCTAssertEqual(try LocalFilterSources.read(defaults: defaults), [source])
+    }
+}
+
+extension BlockerTests {
+    func testBadfilterRejectsRepeatedOrderSensitiveOptionsWithoutRemovingDifferentRule() {
+        for source in [
+            "/ad.js$domain=a.example,domain=b.example\n/ad.js$domain=b.example,domain=a.example,badfilter",
+            "/ad.js$third-party,~third-party\n/ad.js$~third-party,third-party,badfilter"
+        ] {
+            let conversion = Blocker.convert(source)
+            XCTAssertEqual(conversion.rules, 1)
+            XCTAssertEqual(conversion.skipped, 1)
+        }
     }
 }

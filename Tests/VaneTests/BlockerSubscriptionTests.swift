@@ -47,7 +47,7 @@ import XCTest
     }
 
     func testHTMLOrEmptyDownloadNeverReplacesAcceptedSource() async throws {
-        for text in ["<!doctype html><html>error</html>", "! empty list", "/regex/"] {
+        for text in ["<!doctype html><html>error</html>", "! empty list", "/(regex|alternative)/"] {
             XCTAssertThrowsError(try FilterSubscriptions.usableText(.init(status: 200, text: text)))
         }
     }
@@ -107,7 +107,7 @@ extension BlockerSubscriptionTests {
         var calls = 0
         let manager = FilterSubscriptions(directory: directory, fetch: { _ in
             calls += 1
-            return calls == 1 ? .init(status: 200, text: "||ads.example^\n/regex/", etag: "tag") : .init(status: 304)
+            return calls == 1 ? .init(status: 200, text: "||ads.example^\n/(regex|alternative)/", etag: "tag") : .init(status: 304)
         }, validate: { _ in })
         try await manager.add(URL(string: "https://lists.example/filter")!)
         let before = manager.items[0]

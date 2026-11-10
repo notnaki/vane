@@ -360,7 +360,7 @@ private struct BlockRule: Codable, Equatable {
     /// nonisolated, and called from `build`'s detached task: resolving a dozen bookmarks
     /// and reading the filter lists off disk is file work, not UI work, and it used to
     /// happen on the main actor at launch with the first page already loading.
-    private nonisolated static func sources(includeSubscriptions: Bool = true) throws -> [String] {
+    private nonisolated static func sources(includeSubscriptions: Bool = true, includeLinked: Bool = true) throws -> [String] {
         var files: [URL] = []
         // Resolve legacy selections without ScopedPaths.urls: that helper drops failed
         // bookmarks, which would silently discard part of the user's blocking rules.
@@ -395,6 +395,9 @@ private struct BlockRule: Codable, Equatable {
                 text.append(item.text)
             }
         }
+        if includeLinked {
+            text += try LocalFilterSources.read(defaults: .vane).filter(\.enabled).map(\.text)
+        }
         return text
     }
 
@@ -428,6 +431,20 @@ private struct BlockRule: Codable, Equatable {
         _ = try await compile(text)
         try await Task.detached(priority: .utility) {
             try FilterSubscriptions.write(items, directory: FilterSubscriptions.directory)
+        }.value
+    }
+
+    /// Linked snapshots share the import/subscription gate. Compile every source and
+    /// profile exception before publishing the single portable snapshot document.
+    static func commitLinkedSources(_ items: [LocalFilterSource]) async throws {
+        await compileGate.acquire()
+        defer { compileGate.release() }
+        let text = try await Task.detached(priority: .utility) {
+            try sources(includeLinked: false) + items.filter(\.enabled).map(\.text)
+        }.value
+        _ = try await compile(text)
+        try await Task.detached(priority: .utility) {
+            try LocalFilterSources.write(items, defaults: .vane)
         }.value
     }
 
@@ -495,7 +512,8 @@ private struct BlockRule: Codable, Equatable {
     /// `domains##selector` cosmetic rules, `$match-case`, and exact resource exclusions
     /// within an explicit positive resource set.
     ///
-    /// Skipped and counted: `/regex/` rules, `#@#` / `#?#` / `#$#` cosmetic variants,
+    /// Also supports a conservative ASCII regex subset and exact network `$badfilter`.
+    /// Skipped and counted: other regex constructs, `#@#` / `#?#` / `#$#` cosmetic variants,
     /// scriptlets, procedural selectors, negative-only or aggregated resource exclusions, `$important`,
     /// `$redirect`, `$csp`, `$removeparam`, non-ASCII patterns, and anything with an
     /// option this does not know — an unknown option can invert a rule's meaning, so an
@@ -533,6 +551,19 @@ private struct BlockRule: Codable, Equatable {
     }
 
     nonisolated static func convertSources(_ texts: [String], excludingHosts: [String] = []) -> BlockerConversion {
+        // Preprocess across all sources, but never execute unsupported conditional
+        // branches. A badfilter removes one filter identity, not every rule matching
+        // that URL (which an ignore-previous-rules action would incorrectly do).
+        var disabled = Set<String>()
+        for text in texts {
+            var depth = 0
+            for raw in text.components(separatedBy: .newlines) {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("!#if") { depth += 1; continue }
+                if line.hasPrefix("!#endif") { depth = max(0, depth - 1); continue }
+                if depth == 0, let target = badfilterTarget(line) { disabled.insert(networkIdentity(target)) }
+            }
+        }
         var rules: [BlockRule] = []
         var report = BlockerReport()
         for (source, text) in texts.enumerated() {
@@ -542,6 +573,8 @@ private struct BlockRule: Codable, Equatable {
                 if line.hasPrefix("!#if") { conditionalDepth += 1; continue }
                 if line.hasPrefix("!#endif") { conditionalDepth = max(0, conditionalDepth - 1); continue }
                 if line.isEmpty || line.hasPrefix("!") || line.hasPrefix("[") { continue }
+                if conditionalDepth == 0, badfilterTarget(line) != nil { continue }
+                if conditionalDepth == 0, disabled.contains(networkIdentity(line)), !line.contains("#") { continue }
                 if conditionalDepth == 0, var rule = rule(for: line) {
                     if !excludingHosts.isEmpty, !rule.isException {
                         rule.trigger.unlessTopURL = excludingHosts.sorted().map {
@@ -575,7 +608,7 @@ private struct BlockRule: Codable, Equatable {
         if line.contains("#@#") || line.contains("#?#") || line.contains("#$#") { return "Cosmetic variant or exception" }
         if !line.allSatisfy({ $0.isASCII }) { return "Non-ASCII rule" }
         let body = line.hasPrefix("@@") ? String(line.dropFirst(2)) : line
-        if body.hasPrefix("/"), body.split(separator: "$", maxSplits: 1).first?.hasSuffix("/") == true { return "Regular expression" }
+        if body.hasPrefix("/"), networkParts(body).pattern.hasSuffix("/") { return "Regular expression" }
         if line.contains("domain=") || line.contains("##") { return "Invalid or mixed domain restriction / selector" }
         if line.contains("$") { return "Unsupported or invalid option" }
         return "Unsupported pattern"
@@ -598,15 +631,129 @@ private struct BlockRule: Codable, Equatable {
         }
 
         var trigger = BlockRule.Trigger(urlFilter: "")
-        if let dollar = body.firstIndex(of: "$") {
-            let options = String(body[body.index(after: dollar)...])
-            body = String(body[..<dollar])
+        let parts = networkParts(body)
+        body = parts.pattern
+        if let options = parts.options {
             guard applyOptions(options, to: &trigger) else { return nil }
         }
         guard let filter = urlFilter(body, matchCase: trigger.urlFilterIsCaseSensitive == true) else { return nil }
         trigger.urlFilter = filter
         return BlockRule(trigger: trigger,
                          action: .init(type: exception ? "ignore-previous-rules" : "block"))
+    }
+
+    /// A terminal regex `$` is an anchor, not the start of filter options.
+    private nonisolated static func networkParts(_ body: String) -> (pattern: String, options: String?) {
+        if body.hasPrefix("/"), let slash = body.lastIndex(of: "/"), slash != body.startIndex {
+            let suffix = body[body.index(after: slash)...]
+            if suffix.isEmpty { return (body, nil) }
+            if suffix.hasPrefix("$") { return (String(body[...slash]), String(suffix.dropFirst())) }
+        }
+        if let dollar = body.firstIndex(of: "$") {
+            return (String(body[..<dollar]), String(body[body.index(after: dollar)...]))
+        }
+        return (body, nil)
+    }
+
+    private nonisolated static func networkIdentity(_ line: String) -> String {
+        let parts = networkParts(line.hasPrefix("@@") ? String(line.dropFirst(2)) : line)
+        let options = parts.options.map { $0.split(separator: ",", omittingEmptySubsequences: false)
+            .map { value -> String in
+                let option = value.trimmingCharacters(in: .whitespaces).lowercased()
+                switch option {
+                case "3p", "third-party": return "third-party"
+                case "1p", "first-party", "~third-party": return "first-party"
+                default:
+                    if option.hasPrefix("domain=") {
+                        return "domain=" + Set(option.dropFirst(7).split(separator: "|").map(String.init)).sorted().joined(separator: "|")
+                    }
+                    return option
+                }
+            }.sorted().joined(separator: ",") }
+        let matchCase = options?.split(separator: ",").contains("match-case") == true
+        let pattern = matchCase ? parts.pattern : parts.pattern.lowercased()
+        return (line.hasPrefix("@@") ? "@@" : "") + pattern + (options.map { "$" + $0 } ?? "")
+    }
+
+    private nonisolated static func badfilterTarget(_ line: String) -> String? {
+        guard !line.contains("#"), !line.hasPrefix("!"), !line.hasPrefix("[") else { return nil }
+        let parts = networkParts(line.hasPrefix("@@") ? String(line.dropFirst(2)) : line)
+        guard let options = parts.options else { return nil }
+        let values = options.split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard values.filter({ $0.lowercased() == "badfilter" }).count == 1 else { return nil }
+        let kept = values.filter { $0.lowercased() != "badfilter" }
+        // Repeated domain/party options are order-sensitive in the legacy parser.
+        // Sorting them would conflate different targets and remove the wrong rule.
+        let keys = kept.map { value -> String in
+            let option = value.lowercased()
+            if option.hasPrefix("domain=") { return "domain" }
+            if ["third-party", "3p", "~third-party", "first-party", "1p"].contains(option) { return "party" }
+            return option
+        }
+        guard Set(keys).count == keys.count else { return nil }
+        let target = (line.hasPrefix("@@") ? "@@" : "") + parts.pattern + (kept.isEmpty ? "" : "$" + kept.joined(separator: ","))
+        // uBlock decomposes these particular domain-scoped patterns. Until that
+        // decomposition is supported, report the modifier rather than accept a
+        // partial-domain disable that would have no effect here.
+        if ["*", "|http://", "|https://"].contains(parts.pattern),
+           kept.contains(where: { $0.lowercased().hasPrefix("domain=") }) { return nil }
+        guard rule(for: target) != nil else { return nil }
+        return target
+    }
+
+    /// Deliberately smaller than WebKit's grammar: no groups/alternation, special
+    /// escapes, counted/lazy quantifiers or assertions. Passing through an unknown
+    /// regex construct could change its meaning even if WebKit accepted it.
+    private nonisolated static func safeRegex(_ pattern: String, matchCase: Bool) -> String? {
+        let chars = Array(pattern)
+        guard !chars.isEmpty, chars.count <= 4096,
+              chars.allSatisfy({ $0.isASCII && !$0.isWhitespace }) else { return nil }
+        var i = 0
+        var atom = false
+        func category(_ c: Character) -> Int {
+            if c >= "0" && c <= "9" { return 1 }
+            if c >= "a" && c <= "z" { return 2 }
+            if c >= "A" && c <= "Z" { return 3 }
+            return 0
+        }
+        while i < chars.count {
+            let c = chars[i]
+            switch c {
+            case "\\":
+                i += 1
+                guard i < chars.count, "\\.^$+?*[]{}()|/-".contains(chars[i]) else { return nil }
+                atom = true
+            case "[":
+                i += 1
+                if i < chars.count, chars[i] == "^" { i += 1 }
+                let start = i
+                while i < chars.count, chars[i] != "]" {
+                    guard category(chars[i]) != 0 || chars[i] == "_" || chars[i] == "-" else { return nil }
+                    if chars[i] == "-", i > start, i + 1 < chars.count, chars[i + 1] != "]" {
+                        guard category(chars[i - 1]) != 0,
+                              category(chars[i - 1]) == category(chars[i + 1]),
+                              chars[i - 1] <= chars[i + 1] else { return nil }
+                    }
+                    i += 1
+                }
+                guard i < chars.count, i > start else { return nil }
+                atom = true
+            case "*", "+", "?":
+                guard atom else { return nil }
+                atom = false // Reject repeated and lazy quantifiers.
+            case "^":
+                guard i == 0 else { return nil }
+                atom = false
+            case "$":
+                guard i == chars.count - 1 else { return nil }
+                atom = false
+            case "(", ")", "|", "{", "}", "]": return nil
+            default: atom = true
+            }
+            i += 1
+        }
+        return matchCase ? pattern : pattern.lowercased()
     }
 
     /// `example.com,~shop.example.com##.banner` → css-display-none.
@@ -705,8 +852,9 @@ private struct BlockRule: Codable, Equatable {
         // match-case opts into sensitive matching and keeps the original pattern.
         var p = matchCase ? pattern : pattern.lowercased()
         guard !p.isEmpty, p.allSatisfy({ $0.isASCII && !$0.isWhitespace }) else { return nil }
-        // /regex/ rules: full regex, not the subset WebKit accepts.
-        if p.hasPrefix("/") && p.hasSuffix("/") && p.count > 2 { return nil }
+        if p.hasPrefix("/") && p.hasSuffix("/") && p.count > 2 {
+            return safeRegex(String(pattern.dropFirst().dropLast()), matchCase: matchCase)
+        }
 
         var out = ""
         if p.hasPrefix("||") {
@@ -872,9 +1020,9 @@ private struct BlockRule: Codable, Equatable {
                rule(for: "||example.com^*/ads/")?.trigger.urlFilter
                == "^https?://([^/]+\\.)?example\\.com[^a-z0-9_.%-].*/ads/")
 
-        // Everything below must be skipped, not emitted: a half-translated rule blocks the
-        // wrong thing, and one malformed rule fails the whole compile.
-        assert("a /regex/ rule is skipped", rule(for: "/ad[0-9]+\\.js/") == nil)
+        assert("a safe /regex/ rule converts", rule(for: "/ad[0-9]+\\.js/") != nil)
+        // Unsupported rules must be skipped, not half-translated: one malformed rule
+        // can fail the whole compile, and approximations can block the wrong thing.
         assert("an unknown option is skipped", rule(for: "||ads.example.com^$redirect=noop.js") == nil)
         assert("$important is skipped", rule(for: "||ads.example.com^$important") == nil)
         assert("a negated resource type is skipped", rule(for: "||ads.example.com^$~script") == nil)
@@ -892,7 +1040,7 @@ private struct BlockRule: Codable, Equatable {
 
         ||ads.example.com^
         @@||good.example.com^
-        /regex/
+        /(regex|alternative)/
         ||more.example.com^
         """)
         assert("comments and blank lines are not counted as rules", converted.rules == 3)
