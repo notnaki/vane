@@ -1,4 +1,7 @@
 import AppKit
+import CoreMedia
+import CoreVideo
+@preconcurrency import ScreenCaptureKit
 import SwiftUI
 import XCTest
 @testable import vane
@@ -110,6 +113,15 @@ extension SpaceColourTransitionTests {
                 && visible.width > 1 && visible.height > 1
         }
         let surface = try XCTUnwrap(store.spaceGesture.groundSurface)
+        // AppKit can spend the beginning of a landing updating the new Space's
+        // appearance. Record the displayed frames independently of main-actor
+        // polling, so a late task wake cannot erase an actually rendered midpoint.
+        let capture = PresentedGroundColours()
+        try await capture.start(surface: surface, window: window)
+        do {
+        try await compatibilityWait { !capture.samples.isEmpty }
+        try await LibraryFocusFixture.admitForeground(window)
+        let displayedStart = try XCTUnwrap(capture.samples.last)
         func pixel() throws -> NSColor {
             // Sample the exposed sidebar, not the ground covered by the page card.
             let sample = CGRect(x: min(Look.sidebarWidth / 2, surface.bounds.width / 2),
@@ -162,11 +174,16 @@ extension SpaceColourTransitionTests {
         let landed = try XCTUnwrap(samples.last)
         try await Task.sleep(for: .milliseconds(150))
         let resting = try pixel()
+        try await capture.stop()
         XCTAssertEqual(landed.redComponent, resting.redComponent, accuracy: 0.01)
         XCTAssertEqual(landed.blueComponent, resting.blueComponent, accuracy: 0.01)
         XCTAssertGreaterThan(abs(start.redComponent - resting.redComponent), 0.1)
-        XCTAssertTrue(samples.contains { abs($0.redComponent - start.redComponent) > 0.02
-            && abs($0.redComponent - resting.redComponent) > 0.02 }, "Must render intermediate colours")
+        let displayedRest = try XCTUnwrap(capture.samples.last)
+        let displayedTravel = capture.samples.filter { $0.time >= began }
+        XCTAssertGreaterThan(abs(displayedStart.red - displayedRest.red), 0.1)
+        XCTAssertTrue(displayedTravel.contains { abs($0.red - displayedStart.red) > 0.02
+            && abs($0.red - displayedRest.red) > 0.02 }, "Must render intermediate colours")
+        print("COLOUR_DISPLAYED_FRAMES: \(displayedTravel.map { ($0.time - began, $0.red) })")
         let reds = [start.redComponent] + samples.map(\.redComponent) + [resting.redComponent]
         let largestStep = zip(reds, reds.dropFirst()).map { abs($0 - $1) }.max() ?? 0
         print("COLOUR_TRANSITION_FRAMES: \(samples.count); largest red step: \(largestStep)")
@@ -175,5 +192,71 @@ extension SpaceColourTransitionTests {
         // The matching native clocks above and the actual intermediate pixels
         // establish continuous travel. Executor-delayed samples are not consecutive
         // display frames, so their largest step cannot establish a visible cut.
+        } catch {
+            let primary = error
+            do { try await capture.stop() }
+            catch { XCTFail("Colour capture cleanup also failed: \(error)") }
+            throw primary
+        }
+    }
+}
+
+private final class PresentedGroundColours: NSObject, SCStreamOutput, @unchecked Sendable {
+    struct Sample { let time: Double; let red: Double }
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "vane.ground.colour.capture")
+    private var recorded: [Sample] = []
+    @MainActor private var stream: SCStream?
+    var samples: [Sample] { lock.withLock { recorded } }
+
+    @MainActor func start(surface: NSView, window: NSWindow) async throws {
+        let content = try await SCShareableContent.currentProcess
+        let target = try XCTUnwrap(content.windows.first { $0.windowID == CGWindowID(window.windowNumber) })
+        let filter = SCContentFilter(desktopIndependentWindow: target)
+        let configuration = SCStreamConfiguration()
+        let crop = CGRect(x: min(Look.sidebarWidth / 2, surface.bounds.width / 2) - 6,
+                          y: surface.bounds.height / 2 - 6, width: 12, height: 12)
+        let screenCrop = window.convertToScreen(surface.convert(crop, to: nil))
+        configuration.sourceRect = CGRect(x: screenCrop.minX - window.frame.minX,
+            y: window.frame.maxY - screenCrop.maxY, width: crop.width, height: crop.height)
+        configuration.width = 12
+        configuration.height = 12
+        configuration.showsCursor = false
+        configuration.ignoreShadowsSingleWindow = true
+        configuration.captureDynamicRange = .SDR
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        configuration.colorSpaceName = CGColorSpace.displayP3
+        configuration.minimumFrameInterval = CMTime(value: 1,
+            timescale: CMTimeScale(window.screen?.maximumFramesPerSecond ?? 60))
+        configuration.queueDepth = 8
+        let capture = SCStream(filter: filter, configuration: configuration, delegate: nil)
+        try capture.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        stream = capture
+        do { try await capture.startCapture() }
+        catch { try? await stop(); throw error }
+    }
+
+    @MainActor func stop() async throws {
+        guard let stream else { return }
+        try await stream.stopCapture()
+        self.stream = nil
+        queue.sync {}
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer,
+                of type: SCStreamOutputType) {
+        guard type == .screen, buffer.isValid,
+              let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer,
+                createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              attachments.first?[.status] as? Int == SCFrameStatus.complete.rawValue,
+              let pixel = buffer.imageBuffer else { return }
+        CVPixelBufferLockBaseAddress(pixel, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
+        guard let bytes = CVPixelBufferGetBaseAddress(pixel)?.assumingMemoryBound(to: UInt8.self) else { return }
+        let center = CVPixelBufferGetHeight(pixel) / 2 * CVPixelBufferGetBytesPerRow(pixel)
+            + CVPixelBufferGetWidth(pixel) / 2 * 4
+        let sample = Sample(time: CMTimeGetSeconds(buffer.presentationTimeStamp),
+                            red: Double(bytes[center + 2]) / 255)
+        lock.withLock { recorded.append(sample) }
     }
 }
