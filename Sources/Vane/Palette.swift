@@ -1055,7 +1055,6 @@ private struct PaletteResultHover: ViewModifier {
                                                  geo.size.height - barHeight - Look.inset)
                                            : searchTop(geo.size.height)))
                     .animation(motion(Look.quick), value: rows.count)
-                    .animation(motion(Look.quick), value: sidebarLayout.stacked)
             }
             .onChange(of: geo.size.height, initial: true) { _, height in windowHeight = height }
         }
