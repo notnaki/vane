@@ -116,8 +116,9 @@ was removed. The regular app and other tasks' instances were left running.
   journals reduce risk; this pass does not certify every filesystem or disk.
 - UserDefaults-backed Reader/Boost editing retains Foundation's normal persistence
   behavior. This pass verifies backup/restore and restart contents, not per-edit
-  out-of-space feedback for every settings key. Broader settings/history save
-  hardening remains open.
+  out-of-space feedback for every settings key. Broader settings save hardening
+  remains open; [navigation history retries](audits/history-save-recovery.md) now
+  retain failed visits and title updates during the running session.
 - macOS 26, migration to another Mac, authenticated image downloads, external
   extension folders, real accounts and physical storage failure need separate
   environments. All validation fixtures were synthetic; the regular app's data

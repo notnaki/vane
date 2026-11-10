@@ -1041,7 +1041,7 @@ struct TitleReveal: Equatable, Sendable {
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
             self?.retitleTask = nil
-            store.retitle(url, title: title)
+            store.retitleNavigation(url, title: title)
         }
     }
 
@@ -1765,7 +1765,7 @@ struct TitleReveal: Equatable, Sendable {
               navigationState.lastHistoryURL != url else { return }
         navigationState.lastHistoryURL = url
         bookmarked = history.isBookmarked(url)
-        if !isPrivate { history.record(url, title: w.title ?? "") }
+        if !isPrivate { history.recordNavigation(url, title: w.title ?? "") }
     }
 
     func allowCertificateNavigation(to url: URL?) {
@@ -2037,7 +2037,7 @@ struct TitleReveal: Equatable, Sendable {
         navigationState.lastHistoryURL = displayingNavigationError ? nil : url
         if !displayingNavigationError, !isPrivate {
             Trace.note("history")
-            history.record(url, title: w.title ?? "")
+            history.recordNavigation(url, title: w.title ?? "")
         }
         // A favourite or a pinned tab is the tab itself, wherever it has gone: the record
         // on disk follows it.

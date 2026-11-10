@@ -56,6 +56,56 @@ import SQLite3
         XCTAssertEqual(store.history().map(\.title), ["Changed", "Old"])
     }
 
+    func testFailedNavigationVisitAndItsSuffixRemainAvailableForRetry() async throws {
+        let (store, db) = try fixture()
+        let first = URL(string: "https://example.com/first-pending")!
+        let later = URL(string: "https://example.com/later-pending")!
+        execute("CREATE TRIGGER reject_navigation BEFORE INSERT ON visits BEGIN SELECT RAISE(ABORT, 'temporary navigation failure'); END", on: db)
+        let before = Date.now
+        XCTAssertFalse(store.recordNavigation(first, title: "First"))
+        let after = Date.now
+        XCTAssertTrue(store.hasPendingWrites)
+        XCTAssertNotNil(store.lastHistoryError)
+        XCTAssertTrue(store.recordNavigation(later, title: "Later"))
+        XCTAssertTrue(store.history().isEmpty)
+        let failedRetry = await store.flushPendingWrites()
+        XCTAssertFalse(failedRetry)
+        XCTAssertTrue(store.hasPendingWrites)
+        execute("DROP TRIGGER reject_navigation", on: db)
+        let saved = await store.flushPendingWrites()
+        XCTAssertTrue(saved)
+        XCTAssertFalse(store.hasPendingWrites)
+        XCTAssertNil(store.lastHistoryError)
+        XCTAssertEqual(store.history().map(\.title), ["Later", "First"])
+        let visit = try XCTUnwrap(store.history().first { $0.url == first.absoluteString })
+        XCTAssertGreaterThanOrEqual(visit.at, before)
+        XCTAssertLessThanOrEqual(visit.at, after, "Retry preserves the original navigation time")
+        _ = await store.flushPendingWrites()
+        XCTAssertEqual(store.history().count, 2, "Repeated drains cannot duplicate a saved visit")
+    }
+
+    func testFailedNavigationTitleRetainsItsOrderBeforeLaterVisitAndClear() async throws {
+        let (store, db) = try fixture()
+        let url = URL(string: "https://example.com/title-pending")!
+        XCTAssertTrue(store.recordNavigation(url, title: "Original"))
+        execute("CREATE TRIGGER reject_title BEFORE UPDATE ON visits BEGIN SELECT RAISE(ABORT, 'temporary title failure'); END", on: db)
+        XCTAssertFalse(store.retitleNavigation(url, title: "Updated"))
+        XCTAssertTrue(store.hasPendingWrites)
+        XCTAssertTrue(store.recordNavigation(url, title: "Later visit"))
+        XCTAssertEqual(store.history().map(\.title), ["Original"])
+        execute("DROP TRIGGER reject_title", on: db)
+        let saved = await store.flushPendingWrites()
+        XCTAssertTrue(saved)
+        XCTAssertEqual(store.history().map(\.title), ["Later visit", "Updated"])
+        XCTAssertFalse(store.hasPendingWrites)
+        execute("CREATE TRIGGER reject_insert BEFORE INSERT ON visits BEGIN SELECT RAISE(ABORT, 'temporary failure'); END", on: db)
+        XCTAssertFalse(store.recordNavigation(url, title: "Discarded by later clear"))
+        XCTAssertTrue(store.clearHistory())
+        execute("DROP TRIGGER reject_insert", on: db)
+        _ = await store.flushPendingWrites()
+        XCTAssertTrue(store.history().isEmpty, "Clear follows and removes earlier pending history")
+    }
+
     func testRejectedSingleWritesDoNotPublishHistoryChanges() throws {
         let (store, db) = try fixture()
         let url = URL(string: "https://example.com/keep")!
