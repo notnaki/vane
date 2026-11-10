@@ -298,29 +298,46 @@ override a macOS denial. Screen-sharing selection and permission remain managed 
 WebKit and macOS. Vane has no supported screen-sharing persistence or per-source
 revocation API. See [permission lifecycle and platform limits](SITE-PERMISSIONS.md).
 
-## AI providers and your own keys
+## AI connections and feature routing
 
-Settings → Max lets you choose Apple (on-device), Groq, OpenAI, OpenRouter, or an
-OpenAI-compatible HTTPS API. For a cloud provider, enter its model ID, paste your own
-API key, choose **Save Key**, then **Test Connection**. Groq defaults to
-`openai/gpt-oss-20b`. Cloud providers may charge for usage or impose quotas. Custom
-providers need a base URL such as `https://api.example.com/v1` and support for JSON chat
-completions.
+Settings → Max lets you save multiple named connections, including several at the same
+provider. Choose **Add Connection** for ChatGPT, Groq, OpenAI, OpenRouter, or an
+OpenAI-compatible HTTPS API. Apple (on-device) is always available without an account.
+Choose a connection separately for **Tab titles**, **Tab grouping**, **Download names**,
+and **Page summaries**. Adding a connection does not change those routes. Existing
+single-provider settings and saved keys migrate for naming/grouping; summaries stay
+on-device until you explicitly choose a cloud connection for them.
 
-Every person uses their own key. Keys are stored as local, non-synchronizing macOS
-Keychain items, separately for each provider and custom endpoint. No key is bundled with
-the browser, committed to the repository, or sent through a Vane server. Test instances
-use separate credential namespaces. **Remove Key** deletes the selected provider's local
-credential.
+API-key connections take a model ID and your own key: choose **Save Key**, then
+**Test Connection**. Groq defaults to `openai/gpt-oss-20b`. Custom providers need an HTTPS
+base URL such as `https://api.example.com/v1` and JSON chat-completions support. Each
+connection has separate credentials in local, non-synchronizing macOS Keychain items;
+test data directories use separate namespaces. No key or token is bundled with Vane
+or sent through a Vane server. Provider pricing and quotas apply.
 
-Cloud AI handles pinned tab names, download names, and tab grouping. It sends titles,
-hostnames, and download naming metadata (including the source URL path, with query
-strings and fragments removed) to your chosen provider; it does not upload file contents.
-Titles, filenames, and paths can contain personal information. Private windows never
-use these cloud API features; assistant websites are separate and receive questions
-you send them, including in private windows. See the [privacy policy](../PRIVACY.md#ai-features).
-Page summaries continue to use Apple's on-device model. Cloud requests are bounded,
-cancellable, and fall back to ordinary title cleanup and grouping on errors or quotas.
+For ChatGPT, choose **Continue with ChatGPT** and authorize Vane in your system browser.
+Eligible accounts can grant access to their ChatGPT plan without an API key. Vane uses
+OpenAI’s [public open-source sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source),
+checks the returned signed identity and plan permission, and saves each registration's
+issued client ID and credentials separately. After connecting, choose **Refresh Models**
+and pick an available model, then assign features. **Manage Usage…** opens ChatGPT’s
+usage settings. ChatGPT plan/workspace restrictions and shared usage limits apply.
+Vane never automatically falls back to API-key billing. Reconnect to restore a revoked
+session or authorize plan usage after declining it. **Sign Out** keeps the registration
+for later reauthorization, attempts remote session revocation, and clears local tokens;
+a warning identifies when remote revocation could not be confirmed.
+
+Cloud naming/grouping sends titles, hostnames, and download naming metadata (source URL
+path included, query strings/fragments excluded). Cloud summaries additionally send
+bounded extracted page text when a link preview summarizes a page. These may contain
+personal information. Private windows never use any of these cloud AI features;
+assistant websites are separate and receive questions you send them even in private
+windows. See the [privacy policy](../PRIVACY.md#ai-features). Requests are bounded and
+cancellable. Errors and quotas keep the feature's ordinary non-AI fallback; no other
+cloud connection is selected automatically.
+
+**Remove Key** clears an API credential. **Remove Connection** clears that connection
+and returns its feature routes to Apple. ChatGPT removal also attempts session revocation.
 
 When AI and **Rename favorite and pinned tab titles** are enabled, right-click a pinned
 tab and choose **Regenerate Title** to request a fresh name. A successful result replaces
@@ -328,10 +345,14 @@ the current name, including a manual rename, with the usual AI title reveal anim
 If generation fails, the current name stays. Tabs browsed away from their pinned page
 are named from that pinned page's saved title.
 
-The cloud transport checks use an offline HTTP fixture:
+Offline transport, OAuth, renewal and migration checks require no real account or key:
 
 ```sh
 scripts/check-cloud-ai.sh
+scripts/check-ai-connections.sh
+scripts/check-ai-routing.sh
+scripts/check-chatgpt.sh
+scripts/check-chatgpt-session.sh
 scripts/check-cloud-ai.sh --keychain # optional isolated local Keychain integration
 ```
 

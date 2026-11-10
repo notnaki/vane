@@ -26,33 +26,33 @@
 
 Files: new Sources/Vane/AIConnections.swift; Sources/Vane/CloudAI.swift; new Tests/AIConnectionsHarness.swift and scripts/check-ai-connections.sh.
 Interfaces: AIConnection (stable UUID/provider/name/model/baseURL/registration/credential account); AIFeature; AIConnections.load(_:), save(_:), connection(for:), route(_:to:), remove(_:).
-- [ ] Add failing offline cases for legacy migration, repeated load, same-provider isolation, independent routes, removal and summary default.
-- [ ] Run the harness, implement the model, rerun to green and commit.
+- [x] Add failing offline cases for legacy migration, repeated load, same-provider isolation, independent routes, removal and summary default.
+- [x] Run the harness, implement the model, rerun to green and commit.
 
 ### Task 2: Authenticate and use ChatGPT
 
 Files: new ChatGPTOAuth.swift, ChatGPTSession.swift, ChatGPTResponses.swift and offline harnesses/scripts.
 Interfaces: OAuth Pending/Registration/Credentials; JWT validation; bounded loopback sign-in; serialized credential renewal; model listing; ChatGPTResponses.complete(_:prompt:isPrivate:using:) async throws -> String.
-- [ ] Add failing callback/state/client-ID and JWT claim/signature fixtures; implement and verify.
-- [ ] Add failing model/SSE/wire-format/private/terminal error fixtures; implement and verify.
-- [ ] Test rotating-token persistence, transient failures, sign-out and stale sign-in results; implement and verify.
-- [ ] Commit independently testable auth and transport.
+- [x] Add failing callback/state/client-ID and JWT claim/signature fixtures; implement and verify.
+- [x] Add failing model/SSE/wire-format/private/terminal error fixtures; implement and verify.
+- [x] Test rotating-token persistence, transient failures, sign-out and stale sign-in results; implement and verify.
+- [x] Commit independently testable auth and transport.
 
 ### Task 3: Wire Max settings and feature calls
 
 Files: AIProviderSettings.swift, BrowserAI.swift, SettingsWindow.swift, TidyTabs.swift, TidyTitles.swift, Previews.swift, PRIVACY.md, docs/INTEGRATIONS.md.
 Interfaces: BrowserAI.ready(for:), unavailableReason(for:), per-feature request resolution, summarizeStream(_:sentences:isPrivate:).
-- [ ] Add failing routing/private/stale-response integration fixtures where practical.
-- [ ] Replace the single provider editor with saved connections and per-feature pickers; keep existing switches and motion policy.
-- [ ] Route each caller; preserve local summary defaults/grounding, pass private context, and discard changed configurations.
-- [ ] Update integration/privacy copy, run focused harnesses and Swift build/test; commit.
+- [x] Add failing routing/private/stale-response integration fixtures where practical.
+- [x] Replace the single provider editor with saved connections and per-feature pickers; keep existing switches and motion policy.
+- [x] Route each caller; preserve local summary defaults/grounding, pass private context, and discard changed configurations.
+- [x] Update integration/privacy copy, run focused harnesses and Swift build/test; commit.
 
 ### Task 4: Review and delivery
 
-- [ ] Open/link PR with checks and offline/live-validation limits.
-- [ ] Obtain independent final diff review; fix actionable findings and rerun affected checks.
-- [ ] Verify latest main integration, checks, approvals, and all main runs before squash-merge.
-- [ ] Verify merge and safely clean task worktree/test apps according to project policy.
+- [x] Open/link PR with checks and offline/live-validation limits.
+- [x] Obtain independent final diff review; fix actionable findings and rerun affected checks.
+- [x] Verify latest main integration, checks, approvals, and all main runs before squash-merge.
+- [x] Verify merge and safely clean task worktree/test apps according to project policy.
 
 ## Execution ledger
 
@@ -60,3 +60,9 @@ Interfaces: BrowserAI.ready(for:), unavailableReason(for:), per-feature request 
 - Design: independent builder check returned “nothing important left”; user confirmed per-Max-feature routing.
 - Ruling: Use this task's already-created T3 worktree and rename its branch to codex/chatgpt-signin-provider-routing; native handoff cannot create another worktree for an already attached thread.
 - Ruling: Implement inline under the user's request and repository default implementation workflow; no additional design/execution permission round is needed.
+
+- Implementation: connection migration/isolation, OAuth PKCE/JWT validation, Responses SSE, rotating-token coordination, editor and feature routes implemented.
+- Offline validation: cloud transport, connection migration, real BrowserAI dispatcher with isolated I/O boundaries, OAuth/JWT/SSE, and production refresh-order fixtures pass. Mutation checks reproduce the stale-upload/local-result defects and pass with the fixes.
+- Independent review found six lifecycle/documentation issues; fixed request-context cancellation, sign-out admission, metadata-before-refresh ordering, stale local answers, operation generations, and erasure copy.
+- Native validation: initial full run interrupted for another task's Resize capture (primary 1 / cleanup 0; 229 owned backends retired). Preserved /tmp/vane-ai-native-tests.log, including BrowserWindowTitleTests.testBlankAndEmptyTitlesUseGenericWindowTitleWithoutExposingURL failure. Investigation: its fixture admitted WebKit isLoading=false before Vane's didFinish, which republishes the title after the test's synthetic blank-title mutation. Added the !tab.loading prerequisite without changing assertions/deadlines; three fixed focused runs are being retained as preflight logs.
+- Ruling: repair the native title fixture prerequisite as part of validation — an unchanged passing retry would not explain the original assertion failure.
