@@ -102,6 +102,9 @@ import XCTest
             controller = owner
             let loaded = WKWebExtensionContext(for: ext)
             context = loaded
+            // Nonpersistent pages are private. Permit only this isolated fixture
+            // context to exchange messages with its own background worker.
+            loaded.hasAccessToPrivateData = true
             loaded.uniqueIdentifier = UUID().uuidString.lowercased()
             loaded.baseURL = URL(string: "webkit-extension://\(UUID().uuidString.lowercased())/")!
             loaded.setPermissionStatus(.grantedExplicitly, for: WKWebExtension.Permission(rawValue: "storage"))
