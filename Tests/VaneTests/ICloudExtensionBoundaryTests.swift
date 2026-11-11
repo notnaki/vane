@@ -69,14 +69,12 @@ import XCTest
             ]
             try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
             try Data("""
-                browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-                    if (message.kind !== 'vane-sync-boundary') return false;
-                    (async () => ({runtimeID: browser.runtime.id,
+                browser.runtime.onMessage.addListener(async message => {
+                    if (message.kind !== 'vane-sync-boundary') return;
+                    return {runtimeID: browser.runtime.id,
                         sync: await browser.storage.sync.get(null),
                         local: await browser.storage.local.get(null),
-                        session: await browser.storage.session.get(null)}))()
-                        .then(sendResponse, error => sendResponse({error: String(error)}));
-                    return true;
+                        session: await browser.storage.session.get(null)};
                 });
                 """.utf8).write(to: folder.appendingPathComponent("worker.js"))
 
@@ -106,6 +104,8 @@ import XCTest
             controller = owner
             let loaded = WKWebExtensionContext(for: ext)
             context = loaded
+            // This probe's page and worker use only an isolated ephemeral store.
+            loaded.hasAccessToPrivateData = true
             loaded.uniqueIdentifier = UUID().uuidString.lowercased()
             loaded.baseURL = URL(string: "webkit-extension://\(UUID().uuidString.lowercased())/")!
             loaded.setPermissionStatus(.grantedExplicitly, for: WKWebExtension.Permission(rawValue: "storage"))
@@ -175,7 +175,10 @@ import XCTest
             XCTAssertEqual(worker["sync"] as? [String: String], ["portable": remote], "The synthetic host page and actual MV3 worker must share sync storage")
             XCTAssertEqual(worker["local"] as? [String: String], ["localOnly": nonce])
             XCTAssertEqual(worker["session"] as? [String: String], ["sessionOnly": nonce])
-        } catch { failure = error }
+        } catch {
+            print("ICLOUD_BOUNDARY_CONTEXT_ERRORS \(String(describing: context?.errors))")
+            failure = error
+        }
 
         // Retire the exact view and context before joining the owned AppKit loop.
         view?.stopLoading()
