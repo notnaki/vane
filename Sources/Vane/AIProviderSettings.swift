@@ -11,7 +11,7 @@ struct AIProviderSettings: View {
 
     var body: some View {
         SettingsCard {
-            SettingsRow("AI connections") {
+            SettingsRow("AI connections", icon: "network", tint: .purple) {
                 HStack {
                     if !state.connections.isEmpty {
                         Picker("Saved AI connection", selection: $selected) {
