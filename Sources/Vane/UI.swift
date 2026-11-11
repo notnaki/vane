@@ -4135,7 +4135,7 @@ private struct TidyRow: View {
             case .tidy:
                 // The menu item owns the tidy's cancellation and its "undo" bookkeeping —
                 // this is the same closure, not a second copy of it.
-                Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
+                Button { Keybindings.actions[.tidyTabs]?() } label: { SidebarTidyLabel() }
                     .nativeSidebarKeyboardControl()
                     .vaneTooltip("Tidy Tabs", hint: "Group tabs into folders", shortcut: Keybindings.binding(for: .tidyTabs).display)
                     .accessibilityLabel("Tidy Tabs")
