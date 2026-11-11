@@ -80,6 +80,21 @@ private final class PreviewServer: @unchecked Sendable {
         if let previousBatteryMode { BatterySaver.shared.setMode(previousBatteryMode) }
     }
 
+    private func withApplicationLoop(_ body: () async throws -> Void) async throws {
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do {
+            try await compatibilityWait { try loop.isReadyForInteraction() }
+            try await body()
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Preview AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
     func testFixtureWaitsForCompleteRequestHeaders() async throws {
         let server = try PreviewServer()
         let base = try await server.start()
@@ -120,6 +135,10 @@ private final class PreviewServer: @unchecked Sendable {
     }
 
     func testPreviewHostCannotAppearOrInterceptClicksWhenMovedOntoScreen() async throws {
+        try await withApplicationLoop { try await checkPreviewHost() }
+    }
+
+    private func checkPreviewHost() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let server = try PreviewServer(body: """
@@ -171,15 +190,15 @@ private final class PreviewServer: @unchecked Sendable {
     }
 
     func testCancellationUnloadsThePreviewDocument() async throws {
-        try await checkUnloadsDocument(cachedReplacement: false)
+        try await withApplicationLoop { try await checkUnloadsDocument(cachedReplacement: false) }
     }
 
     func testCachedReplacementUnloadsThePreviousPreviewDocument() async throws {
-        try await checkUnloadsDocument(cachedReplacement: true)
+        try await withApplicationLoop { try await checkUnloadsDocument(cachedReplacement: true) }
     }
 
     func testSourceTeardownUnloadsOnlyItsOwnPreview() async throws {
-        try await checkUnloadsDocument(cachedReplacement: false, ownerTeardown: true)
+        try await withApplicationLoop { try await checkUnloadsDocument(cachedReplacement: false, ownerTeardown: true) }
     }
 
     private func checkUnloadsDocument(cachedReplacement: Bool, ownerTeardown: Bool = false) async throws {
@@ -254,19 +273,7 @@ private final class PreviewServer: @unchecked Sendable {
     }
 
     func testRetiredBlankNavigationAndFrameCannotMutateNewPreview() async throws {
-        TestEnvironment.prepare()
-        let loop = try await NativeFixtureApplicationLoop.acquire()
-        var failure: (any Error)?
-        do {
-            try await compatibilityWait { try loop.isReadyForInteraction() }
-            try await checkRetiredBlankNavigationAndFrame()
-        } catch { failure = error }
-        do { try await loop.close() }
-        catch {
-            if failure == nil { failure = error }
-            else { XCTFail("Preview replacement AppKit loop cleanup also failed: \(error)") }
-        }
-        if let failure { throw failure }
+        try await withApplicationLoop { try await checkRetiredBlankNavigationAndFrame() }
     }
 
     private func checkRetiredBlankNavigationAndFrame() async throws {
@@ -331,6 +338,10 @@ private final class PreviewServer: @unchecked Sendable {
     }
 
     func testProfileReplacementReleasesPreviousPreviewViews() async throws {
+        try await withApplicationLoop { try await checkProfileReplacement() }
+    }
+
+    private func checkProfileReplacement() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         final class WeakView {
@@ -391,8 +402,15 @@ private final class PreviewServer: @unchecked Sendable {
     }
 
     func testBriefHoverDoesNotVisitDestinationButSettledHoverDoes() async throws {
+        try await withApplicationLoop { try await checkBriefHover() }
+    }
+
+    private func checkBriefHover() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
+        guard NSApp.isRunning else {
+            return XCTFail("Preview WebKit work requires an admitted AppKit application loop")
+        }
         let server = try PreviewServer(), base = try await server.start()
         let debounce = DebounceFixture()
         let previews = Previews(debounceSleep: debounce.sleep), tab = Tab(isPrivate: true)
