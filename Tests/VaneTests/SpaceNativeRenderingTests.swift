@@ -84,7 +84,8 @@ import XCTest
 
     func testCompactWindowReusesPreparedSurfaceAtItsFittedSidebarWidth() async throws {
         try await withFixtureApplicationLoop {
-            let (store, spaces, window, monitor) = try self.fixture()
+            let (store, spaces, window, monitor) = try self.fixture(registerTeardown: false)
+            defer { self.retireFixture(store, window: window, monitor: monitor) }
             let width = self.fixtureSidebarWidth(in: store)
             XCTAssertEqual(width, SidebarWidth.inWindow(store))
             XCTAssertLessThan(try XCTUnwrap(window.contentView).bounds.width,
