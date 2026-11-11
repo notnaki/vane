@@ -618,11 +618,12 @@ struct BrowserPaletteOverlay: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
+    @ObservedObject private var sidebar = SidebarWidth.shared
 
     var body: some View {
         ZStack {
             if let mode = store.palette {
-                PaletteView(mode: mode) {
+                PaletteView(ownsAccessibilityModal: false, mode: mode) {
                     store.palette = nil
                     store.focusPage()
                 }
@@ -630,6 +631,21 @@ struct BrowserPaletteOverlay: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottomLeading) {
+            if store.palette != nil {
+                // A profile can retain an open command bar while parked. App update
+                // status belongs above its scrim, with the live action still reachable.
+                // ToastPresentation covers the ordinary host while search is open.
+                ToastHost(stickyOnly: true)
+                    .frame(width: sidebar.width)
+                    .padding(.leading, store.sidebarShown || store.sidebarPeeking ? 0 : 16 - Look.inset)
+                    .padding(.bottom, store.sidebarShown || store.sidebarPeeking
+                             ? Look.footer + Look.footerInset + 2 * Look.inset : 16)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(store.palette == nil ? [] : .isModal)
+        .accessibilityHidden(store.palette == nil)
         // Keep search's fade out of the sidebar's disabled-state transaction.
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
                    value: store.palette == nil)
@@ -1324,8 +1340,11 @@ private struct PillBody: View {
         }
         .onHover { hovering = $0 }
         .onTapGesture { open() }
-        .vaneKeyboardAction(requestFocus: $store.chromeFocusRequested,
-                            focusChanged: { pillFocused = $0 }, action: open)
+        .addressKeyboardAction(store: store, value: axValue, customActions: [
+            ("Copy Link", copyLink),
+            ("Site Controls", { if tab != nil, tab?.easelID == nil, !address.isEmpty { showingSiteControls = true } }),
+            ("Actual Size", { if let tab, zoom != nil { Zoom.reset(tab) } })
+        ], focusChanged: { pillFocused = $0 }, action: open)
         // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is
         // the top of the sidebar, and it is what the empty grid used to be dropped on.
         .onDrop(of: [.plainText, .url],
@@ -1334,20 +1353,8 @@ private struct PillBody: View {
                                   favouritePreview: dragPreview))
 
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Address and Search")
-        .accessibilityValue(axValue)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Opens the search bar to type a website address or a search.")
-        .accessibilityAction { open() }
-        // The two glyphs are only drawn on hover, so the actions they stand for have to be
-        // on the pill itself — a pointer gesture is not a route VoiceOver has.
-        .accessibilityAction(named: "Copy Link") { copyLink() }
-        .accessibilityAction(named: "Site Controls") {
-            if tab != nil, tab?.easelID == nil, !address.isEmpty { showingSiteControls = true }
-        }
         .onChange(of: tab?.id) { showingSiteControls = false }
         .onChange(of: address) { showingSiteControls = false }
-        .accessibilityAction(named: "Actual Size") { if let tab, zoom != nil { Zoom.reset(tab) } }
     }
 
     @ViewBuilder private var content: some View {
@@ -1357,9 +1364,10 @@ private struct PillBody: View {
             HStack(spacing: Look.pillGlyphGap) {
                 if address.isEmpty {
                     Image(systemName: "magnifyingglass").accessibilityHidden(true)
-                    Text("Search").font(Look.heading).lineLimit(1)
+                    Text("Search").font(Look.heading).lineLimit(1).accessibilityHidden(true)
                 } else {
                     Text(host).font(Look.text).lineLimit(1)
+                    .accessibilityHidden(true)
                     .vaneTooltip(address)
                 }
                 Spacer(minLength: 0)
@@ -1401,6 +1409,7 @@ private struct PillBody: View {
             .accessibilityLabel("\(store.profile.name) profile and navigation")
 
             Text(address.isEmpty ? "Search or Enter URL…" : host)
+                .accessibilityHidden(true)
                 .font(Look.text).lineLimit(1).truncationMode(.middle)
                 .vaneTooltip(address)
             HStack(spacing: Look.pillGlyphGap) {
@@ -1470,6 +1479,7 @@ private struct PillBody: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityHidden(true)
             // Rebuild only the label when policy changes, settling a running transition
             // without replacing the pill's keyboard owner or its native buttons.
             .id(reduced)
@@ -3513,6 +3523,12 @@ private struct FolderRow: View {
     @ObservedObject private var dragging = Dragging.shared
     private var locked: Bool { store.isFolderLocked(folder.id) }
     private var receiving: Bool { isEnabled && dragging.active && zone == .inside }
+    private var showsArrivals: Bool {
+        !locked && folder.collapsed && folder.live != nil
+            && store[keyPath: shape].entries.contains {
+                $0.parent == folder.id && $0.tab != nil && $0.liveArrival == true
+            }
+    }
 
     var body: some View {
         dropRow
@@ -3592,7 +3608,7 @@ private struct FolderRow: View {
         SidebarRow(selected: false, held: held,
                    keyboardEnabled: store.renamingFolder != folder.id, action: { store.toggleFolder(folder.id, in: shape) }) {
             FolderGlyph(folder: folder, live: LiveFolders.shared(for: store.profileID), dropOpen: receiving,
-                        allowsHoverPreview: !held && !locked)
+                        allowsHoverPreview: !held && !locked, showsArrivals: showsArrivals)
         } label: {
             if !held && store.renamingFolder == folder.id {
                 FolderNameField(store: store, folder: folder, shape: shape)
@@ -3612,6 +3628,7 @@ private struct FolderRow: View {
         return (folder.live == nil ? "Folder, " : "Live folder, ")
             + "\(store[keyPath: shape].tabs(in: folder.id).count) tabs, "
             + (locked ? "locked" : (folder.collapsed ? "collapsed" : "expanded"))
+            + (showsArrivals ? ", new pull requests shown below" : "")
             + (failed ? ", last refresh failed" : "")
     }
 }
@@ -3660,6 +3677,9 @@ struct FolderGlyph: View {
     var live: LiveFolders? = nil
     var dropOpen = false
     var allowsHoverPreview = true
+    var showsArrivals = false
+    private var arrivalMark: Bool { showsArrivals && folder.collapsed && !dropOpen }
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
     var body: some View {
         Group {
             if folder.icon == Folder.defaultIcon {
@@ -3674,6 +3694,16 @@ struct FolderGlyph: View {
             }
         }
         .frame(width: Look.tileIcon)
+        .overlay {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 9, weight: .bold))
+                .offset(y: 1.5)
+                .opacity(arrivalMark ? 1 : 0)
+                .animation(reduced ? nil : Look.quick, value: arrivalMark)
+                .transaction { if reduced { $0.disablesAnimations = true } }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         // A live folder wears its source in the corner of its own glyph, so a folded folder
         // still says it fills itself.
         .overlay(alignment: .bottomTrailing) {

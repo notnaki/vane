@@ -1620,9 +1620,14 @@ extension TabStore {
             window.makeFirstResponder(page)
             return
         }
-        Motion.list {
-            libraryOpen = false
-            sidebarShown = true
+        if libraryOpen || !sidebarShown {
+            Motion.list {
+                libraryOpen = false
+                sidebarShown = true
+            }
+        } else {
+            librarySwipeMonitor.cancelPendingActivation(toward: false)
+            if mountedAddressEndpoint?.takeFocus(from: holder) == true { return }
         }
         DispatchQueue.main.async { [weak self, weak holder] in
             guard let self, let window = self.window, self.palette == nil,
