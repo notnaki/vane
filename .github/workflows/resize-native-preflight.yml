@@ -1,0 +1,48 @@
+name: Resize paint native preflight
+on:
+  push:
+    branches: [codex/resize-native-preflight-20261111]
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: macos-26
+    timeout-minutes: 40
+    env:
+      VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
+      SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+      - name: Build approved application and corner coverage fixture
+        run: swift build -c debug --build-tests --disable-index-store
+      - name: Three predetermined native attempts with retirement
+        run: |
+          python3 - <<'PYTHON'
+          import os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          selection = 'WindowResizePreparationTests|WindowResizeLayoutTests|WindowDragGroundTests|PageResizeStyleTests|SidebarPageResizePreparationTests|SidebarResizeTests|SidebarResizeHighlightTests'
+          statuses = []
+          for attempt in range(1, 4):
+              log = root / f'resize-native-preflight-{attempt}.log'
+              with log.open('w') as output:
+                  result = subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=output, stderr=subprocess.STDOUT)
+              text = log.read_text()
+              status = result.returncode
+              if 'Native suite primary status=0; cleanup status=0' not in text or '*** Signal ' in text:
+                  status = status or 1
+              statuses.append(status)
+              print(f'ATTEMPT {attempt}: status={status}', flush=True)
+              print(text[-5000:], flush=True)
+          print(f'ALL_ATTEMPTS {statuses}', flush=True)
+          sys.exit(any(statuses))
+          PYTHON
+      - name: Preserve every attempt
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: resize-native-preflight
+          path: ${{ runner.temp }}/resize-native-preflight-*.log
