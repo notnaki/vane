@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CloudKit
 import Foundation
 
 @MainActor final class ICloudController: ObservableObject {
@@ -53,6 +54,7 @@ import Foundation
     private var activeSyncID: UUID?
     private var removalInProgress = false
     private var wake: NSObjectProtocol?
+    private var accountChange: AnyCancellable?
     private var completionWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(directory: URL = Store.directory, defaults: UserDefaults = .vane,
@@ -106,6 +108,14 @@ import Foundation
         }
         lastSuccess = defaults.object(forKey: "icloud.lastSuccess") as? Date
         self.secrets?.onStatusChange = { [weak self] in self?.refreshSecretStatus() }
+        self.secrets?.onSyncRequested = { [weak self] in await self?.syncNow() }
+        let observer = NotificationCenter.default.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.masterEnabled else { return }
+                self.requireAccountReview()
+            }
+        }
+        accountChange = AnyCancellable { NotificationCenter.default.removeObserver(observer) }
     }
 
     private func refreshSecretStatus() {
@@ -128,6 +138,10 @@ import Foundation
         activeSync?.cancel()
         transport.revoke()
         secrets?.pause()
+    }
+    private func requireAccountReview() {
+        revoke(); masterEnabled = false; needsAccountConsent = true; saveSwitches()
+        lastError = ICloudFailure.accountChanged.localizedDescription; status = "Review your Apple Account"
     }
     private func saveSwitches() {
         defaults.set(masterEnabled, forKey: "icloud.enabled")
@@ -347,8 +361,7 @@ import Foundation
             revoke(); enabledCategories.remove(category); saveSwitches()
             status = "\(category.title) were removed from iCloud. Turn this category on deliberately to merge local copies again."
         } catch ICloudFailure.accountChanged {
-            revoke(); masterEnabled = false; needsAccountConsent = true; saveSwitches()
-            lastError = ICloudFailure.accountChanged.localizedDescription; status = "Review your Apple Account"
+            requireAccountReview()
         } catch {
             guard generation == token else { return }
             lastError = error.localizedDescription; status = "iCloud sync needs attention"
