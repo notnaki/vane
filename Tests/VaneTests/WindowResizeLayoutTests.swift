@@ -23,7 +23,12 @@ import XCTest
         try await resizeFixture(capture: true, slowResize: true, sidebarToggle: true)
     }
 
-    private func resizeFixture(capture: Bool, slowResize: Bool = false, sidebarToggle: Bool = false) async throws {
+    func testCornerResizeKeepsTheShrinkingAxisPaintedWhileTheOtherAxisGrows() async throws {
+        try await resizeFixture(capture: true, slowResize: true, mixedAxes: true)
+    }
+
+    private func resizeFixture(capture: Bool, slowResize: Bool = false, sidebarToggle: Bool = false,
+                               mixedAxes: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -101,7 +106,8 @@ import XCTest
                     try await captureSidebarPixels(window, store: store, web: page)
                 } else if capture {
                     try await captureResizePixels(window, web: page, direct: direct,
-                                                  proposalInterval: slowResize ? .milliseconds(40) : .milliseconds(8))
+                                                  proposalInterval: slowResize ? .milliseconds(40) : .milliseconds(8),
+                                                  mixedAxes: mixedAxes)
                 } else {
                     for width: CGFloat in [1100, 800, 1200, 900, 1100, 900] {
                         window.setContentSize(NSSize(width: width, height: 600))
@@ -171,7 +177,7 @@ import XCTest
     }
 
     private func captureResizePixels(_ window: VaneWindow, web: WKWebView, direct: Bool,
-                                     proposalInterval: Duration) async throws {
+                                     proposalInterval: Duration, mixedAxes: Bool = false) async throws {
         // Diagnostic reference: the original geometry-only path must remain RED.
         let baselineControl = ProcessInfo.processInfo.environment["VANE_RESIZE_BASELINE"] == "1"
         try await compatibilityWait { NSApp.isActive && window.isKeyWindow }
@@ -200,14 +206,24 @@ import XCTest
             defer { window.endPageResize() }
             let widths = Array(stride(from: 900, through: 1300, by: 40))
                 + Array(stride(from: 1260, through: 900, by: -40))
-            for width in widths {
+            let sizes = mixedAxes
+                ? [NSSize(width: 800, height: frameHeight + 100),
+                   NSSize(width: 1100, height: frameHeight - 100),
+                   NSSize(width: 800, height: frameHeight + 100),
+                   NSSize(width: 900, height: frameHeight)]
+                : widths.map { NSSize(width: CGFloat($0), height: frameHeight) }
+            for size in sizes {
                 let deadline = ContinuousClock.now + proposalInterval
-                let size = NSSize(width: CGFloat(width), height: frameHeight)
                 let accepted = baselineControl ? size : window.proposedPageResize(size)
                 if accepted != window.frame.size {
                     window.setFrame(NSRect(origin: window.frame.origin, size: accepted), display: false)
                 }
                 try await ContinuousClock().sleep(until: deadline)
+                if mixedAxes {
+                    // Keep sampling through each paint so coalescing cannot skip
+                    // the corner geometry this regression is meant to exercise.
+                    try await compatibilityWait { !window.isPreparingPageResize && window.frame.size == size }
+                }
             }
             try await compatibilityWait { !window.isPreparingPageResize }
             let ended = CACurrentMediaTime()
