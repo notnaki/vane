@@ -125,7 +125,7 @@ import XCTest
                                                   proposalInterval: slowResize ? .milliseconds(40) : .milliseconds(8),
                                                   mixedAxes: mixedAxes)
                 } else {
-                    for width: CGFloat in [1100, 800, 1200, 900, 1100, 900] {
+                    for width: CGFloat in [1100, 470, 800, 1200, 900, 1100, 900] {
                         window.setContentSize(NSSize(width: width, height: 600))
                         let earlyWidth = page.bounds.width
                         try await presentation(page)
@@ -155,12 +155,12 @@ import XCTest
         }
         let originalFrame = window.frame
         let originalWidth = web.bounds.width
-        let owner = ResizeCaptureOwner()
+        let owner = ResizeCaptureOwner(window: window, stage: "sidebar stream start")
         let observations = [
             NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
-                object: window, queue: .main) { _ in MainActor.assumeIsolated { owner.interrupted = true } },
+                object: window, queue: .main) { _ in MainActor.assumeIsolated { owner.lostForeground("window resigned key") } },
             NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
-                object: NSApp, queue: .main) { _ in MainActor.assumeIsolated { owner.interrupted = true } }
+                object: NSApp, queue: .main) { _ in MainActor.assumeIsolated { owner.lostForeground("application resigned active") } }
         ]
         defer { observations.forEach(NotificationCenter.default.removeObserver) }
         let sampler = ResizePixelSampler()
@@ -169,10 +169,12 @@ import XCTest
             let baseline = try XCTUnwrap(sampler.frames.last)
             let reducedMotion = Motion.reduced
             let began = CACurrentMediaTime()
+            owner.stage = "sidebar transition"
             store.toggleSidebar()
             // Capture the whole transition, including frames before its endpoint.
             try await Task.sleep(for: .milliseconds(650))
             let ended = CACurrentMediaTime()
+            owner.stage = "sidebar final presentation"
             try await presentation(web)
             try await sampler.captureFinalFrame(window)
             let coverageEnded = CACurrentMediaTime()
@@ -213,13 +215,13 @@ import XCTest
             if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
             return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
         }
-        let owner = ResizeCaptureOwner()
+        let owner = ResizeCaptureOwner(window: window, stage: "resize stream start direct=\(direct) mixed=\(mixedAxes)")
         owner.maxWidth = window.frame.width
         let observers = [
             NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
-                object: window, queue: .main) { _ in MainActor.assumeIsolated { owner.interrupted = true } },
+                object: window, queue: .main) { _ in MainActor.assumeIsolated { owner.lostForeground("window resigned key") } },
             NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
-                object: NSApp, queue: .main) { _ in MainActor.assumeIsolated { owner.interrupted = true } },
+                object: NSApp, queue: .main) { _ in MainActor.assumeIsolated { owner.lostForeground("application resigned active") } },
             NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification,
                 object: window, queue: .main) { _ in
                     MainActor.assumeIsolated { owner.maxWidth = max(owner.maxWidth, window.frame.width) }
@@ -231,6 +233,7 @@ import XCTest
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
             let began = CACurrentMediaTime()
+            owner.stage = "resize proposals direct=\(direct) mixed=\(mixedAxes)"
             let frameHeight = window.frame.height
             if !baselineControl {
                 window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.maxY))
@@ -269,6 +272,7 @@ import XCTest
             }
             try await compatibilityWait { !window.isPreparingPageResize }
             let ended = CACurrentMediaTime()
+            owner.stage = "resize final presentation direct=\(direct) mixed=\(mixedAxes)"
             try await presentation(web)
             try await sampler.captureFinalFrame(window)
             let coverageEnded = CACurrentMediaTime()
@@ -310,6 +314,19 @@ import XCTest
 @MainActor private final class ResizeCaptureOwner {
     var interrupted = false
     var maxWidth: CGFloat = 0
+    weak var window: NSWindow?
+    var stage: String
+
+    init(window: NSWindow, stage: String) {
+        self.window = window
+        self.stage = stage
+    }
+
+    func lostForeground(_ reason: String) {
+        interrupted = true
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        print("RESIZE_FOREGROUND \(CACurrentMediaTime()) reason=\(reason) stage=\(stage) active=\(NSApp.isActive) expected=\(String(describing: window?.windowNumber)) isKey=\(window?.isKeyWindow == true) key=\(String(describing: NSApp.keyWindow?.windowNumber)) frontmost=\(frontmost?.bundleIdentifier ?? "nil") pid=\(frontmost?.processIdentifier ?? 0)")
+    }
 }
 
 @MainActor private final class ResizePixelSampler: NSObject, SCStreamOutput {

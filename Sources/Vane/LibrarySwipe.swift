@@ -355,7 +355,7 @@ private struct LibrarySwipe: ViewModifier {
         guard !store.spaceGesture.isOverScrollingFooter(event) else { return false }
         let inset = store.sidebarShown ? 0 : Look.floatingSidebarGap
         let sidebar = NSRect(x: bounds.minX + inset, y: bounds.minY + inset,
-                             width: SidebarWidth.shared.width,
+                             width: SidebarWidth.inWindow(store),
                              height: max(0, bounds.height - 2 * inset))
         return sidebar.contains(event.locationInWindow)
     }
@@ -436,7 +436,7 @@ private struct LibrarySwipe: ViewModifier {
                 if store.libraryGesture.pageWidth == nil, let window = store.window {
                     store.libraryGesture.pageLeadingInset = store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap
                     let origin = dragOrigin ?? endpoint
-                    let leading = (store.sidebarShown ? SidebarWidth.shared.width : 0) * (1 - origin)
+                    let leading = (store.sidebarShown ? SidebarWidth.inWindow(store) : 0) * (1 - origin)
                         + panelWidth * origin
                     let width = (window.contentView?.bounds.width ?? window.frame.width) - leading
                     if width > 0 { store.libraryGesture.pageWidth = width }
