@@ -99,6 +99,15 @@ snapshot as shadow-root discovery, and pages without inputs skip a redundant
 credential scan. Routine regression tests check selector work counts,
 oversized document/shadow-tree rejection, and successful credential filling.
 
+Frame discovery checks the actual WindowProxy's accessibility before reading its
+document or origin. The standard [WindowProxy prototype operation](https://html.spec.whatwg.org/multipage/nav-history-apis.html#windowproxy-getprototypeof)
+returns null for inaccessible windows, and [WebKit implements that check without reporting a security error](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/bindings/js/JSDOMWindowCustom.cpp#L413).
+Exact serialized origins remain mandatory even when `document.domain` permits DOM
+access. Regression fixtures cover foreign hosts, same-origin URLs redirected to a
+foreign host, CSP sandboxing, and shadow frames becoming opaque and returning to
+an allowed same-origin document. Getter instrumentation verifies that forbidden
+`contentDocument` accesses are avoided rather than caught or hidden.
+
 To measure the actual injected password script on a synthetic article with 16,000
 decorative elements and a login form, build first, then run:
 
