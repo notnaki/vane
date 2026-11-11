@@ -967,14 +967,10 @@ extension VaneWindow {
     private var applyingFrame = false
 
     override func layout() {
-        let began = ProcessInfo.processInfo.systemUptime
-        let hidden = isHiddenOrHasHiddenAncestor
-        let sliding = (superview as? BrowserWindowHost)?.spaceSlide?.isActive == true
+        // Parked profiles retain their views and model subscriptions. Their dirty
+        // layout can wait until they are shown instead of blocking live travel.
+        guard !isHiddenOrHasHiddenAncestor else { return }
         super.layout()
-        let elapsed = ProcessInfo.processInfo.systemUptime - began
-        if ProcessInfo.processInfo.environment["VANE_DIAG_HOST_LAYOUT"] == "1", elapsed > 0.005 {
-            print("HOST_LAYOUT id=\(ObjectIdentifier(self)) hidden=\(hidden) sliding=\(sliding) elapsedMS=\(elapsed * 1000)")
-        }
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -984,11 +980,7 @@ extension VaneWindow {
               !applyingFrame else { return }
         applyingFrame = true
         defer { applyingFrame = false }
-        let began = ProcessInfo.processInfo.systemUptime
         super.layout()
-        if ProcessInfo.processInfo.environment["VANE_DIAG_HOST_LAYOUT"] == "1" {
-            print("HOST_FRAME_LAYOUT id=\(ObjectIdentifier(self)) hidden=\(isHiddenOrHasHiddenAncestor) elapsedMS=\((ProcessInfo.processInfo.systemUptime - began) * 1000)")
-        }
     }
 }
 
@@ -1147,7 +1139,11 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
             window?.makeFirstResponder(nil)
         }
         departing?.views.forEach { $0.isHidden = true }
-        host.views.forEach { $0.isHidden = false }
+        host.views.forEach {
+            let wasHidden = $0.isHidden
+            $0.isHidden = false
+            if wasHidden { $0.needsLayout = true }
+        }
         current = id
     }
 }

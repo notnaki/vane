@@ -57,7 +57,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 25
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         attempt: [1]
     steps:
@@ -77,7 +77,6 @@ jobs:
       - name: Predetermined focused attempt with retirement
         env:
           ATTEMPT: ${{ matrix.attempt }}
-          VANE_DIAG_HOST_LAYOUT: '1'
         run: |
           python3 - <<'PYTHON'
           import os, pathlib, subprocess, sys
