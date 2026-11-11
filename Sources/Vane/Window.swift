@@ -966,13 +966,6 @@ extension VaneWindow {
 @MainActor final class BrowserHostingView<Content: View>: NSHostingView<Content> {
     private var applyingFrame = false
 
-    override func layout() {
-        // Parked profiles retain their views and model subscriptions. Their dirty
-        // layout can wait until they are shown instead of blocking live travel.
-        guard !isHiddenOrHasHiddenAncestor else { return }
-        super.layout()
-    }
-
     override func setFrameSize(_ newSize: NSSize) {
         let previous = frame.size
         super.setFrameSize(newSize)
@@ -1139,11 +1132,7 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
             window?.makeFirstResponder(nil)
         }
         departing?.views.forEach { $0.isHidden = true }
-        host.views.forEach {
-            let wasHidden = $0.isHidden
-            $0.isHidden = false
-            if wasHidden { $0.needsLayout = true }
-        }
+        host.views.forEach { $0.isHidden = false }
         current = id
     }
 }
