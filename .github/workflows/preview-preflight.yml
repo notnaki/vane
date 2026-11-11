@@ -32,8 +32,15 @@ jobs:
         run: |
           result=0
           for attempt in 1 2 3; do
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter 'PreviewLoadingPerformanceTests' > "$RUNNER_TEMP/preview-isolated-$attempt.log" 2>&1 || result=1
+            cat "$RUNNER_TEMP/preview-isolated-$attempt.log"
             python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter 'LinkPreviewPresentationTests|PreviewLoadingPerformanceTests|Feel04LinkPreviewTests' > "$RUNNER_TEMP/preview-sample-$attempt.log" 2>&1 || result=1
             cat "$RUNNER_TEMP/preview-sample-$attempt.log"
+            for sample in "$RUNNER_TEMP/preview-isolated-$attempt.log" "$RUNNER_TEMP/preview-sample-$attempt.log"; do
+              grep -Fq "Test Case '-[VaneTests.PreviewLoadingPerformanceTests testFixtureWaitsForCompleteRequestHeaders]' passed" "$sample" || result=1
+              grep -Fq "Test Case '-[VaneTests.PreviewLoadingPerformanceTests testRetiredBlankNavigationAndFrameCannotMutateNewPreview]' passed" "$sample" || result=1
+              if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$sample"; then result=1; fi
+            done
           done
           exit "$result"
       - name: Preserve every sample
@@ -41,5 +48,5 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: preview-preflight-logs
-          path: ${{ runner.temp }}/preview-sample-*.log
+          path: ${{ runner.temp }}/preview-*.log
           retention-days: 7
