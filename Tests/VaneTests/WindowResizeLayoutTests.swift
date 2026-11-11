@@ -20,6 +20,22 @@ import XCTest
     }
 
     func testClosingSidebarKeepsTheExpandingPagePainted() async throws {
+        TestEnvironment.prepare()
+        let mode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.off)
+        defer { BatterySaver.shared.setMode(mode) }
+        try XCTSkipIf(Motion.spaceReduced,
+                      "Normal-motion sidebar capture requires system Reduce Motion off")
+        XCTAssertFalse(Motion.reduced)
+        try await resizeFixture(capture: true, slowResize: true, sidebarToggle: true)
+    }
+
+    func testClosingSidebarWithReducedMotionKeepsTheExpandingPagePainted() async throws {
+        TestEnvironment.prepare()
+        let mode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.alwaysOn)
+        defer { BatterySaver.shared.setMode(mode) }
+        XCTAssertTrue(Motion.reduced)
         try await resizeFixture(capture: true, slowResize: true, sidebarToggle: true)
     }
 
@@ -151,6 +167,7 @@ import XCTest
         try await sampler.start(window)
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
+            let reducedMotion = Motion.reduced
             let began = CACurrentMediaTime()
             store.toggleSidebar()
             // Capture the whole transition, including frames before its endpoint.
@@ -162,9 +179,15 @@ import XCTest
             try sampler.frames.saveImages(prefix: "sidebar-\(ProcessInfo.processInfo.processIdentifier)")
             let samples = sampler.frames.samples.filter { $0.time >= began && $0.time <= ended }
             let maximum = samples.map(\.gap).max() ?? 0
-            print("SIDEBAR_PIXELS samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum) width=\(originalWidth)->\(web.bounds.width)")
+            print("SIDEBAR_PIXELS reducedMotion=\(reducedMotion) samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum) width=\(originalWidth)->\(web.bounds.width)")
             XCTAssertFalse(owner.interrupted, "Sidebar capture must retain actual foreground ownership")
-            XCTAssertGreaterThan(samples.count, 3)
+            if reducedMotion {
+                // Static content can stop producing stream callbacks after its
+                // immediate update. Keep capturing that update and the final paint.
+                XCTAssertFalse(samples.isEmpty, "Capture the immediate reduced-motion update")
+            } else {
+                XCTAssertGreaterThan(samples.count, 3, "Capture intermediate normal-motion frames")
+            }
             XCTAssertEqual(window.frame, originalFrame, "Sidebar closing must not resize the window")
             XCTAssertFalse(store.sidebarShown)
             XCTAssertGreaterThan(web.bounds.width, originalWidth + 200)
