@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 /// A search engine. `queryTemplate` holds one `%s`, replaced by the percent-encoded query.
 /// ponytail: `%s` rather than a URLComponents dance — every browser's custom-engine field
@@ -101,7 +102,9 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
         if let u = Bangs.resolve(s) { return u }
         if let u = explicitScheme(s) { return u }
         if let u = filePath(s) { return u }
-        if looksLikeHost(s) { return URL(string: scheme(for: s) + s, encodingInvalidCharacters: true) }
+        if looksLikeHost(s), let url = URL(string: scheme(for: s) + s, encodingInvalidCharacters: true) {
+            return url
+        }
         return search(s)
     }
 
@@ -179,12 +182,18 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
     private static func looksLikeHost(_ s: String) -> Bool {
         let auth = authority(s)
         guard !auth.isEmpty else { return false }
-        if auth.hasPrefix("[") { return auth.contains("]") }        // ipv6 literal
         var host = Substring(auth)
-        if let colon = host.lastIndex(of: ":") {
+        // An IPv6 address ends in ], so only a colon after it can introduce a port.
+        if !host.hasSuffix("]"), let colon = host.lastIndex(of: ":") {
             let port = host[host.index(after: colon)...]
-            guard !port.isEmpty, port.count <= 5, port.allSatisfy(\.isNumber) else { return false }
+            guard !port.isEmpty, port.allSatisfy({ $0.isASCII && $0.isNumber }),
+                  UInt16(port) != nil else { return false }
             host = host[..<colon]
+        }
+        if host.hasPrefix("[") {
+            guard host.hasSuffix("]") else { return false }
+            // Brackets also occur in search terms such as "[SwiftUI] list selection".
+            return IPv6Address(String(host.dropFirst().dropLast())) != nil
         }
         let labels = host.split(separator: ".", omittingEmptySubsequences: false)
         guard !host.isEmpty, labels.allSatisfy({ label in
