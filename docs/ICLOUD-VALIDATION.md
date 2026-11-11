@@ -98,6 +98,33 @@ The exported schema was reviewed and CloudKit Console confirmed deployment to
 Production. The release profile secret and container variable were configured;
 no signing private key was exported or changed for this task.
 
+## Account-change admission regression, 11 November 2026
+
+Independent review found that local credential notifications and the secret
+refresh timer could start a new Keychain pass using the previous controller
+generation before checking a changed Apple Account. This was a new submission,
+outside the already-admitted propagation limitation below.
+
+Hosted regression run [43067393166](https://github.com/notnaki/vane/actions/runs/43067393166)
+reproduced both paths: an account switch allowed a second credential revision,
+and an account-change notification left sync enabled. The 32-test secret suite
+reported six failing assertions, with verified fixture cleanup.
+
+Secret refresh requests now go through the controller's account-validating sync
+path. CloudKit account-change notifications synchronously revoke admission and
+require account review. The repair passed independent review, and attempt one of
+[43068573980](https://github.com/notnaki/vane/actions/runs/43068573980) passed all
+32 secret tests, including both regressions and enabled/disabled local-edit
+notifications. That attempt still failed animated Space tests; it is not a
+passing overall validation run. Its cleanup passed. The other two attempts were
+cancelled to conserve runners, and their partial logs contain no final cleanup
+receipt; they do not count as passing coverage.
+
+Compact-window fixture geometry now uses the window's fitted sidebar width,
+including parked profile owners, instead of the saved global width. This removed
+the reproducible width/reuse mismatches, but the retained animated Space failures
+remain integration gates. The failed hidden-layout experiment was reverted.
+
 ## Verification limits and remaining integration gates
 
 - No second Mac is available. Cross-Mac convergence, offline/restart behavior
