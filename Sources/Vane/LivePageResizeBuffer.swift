@@ -143,6 +143,8 @@ import WebKit
     private var driveAgain = false
     private var windowObservers: [NSObjectProtocol] = []
     private var exactPresented = false
+    private var releaseLayoutFlushed = false
+    private var awaitingFinalLayout = false
     private var endpointCompletion: (@MainActor () -> Void)?
     private var recoveryToken: UUID?
     private var recoveryPaints = Set<ObjectIdentifier>()
@@ -332,11 +334,32 @@ import WebKit
     private func driveOnce() {
         guard ownsLayout else { cancel(); return }
         let desired = sizes(latest)
-        if covered(desired) { publish() }
+        let hasCoverage = covered(desired)
+        if hasCoverage { publish() }
+        guard active else { return }
+        if ending, hasCoverage, !releaseLayoutFlushed {
+            // Publication deliberately coalesces native host layout during the
+            // drag. A covered release must reconcile it before the exact-size
+            // floor is calculated, even if this geometry was already published.
+            releaseLayoutFlushed = true
+            flushFinalLayout()
+            guard active else { return }
+            guard ownsLayout else { cancel(); return }
+        }
         guard pendingPaints.isEmpty else { return }
         if ending {
+            if hasCoverage && zip(pages, desired).contains(where: {
+                $0.currentVisibleSize.width > $1.width + 0.001 || $0.currentVisibleSize.height > $1.height + 0.001
+            }) {
+                // SwiftUI can still owe a native host update after the flush.
+                // Await that callback instead of repainting its stale larger
+                // extent forever (or spinning a synchronous presenter).
+                waitForFinalLayout()
+                return
+            }
             if exactPresented && zip(pages, desired).allSatisfy({ $0.prepared == $1 }) {
                 if pages.enumerated().allSatisfy({ $0.element.parentReached(desired[$0.offset]) }) { complete(exact: true) }
+                else { waitForFinalLayout() }
             } else { prepare(exact: true) }
             return
         }
@@ -355,6 +378,7 @@ import WebKit
     private func prepare(exact: Bool) {
         guard active, pendingPaints.isEmpty else { return }
         exactPresented = false
+        awaitingFinalLayout = false
         generation = UUID()
         let token = generation
         let desired = sizes(latest)
@@ -397,15 +421,25 @@ import WebKit
             if covered(sizes(latest)) { publish() }
         }
         exactPresented = exactPaint
-        if exactPresented {
-            applying = true
-            root?.layoutSubtreeIfNeeded()
-            applying = false
-        }
+        if exactPresented { flushFinalLayout() }
         drive()
         // Exact paint may precede SwiftUI's host layout. Its native callback can
         // finish normally; the same bounded watchdog covers a missing layout.
-        if active, ending, exactPresented, pendingPaints.isEmpty { armDeadline(token) }
+        if active, ending, exactPresented, pendingPaints.isEmpty { waitForFinalLayout() }
+    }
+
+    private func flushFinalLayout() {
+        applying = true
+        root?.layoutSubtreeIfNeeded()
+        applying = false
+    }
+
+    private func waitForFinalLayout() {
+        guard active, !awaitingFinalLayout else { return }
+        awaitingFinalLayout = true
+        // The completed paint's deadline must not expire this separate phase.
+        generation = UUID()
+        armDeadline(generation)
     }
 
     private func layoutChanged() {
@@ -425,7 +459,7 @@ import WebKit
     }
 
     private func timedOut(_ token: UUID) {
-        guard active, generation == token, !pendingPaints.isEmpty || (ending && exactPresented) else { return }
+        guard active, generation == token, !pendingPaints.isEmpty || (ending && (exactPresented || awaitingFinalLayout)) else { return }
         guard ownsLayout else { cancel(); return }
         // Preserve the existing bounded policy for an unresponsive WebContent
         // process: restore native sizing and allow the latest pointer geometry.
@@ -454,6 +488,7 @@ import WebKit
     private func complete(exact: Bool, notify: Bool = true) {
         guard active else { return }
         active = false
+        awaitingFinalLayout = false
         generation = UUID()
         timer?.invalidate(); timer = nil
         pendingPaints.removeAll()

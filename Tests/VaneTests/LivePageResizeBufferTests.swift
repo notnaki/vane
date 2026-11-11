@@ -211,6 +211,62 @@ import XCTest
     }
 
     func testCoveredSidebarRequestsCoalesceDescendantLayoutUntilExactRelease() throws {
+        try coalescedSidebarRelease(widths: [226, 224, 222], synchronous: false)
+    }
+
+    func testCoveredShrinkingSidebarReleaseReconcilesDeferredHostBeforeExactPaint() throws {
+        try coalescedSidebarRelease(widths: [230, 232, 234], synchronous: false)
+    }
+
+    func testCoveredShrinkingSidebarReleaseBoundsSynchronousPresentations() throws {
+        try coalescedSidebarRelease(widths: [230, 232, 234], synchronous: true)
+    }
+
+    func testCoveredShrinkingReleaseWaitsForNativeParentOrWatchdogWithoutRepainting() throws {
+        for deliverParent in [false, true] {
+            let f = Fixture(); defer { f.close() }
+            f.host.resizeLayout.sidebarWidth = 228
+            var presentations = 0
+            var deadlines: [@MainActor @Sendable () -> Void] = []
+            let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+                presenter: { _, callback in
+                    presentations += 1
+                    guard presentations <= 8 else { XCTFail("A deferred native parent cannot trigger a synchronous paint loop"); return }
+                    callback()
+                }, deadline: { interval, callback in
+                    XCTAssertEqual(interval, 0.25)
+                    deadlines.append(callback)
+                }, now: { f.time }, apply: { _, width in
+                    if let width { f.host.resizeLayout.sidebarWidth = width }
+                }))
+            defer { buffer.cancel() }
+            buffer.start()
+            f.time += 1.0 / 60
+            XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: 234))
+            var releases = 0
+            buffer.finish { releases += 1 }
+            XCTAssertTrue(buffer.isPreparing)
+            XCTAssertEqual(presentations, 1, "Wait for the deferred host instead of repeatedly painting its stale600pt extent")
+            XCTAssertEqual(releases, 0)
+            // A completed prime's old paint deadline cannot expire the separate
+            // release-layout wait. That phase owns its own bounded deadline.
+            deadlines.first?()
+            XCTAssertEqual(releases, 0)
+            if deliverParent {
+                f.host.setFrameSize(NSSize(width: 594, height: 400))
+                XCTAssertEqual(f.web.frame.width, 594)
+                XCTAssertEqual(presentations, 2)
+            } else { deadlines.last?() }
+            XCTAssertEqual(releases, 1)
+            XCTAssertFalse(buffer.isPreparing)
+            XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+            XCTAssertTrue(f.web.autoresizesSubviews)
+            deadlines.forEach { $0() }
+            XCTAssertEqual(releases, 1)
+        }
+    }
+
+    private func coalescedSidebarRelease(widths: [CGFloat], synchronous: Bool) throws {
         let f = Fixture(); defer { f.close() }
         let root = NSView(frame: f.host.frame)
         let probe = LayoutProbe(frame: root.bounds)
@@ -222,8 +278,16 @@ import XCTest
         probe.onLayout = { f.host.setFrameSize(NSSize(width: 600 + 228 - pendingWidth, height: 400)) }
         root.layoutSubtreeIfNeeded()
         var paints: [@MainActor @Sendable () -> Void] = []
+        var presentationCount = 0
         let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
-            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }, now: { f.time },
+            presenter: { _, callback in
+                presentationCount += 1
+                guard presentationCount <= 8 else {
+                    XCTFail("Release must not spin preparing against a stale larger parent")
+                    return
+                }
+                if synchronous { callback() } else { paints.append(callback) }
+            }, deadline: { _, _ in }, now: { f.time },
             apply: { _, width in
                 if let width {
                     pendingWidth = width
@@ -232,20 +296,24 @@ import XCTest
                 }
             }))
         defer { buffer.cancel() }
-        buffer.start(); nextPaint(&paints)()
+        buffer.start()
+        if !synchronous { nextPaint(&paints)() }
         let initialLayouts = probe.calls
-        for width: CGFloat in [226, 224, 222] {
+        for width in widths {
             f.time += 1.0 / 60
             XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: width))
         }
         XCTAssertEqual(probe.calls, initialLayouts, "Pointer-rate publication must not recursively force retained sidebar descendants")
         var released = false
         buffer.finish { released = true }
-        for _ in 0..<4 where !paints.isEmpty { nextPaint(&paints)() }
+        for _ in 0..<8 where !paints.isEmpty { nextPaint(&paints)() }
         XCTAssertTrue(released)
+        XCTAssertLessThanOrEqual(presentationCount, 6, "A covered release needs an exact paint, not repeated stale-parent paints")
+        XCTAssertTrue(paints.isEmpty)
         XCTAssertGreaterThan(probe.calls, initialLayouts, "The exact endpoint still needs its final native host flush")
-        XCTAssertEqual(f.host.bounds.width, 606)
-        XCTAssertEqual(f.web.bounds.width, 606)
+        let expected = 600 + 228 - (try XCTUnwrap(widths.last))
+        XCTAssertEqual(f.host.bounds.width, expected)
+        XCTAssertEqual(f.web.bounds.width, expected)
         XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
     }
 
