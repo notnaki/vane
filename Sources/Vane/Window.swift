@@ -1158,15 +1158,6 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         departing?.views.forEach { $0.isHidden = true }
         host.views.forEach { $0.isHidden = false }
         current = id
-        // Commit the selected page into its retained native host on this handoff.
-        // Updating only the store can leave WebKit detached until a later SwiftUI
-        // layout turn while the covering sidebar is already travelling.
-        // Layout the hosting root once, as on native resize, without recursively
-        // walking every retained sidebar control.
-        let diagnosticMount = CACurrentMediaTime()
-        let mountedBefore = store.active?.existingWeb?.window === window
-        host.content.layout()
-        print("PROFILE_HOST_ADMISSION t=\(CACurrentMediaTime()) elapsedMS=\((CACurrentMediaTime() - diagnosticMount) * 1000) before=\(mountedBefore) after=\(store.active?.existingWeb?.window === window)")
     }
 }
 
