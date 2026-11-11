@@ -74,11 +74,17 @@ import WebKit
             painted = prepared
         }
 
+        var currentVisibleSize: NSSize {
+            guard let host else { return originalSize }
+            return NSSize(width: originalSize.width + (mask.contains(.width) ? host.bounds.width - parentSize.width : 0),
+                          height: originalSize.height + (mask.contains(.height) ? host.bounds.height - parentSize.height : 0))
+        }
+
         func parentReached(_ size: NSSize) -> Bool {
             guard let host else { return false }
             let tolerance = 1 / (host.window?.backingScaleFactor ?? 1) + 0.001
-            return abs(host.bounds.width - (parentSize.width + size.width - originalSize.width)) < tolerance
-                && abs(host.bounds.height - (parentSize.height + size.height - originalSize.height)) < tolerance
+            return (!mask.contains(.width) || abs(host.bounds.width - (parentSize.width + size.width - originalSize.width)) < tolerance)
+                && (!mask.contains(.height) || abs(host.bounds.height - (parentSize.height + size.height - originalSize.height)) < tolerance)
         }
 
         func restore(exact: Bool) {
@@ -86,9 +92,7 @@ import WebKit
             restored = true
             if let host, web.superview === host {
                 if !exact {
-                    let size = NSSize(width: originalSize.width + (mask.contains(.width) ? host.bounds.width - parentSize.width : 0),
-                                      height: originalSize.height + (mask.contains(.height) ? host.bounds.height - parentSize.height : 0))
-                    web.setFrameSize(size)
+                    web.setFrameSize(currentVisibleSize)
                 }
                 web.autoresizingMask = mask
                 web.autoresizesSubviews = autoSubviews
@@ -136,6 +140,8 @@ import WebKit
     private var exactPaint = false
     private var applying = false
     private var driving = false
+    private var driveAgain = false
+    private var windowObservers: [NSObjectProtocol] = []
     private var exactPresented = false
     private var endpointCompletion: (@MainActor () -> Void)?
     private var recoveryToken: UUID?
@@ -159,11 +165,14 @@ import WebKit
             if let host = view as? WebHost {
                 guard !host.offscreen else { return }
                 guard host.resizeLayout.enabled else { admitted = false; return }
-                for web in host.subviews.compactMap({ $0 as? WKWebView }) where !web.isHiddenOrHasHiddenAncestor {
-                    guard web.frame.width > 0, web.frame.height > 0,
-                          web.responds(to: NSSelectorFromString("_doAfterNextPresentationUpdate:")) else { admitted = false; return }
-                    pages.append(Page(web: web, host: host))
-                }
+                let visible = host.subviews.compactMap { $0 as? WKWebView }.filter { !$0.isHiddenOrHasHiddenAncestor }
+                guard !visible.isEmpty else { return }
+                // Docked inspector frontends are WKWebView siblings with their own
+                // geometry. Fall back before freezing any part of that arrangement.
+                guard visible.count == 1, let web = visible.first, host.web === web,
+                      web.frame.width > 0, web.frame.height > 0,
+                      web.responds(to: NSSelectorFromString("_doAfterNextPresentationUpdate:")) else { admitted = false; return }
+                pages.append(Page(web: web, host: host))
                 return
             }
             view.subviews.forEach(visit)
@@ -194,6 +203,20 @@ import WebKit
         pages.forEach { page in
             page.freeze()
             page.host?.pageLayoutDidResize = { [weak self] in self?.layoutChanged() }
+            page.host?.pageResizeOwnershipWillChange = { [weak self] in self?.cancel() }
+        }
+        if let window {
+            for name in [NSWindow.didResizeNotification, NSWindow.didMoveNotification,
+                         NSWindow.didChangeOcclusionStateNotification, NSWindow.willCloseNotification] {
+                let closing = name == NSWindow.willCloseNotification
+                windowObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        if closing { self.cancel() }
+                        else if !self.applying && !(self.bypassForDrag ? self.ownsWindow : self.ownsLayout) { self.cancel() }
+                    }
+                })
+            }
         }
         prepare(exact: ending)
     }
@@ -292,15 +315,22 @@ import WebKit
         applying = true
         expectedFrame = latest.frame
         apply(latest.frame, latest.sidebar)
-        root?.layoutSubtreeIfNeeded()
         applying = false
     }
 
     private func drive() {
-        guard active, !driving, !applying else { return }
-        guard ownsLayout else { cancel(); return }
+        guard active else { return }
+        guard !driving, !applying else { driveAgain = true; return }
         driving = true
-        defer { driving = false }
+        repeat {
+            driveAgain = false
+            driveOnce()
+        } while active && driveAgain
+        driving = false
+    }
+
+    private func driveOnce() {
+        guard ownsLayout else { cancel(); return }
         let desired = sizes(latest)
         if covered(desired) { publish() }
         guard pendingPaints.isEmpty else { return }
@@ -312,8 +342,8 @@ import WebKit
         }
         // Refill at half the rolling lead, and reduce obsolete coverage on shrink.
         let needsRefill = zip(pages, desired).contains { page, size in
-            let horizontal = axes.width * lead.width * page.fraction.width
-            let vertical = axes.height * lead.height * page.fraction.height
+            let horizontal = page.mask.contains(.width) ? axes.width * lead.width * page.fraction.width : 0
+            let vertical = page.mask.contains(.height) ? axes.height * lead.height * page.fraction.height : 0
             return (horizontal > 0 && (page.painted.width - size.width < horizontal / 2
                 || page.painted.width - size.width > horizontal + 0.001))
                 || (vertical > 0 && (page.painted.height - size.height < vertical / 2
@@ -331,8 +361,8 @@ import WebKit
         let targets = zip(pages, desired).map { page, size in
             // A mixed-axis proposal can wait for growth while its other axis
             // shrinks. Do not prepare a viewport smaller than the still-visible clip.
-            NSSize(width: max(page.mask.contains(.width) ? page.host?.bounds.width ?? 0 : 0, size.width + (exact || !page.mask.contains(.width) ? 0 : axes.width * lead.width * page.fraction.width)),
-                   height: max(page.mask.contains(.height) ? page.host?.bounds.height ?? 0 : 0, size.height + (exact || !page.mask.contains(.height) ? 0 : axes.height * lead.height * page.fraction.height)))
+            NSSize(width: max(page.currentVisibleSize.width, size.width + (exact || !page.mask.contains(.width) ? 0 : axes.width * lead.width * page.fraction.width)),
+                   height: max(page.currentVisibleSize.height, size.height + (exact || !page.mask.contains(.height) ? 0 : axes.height * lead.height * page.fraction.height)))
         }
         exactPaint = exact && targets == desired
         guard targets.allSatisfy({ $0.width > 0 && $0.height > 0 && $0.width.isFinite && $0.height.isFinite }) else { cancel(); return }
@@ -379,7 +409,7 @@ import WebKit
     }
 
     private func layoutChanged() {
-        guard active, !applying else { return }
+        guard active else { return }
         drive()
     }
 
@@ -427,8 +457,11 @@ import WebKit
         generation = UUID()
         timer?.invalidate(); timer = nil
         pendingPaints.removeAll()
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+        windowObservers.removeAll()
         pages.forEach { page in
             page.host?.pageLayoutDidResize = nil
+            page.host?.pageResizeOwnershipWillChange = nil
             page.restore(exact: exact)
         }
         if notify { completion() }

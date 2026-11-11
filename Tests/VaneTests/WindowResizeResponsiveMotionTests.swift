@@ -16,6 +16,51 @@ import XCTest
         try await responsiveMotion(sidebar: true)
     }
 
+    private func baselineSnapshot(_ web: WKWebView) async throws -> (ResizeMotionBaselineSnapshot, String) {
+        let width = web.bounds.width, height = web.bounds.height, zoom = web.pageZoom
+        let json: String = try await withCheckedThrowingContinuation { continuation in
+            web.evaluateJavaScript("""
+            (()=>{const s=globalThis.__vaneResizeStyle,root=document.documentElement;
+              const computed=root?getComputedStyle(root):[];
+              return JSON.stringify({active:Boolean(s?.active),
+                sheetAdopted:Boolean(s && document.adoptedStyleSheets.includes(s.sheet)),
+                sheetDisabled:!s || s.sheet.disabled,
+                targetWidth:s?.width??null,targetHeight:s?.height??null,
+                innerWidth,innerHeight,documentWidth:root?.getBoundingClientRect().width??0,
+                customProperties:Array.from(computed).filter(k=>k.startsWith('--')).length,
+                nativeWidth:\(width),nativeHeight:\(height),pageZoom:\(zoom)});})()
+            """, in: nil, in: PageResizeStyle.world) { result in
+                continuation.resume(with: result.flatMap { value in
+                    guard let json = value as? String else { return .failure(NSError(domain: "ResizeMotionBaselineSnapshot", code: 1)) }
+                    return .success(json)
+                })
+            }
+        }
+        return (try JSONDecoder().decode(ResizeMotionBaselineSnapshot.self, from: Data(json.utf8)), json)
+    }
+
+    private func admitResizeBaseline(_ web: WKWebView, window: NSWindow, sidebar: Bool) async throws {
+        // Baseline admission precedes capture timing. No drag or prime starts here.
+        let readyBy = ContinuousClock.now + .seconds(5)
+        PageResizeStyle.warm(web)
+        var (snapshot, json) = try await baselineSnapshot(web)
+        print("RESPONSIVE_BASELINE sidebar=\(sidebar) stage=initial snapshot=\(json)")
+        while true {
+            guard ContinuousClock.now < readyBy, NSApp.isActive, window.isKeyWindow, NSApp.keyWindow === window else {
+                print("RESPONSIVE_BASELINE sidebar=\(sidebar) stage=unadmitted snapshot=\(json)")
+                throw NSError(domain: "ResizeMotionBaselineReadiness", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "Baseline viewport/hints were not admitted: \(json)"])
+            }
+            if snapshot.isReady { break }
+            // A host layout can supersede the first warm request. Re-target only
+            // when that actual native viewport differs; otherwise observe its ack.
+            if !snapshot.targetMatchesNative { PageResizeStyle.warm(web) }
+            try await Task.sleep(for: .milliseconds(10))
+            (snapshot, json) = try await baselineSnapshot(web)
+        }
+        print("RESPONSIVE_BASELINE sidebar=\(sidebar) stage=ready snapshot=\(json)")
+    }
+
     private func responsiveMotion(sidebar: Bool) async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["VANE_RESIZE_RESPONSIVE_MOTION"] == "1" else { throw XCTSkip("Opt-in real-page motion check") }
@@ -93,19 +138,7 @@ import XCTest
                 return app.isRunning && app.isActive && window.isKeyWindow
                     && window.occlusionState.contains(.visible) && web.window === window && web.bounds.width > 100
             }
-            // Admit the ordinary loaded-page warm state at the baseline viewport.
-            // This is before capture/drag timing; priming itself remains measured.
-            PageResizeStyle.warm(web)
-            let warmed: Bool = try await withCheckedThrowingContinuation { continuation in
-                web.evaluateJavaScript("""
-                (()=>{const s=globalThis.__vaneResizeStyle;
-                  return Boolean(s?.active && s.width===innerWidth && s.height===innerHeight
-                    && document.documentElement.getBoundingClientRect().width>0);})()
-                """, in: nil, in: PageResizeStyle.world) { result in
-                    continuation.resume(with: result.map { $0 as? Bool == true })
-                }
-            }
-            XCTAssertTrue(warmed, "The baseline loaded page must have its normal current-viewport style hints")
+            try await admitResizeBaseline(web, window: window, sidebar: sidebar)
             let presented = XCTestExpectation(description: "Initial responsive page presentation")
             let callback: @convention(block) () -> Void = { presented.fulfill() }
             _ = web.perform(NSSelectorFromString("_doAfterNextPresentationUpdate:"), with: callback)
@@ -268,5 +301,37 @@ private final class ResponsiveMotionSamples: @unchecked Sendable {
                 }
             }
         } else { samples.append(.init(time: time, width: rect.width)) }
+    }
+}
+
+/// Observable baseline readiness, including native-to-CSS pixel rounding. A failed
+/// sample is diagnostic evidence, never permission to measure an unadmitted drag.
+struct ResizeMotionBaselineSnapshot: Decodable {
+    let active: Bool
+    let sheetAdopted: Bool
+    let sheetDisabled: Bool
+    let targetWidth: Double?
+    let targetHeight: Double?
+    let innerWidth: Double
+    let innerHeight: Double
+    let documentWidth: Double
+    let customProperties: Int
+    let nativeWidth: Double
+    let nativeHeight: Double
+    let pageZoom: Double
+
+    var targetMatchesNative: Bool {
+        guard let targetWidth, let targetHeight, pageZoom.isFinite, pageZoom > 0 else { return false }
+        return abs(targetWidth - nativeWidth / pageZoom) < 0.001
+            && abs(targetHeight - nativeHeight / pageZoom) < 0.001
+    }
+
+    var isReady: Bool {
+        guard let targetWidth, let targetHeight else { return false }
+        return active && sheetAdopted && !sheetDisabled && targetMatchesNative
+            // innerWidth/innerHeight expose integer CSS pixels even when AppKit's
+            // viewport divided by page zoom has a fractional native pixel.
+            && abs(innerWidth - targetWidth) <= 1 && abs(innerHeight - targetHeight) <= 1
+            && documentWidth > 0
     }
 }

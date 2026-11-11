@@ -253,6 +253,7 @@ struct SidebarHandle: View {
     @State private var start: CGFloat?
     @State private var hovered = false
     @State private var detent = SidebarResizeDetent()
+    @GestureState private var dragActive = false
 
     /// Wide enough to hit without aiming, narrow enough that the first sidebar row's close
     /// button is still clickable.
@@ -272,11 +273,28 @@ struct SidebarHandle: View {
             .onHover { inside in
                 hovered = inside
             }
+            .onDisappear {
+                (store.window as? VaneWindow)?.cancelLiveSidebarResize()
+            }
+            .onChange(of: dragActive) { wasActive, active in
+                guard wasActive, !active else { return }
+                // GestureState also resets on cancellation, when onEnded is absent.
+                // Give a normal onEnded its turn before discarding release work.
+                RunLoop.main.perform(inModes: [.common]) {
+                    MainActor.assumeIsolated {
+                        guard !dragActive, start != nil else { return }
+                        start = nil
+                        detent = SidebarResizeDetent()
+                        (store.window as? VaneWindow)?.cancelLiveSidebarResize()
+                    }
+                }
+            }
             // macOS's own column-resize pointer, so the affordance is the system's rather
             // than a cursor we drew.
             .pointerStyle(.columnResize)
             .gesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .updating($dragActive) { _, active, _ in active = true }
                     .onChanged { value in
                         // The live pointer, not `translation`. The handle sits at an offset
                         // that the drag itself changes, so the view moves out from under the

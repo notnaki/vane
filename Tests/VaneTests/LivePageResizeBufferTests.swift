@@ -5,7 +5,8 @@ import XCTest
 
 @MainActor final class LivePageResizeBufferTests: XCTestCase {
     private final class ModelWindow: NSWindow {
-        override var isVisible: Bool { true }
+        var admittedVisible = true
+        override var isVisible: Bool { admittedVisible }
     }
 
     @MainActor private final class Fixture {
@@ -51,6 +52,201 @@ import XCTest
     private func nextPaint(_ paints: inout [@MainActor @Sendable () -> Void]) -> @MainActor @Sendable () -> Void {
         guard !paints.isEmpty else { XCTFail("Expected a pending presentation"); return {} }
         return paints.removeFirst()
+    }
+
+    private func baselineSnapshot(_ changes: [String: Any] = [:]) throws -> ResizeMotionBaselineSnapshot {
+        var values: [String: Any] = ["active": true, "sheetAdopted": true, "sheetDisabled": false,
+            "targetWidth": 661.5, "targetHeight": 578.5, "innerWidth": 662, "innerHeight": 579,
+            "documentWidth": 662, "customProperties": 300, "nativeWidth": 661.5,
+            "nativeHeight": 578.5, "pageZoom": 1]
+        values.merge(changes) { _, next in next }
+        return try JSONDecoder().decode(ResizeMotionBaselineSnapshot.self, from: JSONSerialization.data(withJSONObject: values))
+    }
+
+    func testBaselineAdmissionAllowsIntegerCSSViewportRounding() throws {
+        XCTAssertTrue(try baselineSnapshot().isReady)
+        XCTAssertTrue(try baselineSnapshot(["nativeWidth": 992.25, "nativeHeight": 867.75, "pageZoom": 1.5]).isReady)
+    }
+
+    func testBaselineAdmissionRejectsPendingNativeViewportAcknowledgement() throws {
+        XCTAssertFalse(try baselineSnapshot(["innerHeight": 600]).isReady)
+        XCTAssertFalse(try baselineSnapshot(["targetHeight": 600]).isReady)
+        XCTAssertFalse(try baselineSnapshot(["targetWidth": NSNull()]).isReady)
+    }
+
+    func testBaselineAdmissionRequiresTheActiveAdoptedEnabledSheet() throws {
+        for changes: [String: Any] in [["active": false], ["sheetAdopted": false], ["sheetDisabled": true]] {
+            XCTAssertFalse(try baselineSnapshot(changes).isReady)
+        }
+    }
+
+    func testBaselineAdmissionRequiresAnActualLaidOutDocument() throws {
+        XCTAssertFalse(try baselineSnapshot(["documentWidth": 0]).isReady)
+    }
+
+    func testSynchronousPrimeRefillAndExactPresentationCompleteWithoutWatchdog() throws {
+        let f = Fixture(); defer { f.close() }
+        var paints = 0
+        var completed = 0
+        var released = 0
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in paints += 1; callback() }, deadline: { _, _ in },
+            now: { f.time }, apply: { frame, _ in f.window.setFrame(frame, display: false) },
+            completion: { completed += 1 }))
+        defer { buffer.cancel() }
+        buffer.start()
+        XCTAssertFalse(buffer.isPreparing)
+        f.time = 1.0 / 60
+        XCTAssertTrue(buffer.request(frame: NSRect(x: 0, y: 0, width: 720, height: 400)))
+        XCTAssertEqual(f.window.frame.width, 720)
+        buffer.finish { released += 1 }
+        XCTAssertGreaterThanOrEqual(paints, 3)
+        XCTAssertEqual(released, 1, "Synchronous exact presentation must drain the reentrant drive")
+        XCTAssertEqual(completed, 1)
+        XCTAssertFalse(buffer.isPreparing)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+        XCTAssertEqual(f.web.frame.width, 720)
+    }
+
+    func testInspectorSiblingRejectsAdmissionBeforeMutatingEitherWebView() {
+        let f = Fixture(); defer { f.close() }
+        let inspector = WKWebView(frame: NSRect(x: 300, y: 0, width: 300, height: 400), configuration: WKWebViewConfiguration())
+        f.host.addSubview(inspector)
+        defer { inspector.removeFromSuperview() }
+        let pageFrame = f.web.frame
+        let inspectorFrame = inspector.frame
+        let inspectorMask = inspector.autoresizingMask
+        let buffer = LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0), apply: { _, _ in })
+        XCTAssertNil(buffer, "The unsupported docked inspector arrangement must fall back atomically")
+        XCTAssertEqual(f.web.frame, pageFrame)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+        XCTAssertTrue(f.web.autoresizesSubviews)
+        XCTAssertEqual(inspector.frame, inspectorFrame)
+        XCTAssertEqual(inspector.autoresizingMask, inspectorMask)
+        XCTAssertTrue(inspector.autoresizesSubviews)
+        buffer?.cancel()
+    }
+
+    func testFixedNativeAxisDoesNotRefillForeverOrWaitForAnUnrelatedParentDelta() throws {
+        let f = Fixture(); defer { f.close() }
+        f.web.autoresizingMask = [.height]
+        var paints: [@MainActor @Sendable () -> Void] = []
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in },
+            apply: { frame, _ in f.window.setFrame(frame, display: false) }))
+        defer { buffer.cancel() }
+        buffer.start(); nextPaint(&paints)()
+        XCTAssertTrue(paints.isEmpty, "A fixed native axis has no lookahead to refill")
+        XCTAssertTrue(buffer.request(frame: NSRect(x: 0, y: 0, width: 700, height: 400)))
+        var released = false
+        buffer.finish { released = true }
+        for _ in 0..<3 where !paints.isEmpty { nextPaint(&paints)() }
+        XCTAssertTrue(released)
+        XCTAssertEqual(f.web.frame.width, 600)
+        XCTAssertEqual(f.host.bounds.width, 700)
+        XCTAssertEqual(f.web.autoresizingMask, [.height])
+    }
+
+    func testOriginalPageToParentDifferenceSurvivesExactRelease() throws {
+        let f = Fixture(); defer { f.close() }
+        f.web.setFrameSize(NSSize(width: 400, height: 300))
+        var paints: [@MainActor @Sendable () -> Void] = []
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }, apply: { _, _ in }))
+        defer { buffer.cancel() }
+        buffer.start()
+        XCTAssertEqual(f.web.frame.size, NSSize(width: 448, height: 300))
+        nextPaint(&paints)()
+        var released = false
+        buffer.finish { released = true }
+        for _ in 0..<3 where !paints.isEmpty { nextPaint(&paints)() }
+        XCTAssertTrue(released)
+        XCTAssertTrue(paints.isEmpty, "An unchanged endpoint cannot repeatedly prepare the raw larger parent")
+        XCTAssertEqual(f.web.frame.size, NSSize(width: 400, height: 300))
+        XCTAssertEqual(f.host.bounds.size, NSSize(width: 600, height: 400))
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+    }
+
+    func testIdleRootOrPageRemovalRestoresNativeSizingWithoutAnotherPaint() {
+        for change in 0..<3 {
+            let f = Fixture(); defer { f.close() }
+            f.buffer.start(); nextPaint(&f.paints)()
+            XCTAssertTrue(f.paints.isEmpty)
+            XCTAssertEqual(f.web.autoresizingMask, [])
+            if change == 0 { f.host.removePage() }
+            else if change == 1 { f.window.contentView = NSView(frame: f.host.frame) }
+            else { f.host.isHidden = true }
+            XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+            XCTAssertTrue(f.web.autoresizesSubviews)
+            XCTAssertEqual(f.completions, 1)
+        }
+    }
+
+    func testIdleWindowHideOrProgrammaticFrameChangeRestoresNativeSizing() {
+        for hide in [false, true] {
+            let f = Fixture(); defer { f.close() }
+            f.buffer.start(); nextPaint(&f.paints)()
+            XCTAssertTrue(f.paints.isEmpty)
+            if hide {
+                f.window.admittedVisible = false
+                NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: f.window)
+            } else {
+                f.window.setFrame(NSRect(x: 0, y: 0, width: 700, height: 400), display: false)
+                NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: f.window)
+            }
+            XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+            XCTAssertTrue(f.web.autoresizesSubviews)
+            XCTAssertEqual(f.completions, 1)
+        }
+    }
+
+    @MainActor private final class LayoutProbe: NSView {
+        var calls = 0
+        var onLayout: (() -> Void)?
+        override func layout() {
+            calls += 1
+            onLayout?()
+            super.layout()
+        }
+    }
+
+    func testCoveredSidebarRequestsCoalesceDescendantLayoutUntilExactRelease() throws {
+        let f = Fixture(); defer { f.close() }
+        let root = NSView(frame: f.host.frame)
+        let probe = LayoutProbe(frame: root.bounds)
+        f.window.contentView = nil
+        root.addSubview(f.host); root.addSubview(probe)
+        f.window.contentView = root
+        f.host.resizeLayout.sidebarWidth = 228
+        var pendingWidth: CGFloat = 228
+        probe.onLayout = { f.host.setFrameSize(NSSize(width: 600 + 228 - pendingWidth, height: 400)) }
+        root.layoutSubtreeIfNeeded()
+        var paints: [@MainActor @Sendable () -> Void] = []
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }, now: { f.time },
+            apply: { _, width in
+                if let width {
+                    pendingWidth = width
+                    f.host.resizeLayout.sidebarWidth = width
+                    probe.needsLayout = true
+                }
+            }))
+        defer { buffer.cancel() }
+        buffer.start(); nextPaint(&paints)()
+        let initialLayouts = probe.calls
+        for width: CGFloat in [226, 224, 222] {
+            f.time += 1.0 / 60
+            XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: width))
+        }
+        XCTAssertEqual(probe.calls, initialLayouts, "Pointer-rate publication must not recursively force retained sidebar descendants")
+        var released = false
+        buffer.finish { released = true }
+        for _ in 0..<4 where !paints.isEmpty { nextPaint(&paints)() }
+        XCTAssertTrue(released)
+        XCTAssertGreaterThan(probe.calls, initialLayouts, "The exact endpoint still needs its final native host flush")
+        XCTAssertEqual(f.host.bounds.width, 606)
+        XCTAssertEqual(f.web.bounds.width, 606)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
     }
 
     func testPrimingFreezesNativeSizingAndCoveredRequestsCommitWithoutAnotherPaint() throws {

@@ -22,11 +22,29 @@ final class VaneWindow: NSWindow {
     /// A second close command cancels the pending close; a command after its
     /// publication may proceed as a normal reopen.
     func cancelSidebarResize() -> Bool {
-        if sidebarDrag { livePageResizeBuffer?.cancel() }
+        cancelLiveSidebarResize()
         let waiting = sidebarResizePreparation?.awaitingPaint == true
         sidebarResizePreparation?.cancel()
         sidebarResizePreparation = nil
         return waiting
+    }
+
+    /// Gesture disappearance belongs only to the continuous drag. The separate
+    /// discrete close may already be painting/animating its covered endpoint.
+    func cancelLiveSidebarResize() {
+        if sidebarDrag { livePageResizeBuffer?.cancel() }
+    }
+
+    override var contentView: NSView? {
+        willSet {
+            if newValue !== contentView { livePageResizeBuffer?.cancel() }
+        }
+    }
+
+    override func orderOut(_ sender: Any?) {
+        resizeAnchor = nil
+        livePageResizeBuffer?.cancel()
+        super.orderOut(sender)
     }
 
     func prepareSidebarClose(_ store: TabStore) -> Bool {

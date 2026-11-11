@@ -98,6 +98,7 @@ final class WebHost: NSView {
     var resizeLayout = PageResizeLayout()
     var resizeFraction = NSSize(width: 1, height: 1)
     var pageLayoutDidResize: (() -> Void)?
+    var pageResizeOwnershipWillChange: (() -> Void)?
     private(set) var web: WKWebView?
     /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
     /// of the window's key loop and out of the accessibility tree, so an invisible page is
@@ -105,7 +106,12 @@ final class WebHost: NSView {
     /// Measured: it does *not* stop the page's media, unlike taking the view out of the
     /// window, which is what the mini audio player is up against in the first place.
     var offscreen = false {
-        didSet { if offscreen != oldValue { isHidden = offscreen } }
+        didSet {
+            if offscreen != oldValue {
+                if offscreen { pageResizeOwnershipWillChange?() }
+                isHidden = offscreen
+            }
+        }
     }
 
     /// `offscreen` at init and not only through the property, so a host is what it is from
@@ -122,7 +128,23 @@ final class WebHost: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        pageResizeOwnershipWillChange?()
         if !offscreen, let web { PageResizeStyle.warm(web) }
+    }
+
+    override func viewWillMove(toSuperview newSuperview: NSView?) {
+        if newSuperview !== superview { pageResizeOwnershipWillChange?() }
+        super.viewWillMove(toSuperview: newSuperview)
+    }
+
+    override func viewDidHide() {
+        pageResizeOwnershipWillChange?()
+        super.viewDidHide()
+    }
+
+    override func willRemoveSubview(_ subview: NSView) {
+        if subview === web { pageResizeOwnershipWillChange?() }
+        super.willRemoveSubview(subview)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -146,6 +168,7 @@ final class WebHost: NSView {
     }
 
     func removePage() {
+        pageResizeOwnershipWillChange?()
         for page in recent {
             Inspector.hideAttached(to: page, in: self)
             if page.superview === self { page.removeFromSuperview() }
@@ -243,6 +266,7 @@ final class WebHost: NSView {
     func show(_ next: WKWebView, keeping live: [WKWebView] = []) {
         guard !CallPopout.holds(next) else { return }
         let outgoing = web
+        if outgoing !== next { pageResizeOwnershipWillChange?() }
         if let outgoing, outgoing !== next { Inspector.hideAttached(to: outgoing, in: self) }
         if next.superview !== self {
             if let previousHost = next.superview {
