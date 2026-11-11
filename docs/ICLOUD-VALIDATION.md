@@ -34,6 +34,38 @@ The entire native suite and hosted required checks have not run on the final
 integration. Those gates remain required before merge; focused results do not
 replace them.
 
+## Current-main integration, 11 November 2026
+
+The integration retains the approved sync boundaries alongside the current AI
+connection, extension and browser APIs. Hosted macOS 26 preflight
+[42975600166](https://github.com/notnaki/vane/actions/runs/42975600166) completed
+177 iCloud tests in each of three attempts without an iCloud assertion failure.
+That run also exposed pre-existing animated Space fixture failures when Reduce
+Motion was explicitly disabled; it is not recorded as a passing overall suite.
+
+The synthetic worker boundary probe needed explicit private-data access because
+its isolated nonpersistent web view is private. Granting that access only to the
+fixture context restored its original worker reply and all sync/local/session
+separation assertions. The production extension permissions are unchanged.
+The isolated hosted regression passed with verified cleanup in
+[42974014280](https://github.com/notnaki/vane/actions/runs/42974014280).
+
+The native fixture corrections establish owned AppKit loops and actual visible
+owners, retire fixture windows before closing those loops, warm the cached page
+before parking it, and compare the slide against live content while preserving
+the palette above it. Early colour sampling now occurs at its original 100 ms
+checkpoint. Sample counts, reversal limits, cancellation deadlines and pixel
+bounds remain enforced. The fixture patch passed independent review.
+
+The seven corrected animated Space cases passed together locally with zero
+failures in 24.83 seconds and verified fixture retirement (`primary 0 / cleanup 0`).
+The final fixture diff was independently reviewed without findings.
+
+App/test-target builds, pure selfcheck, provisioning fixtures and AI routing
+harnesses passed during integration. A full local native run was stopped at the
+user's request and its original failures and successful cleanup were preserved;
+it is not a full-suite pass. Full required PR CI remains mandatory before merge.
+
 ## Signed service verification on one Mac
 
 Team `T7X84HN3W3` assigned `iCloud.io.github.notnaki.vane` to Vane's existing app ID.
@@ -82,6 +114,6 @@ no signing private key was exported or changed for this task.
 - Local extension shadows remain while sync is off. Deleted profiles are pruned
   at the next enabled inventory pass and cannot be re-exported then; this is not
   an immediate physical purge when a profile is deleted with the category off.
-- Final independent review and integration validation are still required. The
-  current branch must use the coordinator's actual released base before its
-  first push/full CI/merge; no CI capacity is reserved while blocked.
+- The final combined tree must retain current-main integration, independent
+  review and passing required CI before merge. Focused evidence does not replace
+  the protected integration checks.

@@ -33,6 +33,7 @@ import Combine
 /// when the sidebar was last shown. Returning the proposal says "I take whatever you give
 /// me", which is what a page inside a card actually wants.
 struct WebView: NSViewRepresentable {
+    @Environment(\.pageResizeLayout) private var resizeLayout
     let web: WKWebView
     /// Every page the window still has, so the host can tell a page that is merely not on
     /// screen from one whose tab has been closed. Only the card passes it — see `WebCard`
@@ -58,6 +59,15 @@ struct WebView: NSViewRepresentable {
     func updateNSView(_ host: WebHost, context: Context) {
         if mayMount { host.show(web, keeping: live) } else { host.removePage() }
         host.offscreen = offscreen
+        host.resizeLayout = resizeLayout
+        host.resizeFraction = NSSize(width: 1, height: 1)
+        if pane, let split = store?.activeSplit,
+           let id = tab?.id, let index = split.tabs.firstIndex(of: id),
+           split.weights.indices.contains(index) {
+            let weight = CGFloat(split.weights[index])
+            host.resizeFraction = NSSize(width: split.vertical ? 1 : weight,
+                                         height: split.vertical ? weight : 1)
+        }
     }
     static func dismantleNSView(_ host: WebHost, coordinator: ()) {
         host.removePage()
@@ -85,6 +95,9 @@ struct WebView: NSViewRepresentable {
 /// a page is still a fresh attach, and still arrives a frame late; there is nothing to
 /// unhide that has never been shown.
 final class WebHost: NSView {
+    var resizeLayout = PageResizeLayout()
+    var resizeFraction = NSSize(width: 1, height: 1)
+    var pageLayoutDidResize: (() -> Void)?
     private(set) var web: WKWebView?
     /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
     /// of the window's key loop and out of the accessibility tree, so an invisible page is
@@ -105,6 +118,19 @@ final class WebHost: NSView {
         self.offscreen = offscreen
         isHidden = offscreen
         if let web { show(web) }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if !offscreen, let web { PageResizeStyle.warm(web) }
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let previous = frame.size
+        let wasEmpty = frame.width <= 0 || frame.height <= 0
+        super.setFrameSize(newSize)
+        if previous != newSize { pageLayoutDidResize?() }
+        if wasEmpty, !offscreen, let web { PageResizeStyle.warm(web) }
     }
 
     func removePage() {
@@ -217,6 +243,7 @@ final class WebHost: NSView {
         }
         next.isHidden = false
         web = next
+        if outgoing !== next { PageResizeStyle.warm(next) }
         recent.removeAll { $0 === next }
         recent.insert(next, at: 0)
         // WebKit's docked inspector is also a WKWebView sibling. Only pages we
@@ -523,6 +550,11 @@ struct BrowserWindow: View {
         .librarySwipe(store)
         .onAppear { store.applySpaceAppearance() }
         .environmentObject(store.spaceGesture)
+        .environment(\.pageResizeLayout, PageResizeLayout(
+            sidebarWidth: store.sidebarShown ? sidebar.width : 0,
+            librarySection: store.libraryOpen ? library.section : nil,
+            spaces: spaceCount, isPrivate: store.isPrivate,
+            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping))
         // A cached profile adopts the window's current presentation at rest. The
         // revision survives detachment, unlike the transaction used to write the model.
         .transaction(value: store.sidebarPresentationRevision) {
@@ -4103,7 +4135,7 @@ private struct TidyRow: View {
             case .tidy:
                 // The menu item owns the tidy's cancellation and its "undo" bookkeeping —
                 // this is the same closure, not a second copy of it.
-                Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
+                Button { Keybindings.actions[.tidyTabs]?() } label: { SidebarTidyLabel() }
                     .nativeSidebarKeyboardControl()
                     .vaneTooltip("Tidy Tabs", hint: "Group tabs into folders", shortcut: Keybindings.binding(for: .tidyTabs).display)
                     .accessibilityLabel("Tidy Tabs")

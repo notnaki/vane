@@ -270,7 +270,7 @@ struct SidebarHandle: View {
                         detent = SidebarResizeDetent()
                         sidebar.save()
                         if SidebarWidth.shouldCollapse(proposed) {
-                            store.sidebarShown = false
+                            if store.sidebarShown { store.toggleSidebar() }
                             axAnnounce("Sidebar hidden.")
                         } else {
                             axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")

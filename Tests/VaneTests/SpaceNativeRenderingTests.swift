@@ -296,7 +296,8 @@ import XCTest
     }
 
     private func checkNativeSpaceClickBlendsBackground() async throws {
-        let (store, spaces, window, monitor) = try fixture(coloured: true)
+        let (store, spaces, window, monitor) = try fixture(coloured: true, registerTeardown: false)
+        defer { retireFixture(store, window: window, monitor: monitor) }
         // Search's first presentation can occupy the main actor longer than the
         // landing tail. This fixture samples tint; empty-Space/search handoff has
         // its own coverage in SpaceSwipeLandingTests.
@@ -310,11 +311,13 @@ import XCTest
         let surface = try XCTUnwrap(colourSurface(in: XCTUnwrap(window.contentView)))
         // Admit the exact visible source and its row population before the
         // action. A guessed startup delay can miss the spring's entire early travel.
-        try await compatibilityWait {
+        do { try await compatibilityWait {
             host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            CATransaction.flush()
             if !NSApp.isActive || NSApp.keyWindow !== window {
-                NSApp.activate()
                 window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
                 return false
             }
             guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
@@ -327,6 +330,9 @@ import XCTest
                   let presented = try? self.firstColour(of: surface, presented: true).redComponent,
                   let model = try? self.firstColour(of: surface).redComponent else { return false }
             return abs(presented - model) < 0.001
+        } } catch {
+            print("CLICK_TINT_ADMISSION running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) modal=\(NSApp.modalWindow != nil) sheet=\(window.attachedSheet != nil) ready=\(SidebarNativeReadinessCoordinator.shared.isReady(SidebarNativeReadinessScope(store: store, spaceID: spaces[0].id), allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)) presentation=\(surface.base.presentation() != nil) model=\(try? firstColour(of: surface).redComponent) presented=\(try? firstColour(of: surface, presented: true).redComponent)")
+            throw error
         }
         let start = try firstColour(of: surface, presented: true).redComponent
         let selectionStart = ContinuousClock.now
@@ -417,7 +423,12 @@ import XCTest
     }
 
     func testRealShortSwipeRestoresLiveSidebarAfterCancellation() async throws {
-        let (store, spaces, window, _) = try fixture()
+        try await withFixtureApplicationLoop { try await checkRealShortSwipeRestoresLiveSidebarAfterCancellation() }
+    }
+
+    private func checkRealShortSwipeRestoresLiveSidebarAfterCancellation() async throws {
+        let (store, spaces, window, monitor) = try fixture(registerTeardown: false)
+        defer { retireFixture(store, window: window, monitor: monitor) }
         let tab = store.newBlankTab(focus: false)
         tab.park(url: URL(string: "https://example.test/source")!, Parked(title: "Visible source row"))
         store.palette = nil
@@ -453,9 +464,11 @@ import XCTest
         NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -12))
         NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -8))
         XCTAssertNotNil(host.spaceSlide, "The real monitor must mount its native finger track")
+        let originalCover = try XCTUnwrap(host.spaceSlide)
+        XCTAssertTrue(host.spaceSlide === originalCover && store.spaceGesture.profileSliding)
         var queuedRepeat = false
         let observer = store.spaceGesture.$presentation.map(\.profileSliding).removeDuplicates().sink { hidden in
-            guard !hidden, !queuedRepeat, host.spaceSlide != nil else { return }
+            guard !hidden, !queuedRepeat else { return }
             queuedRepeat = true
             DispatchQueue.main.async {
                 // The acknowledged cover can already be retired. A new zero-travel
@@ -1098,8 +1111,10 @@ import XCTest
     }
 
     func testCachedProfileColourStaysContinuousAcrossRepeatedSwipes() async throws {
-        for mixedThemes in [false, true] {
-            try await checkRepeatedProfileSwipes(mixedThemes: mixedThemes)
+        try await withFixtureApplicationLoop {
+            for mixedThemes in [false, true] {
+                try await checkRepeatedProfileSwipes(mixedThemes: mixedThemes)
+            }
         }
     }
 
@@ -1171,6 +1186,8 @@ import XCTest
         let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
         let window = try XCTUnwrap(source.window)
         window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         defer {
             window.close()
             profiles.forEach { _ = manager.delete($0.id) }
@@ -1201,12 +1218,29 @@ import XCTest
             // A new display link and a freshly restored hosting tree may not have
             // presented yet. Establish actual source-color samples before asking
             // this sampler to verify the subsequent transition's continuity.
-            try await compatibilityWait { sampler.reds.count >= 3 }
+            try await compatibilityWait {
+                if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
+                    && host.window === window && showing.window === window && showing.profileVisible
+                    && sampler.reds.count >= 3
+            }
             sampler.beginTransitionSampling()
+            let observers = [
+                NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { _ in
+                    MainActor.assumeIsolated { sampler.foregroundInterrupted = true }
+                },
+                NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main) { _ in
+                    MainActor.assumeIsolated { sampler.foregroundInterrupted = true }
+                }
+            ]
+            defer { observers.forEach(NotificationCenter.default.removeObserver) }
+            let actionBegan = CACurrentMediaTime()
             XCTAssertNotNil(showing.beginSpaceSelection(spaces[index]))
             monitor.track(-CGFloat(direction) * 70, width: SidebarWidth.shared.width, in: showing)
             monitor.land(direction, to: spaces[index], width: SidebarWidth.shared.width,
                          store: showing, duration: 0.3)
+            print("PROFILE_ACTION mixed=\(mixedThemes) leg=\(leg) actionMS=\((CACurrentMediaTime() - actionBegan) * 1000) active=\(NSApp.isActive) key=\(window.isKeyWindow)")
             // Hosting/layout can defer CA's first commit beyond the nominal
             // duration. Sample the entire handoff, including its actual endpoint,
             // rather than stopping at an assumed 450 ms wall-clock deadline.
@@ -1216,6 +1250,7 @@ import XCTest
             }
             sampler.stop()
             XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, spaces[index].id)
+            XCTAssertFalse(sampler.foregroundInterrupted, "Profile sampling must retain actual foreground ownership")
             XCTAssertGreaterThan(sampler.reds.count, 3)
             XCTAssertEqual(sampler.unadmittedTransitionCallbacks, 0,
                            "Every transition callback must identify exactly one presented wash; missing samples cannot pass continuity")
@@ -1349,8 +1384,22 @@ import XCTest
         if cached {
             source.switchTo(space: second)
             let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
-            try await Task.sleep(for: .milliseconds(100))
+            try await compatibilityWait {
+                window.contentView?.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                return arriving.window === window && arriving.profileVisible
+                    && arriving.active?.web.window === window
+                    && arriving.active?.web.isLoading == false
+            }
             arriving.switchTo(space: other)
+            try await compatibilityWait {
+                window.contentView?.layoutSubtreeIfNeeded()
+                return arriving.currentSpaceID == other.id
+                    && SidebarNativeReadinessCoordinator.shared.isReady(
+                        SidebarNativeReadinessScope(store: arriving, spaceID: other.id),
+                        allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)
+            }
             arriving.switchTo(space: first)
         }
         source.newTab(URL(string: "about:blank")!)
@@ -1358,6 +1407,8 @@ import XCTest
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         try await compatibilityWait {
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
             window.contentView?.layoutSubtreeIfNeeded()
             window.displayIfNeeded()
             CATransaction.flush()
@@ -1393,6 +1444,10 @@ import XCTest
         if cached { XCTAssertTrue(observedCachedSelection) }
         XCTAssertTrue(arriving.active?.web.window === window,
                       "The destination web content must be mounted during landing")
+        let surface = try XCTUnwrap(colourSurface(in: host))
+        let colour = try firstColour(of: surface, presented: true)
+        XCTAssertGreaterThan(colour.redComponent, 0.1,
+                             "The background must continue blending after the early profile handoff")
         XCTAssertTrue(host.spaceSlide === slide && slide.isActive,
                       "The original captured sidebar must continue travelling over the new profile")
         XCTAssertTrue(arriving.spaceGesture.profileSliding,
@@ -1429,10 +1484,6 @@ import XCTest
                            "Each arriving footer frame must follow the same native presentation")
         }
         defer { observation.cancel() }
-        let surface = try XCTUnwrap(colourSurface(in: host))
-        let colour = try firstColour(of: surface, presented: true)
-        XCTAssertGreaterThan(colour.redComponent, 0.1,
-                             "The background must continue blending after the early profile handoff")
         try await Task.sleep(for: .milliseconds(1000))
         XCTAssertGreaterThan(footerFrames, 2)
         XCTAssertNil(host.spaceSlide)
@@ -1513,15 +1564,16 @@ import XCTest
     }
 
     func testPreparedSurfaceStaysAttachedToCompositorAtFirstDrag() async throws {
-        try await assertPreparedCompositorHandoff(selecting: false)
+        try await withFixtureApplicationLoop { try await assertPreparedCompositorHandoff(selecting: false) }
     }
 
     func testPreparedSurfaceStaysAttachedToCompositorAtButtonSelection() async throws {
-        try await assertPreparedCompositorHandoff(selecting: true)
+        try await withFixtureApplicationLoop { try await assertPreparedCompositorHandoff(selecting: true) }
     }
 
     private func assertPreparedCompositorHandoff(selecting: Bool) async throws {
-        let (store, spaces, window, monitor) = try fixture(floatingWindow: true)
+        let (store, spaces, window, monitor) = try fixture(floatingWindow: true, registerTeardown: false)
+        defer { retireFixture(store, window: window, monitor: monitor) }
         window.setContentSize(NSSize(width: 1280, height: 840))
         window.contentView?.wantsLayer = true
         window.contentView?.layoutSubtreeIfNeeded()
@@ -1536,6 +1588,10 @@ import XCTest
         let layer = try XCTUnwrap(prepared.layer)
         XCTAssertTrue(layer.superlayer === host.layer, "Idle preparation must already reach the compositor")
         XCTAssertTrue(prepared.isHidden, "Idle surfaces must not paint over the live sidebar")
+        var content: NSView = try XCTUnwrap(store.spaceGesture.sectionsView)
+        while let parent = content.superview, parent !== host { content = parent }
+        XCTAssertTrue(content.superview === host)
+        let contentLayer = try XCTUnwrap(content.layer)
         if selecting { monitor.select(spaces[1], in: store) }
         else { monitor.track(-10, width: SidebarWidth.shared.width, in: store) }
         XCTAssertTrue(host.spaceSlide === prepared)
@@ -1544,8 +1600,11 @@ import XCTest
         XCTAssertFalse(layer.isHidden)
         XCTAssertTrue(layer.superlayer === host.layer,
                       "Hiding live sections must not detach their replacement until a later AppKit turn")
-        XCTAssertTrue(host.layer?.sublayers?.last === layer,
-                      "The already attached replacement must paint above the live hosting tree")
+        let layers = try XCTUnwrap(host.layer?.sublayers)
+        let replacementIndex = try XCTUnwrap(layers.firstIndex { $0 === layer })
+        let contentIndex = try XCTUnwrap(layers.firstIndex { $0 === contentLayer })
+        XCTAssertGreaterThan(replacementIndex, contentIndex,
+                             "The already attached replacement must paint above the live hosting tree")
     }
 
     func testFreshSurfaceReachesCompositorBeforeCoveringLiveSidebar() async throws {
@@ -2974,6 +3033,7 @@ import XCTest
     weak var host: BrowserWindowHost?
     var reds: [Double] = []
     private(set) var unadmittedTransitionCallbacks = 0
+    var foregroundInterrupted = false
     private var samplingTransition = false
     var maxGap: TimeInterval = 0
     private(set) var firstCallbackLatency: TimeInterval?
