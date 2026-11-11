@@ -17,6 +17,10 @@ jobs:
         run: |
           swift --version
           xcodebuild -version
+      - name: Enable and verify animated motion on the hosted desktop
+        run: |
+          defaults write com.apple.universalaccess reduceMotion -bool false
+          swift -e 'import AppKit; print("HOST_REDUCE_MOTION=\(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)")'
       - name: Build approved application and corner coverage fixture
         run: swift build -c debug --build-tests --disable-index-store
       - name: Three predetermined native attempts with retirement

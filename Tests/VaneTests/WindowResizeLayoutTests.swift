@@ -220,9 +220,15 @@ import XCTest
                 }
                 try await ContinuousClock().sleep(until: deadline)
                 if mixedAxes {
+                    print("CORNER_REQUEST target=\(size) actual=\(window.frame) preparing=\(window.isPreparingPageResize) page=\(web.frame) parent=\(String(describing: web.superview?.bounds))")
                     // Keep sampling through each paint so coalescing cannot skip
                     // the corner geometry this regression is meant to exercise.
-                    try await compatibilityWait { !window.isPreparingPageResize && window.frame.size == size }
+                    do {
+                        try await compatibilityWait { !window.isPreparingPageResize && window.frame.size == size }
+                    } catch {
+                        print("CORNER_TIMEOUT target=\(size) actual=\(window.frame) preparing=\(window.isPreparingPageResize) page=\(web.frame) parent=\(String(describing: web.superview?.bounds))")
+                        throw error
+                    }
                 }
             }
             try await compatibilityWait { !window.isPreparingPageResize }

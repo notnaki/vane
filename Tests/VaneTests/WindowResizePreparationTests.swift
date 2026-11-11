@@ -150,10 +150,15 @@ import XCTest
         XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), display: true))
         // The user's real drag delivered its paint at116ms. A150ms page is still
         // responsive; keep the painted window rather than expose the queued size.
+        let began = CACurrentMediaTime()
         let elapsed = XCTestExpectation(description: "Ordinarily late paint interval")
-        let timer = Timer(timeInterval: 0.15, repeats: false) { _ in elapsed.fulfill() }
+        let timer = Timer(timeInterval: 0.15, repeats: false) { _ in
+            print("LATE_PAINT_TIMER elapsedMS=\((CACurrentMediaTime() - began) * 1000)")
+            elapsed.fulfill()
+        }
         RunLoop.main.add(timer, forMode: .common)
         await fulfillment(of: [elapsed], timeout: 2)
+        print("LATE_PAINT_CHECK elapsedMS=\((CACurrentMediaTime() - began) * 1000) commits=\(commits)")
         XCTAssertTrue(commits.isEmpty, "A responsive but late page must not expose unpainted width")
         XCTAssertFalse(resize.bypassForDrag)
         paints.removeFirst()()
