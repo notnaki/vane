@@ -158,10 +158,12 @@ import XCTest
             let ended = CACurrentMediaTime()
             try await presentation(web)
             try await sampler.captureFinalFrame(window)
+            let coverageEnded = CACurrentMediaTime()
             try await sampler.stop()
             try sampler.frames.saveImages(prefix: "sidebar-\(ProcessInfo.processInfo.processIdentifier)")
-            let samples = sampler.frames.samples.filter { $0.time >= began && $0.time <= ended }
-            let maximum = samples.map(\.gap).max() ?? 0
+            let coverage = sampler.frames.samples.filter { $0.time >= began && $0.time <= coverageEnded }
+            let samples = coverage.filter { $0.time <= ended }
+            let maximum = coverage.map(\.gap).max() ?? 0
             print("SIDEBAR_PIXELS samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum) width=\(originalWidth)->\(web.bounds.width)")
             XCTAssertFalse(owner.interrupted, "Sidebar capture must retain actual foreground ownership")
             XCTAssertGreaterThan(samples.count, 3)
@@ -246,18 +248,23 @@ import XCTest
             let ended = CACurrentMediaTime()
             try await presentation(web)
             try await sampler.captureFinalFrame(window)
+            let coverageEnded = CACurrentMediaTime()
             try await sampler.stop()
             let prefix = "\(direct ? "native" : "browser")-\(ProcessInfo.processInfo.processIdentifier)"
             try sampler.frames.saveImages(prefix: prefix)
-            let samples = sampler.frames.samples.filter { $0.time >= began && $0.time <= ended }
+            // Keep the intermediate-frame count strict, and examine every pixel
+            // through final paint: late queued geometry can expose a strip after
+            // native preparation reports completion.
+            let coverage = sampler.frames.samples.filter { $0.time >= began && $0.time <= coverageEnded }
+            let samples = coverage.filter { $0.time <= ended }
             XCTAssertGreaterThan(samples.count, 3, "Capture actual WindowServer frames during resizing")
             XCTAssertFalse(owner.interrupted, "Foreground admission was lost during the native resize capture")
             XCTAssertGreaterThanOrEqual(owner.maxWidth, 1100, "The window must actually grow during capture")
             XCTAssertEqual(window.frame.width, 900, accuracy: 1, "Commit the latest queued request")
             XCTAssertEqual(window.frame.height, frameHeight, accuracy: 1,
                            "Native width proposals must not repeatedly add the titlebar height")
-            let maximum = samples.map(\.gap).max() ?? 0
-            print("RESIZE_PIXELS baselineControl=\(baselineControl) direct=\(direct) samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum)")
+            let maximum = coverage.map(\.gap).max() ?? 0
+            print("RESIZE_PIXELS baselineControl=\(baselineControl) direct=\(direct) samples=\(samples.count) coverageSamples=\(coverage.count) baselineGap=\(baseline.gap) maxGap=\(maximum)")
             XCTAssertLessThanOrEqual(maximum, baseline.gap + 2,
                                      "Drawn page content must reach the visible window edge without an empty strip")
             XCTAssertLessThanOrEqual(try XCTUnwrap(sampler.frames.last).markerGap, baseline.markerGap + 2,

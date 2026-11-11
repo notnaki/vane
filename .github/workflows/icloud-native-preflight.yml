@@ -51,8 +51,8 @@ jobs:
           import os, pathlib, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           corner = 'WindowResizePreparationTests|testCornerResizeKeepsTheShrinkingAxisPaintedWhileTheOtherAxisGrows'
-          space = 'testCachedProfileColourStaysContinuousAcrossRepeatedSwipes'
-          attempts = [('corner-1', corner), ('corner-2', corner), ('corner-3', corner), ('space-properties', space)]
+          space = 'testCachedProfileChangesPageAtStartOfNativeLanding|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testNativeSpaceClickBlendsBackgroundDuringSidebarTravel'
+          attempts = [('corner-1', corner), ('corner-2', corner), ('corner-3', corner), ('space-1', space), ('space-2', space), ('space-3', space)]
           statuses = []
           for attempt, selection in attempts:
               log = root / f'icloud-native-preflight-{attempt}.log'

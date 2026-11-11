@@ -58,6 +58,7 @@ extension EnvironmentValues {
     private let size: NSSize
     private let originalSize: NSSize
     private let originalParentSize: NSSize
+    private var preparationParentSize: NSSize
     private let mask: NSView.AutoresizingMask
     private let autoSubviews: Bool
     private var installed = false
@@ -69,13 +70,14 @@ extension EnvironmentValues {
         parent = web.superview
         originalSize = web.frame.size
         originalParentSize = web.superview?.bounds.size ?? .zero
+        preparationParentSize = originalParentSize
         mask = web.autoresizingMask
         autoSubviews = web.autoresizesSubviews
     }
 
     var stillOwned: Bool {
         web.superview === parent && parent != nil && !web.isHiddenOrHasHiddenAncestor
-            && parent?.bounds.size == originalParentSize && web.frame.size == size
+            && parent?.bounds.size == preparationParentSize && web.frame.size == size
     }
 
     var parentReachedPreparedSize: Bool {
@@ -86,9 +88,20 @@ extension EnvironmentValues {
             && abs(parent.bounds.height - expected.height) < 0.001
     }
 
-    func prepare() {
+    func freezeNativeGeometry() {
         web.autoresizingMask = []
         web.autoresizesSubviews = false
+    }
+
+    func admitClippedParent() -> Bool {
+        guard let parent, web.superview === parent, !web.isHiddenOrHasHiddenAncestor,
+              web.frame.size == originalSize else { return false }
+        preparationParentSize = parent.bounds.size
+        return true
+    }
+
+    func prepare() {
+        freezeNativeGeometry()
         prepareStyle()
         web.setFrameSize(size)
         web.prepareContent(in: NSRect(origin: .zero, size: size))
@@ -200,22 +213,8 @@ extension EnvironmentValues {
         // Growth needs the opposite order: paint the extra area before exposing it.
         guard frame.size != window.frame.size else { return false }
         let current = window.frame
-        if (frame.width < current.width && frame.height > current.height)
-            || (frame.height < current.height && frame.width > current.width) {
-            // A corner can shrink one dimension while growing the other. Clip
-            // the shrinking axis first so its smaller document can never paint
-            // inside the previous larger window while growth is being prepared.
-            let clipped = NSRect(x: frame.width < current.width ? frame.minX : current.minX,
-                                 y: frame.height < current.height ? frame.minY : current.minY,
-                                 width: min(frame.width, current.width),
-                                 height: min(frame.height, current.height))
-            commit(clipped, display)
-            // Submit the smaller native window before WebKit can paint a smaller
-            // document inside WindowServer's previously wider frame.
-            CATransaction.flush()
-            trace("clipped-flushed")
-            return self.request(frame: frame, display: display)
-        }
+        let mixedAxes = (frame.width < current.width && frame.height > current.height)
+            || (frame.height < current.height && frame.width > current.width)
         let nextSize = NSSize(width: root.bounds.width + frame.width - window.frame.width,
                               height: root.bounds.height + frame.height - window.frame.height)
         let targets = Self.targets(in: root, nextSize: nextSize)
@@ -235,6 +234,26 @@ extension EnvironmentValues {
         remaining = targets.count
         generation = UUID()
         let token = generation
+        if mixedAxes {
+            // Keep the already painted WK viewport while the native window clips.
+            // An intermediate WK resize can satisfy the next-presentation callback
+            // before the requested final viewport has actually painted.
+            targets.forEach { $0.freezeNativeGeometry() }
+            let clipped = NSRect(x: frame.width < current.width ? frame.minX : current.minX,
+                                 y: frame.height < current.height ? frame.minY : current.minY,
+                                 width: min(frame.width, current.width),
+                                 height: min(frame.height, current.height))
+            commit(clipped, display)
+            CATransaction.flush()
+            guard generation == token, self.active != nil else { return true }
+            guard window.frame == clipped, window.contentView === root,
+                  targets.allSatisfy({ $0.web.window === window && $0.admitClippedParent() }) else {
+                cancel()
+                return true
+            }
+            startingFrame = window.frame
+            trace("clipped-with-frozen-viewport")
+        }
         trace("preparing")
         // All views must receive their new viewport before requesting any paint.
         targets.forEach { $0.prepare() }
