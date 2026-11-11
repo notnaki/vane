@@ -485,6 +485,7 @@ struct Space: Identifiable, Codable, Equatable {
     let sandboxed: Bool
 
     @Published private(set) var profiles: [Profile] = []
+    lazy var chromeObservation = ProfileChromeObservation(manager: self)
     struct SaveFailure: Identifiable, Equatable {
         enum Target: Hashable { case profiles, deletion, spaces(UUID) }
         let id: Target

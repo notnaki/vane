@@ -53,7 +53,7 @@ jobs:
           import errno, os, pathlib, pty, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           attempt = os.environ['ATTEMPT']
-          selection = 'SpaceNativeRenderingTests.testDestinationVisibilityNotificationCannotAbortTheSourceLanding|SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testFirstProfileVisitChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|SpaceNativeRenderingTests.testHiddenProfileSynchronouslyDropsWarmOwnersDuringLanding|SpaceNativeRenderingTests.testProfileSwipeDoesNotRestoreItsDepartureColour|SpaceNativeRenderingTests.testReverseProfileSwipeTakesOverTheSamePresentedNativeRows'
+          selection = 'ProfileChromeObservationTests|ProfilePersistenceTests|SpaceNativeRenderingTests.testDestinationVisibilityNotificationCannotAbortTheSourceLanding|SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testFirstProfileVisitChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|SpaceNativeRenderingTests.testHiddenProfileSynchronouslyDropsWarmOwnersDuringLanding|SpaceNativeRenderingTests.testProfileSwipeDoesNotRestoreItsDepartureColour|SpaceNativeRenderingTests.testReverseProfileSwipeTakesOverTheSamePresentedNativeRows'
           log = root / f'icloud-native-preflight-{attempt}.log'
           master, slave = pty.openpty()
           process = subprocess.Popen(['python3', '-u', 'scripts/run-native-tests.py', '--skip-build', '--jobs', '1', '--filter', selection], stdout=slave, stderr=slave)
