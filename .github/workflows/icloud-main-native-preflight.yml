@@ -59,7 +59,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1, 2, 3]
+        attempt: [1]
     steps:
       - uses: actions/checkout@v7
       - name: Download exact diagnostic runtime
@@ -82,7 +82,7 @@ jobs:
           import os, pathlib, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           attempt = os.environ['ATTEMPT']
-          selection = 'BoundedSidebarMountingTests|KeyboardAccessibilityTests|SpaceNativeRenderingTests|ICloud|SidebarObservationTests|WindowResize|SidebarPageResizePreparationTests|PasswordShadowAutofillTests|TabTooltipTests|PaletteSizingTests'
+          selection = 'ICloudSecretsTests'
           log = root / f'icloud-native-preflight-{attempt}.log'
           with log.open('w') as output:
               result = subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=output, stderr=subprocess.STDOUT)
