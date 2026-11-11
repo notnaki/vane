@@ -57,6 +57,10 @@ the palette above it. Early colour sampling now occurs at its original 100 ms
 checkpoint. Sample counts, reversal limits, cancellation deadlines and pixel
 bounds remain enforced. The fixture patch passed independent review.
 
+The seven corrected animated Space cases passed together locally with zero
+failures in 24.83 seconds and verified fixture retirement (`primary 0 / cleanup 0`).
+The final fixture diff was independently reviewed without findings.
+
 App/test-target builds, pure selfcheck, provisioning fixtures and AI routing
 harnesses passed during integration. A full local native run was stopped at the
 user's request and its original failures and successful cleanup were preserved;
