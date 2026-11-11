@@ -140,10 +140,19 @@ import WebKit
           var result = [], nodes = 0, roots = 0, exceeded = false;
           function visit(scope, depth) {
             if (++roots > 128 || depth > 32) { exceeded = true; return; }
-            var walker = document.createTreeWalker(scope, 1), el;
-            while (!exceeded && (el = walker.nextNode())) {
-              if (++nodes > 20000) { exceeded = true; break; }
-              if (el.matches(selector)) result.push(el);
+            // Admit a bounded tree before allocating native selector results. Count
+            // its light DOM up front; nested roots share the same total budget.
+            var elements = [], walker = document.createTreeWalker(scope, 1), el;
+            while ((el = walker.nextNode())) {
+              if (++nodes > 20000) { exceeded = true; return; }
+              elements.push(el);
+            }
+            // Match in WebKit once per tree instead of crossing into its selector
+            // engine for every decorative element. '*' needs no matching.
+            var matching = selector === '*' ? null : new Set(scope.querySelectorAll(selector));
+            for (var el of elements) {
+              if (exceeded) break;
+              if (!matching || matching.has(el)) result.push(el);
               if (el.shadowRoot) visit(el.shadowRoot, depth + 1);
             }
           }

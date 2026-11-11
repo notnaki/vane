@@ -404,6 +404,63 @@ import XCTest
         XCTAssertTrue(capture.messages.contains { $0["ready"] as? Bool == true }, "Dynamically mounted logins still announce readiness")
     }
 
+    func testPasswordDiscoveryDoesNotMatchSelectorsOnEveryDecorativeElement() async throws {
+        let (web, _) = try await fixture(script: Autofill.script, name: "vanepw", world: Autofill.world,
+            html: "<body><form><input id=user autocomplete=username><input id=password type=password></form>" +
+                String(repeating: "<section><span>Article text</span></section>", count: 6_000) + "</body>",
+            tracking: """
+            window.__matches = 0;
+            const nativeMatches = Element.prototype.matches;
+            Element.prototype.matches = function(selector) { __matches++; return nativeMatches.call(this, selector); };
+            """)
+        let matches = try await js(web, "return __matches;", world: Autofill.world) as? Int
+        XCTAssertLessThan(try XCTUnwrap(matches), 1_000,
+                          "Credential discovery must use native selector queries rather than matching every decorative node")
+        let filled = try await js(web, "return __vaneFill('ada', 'fixture-secret', false);", world: Autofill.world) as? Bool
+        XCTAssertEqual(filled, true)
+        let values = try await js(web, "return [user.value, password.value].join('|');") as? String
+        XCTAssertEqual(values, "ada|fixture-secret")
+    }
+
+    /// Measures the actual injected script, including all its initial discovery passes.
+    func testPasswordInitializationDiagnostics() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_PAGE_SCRIPT_PROFILE"] == "1")
+        let html = "<body><form><input autocomplete=username><input type=password></form>" +
+            String(repeating: "<section><span>Article text</span></section>", count: 8_000) + "</body>"
+        for run in 0..<9 {
+            let (web, _) = try await fixture(
+                script: "const started = performance.now();\n" + Autofill.script +
+                    "\nwindow.__initializationMS = performance.now() - started;",
+                name: "vanepw", world: Autofill.world, html: html)
+            let ms = try await js(web, "return __initializationMS;", world: Autofill.world)
+            print("PASSWORD_INITIALIZATION run=\(run) ms=\(ms)")
+        }
+    }
+
+    func testPasswordDiscoveryRejectsOversizedTreesBeforeNativeSelectorQueries() async throws {
+        let decoration = String(repeating: "<span>Text</span>", count: 20_001)
+        for shadow in [false, true] {
+            let html = shadow
+                ? "<body><form><input id=password type=password><div id=host></div></form>" +
+                    "<script>host.attachShadow({mode:'open'}).innerHTML='\(decoration)';</script></body>"
+                : "<body><input id=password type=password>\(decoration)</body>"
+            let (web, _) = try await fixture(script: Autofill.script, name: "vanepw", world: Autofill.world,
+                html: html, tracking: """
+                window.__oversizedQueries = 0;
+                const prototype = \(shadow ? "ShadowRoot" : "Document").prototype;
+                const nativeQuery = prototype.querySelectorAll;
+                prototype.querySelectorAll = function(selector) {
+                    __oversizedQueries++;
+                    return nativeQuery.call(this, selector);
+                };
+                """)
+            let filled = try await js(web, "return __vaneFill('ada', 'fixture-secret', false);", world: Autofill.world) as? Bool
+            XCTAssertEqual(filled, false, "An exhausted tree must not supply partial credential targets")
+            let queries = try await js(web, "return __oversizedQueries;", world: Autofill.world) as? Int
+            XCTAssertEqual(queries, 0, "Oversized \(shadow ? "shadow" : "document") trees must fail before native queries allocate matches")
+        }
+    }
+
     func testMediaSessionUpdatesDoNotSearchTheDocument() async throws {
         let (web, _) = try await fixture(script: MediaTray.script, name: MediaTray.messageName,
                                          html: "<body><audio id='first'></audio><video id='second'></video></body>")

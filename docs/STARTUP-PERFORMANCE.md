@@ -88,3 +88,25 @@ Full-window presentation, WebKit process startup, normal background services,
 and pin-name backfill still contribute to total startup. No persistence format,
 profile boundary, sidebar styling, draft policy, Reduce Motion or Battery Saver
 behavior was changed.
+
+## Page-script initialization
+
+Password discovery uses native selector queries within each admitted tree, then
+walks matches in the existing shadow-root order. A bounded preflight preserves the
+20,000-element limit before native queries allocate results; the 128-root and
+32-level limits still apply. Routine regression tests check selector work counts,
+oversized document/shadow-tree rejection, and successful credential filling.
+
+To measure the actual injected password script on a synthetic article with 16,000
+decorative elements and a login form, build first, then run:
+
+```sh
+swift test --jobs 4 --filter PageScriptPerformanceTests
+VANE_PAGE_SCRIPT_PROFILE=1 python3 scripts/run-native-tests.py --skip-build \
+  --filter PageScriptPerformanceTests/testPasswordInitializationDiagnostics
+```
+
+The diagnostic prints nine initialization samples. These cover script execution
+and its initial discovery passes, excluding WebKit process creation, network
+latency, and page rendering. Compare runs on the same macOS/WebKit version in a
+quiet profiling window; they are diagnostics, not CI latency thresholds.
