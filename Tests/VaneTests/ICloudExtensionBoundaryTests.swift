@@ -42,7 +42,9 @@ import XCTest
         let reply = Reply<Any>()
         view.callAsyncJavaScript(source, arguments: arguments, in: nil, in: .page) { reply.result = $0 }
         try await wait("public callAsyncJavaScript reply", until: deadline) { reply.result != nil }
-        let string = try XCTUnwrap(try XCTUnwrap(reply.result).get() as? String)
+        let value = try XCTUnwrap(reply.result).get()
+        print("ICLOUD_BOUNDARY_CALL source=\(source.prefix(90)) type=\(String(reflecting: type(of: value))) value=\(value)")
+        let string = try XCTUnwrap(value as? String)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(string.utf8)) as? [String: Any])
     }
 
