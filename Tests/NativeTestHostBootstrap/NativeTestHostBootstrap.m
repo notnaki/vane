@@ -1,7 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "NativeTestHostBootstrap.h"
 #include <stdio.h>
-#include <stdlib.h>
 
 static bool bootstrapRan;
 static bool bootstrapWasEarly;
@@ -16,10 +15,6 @@ __attribute__((constructor))
 static void VaneConfigureNativeTestHost(void)
 {
     @autoreleasepool {
-        if (getenv("VANE_PREVIEW_TIMEOUT_TRACES")) {
-            setvbuf(stdout, NULL, _IONBF, 0);
-            setvbuf(stderr, NULL, _IONBF, 0);
-        }
         bootstrapRan = true;
         // Reading NSApp does not create it. Refuse to disguise late setup.
         bootstrapWasEarly = NSApp == nil;

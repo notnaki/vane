@@ -30,7 +30,6 @@ jobs:
         env:
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '240'
           VANE_PREVIEW_TIMEOUT_TRACES: ${{ runner.temp }}
-          NSUnbufferedIO: 'YES'
         run: |
           result=0
           for attempt in 1 2 3; do
