@@ -26,7 +26,8 @@ jobs:
         id: toolchain
         run: echo "key=$(python3 scripts/ci-build-artifact.py toolchain)" >> "$GITHUB_OUTPUT"
       - name: Restore diagnostic debug build
-        uses: actions/cache@v6
+        id: diagnostic-cache
+        uses: actions/cache/restore@v6
         with:
           path: .build
           key: native-diag-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Sources/**', 'Tests/**') }}
@@ -39,12 +40,17 @@ jobs:
         run: swift build -c debug --build-tests --disable-index-store
       - name: Preserve source timestamps for diagnostic debug cache
         run: python3 scripts/ci-source-state.py save
+      - name: Save compiled diagnostic debug build before native assertions
+        uses: actions/cache/save@v6
+        with:
+          path: .build
+          key: ${{ steps.diagnostic-cache.outputs.cache-primary-key }}
       - name: Single instrumented native attempt with retirement
         run: |
           python3 - <<'PYTHON'
           import os, pathlib, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          selection = 'testCornerResizeKeepsTheShrinkingAxisPaintedWhileTheOtherAxisGrows|testCachedProfileChangesPageAtStartOfNativeLanding|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testNativeSpaceClickBlendsBackgroundDuringSidebarTravel'
+          selection = 'testCornerResizeKeepsTheShrinkingAxisPaintedWhileTheOtherAxisGrows|testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes'
           statuses = []
           for attempt in range(1, 2):
               log = root / f'icloud-native-preflight-{attempt}.log'

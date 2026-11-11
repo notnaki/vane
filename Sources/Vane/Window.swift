@@ -761,13 +761,21 @@ extension VaneWindow {
         // Every route into a hop must persist the departing Space, including the Profiles
         // menu's direct call above. Otherwise its tabs exist only in the parked store until
         // the next session save and a crash before then loses them.
+        var phaseTime = CACurrentMediaTime()
+        func phase(_ label: String) {
+            let now = CACurrentMediaTime()
+            print("PROFILE_HOP_PHASE t=\(now) phase=\(label) elapsedMS=\((now - phaseTime) * 1000)")
+            phaseTime = now
+        }
         store.saveCurrentSpace()
+        phase("save")
         // Either the store this window already has for that profile, or a new one opened
         // straight into the Space being walked to — there is no intermediate Space to show.
         let arriving = parked(profile.id, in: window)
             ?? TabStore(profileID: profile.id, space: space)
         // Visibility belongs to the window, across every Space and profile. Apply it
         // before mounting the arriving host, including when reusing a parked profile.
+        phase("store-created")
         arriving.sidebarShown = store.sidebarShown
         arriving.sidebarPeeking = store.sidebarPeeking
         arriving.sidebarPresentationRevision &+= 1
@@ -784,14 +792,17 @@ extension VaneWindow {
         arriving.parkedIn = nil
         arriving.window = window
         arriving.profileVisible = true
+        phase("properties")
         ProfileManager.shared.active = profile
         // Live folders keep themselves filled for as long as a window is showing the profile.
         LiveFolders.shared(for: profile.id).begin()
         // A Space deleted while this store was parked leaves it pointing at one that is not
         // on disk, and an ordinary window always shows a real Space.
+        phase("livefolders")
         arriving.resolveStaleSpace()
         arriving.switchTo(space: space)         // a no-op for a store built into it just now
         arriving.applySpaceAppearance()
+        phase("space-switch")
         delegate.shown.store = arriving         // expose only the finalized destination
         // A cached host can take another display turn to acknowledge visibility.
         // The next gesture already belongs to this profile when hop returns.
@@ -799,6 +810,7 @@ extension VaneWindow {
         if arriving.sidebarShown || arriving.sidebarPeeking {
             arriving.spaceGesture.monitor.install(arriving)
         }
+        phase("host-show")
         SharedTabs.refreshPresentation()
         store.extensions.sync()
         arriving.extensions.sync()
@@ -808,6 +820,7 @@ extension VaneWindow {
         // Also set synchronously: a cached host may already have observed this title while
         // its profile was parked and had no window to update.
         window.title = WindowTitle.current(in: arriving)
+        phase("sync-titles")
         rebuild()                               // the Spaces menu's checkmark has changed profile
         // Swapping the profile host detaches the old first responder. Put the keyboard on
         // the arriving page once AppKit has mounted it, so a keyboard switch can keep typing.

@@ -1169,6 +1169,30 @@ import XCTest
                        "The installed callback must resolve the new gesture endpoints before SwiftUI renders again")
     }
 
+    private func admitPopulatedProfile(_ store: TabStore, window: NSWindow) async throws {
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        try await compatibilityWait {
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            CATransaction.flush()
+            guard let sections = store.spaceGesture.sectionsView, sections.window === window,
+                  store.window === window, store.profileVisible, NSApp.isActive,
+                  window.isKeyWindow, window.occlusionState.contains(.visible) else { return false }
+            var root = sections
+            while let parent = root.superview, parent !== host { root = parent }
+            let owners = self.warmOwnerReports(in: root)
+            return root.superview === host && !root.isHiddenOrHasHiddenAncestor
+                && root.layer?.presentation() != nil
+                && (owners.isEmpty || owners.contains { $0.attachedLogicalRows > 0 })
+                && SidebarNativeReadinessCoordinator.shared.isReady(
+                    SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID),
+                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)
+        }
+        print("PROFILE_WARM profile=\(store.profileID) tabs=\(store.tabs.count)")
+    }
+
     private func checkRepeatedProfileSwipes(mixedThemes: Bool) async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
@@ -1203,6 +1227,7 @@ import XCTest
                 tab.park(url: URL(string: "about:blank#\(row)")!, Parked(title: "Profile \(index) document \(row)"))
             }
             owner.palette = nil
+            try await admitPopulatedProfile(owner, window: window)
         }
         TabStore.all.first { $0.window === window }?.switchTo(space: spaces[0])
         try await Task.sleep(for: .milliseconds(150))
@@ -1392,6 +1417,12 @@ import XCTest
                     && arriving.active?.web.window === window
                     && arriving.active?.web.isLoading == false
             }
+            let readyPage = try XCTUnwrap(arriving.active?.web)
+            let painted = XCTestExpectation(description: "Cached profile paints before parking")
+            let callback: @convention(block) () -> Void = { painted.fulfill() }
+            readyPage.perform(NSSelectorFromString("_doAfterNextPresentationUpdate:"), with: callback)
+            await fulfillment(of: [painted], timeout: 5)
+            try await admitPopulatedProfile(arriving, window: window)
             arriving.switchTo(space: other)
             try await compatibilityWait {
                 window.contentView?.layoutSubtreeIfNeeded()
