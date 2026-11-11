@@ -1,5 +1,6 @@
 import XCTest
 import Security
+import CloudKit
 @testable import vane
 
 @MainActor final class ICloudSecretsTests: XCTestCase {
@@ -155,6 +156,23 @@ import Security
         XCTAssertFalse(controller.masterEnabled)
         XCTAssertEqual(store.cloudCount, count, "The changed account must not receive a newly admitted credential")
         XCTAssertEqual(local.values[key], Data("unapproved-account-value".utf8))
+        await controller.setMasterEnabled(false)
+    }
+
+    func testAccountNotificationRevokesSecretAdmissionBeforeAnotherEdit() async throws {
+        let store = MemorySecretKeychain(), local = MemoryLocalSecrets()
+        let bridge = bridge(store, local)
+        let controller = try secretController(bridge, transport: SecretRefreshCloud())
+        await controller.setMasterEnabled(true)
+        XCTAssertNotNil(controller.lastSuccess)
+        NotificationCenter.default.post(name: .CKAccountChanged, object: nil)
+        XCTAssertFalse(controller.masterEnabled, "Account notifications must revoke admission on delivery")
+        XCTAssertTrue(controller.needsAccountConsent)
+        local.values[key] = Data("after-account-notification".utf8)
+        NotificationCenter.default.post(name: .vaneSecretsChanged, object: nil)
+        await controller.syncNow()
+        XCTAssertEqual(store.cloudCount, 0)
+        XCTAssertEqual(local.values[key], Data("after-account-notification".utf8))
         await controller.setMasterEnabled(false)
     }
 
