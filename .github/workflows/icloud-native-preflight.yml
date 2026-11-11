@@ -45,14 +45,16 @@ jobs:
         with:
           path: .build
           key: ${{ steps.diagnostic-cache.outputs.cache-primary-key }}
-      - name: Single instrumented native attempt with retirement
+      - name: Three corner attempts and one property-stage diagnostic
         run: |
           python3 - <<'PYTHON'
           import os, pathlib, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          selection = 'testCornerResizeKeepsTheShrinkingAxisPaintedWhileTheOtherAxisGrows|testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes'
+          corner = 'WindowResizePreparationTests|testCornerResizeKeepsTheShrinkingAxisPaintedWhileTheOtherAxisGrows'
+          space = 'testCachedProfileChangesPageAtStartOfNativeLanding|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testNativeSpaceClickBlendsBackgroundDuringSidebarTravel'
+          attempts = [('corner-1', corner), ('corner-2', corner), ('corner-3', corner), ('space-properties', space)]
           statuses = []
-          for attempt in range(1, 2):
+          for attempt, selection in attempts:
               log = root / f'icloud-native-preflight-{attempt}.log'
               with log.open('w') as output:
                   result = subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=output, stderr=subprocess.STDOUT)

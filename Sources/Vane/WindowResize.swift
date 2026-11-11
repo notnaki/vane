@@ -210,6 +210,10 @@ extension EnvironmentValues {
                                  width: min(frame.width, current.width),
                                  height: min(frame.height, current.height))
             commit(clipped, display)
+            // Submit the smaller native window before WebKit can paint a smaller
+            // document inside WindowServer's previously wider frame.
+            CATransaction.flush()
+            trace("clipped-flushed")
             return self.request(frame: frame, display: display)
         }
         let nextSize = NSSize(width: root.bounds.width + frame.width - window.frame.width,

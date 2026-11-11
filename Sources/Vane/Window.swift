@@ -777,21 +777,32 @@ extension VaneWindow {
         // before mounting the arriving host, including when reusing a parked profile.
         phase("store-created")
         arriving.sidebarShown = store.sidebarShown
+        phase("sidebarShown")
         arriving.sidebarPeeking = store.sidebarPeeking
+        phase("sidebarPeeking")
         arriving.sidebarPresentationRevision &+= 1
+        phase("sidebarRevision")
         if let slide = (window.contentView as? BrowserWindowHost)?.spaceSlide,
            slide.isActive, slide.isSource(store) {
             // Hide live rows and carry the gesture's tint/footer before mounting the
             // arriving profile. The native sidebar continues travelling above this host.
             slide.attach(arriving)
+        phase("attach-slide")
         }
         store.sidebarPeeking = false
+        phase("departingPeeking")
         store.parkedIn = window
+        phase("parkedIn")
         store.window = nil
+        phase("departingWindow")
         store.profileVisible = false
+        phase("departingVisible")
         arriving.parkedIn = nil
+        phase("arrivingParked")
         arriving.window = window
+        phase("arrivingWindow")
         arriving.profileVisible = true
+        phase("arrivingVisible")
         phase("properties")
         ProfileManager.shared.active = profile
         // Live folders keep themselves filled for as long as a window is showing the profile.
