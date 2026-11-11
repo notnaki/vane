@@ -69,12 +69,14 @@ import XCTest
             ]
             try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
             try Data("""
-                browser.runtime.onMessage.addListener(async message => {
-                    if (message.kind !== 'vane-sync-boundary') return;
-                    return {runtimeID: browser.runtime.id,
+                browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+                    if (message.kind !== 'vane-sync-boundary') return false;
+                    (async () => ({runtimeID: browser.runtime.id,
                         sync: await browser.storage.sync.get(null),
                         local: await browser.storage.local.get(null),
-                        session: await browser.storage.session.get(null)};
+                        session: await browser.storage.session.get(null)}))()
+                        .then(sendResponse, error => sendResponse({error: String(error)}));
+                    return true;
                 });
                 """.utf8).write(to: folder.appendingPathComponent("worker.js"))
 
