@@ -316,8 +316,8 @@ private struct SettingsView: View {
             }
             current.pane(selection)
         }
-        .frame(maxWidth: 760, alignment: .leading)
-        .padding(.horizontal, 64)
+        .frame(maxWidth: current.id == "max" ? .infinity : 760, alignment: .leading)
+        .padding(.horizontal, current.id == "max" ? 0 : 64)
         .padding(.bottom, 24)
         .frame(maxWidth: .infinity, alignment: .top)
     }
@@ -1030,25 +1030,6 @@ private struct DataRow: View {
 }
 
 // MARK: - Max
-
-private struct MaxPane: View {
-    @AppStorage("instantLinks") private var instant = true
-
-    var body: some View {
-        Pane {
-            AIProviderSettings()
-            AIFeatureSettings()
-
-            SettingsCard {
-                SettingsRow("Instant Links", icon: "bolt.fill", tint: .purple) { Toggle("", isOn: $instant).labelsHidden() }
-                Footnote("Shift-Return sends searches to DuckDuckGo to open the first result, "
-                         + "regardless of your selected search engine. If it cannot find a result, "
-                         + "it opens DuckDuckGo’s results page. Addresses and site searches keep their destinations. "
-                         + "Never resolves in a private window or for anything that looks like an address.")
-            }
-        }
-    }
-}
 
 // MARK: - Links
 
