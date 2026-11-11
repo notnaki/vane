@@ -360,8 +360,11 @@ them. Local synthetic call tests cover document identity, controls, playback, an
 they do not establish live Google Meet account or screen-sharing compatibility.
 
 Protected playback depends on the system WebKit engine and the service. Public FairPlay
-demo checks do not establish subscription-service compatibility; see the [compatibility
-evidence](REAL-SITE-COMPATIBILITY.md).
+demo checks do not establish subscription-service compatibility. Separate
+[live streaming checks](STREAMING-COMPATIBILITY.md) verified Netflix 4K SDR and Dolby
+Vision plus Spotify playback on one signed nightly/macOS 27.0.1 setup; see that report
+for measured quality and unverified limits. The earlier [compatibility
+evidence](REAL-SITE-COMPATIBILITY.md) covers public demos and native fixtures.
 
 ## Shortcuts and keyboard navigation
 
