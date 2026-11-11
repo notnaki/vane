@@ -1,5 +1,6 @@
 import AppKit
 import CoreMedia
+import CoreVideo
 @preconcurrency import ScreenCaptureKit
 import WebKit
 import XCTest
@@ -8,6 +9,14 @@ import XCTest
 /// Opt-in end-to-end WindowServer geometry measurement on the reported page.
 @MainActor final class WindowResizeResponsiveMotionTests: XCTestCase {
     func testResponsivePageKeepsVisibleWindowMovementWithinTheFrameBudget() async throws {
+        try await responsiveMotion(sidebar: false)
+    }
+
+    func testResponsivePageKeepsVisibleSidebarMovementWithinTheFrameBudget() async throws {
+        try await responsiveMotion(sidebar: true)
+    }
+
+    private func responsiveMotion(sidebar: Bool) async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["VANE_RESIZE_RESPONSIVE_MOTION"] == "1" else { throw XCTSkip("Opt-in real-page motion check") }
         TestEnvironment.prepare()
@@ -40,6 +49,14 @@ import XCTest
         while web.isLoading || web.title?.contains("GitHub") != true {
             guard ContinuousClock.now < loadedBy else { throw NSError(domain: "ResizeMotionPageReadiness", code: 1) }
             try await Task.sleep(for: .milliseconds(25))
+        }
+        if sidebar {
+            // A fixture-only marker lets WindowServer pixels measure the page seam.
+            _ = try await web.evaluateJavaScript("""
+            (()=>{const marker=document.createElement('div');marker.id='vane-motion-fixture-seam';marker.style.cssText=
+              'position:fixed;left:0;top:0;bottom:0;width:3px;background:rgb(255,0,255);z-index:2147483647;pointer-events:none';
+              document.documentElement.append(marker);return true;})()
+            """)
         }
         if let stage = environment["VANE_RESIZE_MOTION_STAGE"] {
             try "page-ready\n".write(toFile: stage, atomically: true, encoding: .utf8)
@@ -92,30 +109,40 @@ import XCTest
                 }
             ]
             defer { observations.forEach(NotificationCenter.default.removeObserver) }
-            let sampler = ResponsiveMotionSampler()
+            let sampler = ResponsiveMotionSampler(sidebar: sidebar)
             try await sampler.start(window)
             do {
                 let began = CACurrentMediaTime()
                 let frameHeight = window.frame.height
                 print("RESPONSIVE_INITIAL frame=\(window.frame.size) content=\(window.contentView?.bounds.size ?? .zero) page=\(web.bounds.size)")
-                window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.maxY))
-                let widths = Array(stride(from: 900, through: 1350, by: 2))
-                    + Array(stride(from: 1348, through: 900, by: -2))
+                if !sidebar { window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.maxY)) }
+                let widths = sidebar
+                    ? Array(stride(from: 228, through: 500, by: 2))
+                        + Array(stride(from: 498, through: 164, by: -2))
+                        + Array(stride(from: 166, through: 228, by: 2))
+                    : Array(stride(from: 900, through: 1350, by: 2))
+                        + Array(stride(from: 1348, through: 900, by: -2))
                 for width in widths {
                     guard ContinuousClock.now < activeBy else { throw NSError(domain: "ResizeMotionActiveBudget", code: 1) }
                     let next = ContinuousClock.now + .milliseconds(8)
-                    let accepted = window.proposedPageResize(NSSize(width: CGFloat(width), height: frameHeight))
-                    if accepted != window.frame.size {
-                        window.setFrame(NSRect(origin: window.frame.origin, size: accepted), display: false)
+                    if sidebar { SidebarWidth.shared.setLiveWidth(CGFloat(width), available: host.bounds.width) }
+                    else {
+                        let accepted = window.proposedPageResize(NSSize(width: CGFloat(width), height: frameHeight))
+                        if accepted != window.frame.size {
+                            window.setFrame(NSRect(origin: window.frame.origin, size: accepted), display: false)
+                        }
                     }
                     try await ContinuousClock().sleep(until: next)
                 }
-                try await compatibilityWait { !window.isPreparingPageResize && abs(window.frame.width - 900) < 1 }
+                try await compatibilityWait {
+                    if sidebar { return abs(web.bounds.width - 661) < 1 }
+                    return !window.isPreparingPageResize && abs(window.frame.width - 900) < 1
+                }
                 let ended = CACurrentMediaTime()
                 window.endPageResize()
                 try await sampler.stop()
                 let samples = sampler.samples.values.filter { $0.time >= began && $0.time <= ended }
-                var changes = [ResponsiveMotionSamples.Frame(time: began, width: 900)]
+                var changes = [ResponsiveMotionSamples.Frame(time: began, width: sidebar ? (samples.first?.width ?? 0) : 900)]
                 for sample in samples where abs(sample.width - changes.last!.width) > 0.5 { changes.append(sample) }
                 let pauses = zip(changes, changes.dropFirst()).map { ($1.time - $0.time) * 1000 }.sorted()
                 let steps = zip(changes, changes.dropFirst()).map { abs($1.width - $0.width) }
@@ -125,10 +152,14 @@ import XCTest
                      from: previous.width, to: next.width)
                 }.sorted { $0.pause > $1.pause }.prefix(5)
                 print("RESPONSIVE_LONGEST \(longest)")
-                print("RESPONSIVE_WINDOWSERVER changes=\(changes.count-1) maxPauseMS=\(pauses.last ?? .infinity) p95PauseMS=\(p95) maxStep=\(steps.max() ?? .infinity)")
+                print("RESPONSIVE_WINDOWSERVER sidebar=\(sidebar) changes=\(changes.count-1) maxPauseMS=\(pauses.last ?? .infinity) p95PauseMS=\(p95) maxStep=\(steps.max() ?? .infinity)")
                 XCTAssertFalse(owner.interrupted, "Actual foreground admission must hold throughout capture")
                 XCTAssertGreaterThan(changes.count, 10)
-                XCTAssertGreaterThanOrEqual(changes.map(\.width).max() ?? 0, 1300)
+                if sidebar {
+                    XCTAssertGreaterThanOrEqual(changes.map(\.width).max() ?? 0, 490)
+                    XCTAssertLessThanOrEqual(changes.map(\.width).min() ?? 1000, 180)
+                    XCTAssertEqual(window.frame.width, 900)
+                } else { XCTAssertGreaterThanOrEqual(changes.map(\.width).max() ?? 0, 1300) }
                 XCTAssertLessThanOrEqual(pauses.last ?? .infinity, 80, "Avoid the measured170ms page-layout stalls")
                 XCTAssertLessThanOrEqual(p95, 60)
                 XCTAssertLessThanOrEqual(steps.max() ?? .infinity, 24)
@@ -155,6 +186,8 @@ private final class ResponsiveMotionSamples: @unchecked Sendable {
 @MainActor private final class ResponsiveMotionSampler: NSObject, SCStreamOutput {
     nonisolated let samples = ResponsiveMotionSamples()
     private var stream: SCStream?
+    nonisolated let sidebar: Bool
+    init(sidebar: Bool) { self.sidebar = sidebar; super.init() }
     func start(_ window: NSWindow) async throws {
         let content = try await SCShareableContent.currentProcess
         let target = try XCTUnwrap(content.windows.first { $0.windowID == CGWindowID(window.windowNumber) })
@@ -162,6 +195,8 @@ private final class ResponsiveMotionSamples: @unchecked Sendable {
         config.width = 1700
         config.height = 800
         config.showsCursor = false
+        config.captureDynamicRange = .SDR
+        config.pixelFormat = kCVPixelFormatType_32BGRA
         config.ignoreShadowsSingleWindow = true
         config.minimumFrameInterval = CMTime(value: 1, timescale: 120)
         config.queueDepth = 8
@@ -185,6 +220,30 @@ private final class ResponsiveMotionSamples: @unchecked Sendable {
               let rect = CGRect(dictionaryRepresentation: dictionary as CFDictionary) else { return }
         let time = CMTimeGetSeconds(sample.presentationTimeStamp)
         guard time.isFinite, rect.width > 0 else { return }
-        samples.append(.init(time: time, width: rect.width))
+        if sidebar {
+            guard let pixel = sample.imageBuffer,
+                  let content = info[.contentRect] as? NSDictionary,
+                  let valid = CGRect(dictionaryRepresentation: content as CFDictionary),
+                  let scale = info[.scaleFactor] as? NSNumber,
+                  let contentScale = info[.contentScale] as? NSNumber else { return }
+            let pixelsPerPoint = scale.doubleValue * contentScale.doubleValue
+            guard pixelsPerPoint > 0 else { return }
+            CVPixelBufferLockBaseAddress(pixel, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
+            guard let bytes = CVPixelBufferGetBaseAddress(pixel)?.assumingMemoryBound(to: UInt8.self) else { return }
+            let origin = valid.minX * scale.doubleValue
+            let left = max(0, Int(ceil(origin)))
+            let right = min(CVPixelBufferGetWidth(pixel), Int(floor(valid.maxX * scale.doubleValue)))
+            let y = Int(valid.midY * scale.doubleValue)
+            guard y >= 0, y < CVPixelBufferGetHeight(pixel), left < right else { return }
+            let row = y * CVPixelBufferGetBytesPerRow(pixel)
+            for x in left..<right {
+                let p = row + x * 4
+                if Int(bytes[p]) > Int(bytes[p + 1]) + 80 && Int(bytes[p + 2]) > Int(bytes[p + 1]) + 80 {
+                    samples.append(.init(time: time, width: (Double(x) - origin) / pixelsPerPoint))
+                    return
+                }
+            }
+        } else { samples.append(.init(time: time, width: rect.width)) }
     }
 }

@@ -128,6 +128,18 @@ final class WebHost: NSView {
     override func setFrameSize(_ newSize: NSSize) {
         let previous = frame.size
         let wasEmpty = frame.width <= 0 || frame.height <= 0
+        // Sidebar/split drags have no native window proposal. Reactivate the
+        // automatic hints before ordinary autoresizing, including after a window
+        // drag cleared them. Prepared pages have their native mask suspended.
+        if !wasEmpty, !offscreen, window != nil, let web, web.superview === self,
+           !web.isHiddenOrHasHiddenAncestor,
+           (newSize.width != previous.width && web.autoresizingMask.contains(.width)
+            || newSize.height != previous.height && web.autoresizingMask.contains(.height)) {
+            let mask = web.autoresizingMask
+            let next = NSSize(width: web.frame.width + (mask.contains(.width) ? newSize.width - previous.width : 0),
+                              height: web.frame.height + (mask.contains(.height) ? newSize.height - previous.height : 0))
+            PageResizeStyle.prepare(web, nextSize: next)
+        }
         super.setFrameSize(newSize)
         if previous != newSize { pageLayoutDidResize?() }
         if wasEmpty, !offscreen, let web { PageResizeStyle.warm(web) }
@@ -438,9 +450,8 @@ struct BrowserWindow: View {
     /// App-wide, so every window's sidebar is the width the user last dragged one to.
     @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var library = Library.shared
-    /// The window's own width, so the Library can be told how much it may take from the
-    /// page. `onGeometryChange` rather than a `GeometryReader` around the stack: the reader
-    /// would have to wrap everything to measure it, and this is one number.
+    /// Available chrome width, capped once both navigation columns fit. The page
+    /// still receives exact native geometry without republishing every window pixel.
     @State private var windowWidth: CGFloat = 0
     private var sidebarWidth: CGFloat { SidebarWidth.fitting(sidebar.width, in: windowWidth) }
 
@@ -464,7 +475,9 @@ struct BrowserWindow: View {
     }
 
     var body: some View {
-        ZStack(alignment: .leading) {
+        let chromeLayout = PageResizeLayout(librarySection: library.section, spaces: spaceCount,
+                                            isPrivate: store.isPrivate)
+        return ZStack(alignment: .leading) {
             WindowGlass()
             SpaceGround()
             LibraryNavigationLayout(gesture: store.libraryGesture,
@@ -507,8 +520,10 @@ struct BrowserWindow: View {
         .sheet(isPresented: $store.organizationSheet.presented(when: store.profileVisible)) {
             TabOrganizationSheet(store: store)
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
-        .environment(\.sidebarWindowWidth, windowWidth > 0 ? windowWidth : .infinity)
+        .onGeometryChange(for: CGFloat.self) {
+            chromeLayout.chromeWidth(at: $0.size.width)
+        } action: { windowWidth = $0 }
+        .environment(\.sidebarWindowWidth, windowWidth > 0 ? min(windowWidth, SidebarWidth.maximum + 200) : .infinity)
         .environment(\.librarySpaceCatalog, librarySpaces)
         .onAppear {
             if !store.isPrivate { librarySpaces.prepare(manager: profiles) }

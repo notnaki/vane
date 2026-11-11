@@ -26,6 +26,79 @@ import XCTest
         }
     }
 
+    func testViewportHintsFollowSidebarDragWithoutRebuildingTheStylesheet() async throws {
+        let web = try await page(variables: 160)
+        let host = WebHost(web)
+        let window = ResizeStyleModelWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil; host.removePage(); window.close() }
+        _ = try await read(web, "'ordered'", world: PageResizeStyle.world)
+        _ = try await read(web, """
+        globalThis.rebuilds=0;const original=CSSStyleSheet.prototype.replaceSync;
+        CSSStyleSheet.prototype.replaceSync=function(...args){globalThis.rebuilds++;return original.apply(this,args)};'ready'
+        """, world: PageResizeStyle.world)
+        let outerFrame = window.frame
+        for zoom: CGFloat in [1, 1.5] {
+            web.pageZoom = zoom
+            var previousCount: Int?
+            // Far beyond the warm band, across a cycle boundary, then reverse.
+            for cssWidth: CGFloat in [700, 702, 704, 818, 820, 822, 820, 798, 839, 880] {
+                let width = cssWidth * zoom
+                host.setFrameSize(NSSize(width: width, height: 600))
+                try await compatibilityWait {
+                    let current = try await web.evaluateJavaScript("innerWidth") as? NSNumber
+                    return abs((current?.doubleValue ?? 0) - cssWidth) <= 1
+                }
+                let count = Int(try await read(web, "String([...getComputedStyle(document.documentElement)].filter(x=>x.startsWith('--vane-resize-')).length)"))
+                XCTAssertNotEqual(count, previousCount, "Each resized CSS pixel must avoid the inherited-variable equality path")
+                previousCount = count
+                XCTAssertEqual(web.frame.width, width)
+                XCTAssertEqual(window.frame, outerFrame)
+                XCTAssertEqual(web.pageZoom, zoom)
+            }
+        }
+        let rebuilds = try await read(web, "String(globalThis.rebuilds)", world: PageResizeStyle.world)
+        XCTAssertEqual(rebuilds, "0", "Live geometry must not repeatedly invalidate the complete document stylesheet")
+    }
+
+    func testHostResizeReactivatesHintsAfterWindowDragFinishes() async throws {
+        let web = try await page(variables: 160)
+        let host = WebHost(web)
+        let window = ResizeStyleModelWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil; host.removePage(); window.close() }
+        PageResizeStyle.finish(web)
+        _ = try await read(web, "'ordered'", world: PageResizeStyle.world)
+        host.setFrameSize(NSSize(width: 700, height: 600))
+        _ = try await read(web, "'ordered'", world: PageResizeStyle.world)
+        let active = try await read(web, "String(globalThis.__vaneResizeStyle.active)", world: PageResizeStyle.world)
+        XCTAssertEqual(active, "true", "The next sidebar drag must work after native window-resize cleanup")
+    }
+
+    func testHiddenOrPreparedHostResizeKeepsHintsRetired() async throws {
+        let web = try await page(variables: 160)
+        let host = WebHost(web)
+        let window = ResizeStyleModelWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil; host.removePage(); window.close() }
+        PageResizeStyle.finish(web)
+        _ = try await read(web, "'ordered'", world: PageResizeStyle.world)
+        host.offscreen = true
+        host.setFrameSize(NSSize(width: 800, height: 600))
+        host.offscreen = false
+        web.autoresizingMask = []
+        host.setFrameSize(NSSize(width: 700, height: 600))
+        _ = try await read(web, "'ordered'", world: PageResizeStyle.world)
+        let active = try await read(web, "String(globalThis.__vaneResizeStyle.active)", world: PageResizeStyle.world)
+        XCTAssertEqual(active, "false", "A hidden host or paint coordinator owns its own style lifetime")
+    }
+
     func testHintPreservesAuthorStylesAttributesAndEveryElementsGeometry() async throws {
         let web = try await page(variables: 160)
         defer { web.stopLoading() }

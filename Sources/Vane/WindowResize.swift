@@ -24,12 +24,20 @@ struct WindowResizeAnchor {
 
 /// The same column sizing used by LibraryNavigationLayout, captured by its root.
 /// Native resize preparation needs the next viewport before SwiftUI's next layout.
-struct PageResizeLayout {
+struct PageResizeLayout: Sendable {
     var sidebarWidth: CGFloat = 0
     var librarySection: LibrarySection?
     var spaces = 0
     var isPrivate = false
     var enabled = true
+
+    /// Chrome stops depending on raw window width once both navigation columns
+    /// fit. Keep publishing that stable value while the page continues resizing.
+    func chromeWidth(at width: CGFloat) -> CGFloat {
+        let panel = Library.panelWidth(section: librarySection ?? .archived, spaces: spaces,
+                                       private: isPrivate, available: .greatestFiniteMagnitude)
+        return min(width, max(SidebarWidth.maximum + 200, panel + Look.libraryMinPage))
+    }
 
     func leadingWidth(at width: CGFloat) -> CGFloat {
         guard let librarySection else {
