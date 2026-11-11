@@ -107,6 +107,29 @@ class ChangeScopeTests(unittest.TestCase):
         self.commit()
         self.scope(True)
 
+    def test_website_video_fonts_and_licenses_skip_app_work(self):
+        for name in ("docs/media/session.webm", "docs/media/session.mp4",
+                     "docs/fonts/wordmark.ttf", "docs/fonts/OFL.txt",
+                     "docs/fonts/Pinyon-OFL.txt"):
+            with self.subTest(name=name):
+                p = self.root / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(b"website asset\n")
+                base = self.git("rev-parse", "HEAD")
+                self.commit()
+                self.scope(False, base)
+
+    def test_website_media_does_not_exempt_unknown_files_or_source(self):
+        for name in ("docs/fonts/instructions.txt", "docs/fonts/setup.py",
+                     "Sources/session.mp4", "Resources/wordmark.ttf"):
+            with self.subTest(name=name):
+                p = self.root / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("fixture\n")
+                base = self.git("rev-parse", "HEAD")
+                self.commit()
+                self.scope(True, base)
+
     def test_workflow_routing_edits_skip_but_native_edits_require_app_work(self):
         workflow = self.root / ".github/workflows/checks.yml"
         workflow.parent.mkdir(parents=True)

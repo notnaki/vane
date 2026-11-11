@@ -81,3 +81,56 @@ appearance demonstrates ordinary browsing and does not imply endorsement.
 The self-hosted Cormorant Garamond variable font comes from the Google Fonts
 repository (`ofl/cormorantgaramond`). Its SIL Open Font License is preserved in
 `../fonts/OFL.txt`.
+
+
+## Website identity
+
+`../app-icon.png` is a byte-identical copy of the original blue glass catalogue
+render at `AppIcons/Previews/Normal.png`, used as the website’s primary logo.
+The installed app separately supports a user-selectable Dark finish; the website
+does not infer a visitor’s app-icon preference.
+
+The homepage Vane wordmark uses Pinyon Script from the Google Fonts repository
+(`ofl/pinyonscript`), self-hosted in `../fonts/pinyon-script.ttf` with its SIL Open
+Font License in `../fonts/Pinyon-OFL.txt`. It is lettering for the website, not
+a replacement for the native app icon.
+
+`sunlight.jpg` is an AI-generated decorative leaf-shadow image created on
+10 November 2026. The homepage blends it into a dark lilac backdrop. It contains
+no app UI; product windows remain unmodified native app captures.
+
+## Homepage session video — 11 November 2026
+
+`vane-session.webm` and its `vane-session.mp4` fallback contain a 20-second,
+silent recording of installed Vane `0.1.1-nightly.20261110.1` (build 623).
+It switches from the NASA Mars page to a Studio Space, opens Linear and Figma
+side by side, and brings a smaller Little Vane article forward for a quick read.
+The pointer uses varied curved paths and brief corrections; input is scripted
+against the disposable instance. macOS menus and desktop chrome are excluded.
+
+The recording uses a separate data directory and uniquely identified app copy.
+The app binary is unchanged (SHA-256
+`16eb83e96deec152a02f0605b44e7c308cc9d82f6d479e0ab1aecdce3966bc52`).
+Automatic Picture in Picture is disabled only in that demo instance to keep
+Figma’s page video from floating over the recording.
+
+Exports are proportionally scaled to 1600 × 1050 at 30 fps. The WebM’s alpha
+comes from the actual native window silhouette in `vane-session-poster.png`;
+the MP4 uses the same silhouette over a dark surface. There is no additional
+CSS corner rounding or redrawn app UI. The homepage pauses playback offscreen,
+preserves a visitor’s manual pause, and leaves playback manual with Reduce Motion.
+
+
+## Delivery optimisation — 11 November 2026
+
+The primary pages use proportional WebP derivatives of the native PNG captures
+at 768, 1536, and 2304 pixels, selected through responsive `srcset` values.
+The original PNGs remain preserved. Capture derivatives retain their native
+Display P3 ICC profiles and alpha corners; no controls are redrawn or cropped.
+The homepage magnifier uses the 1536-pixel source for legibility.
+
+`vane-session-poster.webp` is a 1600-pixel derivative of the native video poster.
+`sunlight.webp` compresses the decorative background. The small `app-icon-*.webp`
+files are proportional derivatives of `../app-icon.png`, whose original bytes
+remain unchanged. Cormorant and Pinyon are delivered as WOFF2 using the same
+font data and existing SIL Open Font Licenses; original TTFs are preserved.

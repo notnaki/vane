@@ -12,7 +12,7 @@ ROUTING_FILES = {"scripts/ci-change-scope.py", "scripts/test-ci-change-scope.py"
                  "scripts/test-checks-workflow.py"}
 WORKFLOW = ".github/workflows/checks.yml"
 WEBSITE_SUFFIXES = {".html", ".css", ".js", ".cjs", ".svg", ".png", ".jpg", ".jpeg",
-                    ".webp", ".gif", ".ico", ".woff", ".woff2"}
+                    ".webp", ".gif", ".ico", ".woff", ".woff2", ".ttf", ".mp4", ".webm"}
 
 
 def routing_only_workflow_change(base, head):
@@ -44,6 +44,9 @@ def cheap_checks_only(path):
     if path in ROUTING_FILES or path == "docs/.nojekyll":
         return True
     if parts and parts[0] == "docs" and PurePosixPath(path).suffix in WEBSITE_SUFFIXES:
+        return True
+    if parts[:2] == ("docs", "fonts") and len(parts) == 3 and (
+            parts[2] == "OFL.txt" or parts[2].endswith("-OFL.txt")):
         return True
     return path == ".gitignore" or path.endswith(".md") and (
         len(parts) == 1 or parts[0] == "docs" or

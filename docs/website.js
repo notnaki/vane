@@ -86,7 +86,9 @@
     query.value = '';
     query.placeholder = scope === 'docs.html' ? 'Find something in the guide…' : scope === 'privacy.html' ? 'Find something in the privacy policy…' : 'Find a page, feature, or shortcut…';
     indexIncomplete = false;
-    renderResults(); finder.showModal(); query.focus(); loadIndex();
+    finder.removeAttribute('data-keyboard-navigation');
+    finder.removeAttribute('data-pointer-navigation');
+    renderResults(); finder.showModal(); query.focus({preventScroll:true}); loadIndex();
   }
   document.querySelectorAll('[data-site-search]').forEach(button => {
     button.hidden = false;
@@ -96,8 +98,11 @@
   backdropClose(finder);
   finder.addEventListener('close', () => searchOpener?.focus({preventScroll:true}));
   query.addEventListener('input',renderResults);
+  results.addEventListener('pointermove',event=>{if(event.pointerType!=='touch')finder.setAttribute('data-pointer-navigation','');});
   query.addEventListener('keydown',event => { if (event.key==='Enter') { const first=results.querySelector('a'); if(first) { event.preventDefault(); first.click(); } } });
   finder.addEventListener('keydown',event => {
+    finder.removeAttribute('data-pointer-navigation');
+    if(event.key==='Tab')finder.setAttribute('data-keyboard-navigation','');
     const links = [...results.querySelectorAll('a')];
     if (!['ArrowDown','ArrowUp'].includes(event.key) || !links.length) return;
     event.preventDefault();
@@ -111,6 +116,21 @@
       event.preventDefault(); openSearch(document.activeElement);
     }
   });
+
+  // The Guide keeps its full sidebar on desktop and a compact contents control on phones.
+  const guideContents=document.querySelector('.guide-contents');
+  if(guideContents){
+    const compactGuide=matchMedia('(max-width:760px)');
+    function arrangeContents(){
+      const moveFocus=compactGuide.matches&&guideContents.contains(document.activeElement);
+      guideContents.open=!compactGuide.matches;
+      if(moveFocus)guideContents.querySelector('summary').focus({preventScroll:true});
+    }
+    arrangeContents();compactGuide.addEventListener('change',arrangeContents);
+    guideContents.querySelectorAll('a').forEach(link=>link.addEventListener('click',()=>{
+      if(compactGuide.matches){guideContents.open=false;const target=document.querySelector(link.getAttribute('href'));if(target){target.tabIndex=-1;target.focus({preventScroll:true});}}
+    }));
+  }
 
   // Keep the reader's current topic visible in the table of contents.
   const toc = document.querySelector('.guide-toc');
@@ -159,9 +179,11 @@
   const cards=[...document.querySelectorAll('[data-feature-group]')];
   filters.forEach(button => button.addEventListener('click',() => {
     const group=button.dataset.featureFilter;
+    document.querySelector('.feature-mosaic').dataset.filter=group;
     filters.forEach(filter => filter.setAttribute('aria-pressed',String(filter===button)));
     let count=0;
     cards.forEach(card => {
+      card.classList.remove('bento-fill-row');
       card.hidden = group!=='all' && !card.dataset.featureGroup.split(' ').includes(group);
       if (!card.hidden) {
         count++;
@@ -169,6 +191,8 @@
         if (!reduceMotion.matches) card.animate([{opacity:.35,transform:'translateY(5px)'},{opacity:1,transform:'translateY(0)'}],{duration:220,easing:'cubic-bezier(.16,1,.3,1)'});
       }
     });
+    const visible=cards.filter(card=>!card.hidden);
+    if(group!=='all'&&count%2)visible.at(-1)?.classList.add('bento-fill-row');
     document.querySelector('#feature-count').textContent=count+' features shown';
   }));
 
@@ -178,10 +202,9 @@
     const frame=sidebar.querySelector('.sidebar-window');
     const detail=sidebar.querySelector('.sidebar-detail-image');
     const buttons=[...sidebar.querySelectorAll('[data-sidebar-topic]')];
-    const original=sidebar.querySelector('.sidebar-original');
     const resetZoom=sidebar.querySelector('.sidebar-zoom-reset');
     const lens=document.createElement('div');lens.className='sidebar-highlight';lens.setAttribute('aria-hidden','true');
-    const magnified=document.createElement('img');magnified.className='sidebar-magnified-image';magnified.alt='';magnified.loading='lazy';magnified.src=detail.currentSrc||detail.src;lens.append(magnified);
+    const magnified=document.createElement('img');magnified.className='sidebar-magnified-image';magnified.alt='';magnified.loading='lazy';magnified.decoding='async';magnified.width=1536;magnified.height=1008;magnified.src=detail.dataset.zoomSrc||detail.currentSrc||detail.src;lens.append(magnified);
     sidebar.querySelector('.sidebar-window-images').append(lens);
     const topics={
       favourites:{text:'Favourites stay with you as you move between Spaces.',x:.005469,y:.103571,w:.167188,h:.059524},
@@ -201,21 +224,23 @@
       lens.classList.toggle('is-magnified',zoomed);resetZoom.hidden=!zoomed;
     }
     resetZoom.addEventListener('click',()=>{buttons.find(button=>button.dataset.sidebarTopic===selected).focus({preventScroll:true});zoomed=false;paintDetail();});
-    reduceMotion.addEventListener('change',()=>{if(reduceMotion.matches){zoomed=false;paintDetail();}});
-    async function selectTopic(button){
+    reduceMotion.addEventListener('change',paintDetail);
+    async function selectTopic(button,fromScroll=false){
       const token=++topicRequest;frame.setAttribute('aria-busy','true');
       if(detail.complete&&!detail.naturalWidth)detail.src=detail.getAttribute('src');
-      try{await detail.decode();}catch{if(token===topicRequest){frame.removeAttribute('aria-busy');description.textContent='This view couldn’t load. Choose a topic to retry.';}return;}
+      try{await detail.decode();}catch{if(token===topicRequest){frame.removeAttribute('aria-busy');description.textContent='This view couldn’t load. Choose a topic to retry.';sidebar.dispatchEvent(new CustomEvent('sidebar-selection-error',{detail:{topic:button.dataset.sidebarTopic}}));}return;}
       if(token!==topicRequest)return;
-      frame.removeAttribute('aria-busy');selected=button.dataset.sidebarTopic;zoomed=!reduceMotion.matches;
+      frame.removeAttribute('aria-busy');selected=button.dataset.sidebarTopic;zoomed=true;
       buttons.forEach(item=>{const active=item===button;item.setAttribute('aria-selected',String(active));item.tabIndex=active?0:-1;});
-      frame.setAttribute('aria-labelledby',button.id);original.href=detail.src;description.textContent=topics[selected].text;
-      magnified.src=detail.currentSrc||detail.src;paintDetail();
+      frame.setAttribute('aria-labelledby',button.id);description.textContent=topics[selected].text;
+      magnified.src=detail.dataset.zoomSrc||detail.currentSrc||detail.src;paintDetail();
+      sidebar.dispatchEvent(new CustomEvent('sidebar-selection',{detail:{topic:selected,fromScroll}}));
     }
     buttons.forEach((button,i)=>{
       button.disabled=false;button.addEventListener('click',()=>selectTopic(button));
       button.addEventListener('keydown',event=>{let next;if(event.key==='ArrowDown'||event.key==='ArrowRight')next=(i+1)%buttons.length;if(event.key==='ArrowUp'||event.key==='ArrowLeft')next=(i-1+buttons.length)%buttons.length;if(event.key==='Home')next=0;if(event.key==='End')next=buttons.length-1;if(next!==undefined){event.preventDefault();buttons[next].focus();selectTopic(buttons[next]);}});
     });
+    sidebar.addEventListener('sidebar-scroll-step',event=>{const button=buttons.find(item=>item.dataset.sidebarTopic===event.detail.topic);if(button&&(selected!==event.detail.topic||!zoomed))selectTopic(button,true);});
     paintDetail();
   }
 
@@ -250,19 +275,4 @@
     selectQuestion(0,false);
   }
 
-  const zoomImages=[...document.querySelectorAll('[data-zoom]')];
-  if (zoomImages.length) {
-    const dialog=document.createElement('dialog'); dialog.className='capture-dialog'; dialog.setAttribute('aria-label','App screenshot');
-    dialog.innerHTML='<div class="capture-toolbar"><span>Vane</span><div><button class="capture-zoom" type="button" aria-pressed="false">Zoom in</button><button class="dialog-close" type="button" aria-label="Close screenshot">Close '+arrow+'</button></div></div><img alt="">';
-    document.body.append(dialog); const image=dialog.querySelector('img'); const zoom=dialog.querySelector('.capture-zoom'); let opener;
-    function reset() { dialog.classList.remove('is-zoomed'); zoom.textContent='Zoom in'; zoom.setAttribute('aria-pressed','false'); dialog.scrollTo(0,0); }
-    zoomImages.forEach(source => {
-      const button=document.createElement('button'); button.type='button'; button.className='capture-button'; button.setAttribute('aria-label','View full-size app screenshot');
-      source.replaceWith(button); button.append(source);
-      button.addEventListener('click',() => { opener=button; reset(); image.src=source.src; image.alt=source.alt; dialog.querySelector('.capture-toolbar > span').textContent=source.alt; dialog.showModal(); });
-    });
-    zoom.addEventListener('click',() => { const active=dialog.classList.toggle('is-zoomed'); zoom.textContent=active?'Fit window':'Zoom in'; zoom.setAttribute('aria-pressed',String(active)); if(!active)dialog.scrollTo(0,0); });
-    dialog.querySelector('.dialog-close').addEventListener('click',()=>dialog.close());
-    dialog.addEventListener('close',()=>{reset();opener?.focus({preventScroll:true});}); backdropClose(dialog);
-  }
 })();
