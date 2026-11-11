@@ -76,6 +76,20 @@ def retire_timed_out_primary(process, directory, token):
         records = load_records(directory, token)  # Validate ALL before any host signal.
         if not records: raise ValueError("primary timeout has no recorded host identity; manifest retained")
         initial_records = records
+        # Temporary PR651 preflight diagnostics; never target an unverified PID.
+        trace_root = os.environ.get("VANE_PREVIEW_TIMEOUT_TRACES")
+        if trace_root:
+            for record in records:
+                host = record["host"]
+                try:
+                    observed = process_identity(host["pid"])
+                    if observed != {key: host[key] for key in ("pid", "start", "path")}:
+                        continue
+                    trace = Path(trace_root) / f'preview-timeout-{host["pid"]}.log'
+                    print(f"Sampling timed-out owned test host pid={host['pid']} to {trace}", flush=True)
+                    subprocess.run(["sample", str(host["pid"]), "2", "-file", str(trace)], timeout=10, check=False)
+                except Exception as error:
+                    print(f"Timeout stack capture unavailable: {error}", flush=True)
     finally:
         # This must run even if the manifest is missing, malformed, or untrusted.
         stop_primary_driver(process)
