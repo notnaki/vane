@@ -927,7 +927,7 @@ struct SpacePreviewList: View, Equatable {
             }
             if TidyTabs.offersClear(today: todayCount) {
                 if control != .hidden { Text("|").foregroundStyle(Look.inkQuiet) }
-                Button("Clear", action: {})
+                Button(action: {}) { SidebarClearLabel() }
             }
         }
     }
