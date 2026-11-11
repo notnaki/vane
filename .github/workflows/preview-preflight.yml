@@ -1,0 +1,45 @@
+name: Preview focused preflight
+
+on:
+  push:
+    branches: [codex/fix-651-preflight]
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: Identify toolchain
+        id: toolchain
+        run: echo "key=$(python3 scripts/ci-build-artifact.py toolchain)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: preview-preflight-${{ github.sha }}
+          restore-keys: |
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - name: Restore unchanged source timestamps
+        run: python3 scripts/ci-source-state.py restore
+      - name: Build focused test host
+        run: swift build -c debug --build-tests --disable-index-store
+      - name: Three retained preview samples
+        env:
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '240'
+        run: |
+          result=0
+          for attempt in 1 2 3; do
+            python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter 'LinkPreviewPresentationTests|PreviewLoadingPerformanceTests|Feel04LinkPreviewTests' > "$RUNNER_TEMP/preview-sample-$attempt.log" 2>&1 || result=1
+            cat "$RUNNER_TEMP/preview-sample-$attempt.log"
+          done
+          exit "$result"
+      - name: Preserve every sample
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: preview-preflight-logs
+          path: ${{ runner.temp }}/preview-sample-*.log
+          retention-days: 7
