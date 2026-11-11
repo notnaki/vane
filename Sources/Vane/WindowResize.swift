@@ -32,7 +32,9 @@ struct PageResizeLayout {
     var enabled = true
 
     func leadingWidth(at width: CGFloat) -> CGFloat {
-        guard let librarySection else { return sidebarWidth }
+        guard let librarySection else {
+            return sidebarWidth > 0 ? SidebarWidth.fitting(sidebarWidth, in: width) : 0
+        }
         return Library.panelWidth(section: librarySection, spaces: spaces,
                                   private: isPrivate, available: width)
     }
