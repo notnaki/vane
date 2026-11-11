@@ -362,7 +362,8 @@ they do not establish live Google Meet account or screen-sharing compatibility.
 Protected playback depends on the system WebKit engine and the service. Public FairPlay
 demo checks do not establish subscription-service compatibility. Separate
 [live streaming checks](STREAMING-COMPATIBILITY.md) verified Netflix 4K SDR and Dolby
-Vision plus Spotify playback on one signed nightly/macOS 27.0.1 setup; see that report
+Vision, Spotify music, and Disney+ protected video at 720p on one signed nightly/macOS
+27.0.1 setup; see that report
 for measured quality and unverified limits. The earlier [compatibility
 evidence](REAL-SITE-COMPATIBILITY.md) covers public demos and native fixtures.
 

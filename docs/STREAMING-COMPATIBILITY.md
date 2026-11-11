@@ -1,7 +1,8 @@
 # Subscription streaming: observed compatibility
 
 Live checks on **2026-11-11** verified Netflix 4K SDR, Netflix 4K Dolby Vision,
-and Spotify music playback in the installed Vane app. These are scoped playback
+Spotify music playback, and Disney+ protected video at 720p in the installed Vane
+app. These are scoped playback
 observations, not a certification of every title, account, device, or macOS version.
 
 ## Tested environment
@@ -22,7 +23,8 @@ observations, not a certification of every title, account, device, or macOS vers
   `Version/27.0.1 Safari/605.1.15`. No user-agent switch or DRM bypass was used.
 - Existing signed-in accounts in the user's normal Vane profile. Netflix's
   account page showed **Premium**, and its active profile used **Auto** data
-  usage. Account identifiers, credentials, session identifiers, and raw account
+  usage. The user completed Disney+ sign-in before its playback test; its
+  subscription tier was not recorded. Account identifiers, credentials, session identifiers, and raw account
   screenshots are deliberately excluded from this report.
 - Native Vane UI and its Web Inspector were used. Playback statistics describe
   the actual installed app, not a separate preview browser or a public DRM demo.
@@ -37,7 +39,7 @@ observations, not a certification of every title, account, device, or macOS vers
 | Netflix audio in these samples | **Pass** | **2-channel HE-AAC, 128 kbps** | Player reported `audio/mp4;codecs=mp4a.40.5`, channels 2.0. The nature title also reported `SpeakerSpatialAudio`. This does not verify discrete surround sound or Dolby Atmos output. |
 | Spotify Web Player, signed-in browsing and Spotify Connect | **Pass** | Library/settings load; existing remote playback is represented | The initial player correctly displayed an iPhone as the playback destination with advancing track progress. Remote progress alone was not counted as local browser audio. |
 | Spotify Web Player, local music playback | **Pass, quality unmeasured** | Local playback, pause/resume; **Automatic** streaming quality | After choosing **This web browser**, the remote-device banner disappeared, local volume controls became available, track progress advanced, and `navigator.mediaSession.playbackState` reported `playing`. Pause changed the main control to Play; resume changed it back to Pause. The user also confirmed playback. The quality menu exposed only Automatic in the observed session. Actual codec, bitrate, sample rate, bit depth, and lossless delivery were not measured. |
-| Disney+ subscription playback | **Blocked / unverified** | Sign-in page loads | `disneyplus.com` redirected to `/identity/login/enter-email` in the tested profile. No authenticated video was available for this pass. Resolution, HDR, audio format, DRM licensing, and playback controls cannot be scored as passes from the login page. |
+| Disney+, *Wonder Man*, season 1 episode 1, “Matinee” (`f63874ef-939f-4a16-8fc0-043f3169f664`) | **Pass, format coverage partial** | **1280 × 720 protected video**, advancing playback and pause; Turkish subtitles displayed | After the user signed in, the episode played from its opening into the ninth minute. A read-only media sample at 536.617 s reported 1280 × 720, `paused=false`, `readyState=4`, modern `mediaKeys` attached, no media error, 13,007 frames, 64 dropped frames, and zero corrupted frames. The title badge was HD. Pause changed the control to Play; the settings menu showed English audio and Turkish subtitles. Codec, exact DRM system, bitrate, HDR, surround audio, and a higher maximum resolution were not established. |
 
 Netflix reported `com.apple.fps.3_0` as the active key system and usable keys for
 the selected representations. The HDR pass is supported by the **playing Dolby
@@ -45,7 +47,7 @@ Vision codec and tags**, not just the separate `HDR support: true
 (media-capabilities)` line. Physical display luminance, color accuracy, HDR10
 fallback, external-display HDCP, and Dolby Atmos were not independently measured.
 
-These were short checks, not full episodes, long listening sessions, or a network
+These were limited checks, not full episodes, long listening sessions, or a network
 recovery test. Minimum macOS 26, Intel Macs, other displays, other subscription
 tiers, fresh login/MFA, relaunch persistence, offline downloads, casting, and every
 service feature remain outside this evidence.
@@ -91,10 +93,13 @@ service feature remain outside this evidence.
    local controls, advancing progress, and pause/resume. Read Settings → Audio
    quality; do not turn Automatic into an assumed measured kbps rate. DOM media
    queries and Media Session metadata alone do not establish the audio format.
-4. For Disney+, use an authenticated subscribed profile, start protected content,
-   and measure the actual decoded video and audio before replacing the unverified
-   row. Catalog labels and supported-device documentation are not a live playback
-   pass.
+4. For Disney+, use an authenticated subscribed profile and start protected
+   content. Read the active video's intrinsic dimensions, ready state, advancing
+   time, media-key attachment, error state, and frame counters. Ignore unused
+   zero-size video elements; accessible open shadow roots may contain the active
+   player. Record the quality setting and actual media format when available.
+   A 720p sample does not establish a hard 720p ceiling, and catalog labels do not
+   establish a decoded HDR or 4K stream.
 
 The older public-demo and native-fixture results remain in
 [Real-site compatibility evidence](REAL-SITE-COMPATIBILITY.md).

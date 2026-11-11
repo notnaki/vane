@@ -168,7 +168,8 @@ WebKit version, the website, and sometimes signing or Apple-managed capabilities
 
 - **Compatibility is incomplete.** Scoped macOS 27 public-demo, local-fixture, and
   [live streaming checks](docs/STREAMING-COMPATIBILITY.md) cover only their listed
-  environments and flows. Netflix 4K SDR/Dolby Vision and Spotify playback were
+  environments and flows. Netflix 4K SDR/Dolby Vision, Spotify music, and Disney+
+  protected video at 720p were
   observed on one signed, notarized nightly; this does not establish every service,
   provider sign-in, cross-network call, hardware permission, or minimum-macOS setup.
   See the [compatibility matrix](docs/REAL-SITE-COMPATIBILITY.md).

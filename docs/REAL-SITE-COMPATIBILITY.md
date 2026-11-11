@@ -1,9 +1,9 @@
 # Real-site compatibility evidence
 
 The [2026-11-11 subscription-streaming checks](STREAMING-COMPATIBILITY.md) add
-live Netflix 4K SDR/Dolby Vision and Spotify playback observations in an installed
-Developer ID signed, notarized nightly. Disney+ playback remains unverified
-pending an authenticated session. These later results do not change the historical
+live Netflix 4K SDR/Dolby Vision, Spotify music, and Disney+ 720p protected-playback
+observations in an installed Developer ID signed, notarized nightly. These later
+results do not change the historical
 scope of the October checks below.
 
 The public-demo pass on **2026-10-06** verified password-session navigation,
