@@ -28,7 +28,7 @@ final class VaneWindow: NSWindow {
     func prepareSidebarClose(_ store: TabStore) -> Bool {
         guard isVisible, !isPreparingPageResize, !inLiveResize, let root = contentView,
               store.sidebarShown, !store.libraryOpen else { return false }
-        let expansion = SidebarWidth.shared.width - Look.cardGap
+        let expansion = SidebarWidth.inWindow(store) - Look.cardGap
         let pages = WindowResizePreparation.targets(in: root, nextSize: root.bounds.size,
                                                     leadingExpansion: expansion)
         guard !pages.isEmpty else { return false }
@@ -624,8 +624,6 @@ extension VaneWindow {
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
-        // Keep the sidebar and page usable, including when restoring an older saved frame.
-        window.minSize = NSSize(width: 800, height: 500)
         window.title = WindowTitle.current(in: store)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
@@ -658,6 +656,9 @@ extension VaneWindow {
         // `BrowserWindowHost`, not `BrowserWindow` directly: a window hops profiles in place,
         // so which store it is showing is a thing that changes. The host is what watches it.
         window.contentView = BrowserWindowHost(shown: delegate.shown)
+        // Full-size content fills the frame. The content limit avoids minSize's
+        // additional toolbar inset on compact windows.
+        window.contentMinSize = NSSize(width: 470, height: 380)
         // Position first, autosave second, as SettingsWindow does: `setFrameUsingName`
         // says whether there was a saved frame, and centring after it would throw the
         // saved position away and keep only the size — which is what every launch did.
@@ -1142,9 +1143,11 @@ private struct NativeSpacePreview: View {
     let preview: SpacePreviewList
     let scope: SidebarNativeReadinessScope
     let theme: SpaceChromeTheme
+    let windowWidth: CGFloat
 
     var body: some View {
         preview.equatable()
+            .environment(\.sidebarWindowWidth, windowWidth)
             .environment(\.sidebarNativeReadinessScope, scope)
             .environment(\.spaceChromeTheme, theme)
             .environment(\.colorScheme, preview.colorScheme)
@@ -1202,10 +1205,11 @@ private struct NativeSpacePreview: View {
         let incomingFallback = ProfileManager.shared.profiles.first { $0.id == incoming.space.profileID }?.colorHex
             ?? source.profile.colorHex
         let incomingTheme = SpaceChromeTheme(space: incoming.space, fallback: incomingFallback)
+        let windowWidth = source.window?.contentView?.bounds.width ?? .infinity
         let outgoingHost = NSHostingView(rootView: NativeSpacePreview(
-            preview: outgoing, scope: outgoingScope, theme: outgoingTheme))
+            preview: outgoing, scope: outgoingScope, theme: outgoingTheme, windowWidth: windowWidth))
         let incomingHost = NSHostingView(rootView: NativeSpacePreview(
-            preview: incoming, scope: incomingScope, theme: incomingTheme))
+            preview: incoming, scope: incomingScope, theme: incomingTheme, windowWidth: windowWidth))
         // Both captures have an explicit native frame. Intrinsic/min/max fitting
         // probes otherwise lay out the frozen rows again during window layout.
         outgoingHost.sizingOptions = []
