@@ -125,7 +125,7 @@ import XCTest
                                                   proposalInterval: slowResize ? .milliseconds(40) : .milliseconds(8),
                                                   mixedAxes: mixedAxes)
                 } else {
-                    for width: CGFloat in [1100, 800, 1200, 900, 1100, 900] {
+                    for width: CGFloat in [1100, 470, 800, 1200, 900, 1100, 900] {
                         window.setContentSize(NSSize(width: width, height: 600))
                         let earlyWidth = page.bounds.width
                         try await presentation(page)

@@ -5,6 +5,14 @@ import XCTest
 
 /// Unshown native objects only: no focus, input, or capture is needed.
 @MainActor final class WindowResizePreparationTests: XCTestCase {
+    func testCompactWindowReservesPageSpaceBesideAWideSidebar() {
+        let layout = PageResizeLayout(sidebarWidth: 500)
+        XCTAssertEqual(layout.leadingWidth(at: 470), 270)
+        XCTAssertEqual(layout.leadingWidth(at: 1280), 500)
+        XCTAssertEqual(PageResizeLayout(sidebarWidth: 228).leadingWidth(at: 470), 228)
+        XCTAssertEqual(PageResizeLayout().leadingWidth(at: 470), 0)
+    }
+
     func testLeftBottomResizeKeepsTheOppositeCornerFixed() {
         let frame = NSRect(x: 100, y: 200, width: 900, height: 600)
         let anchor = WindowResizeAnchor(frame: frame, pointer: NSPoint(x: 100, y: 200))
