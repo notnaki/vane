@@ -34,46 +34,29 @@ jobs:
           ATTEMPT: '1'
         run: |
           python3 - <<'PYTHON'
-          import os, pathlib, subprocess, sys, time
+          import os, pathlib, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          attempt = os.environ['ATTEMPT']
+          runner = pathlib.Path('scripts/run-native-tests.py').read_text()
+          injection = "    def collect_owned_profile():\n        root = Path(os.environ['RUNNER_TEMP'])\n        with (root / 'profile-sampler.log').open('w') as output:\n            deadline = time.monotonic() + 30\n            while time.monotonic() < deadline:\n                try:\n                    records = load_records(directory, token)\n                    for record in records:\n                        if not record['profiles']:\n                            continue\n                        host = record['host']\n                        observed = process_identity(host['pid'])\n                        if observed is None or observed['start'] != host['start'] or observed['path'] != host['path']:\n                            continue\n                        output.write('VERIFIED_OWNED_TEST_HOST=' + json.dumps(host) + '\\n')\n                        output.flush()\n                        subprocess.run(['/usr/bin/sample', str(host['pid']), '30', '5', '-mayDie', '-file', str(root / 'profile-main-thread-sample.txt')], stdout=output, stderr=subprocess.STDOUT, timeout=75)\n                        return\n                except Exception as error:\n                    output.write('SAMPLER_ADMISSION=' + str(error) + '\\n')\n                    output.flush()\n                time.sleep(0.05)\n            output.write('NO_OWNED_LIVE_WEBKIT_HOST_ADMITTED\\n')\n    sampling_thread = threading.Thread(target=collect_owned_profile, daemon=True)\n    sampling_thread.start()\n"
+          anchor = '    environment.pop(PHASE_ENV, None)\n'
+          end = '        for signum, handler in previous.items(): signal.signal(signum, handler)'
+          assert runner.count(anchor) == runner.count(end) == 1
+          runner = runner.replace('import time\n','import time\nimport threading\n').replace(anchor,anchor+injection).replace(end,'        sampling_thread.join(timeout=80)\n'+end)
+          script = root/'profile-owned-native-runner.py'
+          script.write_text(runner)
           selection = 'WindowResizeLayoutTests.testClosingSidebarWithReducedMotionKeepsTheExpandingPagePainted|SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testFirstProfileVisitChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|SpaceNativeRenderingTests.testProfileOriginClickReversesBeforeTheCurrentLandingFinishes'
-          log = root / f'icloud-native-preflight-{attempt}.log'
+          log = root/'icloud-native-preflight-1.log'
+          with log.open('w') as output:
+              result = subprocess.run(['python3',str(script),'--skip-build','--jobs','1','--filter',selection],stdout=output,stderr=subprocess.STDOUT)
           sample = root/'profile-main-thread-sample.txt'
-          sampler = None
-          with (root/'profile-sampler.log').open('w') as sampler_log, log.open('w') as output:
-              result = subprocess.Popen(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=output, stderr=subprocess.STDOUT)
-              admission_deadline = time.monotonic() + 30
-              while result.poll() is None and time.monotonic() < admission_deadline:
-                  listing = subprocess.check_output(['/bin/ps','-axo','pid=,comm=,args='],text=True)
-                  for line in listing.splitlines():
-                      parts = line.strip().split(None,2)
-                      if len(parts) != 3:
-                          continue
-                      pid, executable, arguments = parts
-                      if pathlib.Path(executable).name == 'xctest' and 'VanePackageTests.xctest' in arguments and '/Users/runner/work/vane/vane/' in arguments:
-                          print(f'EXACT_SAMPLED_TEST_HOST={line.strip()}',flush=True)
-                          sampler = subprocess.Popen(['/usr/bin/sample',pid,'60','5','-mayDie','-file',str(sample)],stdout=sampler_log,stderr=subprocess.STDOUT)
-                          break
-                  if sampler is not None:
-                      break
-                  time.sleep(0.05)
-              result.wait()
-              if sampler is not None:
-                  try:
-                      sampler.wait(timeout=75)
-                  except subprocess.TimeoutExpired:
-                      sampler.terminate()
-                      sampler.wait(timeout=10)
           graph = sample.read_text(errors='replace').split('Call graph:',1)[-1].split('Total number in stack',1)[0].strip() if sample.exists() else ''
-          sampled = sampler is not None and sampler.returncode == 0 and len(graph) > 50
+          sampled = len(graph) > 50
           print(f'HOSTED_SAMPLER_VALID={sampled} GRAPH_BYTES={len(graph)}',flush=True)
           text = log.read_text()
           status = result.returncode or (0 if sampled else 1)
           if 'Native suite primary status=0; cleanup status=0' not in text or '*** Signal ' in text:
               status = status or 1
-          print(f'ATTEMPT {attempt}: status={status}', flush=True)
-          print(text[-6000:], flush=True)
+          print(text[-8000:],flush=True)
           sys.exit(status)
           PYTHON
       - name: Preserve attempt and pixel evidence
