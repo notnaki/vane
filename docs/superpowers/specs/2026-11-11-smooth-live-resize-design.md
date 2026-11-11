@@ -1,0 +1,24 @@
+# Smooth live page resizing
+
+The user wants both sidebar-divider and native-window resizing to be buttery smooth. They explicitly delegated the choice of using a small prepaint buffer, accepting responsive layout briefly ahead of the visible edge, with no scaling or empty bar and an exact viewport after release.
+
+The original paint-before-each-growth coordinator visibly stalls on responsive GitHub breakpoints. Shared cyclic stylesheet hints and bounded chrome geometry improve ordinary costs but do not remove that barrier. Retain those improvements and use a rolling native page-viewport buffer only during continuous drags.
+
+- Capture visible page owners, native flags, original frames/parent sizes, split fractions and navigation metadata at drag start. Keep each web view's native autoresizing mask suspended through the drag.
+- Prime extra painted coverage in the active resize axes at drag start. Use48–192pt adaptive lookahead, targeting0.18s of observed viewport velocity and a half-buffer refill threshold. These are implementation bounds, not a promise about unresponsive content.
+- Commit pointer-driven window/sidebar geometry immediately while all pages' old painted coverage and any in-flight viewport cover that geometry. Prepare the next buffered viewport asynchronously; install native clips only after every split page presents. Never expose unpainted growth or scale existing pixels.
+- Derive desired page geometry from a fixed drag baseline and the same PageResizeLayout/sidebar-fitting formulas as the UI. Account for split fractions. Do not accumulate overscan or native-parent deltas.
+- On release, paint the exact requested viewport, publish the latest geometry, then restore native sizing and clear browser-owned style hints. Preserve sidebar detent, clamping, persistence, collapse, and accessibility behavior.
+- Generation/owner guards reject late callbacks and programmatic root/frame replacement. A250ms paint watchdog restores flags and uses the existing bounded-fallback policy for truly unresponsive content. Closing, hiding, fullscreen, replaced pages and reversed drags must leave no frozen native state.
+- Ordinary programmatic sizing retains the current exact-viewport path. Discrete sidebar closing retains its existing covered animation.
+
+Verification retains strict WindowServer coverage at settled gutter+2pt, normal pageZoom and a final fixed-right marker at the exact endpoint. Continuous motion should target p95≤25ms, retain the existing≤80ms maximum and≤24pt step limits, and preserve every failed attempt. The already recorded146–153ms window stalls are RED evidence, not resolved by model tests. Foreground capture requires its actual owner; focus-interrupted runs cannot count as motion passes.
+
+Implementation notes for the native owner:
+
+- Use persistent per-page state for one drag, capturing original mask, child-autoresize flag, web size, native parent size, navigation metadata and split fractions. During preparation the web frame may change, while its native child clip stays at the last painted size; after all paints, install child geometry together. Restore original flags exactly once.
+- Predict actual viewport from the fixed baseline, not the enlarged current web frame: original web width plus `(window width delta + old leading width - requested leading width) * split fraction`. Sidebar requests override only the requested sidebar width in the baseline navigation layout. Vertical deltas use the corresponding split fraction.
+- While a smaller buffered viewport is in flight, geometry must fit both the last painted size and that in-flight size. This prevents reversal from exposing a newly smaller paint.
+- Permit synchronous native geometry commits from a request once coverage exists, with a reentrancy guard for host layout callbacks. Maintain expected current window frame/root identity and reject unrelated programmatic replacements.
+- On release during an in-flight paint, retain only the latest request. Once covered, commit it, prepare the exact viewport without lead, flush the actual final host layout once, and restore flags without applying a parent delta twice. Canceled/reparented views keep their new owner's frame/mask.
+- Start priming at native resize begin / first sidebar gesture event. Infer native resize axes from the pointer's proximity to window edges and actual proposals; sidebar uses width only. Do not hold a wider layout for the entire drag: replenish and reduce the rolling buffer as the pointer moves.

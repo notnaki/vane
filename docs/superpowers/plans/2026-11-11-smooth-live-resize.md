@@ -1,0 +1,43 @@
+# Smooth Live Resize Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans. Steps use checkbox syntax.
+
+**Goal:** Smooth continuous window and sidebar resizing without scaling or blank page strips, settling to an exact viewport on release.
+
+**Architecture:** Add a native rolling viewport buffer for admitted visible WKWebViews during continuous drags. Geometry consumes already painted coverage while the next viewport paints asynchronously; existing exact programmatic and discrete sidebar-close paths remain available.
+
+**Tech Stack:** Swift, AppKit, SwiftUI, WebKit, XCTest, ScreenCaptureKit.
+
+**Spec:** `docs/superpowers/specs/2026-11-11-smooth-live-resize-design.md`.
+
+## Global Constraints
+
+- No scaling, page zoom changes, stretched snapshots, or background masking.
+- Buffered responsive geometry may briefly run ahead of the visible edge; final viewport must be exact.
+- Lookahead48–192pt, velocity horizon0.18s, refill at half-buffer remaining;250ms bounded paint watchdog.
+- Preserve native pointer anchoring, split fractions, sidebar clamp/detent/collapse/persistence/accessibility and motion policy.
+- Preserve strict settled-gutter+2pt coverage and all existing failure evidence.
+- Native motion targets p95≤25ms, maximum≤80ms, step≤24pt; final screenshots must reflect exact geometry.
+
+## Review Focus
+
+- Fast reversal while a smaller buffered viewport is in flight must not expose its edge.
+- Split pages paint independently; no geometry may exceed the least-covered page.
+- Frame/root/page replacement and late callbacks must restore only state still owned.
+- Release during paint must commit only the latest desired geometry and restore every native flag.
+- Watchdog, window close/fullscreen and sidebar collapse must not leave an active coordinator or frozen page.
+
+### Task 1: Buffered continuous resizing
+
+**Files:** Create `Sources/Vane/LivePageResizeBuffer.swift` and `Tests/VaneTests/LivePageResizeBufferTests.swift`; modify `Sources/Vane/Window.swift`, `Sources/Vane/SidebarResize.swift`, `Sources/Vane/WindowResize.swift` only if shared layout metadata needs equality; update `Tests/VaneTests/WindowResizeResponsiveMotionTests.swift` and `Tests/VaneTests/WindowResizeLayoutTests.swift` for buffered endpoint readiness and continuous sidebar coverage.
+
+**Interfaces:** A main-actor, failable buffer owns a visible window/root and admitted pages. It exposes start/prime, request desired window frame or sidebar width, finish exact viewport, cancel, and isPreparing. Presenter/deadline injections match WindowResizePreparation so deterministic tests can control paints and watchdogs. VaneWindow starts/forwards/ends it for native live resize and sidebar gestures; an apply callback publishes actual geometry, an isCurrent closure protects sidebar ownership, and a completion callback clears its owner. Exact internal signatures may be chosen together because this is one coupled component.
+
+- [ ] Write deterministic tests for priming/covered immediate movement, bounded refill, baseline geometry/no cumulative lead, reversal, independent split paints, latest release endpoint, owner replacement and watchdog/late-callback cleanup.
+- [ ] Implement the buffer and VaneWindow/sidebar gesture adapters. Keep original exact programmatic/discrete-close paths as fallbacks.
+- [ ] Extend native coverage to continuous sidebar drags and await exact final buffer drainage before endpoint assertions. Retain assertion bounds.
+- [ ] Run focused model tests with `python3 scripts/run-native-tests.py --jobs 4 --filter 'LivePageResizeBufferTests|PageResizeStyleTests|WindowResizePreparationTests|SidebarPageResizePreparationTests|SidebarResizeTests|SidebarResizeHighlightTests'`; require primary0/cleanup0.
+- [ ] Review the complete task diff independently, fix actionable findings, and rerun covering checks.
+- [ ] Coordinate final foreground paint/cadence captures with the controller; require original assertions and tighter p95 target. Do not call the work complete while actual cadence fails.
+
+After the task: validate integration with current main, pass required CI/review, squash-merge PR658, verify and clean only this task's worktree and owned test processes.

@@ -54,7 +54,8 @@ import XCTest
                 let count = Int(try await read(web, "String([...getComputedStyle(document.documentElement)].filter(x=>x.startsWith('--vane-resize-')).length)"))
                 XCTAssertNotEqual(count, previousCount, "Each resized CSS pixel must avoid the inherited-variable equality path")
                 previousCount = count
-                XCTAssertEqual(web.frame.width, width)
+                XCTAssertEqual(web.frame.width, width, accuracy: 1 / max(window.backingScaleFactor, 1),
+                               "Native autoresizing may align fractional widths to a backing pixel")
                 XCTAssertEqual(window.frame, outerFrame)
                 XCTAssertEqual(web.pageZoom, zoom)
             }
