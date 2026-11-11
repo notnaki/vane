@@ -439,6 +439,7 @@ struct BrowserWindow: View {
     /// page. `onGeometryChange` rather than a `GeometryReader` around the stack: the reader
     /// would have to wrap everything to measure it, and this is one number.
     @State private var windowWidth: CGFloat = 0
+    private var sidebarWidth: CGFloat { SidebarWidth.fitting(sidebar.width, in: windowWidth) }
 
     /// Whether the window is showing any chrome at all, which is what the traffic lights
     /// follow. The Library counts: it stands where the sidebar does, with the lights' own
@@ -465,7 +466,7 @@ struct BrowserWindow: View {
             SpaceGround()
             LibraryNavigationLayout(gesture: store.libraryGesture,
                 libraryOpen: store.libraryOpen, sidebarShown: store.sidebarShown,
-                floating: store.sidebarFloatingChrome, sidebarWidth: sidebar.width,
+                floating: store.sidebarFloatingChrome, sidebarWidth: sidebarWidth,
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
                 page: WebCard().modifier(DownloadFeedbackAnchor(target: .page))
@@ -477,7 +478,7 @@ struct BrowserWindow: View {
             // Not while the Library is up: the rail is not the sidebar, and is not dragged.
             if store.sidebarShown && !store.libraryOpen {
                 // Arc's rounded rule sits 4pt inside the sidebar's trailing edge.
-                SidebarHandle().offset(x: sidebar.width - SidebarHandle.hitTestWidth)
+                SidebarHandle().offset(x: sidebarWidth - SidebarHandle.hitTestWidth)
                     .zIndex(1)
             }
             if presentsPalette { BrowserPaletteOverlay().zIndex(2) }
@@ -487,7 +488,7 @@ struct BrowserWindow: View {
         // traffic lights instead of beside them, and the card loses its top inset.
         .ignoresSafeArea()
         .modifier(PeekContentTracking(area: store.peekContent))
-        .modifier(ToastPresentation(store: store, sidebarWidth: sidebar.width))
+        .modifier(ToastPresentation(store: store, sidebarWidth: sidebarWidth))
         .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
@@ -504,6 +505,7 @@ struct BrowserWindow: View {
             TabOrganizationSheet(store: store)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
+        .environment(\.sidebarWindowWidth, windowWidth > 0 ? windowWidth : .infinity)
         .environment(\.librarySpaceCatalog, librarySpaces)
         .onAppear {
             if !store.isPrivate { librarySpaces.prepare(manager: profiles) }
@@ -590,7 +592,7 @@ struct BrowserWindow: View {
         return Sidebar()
             .disabled(!visible || store.palette != nil || store.libraryOpen)
             .accessibilityHidden(!visible || store.palette != nil || store.libraryOpen)
-            .frame(width: sidebar.width)
+            .frame(width: sidebarWidth)
             .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
             .background {
                 ZStack {
@@ -608,7 +610,7 @@ struct BrowserWindow: View {
                     .allowsHitTesting(false)
             }
             .padding(floating ? Look.floatingSidebarGap : 0)
-            .offset(x: visible ? 0 : -(sidebar.width + 2 * Look.floatingSidebarGap))
+            .offset(x: visible ? 0 : -(sidebarWidth + 2 * Look.floatingSidebarGap))
             .opacity(visible ? 1 : 0)
             .allowsHitTesting(visible && !store.libraryOpen)
             // Above the page during edge reveal and dismissal; below the resize handle.
@@ -651,6 +653,7 @@ struct BrowserPaletteOverlay: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ObservedObject private var sidebar = SidebarWidth.shared
+    private var sidebarWidth: CGFloat { SidebarWidth.inWindow(store) }
 
     var body: some View {
         ZStack {
@@ -669,7 +672,7 @@ struct BrowserPaletteOverlay: View {
                 // status belongs above its scrim, with the live action still reachable.
                 // ToastPresentation covers the ordinary host while search is open.
                 ToastHost(stickyOnly: true)
-                    .frame(width: sidebar.width)
+                    .frame(width: sidebarWidth)
                     .padding(.leading, store.sidebarShown || store.sidebarPeeking ? 0 : 16 - Look.inset)
                     .padding(.bottom, store.sidebarShown || store.sidebarPeeking
                              ? Look.footer + Look.footerInset + 2 * Look.inset : 16)
@@ -690,6 +693,7 @@ struct BrowserPaletteOverlay: View {
 /// sitting in a grey box. A space with no colour of its own wears its profile's — Arc has
 /// no colourless space, and a grey slab was what the old fallback amounted to.
 struct SpaceGround: View {
+    @WindowSidebarWidth private var sidebarWidth
     @EnvironmentObject var store: TabStore
     @EnvironmentObject private var gesture: SpaceGesture
     @EnvironmentObject var profiles: ProfileManager
@@ -732,7 +736,7 @@ struct SpaceGround: View {
     /// to the new profile's colour after having slid to it.
     private func pulled(from here: Space?, systemDark: Bool) -> (surface: ThemeWash, fraction: Double) {
         let idle = (surface(of: here, systemDark: systemDark), 0.0)
-        let width = SidebarWidth.shared.width
+        let width = sidebarWidth
         let drag = gesture.nativeDrag ?? gesture.drag
         // Zero progress still needs the destination: native tracking can advance the
         // wash without publishing another SwiftUI body update after a click starts.
@@ -939,7 +943,7 @@ private struct Sidebar: View {
     @AppStorage(LibraryHoverCategory.key, store: .vane) private var hoverCategory = "downloads"
     @State private var previewItems: [LibraryHoverItem] = []
     @ObservedObject private var batterySaver = BatterySaver.shared
-    @ObservedObject private var sidebar = SidebarWidth.shared
+    @WindowSidebarWidth private var sidebarWidth
     @ObservedObject private var previewProfiles = ProfileManager.shared
     @State private var sidebarHeight: CGFloat = 0
 
@@ -1060,7 +1064,7 @@ private struct Sidebar: View {
         .onChange(of: store.profileVisible) { _, visible in
             if !visible { downloadsHover.dismiss() }
         }
-        .frame(width: sidebar.width, alignment: .leading)
+        .frame(width: sidebarWidth, alignment: .leading)
         .background(SidebarDragAnchor(preview: dragPreview, store: store, region: .root))
         .environmentObject(dragPreview)
         .environment(\.sidebarDragPreview, dragPreview)
@@ -1118,9 +1122,9 @@ private struct Sidebar: View {
 /// lights are drawn, so the row is laid out around them.
 struct TopRow: View {
     @EnvironmentObject var store: TabStore
-    @ObservedObject private var sidebar = SidebarWidth.shared
+    @WindowSidebarWidth private var sidebarWidth
     var layoutWidth: CGFloat? = nil
-    private var layout: SidebarChromeLayout { SidebarChromeLayout(width: layoutWidth ?? sidebar.width) }
+    private var layout: SidebarChromeLayout { SidebarChromeLayout(width: layoutWidth ?? sidebarWidth) }
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1316,9 +1320,9 @@ private struct PillBody: View {
     @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     @Environment(\.sidebarDragPreview) private var dragPreview
-    @ObservedObject private var sidebar = SidebarWidth.shared
+    @WindowSidebarWidth private var sidebarWidth
     @ObservedObject private var batterySaver = BatterySaver.shared
-    private var compact: Bool { SidebarChromeLayout(width: layoutWidth ?? sidebar.width).compact }
+    private var compact: Bool { SidebarChromeLayout(width: layoutWidth ?? sidebarWidth).compact }
     let tab: Tab?
     let host: String
     let address: String
@@ -1770,7 +1774,7 @@ private struct Favorites: View {
     @EnvironmentObject var dragPreview: SidebarDragPreview
     @ObservedObject private var dragging = Dragging.shared
     /// A narrow sidebar drops a column instead of shrinking every tile to a sliver.
-    @ObservedObject private var sidebar = SidebarWidth.shared
+    @WindowSidebarWidth private var sidebarWidth
     @State private var side: Landing.Band?
 
     var body: some View {
@@ -1778,7 +1782,7 @@ private struct Favorites: View {
         if !pinned.isEmpty {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),
                                      count: SidebarWidth.favouriteColumns(pinned.count,
-                                                                          width: sidebar.width)),
+                                                                          width: sidebarWidth)),
                       spacing: Look.inset) {
                 ForEach(pinned) { tab in
                     if tab.kind != .favourite {
@@ -3197,7 +3201,7 @@ private struct SpaceDots: View {
         .accessibilityAction { gesture.monitor.select(space, in: store) }
     }
 
-    private var sidebarWidth: CGFloat { SidebarWidth.shared.width }
+    @WindowSidebarWidth private var sidebarWidth
 }
 
 enum SpaceDotBlend {

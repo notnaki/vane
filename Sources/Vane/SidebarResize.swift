@@ -1,6 +1,24 @@
 import AppKit
 import SwiftUI
 
+private struct SidebarWindowWidth: EnvironmentKey {
+    static let defaultValue: CGFloat = .infinity
+}
+
+extension EnvironmentValues {
+    var sidebarWindowWidth: CGFloat {
+        get { self[SidebarWindowWidth.self] }
+        set { self[SidebarWindowWidth.self] = newValue }
+    }
+}
+
+/// Observe the shared preference, but fit its presentation independently in each window.
+@MainActor @propertyWrapper struct WindowSidebarWidth: DynamicProperty {
+    @ObservedObject private var sidebar = SidebarWidth.shared
+    @Environment(\.sidebarWindowWidth) private var available
+    var wrappedValue: CGFloat { SidebarWidth.fitting(sidebar.width, in: available) }
+}
+
 /// Keep full-size header targets until they touch, then move secondary actions into a menu.
 struct SidebarChromeLayout {
     let width: CGFloat
@@ -62,6 +80,16 @@ struct SidebarChromeLayout {
         return Swift.min(Swift.max(w, minimum), maximum)
     }
 
+    /// Leave a usable page column when the browser is narrower than a saved sidebar.
+    nonisolated static func fitting(_ proposed: CGFloat, in windowWidth: CGFloat) -> CGFloat {
+        guard windowWidth.isFinite, windowWidth > 0 else { return clamp(proposed) }
+        return min(clamp(proposed), max(minimum, windowWidth - 200))
+    }
+
+    static func inWindow(_ store: TabStore) -> CGFloat {
+        fitting(shared.width, in: store.window?.contentView?.bounds.width ?? .infinity)
+    }
+
     /// A width read back off disk. An unset key reads as 0, which clamps up to the minimum
     /// rather than to the default, so "never set" is checked before clamping.
     nonisolated static func load(_ defaults: UserDefaults = .vane) -> CGFloat {
@@ -77,8 +105,8 @@ struct SidebarChromeLayout {
 
     /// Pointer movement must follow the hand, even inside a window reveal transaction.
     /// At a clamp boundary repeated events should not publish identical widths.
-    func setLiveWidth(_ proposed: CGFloat) {
-        let next = Self.clamp(proposed)
+    func setLiveWidth(_ proposed: CGFloat, available: CGFloat? = nil) {
+        let next = available.map { Self.fitting(proposed, in: $0) } ?? Self.clamp(proposed)
         guard next != width else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -218,6 +246,7 @@ final class SidebarResizeHighlightView: NSView {
 struct SidebarHandle: View {
     @EnvironmentObject private var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
+    @WindowSidebarWidth private var presentedWidth
     /// The gap between the pointer and the seam, taken on the drag's first frame and held
     /// for the rest of it, so the seam does not jump to the pointer when the grab was a few
     /// points off centre.
@@ -256,16 +285,18 @@ struct SidebarHandle: View {
                         // is in the window's own space and cannot drift, so the drag is
                         // "the seam is wherever the pointer is", plus the grab offset taken
                         // on the first frame.
-                        let grab = start ?? (sidebar.width - value.startLocation.x)
+                        let grab = start ?? (presentedWidth - value.startLocation.x)
                         if start == nil {
                             detent = SidebarResizeDetent()
                             start = grab
                         }
-                        sidebar.setLiveWidth(detent.width(for: value.location.x + grab))
+                        sidebar.setLiveWidth(detent.width(for: value.location.x + grab),
+                                             available: store.window?.contentView?.bounds.width)
                     }
                     .onEnded { value in
                         let proposed = value.location.x + (start ?? 0)
-                        sidebar.setLiveWidth(detent.width(for: proposed))
+                        sidebar.setLiveWidth(detent.width(for: proposed),
+                                             available: store.window?.contentView?.bounds.width)
                         start = nil
                         detent = SidebarResizeDetent()
                         sidebar.save()
@@ -292,7 +323,7 @@ struct SidebarHandle: View {
             // below, which VoiceOver can reach without a drag.
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Sidebar Width")
-            .accessibilityValue("\(Int(sidebar.width)) points")
+            .accessibilityValue("\(Int(presentedWidth)) points")
             .accessibilityHint("Drag to resize the sidebar. Double-click to reset it.")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction(named: "Widen Sidebar") { step(20) }
@@ -301,7 +332,13 @@ struct SidebarHandle: View {
     }
 
     private func step(_ delta: CGFloat) {
-        Motion.animate(Look.quick) { sidebar.width = SidebarWidth.clamp(sidebar.width + delta) }
+        let proposed = presentedWidth + delta
+        let next = store.window?.contentView.map {
+            SidebarWidth.fitting(proposed, in: $0.bounds.width)
+        } ?? SidebarWidth.clamp(proposed)
+        Motion.animate(Look.quick) {
+            sidebar.width = next
+        }
         sidebar.save()
         axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")
     }
