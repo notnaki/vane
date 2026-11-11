@@ -3,7 +3,7 @@ import ObjectiveC
 import WebKit
 @testable import vane
 
-/// A single real explicit-fill reply, held between WebKit execution and its
+/// A single real fill reply, held between WebKit execution and its
 /// native consumer. This helper is linked only into the XCTest bundle.
 @MainActor final class PasswordFillCompletionHold {
     private typealias Reply = @convention(block) (AnyObject?, NSError?) -> Void
@@ -18,6 +18,7 @@ import WebKit
     private weak var web: WKWebView?
     private let script: String
     private let world: WKContentWorld
+    private let expectedReply: Bool
     private var trampoline: IMP?
     private var installed = false
     private var active = true
@@ -32,7 +33,8 @@ import WebKit
     var isHoldingReply: Bool { held != nil }
     var pendingReplies: Int { pending }
 
-    init(web: WKWebView, script: String, world: WKContentWorld = Autofill.world) throws {
+    init(web: WKWebView, script: String, world: WKContentWorld = Autofill.world,
+         expectedReply: Bool = true) throws {
         guard Self.owner == nil else { throw Failure.alreadyOwned }
         guard let method = class_getInstanceMethod(WKWebView.self, Self.selector),
               let encoding = method_getTypeEncoding(method),
@@ -42,6 +44,7 @@ import WebKit
         self.web = web
         self.script = script
         self.world = world
+        self.expectedReply = expectedReply
         let originalCall = unsafeBitCast(original, to: Evaluate.self)
         let selector = Self.selector
         let intercept: Intercept = { [weak self] receiver, source, frame, world, completion in
@@ -82,7 +85,7 @@ import WebKit
         let reply: Reply = { [self] value, error in
             MainActor.assumeIsolated {
                 pending -= 1
-                guard active, error == nil, value as? Bool == true else {
+                guard active, error == nil, value as? Bool == expectedReply else {
                     if active { failure = .invalidReply }
                     deliveredReplies += 1
                     completion(value, error)

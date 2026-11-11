@@ -5,6 +5,29 @@
 Start here for tabs, Spaces, search, windows, downloads, and media. For saved reading
 and visual tools, see [Reading and customization](FEATURES.md).
 
+## Page captures
+
+Press **⌘⇧2** or choose **File → Capture a Portion of This Page**. Move over an element to
+highlight it, click to capture it, or drag a rectangle. **Return** captures the highlighted
+region or visible page; **Escape** cancels. Choose **Full Page** in capture mode or
+**File → Capture Full Page** to include the rendered document below the viewport.
+Infinite-scroll content that has not loaded is not included, and unusually large pages
+may need a smaller region.
+
+The compact capture menu offers **Copy**, **Save PNG…**, **Share…**, **Edit…**, **Retake**,
+and **Save to Library**. Normal windows also offer **New Easel** and existing Easels for
+web-page captures. Filter the menu with **Send To…**. Click outside the result or press
+**Escape** to dismiss it.
+
+In **Edit**, drag with **Crop**, **Pen**, **Arrow**, or **Rectangle**, or choose **Text** and
+click to place a label. Pick a color and stroke width; **Undo**, **Redo**, and **Reset**
+keep changes reversible. **Apply** returns to the capture menu with the edited image;
+**Cancel** keeps the original capture.
+
+Explicitly saved captures appear in **Library → Media**, with the other saved images, source search, preview, and the usual media actions.
+They use the existing saved-file history rather than a separate capture collection. Private-window captures stay temporary, with copy, PNG export, share and
+editing available; the saved capture library and Easels are unavailable there.
+
 ## First launch
 
 Fresh installations open with a short, skippable welcome to search and Spaces. Finishing
@@ -187,6 +210,10 @@ download loses its connection, **Retry** starts a fresh download after you recon
 partial archives are removed rather than installed. An update already installed and
 waiting for **Restart** can finish without another update download. Manual checks and
 retries do not wait for the automatic check's backoff interval.
+
+The update status pill is shared across Spaces and profiles, including when the
+destination has an open command bar. Its current Update, Retry, or Restart action
+remains available there.
 
 ## Search and history
 

@@ -211,7 +211,25 @@ private final class PreviewServer: @unchecked Sendable {
 
     func testRetiredBlankNavigationAndFrameCannotMutateNewPreview() async throws {
         TestEnvironment.prepare()
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do {
+            try await compatibilityWait { try loop.isReadyForInteraction() }
+            try await checkRetiredBlankNavigationAndFrame()
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Preview replacement AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkRetiredBlankNavigationAndFrame() async throws {
+        TestEnvironment.prepare()
         _ = NSApplication.shared
+        XCTAssertTrue(NSApp.isRunning,
+                      "Preview navigation requires an admitted AppKit loop before WebKit starts")
         let server = try PreviewServer(body: "<title>Current preview</title><body>Fixture<script>if(location.pathname==='/next')location.replace('/final')</script></body>")
         let base = try await server.start(), previews = Previews(), tab = Tab(isPrivate: true)
         let enabled = Previews.enabled
@@ -236,7 +254,9 @@ private final class PreviewServer: @unchecked Sendable {
         let nextDeadline = ContinuousClock.now + .seconds(8)
         while web.url != base.appendingPathComponent("final") || web.isLoading
                 || previews.current?.title != "Current preview" {
-            guard ContinuousClock.now < nextDeadline else { return XCTFail("Replacement preview did not load") }
+            guard ContinuousClock.now < nextDeadline else {
+                return XCTFail("Replacement preview did not load: url=\(web.url?.absoluteString ?? "nil") loading=\(web.isLoading) webTitle=\(web.title ?? "nil") previewTitle=\(previews.current?.title ?? "nil") paths=\(server.requestedPaths) appRunning=\(NSApp.isRunning)")
+            }
             try await Task.sleep(for: .milliseconds(20))
         }
         let pageHandler = try await web.evaluateJavaScript("typeof window.webkit?.messageHandlers?.vanepreviewmeta") as? String
