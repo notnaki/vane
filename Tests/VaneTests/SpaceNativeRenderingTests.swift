@@ -58,6 +58,26 @@ import XCTest
         try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: store.profileID, in: Store.directory))
     }
 
+    /// A closed, retained NSWindow still owns its content tree. Retire native
+    /// travel and both visible and parked roots before deleting fixture profiles.
+    private func retireProfileWindow(_ window: NSWindow) {
+        let held = TabStore.all.filter { $0.window === window || $0.parkedIn === window }
+        for store in held {
+            store.spaceGesture.monitor.interruptLanding()
+            store.spaceGesture.monitor.remove()
+            store.librarySwipeMonitor.remove()
+        }
+        (window.contentView as? BrowserWindowHost)?.cancelSpaceSlide()
+        window.close()
+        window.contentView = nil
+        for store in held {
+            store.window = nil
+            store.parkedIn = nil
+            store.profileVisible = false
+            store.dropStashes()
+        }
+    }
+
     private func withFixtureApplicationLoop(_ body: () async throws -> Void) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
@@ -416,7 +436,7 @@ import XCTest
         let source = Windows.open(profile: blackProfile, space: black, focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(blackProfile.id)
             _ = manager.delete(blueProfile.id)
             manager.active = previous
@@ -853,7 +873,7 @@ import XCTest
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         defer {
-            window.close()
+            retireProfileWindow(window)
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
@@ -911,7 +931,7 @@ import XCTest
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         defer {
-            window.close()
+            retireProfileWindow(window)
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
@@ -1216,7 +1236,7 @@ import XCTest
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         defer {
-            window.close()
+            retireProfileWindow(window)
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
@@ -1309,7 +1329,7 @@ import XCTest
         let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
@@ -1352,7 +1372,7 @@ import XCTest
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         defer {
-            window.close()
+            retireProfileWindow(window)
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
@@ -1403,7 +1423,7 @@ import XCTest
         let window = try XCTUnwrap(source.window)
         window.orderFrontRegardless()
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
             _ = manager.delete(secondProfile.id)
             manager.active = previous
@@ -1533,7 +1553,7 @@ import XCTest
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
             _ = manager.delete(secondProfile.id)
             manager.active = previous
@@ -2914,7 +2934,7 @@ import XCTest
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
             _ = manager.delete(secondProfile.id)
             manager.active = previous
@@ -2987,7 +3007,7 @@ import XCTest
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
             _ = manager.delete(secondProfile.id)
             manager.active = previous
@@ -3025,7 +3045,7 @@ import XCTest
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
             _ = manager.delete(secondProfile.id)
             manager.active = previous
