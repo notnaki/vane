@@ -9,96 +9,82 @@ env:
   VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
   SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
 jobs:
-  build:
-    runs-on: macos-26
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-      - name: Identify diagnostic cache toolchain
-        id: toolchain
-        run: echo "key=$(python3 scripts/ci-build-artifact.py toolchain)" >> "$GITHUB_OUTPUT"
-      - name: Restore diagnostic debug build
-        id: diagnostic-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: .build
-          key: native-diag-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Sources/**', 'Tests/**') }}
-          restore-keys: |
-            native-diag-${{ steps.toolchain.outputs.key }}-
-            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
-      - name: Restore unchanged source timestamps
-        run: python3 scripts/ci-source-state.py restore
-      - name: Build diagnostic runtime
-        run: swift build -c debug --build-tests --disable-index-store
-      - name: Preserve source timestamps for diagnostic debug cache
-        run: python3 scripts/ci-source-state.py save
-      - name: Save compiled diagnostic debug build before native assertions
-        uses: actions/cache/save@v6
-        with:
-          path: .build
-          key: ${{ steps.diagnostic-cache.outputs.cache-primary-key }}
-      - name: Bundle compiled application
-        env:
-          VANE_CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}
-        run: ./make-app.sh debug --skip-app-build
-      - name: Package exact diagnostic runtime
-        run: |
-          BIN_PATH=$(swift build -c debug --show-bin-path)
-          python3 scripts/ci-build-artifact.py pack --bin-path "$BIN_PATH" --revision "$GITHUB_SHA" --archive "$RUNNER_TEMP/native-diagnostic-runtime.tar.gz"
-      - name: Share compiled runtime
-        uses: actions/upload-artifact@v6
-        with:
-          name: native-diagnostic-runtime
-          path: ${{ runner.temp }}/native-diagnostic-runtime.tar.gz
-          compression-level: 0
-          retention-days: 7
-  native:
-    needs: build
+  recorded-history:
     runs-on: macos-26
     timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        attempt: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
-      - name: Download exact diagnostic runtime
+        with:
+          ref: b0fe840662888fec27bb56023099e80a295b921a
+      - name: Download already compiled diagnostic runtime
         uses: actions/download-artifact@v8
         with:
-          digest-mismatch: warn
+          github-token: ${{ github.token }}
+          run-id: 43007104697
           name: native-diagnostic-runtime
-          path: ${{ runner.temp }}/native-diagnostic-runtime
-      - name: Restore and verify diagnostic runtime
-        run: python3 scripts/ci-build-artifact.py restore --revision "$GITHUB_SHA" --archive "$RUNNER_TEMP/native-diagnostic-runtime/native-diagnostic-runtime.tar.gz"
-      - name: Enable and verify animated motion on the hosted desktop
+          path: ${{ runner.temp }}/runtime
+      - name: Download original failed shard inventory and filter
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 43003951584
+          name: native-loop-logs-4
+          path: ${{ runner.temp }}/recorded
+      - name: Restore revision and toolchain verified runtime
+        run: python3 scripts/ci-build-artifact.py restore --revision b0fe840662888fec27bb56023099e80a295b921a --archive "$RUNNER_TEMP/runtime/native-diagnostic-runtime.tar.gz"
+      - name: Verify exact recorded inventory and shard membership
         run: |
-          defaults write com.apple.universalaccess reduceMotion -bool false
-          swift -e 'import AppKit; let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion; print("HOST_REDUCE_MOTION=\(reduced)"); exit(reduced ? 1 : 0)'
-      - name: Predetermined focused attempt with retirement
-        env:
-          ATTEMPT: ${{ matrix.attempt }}
-        run: |
-          python3 - <<'PYTHON'
-          import os, pathlib, subprocess, sys
+          swift test list --skip-build > "$RUNNER_TEMP/inventory.txt"
+          python3 scripts/native-test-shards.py plan --inventory "$RUNNER_TEMP/inventory.txt" --suite required --index 4 --count 4 --manifest "$RUNNER_TEMP/actual-shard.json" --filter-output "$RUNNER_TEMP/actual-shard.filter"
+          python3 - <<'PY'
+          import json, os, pathlib
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          attempt = os.environ['ATTEMPT']
-          selection = 'PasswordShadowAutofillTests'
-          log = root / f'icloud-native-preflight-{attempt}.log'
+          actual = json.loads((root/'actual-shard.json').read_text())
+          recorded = json.loads((root/'recorded/vane-native-shard.json').read_text())
+          assert actual == recorded, 'Recorded 781-case inventory or shard membership changed'
+          assert (root/'actual-shard.filter').read_bytes() == (root/'recorded/vane-native-shard.filter').read_bytes()
+          print('EXACT_RECORDED_SHARD_MEMBERSHIP=781')
+          PY
+      - name: Match reduced motion environment from original failed CI
+        run: |
+          defaults write com.apple.universalaccess reduceMotion -bool true
+          swift -e 'import AppKit; let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion; print("HOST_REDUCE_MOTION=\(reduced)"); exit(reduced ? 0 : 1)'
+      - name: Run original owned-loop preflight and retirement
+        run: |
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+      - name: One instrumented attempt after exact recorded native history
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, subprocess, sys
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          selection = (root/'recorded/vane-native-shard.filter').read_text().strip()
+          log = root/'shadow-recorded-history.log'
           with log.open('w') as output:
-              result = subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=output, stderr=subprocess.STDOUT)
+              result = subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection],stdout=output,stderr=subprocess.STDOUT)
           text = log.read_text()
-          status = result.returncode
+          original = (root/'recorded/vane-swift-tests.log').read_text()
+          started = re.compile(r"Test Case '-\[([^ ]+) ([^]]+)\]' started\.")
+          order = started.findall(text)
+          expected = started.findall(original)
+          if order != expected:
+              print(f'ORDER_MISMATCH actual={len(order)} expected={len(expected)}')
+              result_status = 1
+          else:
+              print(f'EXACT_RECORDED_TEST_ORDER={len(order)}')
+              result_status = result.returncode
           if 'Native suite primary status=0; cleanup status=0' not in text or '*** Signal ' in text:
-              status = status or 1
-          print(f'ATTEMPT {attempt}: status={status}', flush=True)
-          print(text[-6000:], flush=True)
-          sys.exit(status)
-          PYTHON
-      - name: Preserve attempt and pixel evidence
+              result_status = result_status or 1
+          print(text[-8000:])
+          sys.exit(result_status)
+          PY
+      - name: Preserve all recorded-history evidence
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: icloud-native-preflight-${{ matrix.attempt }}
+          name: shadow-recorded-history
           path: |
-            ${{ runner.temp }}/icloud-native-preflight-*.log
-            /tmp/vane-resize-*.png
+            ${{ runner.temp }}/shadow-recorded-history.log
+            ${{ runner.temp }}/smoke.log
+            ${{ runner.temp }}/actual-shard.*
+            ${{ runner.temp }}/inventory.txt
