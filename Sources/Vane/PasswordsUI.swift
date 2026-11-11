@@ -89,7 +89,7 @@ import SwiftUI
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Password Manager").font(Look.heading)
-                        Text("Your saved logins, on this Mac")
+                        Text("Saved logins in this Mac’s Keychain")
                             .font(Look.caption).foregroundStyle(Look.inkSecondary)
                     }
                     Spacer()
@@ -97,6 +97,7 @@ import SwiftUI
                         .buttonStyle(.borderedProminent)
                 }
                 PasswordSavingPreference(profileID: profileID)
+                Footnote("Optional password sync is managed in Settings → iCloud. Local saved logins remain available when sync is off.")
                 Footnote("Passkeys are pending Apple’s browser capability approval and provisioning. Saved passwords remain available here.")
                 DisclosureGroup("Folder unlock method") {
                     SettingsRow("Unlock folders using") {

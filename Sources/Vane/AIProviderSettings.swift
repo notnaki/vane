@@ -54,7 +54,7 @@ struct AIProviderSettings: View {
                     Footnote(feature.title + ": " + reason)
                 }
             }
-            Footnote("Each feature uses only its selected connection. Cloud naming sends titles, hostnames and download naming details; choosing cloud page summaries also sends extracted page text when a link preview summarizes a page. Cloud AI is never used in private windows. Keys and ChatGPT tokens stay in this Mac's Keychain. Provider pricing and quotas apply.")
+            Footnote("Each feature uses only its selected connection. Cloud naming sends titles, hostnames and download naming details; choosing cloud page summaries also sends extracted page text when a link preview summarizes a page. Cloud AI is never used in private windows. API keys use local Keychain originals, with optional API-key sync in Settings → iCloud. ChatGPT tokens stay on this Mac. Provider pricing and quotas apply.")
         }
         .onAppear { reload() }
         .onChange(of: revision) { reload() }

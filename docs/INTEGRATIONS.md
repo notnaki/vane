@@ -390,7 +390,9 @@ on-device until you explicitly choose a cloud connection for them.
 API-key connections take a model ID and your own key: choose **Save Key**, then
 **Test Connection**. Groq defaults to `openai/gpt-oss-20b`. Custom providers need an HTTPS
 base URL such as `https://api.example.com/v1` and JSON chat-completions support. Each
-connection has separate credentials in local, non-synchronizing macOS Keychain items;
+connection has separate local Keychain originals; provisioned builds can mirror API
+keys through the separate, initially unselected Settings → iCloud → AI API keys control.
+ChatGPT registrations and tokens never enter that mirror;
 test data directories use separate namespaces. No key or token is bundled with Vane
 or sent through a Vane server. Provider pricing and quotas apply.
 
