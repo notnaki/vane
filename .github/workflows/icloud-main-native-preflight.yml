@@ -6,7 +6,7 @@ permissions:
   contents: read
   actions: read
 env:
-  VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
+  VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
   SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
 jobs:
   focused:
@@ -50,19 +50,57 @@ jobs:
           ATTEMPT: '1'
         run: |
           python3 - <<'PYTHON'
-          import os, pathlib, subprocess, sys
+          import errno, os, pathlib, pty, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           attempt = os.environ['ATTEMPT']
-          selection = 'SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testFirstProfileVisitChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|SpaceNativeRenderingTests.testHiddenProfileSynchronouslyDropsWarmOwnersDuringLanding|SpaceNativeRenderingTests.testProfileSwipeDoesNotRestoreItsDepartureColour|SpaceNativeRenderingTests.testReverseProfileSwipeTakesOverTheSamePresentedNativeRows'
+          selection = 'SpaceNativeRenderingTests.testCachedProfileColourStaysContinuousAcrossRepeatedSwipes'
+          # Temporary instrumentation: sample only manifest-owned, revalidated hosts.
+          source = pathlib.Path('scripts/run-native-tests.py').read_text()
+          helper = """
+          def diagnostic_sample(directory, token, label):
+              for record in load_records(directory, token):
+                  host = record['host']
+                  observed = process_identity(host['pid'])
+                  if observed != {'pid': host['pid'], 'start': host['start'], 'path': os.path.realpath(host['path'])}: continue
+                  output = Path(os.environ['RUNNER_TEMP']) / ('icloud-stack-' + label + '-' + str(host['pid']) + '.txt')
+                  print('DIAGNOSTIC_SAMPLE ' + str(output), flush=True)
+                  subprocess.run(['sample', str(host['pid']), '3', '1', '-file', str(output)], timeout=10, check=False)
+
+          """
+          source = source.replace('def main(arguments):', helper + 'def main(arguments):')
+          needle = '            status = active.wait(timeout=90 if is_cleanup else primary_timeout)'
+          assert source.count(needle) == 1
+          source = source.replace(needle, """            if not is_cleanup:
+                          began = time.monotonic()
+                          try: active.wait(timeout=15)
+                          except subprocess.TimeoutExpired: diagnostic_sample(directory, token, 'active')
+                          remaining = max(1, primary_timeout - (time.monotonic() - began))
+                      else: remaining = 90
+                      status = active.wait(timeout=remaining)""")
+          needle = '        initial_records = records'
+          assert source.count(needle) == 1
+          source = source.replace(needle, needle + "\n        diagnostic_sample(directory, token, 'timeout')")
+          driver = root / 'icloud-diagnostic-driver.py'
+          driver.write_text(source)
           log = root / f'icloud-native-preflight-{attempt}.log'
-          with log.open('w') as output:
-              result = subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=output, stderr=subprocess.STDOUT)
+          master, slave = pty.openpty()
+          process = subprocess.Popen(['python3', '-u', str(driver), '--skip-build', '--jobs', '1', '--filter', selection], stdout=slave, stderr=slave)
+          os.close(slave)
+          with log.open('wb') as output:
+              while True:
+                  try: chunk = os.read(master, 65536)
+                  except OSError as error:
+                      if error.errno == errno.EIO: break
+                      raise
+                  if not chunk: break
+                  output.write(chunk); output.flush()
+                  sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()
+          os.close(master)
+          status = process.wait()
           text = log.read_text()
-          status = result.returncode
           if 'Native suite primary status=0; cleanup status=0' not in text or '*** Signal ' in text:
               status = status or 1
           print(f'ATTEMPT {attempt}: status={status}', flush=True)
-          print(text[-6000:], flush=True)
           sys.exit(status)
           PYTHON
       - name: Preserve attempt and pixel evidence
@@ -72,4 +110,5 @@ jobs:
           name: icloud-native-preflight-1
           path: |
             ${{ runner.temp }}/icloud-native-preflight-*.log
+            ${{ runner.temp }}/icloud-stack-*.txt
             /tmp/vane-resize-*.png
