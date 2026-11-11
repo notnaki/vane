@@ -3,7 +3,7 @@
   const stories=[...document.querySelectorAll('[data-scroll-story]')].map(root=>{
     const feature=root.dataset.scrollStory==='features';
     const stage=root.querySelector(feature?'.feature-playground':'.sidebar-explorer-section');
-    return {root,stage,feature,buttons:[...stage.querySelectorAll(feature?'[data-feature]':'[data-sidebar-topic]')],hint:stage.querySelector(feature?'.feature-scroll-hint':'.sidebar-scroll-hint'),counter:stage.querySelector(feature?'[data-story-step]':'[data-sidebar-step]'),enabled:false,top:32,distance:0,last:-1,manual:null,retryAt:0};
+    return {root,stage,feature,buttons:[...stage.querySelectorAll(feature?'[data-feature]':'[data-sidebar-topic]')],hint:stage.querySelector(feature?'.feature-scroll-hint':'.sidebar-scroll-hint'),counter:stage.querySelector(feature?'[data-story-step]':'[data-sidebar-step]'),enabled:false,top:32,distance:0,last:-1,manual:null,retryAt:0,initialTopic:feature?location.hash.slice(1):null};
   });
   if(!stories.length)return;
   let frame=0;
@@ -20,7 +20,13 @@
         story.root.style.setProperty('--story-frame',height+'px');
         story.root.style.setProperty('--story-distance',story.distance+'px');
         story.root.style.setProperty('--story-top',story.top+'px');
+        const initialIndex=story.buttons.findIndex(button=>key(story,button)===story.initialTopic);
+        if(initialIndex>=0){
+          const start=story.root.getBoundingClientRect().top+scrollY-story.top;
+          scrollTo({top:start+story.distance*(initialIndex+.5)/story.buttons.length,behavior:'instant'});
+        }
       }
+      story.initialTopic=null;
       story.manual=null;story.last=-1;story.retryAt=0;
     });
     schedule();
