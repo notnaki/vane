@@ -188,6 +188,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
       </array>
     </dict>
   </array>
+  <!-- Plain http to a hostname is refused by ATS without this, so HTTPS-only's "Load
+       Insecurely" and any page with HTTPS-only off would fail with -1022. Web content only:
+       Vane's own URLSession traffic keeps ATS. -->
+  <key>NSAppTransportSecurity</key>
+  <dict><key>NSAllowsArbitraryLoadsInWebContent</key> <true/></dict>
   <key>NSCameraUsageDescription</key>     <string>Websites you visit can ask to use your camera.</string>
   <key>NSMicrophoneUsageDescription</key> <string>Websites you visit can ask to use your microphone.</string>
   <key>NSLocationUsageDescription</key> <string>Websites you visit can ask for your location.</string>

@@ -307,7 +307,7 @@ import WebKit
     /// ponytail: a page could navigate itself here to raise the alert. It cannot get past it —
     /// the alert defaults to Go Back and the button that proceeds has no key equivalent, same
     /// as `CertificateTrust` — so the worst a hostile page buys is one modal it cannot answer.
-    static let insecureScheme = "x-vane-insecure"
+    nonisolated static let insecureScheme = "x-vane-insecure"
 
     /// Percent-encoded down to alphanumerics, so whatever the url contains is inert in every
     /// context the interstitial puts it in.

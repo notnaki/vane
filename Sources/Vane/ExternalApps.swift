@@ -47,10 +47,11 @@ import WebKit
 
     /// Whether a url is one for another app. A url with no scheme is not: WebKit resolves
     /// it against the page and it never reaches here as a bare string anyway. Neither is one
-    /// of ours — nothing is handed to macOS for a scheme this app answers itself.
+    /// of ours — nothing is handed to macOS for a scheme this app answers itself, and that
+    /// includes the https-only interstitial's "continue" link, which `HTTPSOnly.decide` reads.
     nonisolated static func isExternal(_ scheme: String?) -> Bool {
         guard let scheme = scheme?.lowercased(), !scheme.isEmpty else { return false }
-        return !isOwn(scheme) && !webSchemes.contains(scheme)
+        return !isOwn(scheme) && !webSchemes.contains(scheme) && scheme != HTTPSOnly.insecureScheme
     }
 
     /// What to do about one. Pure, so the table is proved without a window server, a
@@ -275,6 +276,8 @@ import WebKit
             ("…and so is Safari's spelling of it", !isExternal("safari-web-extension")),
             ("…whatever case WebKit hands it over in", !isExternal("WebKit-Extension")),
             ("a url with no scheme at all is not", !isExternal(nil) && !isExternal("")),
+            ("the https-only interstitial's continue link is ours, not another app's",
+             !isExternal(HTTPSOnly.insecureScheme)),
 
             // The decision.
             ("an app link nobody has answered for asks",
