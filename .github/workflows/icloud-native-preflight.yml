@@ -17,16 +17,20 @@ jobs:
         run: |
           swift --version
           xcodebuild -version
+      - name: Enable and verify animated motion on the hosted desktop
+        run: |
+          defaults write com.apple.universalaccess reduceMotion -bool false
+          swift -e 'import AppKit; let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion; print("HOST_REDUCE_MOTION=\(reduced)"); exit(reduced ? 1 : 0)'
       - name: Build unchanged application and repaired fixtures
         run: swift build -c debug --build-tests --disable-index-store
-      - name: One instrumented extension boundary attempt
+      - name: Three predetermined native attempts with retirement
         run: |
           python3 - <<'PYTHON'
           import os, pathlib, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          selection = 'ICloudExtensionBoundaryTests'
+          selection = 'BoundedSidebarMountingTests|KeyboardAccessibilityTests|SpaceNativeRenderingTests|ICloud'
           statuses = []
-          for attempt in range(1, 2):
+          for attempt in range(1, 4):
               log = root / f'icloud-native-preflight-{attempt}.log'
               with log.open('w') as output:
                   result = subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=output, stderr=subprocess.STDOUT)

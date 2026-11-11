@@ -42,9 +42,7 @@ import XCTest
         let reply = Reply<Any>()
         view.callAsyncJavaScript(source, arguments: arguments, in: nil, in: .page) { reply.result = $0 }
         try await wait("public callAsyncJavaScript reply", until: deadline) { reply.result != nil }
-        let value = try XCTUnwrap(reply.result).get()
-        print("ICLOUD_BOUNDARY_CALL source=\(source.prefix(90)) type=\(String(reflecting: type(of: value))) value=\(value)")
-        let string = try XCTUnwrap(value as? String)
+        let string = try XCTUnwrap(try XCTUnwrap(reply.result).get() as? String)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(string.utf8)) as? [String: Any])
     }
 
@@ -104,7 +102,8 @@ import XCTest
             controller = owner
             let loaded = WKWebExtensionContext(for: ext)
             context = loaded
-            // This probe's page and worker use only an isolated ephemeral store.
+            // Nonpersistent pages are private. Permit only this isolated fixture
+            // context to exchange messages with its own background worker.
             loaded.hasAccessToPrivateData = true
             loaded.uniqueIdentifier = UUID().uuidString.lowercased()
             loaded.baseURL = URL(string: "webkit-extension://\(UUID().uuidString.lowercased())/")!
@@ -175,10 +174,7 @@ import XCTest
             XCTAssertEqual(worker["sync"] as? [String: String], ["portable": remote], "The synthetic host page and actual MV3 worker must share sync storage")
             XCTAssertEqual(worker["local"] as? [String: String], ["localOnly": nonce])
             XCTAssertEqual(worker["session"] as? [String: String], ["sessionOnly": nonce])
-        } catch {
-            print("ICLOUD_BOUNDARY_CONTEXT_ERRORS \(String(describing: context?.errors))")
-            failure = error
-        }
+        } catch { failure = error }
 
         // Retire the exact view and context before joining the owned AppKit loop.
         view?.stopLoading()
