@@ -2338,9 +2338,10 @@ struct TitleReveal: Equatable, Sendable {
         }
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
-            if body["gone"] as? Bool == true { Previews.shared.cancel(); return }
+            if body["gone"] as? Bool == true { Previews.shared.cancel(from: self); return }
             guard let raw = body["url"] as? String, let url = URL(string: raw) else { return }
-            Previews.shared.request(url, from: self)
+            let rect = Previews.rect(from: body, pageZoom: m.webView?.pageZoom ?? 1) ?? .zero
+            Previews.shared.request(url, from: self, rect: rect)
             return
         }
         if m.name == PictureInPicture.messageName {

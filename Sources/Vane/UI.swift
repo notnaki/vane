@@ -357,6 +357,9 @@ struct TabPage: View {
                                 $0.existingWeb != nil && store.ownsPage($0) && !store.isTabLocked($0.id)
                             }.compactMap(\.existingWeb) : [],
                             offscreen: offscreen, pane: pane, tab: tab, store: store)
+                        .overlay {
+                            if !offscreen { LinkPreviewOverlay(tab: tab) }
+                        }
                     }
                 }
                 .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }

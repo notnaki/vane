@@ -60,6 +60,18 @@ import WebKit
     }
 
     @Published private(set) var current: Preview?
+    /// Native points within the source WebView, not window or screen coordinates.
+    @Published private(set) var linkRect = CGRect.zero
+
+    func preview(for tab: Tab) -> Preview? { source === tab ? current : nil }
+
+    static func rect(from body: [String: Any], pageZoom: CGFloat) -> CGRect? {
+        let values = ["x", "y", "w", "h"].compactMap { body[$0] as? Double }
+        guard values.count == 4, values.allSatisfy({ $0.isFinite && abs($0) <= 1_000_000 }),
+              values[2] >= 0, values[3] >= 0, pageZoom.isFinite, pageZoom > 0, pageZoom <= 10 else { return nil }
+        return CGRect(x: values[0] * pageZoom, y: values[1] * pageZoom,
+                      width: values[2] * pageZoom, height: values[3] * pageZoom)
+    }
 
     /// Off is a real preference; on is the default because a preview is the feature.
     static var enabled: Bool {
@@ -235,7 +247,7 @@ import WebKit
 
     /// Start (or instantly re-show) a preview of `url`. Safe to call on every hover event —
     /// the same link twice in a row costs nothing.
-    func request(_ url: URL, from tab: Tab) {
+    func request(_ url: URL, from tab: Tab, rect: CGRect = .zero) {
         guard Previews.enabled, !BatterySaver.shared.isActive else { cancel(); return }
         guard Previews.eligible(url, onPage: tab.currentURL) else { cancel(); return }
         let scope = (profile: tab.profileID, privateTab: tab.isPrivate ? tab.id : nil)
@@ -249,10 +261,11 @@ import WebKit
             sessionObserver = sessionObserverFactory(tab.profileID) { [weak self] in self?.retireSession() }
         }
         let key = Previews.key(for: url)
-        if showing == key { source = tab; return }
+        if showing == key, source === tab { linkRect = rect; return }
 
         stop()
         source = tab
+        linkRect = rect
         let id = begin()
         showing = key
 
@@ -342,6 +355,11 @@ import WebKit
     /// A page release must not dismiss a preview requested by another tab.
     func cancel(from tab: Tab) {
         guard source === tab else { return }
+        cancel()
+    }
+
+    func cancel(from tabID: Tab.ID) {
+        guard source?.id == tabID else { return }
         cancel()
     }
 
