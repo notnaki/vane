@@ -138,7 +138,17 @@ import XCTest
     }
 
     private func warmOwnerFixture(pinnedRows: Int = 0) async throws -> (TabStore, [Space], NSWindow, SwipeMonitor, BrowserWindowHost) {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
         try XCTSkipIf(ProcessInfo.processInfo.environment["VANE_RETAIN_INACTIVE_SPACE_ROW_OWNERS"] == "0")
+        let policy = app.activationPolicy()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        // Registered first: LIFO teardown retires the fixture's roots before
+        // joining its AppKit loop and restoring activation policy.
+        addTeardownBlock { @MainActor in
+            defer { app.setActivationPolicy(policy) }
+            try await loop.close()
+        }
         let (store, spaces, window, monitor) = try fixture()
         window.setContentSize(NSSize(width: 1100, height: 800))
         for space in spaces {
@@ -862,6 +872,10 @@ import XCTest
     }
 
     func testReverseProfileSwipeTakesOverTheSamePresentedNativeRows() async throws {
+        try await withFixtureApplicationLoop { try await checkReverseProfileSwipe() }
+    }
+
+    private func checkReverseProfileSwipe() async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
         let manager = ProfileManager.shared
