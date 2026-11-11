@@ -282,8 +282,9 @@ import WebKit
             debounceTask = Task(priority: .background) { [weak self, weak tab] in
                 guard let self, let tab, let unchanged = await self.sessionUnchanged(id) else { return }
                 if !unchanged {
+                    let rect = self.linkRect
                     self.retireSession()
-                    self.request(url, from: tab)
+                    self.request(url, from: tab, rect: rect)
                     return
                 }
                 self.publish(p, for: id)

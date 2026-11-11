@@ -5,6 +5,30 @@ import XCTest
 @testable import vane
 
 @MainActor final class LinkPreviewPresentationTests: XCTestCase {
+    func testRejectedCachedSessionKeepsTheHoveredLinkPositionOnRetry() async throws {
+        TestEnvironment.prepare()
+        let profile = ProfileManager.shared.create(name: "Link preview geometry fixture")
+        let previews = Previews(sessionObserverFactory: { _, _ in nil })
+        let tab = vane.Tab(profileID: profile.id)
+        let enabled = Previews.enabled, mode = BatterySaver.shared.mode
+        Previews.enabled = true; BatterySaver.shared.setMode(.off)
+        defer {
+            previews.cancel(); tab.tearDown()
+            Previews.enabled = enabled; BatterySaver.shared.setMode(mode)
+            Store.forget(profile.id); _ = ProfileManager.shared.delete(profile.id)
+        }
+        let url = URL(string: "http://127.0.0.1:9/preview")!
+        let cached = Previews.Preview(url: url, title: "Unverified cached session", image: NSImage())
+        previews.publish(cached, for: previews.begin())
+        let rect = CGRect(x: 240, y: 180, width: 120, height: 24)
+        // The cached pixels have no verified session snapshot. The real cookie-store
+        // read must reject them and restart the request, preserving the link anchor.
+        previews.request(url, from: tab, rect: rect)
+        try await compatibilityWait { previews.current?.title == "127.0.0.1" }
+        XCTAssertNil(previews.current?.image, "The rejected cached pixels must not be presented")
+        XCTAssertEqual(previews.linkRect, rect, "Session revalidation must not move the card to the pane origin")
+    }
+
     func testPreviewBelongsOnlyToItsRequestingTabEvenForTheSameURL() {
         TestEnvironment.prepare()
         let previews = Previews(), first = vane.Tab(isPrivate: true), second = vane.Tab(isPrivate: true)
