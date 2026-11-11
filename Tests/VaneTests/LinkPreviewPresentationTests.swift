@@ -164,10 +164,15 @@ import XCTest
             SharedTabs.release(store.tabs)
         }
         web.loadHTMLString("<body style='background:white'>Current article</body>", baseURL: nil)
-        try await compatibilityWait {
-            host.layoutSubtreeIfNeeded()
-            return NativeFixtureMountAdmission.surfaceReady(host, in: window)
-                && window.isKeyWindow && tab.existingWeb?.window === window && !tab.web.isLoading
+        do {
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                return NativeFixtureMountAdmission.surfaceReady(host, in: window)
+                    && window.isKeyWindow && tab.existingWeb?.window === window && !tab.web.isLoading
+            }
+        } catch {
+            FileHandle.standardError.write(Data("LINK_PREVIEW_ADMISSION running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) mounted=\(tab.existingWeb?.window === window) loading=\(tab.existingWeb?.isLoading ?? false) surface=\(NativeFixtureMountAdmission.surfaceReady(host, in: window))\n".utf8))
+            throw error
         }
 
         previews.request(URL(string: "http://127.0.0.1:9/preview")!, from: tab)

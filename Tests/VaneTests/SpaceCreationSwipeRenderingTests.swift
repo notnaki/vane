@@ -36,8 +36,13 @@ import XCTest
         try await checkRecordedCrossProfilePull(samplingDelay: .milliseconds(160))
     }
 
+    func testRecordedPullReadmitsItsWindowAfterPreparation() async throws {
+        try await checkRecordedCrossProfilePull(hideBeforeReplay: true)
+    }
+
     private func checkRecordedCrossProfilePull(withAmbientSpace: Bool = false,
-                                               samplingDelay: Duration = .zero) async throws {
+                                               samplingDelay: Duration = .zero,
+                                               hideBeforeReplay: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -45,7 +50,8 @@ import XCTest
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do { try await exerciseRecordedCrossProfilePull(withAmbientSpace: withAmbientSpace,
-                                                       samplingDelay: samplingDelay) }
+                                                       samplingDelay: samplingDelay,
+                                                       hideBeforeReplay: hideBeforeReplay) }
         catch { failure = error }
         do { try await loop.close() }
         catch {
@@ -56,7 +62,8 @@ import XCTest
     }
 
     private func exerciseRecordedCrossProfilePull(withAmbientSpace: Bool,
-                                                  samplingDelay: Duration) async throws {
+                                                  samplingDelay: Duration,
+                                                  hideBeforeReplay: Bool) async throws {
         let oldWidth = SidebarWidth.shared.width
         let iconKey = SpaceFooterPreferences.showIconsKey
         let oldIcons = UserDefaults.vane.object(forKey: iconKey)
@@ -86,7 +93,7 @@ import XCTest
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         func showing() -> TabStore? { TabStore.all.first { $0.window === window } }
-        func admit(_ space: Space) async throws {
+        func admit(_ space: Space, requiresPreparedSlides: Bool = false) async throws {
             try await compatibilityWait {
                 guard let store = showing() else { return false }
                 store.palette = nil
@@ -98,6 +105,8 @@ import XCTest
                     && store.currentSpaceID == space.id && !store.spaceSwiping
                     && store.spaceGesture.monitor.isInstalled
                     && store.spaceGesture.sectionsView?.window === window
+                    && (!requiresPreparedSlides || Motion.spaceReduced
+                        || !store.spaceGesture.monitor.preparedSlides.isEmpty)
             }
         }
         try await admit(spaces[0])
@@ -180,13 +189,36 @@ import XCTest
             (0.366629250, -4, 2),
             (0.374996917, -5, 3),
         ]
+        if hideBeforeReplay {
+            window.orderOut(nil)
+            XCTAssertFalse(window.isVisible, "Control foreground loss after sidebar preparation")
+        }
+        // Preparation and parked-tab publication can span main-loop turns. Admit
+        // the current foreground/presentation owner again immediately before input.
+        try await admit(spaces[2], requiresPreparedSlides: true)
+        XCTAssertTrue(NSApp.isActive && window.isKeyWindow && window.isVisible,
+                      "The exact owner must be foreground after preparation, before replay input")
         let replayStart = ProcessInfo.processInfo.systemUptime
+        var replayNotes: [String] = []
+        let replayObservers = [NSApplication.didResignActiveNotification, NSWindow.didResignKeyNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { note in
+                let notifyingWindow = note.object as? NSWindow
+                MainActor.assumeIsolated {
+                    replayNotes.append("notification=\(name.rawValue) owner=\(notifyingWindow === window) t=\(ProcessInfo.processInfo.systemUptime - replayStart)")
+                }
+            }
+        }
+        defer { replayObservers.forEach(NotificationCenter.default.removeObserver) }
         for (index, sample) in samples.enumerated() {
             let remaining = sample.0 - (ProcessInfo.processInfo.systemUptime - replayStart)
             if remaining > 0 { try await Task.sleep(for: .seconds(remaining)) }
             NSApp.sendEvent(ScrollEvent(window: window, dx: sample.1, dy: sample.2,
                                        phase: index == 0 ? .began : .changed,
                                        timestamp: 3 + sample.0))
+            replayNotes.append("packet=\(index) stamp=\(sample.0) active=\(NSApp.isActive) key=\(window.isKeyWindow) monitor=\(store.spaceGesture.monitor.isInstalled) pull=\(store.spacePull)")
+        }
+        if store.spacePull != 2 {
+            FileHandle.standardError.write(Data(("RECORDED_CREATION_INPUT\n" + replayNotes.joined(separator: "\n") + "\n").utf8))
         }
         XCTAssertEqual(store.spacePull, 2, "The recorded deliberate pull must arm creation")
         let host = try XCTUnwrap(window.contentView)

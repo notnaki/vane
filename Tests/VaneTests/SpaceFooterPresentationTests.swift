@@ -4,7 +4,32 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceFooterPresentationTests: XCTestCase {
-    private func fixture() throws -> (SpaceFooterPresentation, [TabStore], [UUID], NSWindow, [NativeSpaceFooterMarkerView]) {
+    private var presentationCleanups: [@MainActor () -> Void]?
+
+    private func withPresentationLoop(_ body: @MainActor () async throws -> Void) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        presentationCleanups = []
+        var failure: (any Error)?
+        do {
+            try loop.verifyRunning()
+            try await body()
+        } catch { failure = error }
+        let cleanups = presentationCleanups ?? []
+        presentationCleanups = nil
+        cleanups.reversed().forEach { $0() }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Footer AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func fixture(nativePresentation: Bool = false) throws -> (SpaceFooterPresentation, [TabStore], [UUID], NSWindow, [NativeSpaceFooterMarkerView]) {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.reduced, "Requires animated markers")
         let manager = ProfileManager.shared
@@ -12,7 +37,7 @@ import XCTest
         let spaces = profiles.map { manager.createSpace(name: "Footer", in: $0.id) }
         let stores = zip(profiles, spaces).map { TabStore(profileID: $0.0.id, space: $0.1, session: []) }
         let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 64, height: 32),
-                              styleMask: .borderless, backing: .buffered, defer: false)
+                              styleMask: nativePresentation ? .titled : .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let root = NSView(frame: window.contentView!.bounds)
         window.contentView = root
@@ -27,7 +52,10 @@ import XCTest
         }
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
-        addTeardownBlock { @MainActor in
+        var cleaned = false
+        let cleanup: @MainActor () -> Void = {
+            guard !cleaned else { return }
+            cleaned = true
             window.orderOut(nil); window.contentView = nil; window.close()
             for store in stores {
                 store.dropStashes()
@@ -36,34 +64,38 @@ import XCTest
                 manager.delete(store.profileID)
             }
         }
+        addTeardownBlock { @MainActor in cleanup() }
+        presentationCleanups?.append(cleanup)
         return (presentation, stores, spaces.map(\.id), window, views)
     }
 
     func testProfileHandoffCarriesTheSameGrowingGlyphAndIgnoresTheParkedRoot() async throws {
-        let (presentation, stores, ids, window, views) = try fixture()
-        try await Task.sleep(for: .milliseconds(60))
-        let glyph = try XCTUnwrap(views[1].marker?.symbol)
-        presentation.activate(stores[1])
-        let animation = try XCTUnwrap(glyph.animation(forKey: "space-selection") as? CABasicAnimation)
-        XCTAssertNotNil(glyph.animation(forKey: "space-emphasis"),
-                        "An uncovered selection must animate brightness as well as size")
-        let replacement = NativeSpaceFooterMarkerView(frame: views[1].frame)
-        replacement.presentation = presentation
-        window.contentView?.addSubview(replacement)
-        presentation.mount(replacement, owner: stores[1], id: ids[1], icon: "square.fill",
-            layout: SpaceStripLayout(count: 2, availableWidth: 64), hovered: false, scheme: .dark, reduced: false)
-        XCTAssertTrue(replacement.marker?.symbol === glyph)
-        XCTAssertEqual(glyph.animation(forKey: "space-selection")?.beginTime, animation.beginTime,
-                       "A new profile root must keep the existing animation clock")
-        presentation.mount(views[1], owner: stores[0], id: ids[1], icon: "square.fill",
-            layout: SpaceStripLayout(count: 2, availableWidth: 64), hovered: false, scheme: .dark, reduced: false)
-        XCTAssertTrue(replacement.marker?.layer.superlayer === replacement.layer,
-                      "Updating a parked root must not take its icon back")
-        try await Task.sleep(for: .milliseconds(30))
-        let scale = (glyph.presentation()?.value(forKeyPath: "transform.scale.x") as? NSNumber)?.doubleValue
-        presentation.activate(stores[0])
-        let reverse = try XCTUnwrap(glyph.animation(forKey: "space-selection") as? CABasicAnimation)
-        XCTAssertEqual(try XCTUnwrap(reverse.fromValue as? Double), try XCTUnwrap(scale), accuracy: 0.03)
+        try await withPresentationLoop {
+            let (presentation, stores, ids, window, views) = try fixture(nativePresentation: true)
+            try await admitMarkerPresentation(try XCTUnwrap(views[0].marker), in: views[0], window: window)
+            let glyph = try XCTUnwrap(views[1].marker?.symbol)
+            presentation.activate(stores[1])
+            let animation = try XCTUnwrap(glyph.animation(forKey: "space-selection") as? CABasicAnimation)
+            XCTAssertNotNil(glyph.animation(forKey: "space-emphasis"),
+                            "An uncovered selection must animate brightness as well as size")
+            let replacement = NativeSpaceFooterMarkerView(frame: views[1].frame)
+            replacement.presentation = presentation
+            window.contentView?.addSubview(replacement)
+            presentation.mount(replacement, owner: stores[1], id: ids[1], icon: "square.fill",
+                layout: SpaceStripLayout(count: 2, availableWidth: 64), hovered: false, scheme: .dark, reduced: false)
+            XCTAssertTrue(replacement.marker?.symbol === glyph)
+            XCTAssertEqual(glyph.animation(forKey: "space-selection")?.beginTime, animation.beginTime,
+                           "A new profile root must keep the existing animation clock")
+            presentation.mount(views[1], owner: stores[0], id: ids[1], icon: "square.fill",
+                layout: SpaceStripLayout(count: 2, availableWidth: 64), hovered: false, scheme: .dark, reduced: false)
+            XCTAssertTrue(replacement.marker?.layer.superlayer === replacement.layer,
+                          "Updating a parked root must not take its icon back")
+            try await Task.sleep(for: .milliseconds(30))
+            let scale = (glyph.presentation()?.value(forKeyPath: "transform.scale.x") as? NSNumber)?.doubleValue
+            presentation.activate(stores[0])
+            let reverse = try XCTUnwrap(glyph.animation(forKey: "space-selection") as? CABasicAnimation)
+            XCTAssertEqual(try XCTUnwrap(reverse.fromValue as? Double), try XCTUnwrap(scale), accuracy: 0.03)
+        }
     }
 
     func testFingerProgressContinuouslySizesBothIconsBeforeSelectionChanges() throws {
@@ -81,22 +113,15 @@ import XCTest
     }
 
     func testCompactHoverCannotReviveTheOutgoingIconAfterLanding() async throws {
-        TestEnvironment.prepare()
-        let policy = NSApplication.shared.activationPolicy()
-        defer { NSApp.setActivationPolicy(policy) }
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
-        var failure: (any Error)?
-        do {
-            let (presentation, stores, ids, window, views) = try fixture()
-            window.styleMask = [.titled]
+        try await withPresentationLoop {
+            let (presentation, stores, ids, window, views) = try fixture(nativePresentation: true)
             let view = views[0]
             let layout = SpaceStripLayout(count: 2, availableWidth: 64, showIcons: false)
-            func mount(hovered: Bool) {
+            @MainActor func mount(hovered: Bool) {
                 presentation.mount(view, owner: stores[0], id: ids[0], icon: "square.fill",
                     layout: layout, hovered: hovered, scheme: .dark, reduced: false)
             }
             mount(hovered: true)
-            try await LibraryFocusFixture.admitForeground(window)
             let marker = try XCTUnwrap(view.marker)
             try await admitMarkerPresentation(marker, in: view, window: window)
             presentation.track(origin: ids[0], target: ids[1], fraction: 0.5)
@@ -130,38 +155,23 @@ import XCTest
             try await Task.sleep(for: .milliseconds(30))
             XCTAssertEqual(try XCTUnwrap(marker.symbol.presentation()).opacity, 0, accuracy: 0.02,
                            "The outgoing icon must remain hidden in the first frame after landing")
-        } catch { failure = error }
-        do { try await loop.close() }
-        catch {
-            if failure == nil { failure = error }
-            else { XCTFail("Footer regression AppKit loop cleanup also failed: \(error)") }
         }
-        if let failure { throw failure }
     }
 
     func testMarkerPresentationReadmitsAHiddenWindow() async throws {
-        TestEnvironment.prepare()
-        let policy = NSApplication.shared.activationPolicy()
-        defer { NSApp.setActivationPolicy(policy) }
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
-        var failure: (any Error)?
-        do {
-            let (presentation, _, _, window, views) = try fixture()
+        try await withPresentationLoop {
+            let (presentation, _, _, window, views) = try fixture(nativePresentation: true)
             defer { withExtendedLifetime(presentation) {} }
-            window.styleMask = [.titled]
             let view = views[0]
             let marker = try XCTUnwrap(view.marker)
-            try await LibraryFocusFixture.admitForeground(window)
+            try await admitMarkerPresentation(marker, in: view, window: window)
             window.orderOut(nil)
             XCTAssertFalse(window.isVisible, "Control the lost presentation prerequisite")
             try await admitMarkerPresentation(marker, in: view, window: window)
             XCTAssertTrue(window.isVisible && window.isKeyWindow)
             XCTAssertTrue(marker.layer.superlayer === view.layer)
             XCTAssertNotNil(marker.symbol.presentation())
-        } catch { failure = error }
-        do { try await loop.close() }
-        catch { if failure == nil { failure = error } else { XCTFail("Footer admission cleanup also failed: \(error)") } }
-        if let failure { throw failure }
+        }
     }
 
     private func admitMarkerPresentation(_ marker: SpaceFooterPresentation.Marker,
@@ -176,12 +186,13 @@ import XCTest
                 window.contentView?.layoutSubtreeIfNeeded()
                 window.displayIfNeeded()
                 CATransaction.flush()
-                return NSApp.isRunning && window.isKeyWindow && window.occlusionState.contains(.visible)
+                return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+                    && window.isKeyWindow && window.occlusionState.contains(.visible)
                     && view.window === window && marker.view === view
                     && marker.layer.superlayer === view.layer && marker.symbol.presentation() != nil
             }
         } catch {
-            print("FOOTER_ADMISSION running=\(NSApp.isRunning) key=\(window.isKeyWindow) visible=\(window.occlusionState.contains(.visible)) owner=\(view.window === window) markerOwner=\(marker.view === view) layerOwner=\(marker.layer.superlayer === view.layer) presented=\(marker.symbol.presentation() != nil) content=\(window.contentView?.bounds ?? .zero) frame=\(window.frame)")
+            print("FOOTER_ADMISSION running=\(NSApp.isRunning) active=\(NSApp.isActive) exactKey=\(NSApp.keyWindow === window) key=\(window.isKeyWindow) visible=\(window.occlusionState.contains(.visible)) owner=\(view.window === window) markerOwner=\(marker.view === view) layerOwner=\(marker.layer.superlayer === view.layer) presented=\(marker.symbol.presentation() != nil) content=\(window.contentView?.bounds ?? .zero) frame=\(window.frame)")
             throw error
         }
     }
@@ -220,39 +231,42 @@ import XCTest
     }
 
     func testDelayedCommitDoesNotExpireFooterEmphasisBeforeSidebarTravelStarts() async throws {
-        let (presentation, _, ids, window, views) = try fixture()
-        let root = try XCTUnwrap(window.contentView)
-        root.wantsLayer = true
-        let sidebar = CALayer()
-        sidebar.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
-        root.layer?.addSublayer(sidebar)
-        presentation.track(origin: ids[0], target: ids[1], fraction: 0)
-        CATransaction.flush()
-        try await Task.sleep(for: .milliseconds(40))
-        let from = sidebar.position
-        let to = CGPoint(x: from.x + 100, y: from.y)
-        let timing = CABasicAnimation(keyPath: "position")
-        timing.duration = 0.8
-        timing.fromValue = NSValue(point: from)
-        timing.toValue = NSValue(point: to)
-        timing.timingFunction = CAMediaTimingFunction(name: .linear)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        sidebar.position = to
-        sidebar.add(timing, forKey: "test-sidebar")
-        presentation.animate(origin: ids[0], target: ids[1], from: 0, to: 1, timing: timing)
-        // Model expensive pre-commit layout without letting CA submit this transaction.
-        usleep(1_000_000)
-        CATransaction.commit()
-        CATransaction.flush()
-        try await Task.sleep(for: .milliseconds(35))
-        let travel = (try XCTUnwrap(sidebar.presentation()).position.x - from.x) / 100
-        let opacity = try XCTUnwrap(views[1].marker?.symbol.presentation()).opacity
-        let emphasis = (Double(opacity) - 0.6) / 0.4
-        XCTAssertGreaterThan(travel, 0.01)
-        XCTAssertLessThan(travel, 0.7, "Sample the actual first part of sidebar travel")
-        XCTAssertEqual(emphasis, travel, accuracy: 0.12,
-                       "Footer emphasis and sidebar travel must start on the same committed clock")
+        try await withPresentationLoop {
+            let (presentation, _, ids, window, views) = try fixture(nativePresentation: true)
+            let root = try XCTUnwrap(window.contentView)
+            root.wantsLayer = true
+            let sidebar = CALayer()
+            sidebar.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+            root.layer?.addSublayer(sidebar)
+            try await admitMarkerPresentation(try XCTUnwrap(views[0].marker), in: views[0], window: window)
+            presentation.track(origin: ids[0], target: ids[1], fraction: 0)
+            CATransaction.flush()
+            try await Task.sleep(for: .milliseconds(40))
+            let from = sidebar.position
+            let to = CGPoint(x: from.x + 100, y: from.y)
+            let timing = CABasicAnimation(keyPath: "position")
+            timing.duration = 0.8
+            timing.fromValue = NSValue(point: from)
+            timing.toValue = NSValue(point: to)
+            timing.timingFunction = CAMediaTimingFunction(name: .linear)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            sidebar.position = to
+            sidebar.add(timing, forKey: "test-sidebar")
+            presentation.animate(origin: ids[0], target: ids[1], from: 0, to: 1, timing: timing)
+            // Model expensive pre-commit layout without letting CA submit this transaction.
+            usleep(1_000_000)
+            CATransaction.commit()
+            CATransaction.flush()
+            try await Task.sleep(for: .milliseconds(35))
+            let travel = (try XCTUnwrap(sidebar.presentation()).position.x - from.x) / 100
+            let opacity = try XCTUnwrap(views[1].marker?.symbol.presentation()).opacity
+            let emphasis = (Double(opacity) - 0.6) / 0.4
+            XCTAssertGreaterThan(travel, 0.01)
+            XCTAssertLessThan(travel, 0.7, "Sample the actual first part of sidebar travel")
+            XCTAssertEqual(emphasis, travel, accuracy: 0.12,
+                           "Footer emphasis and sidebar travel must start on the same committed clock")
+        }
     }
 
     func testCachedProfileActivationMovesRegisteredLayersWithoutAViewUpdate() throws {
@@ -354,64 +368,78 @@ import XCTest
     }
 
     func testHoverAndMarkerModeRetargetUnfinishedEmphasisFromThePresentedInk() async throws {
-        let (presentation, stores, ids, _, views) = try fixture()
-        let view = views[0]
-        func mount(hovered: Bool, icons: Bool) {
-            presentation.mount(view, owner: stores[0], id: ids[0], icon: "square.fill",
-                layout: SpaceStripLayout(count: 2, availableWidth: 64, showIcons: icons),
-                hovered: hovered, scheme: .dark, reduced: false)
+        try await withPresentationLoop {
+            XCTAssertTrue(NSApplication.shared.isRunning, "Own the AppKit loop before sampling native animation")
+            let (presentation, stores, ids, window, views) = try fixture(nativePresentation: true)
+            let view = views[0]
+            @MainActor func mount(hovered: Bool, icons: Bool) {
+                presentation.mount(view, owner: stores[0], id: ids[0], icon: "square.fill",
+                    layout: SpaceStripLayout(count: 2, availableWidth: 64, showIcons: icons),
+                    hovered: hovered, scheme: .dark, reduced: false)
+            }
+            mount(hovered: false, icons: true)
+            try await admitMarkerPresentation(try XCTUnwrap(view.marker), in: view, window: window)
+            let symbol = try XCTUnwrap(view.marker?.symbol)
+            presentation.track(origin: ids[0], target: ids[1], fraction: 0.25)
+            CATransaction.flush()
+            // Establish the finger-position baseline before testing a landing retarget.
+            // Otherwise a delayed commit can leave the selected icon at opacity 1,
+            // making hover-on correctly require no opacity animation at all.
+            try await compatibilityWait { abs((symbol.presentation()?.opacity ?? -1) - 0.9) < 0.02 }
+            let timing = CABasicAnimation(keyPath: "position")
+            timing.duration = 3
+            timing.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            presentation.animate(origin: ids[0], target: ids[1], from: 0.25, to: 1, timing: timing)
+            try await Task.sleep(for: .milliseconds(60))
+            let visible = try XCTUnwrap(symbol.presentation()).opacity
+            mount(hovered: true, icons: true)
+            if symbol.animation(forKey: "space-emphasis") == nil {
+                FileHandle.standardError.write(Data("FOOTER_RETARGET visible=\(visible) model=\(symbol.opacity) reduced=\(Motion.spaceReduced) active=\(NSApp.isActive) key=\(window.isKeyWindow)\n".utf8))
+            }
+            let hover = try XCTUnwrap(symbol.animation(forKey: "space-emphasis") as? CABasicAnimation)
+            XCTAssertEqual(try XCTUnwrap(hover.fromValue as? NSNumber).floatValue, visible, accuracy: 0.04)
+            XCTAssertEqual(try XCTUnwrap(hover.toValue as? NSNumber).doubleValue, 1, accuracy: 0.001)
+            XCTAssertLessThanOrEqual(hover.duration, 0.15)
+            try await Task.sleep(for: .milliseconds(200))
+            let sizeDuringHover = try XCTUnwrap(
+                symbol.presentation()?.value(forKeyPath: "transform.scale.x") as? NSNumber).doubleValue
+            XCTAssertGreaterThan(sizeDuringHover, 0.85,
+                                 "Quick hover feedback must not finish icon sizing ahead of the sidebar")
+            try await Task.sleep(for: .milliseconds(30))
+            mount(hovered: false, icons: true)
+            let unhover = try XCTUnwrap(symbol.animation(forKey: "space-emphasis") as? CABasicAnimation)
+            XCTAssertEqual(try XCTUnwrap(unhover.toValue as? NSNumber).doubleValue, 0.6, accuracy: 0.001)
+            XCTAssertGreaterThan(unhover.duration, 0.3, "Unhover must continue the unfinished landing")
+            mount(hovered: false, icons: false)
+            let compact = try XCTUnwrap(symbol.animation(forKey: "space-emphasis") as? CABasicAnimation)
+            XCTAssertEqual(try XCTUnwrap(compact.toValue as? NSNumber).doubleValue, 0, accuracy: 0.001)
+            XCTAssertGreaterThan(compact.duration, 0.3)
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertGreaterThan(try XCTUnwrap(symbol.presentation()).opacity, 0.03,
+                                 "Changing marker mode must not finish its ink ahead of the sidebar")
         }
-        mount(hovered: false, icons: true)
-        presentation.track(origin: ids[0], target: ids[1], fraction: 0.25)
-        let timing = CABasicAnimation(keyPath: "position")
-        timing.duration = 3
-        timing.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        presentation.animate(origin: ids[0], target: ids[1], from: 0.25, to: 1, timing: timing)
-        try await Task.sleep(for: .milliseconds(60))
-        let symbol = try XCTUnwrap(view.marker?.symbol)
-        let visible = try XCTUnwrap(symbol.presentation()).opacity
-        mount(hovered: true, icons: true)
-        let hover = try XCTUnwrap(symbol.animation(forKey: "space-emphasis") as? CABasicAnimation)
-        XCTAssertEqual(try XCTUnwrap(hover.fromValue as? NSNumber).floatValue, visible, accuracy: 0.04)
-        XCTAssertEqual(try XCTUnwrap(hover.toValue as? NSNumber).doubleValue, 1, accuracy: 0.001)
-        XCTAssertLessThanOrEqual(hover.duration, 0.15)
-        try await Task.sleep(for: .milliseconds(200))
-        let sizeDuringHover = try XCTUnwrap(
-            symbol.presentation()?.value(forKeyPath: "transform.scale.x") as? NSNumber).doubleValue
-        XCTAssertGreaterThan(sizeDuringHover, 0.85,
-                             "Quick hover feedback must not finish icon sizing ahead of the sidebar")
-        try await Task.sleep(for: .milliseconds(30))
-        mount(hovered: false, icons: true)
-        let unhover = try XCTUnwrap(symbol.animation(forKey: "space-emphasis") as? CABasicAnimation)
-        XCTAssertEqual(try XCTUnwrap(unhover.toValue as? NSNumber).doubleValue, 0.6, accuracy: 0.001)
-        XCTAssertGreaterThan(unhover.duration, 0.3, "Unhover must continue the unfinished landing")
-        mount(hovered: false, icons: false)
-        let compact = try XCTUnwrap(symbol.animation(forKey: "space-emphasis") as? CABasicAnimation)
-        XCTAssertEqual(try XCTUnwrap(compact.toValue as? NSNumber).doubleValue, 0, accuracy: 0.001)
-        XCTAssertGreaterThan(compact.duration, 0.3)
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertGreaterThan(try XCTUnwrap(symbol.presentation()).opacity, 0.03,
-                             "Changing marker mode must not finish its ink ahead of the sidebar")
     }
 
     func testEmphasisUsesTheSidebarTimingAndReducedMotionCancelsBothAnimations() async throws {
-        let (presentation, stores, ids, _, views) = try fixture()
-        try await Task.sleep(for: .milliseconds(60))
-        presentation.track(origin: ids[0], target: ids[1], fraction: 0.25)
-        let timing = CABasicAnimation(keyPath: "position")
-        timing.duration = 0.8
-        timing.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        presentation.animate(origin: ids[0], target: ids[1], from: 0.25, to: 1, timing: timing)
-        let glyph = try XCTUnwrap(views[1].marker?.symbol)
-        let emphasis = try XCTUnwrap(glyph.animation(forKey: "space-emphasis") as? CABasicAnimation)
-        XCTAssertEqual(emphasis.duration, timing.duration)
-        XCTAssertEqual(emphasis.timingFunction, timing.timingFunction)
-        presentation.activate(stores[1])
-        presentation.mount(views[1], owner: stores[1], id: ids[1], icon: "square.fill",
-            layout: SpaceStripLayout(count: 2, availableWidth: 64), hovered: false, scheme: .dark, reduced: true)
-        XCTAssertNil(glyph.animation(forKey: "space-emphasis"))
-        XCTAssertNil(glyph.animation(forKey: "space-selection"))
-        XCTAssertEqual(glyph.opacity, 1)
-        XCTAssertEqual(glyph.transform.m11, 1, accuracy: 0.001)
+        try await withPresentationLoop {
+            let (presentation, stores, ids, window, views) = try fixture(nativePresentation: true)
+            try await admitMarkerPresentation(try XCTUnwrap(views[0].marker), in: views[0], window: window)
+            presentation.track(origin: ids[0], target: ids[1], fraction: 0.25)
+            let timing = CABasicAnimation(keyPath: "position")
+            timing.duration = 0.8
+            timing.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            presentation.animate(origin: ids[0], target: ids[1], from: 0.25, to: 1, timing: timing)
+            let glyph = try XCTUnwrap(views[1].marker?.symbol)
+            let emphasis = try XCTUnwrap(glyph.animation(forKey: "space-emphasis") as? CABasicAnimation)
+            XCTAssertEqual(emphasis.duration, timing.duration)
+            XCTAssertEqual(emphasis.timingFunction, timing.timingFunction)
+            presentation.activate(stores[1])
+            presentation.mount(views[1], owner: stores[1], id: ids[1], icon: "square.fill",
+                layout: SpaceStripLayout(count: 2, availableWidth: 64), hovered: false, scheme: .dark, reduced: true)
+            XCTAssertNil(glyph.animation(forKey: "space-emphasis"))
+            XCTAssertNil(glyph.animation(forKey: "space-selection"))
+            XCTAssertEqual(glyph.opacity, 1)
+            XCTAssertEqual(glyph.transform.m11, 1, accuracy: 0.001)
+        }
     }
 }

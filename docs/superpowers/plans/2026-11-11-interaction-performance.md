@@ -106,3 +106,52 @@ authoritative record of broader native integration validation.
   17 and 10 tests. Independent review of all fixture/policy repairs found no remaining
   actionable issues. Integrated debug `selfcheck --pure` also passed. Full required CI
   must run on the updated PR head.
+
+## Updated-target native admission investigation
+
+- Canceled PR run `43080747872` at the user's request before updating the branch;
+  verified the run and every job were terminal. Its original failing native shard
+  (3/4) had passed. No replacement CI was launched during local investigation.
+- Integrated target changes through `d153f301` (link previews and settings). The
+  performance diff was unchanged by the target merges.
+- A controlled hidden-after-preparation replay reproduced a missing foreground
+  prerequisite. Re-admit the exact owner and prepared sidebar surfaces immediately
+  before the original recorded input; retain all packets, timestamps and thresholds.
+- Preserved replay instrumentation identified another actual reset at 134 ms:
+  `NSWindowDidResignKeyNotification` for the exact owner, followed by application
+  resignation. The production monitor correctly aborted; subsequent synthetic packets
+  arrived while inactive. The user agreed to leave the desktop idle for validation.
+  Evidence: `/tmp/vane-fast-native-admission-diagnostic-3.log`.
+- A footer hover fixture sampled native animation without owning an AppKit loop;
+  an explicit loop-running assertion reproduced that missing prerequisite. Native
+  presentation cases now own a structured loop, retire exact fixture resources, and
+  explicitly join it inside the test body. An intermediate XCTest-teardown approach
+  hung, was removed, and its exact host was terminated after stack capture; fresh
+  wrapper cleanup passed. Evidence: `/tmp/vane-fast-footer-loop-red.log`,
+  `/tmp/vane-fast-native-hang.sample`, `/tmp/vane-fast-base-a2f3-owned-1.log`.
+- One-shot foreground admission timed out with active=false/key=false. Shared footer
+  admission reasserts foreground within the original deadline and requires active app,
+  exact key window, visible owner, mounted layers and a native presentation.
+- Failure diagnostics reproduced the hover baseline at opacity 0.999999. The fixture
+  had tracked the fingers and started landing in one transaction; hover-on then correctly
+  required no opacity animation. Commit and admit the 0.9 finger-position baseline
+  before landing, preserving the original 60 ms post-animation sample and all assertions.
+  Evidence: `/tmp/vane-fast-native-admission-diagnostic-2.log`.
+- A new target link-preview fixture also timed out during its initial native mount
+  admission in the active-desktop session. Added failure-only prerequisite diagnostics;
+  no link-preview behavior or assertion was changed. It remains part of combined validation.
+- Independent review found and resolved missing active-app/exact-key predicates in the
+  shared footer admission. Final review of the three test diffs had no actionable findings.
+- Native attempts, including failures, are retained under `/tmp/vane-fast-base-a2f3-*`
+  and `/tmp/vane-fast-native-admission-diagnostic-*`; passing unchanged retries were not
+  counted as repairs. Three focused idle-desktop preflights are required on the updated
+  integration before a replacement full CI run.
+
+- Updated integration at `d153f301` passed all three predetermined idle-desktop
+  preflights: 88 tests per attempt, zero failures, and wrapper primary/cleanup both zero.
+  This includes initial link-preview admission and rendered-card assertions, settings,
+  replay, footer, locks and suggestion ranking. Logs:
+  `/tmp/vane-fast-idle-updated-preflight-{1,2,3}.log`.
+- Integrated debug `selfcheck --pure` passed; current fixture changes compiled. The
+  desktop run completed and all task-owned native test hosts exited. Full CI remains
+  required on the pushed head.
