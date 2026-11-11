@@ -289,22 +289,30 @@ struct SidebarHandle: View {
                         if start == nil {
                             detent = SidebarResizeDetent()
                             start = grab
+                            (store.window as? VaneWindow)?.beginSidebarResize(store)
                         }
-                        sidebar.setLiveWidth(detent.width(for: value.location.x + grab),
-                                             available: store.window?.contentView?.bounds.width)
+                        let next = detent.width(for: value.location.x + grab)
+                        if (store.window as? VaneWindow)?.updateSidebarResize(next) != true {
+                            sidebar.setLiveWidth(next, available: store.window?.contentView?.bounds.width)
+                        }
                     }
                     .onEnded { value in
                         let proposed = value.location.x + (start ?? 0)
-                        sidebar.setLiveWidth(detent.width(for: proposed),
-                                             available: store.window?.contentView?.bounds.width)
+                        let next = detent.width(for: proposed)
                         start = nil
                         detent = SidebarResizeDetent()
-                        sidebar.save()
-                        if SidebarWidth.shouldCollapse(proposed) {
-                            if store.sidebarShown { store.toggleSidebar() }
-                            axAnnounce("Sidebar hidden.")
-                        } else {
-                            axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")
+                        let finished: @MainActor () -> Void = {
+                            sidebar.save()
+                            if SidebarWidth.shouldCollapse(proposed) {
+                                if store.sidebarShown { store.toggleSidebar() }
+                                axAnnounce("Sidebar hidden.")
+                            } else {
+                                axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")
+                            }
+                        }
+                        if (store.window as? VaneWindow)?.endSidebarResize(next, completion: finished) != true {
+                            sidebar.setLiveWidth(next, available: store.window?.contentView?.bounds.width)
+                            finished()
                         }
                     }
             )
@@ -315,6 +323,7 @@ struct SidebarHandle: View {
             // needs a point of movement, and a double-click has none.
             .simultaneousGesture(
                 TapGesture(count: 2).onEnded {
+                    _ = (store.window as? VaneWindow)?.cancelSidebarResize()
                     sidebar.reset()
                     axAnnounce("Sidebar width reset.")
                 }
@@ -328,10 +337,14 @@ struct SidebarHandle: View {
             .accessibilityAddTraits(.isButton)
             .accessibilityAction(named: "Widen Sidebar") { step(20) }
             .accessibilityAction(named: "Narrow Sidebar") { step(-20) }
-            .accessibilityAction(named: "Reset Sidebar Width") { sidebar.reset() }
+            .accessibilityAction(named: "Reset Sidebar Width") {
+                _ = (store.window as? VaneWindow)?.cancelSidebarResize()
+                sidebar.reset()
+            }
     }
 
     private func step(_ delta: CGFloat) {
+        _ = (store.window as? VaneWindow)?.cancelSidebarResize()
         let proposed = presentedWidth + delta
         let next = store.window?.contentView.map {
             SidebarWidth.fitting(proposed, in: $0.bounds.width)

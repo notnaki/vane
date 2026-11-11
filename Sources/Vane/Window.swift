@@ -15,10 +15,14 @@ final class VaneWindow: NSWindow {
     private var resizeAnchor: WindowResizeAnchor?
     private var committingResize = false
     private var sidebarResizePreparation: SidebarPageResizePreparation?
+    private var livePageResizeBuffer: LivePageResizeBuffer?
+    private var liveResizeOwner = UUID()
+    private var sidebarDrag = false
 
     /// A second close command cancels the pending close; a command after its
     /// publication may proceed as a normal reopen.
     func cancelSidebarResize() -> Bool {
+        if sidebarDrag { livePageResizeBuffer?.cancel() }
         let waiting = sidebarResizePreparation?.awaitingPaint == true
         sidebarResizePreparation?.cancel()
         sidebarResizePreparation = nil
@@ -42,10 +46,45 @@ final class VaneWindow: NSWindow {
         return true
     }
 
-    var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true }
+    var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true || livePageResizeBuffer?.isPreparing == true }
+
+    func beginSidebarResize(_ store: TabStore) {
+        _ = cancelSidebarResize()
+        livePageResizeBuffer?.cancel()
+        resizePreparation?.cancel()
+        sidebarDrag = true
+        let owner = UUID()
+        liveResizeOwner = owner
+        livePageResizeBuffer = LivePageResizeBuffer(window: self, axes: NSSize(width: 1, height: 0),
+            isCurrent: { [weak self, weak store] in
+                guard let self, let store else { return false }
+                return self.liveResizeOwner == owner && store.window === self && store.profileVisible
+                    && store.sidebarShown && !store.libraryOpen
+            }, apply: { [weak store] _, width in
+                if let width { SidebarWidth.shared.setLiveWidth(width, available: store?.window?.contentView?.bounds.width) }
+            }, completion: { [weak self] in
+                guard let self, self.liveResizeOwner == owner else { return }
+                self.livePageResizeBuffer = nil
+                self.sidebarDrag = false
+            })
+        livePageResizeBuffer?.start()
+        if livePageResizeBuffer == nil { sidebarDrag = false }
+    }
+
+    @discardableResult func updateSidebarResize(_ width: CGFloat) -> Bool {
+        guard sidebarDrag else { return false }
+        return livePageResizeBuffer?.request(frame: frame, sidebarWidth: width) == true
+    }
+
+    @discardableResult func endSidebarResize(_ width: CGFloat, completion: @escaping @MainActor () -> Void) -> Bool {
+        guard updateSidebarResize(width), let buffer = livePageResizeBuffer else { return false }
+        buffer.finish(completion)
+        return true
+    }
 
     @discardableResult func preparePageResize(frame: NSRect, display: Bool) -> Bool {
         _ = cancelSidebarResize()
+        livePageResizeBuffer?.cancel()
         if resizePreparation == nil {
             resizePreparation = WindowResizePreparation(window: self) { [weak self] frame, display in
                 self?.commitPreparedResize(frame, display: display)
@@ -63,24 +102,41 @@ final class VaneWindow: NSWindow {
 
     func beginPageResize(at point: NSPoint = NSEvent.mouseLocation) {
         _ = cancelSidebarResize()
+        livePageResizeBuffer?.cancel()
+        resizePreparation?.cancel()
         resizeAnchor = WindowResizeAnchor(frame: frame, pointer: point)
+        let nearHorizontal = min(abs(point.x - frame.minX), abs(point.x - frame.maxX)) <= 24
+        let nearVertical = min(abs(point.y - frame.minY), abs(point.y - frame.maxY)) <= 24
+        let owner = UUID()
+        liveResizeOwner = owner
+        livePageResizeBuffer = LivePageResizeBuffer(window: self,
+            axes: NSSize(width: nearHorizontal ? 1 : 0, height: nearVertical ? 1 : 0),
+            apply: { [weak self] frame, _ in self?.commitPreparedResize(frame, display: true) },
+            completion: { [weak self] in
+                guard let self, self.liveResizeOwner == owner else { return }
+                self.livePageResizeBuffer = nil
+            })
+        livePageResizeBuffer?.start()
         resizePreparation?.beginLiveResize()
     }
 
     func proposedPageResize(_ size: NSSize) -> NSSize {
         guard !committingResize, let resizeAnchor, !styleMask.contains(.fullScreen) else { return size }
         let target = resizeAnchor.frame(for: size)
+        if livePageResizeBuffer?.request(frame: target) == true { return frame.size }
         return preparePageResize(frame: target, display: true) ? frame.size : size
     }
 
     func endPageResize() {
         resizeAnchor = nil
+        livePageResizeBuffer?.finish()
         resizePreparation?.endLiveResize()
     }
 
     override func close() {
         _ = cancelSidebarResize()
         endPageResize()
+        livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.close()
     }
@@ -88,6 +144,7 @@ final class VaneWindow: NSWindow {
     override func miniaturize(_ sender: Any?) {
         _ = cancelSidebarResize()
         endPageResize()
+        livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.miniaturize(sender)
     }
@@ -95,6 +152,7 @@ final class VaneWindow: NSWindow {
     override func toggleFullScreen(_ sender: Any?) {
         _ = cancelSidebarResize()
         endPageResize()
+        livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.toggleFullScreen(sender)
     }

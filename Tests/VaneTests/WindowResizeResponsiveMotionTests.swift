@@ -93,6 +93,19 @@ import XCTest
                 return app.isRunning && app.isActive && window.isKeyWindow
                     && window.occlusionState.contains(.visible) && web.window === window && web.bounds.width > 100
             }
+            // Admit the ordinary loaded-page warm state at the baseline viewport.
+            // This is before capture/drag timing; priming itself remains measured.
+            PageResizeStyle.warm(web)
+            let warmed: Bool = try await withCheckedThrowingContinuation { continuation in
+                web.evaluateJavaScript("""
+                (()=>{const s=globalThis.__vaneResizeStyle;
+                  return Boolean(s?.active && s.width===innerWidth && s.height===innerHeight
+                    && document.documentElement.getBoundingClientRect().width>0);})()
+                """, in: nil, in: PageResizeStyle.world) { result in
+                    continuation.resume(with: result.map { $0 as? Bool == true })
+                }
+            }
+            XCTAssertTrue(warmed, "The baseline loaded page must have its normal current-viewport style hints")
             let presented = XCTestExpectation(description: "Initial responsive page presentation")
             let callback: @convention(block) () -> Void = { presented.fulfill() }
             _ = web.perform(NSSelectorFromString("_doAfterNextPresentationUpdate:"), with: callback)
@@ -115,7 +128,8 @@ import XCTest
                 let began = CACurrentMediaTime()
                 let frameHeight = window.frame.height
                 print("RESPONSIVE_INITIAL frame=\(window.frame.size) content=\(window.contentView?.bounds.size ?? .zero) page=\(web.bounds.size)")
-                if !sidebar { window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.maxY)) }
+                if sidebar { window.beginSidebarResize(store) }
+                else { window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.midY)) }
                 let widths = sidebar
                     ? Array(stride(from: 228, through: 500, by: 2))
                         + Array(stride(from: 498, through: 164, by: -2))
@@ -125,7 +139,11 @@ import XCTest
                 for width in widths {
                     guard ContinuousClock.now < activeBy else { throw NSError(domain: "ResizeMotionActiveBudget", code: 1) }
                     let next = ContinuousClock.now + .milliseconds(8)
-                    if sidebar { SidebarWidth.shared.setLiveWidth(CGFloat(width), available: host.bounds.width) }
+                    if sidebar {
+                        if !window.updateSidebarResize(CGFloat(width)) {
+                            SidebarWidth.shared.setLiveWidth(CGFloat(width), available: host.bounds.width)
+                        }
+                    }
                     else {
                         let accepted = window.proposedPageResize(NSSize(width: CGFloat(width), height: frameHeight))
                         if accepted != window.frame.size {
@@ -134,8 +152,13 @@ import XCTest
                     }
                     try await ContinuousClock().sleep(until: next)
                 }
+                if sidebar {
+                    if !window.endSidebarResize(228, completion: {}) {
+                        SidebarWidth.shared.setLiveWidth(228, available: host.bounds.width)
+                    }
+                } else { window.endPageResize() }
                 try await compatibilityWait {
-                    if sidebar { return abs(web.bounds.width - 661) < 1 }
+                    if sidebar { return !window.isPreparingPageResize && abs(web.bounds.width - 661) < 1 }
                     return !window.isPreparingPageResize && abs(window.frame.width - 900) < 1
                 }
                 let ended = CACurrentMediaTime()
@@ -161,7 +184,7 @@ import XCTest
                     XCTAssertEqual(window.frame.width, 900)
                 } else { XCTAssertGreaterThanOrEqual(changes.map(\.width).max() ?? 0, 1300) }
                 XCTAssertLessThanOrEqual(pauses.last ?? .infinity, 80, "Avoid the measured170ms page-layout stalls")
-                XCTAssertLessThanOrEqual(p95, 60)
+                XCTAssertLessThanOrEqual(p95, 25)
                 XCTAssertLessThanOrEqual(steps.max() ?? .infinity, 24)
                 XCTAssertEqual(web.pageZoom, 1)
             } catch { try? await sampler.stop(); throw error }

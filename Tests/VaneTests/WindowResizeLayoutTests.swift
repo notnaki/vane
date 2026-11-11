@@ -39,12 +39,16 @@ import XCTest
         try await resizeFixture(capture: true, slowResize: true, sidebarToggle: true)
     }
 
+    func testContinuousSidebarDragKeepsThePagePaintedThroughReversals() async throws {
+        try await resizeFixture(capture: true, slowResize: true, sidebarDrag: true)
+    }
+
     func testCornerResizeKeepsTheShrinkingAxisPaintedWhileTheOtherAxisGrows() async throws {
         try await resizeFixture(capture: true, slowResize: true, mixedAxes: true)
     }
 
     private func resizeFixture(capture: Bool, slowResize: Bool = false, sidebarToggle: Bool = false,
-                               mixedAxes: Bool = false) async throws {
+                               mixedAxes: Bool = false, sidebarDrag: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -92,7 +96,7 @@ import XCTest
             tab.web.loadHTMLString(html, baseURL: nil)
             try await compatibilityWait { !tab.web.isLoading && tab.web.title == "Resize ready" }
             for direct in [false, true] {
-                if sidebarToggle && direct { continue }
+                if (sidebarToggle || sidebarDrag) && direct { continue }
                 // The control has an independent page. Borrowing a page from a
                 // retained SwiftUI root lets a later update mount it back there.
                 let page: WKWebView
@@ -123,7 +127,7 @@ import XCTest
                 } else if capture {
                     try await captureResizePixels(window, web: page, direct: direct,
                                                   proposalInterval: slowResize ? .milliseconds(40) : .milliseconds(8),
-                                                  mixedAxes: mixedAxes)
+                                                  mixedAxes: mixedAxes, sidebarStore: sidebarDrag ? store : nil)
                 } else {
                     for width: CGFloat in [1100, 470, 800, 1200, 900, 1100, 900] {
                         window.setContentSize(NSSize(width: width, height: 600))
@@ -205,7 +209,7 @@ import XCTest
     }
 
     private func captureResizePixels(_ window: VaneWindow, web: WKWebView, direct: Bool,
-                                     proposalInterval: Duration, mixedAxes: Bool = false) async throws {
+                                     proposalInterval: Duration, mixedAxes: Bool = false, sidebarStore: TabStore? = nil) async throws {
         // Diagnostic reference: the original geometry-only path must remain RED.
         let baselineControl = ProcessInfo.processInfo.environment["VANE_RESIZE_BASELINE"] == "1"
         try await compatibilityWait {
@@ -233,12 +237,18 @@ import XCTest
             let began = CACurrentMediaTime()
             owner.stage = "resize proposals direct=\(direct) mixed=\(mixedAxes)"
             let frameHeight = window.frame.height
-            if !baselineControl {
-                window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.maxY))
+            if let sidebarStore { window.beginSidebarResize(sidebarStore) }
+            else if !baselineControl {
+                window.beginPageResize(at: NSPoint(x: window.frame.maxX,
+                    y: mixedAxes ? window.frame.maxY : window.frame.midY))
             }
             defer { window.endPageResize() }
-            let widths = Array(stride(from: 900, through: 1300, by: 40))
-                + Array(stride(from: 1260, through: 900, by: -40))
+            let widths = sidebarStore != nil
+                ? Array(stride(from: 228, through: 500, by: 8))
+                    + Array(stride(from: 492, through: 164, by: -8))
+                    + Array(stride(from: 172, through: 228, by: 8))
+                : Array(stride(from: 900, through: 1300, by: 40))
+                    + Array(stride(from: 1260, through: 900, by: -40))
             let sizes = mixedAxes
                 ? [NSSize(width: 800, height: frameHeight + 40),
                    NSSize(width: 1100, height: frameHeight - 40),
@@ -247,9 +257,15 @@ import XCTest
                 : widths.map { NSSize(width: CGFloat($0), height: frameHeight) }
             for size in sizes {
                 let deadline = ContinuousClock.now + proposalInterval
-                let accepted = baselineControl ? size : window.proposedPageResize(size)
-                if accepted != window.frame.size {
-                    window.setFrame(NSRect(origin: window.frame.origin, size: accepted), display: false)
+                if sidebarStore != nil {
+                    if !window.updateSidebarResize(size.width) {
+                        SidebarWidth.shared.setLiveWidth(size.width, available: window.contentView?.bounds.width)
+                    }
+                } else {
+                    let accepted = baselineControl ? size : window.proposedPageResize(size)
+                    if accepted != window.frame.size {
+                        window.setFrame(NSRect(origin: window.frame.origin, size: accepted), display: false)
+                    }
                 }
                 try await ContinuousClock().sleep(until: deadline)
                 if mixedAxes {
@@ -258,6 +274,11 @@ import XCTest
                     try await compatibilityWait { !window.isPreparingPageResize && window.frame.size == size }
                 }
             }
+            if sidebarStore != nil {
+                if !window.endSidebarResize(228, completion: {}) {
+                    SidebarWidth.shared.setLiveWidth(228, available: window.contentView?.bounds.width)
+                }
+            } else { window.endPageResize() }
             try await compatibilityWait { !window.isPreparingPageResize }
             let ended = CACurrentMediaTime()
             owner.stage = "resize final presentation direct=\(direct) mixed=\(mixedAxes)"
@@ -269,7 +290,12 @@ import XCTest
             let samples = sampler.frames.samples.filter { $0.time >= began && $0.time <= ended }
             XCTAssertGreaterThan(samples.count, 3, "Capture actual WindowServer frames during resizing")
             XCTAssertFalse(owner.interrupted, "Foreground admission was lost during the native resize capture")
-            XCTAssertGreaterThanOrEqual(owner.maxWidth, 1100, "The window must actually grow during capture")
+            if sidebarStore == nil {
+                XCTAssertGreaterThanOrEqual(owner.maxWidth, 1100, "The window must actually grow during capture")
+            } else {
+                XCTAssertEqual(SidebarWidth.shared.width, 228)
+                XCTAssertEqual(web.frame.width, 661, accuracy: 1)
+            }
             XCTAssertEqual(window.frame.width, 900, accuracy: 1, "Commit the latest queued request")
             XCTAssertEqual(window.frame.height, frameHeight, accuracy: 1,
                            "Native width proposals must not repeatedly add the titlebar height")
