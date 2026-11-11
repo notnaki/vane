@@ -583,7 +583,7 @@ private struct PreviewsPane: View {
                 SettingsRow("Preview links on hover") {
                     Toggle("Preview links on hover", isOn: $previews).labelsHidden()
                 }
-                Footnote("Hover over a link to preview the page. The website sees a visit when its preview loads. An on-device summary appears when Max is available.")
+                Footnote("Hover over a link to preview the page. The website sees a visit when its preview loads. A page summary follows when Max is enabled and its selected summary connection is available.")
             }
             SettingsCard {
                 SettingsRow("Open links from pinned tabs in Peek") {
