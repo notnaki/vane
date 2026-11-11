@@ -138,16 +138,7 @@ import XCTest
     }
 
     private func warmOwnerFixture(pinnedRows: Int = 0) async throws -> (TabStore, [Space], NSWindow, SwipeMonitor, BrowserWindowHost) {
-        TestEnvironment.prepare()
-        _ = NSApplication.shared
         try XCTSkipIf(ProcessInfo.processInfo.environment["VANE_RETAIN_INACTIVE_SPACE_ROW_OWNERS"] == "0")
-        let policy = NSApp.activationPolicy()
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
-        // Registered before fixture teardown, so its native roots retire first.
-        addTeardownBlock { @MainActor in
-            defer { NSApp.setActivationPolicy(policy) }
-            try await loop.close()
-        }
         let (store, spaces, window, monitor) = try fixture()
         window.setContentSize(NSSize(width: 1100, height: 800))
         for space in spaces {
@@ -163,12 +154,7 @@ import XCTest
         }
         store.switchTo(space: spaces[0]); store.palette = nil
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
-        try await compatibilityWait {
-            self.warmOwnerReports(in: host).contains { $0.attachedLogicalRows >= 24 }
-                && SidebarNativeReadinessCoordinator.shared.isReady(
-                    SidebarNativeReadinessScope(store: store, spaceID: spaces[0].id),
-                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)
-        }
+        try await compatibilityWait { self.warmOwnerReports(in: host).contains { $0.attachedLogicalRows >= 24 } }
         return (store, spaces, window, monitor, host)
     }
 
@@ -176,12 +162,7 @@ import XCTest
                                 host: BrowserWindowHost) async throws {
         let direction = try XCTUnwrap(store.beginSpaceSelection(target))
         monitor.land(direction, to: target, width: fixtureSidebarWidth(in: store), store: store, duration: 0.05)
-        try await compatibilityWait {
-            store.currentSpaceID == target.id && !store.spaceSwiping && host.spaceSlide == nil
-                && SidebarNativeReadinessCoordinator.shared.isReady(
-                    SidebarNativeReadinessScope(store: store, spaceID: target.id),
-                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)
-        }
+        try await compatibilityWait { store.currentSpaceID == target.id && !store.spaceSwiping && host.spaceSlide == nil }
     }
 
     func testInactiveWarmOwnerBudgetAppliesAcrossPinnedAndTodaySections() async throws {
@@ -1278,7 +1259,7 @@ import XCTest
             let showing = try XCTUnwrap(TabStore.all.first { $0.window === window })
             let direction = index == 1 ? 1 : -1
             let monitor = showing.spaceGesture.monitor
-            let sampler = ProfileWashSampler(host: host, source: showing)
+            let sampler = ProfileWashSampler(host: host)
             sampler.start(on: try XCTUnwrap(window.screen))
             defer { sampler.stop() }
             // A new display link and a freshly restored hosting tree may not have
@@ -1289,7 +1270,7 @@ import XCTest
                 if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
                 return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
                     && host.window === window && showing.window === window && showing.profileVisible
-                    && sampler.reds.count >= 3 && sampler.isReadyForSource()
+                    && sampler.reds.count >= 3
             }
             sampler.beginTransitionSampling()
             let observers = [
@@ -1482,7 +1463,6 @@ import XCTest
                 && window.isVisible && window.occlusionState.contains(.visible)
                 && source.window === window && source.profileVisible
                 && source.active?.web.window === window
-                && source.active?.web.isLoading == false
                 && source.spaceGesture.sectionsView?.window === window
                 && source.spaceGesture.monitor.isInstalled
         }
@@ -3098,7 +3078,6 @@ import XCTest
 
 @MainActor private final class ProfileWashSampler: NSObject {
     weak var host: BrowserWindowHost?
-    private weak var source: TabStore?
     var reds: [Double] = []
     private(set) var unadmittedTransitionCallbacks = 0
     var foregroundInterrupted = false
@@ -3110,7 +3089,7 @@ import XCTest
     private var link: CADisplayLink?
     private let diagnosticsEnabled = ProcessInfo.processInfo.environment["VANE_DIAG_PROFILE_WASH_SAMPLES"] == "1"
     private var diagnosticFrames: [String] = []
-    init(host: BrowserWindowHost, source: TabStore) { self.host = host; self.source = source }
+    init(host: BrowserWindowHost) { self.host = host }
     private func presentedSurfaces(in view: NSView) -> [ThemeWashSurface] {
         if let layer = view.layer {
             // The model host switches before its next compositor commit. Mixing
@@ -3125,20 +3104,6 @@ import XCTest
     private func visibleSurface(in view: NSView) -> ThemeWashSurface? {
         let candidates = presentedSurfaces(in: view)
         return candidates.count == 1 ? candidates[0] : nil
-    }
-    /// Admit the selected profile's resting compositor surface before starting
-    /// the gesture. Transition sampling still counts every later callback.
-    func isReadyForSource() -> Bool {
-        guard let host, let surface = source?.spaceGesture.groundSurface,
-              surface.window === host.window, !surface.isHiddenOrHasHiddenAncestor,
-              visibleSurface(in: host) === surface, !surface.nativeAnimating,
-              let model = (surface.base.colors as? [CGColor])?.first,
-              let presented = (surface.base.presentation()?.colors as? [CGColor])?.first,
-              let modelRGB = NSColor(cgColor: model)?.usingColorSpace(.deviceRGB),
-              let presentedRGB = NSColor(cgColor: presented)?.usingColorSpace(.deviceRGB) else { return false }
-        return abs(modelRGB.redComponent - presentedRGB.redComponent) < 0.001
-            && abs(modelRGB.greenComponent - presentedRGB.greenComponent) < 0.001
-            && abs(modelRGB.blueComponent - presentedRGB.blueComponent) < 0.001
     }
     func start(on screen: NSScreen) {
         started = ProcessInfo.processInfo.systemUptime
@@ -3166,10 +3131,6 @@ import XCTest
               let cg = (surface.base.presentation()?.colors as? [CGColor])?.first,
               let colour = NSColor(cgColor: cg)?.usingColorSpace(.deviceRGB) else {
             if samplingTransition { unadmittedTransitionCallbacks += 1 }
-            return
-        }
-        if !samplingTransition, surface !== source?.spaceGesture.groundSurface {
-            reds.removeAll(keepingCapacity: true)
             return
         }
         reds.append(colour.redComponent)
