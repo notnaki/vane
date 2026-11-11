@@ -22,8 +22,23 @@ jobs:
         run: |
           defaults write com.apple.universalaccess reduceMotion -bool false
           swift -e 'import AppKit; let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion; print("HOST_REDUCE_MOTION=\(reduced)"); exit(reduced ? 1 : 0)'
+      - name: Identify diagnostic cache toolchain
+        id: toolchain
+        run: echo "key=$(python3 scripts/ci-build-artifact.py toolchain)" >> "$GITHUB_OUTPUT"
+      - name: Restore diagnostic debug build
+        uses: actions/cache@v6
+        with:
+          path: .build
+          key: native-diag-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Sources/**', 'Tests/**') }}
+          restore-keys: |
+            native-diag-${{ steps.toolchain.outputs.key }}-
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - name: Restore unchanged source timestamps
+        run: python3 scripts/ci-source-state.py restore
       - name: Build diagnostic runtime
         run: swift build -c debug --build-tests --disable-index-store
+      - name: Preserve source timestamps for diagnostic debug cache
+        run: python3 scripts/ci-source-state.py save
       - name: Single instrumented native attempt with retirement
         run: |
           python3 - <<'PYTHON'

@@ -2020,7 +2020,10 @@ private struct SpaceSwipe: ViewModifier {
                 guard let self, self.transition == token, let store,
                       store.currentSpaceID == self.landingFrom,
                       store.spaceGesture.neighbour?.id == destination.id else { return }
+                let activationStarted = CACurrentMediaTime()
+                print("PROFILE_ACTIVATE_START t=\(activationStarted)")
                 _ = self.activate(destination, in: store)
+                print("PROFILE_ACTIVATE_END t=\(CACurrentMediaTime()) elapsedMS=\((CACurrentMediaTime() - activationStarted) * 1000)")
             }
         } else {
             if let host = store.window?.contentView as? BrowserWindowHost,

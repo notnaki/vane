@@ -1492,6 +1492,7 @@ private struct NativeSpacePreview: View {
     }
 
     @objc private func advanceProgress(_ link: CADisplayLink) {
+        print("PROFILE_PROGRESS t=\(CACurrentMediaTime()) timestamp=\(link.timestamp) target=\(link.targetTimestamp) finished=\(finished)")
         guard !finished, let presentation = outgoing.layer?.presentation() else { return }
         publishProgress(presentation.frame.minX - contentInset)
     }
