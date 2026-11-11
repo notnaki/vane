@@ -1,4 +1,5 @@
 import Combine
+import QuartzCore
 import SwiftUI
 
 /// Shared mutations of the settled sidebar and its captured Space previews.
@@ -62,7 +63,11 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
             sidebarChange(store.$renamingTab), sidebarChange(store.$renamingFolder),
             sidebarChange(store.$renamingSpace), sidebarChange(store.$announcing),
             sidebarChange(store.$creatingSpace)
-        ]).sink { [weak self] _ in self?.changed() }
+        ]).sink { [weak self] _ in
+            let started = CACurrentMediaTime()
+            self?.changed()
+            print("PROFILE_REMAINING_OBSERVER kind=row t=\(CACurrentMediaTime()) elapsedMS=\((CACurrentMediaTime() - started) * 1000)")
+        }
     }
 }
 
@@ -89,7 +94,11 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
         subscription = Publishers.Merge(
             store.sidebarObservation.objectWillChange.eraseToAnyPublisher(),
             sidebarChange(store.$profileVisible)
-        ).sink { [weak self] _ in self?.objectWillChange.send() }
+        ).sink { [weak self] _ in
+            let started = CACurrentMediaTime()
+            self?.objectWillChange.send()
+            print("PROFILE_REMAINING_OBSERVER kind=presentation t=\(CACurrentMediaTime()) elapsedMS=\((CACurrentMediaTime() - started) * 1000)")
+        }
     }
 }
 

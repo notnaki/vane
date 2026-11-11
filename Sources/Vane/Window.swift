@@ -761,57 +761,82 @@ extension VaneWindow {
         // Every route into a hop must persist the departing Space, including the Profiles
         // menu's direct call above. Otherwise its tabs exist only in the parked store until
         // the next session save and a crash before then loses them.
+        var diagnosticAt = CACurrentMediaTime()
+        func phase(_ name: String) {
+            let now = CACurrentMediaTime()
+            print("PROFILE_REMAINING_PHASE name=\(name) t=\(now) elapsedMS=\((now - diagnosticAt) * 1000)")
+            diagnosticAt = now
+        }
         store.saveCurrentSpace()
+        phase("saveCurrentSpace")
         // Either the store this window already has for that profile, or a new one opened
         // straight into the Space being walked to — there is no intermediate Space to show.
         let arriving = parked(profile.id, in: window)
             ?? TabStore(profileID: profile.id, space: space)
+        phase("getArriving")
         // Visibility belongs to the window, across every Space and profile. Apply it
         // before mounting the arriving host, including when reusing a parked profile.
         arriving.sidebarShown = store.sidebarShown
         arriving.sidebarPeeking = store.sidebarPeeking
         arriving.sidebarPresentationRevision &+= 1
+        phase("sidebarProperties")
         if let slide = (window.contentView as? BrowserWindowHost)?.spaceSlide,
            slide.isActive, slide.isSource(store) {
             // Hide live rows and carry the gesture's tint/footer before mounting the
             // arriving profile. The native sidebar continues travelling above this host.
             slide.attach(arriving)
         }
+        phase("attachSlide")
         store.sidebarPeeking = false
         store.parkedIn = window
         store.window = nil
+        phase("departingPointers")
         store.profileVisible = false
+        phase("departingVisible")
         arriving.parkedIn = nil
         arriving.window = window
+        phase("arrivingPointers")
         arriving.profileVisible = true
+        phase("arrivingVisible")
         ProfileManager.shared.active = profile
+        phase("activeProfile")
         // Live folders keep themselves filled for as long as a window is showing the profile.
         LiveFolders.shared(for: profile.id).begin()
+        phase("liveFolders")
         // A Space deleted while this store was parked leaves it pointing at one that is not
         // on disk, and an ordinary window always shows a real Space.
         arriving.resolveStaleSpace()
         arriving.switchTo(space: space)         // a no-op for a store built into it just now
         arriving.applySpaceAppearance()
+        phase("resolveSwitchAppearance")
+        phase("beforeHost")
         delegate.shown.store = arriving         // expose only the finalized destination
         // A cached host can take another display turn to acknowledge visibility.
         // The next gesture already belongs to this profile when hop returns.
+        phase("host")
         arriving.librarySwipeMonitor.install(arriving)
         if arriving.sidebarShown || arriving.sidebarPeeking {
             arriving.spaceGesture.monitor.install(arriving)
         }
+        phase("monitors")
         SharedTabs.refreshPresentation()
+        phase("sharedTabs")
         store.extensions.sync()
         arriving.extensions.sync()
+        phase("extensions")
         // The parked profile is intentionally absent from SharedTabs' visible-window
         // election. Its outgoing panes still need their call departure considered.
         store.onScreenTabs.forEach(CallPopout.presentationChanged)
         // Also set synchronously: a cached host may already have observed this title while
         // its profile was parked and had no window to update.
         window.title = WindowTitle.current(in: arriving)
+        phase("callsAndTitle")
         rebuild()                               // the Spaces menu's checkmark has changed profile
         // Swapping the profile host detaches the old first responder. Put the keyboard on
         // the arriving page once AppKit has mounted it, so a keyboard switch can keep typing.
+        phase("menuRebuild")
         arriving.focusPageAfterHop()
+        phase("focus")
         return arriving
     }
 

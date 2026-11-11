@@ -460,7 +460,12 @@ extension EnvironmentValues {
         self.commit = commit
     }
 
+    private func diagnostic(_ phase: String) {
+        print("SIDEBAR_PREPARATION_PHASE phase=\(phase) t=\(CACurrentMediaTime()) active=\(active) published=\(published) remaining=\(remaining) current=\(isCurrent()) owns=\(ownsLayout)")
+    }
+
     func start() {
+        diagnostic("start")
         guard !pages.isEmpty else { return }
         active = true
         for page in pages {
@@ -495,6 +500,7 @@ extension EnvironmentValues {
     }
 
     func cancel() {
+        diagnostic("cancel")
         guard active else { return }
         active = false
         deadlineToken = UUID()
@@ -516,6 +522,7 @@ extension EnvironmentValues {
     }
 
     private func presented() {
+        diagnostic("presented")
         guard active, !published else { return }
         remaining -= 1
         guard remaining == 0 else { return }
@@ -543,6 +550,7 @@ extension EnvironmentValues {
     }
 
     private func timedOut(_ token: UUID) {
+        diagnostic("timedOut")
         guard active, deadlineToken == token else { return }
         let shouldCommit = !published && ownsLayout && isCurrent()
         cancel()
