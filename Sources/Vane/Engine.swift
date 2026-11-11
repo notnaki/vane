@@ -2051,6 +2051,7 @@ struct TitleReveal: Equatable, Sendable {
         finishCertificateNavigation(navigation, in: w)
         progress = 1
         loading = false
+        PageResizeStyle.warm(w)
         updatePageTitle(from: w)
         Trace.end(id)
         Trace.note("favicon")
@@ -2945,11 +2946,13 @@ struct Stash {
     /// Library occupies the sidebar: hiding it also ends that visit, so the next
     /// toggle opens ordinary tabs rather than restoring the Library panel.
     func toggleSidebar() {
+        if (window as? VaneWindow)?.cancelSidebarResize() == true { return }
         if libraryOpen || librarySwipeMonitor.intendsOpen(in: self) {
             sidebarShown = false
             sidebarPeeking = false
             Library.close(self)
         } else {
+            if sidebarShown, (window as? VaneWindow)?.prepareSidebarClose(self) == true { return }
             sidebarShown.toggle()
         }
     }

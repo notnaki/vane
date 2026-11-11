@@ -3,7 +3,7 @@ import SwiftUI
 import Combine
 import WebKit
 
-/// The window, only so the traffic lights can be nailed to the sidebar's top row.
+/// The native browser frame, page-paint coordination, and traffic-light placement.
 ///
 /// AppKit picks where the lights go from the titlebar's height, and it re-picks after every
 /// resize, every key/resign-key and every restored frame. An empty compact toolbar gets that
@@ -11,6 +11,94 @@ import WebKit
 /// close is what the user saw as "the traffic lights aren't in the same place as the others".
 /// So the buttons are moved back onto the line after every layout pass, whatever AppKit did.
 final class VaneWindow: NSWindow {
+    private var resizePreparation: WindowResizePreparation?
+    private var resizeAnchor: WindowResizeAnchor?
+    private var committingResize = false
+    private var sidebarResizePreparation: SidebarPageResizePreparation?
+
+    /// A second close command cancels the pending close; a command after its
+    /// publication may proceed as a normal reopen.
+    func cancelSidebarResize() -> Bool {
+        let waiting = sidebarResizePreparation?.awaitingPaint == true
+        sidebarResizePreparation?.cancel()
+        sidebarResizePreparation = nil
+        return waiting
+    }
+
+    func prepareSidebarClose(_ store: TabStore) -> Bool {
+        guard isVisible, !isPreparingPageResize, !inLiveResize, let root = contentView,
+              store.sidebarShown, !store.libraryOpen else { return false }
+        let expansion = SidebarWidth.shared.width - Look.cardGap
+        let pages = WindowResizePreparation.targets(in: root, nextSize: root.bounds.size,
+                                                    leadingExpansion: expansion)
+        guard !pages.isEmpty else { return false }
+        let preparation = SidebarPageResizePreparation(window: self, pages: pages,
+            isCurrent: { [weak self, weak store] in
+                guard let self, let store else { return false }
+                return store.window === self && store.profileVisible && store.sidebarShown && !store.libraryOpen
+            }, commit: { [weak store] in store?.sidebarShown = false })
+        sidebarResizePreparation = preparation
+        preparation.start()
+        return true
+    }
+
+    var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true }
+
+    @discardableResult func preparePageResize(frame: NSRect, display: Bool) -> Bool {
+        _ = cancelSidebarResize()
+        if resizePreparation == nil {
+            resizePreparation = WindowResizePreparation(window: self) { [weak self] frame, display in
+                self?.commitPreparedResize(frame, display: display)
+            }
+        }
+        return resizePreparation?.request(frame: frame, display: display) == true
+    }
+
+    private func commitPreparedResize(_ frame: NSRect, display: Bool) {
+        committingResize = true
+        defer { committingResize = false }
+        super.setFrame(frame, display: false)
+        if display { viewsNeedDisplay = true }
+    }
+
+    func beginPageResize(at point: NSPoint = NSEvent.mouseLocation) {
+        _ = cancelSidebarResize()
+        resizeAnchor = WindowResizeAnchor(frame: frame, pointer: point)
+        resizePreparation?.beginLiveResize()
+    }
+
+    func proposedPageResize(_ size: NSSize) -> NSSize {
+        guard !committingResize, let resizeAnchor, !styleMask.contains(.fullScreen) else { return size }
+        let target = resizeAnchor.frame(for: size)
+        return preparePageResize(frame: target, display: true) ? frame.size : size
+    }
+
+    func endPageResize() {
+        resizeAnchor = nil
+        resizePreparation?.endLiveResize()
+    }
+
+    override func close() {
+        _ = cancelSidebarResize()
+        endPageResize()
+        resizePreparation?.cancel()
+        super.close()
+    }
+
+    override func miniaturize(_ sender: Any?) {
+        _ = cancelSidebarResize()
+        endPageResize()
+        resizePreparation?.cancel()
+        super.miniaturize(sender)
+    }
+
+    override func toggleFullScreen(_ sender: Any?) {
+        _ = cancelSidebarResize()
+        endPageResize()
+        resizePreparation?.cancel()
+        super.toggleFullScreen(sender)
+    }
+
     /// Where a light's frame origin has to sit for its centre to land `Look.lightsCentre`
     /// below the window's top edge. `top` is that top edge in the button's superview's own
     /// (unflipped, y-up) coordinates, so this is the same arithmetic whatever titlebar view
@@ -748,7 +836,16 @@ extension VaneWindow {
             (store.window as? VaneWindow)?.centreTrafficLights()
         }
         func windowDidResize(_ n: Notification) { recentre() }
-        func windowDidEndLiveResize(_ n: Notification) { recentre() }
+        func windowWillStartLiveResize(_ n: Notification) {
+            (store.window as? VaneWindow)?.beginPageResize()
+        }
+        func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+            (sender as? VaneWindow)?.proposedPageResize(frameSize) ?? frameSize
+        }
+        func windowDidEndLiveResize(_ n: Notification) {
+            (store.window as? VaneWindow)?.endPageResize()
+            recentre()
+        }
         func windowDidBecomeKey(_ n: Notification) {
             recentre()
             MainActor.assumeIsolated { rebuild(); SharedTabs.refreshPresentation(); store.extensions.sync() }
@@ -859,6 +956,24 @@ extension VaneWindow {
 @MainActor final class ShownStore: ObservableObject {
     @Published var store: TabStore
     init(_ store: TabStore) { self.store = store }
+}
+
+/// The window owns this root's frame. Propagate a native size change through
+/// SwiftUI immediately so WebKit receives its viewport before the next commit.
+/// Only update the hosting root here; walking every native descendant's layout
+/// during the resize also reflows the sidebar's retained controls unnecessarily.
+@MainActor final class BrowserHostingView<Content: View>: NSHostingView<Content> {
+    private var applyingFrame = false
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let previous = frame.size
+        super.setFrameSize(newSize)
+        guard previous != newSize, window != nil, !isHiddenOrHasHiddenAncestor,
+              !applyingFrame else { return }
+        applyingFrame = true
+        defer { applyingFrame = false }
+        super.layout()
+    }
 }
 
 /// An empty search layer must pass clicks through to the page and sidebar.
@@ -981,11 +1096,14 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         let host: ProfileHosts
         if let existing = hosts[id] { host = existing }
         else {
-            let content = NSHostingView(rootView: BrowserWindow(presentsPalette: false)
+            let content = BrowserHostingView(rootView: BrowserWindow(presentsPalette: false)
                 .environmentObject(store)
                 .environmentObject(ProfileManager.shared)
                 .environment(\.spaceFooterPresentation, footerPresentation)
                 .font(Look.text))
+            // The outer native container supplies the frame; do not separately
+            // measure minimum, ideal and maximum sizes on each resize.
+            content.sizingOptions = []
             let palette = BrowserPaletteHost(rootView: AnyView(BrowserPaletteOverlay()
                 .environmentObject(store)
                 .environmentObject(ProfileManager.shared)
