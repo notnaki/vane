@@ -32,14 +32,20 @@ import XCTest
         try await checkRecordedCrossProfilePull(withAmbientSpace: true)
     }
 
-    private func checkRecordedCrossProfilePull(withAmbientSpace: Bool = false) async throws {
+    func testDelayedSamplingStillObservesReleaseThroughTheUsableForm() async throws {
+        try await checkRecordedCrossProfilePull(samplingDelay: .milliseconds(160))
+    }
+
+    private func checkRecordedCrossProfilePull(withAmbientSpace: Bool = false,
+                                               samplingDelay: Duration = .zero) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
         defer { app.setActivationPolicy(policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
-        do { try await exerciseRecordedCrossProfilePull(withAmbientSpace: withAmbientSpace) }
+        do { try await exerciseRecordedCrossProfilePull(withAmbientSpace: withAmbientSpace,
+                                                       samplingDelay: samplingDelay) }
         catch { failure = error }
         do { try await loop.close() }
         catch {
@@ -49,7 +55,8 @@ import XCTest
         if let failure { throw failure }
     }
 
-    private func exerciseRecordedCrossProfilePull(withAmbientSpace: Bool) async throws {
+    private func exerciseRecordedCrossProfilePull(withAmbientSpace: Bool,
+                                                  samplingDelay: Duration) async throws {
         let oldWidth = SidebarWidth.shared.width
         let iconKey = SpaceFooterPreferences.showIconsKey
         let oldIcons = UserDefaults.vane.object(forKey: iconKey)
@@ -219,7 +226,7 @@ import XCTest
         NSApp.sendEvent(ScrollEvent(window: window, phase: .ended, timestamp: 3.375062042))
         var excursions: [CGFloat] = []
         var incompleteMarkerSamples = 0
-        let sampleEnd = ContinuousClock.now + .milliseconds(350)
+        let minimumSampleEnd = ContinuousClock.now + .milliseconds(350)
         // Sample immediately after release within the existing form-readiness
         // deadline, including frames after the form first becomes usable.
         try await compatibilityWait {
@@ -227,9 +234,14 @@ import XCTest
             if Set(centers.keys) == expectedMarkerIDs {
                 excursions.append(baseline.map { id, x in abs((centers[id] ?? x) - x) }.max() ?? 0)
             } else { incompleteMarkerSamples += 1 }
-            return ContinuousClock.now >= sampleEnd
+            // This is a minimum observation period, not the readiness deadline.
+            // A delayed main-actor poll can consume it with only three samples;
+            // keep observing within compatibilityWait's existing deadline.
+            let ready = ContinuousClock.now >= minimumSampleEnd && excursions.count > 3
                 && Set(centers.keys) == expectedMarkerIDs
                 && store.creatingSpace && formIsUsable(in: host, window: window)
+            if !ready, samplingDelay > .zero { try await Task.sleep(for: samplingDelay) }
+            return ready
         }
         print("CREATION_FOOTER_MAX_EXCURSION points=\(excursions.max() ?? .infinity) samples=\(excursions.count)")
         XCTAssertGreaterThan(excursions.count, 3, "Observe native footer frames across release")

@@ -98,12 +98,7 @@ import XCTest
             mount(hovered: true)
             try await LibraryFocusFixture.admitForeground(window)
             let marker = try XCTUnwrap(view.marker)
-            try await compatibilityWait {
-                window.contentView?.layoutSubtreeIfNeeded()
-                return NSApp.isRunning && window.isKeyWindow && window.occlusionState.contains(.visible)
-                    && view.window === window && marker.view === view
-                    && marker.layer.superlayer === view.layer && marker.symbol.presentation() != nil
-            }
+            try await admitMarkerPresentation(marker, in: view, window: window)
             presentation.track(origin: ids[0], target: ids[1], fraction: 0.5)
             CATransaction.flush()
             // Establish a presented finger position before completing the landing.
@@ -142,6 +137,53 @@ import XCTest
             else { XCTFail("Footer regression AppKit loop cleanup also failed: \(error)") }
         }
         if let failure { throw failure }
+    }
+
+    func testMarkerPresentationReadmitsAHiddenWindow() async throws {
+        TestEnvironment.prepare()
+        let policy = NSApplication.shared.activationPolicy()
+        defer { NSApp.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do {
+            let (presentation, _, _, window, views) = try fixture()
+            defer { withExtendedLifetime(presentation) {} }
+            window.styleMask = [.titled]
+            let view = views[0]
+            let marker = try XCTUnwrap(view.marker)
+            try await LibraryFocusFixture.admitForeground(window)
+            window.orderOut(nil)
+            XCTAssertFalse(window.isVisible, "Control the lost presentation prerequisite")
+            try await admitMarkerPresentation(marker, in: view, window: window)
+            XCTAssertTrue(window.isVisible && window.isKeyWindow)
+            XCTAssertTrue(marker.layer.superlayer === view.layer)
+            XCTAssertNotNil(marker.symbol.presentation())
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch { if failure == nil { failure = error } else { XCTFail("Footer admission cleanup also failed: \(error)") } }
+        if let failure { throw failure }
+    }
+
+    private func admitMarkerPresentation(_ marker: SpaceFooterPresentation.Marker,
+                                         in view: NativeSpaceFooterMarkerView,
+                                         window: NSWindow) async throws {
+        do {
+            try await compatibilityWait {
+                if !window.isKeyWindow || !window.occlusionState.contains(.visible) {
+                    window.makeKeyAndOrderFront(nil)
+                }
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                window.contentView?.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                return NSApp.isRunning && window.isKeyWindow && window.occlusionState.contains(.visible)
+                    && view.window === window && marker.view === view
+                    && marker.layer.superlayer === view.layer && marker.symbol.presentation() != nil
+            }
+        } catch {
+            print("FOOTER_ADMISSION running=\(NSApp.isRunning) key=\(window.isKeyWindow) visible=\(window.occlusionState.contains(.visible)) owner=\(view.window === window) markerOwner=\(marker.view === view) layerOwner=\(marker.layer.superlayer === view.layer) presented=\(marker.symbol.presentation() != nil) content=\(window.contentView?.bounds ?? .zero) frame=\(window.frame)")
+            throw error
+        }
     }
 
     func testBatterySaverLandingKeepsSpaceProgressOnTheCompositorClock() throws {

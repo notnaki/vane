@@ -72,3 +72,37 @@ the performance changes.
 
 Required full CI and merge remain governed by the project PR workflow; PR checks are the
 authoritative record of broader native integration validation.
+
+## CI follow-up and runner cancellation
+
+- Run `43072799514` failed one native assertion: recorded swipe creation collected only
+  three footer observations during the minimum 350 ms window. Marker excursion was zero;
+  the failed shard's post-exit cleanup verified 88 owned backends absent.
+- The user requested cancellation of remaining jobs on failure. Canceled the whole PR
+  run and verified both unfinished native shards ended canceled. PR-native matrix
+  fail-fast now cancels sibling shards automatically; `main` retains all shard outcomes.
+  Other PR-job failures still require canceling the whole run when the watcher reports them.
+- A controlled 160 ms sampling-delay fixture reproduced the same three-observation
+  failure. Sampling now requires both the minimum observation period and four actual
+  observations, within the unchanged 10 s compatibility deadline. Immediate sampling,
+  marker completeness, 0.5-point excursion and usable-form assertions are preserved.
+- Focused preflight exposed a separate footer renderer's manual activation-policy race.
+  It now requests accessory policy through the existing loop-admission helper, rather
+  than capturing a policy that can still be changing.
+- A neighboring baseline presentation-admission timeout remained after an unchanged
+  diagnostic retry passed; that retry was not accepted as a repair. A controlled hidden
+  owner reproduced the missing foreground prerequisite. Shared admission now restores the
+  exact window, lays it out and commits native layers before checking the original
+  owner/layer/presentation predicates. The same 10 s deadline and early-animation
+  assertions remain. The controlled test retains its presentation owner through admission.
+- Preserved failed attempts and diagnostics in `/tmp/vane-fast-ci-failed-job.log`,
+  `/tmp/vane-fast-footer-red.log`, `/tmp/vane-fast-preflight-1.log`,
+  `/tmp/vane-fast-preflight-policy-1.log`, and
+  `/tmp/vane-fast-hidden-owner-red-retained.log`.
+- After repairs and integration of `main` at `031a6012`, all three predetermined
+  focused preflights passed: 102 tests per run, zero failures, and verified native
+  cleanup. Evidence: `/tmp/vane-fast-preflight-admitted-{1,2,3}.log`.
+- Workflow gate regression passed 12,333 cases; routing and shard fixtures passed
+  17 and 10 tests. Independent review of all fixture/policy repairs found no remaining
+  actionable issues. Integrated debug `selfcheck --pure` also passed. Full required CI
+  must run on the updated PR head.

@@ -172,7 +172,7 @@ jobs:
     if: needs.changes.outputs.app_required == 'true' && needs.changes.outputs.native_reused != 'true'
     runs-on: macos-26
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         shard: [1, 2, 3, 4]
     env:
