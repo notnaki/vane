@@ -16,20 +16,20 @@ struct AIFeatureSettings: View {
 
     var body: some View {
         SettingsCard {
-            SettingsRow("AI features") {
+            SettingsRow("AI features", icon: "sparkles", tint: .purple) {
                 Toggle("AI features", isOn: BrowserAI.enabledBinding).labelsHidden()
             }
-            SettingsRow("Group tabs by topic") {
+            SettingsRow("Group tabs by topic", icon: "square.stack.3d.up.fill", tint: .purple) {
                 Toggle("Group tabs by topic", isOn: $tabs).labelsHidden().disabled(unavailable(.tabGroups))
             }
-            SettingsRow("Preview before tidying") {
+            SettingsRow("Preview before tidying", icon: "eye.fill", tint: .purple) {
                 Toggle("Preview before tidying", isOn: $preview).labelsHidden()
             }
             Footnote("Turn off to apply Tidy groups immediately. You can undo the grouping afterward.")
-            SettingsRow("Rename messy downloads") {
+            SettingsRow("Rename messy downloads", icon: "arrow.down.doc.fill", tint: .purple) {
                 Toggle("Rename messy downloads", isOn: $downloads).labelsHidden().disabled(unavailable(.downloads))
             }
-            SettingsRow("Rename favorite and pinned tab titles") {
+            SettingsRow("Rename favorite and pinned tab titles", icon: "textformat", tint: .purple) {
                 Toggle("Rename favorite and pinned tab titles", isOn: $titles).labelsHidden().disabled(unavailable(.tabTitles))
             }
             Footnote(!enabled ? "AI is off. Browsing works without it."
