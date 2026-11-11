@@ -220,6 +220,7 @@ import XCTest
                    NSSize(width: 900, height: frameHeight)]
                 : widths.map { NSSize(width: CGFloat($0), height: frameHeight) }
             for size in sizes {
+                let proposalBegan = CACurrentMediaTime()
                 let deadline = ContinuousClock.now + proposalInterval
                 let accepted = baselineControl ? size : window.proposedPageResize(size)
                 if accepted != window.frame.size {
@@ -230,6 +231,15 @@ import XCTest
                     // Keep sampling through each paint so coalescing cannot skip
                     // the corner geometry this regression is meant to exercise.
                     try await compatibilityWait { !window.isPreparingPageResize && window.frame.size == size }
+                    // Admit the actual WindowServer geometry before the next
+                    // proposal. Keep every earlier pixel sample, including gaps.
+                    try await compatibilityWait {
+                        sampler.frames.samples.contains { sample in
+                            sample.time >= proposalBegan
+                                && abs(sample.extent.width - size.width) < 1
+                                && abs(sample.extent.height - size.height) < 1
+                        }
+                    }
                 }
             }
             try await compatibilityWait { !window.isPreparingPageResize }
@@ -413,13 +423,14 @@ import XCTest
                                       width: width, height: height, stride: CVPixelBufferGetBytesPerRow(pixel)) : nil
         if snapshot != nil { print("RESIZE_CAPTURE_BOUND time=\(time) rect=\(valid) red=\(String(describing: firstRed))...\(String(describing: lastRed)) right=\(String(describing: rightWindow)) gap=\(gap)") }
         let markerGap = lastRed.flatMap { red in rightWindow.map { Double($0 - red) / pixelsPerPoint } } ?? 10_000
-        frames.append(time: time, gap: gap, markerGap: markerGap, image: snapshot)
+        frames.append(time: time, gap: gap, markerGap: markerGap,
+                      extent: CGSize(width: valid.width / pixelsPerPoint, height: valid.height / pixelsPerPoint), image: snapshot)
     }
 
 }
 
 private final class ResizePixelFrames: @unchecked Sendable {
-    struct Frame { let time: Double; let gap: Double; let markerGap: Double }
+    struct Frame { let time: Double; let gap: Double; let markerGap: Double; let extent: CGSize }
     struct Image { let data: Data; let width: Int; let height: Int; let stride: Int }
     let queue = DispatchQueue(label: "vane.resize.pixel-capture")
     private let lock = NSLock()
@@ -430,15 +441,15 @@ private final class ResizePixelFrames: @unchecked Sendable {
     var last: Frame? { lock.withLock { recorded.last } }
     var samples: [Frame] { lock.withLock { recorded } }
     func needsImage(for gap: Double) -> Bool { lock.withLock { baselineImage == nil || gap > worstGap } }
-    func append(time: Double, gap: Double, markerGap: Double, image: Image?) {
+    func append(time: Double, gap: Double, markerGap: Double, extent: CGSize, image: Image?) {
         lock.withLock {
-            recorded.append(Frame(time: time, gap: gap, markerGap: markerGap))
+            recorded.append(Frame(time: time, gap: gap, markerGap: markerGap, extent: extent))
             if baselineImage == nil { baselineImage = image }
             if gap > worstGap { worstGap = gap; worstImage = image }
         }
     }
     func repeatFrame(_ time: Double) {
-        lock.withLock { if let last = recorded.last { recorded.append(Frame(time: time, gap: last.gap, markerGap: last.markerGap)) } }
+        lock.withLock { if let last = recorded.last { recorded.append(Frame(time: time, gap: last.gap, markerGap: last.markerGap, extent: last.extent)) } }
     }
     @MainActor func saveImages(prefix: String) throws {
         let images = lock.withLock { [("baseline", baselineImage), ("worst", worstImage)] }

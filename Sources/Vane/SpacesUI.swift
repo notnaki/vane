@@ -1215,6 +1215,8 @@ private struct SpaceSwipe: ViewModifier {
         preparationPeers.removeAll()
         for peer in TabStore.all where peer !== store && profiles.contains(peer.profileID) {
             preparationPeers[ObjectIdentifier(peer)] = peer.sidebarSnapshotChanges.sink { [weak self, weak store] _ in
+                let began = CACurrentMediaTime()
+                defer { ProfileHandoffTrace.end("PreparationPeer", began) }
                 self?.extendPreparationQuietInterval()
                 self?.invalidatePreparation()
                 DispatchQueue.main.async { [weak self, weak store] in
@@ -1226,6 +1228,8 @@ private struct SpaceSwipe: ViewModifier {
     }
 
     private func invalidatePreparation() {
+        let began = CACurrentMediaTime()
+        defer { ProfileHandoffTrace.end("SwipeMonitor.invalidatePreparation", began) }
         preparation?.cancel()
         preparation = nil
         // Detach and revoke immediately, including protected peer changes. Keep
@@ -1669,6 +1673,8 @@ private struct SpaceSwipe: ViewModifier {
             (ProfileManager.shared.objectWillChange.eraseToAnyPublisher(), true)
         ] {
             preparationObservers.append(publisher.sink { [weak self, weak store] _ in
+                let began = CACurrentMediaTime()
+                defer { ProfileHandoffTrace.end("PreparationOwner", began) }
                 if invalidates {
                     self?.extendPreparationQuietInterval()
                     self?.invalidatePreparation()

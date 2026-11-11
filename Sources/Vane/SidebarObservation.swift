@@ -46,6 +46,8 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
     }
 
     private func changed() {
+        let began = CACurrentMediaTime()
+        defer { ProfileHandoffTrace.end("SidebarObservation.changed", began) }
         if mutationDepth > 0 { pendingChange = true }
         else { objectWillChange.send() }
     }

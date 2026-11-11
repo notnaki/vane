@@ -795,13 +795,17 @@ extension VaneWindow {
         phase("parkedIn")
         store.window = nil
         phase("departingWindow")
+        ProfileHandoffTrace.context = "departingVisible"
         store.profileVisible = false
+        ProfileHandoffTrace.context = nil
         phase("departingVisible")
         arriving.parkedIn = nil
         phase("arrivingParked")
         arriving.window = window
         phase("arrivingWindow")
+        ProfileHandoffTrace.context = "arrivingVisible"
         arriving.profileVisible = true
+        ProfileHandoffTrace.context = nil
         phase("arrivingVisible")
         phase("properties")
         ProfileManager.shared.active = profile
@@ -1019,6 +1023,13 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
 
 /// Retained native hosts per profile preserve SwiftUI state and WebKit backing
 /// frames. Search has its own layer above both live chrome and native Space travel.
+@MainActor enum ProfileHandoffTrace {
+    static var context: String?
+    static func end(_ label: String, _ began: Double) {
+        if let context { print("PROFILE_OBSERVER context=\(context) label=\(label) ms=\((CACurrentMediaTime() - began) * 1000)") }
+    }
+}
+
 @MainActor final class BrowserWindowHost: NSView {
     let footerPresentation = SpaceFooterPresentation()
     private struct ProfileHosts {

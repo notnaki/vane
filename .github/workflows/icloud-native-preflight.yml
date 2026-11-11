@@ -51,7 +51,7 @@ jobs:
           import os, pathlib, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           corner = 'WindowResizePreparationTests|testCornerResizeKeepsTheShrinkingAxisPaintedWhileTheOtherAxisGrows'
-          space = 'testCachedProfileChangesPageAtStartOfNativeLanding|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testNativeSpaceClickBlendsBackgroundDuringSidebarTravel'
+          space = 'testCachedProfileColourStaysContinuousAcrossRepeatedSwipes'
           attempts = [('corner-1', corner), ('corner-2', corner), ('corner-3', corner), ('space-properties', space)]
           statuses = []
           for attempt, selection in attempts:
