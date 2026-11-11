@@ -182,6 +182,11 @@ extension EnvironmentValues {
         styledPages.removeAllObjects()
     }
 
+    private func trace(_ phase: String) {
+        let sizes = pages.map { "web=\($0.web.frame),parent=\(String(describing: $0.web.superview?.bounds))" }
+        print("RESIZE_PHASE t=\(CACurrentMediaTime()) phase=\(phase) window=\(String(describing: window?.frame)) active=\(String(describing: active?.frame)) pending=\(String(describing: pending?.frame)) pages=\(sizes)")
+    }
+
     @discardableResult func request(frame: NSRect, display: Bool) -> Bool {
         guard !bypassForDrag, let window, window.isVisible, let root = window.contentView else { return false }
         let request = Request(frame: frame, display: display)
@@ -226,6 +231,7 @@ extension EnvironmentValues {
         remaining = targets.count
         generation = UUID()
         let token = generation
+        trace("preparing")
         // All views must receive their new viewport before requesting any paint.
         targets.forEach { $0.prepare() }
         for target in targets {
@@ -269,6 +275,7 @@ extension EnvironmentValues {
     }
 
     private func presented(_ token: UUID) {
+        trace("presented")
         guard generation == token, let active else {
             // A fallback must not stay latched after WebKit becomes responsive.
             // Its old callback only readmits coordination; it never commits a frame.
@@ -306,6 +313,7 @@ extension EnvironmentValues {
             pages.forEach { $0.installNativeGeometry() }
             commit(active.frame, active.display)
         }
+        trace("committed")
         pages.forEach { $0.restore(committed: true) }
         pages = []
         self.active = nil
@@ -340,6 +348,7 @@ extension EnvironmentValues {
     }
 
     private func timedOut(_ token: UUID) {
+        trace("timeout")
         guard generation == token, let active else { return }
         guard let window, window.frame == startingFrame, window.isVisible,
               window.contentView === root,

@@ -1435,8 +1435,11 @@ import XCTest
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
+        let earlyAction = CACurrentMediaTime()
         monitor.land(1, to: second, width: SidebarWidth.shared.width, store: source, duration: 0.8)
+        print("EARLY_PROFILE_START cached=\(cached) actionMS=\((CACurrentMediaTime() - earlyAction) * 1000) offset=\(slide.offset) active=\(slide.isActive)")
         try await Task.sleep(for: .milliseconds(100))
+        print("EARLY_PROFILE_CHECK cached=\(cached) elapsedMS=\((CACurrentMediaTime() - earlyAction) * 1000) offset=\(slide.offset) active=\(slide.isActive) running=\(NSApp.isRunning) key=\(window.isKeyWindow) mode=\(String(describing: RunLoop.current.currentMode))")
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
         XCTAssertEqual(arriving.profileID, secondProfile.id,
                        "Profile activation must not wait for the sidebar animation to finish")
@@ -3076,6 +3079,9 @@ import XCTest
     func stop() { samplingTransition = false; link?.invalidate(); link = nil }
     @objc private func tick(_ link: CADisplayLink) {
         let now = ProcessInfo.processInfo.systemUptime
+        if samplingTransition {
+            print("PROFILE_LINK t=\(now) timestamp=\(link.timestamp) target=\(link.targetTimestamp) mode=\(String(describing: RunLoop.current.currentMode)) offset=\(String(describing: host?.spaceSlide?.offset))")
+        }
         if firstCallbackLatency == nil, let started { firstCallbackLatency = now - started }
         if let last { maxGap = max(maxGap, now - last) }
         last = now

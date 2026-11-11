@@ -14,18 +14,6 @@ jobs:
       SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: c3459fad860fa681e0a853dc534eff11ce27cb63
-      - name: Download exact failed CI runtime
-        uses: actions/download-artifact@v8
-        with:
-          name: debug-runtime
-          run-id: 42984559023
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/vane-debug-runtime
-      - name: Restore exact failed CI runtime without rebuilding
-        run: |
-          python3 scripts/ci-build-artifact.py restore --revision c3459fad860fa681e0a853dc534eff11ce27cb63 --archive "$RUNNER_TEMP/vane-debug-runtime/vane-debug-runtime.tar.gz"
       - name: Toolchain
         run: |
           swift --version
@@ -34,14 +22,16 @@ jobs:
         run: |
           defaults write com.apple.universalaccess reduceMotion -bool false
           swift -e 'import AppKit; let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion; print("HOST_REDUCE_MOTION=\(reduced)"); exit(reduced ? 1 : 0)'
-      - name: Three predetermined native attempts with retirement
+      - name: Build diagnostic runtime
+        run: swift build -c debug --build-tests --disable-index-store
+      - name: Single instrumented native attempt with retirement
         run: |
           python3 - <<'PYTHON'
           import os, pathlib, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          selection = 'WindowResizeLayoutTests|SpaceNativeRenderingTests'
+          selection = 'testCornerResizeKeepsTheShrinkingAxisPaintedWhileTheOtherAxisGrows|testCachedProfileChangesPageAtStartOfNativeLanding|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testNativeSpaceClickBlendsBackgroundDuringSidebarTravel'
           statuses = []
-          for attempt in range(1, 4):
+          for attempt in range(1, 2):
               log = root / f'icloud-native-preflight-{attempt}.log'
               with log.open('w') as output:
                   result = subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=output, stderr=subprocess.STDOUT)
@@ -60,4 +50,6 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: icloud-native-preflight
-          path: ${{ runner.temp }}/icloud-native-preflight-*.log
+          path: |
+            ${{ runner.temp }}/icloud-native-preflight-*.log
+            /tmp/vane-resize-*.png
