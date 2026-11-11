@@ -83,7 +83,7 @@ struct AIProviderSettings: View {
                 .font(.system(size: 12)).padding(14)
             }
         }
-        .tint(AIConnectionLook.cobalt)
+        .tint(.primary)
         .onAppear { reload() }
         .onChange(of: revision) { reload() }
         .animation(animation, value: state.connections.map(\.id))
@@ -200,6 +200,8 @@ private struct AIConnectionEditor: View {
                     Spacer(minLength: 8)
                     Button("Test Connection") { test() }
                         .buttonStyle(.borderedProminent)
+                        .tint(AIConnectionLook.cobalt)
+                        .foregroundStyle(.white)
                         .disabled(busy || BrowserAI.unavailableReason(connection) != nil)
                     Menu {
                         if saved {

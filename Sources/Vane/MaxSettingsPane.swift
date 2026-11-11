@@ -11,34 +11,36 @@ struct MaxPane: View {
     @AppStorage("linkPreviews", store: .vane) private var previews = true
     @AppStorage("aiSettingsRevision", store: .vane) private var revision = 0
 
+    @State private var showsConnections = false
+
     var body: some View {
         VStack(spacing: 0) {
             MaxBanner()
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 16) {
                 Text("Let Vane do a little more, so you can do a little less. Meet Max: helpful tools for your tabs, links, and downloads.")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 SettingsCard {
-                    HStack(spacing: 12) {
+                    HStack(spacing: 10) {
                         Image(systemName: "command")
-                            .font(.system(size: 22, weight: .medium))
+                            .font(.system(size: 18, weight: .medium))
                             .foregroundStyle(MaxBanner.coral)
-                            .frame(width: 36, height: 36)
-                            .background(MaxBanner.blue, in: .rect(cornerRadius: 9))
+                            .frame(width: 28, height: 28)
+                            .background(MaxBanner.blue, in: .rect(cornerRadius: 7))
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Enable Max").font(.system(size: 15, weight: .semibold))
+                            Text("Enable Max").font(.system(size: 13, weight: .semibold))
                             Text(enabled ? "Choose the AI features you want below." : "AI is off. Instant Links and link previews still work.")
                                 .contentTransition(.opacity)
-                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer(minLength: 12)
                         Toggle("Enable Max", isOn: BrowserAI.enabledBinding)
-                            .labelsHidden().toggleStyle(.switch).controlSize(.regular)
+                            .labelsHidden().toggleStyle(.switch).controlSize(.small)
                     }
-                    .padding(16)
+                    .padding(12)
                     .animation(Look.quick, value: enabled)
                 }
 
@@ -46,7 +48,7 @@ struct MaxPane: View {
                     MaxFeatureRow(title: "Tidy Tabs", detail: "Group your open tabs into folders by topic. Choose Tidy Tabs in the sidebar when it appears.",
                                   image: "TidyTabs", isOn: $tabs, disabled: unavailable(.tabGroups)) {
                         Toggle("Review groups before tidying", isOn: $review)
-                            .toggleStyle(.checkbox).font(.system(size: 12))
+                            .toggleStyle(.checkbox).font(.system(size: 11))
                         Text("Turn off to apply groups immediately. You can undo afterward.")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
@@ -67,17 +69,26 @@ struct MaxPane: View {
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("AI connections").font(.system(size: 17, weight: .semibold))
-                    Text("Use Apple Intelligence on this Mac, or connect a service of your choice. Choose a connection for each feature below.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    AIProviderSettings()
+                DisclosureGroup(isExpanded: Binding(
+                    get: { showsConnections },
+                    set: { value in Motion.animate(Look.quick) { showsConnections = value } }
+                )) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Use Apple Intelligence on this Mac, or connect a service of your choice. Choose a connection for each feature below.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        AIProviderSettings()
+                    }
+                    .padding(.top, 12)
+                } label: {
+                    Text("AI connections").font(.system(size: 13, weight: .semibold))
                 }
+                .tint(.primary)
+
             }
             .frame(maxWidth: 632)
             .padding(.horizontal, 40)
-            .padding(.vertical, 30)
+            .padding(.vertical, 22)
             .frame(maxWidth: .infinity)
         }
     }
@@ -97,26 +108,26 @@ private struct MaxFeatureRow<Extra: View>: View {
     @ViewBuilder var extra: Extra
 
     var body: some View {
-        HStack(alignment: .center, spacing: 18) {
+        HStack(alignment: .center, spacing: 14) {
             MaxArtwork.image(image)
                 .resizable().scaledToFill()
-                .frame(width: 112, height: 78)
+                .frame(width: 96, height: 64)
                 .clipped()
                 .clipShape(.rect(cornerRadius: 7))
                 .overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(.primary.opacity(0.12)) }
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.system(size: 15, weight: .semibold))
-                Text(detail).font(.system(size: 12)).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 13, weight: .semibold))
+                Text(detail).font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 extra
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Toggle(title, isOn: $isOn).labelsHidden()
-                .toggleStyle(.switch).controlSize(.regular)
+                .toggleStyle(.switch).controlSize(.small)
                 .disabled(disabled)
         }
-        .padding(16)
+        .padding(12)
         .accessibilityElement(children: .contain)
     }
 }
@@ -133,14 +144,33 @@ private struct MaxBanner: View {
 
     var body: some View {
         GeometryReader { geometry in
-            MaxArtwork.image("Banner")
-                .resizable().scaledToFill()
-                .frame(width: geometry.size.width, height: geometry.size.height)
-                .clipped()
+            ZStack {
+                Self.blue
+                HStack {
+                    Image(systemName: "command").rotationEffect(.degrees(-18))
+                    Spacer()
+                    Image(systemName: "command").rotationEffect(.degrees(16))
+                }
+                .font(.system(size: 38, weight: .medium))
+                .foregroundStyle(Self.coral)
+                .padding(.horizontal, 38)
+                MaxArtwork.image("Banner")
+                    .resizable().scaledToFill()
+                    .frame(width: min(geometry.size.width, 440), height: 118)
+                    .clipped()
+                    .mask {
+                        LinearGradient(stops: [.init(color: .clear, location: 0),
+                                               .init(color: .black, location: 0.12),
+                                               .init(color: .black, location: 0.88),
+                                               .init(color: .clear, location: 1)],
+                                       startPoint: .leading, endPoint: .trailing)
+                    }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
-        .frame(height: 148)
-        .background(Self.blue)
+        .frame(height: 118)
         .clipShape(MaxBannerEdge())
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Max")
         .accessibilityAddTraits(.isHeader)
     }
