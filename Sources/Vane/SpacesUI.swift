@@ -1805,6 +1805,15 @@ private struct SpaceSwipe: ViewModifier {
         if let store, !store.sidebarShown, !store.sidebarPeeking {
             (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidDisappear(store)
         }
+        // A profile's will-set visibility notification can remove its old input
+        // before the incoming value is readable. Its attached cover still belongs
+        // to the departing monitor; removing this destination's input must not
+        // abort that committed landing. Explicit aborts retain their usual effect.
+        if let store, let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
+           slide.isActive, slide.isDestination(store), !slide.isSource(store) {
+            forget()
+            return
+        }
         abort()
     }
 

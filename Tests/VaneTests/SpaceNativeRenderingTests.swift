@@ -1157,6 +1157,46 @@ import XCTest
                       "Finishing a covered animation must not synchronously rebuild the already updated menu")
     }
 
+    func testDestinationVisibilityNotificationCannotAbortTheSourceLanding() async throws {
+        try await withFixtureApplicationLoop {
+            let (source, spaces, window, monitor) = try self.fixture(registerTeardown: false)
+            let arriving = TabStore(profileID: source.profileID, space: spaces[1], session: [])
+            defer {
+                arriving.spaceGesture.monitor.remove()
+                arriving.window = nil
+                arriving.dropStashes()
+                TabStore.all.removeAll { $0 === arriving }
+                self.retireFixture(source, window: window, monitor: monitor)
+            }
+            let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+            let slide = ProfileSpaceSlide(frame: NSRect(x: 0, y: 0, width: 228, height: 300),
+                outgoing: source.swipePreview(in: spaces[0]), incoming: source.swipePreview(in: spaces[1]),
+                drag: -70, direction: 1, source: source, includesFavorites: true, travelWidth: 228)
+            host.beginSpaceSlide(slide, preservingGround: true)
+            slide.start(duration: 2) {}
+            arriving.profileVisible = false
+            arriving.window = window
+            arriving.spaceGesture.monitor.install(arriving)
+            slide.attach(arriving)
+            var removals = 0
+            let visibility = arriving.$profileVisible.dropFirst().sink { visible in
+                guard visible else { return }
+                XCTAssertFalse(arriving.profileVisible, "@Published delivers the incoming value before assignment")
+                removals += 1
+                arriving.spaceGesture.monitor.remove()
+            }
+            defer { visibility.cancel() }
+            arriving.profileVisible = true
+            XCTAssertEqual(removals, 1)
+            XCTAssertTrue(slide.isActive, "Removing destination input must preserve the source's committed cover")
+            XCTAssertTrue(host.spaceSlide === slide)
+            XCTAssertTrue(arriving.spaceSwiping)
+            arriving.spaceGesture.monitor.install(arriving)
+            arriving.spaceGesture.monitor.abort()
+            XCTAssertFalse(slide.isActive, "An explicit abort must still cancel an attached landing")
+        }
+    }
+
     func testCachedProfileColourStaysContinuousAcrossRepeatedSwipes() async throws {
         try await withFixtureApplicationLoop {
             for mixedThemes in [false, true] {
