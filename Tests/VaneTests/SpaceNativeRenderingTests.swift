@@ -787,7 +787,7 @@ import XCTest
     }
 
     func testFirstProfileVisitChangesPageAtStartOfNativeLanding() async throws {
-        try await checkEarlyProfilePageSelection(cached: false)
+        try await withFixtureApplicationLoop { try await checkEarlyProfilePageSelection(cached: false) }
     }
 
     func testReverseSwipeTakesOverThePresentedLandingWithoutFinishingIt() async throws {
@@ -1234,7 +1234,7 @@ import XCTest
     }
 
     func testCachedProfileChangesPageAtStartOfNativeLanding() async throws {
-        try await checkEarlyProfilePageSelection(cached: true)
+        try await withFixtureApplicationLoop { try await checkEarlyProfilePageSelection(cached: true) }
     }
 
     func testCachedProfileReturnInstallsInputBeforeTheNextRender() async throws {
@@ -1355,7 +1355,19 @@ import XCTest
         }
         source.newTab(URL(string: "about:blank")!)
         source.palette = nil
-        try await Task.sleep(for: .milliseconds(150))
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        try await compatibilityWait {
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            CATransaction.flush()
+            return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
+                && window.isVisible && window.occlusionState.contains(.visible)
+                && source.window === window && source.profileVisible
+                && source.active?.web.window === window
+                && source.spaceGesture.sectionsView?.window === window
+                && source.spaceGesture.monitor.isInstalled
+        }
         let sourcePage = try XCTUnwrap(source.active?.web)
         var observedCachedSelection = false
         let selection = TabStore.all.first { $0.parkedIn === window && $0.profileID == secondProfile.id }?

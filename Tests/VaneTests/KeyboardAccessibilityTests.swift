@@ -78,9 +78,8 @@ private struct DisabledKeyboardSurface: View {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
-        app.setActivationPolicy(.accessory)
         defer { app.setActivationPolicy(policy) }
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do {
             let (store, window, web, retire) = makeFixture(isPrivate: isPrivate)
@@ -448,40 +447,45 @@ private struct DisabledKeyboardSurface: View {
 
 
     func testF6MovesBetweenPageAndBrowserControls() async throws {
-        let (store, window, web) = fixture()
-        let previousPolicy = NSApp.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
-        defer { NSApp.setActivationPolicy(previousPolicy) }
-        let oldMenu = NSApp.mainMenu
-        let oldActions = Keybindings.actions
-        defer { NSApp.mainMenu = oldMenu; Keybindings.actions = oldActions }
-        rebuild()
-        let host = NSHostingView(rootView: AddressPill(tab: store.active).environmentObject(store))
-        let container = NSView(frame: window.contentView!.frame)
-        host.frame = NSRect(x: 0, y: 520, width: 250, height: 80)
-        web.frame = NSRect(x: 250, y: 0, width: 550, height: 600)
-        container.addSubview(host)
-        container.addSubview(web)
-        window.contentView = container
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        try await Task.sleep(for: .milliseconds(150))
-        host.layoutSubtreeIfNeeded()
-        window.makeFirstResponder(web)
-        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
-                                    timestamp: 0, windowNumber: window.windowNumber, context: nil,
-                                    characters: "\u{F709}", charactersIgnoringModifiers: "\u{F709}",
-                                    isARepeat: false, keyCode: 97)!
-        XCTAssertEqual(Keybindings.command(for: Keybinding(event: event)!), .nextFocusArea)
-        XCTAssertNotNil(Keybindings.actions[.nextFocusArea])
-        store.focusNextArea()
-        try await Task.sleep(for: .milliseconds(150))
-        XCTAssertFalse(window.firstResponder === web)
-        XCTAssertFalse(window.firstResponder === window)
-        store.focusNextArea()
-        try await Task.sleep(for: .milliseconds(150))
-        XCTAssertTrue(window.firstResponder === web)
-        XCTAssertNil(store.palette)
+        try await withNativePageFixture { store, window, web in
+            let oldMenu = NSApp.mainMenu
+            let oldActions = Keybindings.actions
+            defer { NSApp.mainMenu = oldMenu; Keybindings.actions = oldActions }
+            rebuild()
+            let host = NSHostingView(rootView: AddressPill(tab: store.active).environmentObject(store))
+            let container = NSView(frame: window.contentView!.frame)
+            host.frame = NSRect(x: 0, y: 520, width: 250, height: 80)
+            web.frame = NSRect(x: 250, y: 0, width: 550, height: 600)
+            container.addSubview(host)
+            container.addSubview(web)
+            window.contentView = container
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                return store.mountedAddressEndpoint?.window === window
+                    && (store.mountedAddressEndpoint?.bounds.width ?? 0) > 0
+                    && web.window === window && NSApp.isRunning && NSApp.isActive
+                    && window.isKeyWindow && NSApp.keyWindow === window
+                    && !host.needsDisplay && host.layer?.presentation() != nil
+            }
+            XCTAssertTrue(window.makeFirstResponder(web))
+            XCTAssertTrue(window.firstResponder === web)
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                        timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                                        characters: "\u{F709}", charactersIgnoringModifiers: "\u{F709}",
+                                        isARepeat: false, keyCode: 97)!
+            XCTAssertEqual(Keybindings.command(for: Keybinding(event: event)!), .nextFocusArea)
+            XCTAssertNotNil(Keybindings.actions[.nextFocusArea])
+            store.focusNextArea()
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertFalse(window.firstResponder === web)
+            XCTAssertFalse(window.firstResponder === window)
+            store.focusNextArea()
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertTrue(window.firstResponder === web)
+            XCTAssertNil(store.palette)
+        }
     }
 
     func testPaletteDismissalReturnsFocusWhenFindRemainsOpen() async throws {
