@@ -966,6 +966,17 @@ extension VaneWindow {
 @MainActor final class BrowserHostingView<Content: View>: NSHostingView<Content> {
     private var applyingFrame = false
 
+    override func layout() {
+        let began = ProcessInfo.processInfo.systemUptime
+        let hidden = isHiddenOrHasHiddenAncestor
+        let sliding = (superview as? BrowserWindowHost)?.spaceSlide?.isActive == true
+        super.layout()
+        let elapsed = ProcessInfo.processInfo.systemUptime - began
+        if ProcessInfo.processInfo.environment["VANE_DIAG_HOST_LAYOUT"] == "1", elapsed > 0.005 {
+            print("HOST_LAYOUT id=\(ObjectIdentifier(self)) hidden=\(hidden) sliding=\(sliding) elapsedMS=\(elapsed * 1000)")
+        }
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         let previous = frame.size
         super.setFrameSize(newSize)
@@ -973,7 +984,11 @@ extension VaneWindow {
               !applyingFrame else { return }
         applyingFrame = true
         defer { applyingFrame = false }
+        let began = ProcessInfo.processInfo.systemUptime
         super.layout()
+        if ProcessInfo.processInfo.environment["VANE_DIAG_HOST_LAYOUT"] == "1" {
+            print("HOST_FRAME_LAYOUT id=\(ObjectIdentifier(self)) hidden=\(isHiddenOrHasHiddenAncestor) elapsedMS=\((ProcessInfo.processInfo.systemUptime - began) * 1000)")
+        }
     }
 }
 
