@@ -311,24 +311,37 @@ import XCTest
         }
     }
 
-    // A static final picture need not produce another streaming callback on
-    // macOS 26. Request a fresh WindowServer sample after WebKit's final paint.
+    // Static content need not generate a new streaming callback on macOS 26.
+    // Capture exactly the filtered window after its final WebKit presentation.
     func captureFinalFrame(_ window: NSWindow) async throws {
         try await stop()
         let content = try await SCShareableContent.currentProcess
         let target = try XCTUnwrap(content.windows.first { $0.windowID == CGWindowID(window.windowNumber) })
+        let filter = SCContentFilter(desktopIndependentWindow: target)
+        let bounds = filter.contentRect
+        let scale = CGFloat(filter.pointPixelScale)
+        guard bounds.width > 0, bounds.height > 0, scale > 0 else {
+            throw NSError(domain: "ResizeFinalCaptureGeometry", code: 1)
+        }
         let configuration = SCStreamConfiguration()
-        configuration.width = 1400
-        configuration.height = 700
+        configuration.width = Int(ceil(bounds.width * scale))
+        configuration.height = Int(ceil(bounds.height * scale))
         configuration.showsCursor = false
         configuration.ignoreShadowsSingleWindow = true
         configuration.captureDynamicRange = .SDR
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
         let sample = try await SCScreenshotManager.captureSampleBuffer(
-            contentFilter: SCContentFilter(desktopIndependentWindow: target), configuration: configuration)
-        frames.queue.sync {}
+            contentFilter: filter, configuration: configuration)
+        let pixel = try XCTUnwrap(sample.imageBuffer)
+        let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
+        // Screenshot results do not promise SCStreamFrameInfo attachments. Use
+        // the exact filter aspect and capture dimensions, with no padded canvas.
+        XCTAssertEqual(width, configuration.width)
+        XCTAssertEqual(height, configuration.height)
+        print("FINAL_RESIZE_CAPTURE pixels=\(width)x\(height) points=\(bounds.size) metadata=\(String(describing: CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false)))")
         let captured = CACurrentMediaTime()
-        consume(sample, time: captured)
+        record(pixel, valid: CGRect(x: 0, y: 0, width: width, height: height),
+               pixelsPerPoint: Double(width) / bounds.width, time: captured)
         guard frames.last?.time == captured else {
             throw NSError(domain: "ResizeFinalCaptureFormat", code: 1)
         }
@@ -336,21 +349,14 @@ import XCTest
 
     nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
                             of type: SCStreamOutputType) {
-        guard type == .screen else { return }
-        consume(sampleBuffer, time: CMTimeGetSeconds(sampleBuffer.presentationTimeStamp))
-    }
-
-    nonisolated private func consume(_ sampleBuffer: CMSampleBuffer, time: Double) {
-        guard sampleBuffer.isValid else { return }
+        guard type == .screen, sampleBuffer.isValid else { return }
+        let time = CMTimeGetSeconds(sampleBuffer.presentationTimeStamp)
         guard time.isFinite else { return }
         let info = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
             as? [[SCStreamFrameInfo: Any]]
         let status = info?.first?[.status] as? Int
         if status == SCFrameStatus.idle.rawValue { frames.repeatFrame(time); return }
         guard status == SCFrameStatus.complete.rawValue, let pixel = sampleBuffer.imageBuffer else { return }
-        CVPixelBufferLockBaseAddress(pixel, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
-        guard let bytes = CVPixelBufferGetBaseAddress(pixel)?.assumingMemoryBound(to: UInt8.self) else { return }
         let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
         guard let rectDictionary = info?.first?[.contentRect] as? NSDictionary,
               let rect = CGRect(dictionaryRepresentation: rectDictionary as CFDictionary),
@@ -358,11 +364,21 @@ import XCTest
               let contentScale = info?.first?[.contentScale] as? NSNumber else { return }
         let scale = CGFloat(factor.doubleValue)
         let pixelsPerPoint = factor.doubleValue * contentScale.doubleValue
-        guard pixelsPerPoint.isFinite, pixelsPerPoint > 0 else { return }
         let valid = CGRect(x: rect.minX * scale, y: rect.minY * scale,
                            width: rect.width * scale, height: rect.height * scale)
             .intersection(CGRect(x: 0, y: 0, width: width, height: height))
-        guard !valid.isEmpty else { return }
+        if frames.last == nil { print("RESIZE_CAPTURE info=\(String(describing: info?.first))") }
+        record(pixel, valid: valid, pixelsPerPoint: pixelsPerPoint, time: time)
+    }
+
+    nonisolated private func record(_ pixel: CVPixelBuffer, valid: CGRect,
+                                   pixelsPerPoint: Double, time: Double) {
+        guard time.isFinite, pixelsPerPoint.isFinite, pixelsPerPoint > 0, !valid.isEmpty,
+              CVPixelBufferGetPixelFormatType(pixel) == kCVPixelFormatType_32BGRA else { return }
+        CVPixelBufferLockBaseAddress(pixel, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
+        guard let bytes = CVPixelBufferGetBaseAddress(pixel)?.assumingMemoryBound(to: UInt8.self) else { return }
+        let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
         // ScreenCaptureKit can retain pixels from the previously wider window
         // outside this frame's content rectangle. Those are not visible content.
         let row = Int(valid.midY) * CVPixelBufferGetBytesPerRow(pixel)
@@ -393,11 +409,11 @@ import XCTest
         let snapshot = frames.needsImage(for: gap)
             ? ResizePixelFrames.Image(data: Data(bytes: bytes, count: CVPixelBufferGetBytesPerRow(pixel) * height),
                                       width: width, height: height, stride: CVPixelBufferGetBytesPerRow(pixel)) : nil
-        if snapshot != nil { print("RESIZE_CAPTURE_BOUND time=\(time) rect=\(valid) red=\(String(describing: firstRed))...\(String(describing: lastRed)) right=\(String(describing: rightWindow)) gap=\(gap) screen=\(String(describing: info?.first?[.screenRect]))") }
-        if frames.last == nil { print("RESIZE_CAPTURE info=\(String(describing: info?.first))") }
+        if snapshot != nil { print("RESIZE_CAPTURE_BOUND time=\(time) rect=\(valid) red=\(String(describing: firstRed))...\(String(describing: lastRed)) right=\(String(describing: rightWindow)) gap=\(gap)") }
         let markerGap = lastRed.flatMap { red in rightWindow.map { Double($0 - red) / pixelsPerPoint } } ?? 10_000
         frames.append(time: time, gap: gap, markerGap: markerGap, image: snapshot)
     }
+
 }
 
 private final class ResizePixelFrames: @unchecked Sendable {

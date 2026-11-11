@@ -133,7 +133,7 @@ import XCTest
         defer { window.contentView = nil; host.removePage(); window.close() }
         var paints: [@MainActor @Sendable () -> Void] = []
         let resize = WindowResizePreparation(window: window,
-            presenter: { _, callback in paints.append(callback) }, deadline: { _ in }) { frame, display in
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }) { frame, display in
                 window.setFrame(frame, display: display)
             }
         XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 1000, height: 600), display: false))
@@ -158,7 +158,7 @@ import XCTest
         defer { window.contentView = nil; host.removePage(); window.close() }
         var paint: (@MainActor @Sendable () -> Void)?
         let resize = WindowResizePreparation(window: window,
-            presenter: { _, callback in paint = callback }, deadline: { _ in }) { _, _ in XCTFail("Canceled paint committed") }
+            presenter: { _, callback in paint = callback }, deadline: { _, _ in }) { _, _ in XCTFail("Canceled paint committed") }
         XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 1000, height: 600), display: false))
         resize.cancel()
         paint?()

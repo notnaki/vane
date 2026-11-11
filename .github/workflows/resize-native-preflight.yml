@@ -23,6 +23,30 @@ jobs:
           swift -e 'import AppKit; print("HOST_REDUCE_MOTION=\(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)")'
       - name: Build approved application and corner coverage fixture
         run: swift build -c debug --build-tests --disable-index-store
+      - name: Prove the late-paint regression rejects an early watchdog
+        run: |
+          python3 - <<'PYTHON'
+          import os, pathlib, subprocess
+          source = pathlib.Path('Sources/Vane/WindowResize.swift')
+          original = source.read_text()
+          old = 'let interval: TimeInterval = 0.25'
+          assert original.count(old) == 1
+          log = pathlib.Path(os.environ['RUNNER_TEMP']) / 'resize-native-preflight-mutation.log'
+          try:
+              source.write_text(original.replace(old, 'let interval: TimeInterval = 0.10'))
+              with log.open('w') as output:
+                  result = subprocess.run(['python3','scripts/run-native-tests.py','--jobs','1','--filter','^VaneTests[.]WindowResizePreparationTests/testNormallyLatePaintDoesNotExposeAnUnpaintedQueuedFrame$'], stdout=output, stderr=subprocess.STDOUT)
+          finally:
+              source.write_text(original)
+          text = log.read_text()
+          print(text[-5000:])
+          assert result.returncode != 0
+          assert 'A responsive but late page must not expose unpainted width' in text
+          assert 'Native suite primary status=1; cleanup status=0' in text
+          assert '*** Signal ' not in text
+          print('EARLY_WATCHDOG_MUTATION_REJECTED')
+          subprocess.run(['swift','build','-c','debug','--build-tests','--disable-index-store'], check=True)
+          PYTHON
       - name: Three predetermined native attempts with retirement
         run: |
           python3 - <<'PYTHON'

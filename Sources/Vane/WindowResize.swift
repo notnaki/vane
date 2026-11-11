@@ -133,7 +133,7 @@ extension EnvironmentValues {
 /// There is at most one preparation and one latest request; no event-loop waits.
 @MainActor final class WindowResizePreparation {
     typealias Presenter = @MainActor (WKWebView, @escaping @MainActor @Sendable () -> Void) -> Void
-    typealias Deadline = @MainActor (@escaping @MainActor @Sendable () -> Void) -> Void
+    typealias Deadline = @MainActor (TimeInterval, @escaping @MainActor @Sendable () -> Void) -> Void
     struct Request {
         let frame: NSRect
         let display: Bool
@@ -226,11 +226,12 @@ extension EnvironmentValues {
             target.web.perform(Self.presentation, with: callback)
         }
         let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
-        if let deadline { deadline(timeout) }
+        let interval: TimeInterval = 0.25
+        if let deadline { deadline(interval, timeout) }
         else if generation == token, active != nil {
             // A real GitHub resize can paint after116ms. Treating that as a
             // stalled process exposed unpainted queued width for the whole drag.
-            let timer = Timer(timeInterval: 0.25, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
+            let timer = Timer(timeInterval: interval, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
             watchdog = timer
             RunLoop.main.add(timer, forMode: .common)
         }
@@ -440,7 +441,7 @@ extension EnvironmentValues {
         deadlineToken = UUID()
         let token = deadlineToken
         let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
-        if let deadline { deadline(timeout) }
+        if let deadline { deadline(interval, timeout) }
         else {
             let timer = Timer(timeInterval: interval, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
             self.timer = timer
