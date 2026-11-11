@@ -4,7 +4,7 @@ struct BackupSettings: View {
     @ObservedObject var controller: BackupController
     var body: some View {
         SettingsCard {
-            SettingsRow("Your saved library") {
+            SettingsRow("Your saved library", icon: "externaldrive.fill", tint: .green) {
                 HStack {
                     Button("Export Backup…") { controller.showExportPanel() }
                     Button("Restore Backup…") { controller.showRestorePanel() }
@@ -17,7 +17,7 @@ struct BackupSettings: View {
                 .padding(.horizontal, Look.cardInset).padding(.vertical, Look.inset)
             if let status = controller.status { Footnote(status) }
             if let error = controller.error { errorRow(error) }
-            SettingsRow("Automatic local recovery") {
+            SettingsRow("Automatic local recovery", icon: "clock.arrow.circlepath", tint: .green) {
                 Text("Hourly · Latest 10").font(Look.footnote).foregroundStyle(.secondary)
             }
             if let point = controller.points.first(where: { $0.diagnostic == nil }) {
