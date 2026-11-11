@@ -113,6 +113,32 @@ private struct ObservedSidebarProbe: View {
                        "Protection revocation must publish synchronously without a shape assignment")
     }
 
+    func testCoveredVisibilityDefersOnlyVisibilityUntilItsLastOwnerEnds() {
+        let store = fixture()
+        var draws: [Bool] = []
+        var snapshots = 0
+        let redraw = store.sidebarObservation.objectWillChange.sink { draws.append(store.profileVisible) }
+        let capture = store.sidebarSnapshotChanges.sink { snapshots += 1 }
+        defer { redraw.cancel(); capture.cancel() }
+        let first = store.sidebarObservation.beginCoveredVisibilityChanges()
+        let second = store.sidebarObservation.beginCoveredVisibilityChanges()
+        store.profileVisible = false
+        XCTAssertTrue(draws.isEmpty)
+        XCTAssertEqual(snapshots, 1, "Snapshot authority must revoke on the original publication turn")
+        store.sidebarPreviewInvalidated.send()
+        XCTAssertEqual(draws, [false], "Protection changes must redraw immediately under a native cover")
+        store.tabs = []
+        XCTAssertEqual(draws, [false, false], "Ordinary content changes must stay synchronous")
+        store.sidebarObservation.endCoveredVisibilityChanges(first)
+        XCTAssertEqual(draws.count, 2)
+        store.sidebarObservation.endCoveredVisibilityChanges(second)
+        XCTAssertEqual(draws, [false, false, false], "The final release renders completed visibility state")
+        store.sidebarObservation.endCoveredVisibilityChanges(second)
+        XCTAssertEqual(draws.count, 3, "A repeated release must not flush another redraw")
+        store.profileVisible = true
+        XCTAssertEqual(draws.count, 4, "Normal visibility redraws resume after the cover releases ownership")
+    }
+
     func testMountedSidebarSkipsSearchUpdatesButRendersRenameChanges() async throws {
         let store = fixture()
         let draws = SidebarDrawCount()

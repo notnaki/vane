@@ -6,12 +6,16 @@ import SwiftUI
 /// has no initial value and must revoke snapshots on the sending turn.
 extension TabStore {
     var sidebarSnapshotChanges: AnyPublisher<Void, Never> {
+        Publishers.Merge(sidebarContentChanges, sidebarChange($profileVisible)).eraseToAnyPublisher()
+    }
+
+    var sidebarContentChanges: AnyPublisher<Void, Never> {
         Publishers.MergeMany([
             sidebarChange($tabs), sidebarChange($pins), sidebarChange($todayShape),
             sidebarChange($splits), sidebarChange($current), sidebarChange($selection),
             sidebarChange($collapsedPinnedSpaces), sidebarChange($currentSpaceID),
             sidebarChange($spaceRevision), sidebarChange($previewSpace),
-            sidebarChange($profileVisible), sidebarPreviewInvalidated.eraseToAnyPublisher()
+            sidebarPreviewInvalidated.eraseToAnyPublisher()
         ]).eraseToAnyPublisher()
     }
 }
@@ -25,6 +29,9 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
 @MainActor final class SidebarObservation: @MainActor ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
     private var subscription: AnyCancellable?
+    private var visibilitySubscription: AnyCancellable?
+    private var coveredVisibilityOwners: Set<UUID> = []
+    private var pendingVisibilityChange = false
     private var mutationDepth = 0
     private var pendingChange = false
 
@@ -45,6 +52,26 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
         return try body()
     }
 
+    /// A native cover already owns the sidebar picture during profile travel.
+    /// Delay only its visibility redraw; content/protection invalidation stays immediate.
+    func beginCoveredVisibilityChanges() -> UUID {
+        let token = UUID()
+        coveredVisibilityOwners.insert(token)
+        return token
+    }
+
+    func endCoveredVisibilityChanges(_ token: UUID) {
+        guard coveredVisibilityOwners.remove(token) != nil,
+              coveredVisibilityOwners.isEmpty, pendingVisibilityChange else { return }
+        pendingVisibilityChange = false
+        changed()
+    }
+
+    private func visibilityChanged() {
+        if coveredVisibilityOwners.isEmpty { changed() }
+        else { pendingVisibilityChange = true }
+    }
+
     private func changed() {
         let began = CACurrentMediaTime()
         defer { ProfileHandoffTrace.end("SidebarObservation.changed", began) }
@@ -54,12 +81,15 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
 
     init(store: TabStore) {
         subscription = Publishers.MergeMany([
-            store.sidebarSnapshotChanges,
+            store.sidebarContentChanges,
             // Live controls redraw for these changes; captured previews do not.
             sidebarChange(store.$renamingTab), sidebarChange(store.$renamingFolder),
             sidebarChange(store.$renamingSpace), sidebarChange(store.$announcing),
             sidebarChange(store.$creatingSpace)
         ]).sink { [weak self] _ in self?.changed() }
+        visibilitySubscription = store.$profileVisible.dropFirst().sink { [weak self] _ in
+            self?.visibilityChanged()
+        }
     }
 }
 
