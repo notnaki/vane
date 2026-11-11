@@ -28,6 +28,7 @@ enum TabTooltipLayout {
 /// receives clicks, and its panel never takes focus from a page or an inline rename field.
 @MainActor final class TabTooltip {
     static let shared = TabTooltip()
+    private let mouseLocation: () -> NSPoint
     private weak var anchor: TabTooltipAnchorView?
     private weak var owner: NSWindow?
     private var pending: Task<Void, Never>?
@@ -37,6 +38,10 @@ enum TabTooltipLayout {
     private let hovered = NSHashTable<TabTooltipAnchorView>.weakObjects()
     var isPending: Bool { pending != nil }
     var isVisible: Bool { panel != nil }
+
+    init(mouseLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) {
+        self.mouseLocation = mouseLocation
+    }
 
     func schedule(for anchor: TabTooltipAnchorView) {
         guard anchor.enabled else { return }
@@ -97,7 +102,7 @@ enum TabTooltipLayout {
         guard anchor.enabled, let owner = anchor.window, owner.isKeyWindow, NSApp.isActive,
               !anchor.isHiddenOrHasHiddenAncestor, !anchor.tooltipRect.isEmpty,
               let screen = owner.screen else { dismiss(); return }
-        let pointer = anchor.convert(owner.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let pointer = anchor.convert(owner.convertPoint(fromScreen: mouseLocation()), from: nil)
         guard anchor.tooltipRect.contains(pointer) else { dismiss(); return }
         let surface = TabTooltipSurface(title: anchor.title, hint: anchor.hint,
                                         shortcut: anchor.shortcut, compact: anchor.centered, theme: anchor.theme)

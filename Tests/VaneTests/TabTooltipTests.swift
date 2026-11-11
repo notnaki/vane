@@ -12,20 +12,24 @@ final class TabTooltipTests: XCTestCase {
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do {
+            // Supply a stable screen position without depending on the runner's
+            // cursor or moving a titled window beyond the screen's usable bounds.
+            var pointer = NSPoint.zero
+            let tooltip = TabTooltip(mouseLocation: { pointer })
             let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 240, height: 400),
                                   styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             let host = NSHostingView(rootView: VStack(spacing: 0) {
                 Color.clear.frame(height: 200)
                 Text("Pull Requests").frame(width: 228, height: 36)
-                    .vaneTooltip("Pull Requests", hint: "Click to expand or collapse")
+                    .background(HostedFolderTooltipAnchor(tooltip: tooltip))
                 Spacer(minLength: 0)
             }.frame(width: 240, height: 400).background(.black))
             window.contentView = host
             window.makeKeyAndOrderFront(nil)
             app.activate(ignoringOtherApps: true)
             defer {
-                TabTooltip.shared.dismiss()
+                tooltip.dismiss()
                 window.contentView = nil
                 window.close()
             }
@@ -42,21 +46,12 @@ final class TabTooltipTests: XCTestCase {
             let anchor = try XCTUnwrap(find(host))
             XCTAssertGreaterThan(anchor.visibleRect.height, anchor.bounds.height,
                 "The hosted fixture must expose the oversized ancestor clip behind this regression")
-            // Put the row beneath the real pointer without moving the user's cursor.
-            let rowInWindow = anchor.convert(anchor.bounds, to: nil)
-            let pointer = NSEvent.mouseLocation
-            window.setFrameOrigin(CGPoint(x: pointer.x - rowInWindow.midX,
-                                          y: pointer.y - rowInWindow.midY))
-            try await compatibilityWait {
-                host.layoutSubtreeIfNeeded()
-                return window.isKeyWindow && window.screen != nil
-                    && anchor.bounds.contains(anchor.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil))
-            }
-            TabTooltip.shared.schedule(for: anchor)
-            try await compatibilityWait { TabTooltip.shared.isVisible }
-            let panel = try XCTUnwrap(window.childWindows?.first as? NSPanel)
             let row = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
+            pointer = NSPoint(x: row.midX, y: row.midY)
             let screen = try XCTUnwrap(window.screen)
+            tooltip.schedule(for: anchor)
+            try await compatibilityWait { tooltip.isVisible }
+            let panel = try XCTUnwrap(window.childWindows?.first as? NSPanel)
             let expected = TabTooltipLayout.frame(anchor: row, size: panel.frame.size,
                                                   screen: screen.visibleFrame, centered: true)
             XCTAssertEqual(panel.frame.minX, expected.minX, accuracy: 1)
@@ -67,17 +62,19 @@ final class TabTooltipTests: XCTestCase {
                 let contentFrame = window.convertToScreen(host.convert(host.bounds, to: nil))
                 let canvas = contentFrame.union(panel.frame)
                 let image = NSImage(size: canvas.size)
-                image.lockFocus()
-                NSColor.black.setFill()
-                NSRect(origin: .zero, size: canvas.size).fill()
-                for view in [host, tooltipView] {
-                    view.layoutSubtreeIfNeeded()
-                    let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-                    view.cacheDisplay(in: view.bounds, to: bitmap)
-                    let frame = try XCTUnwrap(view.window).convertToScreen(view.convert(view.bounds, to: nil))
-                    bitmap.draw(in: frame.offsetBy(dx: -canvas.minX, dy: -canvas.minY))
+                do {
+                    image.lockFocus()
+                    defer { image.unlockFocus() }
+                    NSColor.black.setFill()
+                    NSRect(origin: .zero, size: canvas.size).fill()
+                    for view in [host, tooltipView] {
+                        view.layoutSubtreeIfNeeded()
+                        let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                        view.cacheDisplay(in: view.bounds, to: bitmap)
+                        let frame = try XCTUnwrap(view.window).convertToScreen(view.convert(view.bounds, to: nil))
+                        bitmap.draw(in: frame.offsetBy(dx: -canvas.minX, dy: -canvas.minY))
+                    }
                 }
-                image.unlockFocus()
                 let bitmap = NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation))
                 try XCTUnwrap(bitmap?.representation(using: .png, properties: [:]))
                     .write(to: URL(fileURLWithPath: path))
@@ -88,17 +85,15 @@ final class TabTooltipTests: XCTestCase {
             let refreshed = TabTooltipLayout.frame(anchor: row, size: panel.frame.size,
                                                    screen: screen.visibleFrame, centered: true)
             XCTAssertEqual(panel.frame.minY, refreshed.minY, accuracy: 1)
-            TabTooltip.shared.dismiss()
+            tooltip.dismiss()
             // The surrounding clip must not admit hover in the empty space above the row.
-            window.setFrameOrigin(CGPoint(x: pointer.x - rowInWindow.midX,
-                                          y: pointer.y - rowInWindow.maxY - 40))
-            host.layoutSubtreeIfNeeded()
-            let gap = anchor.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+            let gap = NSPoint(x: anchor.bounds.midX, y: anchor.bounds.maxY + 40)
+            pointer = window.convertPoint(toScreen: anchor.convert(gap, to: nil))
             XCTAssertFalse(anchor.bounds.contains(gap))
             XCTAssertTrue(anchor.visibleRect.contains(gap))
-            TabTooltip.shared.schedule(for: anchor)
-            try await compatibilityWait { !TabTooltip.shared.isPending }
-            XCTAssertFalse(TabTooltip.shared.isVisible,
+            tooltip.schedule(for: anchor)
+            try await compatibilityWait { !tooltip.isPending }
+            XCTAssertFalse(tooltip.isVisible,
                 "An ancestor's empty space must not show the folder's tooltip")
         } catch { failure = error }
         do { try await loop.close() }
@@ -336,5 +331,17 @@ final class TabTooltipTests: XCTestCase {
             eventNumber: 1, clickCount: 2, pressure: 1)!
         XCTAssertTrue(tooltip.handle(event) === event)
         XCTAssertFalse(tooltip.isPending)
+    }
+}
+
+private struct HostedFolderTooltipAnchor: NSViewRepresentable {
+    let tooltip: TabTooltip
+    func makeNSView(context: Context) -> TabTooltipAnchorView { TabTooltipAnchorView(tooltip: tooltip) }
+    func updateNSView(_ view: TabTooltipAnchorView, context: Context) {
+        view.configure(title: "Pull Requests", hint: "Click to expand or collapse",
+                       centered: true, enabled: true)
+    }
+    static func dismantleNSView(_ view: TabTooltipAnchorView, coordinator: ()) {
+        view.tooltip.dismiss(for: view)
     }
 }
