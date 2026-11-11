@@ -920,7 +920,7 @@ struct SpacePreviewList: View, Equatable {
         return SidebarTidySurface {
             switch control {
             case .hidden: EmptyView()
-            case .tidy: Button("Tidy", action: {})
+            case .tidy: Button(action: {}) { SidebarTidyLabel() }
             case .tidying:
                 ProgressView().controlSize(.small).scaleEffect(Look.tidySpinnerScale)
                     .frame(height: Look.tidyRow)
