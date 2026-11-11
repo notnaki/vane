@@ -24,16 +24,18 @@ import XCTest
         }
         return try data.map { try JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
     }
-    private func wait(_ condition: () async throws -> Bool) async throws {
+    private func wait(_ stage: String = "fixture outcome", file: StaticString = #filePath,
+                      line: UInt = #line, _ condition: () async throws -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while ContinuousClock.now < deadline {
             if try await condition() { return }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTFail("Focus-free WebKit fixture prerequisite timed out")
+        XCTFail("Focus-free WebKit fixture timed out: \(stage); appRunning=\(NSApp.isRunning)", file: file, line: line)
         throw NSError(domain: "PasswordShadowFixtureTimeout", code: 1)
     }
-    private func fixture(_ html: String) async throws -> (WKWebView, Capture) {
+    private func fixture(_ html: String,
+                         retireWith: ((@escaping @MainActor @Sendable () -> Void) -> Void)? = nil) async throws -> (WKWebView, Capture) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         WebKitStartup.prepare()
@@ -46,15 +48,17 @@ import XCTest
         let window = NSWindow(contentRect: web.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = web
-        addTeardownBlock { @MainActor in
+        let retire: @MainActor @Sendable () -> Void = {
             web.stopLoading()
             config.userContentController.removeScriptMessageHandler(forName: "vanepw", contentWorld: Autofill.world)
             window.contentView = nil
             window.close()
         }
+        if let retireWith { retireWith(retire) }
+        else { addTeardownBlock { @MainActor in retire() } }
         web.loadSimulatedRequest(URLRequest(url: URL(string: "https://login.example.test/signin")!),
             responseHTML: "<!doctype html><body>" + html + "</body>")
-        try await wait {
+        try await wait("document load and isolated API") {
             guard !web.isLoading else { return false }
             return try await self.js(web, "typeof __vaneFill", isolated: true) as? String == "function"
         }
@@ -108,14 +112,35 @@ import XCTest
     }
 
     func testLateAttachedNestedRootsAndFieldsNotifyDiscoveryWithoutLightDOMMutation() async throws {
-        let (web, capture) = try await fixture("<div id=host></div>")
+        TestEnvironment.prepare()
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do {
+            try await compatibilityWait { try loop.isReadyForInteraction() }
+            try await checkLateAttachedNestedRoots()
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Shadow discovery AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkLateAttachedNestedRoots() async throws {
+        XCTAssertTrue(NSApp.isRunning,
+                      "Shadow discovery requires an admitted AppKit loop before WebKit starts")
+        var retire: (@MainActor @Sendable () -> Void)?
+        defer { retire?() }
+        // Retire inside the owned loop, including when fixture admission throws.
+        let (web, capture) = try await fixture("<div id=host></div>", retireWith: { retire = $0 })
         _ = try await js(web, "var root=host.attachShadow({mode:'open'}); root.innerHTML='<div id=inner></div>'; var inner=root.getElementById('inner'); var nested=inner.attachShadow({mode:'open'}); nested.innerHTML='<form><input autocomplete=username><input id=password type=password></form>'")
-        try await wait { capture.messages.contains { $0["ready"] as? Bool == true } }
+        try await wait("late shadow root discovery") { capture.messages.contains { $0["ready"] as? Bool == true } }
         let originalAnchor = try await anchor(web)
         let old = try XCTUnwrap(originalAnchor?["target"] as? String)
         let count = capture.messages.filter { $0["ready"] as? Bool == true }.count
         _ = try await js(web, "nested.getElementById('password').outerHTML='<input id=password type=password autocomplete=current-password>'")
-        try await wait { capture.messages.filter { $0["ready"] as? Bool == true }.count > count }
+        try await wait("replacement shadow field discovery") { capture.messages.filter { $0["ready"] as? Bool == true }.count > count }
         let stale = try await fill(web, target: old)
         XCTAssertFalse(stale)
         let current = try await fill(web)

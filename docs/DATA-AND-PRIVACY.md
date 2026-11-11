@@ -67,12 +67,11 @@ The bookmark manager supports folders, search, bulk actions and HTML import/expo
 Use **Vane → Import History & Bookmarks…** for supported Chromium-family browsers,
 Firefox, or Safari, and **Import Passwords…** in the Passwords UI for CSV. The dedicated
 **Vane → Import from Arc…** flow can also migrate supported local Arc data, including sessions;
-it is separate from the general importer. Review the source and destination before importing.
+it is separate from the general importer. Browser locations are found automatically, without a folder picker. Onboarding shows scan progress and source counts before confirmation, then imports the selected source and reports the result. macOS privacy controls may still prevent reading protected browser data; unavailable sources are reported rather than treated as empty. Review the source and destination before importing.
 
 The general importer offers **Also copy cookies / sessions**, off by default, for Chrome,
 Chromium, Edge, Brave, Vivaldi, Opera, and Arc profiles with a `Cookies` or `Network/Cookies`
-database. If you choose a profile folder yourself, identify the browser explicitly to enable
-session import; Vane does not guess a Safe Storage identity from the folder name. macOS may
+database. Detected vendor locations identify the browser explicitly; Vane does not guess a Safe Storage identity from an arbitrary folder name. Onboarding’s general-browser route copies bookmarks and history; use the menu importer for optional sessions. macOS may
 ask to read that browser's Safe Storage key. Only the selected browser's exact service/account
 pair is read; Vane never tries other browsers' keys or creates a source Keychain item.
 Firefox and Safari session extraction are not supported.
@@ -256,7 +255,9 @@ certificate needs another decision.
 
 [Crash recovery](CRASH-RECOVERY.md) describes previous generations, preserved originals, and manual recovery precautions. [Draft protection](DRAFT-PROTECTION.md) keeps eligible live forms awake; drafts are not written to disk or backed up.
 
-For what leaves the Mac, see [AI provider metadata and
-keys](INTEGRATIONS.md#ai-providers-and-your-own-keys), [filter
+For what leaves the Mac, see [AI connections, shared metadata and
+credentials](INTEGRATIONS.md#ai-connections-and-feature-routing), [filter
 subscriptions](INTEGRATIONS.md#content-blocking-and-filter-subscriptions), and [GitHub
 Live Folders](INTEGRATIONS.md#github-live-folders).
+
+AI features are off by default until enabled in onboarding or Settings → Max. Existing explicit choices are retained. Browser discovery includes Zen and Orion alongside the existing sources, reports macOS-blocked locations, and shows the selected source’s reviewed items before confirmation. Read-only sandbox access remains limited to these known browser locations; macOS privacy controls still apply.

@@ -1,6 +1,8 @@
 import AppKit
 import WebKit
 import CryptoKit
+import ImageIO
+import Darwin
 
 /// ponytail: WKDownload still does the transfer, the resume data and the progress
 /// reporting. What it does not do is remember anything across a launch, so this file is
@@ -47,6 +49,7 @@ import CryptoKit
         cache[id] = nil
         try? FileManager.default.removeItem(at: listURL(for: id, in: dir))
         try? FileManager.default.removeItem(at: resumeDir(for: id, in: dir))
+        try? FileManager.default.removeItem(at: captureDirectory(for: id, in: dir))
     }
 
     /// Retention policy: the newest 200 *finished* entries per profile (done, missing or
@@ -560,6 +563,73 @@ import CryptoKit
         items.insert(item, at: 0)
         save()
         return item
+    }
+
+    enum CaptureSaveError: LocalizedError {
+        case unavailable, invalid
+        var errorDescription: String? {
+            switch self {
+            case .unavailable: "This capture cannot be saved to Media right now. Private captures stay temporary."
+            case .invalid: "The captured image is invalid or too large. Try capturing a smaller region."
+            }
+        }
+    }
+
+    nonisolated static func captureDirectory(for id: UUID, in directory: URL) -> URL {
+        directory.appendingPathComponent("captures-\(id.uuidString)", isDirectory: true)
+    }
+
+    /// Captures are saved files in the existing Media pipeline, not a second library.
+    /// Publish only after both the PNG and the shared saved-file index are durable.
+    @discardableResult func saveCapture(_ png: Data, title: String, source: URL?) async throws -> Item {
+        guard !invalidated, profileID != Profile.incognito.id,
+              !AppLifecycle.shared.persistenceExitInProgress else { throw CaptureSaveError.unavailable }
+        let root = directory
+        let folder = Self.captureDirectory(for: profileID, in: root)
+        let id = UUID()
+        let cleaned = title.components(separatedBy: CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "/\\:")))
+            .joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = cleaned.isEmpty ? "Vane Capture" : String(decoding: cleaned.utf8.prefix(100), as: UTF8.self)
+        let name = "\(prefix) – \(id.uuidString.prefix(8)).png"
+        let file = folder.appendingPathComponent(name)
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                guard !png.isEmpty, png.count <= 32 * 1024 * 1024,
+                      png.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]),
+                      let image = CGImageSourceCreateWithData(png as CFData, nil),
+                      CGImageSourceGetStatus(image) == .statusComplete else { throw CaptureSaveError.invalid }
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                try BackupIO.directory(folder)
+                try BackupIO.write(png, file)
+            }.value
+            guard !invalidated, !AppLifecycle.shared.persistenceExitInProgress else { throw CaptureSaveError.unavailable }
+            let list = Self.listURL(for: profileID, in: directory)
+            if FileManager.default.fileExists(atPath: list.path) {
+                // Never turn an unreadable existing index into an apparently empty list.
+                _ = try JSONDecoder().decode([Record].self, from: BackupIO.read(list))
+            }
+            let item = Item(record: Record(id: id, name: name, destination: file, source: source,
+                total: Int64(png.count), received: Int64(png.count), state: "done", completed: .now, started: .now))
+            var finished = 0
+            let candidate = ([item] + items).filter { row in
+                if row.status.isLive { return true }
+                finished += 1
+                return finished <= Self.historyLimit
+            }
+            try BackupIO.write(JSONEncoder().encode(candidate.map(\.record)), list)
+            for evicted in items where !candidate.contains(where: { $0 === evicted }) {
+                deleteResume(evicted)
+                ScopedPaths.releaseBookmark(owner: evicted.scopeOwner)
+                evicted.destinationLease = nil
+            }
+            items = candidate
+            lastSave = .now
+            return item
+        } catch {
+            try? FileManager.default.removeItem(at: file)
+            if invalidated { _ = rmdir(folder.path) }
+            throw error
+        }
     }
 
     /// Clears the history. Running and paused rows stay: the list is the only handle on

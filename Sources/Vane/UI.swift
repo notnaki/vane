@@ -476,7 +476,8 @@ struct BrowserWindow: View {
             // resize handle is, and it has to be above the web view to see a drag at all.
             // Not while the Library is up: the rail is not the sidebar, and is not dragged.
             if store.sidebarShown && !store.libraryOpen {
-                SidebarHandle().offset(x: sidebar.width - SidebarHandle.hitTestWidth / 2)
+                // Arc's rounded rule sits 4pt inside the sidebar's trailing edge.
+                SidebarHandle().offset(x: sidebar.width - SidebarHandle.hitTestWidth)
                     .zIndex(1)
             }
             if presentsPalette { BrowserPaletteOverlay().zIndex(2) }
@@ -649,11 +650,12 @@ struct BrowserPaletteOverlay: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
+    @ObservedObject private var sidebar = SidebarWidth.shared
 
     var body: some View {
         ZStack {
             if let mode = store.palette {
-                PaletteView(mode: mode) {
+                PaletteView(ownsAccessibilityModal: false, mode: mode) {
                     store.palette = nil
                     store.focusPage()
                 }
@@ -661,6 +663,21 @@ struct BrowserPaletteOverlay: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottomLeading) {
+            if store.palette != nil {
+                // A profile can retain an open command bar while parked. App update
+                // status belongs above its scrim, with the live action still reachable.
+                // ToastPresentation covers the ordinary host while search is open.
+                ToastHost(stickyOnly: true)
+                    .frame(width: sidebar.width)
+                    .padding(.leading, store.sidebarShown || store.sidebarPeeking ? 0 : 16 - Look.inset)
+                    .padding(.bottom, store.sidebarShown || store.sidebarPeeking
+                             ? Look.footer + Look.footerInset + 2 * Look.inset : 16)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(store.palette == nil ? [] : .isModal)
+        .accessibilityHidden(store.palette == nil)
         // Keep search's fade out of the sidebar's disabled-state transaction.
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
                    value: store.palette == nil)
@@ -825,23 +842,7 @@ struct WebCard: View {
         }
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
-        .clipShape(.rect(cornerRadius: radius))
-        .background {
-            RoundedRectangle(cornerRadius: radius)
-                .stroke(Look.pageShadow, lineWidth: 1)
-                .blur(radius: Look.pageShadowRadius)
-                .offset(y: 1)
-                .opacity(edgeToEdge ? 0 : 1)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: radius)
-                .strokeBorder(Look.pageRim, lineWidth: 1)
-                .opacity(edgeToEdge ? 0 : 1)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-        }
+        .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
@@ -957,7 +958,7 @@ private struct Sidebar: View {
     }
 
     var body: some View {
-        VStack(spacing: Look.inset) {
+        SidebarChrome {
             TopRow()
             AddressPill(tab: store.active)
             ZStack {
@@ -1003,11 +1004,6 @@ private struct Sidebar: View {
                       preparePreview: preparePreview)
         }
         .environment(\.sidebarDropMarker, dropMarker)
-        // SwiftUI's accessibility motion environment is read-only. Stop decorative
-        // animations here without changing the user's system accessibility setting.
-        .padding(.horizontal, Look.inset)
-        .padding(.bottom, Look.footerInset)
-        .padding(.top, Look.topInset)
         // Toasts and the mini audio player fade in above the footer and sit just
         // above it, over the list — the toast above the player, so neither covers the other.
         .overlay(alignment: .bottom) {
@@ -1123,7 +1119,8 @@ private struct Sidebar: View {
 struct TopRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
-    private var layout: SidebarChromeLayout { SidebarChromeLayout(width: sidebar.width) }
+    var layoutWidth: CGFloat? = nil
+    private var layout: SidebarChromeLayout { SidebarChromeLayout(width: layoutWidth ?? sidebar.width) }
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1287,6 +1284,8 @@ private struct NavigationTarget: ViewModifier {
 struct AddressPill: View {
     let tab: Tab?
     var showsProfile = false
+    var displayAddress: String? = nil
+    var layoutWidth: CGFloat? = nil
     @ObservedObject private var changes = SiteChanges.shared
     @State private var tabRevision: UInt = 0
 
@@ -1295,8 +1294,8 @@ struct AddressPill: View {
         // and keyboard owner must survive a page → empty → page round trip.
         let _ = tabRevision
         let site = tab.map { SiteControlModel($0) } ?? SiteControlModel()
-        PillBody(tab: tab, host: host, address: tab?.address ?? "", site: site,
-                 zoom: PillState.zoomLabel(tab?.zoom ?? 1), showsProfile: showsProfile)
+        PillBody(tab: tab, host: host, address: displayAddress ?? tab?.address ?? "", site: site,
+                 zoom: PillState.zoomLabel(tab?.zoom ?? 1), showsProfile: showsProfile, layoutWidth: layoutWidth)
             .onReceive(tab?.objectWillChange.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) {
                 tabRevision &+= 1
             }
@@ -1304,6 +1303,7 @@ struct AddressPill: View {
 
     /// Read metadata here on every page notification, including permission changes.
     private var host: String {
+        if let displayAddress { return displayAddress }
         guard let tab else { return "" }
         if tab.easelID != nil { return "Local Easel" }
         if let label = Files.pillLabel(tab.currentURL) { return label }
@@ -1318,7 +1318,7 @@ private struct PillBody: View {
     @Environment(\.sidebarDragPreview) private var dragPreview
     @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var batterySaver = BatterySaver.shared
-    private var compact: Bool { SidebarChromeLayout(width: sidebar.width).compact }
+    private var compact: Bool { SidebarChromeLayout(width: layoutWidth ?? sidebar.width).compact }
     let tab: Tab?
     let host: String
     let address: String
@@ -1327,6 +1327,7 @@ private struct PillBody: View {
     /// "125%" while the page is zoomed, nil at 100 %. Clicking it puts the page back.
     var zoom: String?
     var showsProfile = false
+    var layoutWidth: CGFloat? = nil
     @State private var hovering = false
     @State private var showingSiteControls = false
     @State private var pillFocused = false
@@ -1371,8 +1372,11 @@ private struct PillBody: View {
         }
         .onHover { hovering = $0 }
         .onTapGesture { open() }
-        .vaneKeyboardAction(requestFocus: $store.chromeFocusRequested,
-                            focusChanged: { pillFocused = $0 }, action: open)
+        .addressKeyboardAction(store: store, value: axValue, customActions: [
+            ("Copy Link", copyLink),
+            ("Site Controls", { if tab != nil, tab?.easelID == nil, !address.isEmpty { showingSiteControls = true } }),
+            ("Actual Size", { if let tab, zoom != nil { Zoom.reset(tab) } })
+        ], focusChanged: { pillFocused = $0 }, action: open)
         // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is
         // the top of the sidebar, and it is what the empty grid used to be dropped on.
         .onDrop(of: [.plainText, .url],
@@ -1381,20 +1385,8 @@ private struct PillBody: View {
                                   favouritePreview: dragPreview))
 
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Address and Search")
-        .accessibilityValue(axValue)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Opens the search bar to type a website address or a search.")
-        .accessibilityAction { open() }
-        // The two glyphs are only drawn on hover, so the actions they stand for have to be
-        // on the pill itself — a pointer gesture is not a route VoiceOver has.
-        .accessibilityAction(named: "Copy Link") { copyLink() }
-        .accessibilityAction(named: "Site Controls") {
-            if tab != nil, tab?.easelID == nil, !address.isEmpty { showingSiteControls = true }
-        }
         .onChange(of: tab?.id) { showingSiteControls = false }
         .onChange(of: address) { showingSiteControls = false }
-        .accessibilityAction(named: "Actual Size") { if let tab, zoom != nil { Zoom.reset(tab) } }
     }
 
     @ViewBuilder private var content: some View {
@@ -1404,9 +1396,10 @@ private struct PillBody: View {
             HStack(spacing: Look.pillGlyphGap) {
                 if address.isEmpty {
                     Image(systemName: "magnifyingglass").accessibilityHidden(true)
-                    Text("Search").font(Look.heading).lineLimit(1)
+                    Text("Search").font(Look.heading).lineLimit(1).accessibilityHidden(true)
                 } else {
                     Text(host).font(Look.text).lineLimit(1)
+                    .accessibilityHidden(true)
                     .vaneTooltip(address)
                 }
                 Spacer(minLength: 0)
@@ -1448,6 +1441,7 @@ private struct PillBody: View {
             .accessibilityLabel("\(store.profile.name) profile and navigation")
 
             Text(address.isEmpty ? "Search or Enter URL…" : host)
+                .accessibilityHidden(true)
                 .font(Look.text).lineLimit(1).truncationMode(.middle)
                 .vaneTooltip(address)
             HStack(spacing: Look.pillGlyphGap) {
@@ -1517,6 +1511,7 @@ private struct PillBody: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityHidden(true)
             // Rebuild only the label when policy changes, settling a running transition
             // without replacing the pill's keyboard owner or its native buttons.
             .id(reduced)
@@ -1549,8 +1544,7 @@ private struct PillBody: View {
 
     private func copyLink() {
         guard let u = tab?.currentURL else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(u.absoluteString, forType: .string)
+        CleanLink.copy(u)
         store.feedback.copied(u)
         axAnnounce("Link copied.")
         Toasts.show("Copied URL", in: store)
@@ -2391,6 +2385,9 @@ private struct PanePill: View {
                             radius: Look.panePillRadius) { store.focusPane(tab.id) }
         .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
         .tabTooltip(TidyTitles.title(for: tab), enabled: store.renamingTab == nil)
+        .contextMenu {
+            if !held && !previewing { SidebarTabContextMenu(store: store, tab: tab) }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(TidyTitles.title(for: tab))
         .accessibilityValue("Pane \(index + 1) of \(of)" + (active ? ", showing" : ""))
@@ -3301,6 +3298,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     var animatesCutoffs = true
     var retainsRows = false
     var tracesLiveInput = false
+    var allowsWindowDrag = true
     var reportOffset: (CGFloat) -> Void = { _ in }
     @ViewBuilder let header: () -> Header
     @ViewBuilder let rows: () -> Rows
@@ -3318,7 +3316,9 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
             ScrollView {
                 rowStack
                     .frame(minHeight: scrollHeight, alignment: .top)
-                    .background(WindowDragArea())
+                    .background {
+                        if allowsWindowDrag { WindowDragArea() }
+                    }
                     .background(SidebarSectionsViewport(tracesLiveInput: tracesLiveInput))
             }
             .scrollIndicators(.never)
@@ -3555,6 +3555,12 @@ private struct FolderRow: View {
     @ObservedObject private var dragging = Dragging.shared
     private var locked: Bool { store.isFolderLocked(folder.id) }
     private var receiving: Bool { isEnabled && dragging.active && zone == .inside }
+    private var showsArrivals: Bool {
+        !locked && folder.collapsed && folder.live != nil
+            && store[keyPath: shape].entries.contains {
+                $0.parent == folder.id && $0.tab != nil && $0.liveArrival == true
+            }
+    }
 
     var body: some View {
         dropRow
@@ -3634,7 +3640,7 @@ private struct FolderRow: View {
         SidebarRow(selected: false, held: held,
                    keyboardEnabled: store.renamingFolder != folder.id, action: { store.toggleFolder(folder.id, in: shape) }) {
             FolderGlyph(folder: folder, live: LiveFolders.shared(for: store.profileID), dropOpen: receiving,
-                        allowsHoverPreview: !held && !locked)
+                        allowsHoverPreview: !held && !locked, showsArrivals: showsArrivals)
         } label: {
             if !held && store.renamingFolder == folder.id {
                 FolderNameField(store: store, folder: folder, shape: shape)
@@ -3654,6 +3660,7 @@ private struct FolderRow: View {
         return (folder.live == nil ? "Folder, " : "Live folder, ")
             + "\(store[keyPath: shape].tabs(in: folder.id).count) tabs, "
             + (locked ? "locked" : (folder.collapsed ? "collapsed" : "expanded"))
+            + (showsArrivals ? ", new pull requests shown below" : "")
             + (failed ? ", last refresh failed" : "")
     }
 }
@@ -3702,6 +3709,9 @@ struct FolderGlyph: View {
     var live: LiveFolders? = nil
     var dropOpen = false
     var allowsHoverPreview = true
+    var showsArrivals = false
+    private var arrivalMark: Bool { showsArrivals && folder.collapsed && !dropOpen }
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
     var body: some View {
         Group {
             if folder.icon == Folder.defaultIcon {
@@ -3716,6 +3726,16 @@ struct FolderGlyph: View {
             }
         }
         .frame(width: Look.tileIcon)
+        .overlay {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 9, weight: .bold))
+                .offset(y: 1.5)
+                .opacity(arrivalMark ? 1 : 0)
+                .animation(reduced ? nil : Look.quick, value: arrivalMark)
+                .transaction { if reduced { $0.disablesAnimations = true } }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         // A live folder wears its source in the corner of its own glyph, so a folded folder
         // still says it fills itself.
         .overlay(alignment: .bottomTrailing) {
@@ -4372,6 +4392,7 @@ private struct SplitRow: View {
         .contextMenu {
             if ticked, store.selection.count > 1 {
                 BulkMenu(store: store, count: store.selection.count, kind: lead.kind)
+                SidebarExtensionMenu(store: store, tab: active)
             } else {
                 SplitMenu(store: store, split: split)
             }
@@ -4404,7 +4425,7 @@ extension SplitRow {
 /// The right-click menu on a split's row: what can be done to the split as a whole. What can
 /// be done to one pane is on that pane's own tab menu, which is where it was before it
 /// became a pane.
-private struct SplitMenu: View {
+struct SplitMenu: View {
     let store: TabStore
     let split: Split
 
@@ -4413,6 +4434,7 @@ private struct SplitMenu: View {
         Button("Separate All Tabs") { store.separateSplit(split) }
         Divider()
         Button("Close Split View") { store.closeSplit(split) }
+        SidebarExtensionMenu(store: store, tab: store.tabs.first { $0.id == split.activeTab })
     }
 }
 
@@ -4602,13 +4624,7 @@ private struct TabRow: View {
         .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
         // Right-clicking one of several ticked rows is about all of them; anywhere else it
         // is about the one tab, exactly as before.
-        .contextMenu {
-            if ticked, store.selection.count > 1 {
-                BulkMenu(store: store, count: store.selection.count, kind: tab.kind)
-            } else {
-                TabMenu(store: store, tab: tab)
-            }
-        }
+        .contextMenu { SidebarTabContextMenu(store: store, tab: tab) }
         // One element per tab, the way a tab in Safari reads: the title is the label, the
         // state is the value, and the close button becomes an action rather than a second
         // element the user has to find and then guess the meaning of.
@@ -4706,6 +4722,23 @@ private struct TabRow: View {
     }
 }
 
+struct SidebarTabContextMenu: View {
+    let store: TabStore
+    let tab: Tab
+
+    var body: some View {
+        // A pane belongs to the split's one selected row. Its extension subject
+        // remains the clicked pane, independently of that row's lead tab.
+        let row = store.split(containing: tab.id).flatMap { store.leadPane($0) } ?? tab.id
+        if store.selection.contains(row), store.selection.count > 1 {
+            BulkMenu(store: store, count: store.selection.count, kind: store.selection.section ?? tab.kind)
+            SidebarExtensionMenu(store: store, tab: tab)
+        } else {
+            TabMenu(store: store, tab: tab)
+        }
+    }
+}
+
 /// The right-click menu on any tab in the sidebar, in Arc's shape: what this tab is, where
 /// it can go, and how to be rid of it. `Move To` names the other two sections, so a tab can
 /// be moved without a drag — which is the only route VoiceOver and the keyboard have.
@@ -4725,6 +4758,7 @@ struct TabMenu: View {
         } else {
             ordinaryMenu
         }
+        SidebarExtensionMenu(store: store, tab: tab)
     }
 
     @ViewBuilder private var ordinaryMenu: some View {
@@ -4853,7 +4887,7 @@ private struct LivePullRequestMenu: View {
 
 private struct RegenerateTitleItem: View {
     @ObservedObject var tab: Tab
-    @AppStorage("appleAI", store: .vane) private var aiEnabled = true
+    @AppStorage("appleAI", store: .vane) private var aiEnabled = false
     @AppStorage("tidyTitles", store: .vane) private var titlesEnabled = true
 
     var body: some View {
@@ -5389,6 +5423,7 @@ private struct TabHomeIcon: View {
 /// tooltip, the VoiceOver label and the row's own accessibility action are all these.
 private struct GoHomeGlyph: View {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.rowHovering) private var rowHovering
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let store: TabStore
     let tab: Tab
@@ -5414,7 +5449,8 @@ private struct GoHomeGlyph: View {
                         .frame(width: Look.returnMarkerWidth)
                         .padding(.trailing, 2)
                         .offset(y: -1)
-                        .opacity(returnHovering.wrappedValue ? 0 : 1)
+                        // Only an inactive row's inset hover highlight hides the marker.
+                        .opacity((rowHovering && !rowSelected) || returnHovering.wrappedValue ? 0 : 1)
                         .accessibilityHidden(true)
                     }
                 .background(returnHovering.wrappedValue ? chromeTheme.hovered : .clear,

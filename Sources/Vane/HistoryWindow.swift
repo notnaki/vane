@@ -67,6 +67,8 @@ private struct HistoryView: View {
     @State private var selectedProfileID: UUID
     @State private var period = HistoryPeriod.all
     @State private var revision = 0
+    @State private var saveFailure: String?
+    @State private var retryingSave = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ObservedObject private var profiles = ProfileManager.shared
@@ -113,6 +115,26 @@ private struct HistoryView: View {
                     : "Find a page and pick up where you left off.", icon: "clock.arrow.circlepath")
             header
             filters
+            if let saveFailure {
+                HStack(alignment: .top, spacing: Look.inset) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("History changes are waiting to be saved.")
+                        Text(saveFailure).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                    }
+                    Spacer(minLength: Look.inset)
+                    Button(retryingSave ? "Saving…" : "Retry Save") {
+                        retryingSave = true
+                        Task {
+                            _ = await store.flushPendingWrites()
+                            updateSaveFailure()
+                            retryingSave = false
+                        }
+                    }.disabled(retryingSave)
+                }
+                .padding(Look.inset)
+                .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: Look.inset))
+                .transition(.opacity)
+            }
             // Keep the scroll/focus host mounted through debounce, empty results and
             // completion. A keystroke must not replace the entire navigation surface.
             list.overlay(alignment: .topLeading) {
@@ -125,9 +147,9 @@ private struct HistoryView: View {
         .font(Look.text)
         .foregroundStyle(Look.inkPrimary)
         .background(Look.panelFill)
-        .onAppear { focus = .search }
+        .onAppear { focus = .search; updateSaveFailure() }
         .onChange(of: query) { searching = true }
-        .onChange(of: selectedProfileID) { clearResults() }
+        .onChange(of: selectedProfileID) { clearResults(); updateSaveFailure() }
         .onChange(of: period) { searching = true }
         .task(id: request) {
             guard profileID != Profile.incognito.id else { clearResults(); searching = false; return }
@@ -160,9 +182,17 @@ private struct HistoryView: View {
         .onReceive(NotificationCenter.default.publisher(for: Store.historyChanged)) { note in
             if note.object as? Store === store { reload() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: Store.historySaveStateChanged)) { note in
+            if note.object as? Store === store { updateSaveFailure() }
+        }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: period)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: selectedProfileID)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: saveFailure != nil)
         .vaneMotionPolicy()
+    }
+
+    private func updateSaveFailure() {
+        saveFailure = store.hasPendingWrites ? store.lastHistoryError : nil
     }
 
     private var filters: some View {

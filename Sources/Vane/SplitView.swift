@@ -541,12 +541,7 @@ private struct Pane: View {
                 }
             }
             .simultaneousGesture(TapGesture().onEnded { if tab.easelID != nil { focus() } })
-            .clipShape(.rect(cornerRadius: Look.paneRadius))
-            .overlay {
-                RoundedRectangle(cornerRadius: Look.paneRadius)
-                    .strokeBorder(active ? chromeTheme.paneFrame : .clear, lineWidth: Look.paneFrameWidth)
-                    .allowsHitTesting(false)
-            }
+            .modifier(BrowserPaneSurface(active: active))
             .accessibilityElement(children: .contain)
             .accessibilityLabel(TidyTitles.title(for: tab))
             .accessibilityValue(active ? "active pane" : "pane")

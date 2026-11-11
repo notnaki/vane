@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Darwin
 import SQLite3
@@ -69,6 +70,7 @@ struct BookmarkImportResult: Equatable, Sendable {
 /// serial worker for atomic imports plus their deferred interactive mutation log.
 @MainActor final class Store {
     static let historyChanged = Notification.Name("vane.historyChanged")
+    static let historySaveStateChanged = Notification.Name("vane.historySaveStateChanged")
     /// The active profile's store. Still spelled `Store.shared` everywhere; it just resolves
     /// per profile now, and the default profile's file is still `vane.db`.
     static var shared: Store { store(for: ProfileManager.shared.active.id) }
@@ -188,6 +190,12 @@ struct BookmarkImportResult: Equatable, Sendable {
     private var projectedFolders: [String: BookmarkFolder] = [:]
     private var deletedFolderIDs: Set<String> = []
     private(set) var lastHistoryError: String?
+    private var navigationSaveNoticeShown = false
+    private var historyFeedbackOwner: TabStore? {
+        guard NSApp != nil, let profileID, let owner = Windows.current,
+              owner.profileID == profileID, !owner.isPrivate else { return nil }
+        return owner
+    }
 
     init(path: String? = nil, profileID: UUID? = nil) {
         self.profileID = profileID
@@ -230,6 +238,7 @@ struct BookmarkImportResult: Equatable, Sendable {
     /// available for retry; no navigation is discarded after a rollback or disk-full error.
     @discardableResult func flushPendingWrites() async -> Bool {
         while replaying { await withCheckedContinuation { replayWaiters.append($0) } }
+        let hadSaveState = !pending.isEmpty || lastHistoryError != nil
         replaying = true
         var replayed = false
         var rejected: [String] = []
@@ -241,6 +250,7 @@ struct BookmarkImportResult: Equatable, Sendable {
             replaying = false
             let waiters = replayWaiters; replayWaiters.removeAll()
             for waiter in waiters { waiter.resume() }
+            if hadSaveState { NotificationCenter.default.post(name: Self.historySaveStateChanged, object: self) }
         }
         while !pending.isEmpty {
             let writes = pending
@@ -254,12 +264,12 @@ struct BookmarkImportResult: Equatable, Sendable {
                 lastHistoryError = (result.error ?? "Queued browsing changes could not be saved. Try again.")
                     + (rejected.isEmpty ? "" : " " + rejected.joined(separator: " "))
                 NSLog("Vane queued history write failed: %@", lastHistoryError!)
-                if Windows.current != nil {
+                if let owner = historyFeedbackOwner {
                     Toasts.show("Browsing changes are waiting to be saved", action: ("Retry", { [weak self] in
                         Task { _ = await self?.flushPendingWrites() }
-                    }))
+                    }), in: owner)
                 }
-                NotificationCenter.default.post(name: Self.historyChanged, object: self)
+                if result.changed { NotificationCenter.default.post(name: Self.historyChanged, object: self) }
                 return false
             }
             if result.changed { NotificationCenter.default.post(name: Self.historyChanged, object: self) }
@@ -269,9 +279,12 @@ struct BookmarkImportResult: Equatable, Sendable {
         bookmarkProjectionVersions.removeAll()
         projectedFolders.removeAll(); deletedFolderIDs.removeAll()
         lastHistoryError = rejected.first
+        navigationSaveNoticeShown = false
         if !rejected.isEmpty {
             NotificationCenter.default.post(name: Self.historyChanged, object: self)
-            if Windows.current != nil { Toasts.show("A bookmark change could not be applied: " + rejected[0]) }
+            if let owner = historyFeedbackOwner {
+                Toasts.show("A bookmark change could not be applied: " + rejected[0], in: owner)
+            }
         }
         return true
     }
@@ -345,6 +358,31 @@ struct BookmarkImportResult: Equatable, Sendable {
         let at = Date.now
         return mutate(true, rejected: false, operation: { $0.record([(url, title, at)]) != nil },
                       immediate: { $0.record(url, title: title) })
+    }
+    @discardableResult func recordNavigation(_ url: URL, title: String) -> Bool {
+        guard url.scheme == "http" || url.scheme == "https" else { return true }
+        let at = Date.now
+        return saveNavigation { $0.record([(url, title, at)]) != nil }
+    }
+    @discardableResult func retitleNavigation(_ url: URL, title: String) -> Bool {
+        saveNavigation { $0.retitle(url, title: title) }
+    }
+    /// Navigation callbacks have no user to repeat a failed command. Retain the
+    /// original operation in order; normal history commands still report failure
+    /// without implicitly retrying a destructive user action.
+    private func saveNavigation(_ operation: @escaping @Sendable (StoreConnection) -> Bool) -> Bool {
+        guard !discarding else { return false }
+        let accepted = mutate(true, rejected: false, operation: operation, immediate: operation)
+        guard !accepted else { return true }
+        pending.append(StorePendingWrite(operation: operation))
+        NotificationCenter.default.post(name: Self.historySaveStateChanged, object: self)
+        if !navigationSaveNoticeShown, let owner = historyFeedbackOwner {
+            navigationSaveNoticeShown = true
+            Toasts.show("Browsing history is waiting to be saved", action: ("Retry Save", { [weak self] in
+                Task { _ = await self?.flushPendingWrites() }
+            }), in: owner)
+        }
+        return false
     }
     @discardableResult func retitle(_ url: URL, title: String) -> Bool {
         mutate(true, rejected: false, operation: { $0.retitle(url, title: title) }, immediate: { $0.retitle(url, title: title) })

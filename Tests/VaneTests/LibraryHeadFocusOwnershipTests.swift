@@ -71,8 +71,8 @@ import XCTest
         field.effectiveAppearance.performAsCurrentDrawingAppearance {
             ink = field.textColor?.usingColorSpace(.deviceRGB)
         }
-        XCTAssertEqual(try XCTUnwrap(ink).alphaComponent, 0.8, accuracy: 0.001,
-                       "Native search text must retain the Library's primary ink strength")
+        XCTAssertEqual(try XCTUnwrap(ink).alphaComponent, 0.6, accuracy: 0.001,
+                       "Native search text must match the reference Library's secondary ink strength")
         // A departing head can remain mounted while a replacement appears. Its
         // delayed onAppear request has no authority over the selected section.
         state.mountsOutgoing = true

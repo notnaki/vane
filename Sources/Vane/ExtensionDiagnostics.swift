@@ -20,8 +20,12 @@ import WebKit
             issues.append("\(permission): Vane does not provide " + (permission == "nativeMessaging"
                 ? "connections to native messaging hosts." : "extension items in page menus."))
         }
-        if !declared.intersection(["contextMenus", "menus"]).isEmpty {
-            issues.append("Page menus are supported; Vane does not yet add extension items to sidebar tab menus.")
+        if declared.contains("webRequestBlocking") {
+            issues.append("webRequestBlocking: system WebKit cannot cancel or redirect requests or change headers through webRequest. MV2 background pages, actions and content scripts can run. uBlock Origin can use Vane’s partial static-filter compatibility; dynamic request decisions remain unavailable.")
+        }
+        if ext.displayName == "uBlock Origin", ext.manifestVersion == 2 {
+            issues.append("privacy: Vane exposes explicit unsupported-setting errors so uBlock’s Chromium adapter can finish starting. Its privacy switches cannot change Vane’s browser settings.")
+            issues.append("webNavigation.onCreatedNavigationTarget: Vane derives tab-level target events from known openers. Source frame and process identifiers are unavailable.")
         }
         for (key, detail) in [
             ("chrome_url_overrides", "replacement browser pages"),

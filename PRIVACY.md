@@ -10,9 +10,9 @@ Vane stores your browser library on your Mac. It has no Vane account, hosted bro
 
 Vane keeps history (including URLs, titles, and visit times), bookmarks, tabs, Spaces, settings, download records, saved articles and images, Easels, and recovery copies locally. WebKit manages cookies, website storage, caches, and website sign-ins. Regular profiles separate history, bookmarks, saved passwords, extensions, and website stores; download and media records are shared across regular profiles.
 
-Saved passwords, AI API keys, and GitHub connection credentials use the local macOS Keychain. Vane does not enable Keychain synchronization for these items. Passwords are used to fill matching HTTPS sign-in forms; submitting a form sends its contents to that website. Vane does not upload your password library to a Vane service.
+Saved passwords, AI API keys and ChatGPT tokens, and GitHub connection credentials use the local macOS Keychain. Vane does not enable Keychain synchronization for these items. Passwords are used to fill matching HTTPS sign-in forms; submitting a form sends its contents to that website. Vane does not upload your password library to a Vane service.
 
-Browser imports read the local data you select and, where required, use Keychain access to import supported credentials. Library files and recovery copies are not encrypted by Vane. Folder locks limit access within the app; they do not encrypt browser data. Password CSV exports are plaintext, and `.vanebackup` exports offer optional password encryption. Vane cannot recover backup passwords. Exports made without a password and automatic local recovery points remain unencrypted. Protect these files and any device or system backups containing them.
+Browser imports scan known local browser locations when you open import or reach the onboarding import step, show the items found, and copy the selected source only after you confirm. Known browser locations have read-only sandbox access; macOS privacy controls still apply. Where required, importing supported credentials uses separate Keychain consent. Library files and recovery copies are not encrypted by Vane. Folder locks limit access within the app; they do not encrypt browser data. Password CSV exports are plaintext, and `.vanebackup` exports offer optional password encryption. Vane cannot recover backup passwords. Exports made without a password and automatic local recovery points remain unencrypted. Protect these files and any device or system backups containing them.
 
 ## Browsing, searches, and website requests
 
@@ -31,15 +31,18 @@ Network recipients may keep their own logs. Vane cannot delete information alrea
 
 ## AI features
 
-**Apple's on-device model is the default provider.** Page summaries use that on-device model. Cloud naming and grouping are optional and require choosing Groq, OpenAI, OpenRouter, or a custom HTTPS API, then supplying your own key. Requests go directly to the chosen provider, without a Vane server in between.
+**AI features are off by default.** Enable them during onboarding or in Settings → Max; existing explicit choices are preserved. Apple's on-device model is the default provider. Settings → Max lets you save multiple AI connections and choose one separately for tab titles, tab grouping, download names, and page summaries. Cloud connections use your own Groq, OpenAI, OpenRouter, or custom HTTPS API key, or **Continue with ChatGPT** to authorize eligible ChatGPT plan usage. Page summaries remain on-device until you explicitly select a cloud connection for them. Requests go directly to the selected provider, without a Vane server in between.
 
-Cloud requests include your API key, configured model, task instructions, and the metadata needed for the task:
+Cloud requests include the selected connection’s API key or ChatGPT OAuth access token, configured model, task instructions, and the data needed for the task:
 
-- Pinned tab naming sends the page title and hostname. Tidy Titles is on by default and can request cloud naming automatically after you configure a cloud provider.
+- Pinned tab naming sends the page title and hostname. After you enable AI features, Tidy Titles is selected by default and can request cloud naming automatically after you configure a cloud provider.
 - Tab grouping sends tab titles and hostnames when you use Tidy Tabs.
 - Download naming sends the suggested filename, page title, and source hostname and path. Tidy Downloads is off by default; enabling it can trigger requests as downloads complete. These naming requests do not upload downloaded file contents.
+- Page summaries send a bounded extract of the page title and article text when a link preview requests a summary, only if you explicitly route summaries to a cloud connection. This text may contain private page content.
 
-Source URL query strings and fragments are omitted from this metadata, but titles, filenames, and paths may still contain personal or confidential information. **Test Connection** also sends a request to the configured provider. Private windows do not use these cloud API features. Choose the Apple provider or remove your saved key to stop cloud API use; this cannot retract earlier requests.
+Source URL query strings and fragments are omitted from this metadata, but titles, filenames, and paths may still contain personal or confidential information. **Test Connection** also sends a request to the configured provider. Private windows do not use these cloud API features. Route each feature to Apple, disable AI features, or remove the relevant connection to stop its cloud AI use; this cannot retract earlier requests.
+
+ChatGPT sign-in opens OpenAI’s authorization page in your system browser. Vane stores each registration separately and keeps its access, refresh, and identity tokens in local, non-synchronizing Keychain items. It renews authorized sessions and fetches the account’s available models directly from OpenAI. Sign-out attempts session revocation and clears local tokens; disconnect Vane in ChatGPT Settings if remote revocation cannot be confirmed. ChatGPT plan eligibility and usage limits apply. Vane does not automatically switch to API-key billing when plan usage fails.
 
 **Assistant websites are separate.** An explicit Ask action or assistant-prefixed search can open ChatGPT, Claude, Perplexity, or Grok with your question in the URL. This sends your question to that service, including when invoked in a private window. Normal website sign-in and cookie behavior applies to the window's website store. Provider policies govern their processing, retention, and any use for model training; review those policies before sending sensitive information.
 
@@ -53,7 +56,7 @@ These services receive requests directly and apply their own privacy policies an
 
 ## Private browsing
 
-Private windows use temporary browsing identities and nonpersistent website stores. Vane does not restore their history, tabs, or download records after quitting, or use your saved profile passwords and extensions there. They disable search suggestions, Instant Links, and cloud AI naming/grouping.
+Private windows use temporary browsing identities and nonpersistent website stores. Vane does not restore their history, tabs, or download records after quitting, or use your saved profile passwords and extensions there. They disable search suggestions, Instant Links, and cloud AI naming, grouping, and summaries.
 
 Private browsing does not hide your IP address or activity from websites, services you contact, or your network. Assistant websites, website icons, link previews, and app-wide updates or filter fetches can still make requests as described above. Downloaded files and captures you explicitly save remain on disk.
 
@@ -63,7 +66,7 @@ Regular browsing data stays locally until you delete it or a feature replaces it
 
 Use **Clear Browsing Data** for history, cookies/site data, and caches, or **Website Data** for selected sites. Manage saved passwords in Settings, and delete saved articles, Easels, and other library items using their controls. **Erase Everything** attempts to remove Vane's local library, recovery points, preferences, website data, saved passwords, and GitHub connection credentials. Inaccessible files or older data folders may remain if deletion fails.
 
-AI API keys must be removed separately. **Before erasing**, select each provider and saved custom endpoint in **Settings → Max** and use **Remove Key** for each. That control only deletes the selected key. Erasure clears endpoint preferences but leaves these Keychain items; afterward, you may need the old endpoint details or macOS Keychain Access to find remaining keys. Erasing Vane does not remove downloaded files, exports, system backups, or copies held by other services. Deletion is not a guarantee of forensic erasure. See the [data guide](https://github.com/notnaki/vane/blob/main/docs/DATA-AND-PRIVACY.md) for exports, backup exclusions, and recovery behavior.
+AI credentials must be removed separately. **Before erasing**, select each saved connection in **Settings → Max** and choose **Remove Connection**. **Remove Key** clears an API key; **Sign Out** clears ChatGPT tokens and attempts session revocation. If revocation cannot be confirmed, disconnect Vane in ChatGPT Settings. Erasure clears connection preferences but leaves separate Keychain items; afterward, macOS Keychain Access may be needed to find remaining credentials. Erasing Vane does not remove downloaded files, exports, system backups, or copies held by other services. Deletion is not a guarantee of forensic erasure. See the [data guide](https://github.com/notnaki/vane/blob/main/docs/DATA-AND-PRIVACY.md) for exports, backup exclusions, and recovery behavior.
 
 ## Website, diagnostics, and public support
 

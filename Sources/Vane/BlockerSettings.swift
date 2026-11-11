@@ -5,6 +5,7 @@ import SwiftUI
 struct BlockerSettingsSection: View {
     let profileID: UUID
     @ObservedObject private var subscriptions = FilterSubscriptions.shared
+    @ObservedObject private var localSources = LocalFilterSources.shared
     @ObservedObject private var status = BlockerStatus.shared
     @State private var url = ""
     @State private var error: String?
@@ -26,12 +27,36 @@ struct BlockerSettingsSection: View {
                 }
                 SettingsRow("Local filter files") {
                     Button("Import from Disk…") { Blocker.chooseAndAddList() }
+                    Button("Link Local File…") { chooseLinked() }
                 }
                 ForEach(UserDefaults.vane.stringArray(forKey: "blockerImportedLists") ?? [], id: \.self) { name in
                     SettingsRow((UserDefaults.vane.dictionary(forKey: "blockerImportedNames") as? [String: String])?[name] ?? "Imported list " + String(name.prefix(8))) {
                         Button("Inspect…") { inspect(name) }
                     }
                 }
+                Footnote("Import from Disk saves a snapshot. Link Local File explicitly allows refresh from the selected file every 30 seconds while Vane runs, and after startup or wake. File access is never included in backups; restored sources keep their accepted rules and can be relinked.")
+                ForEach(localSources.items) { item in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(item.name).font(Look.caption).textSelection(.enabled)
+                        Toggle("Use these rules", isOn: Binding(get: { item.enabled }, set: { on in
+                            Task { await localSources.setEnabled(item.id, enabled: on) }
+                        }))
+                        Toggle("Refresh automatically", isOn: Binding(get: { item.automaticUpdates }, set: { on in
+                            Task { await localSources.setAutomaticUpdates(item.id, enabled: on) }
+                        }))
+                        Text(localStatus(item)).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                        Text(item.report.summary).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                        HStack {
+                            Button("Retry / Check Now") { Task { await localSources.refresh(item.id) } }
+                            Button("Relink…") { chooseLinked(replacing: item.id) }
+                            Button("Unsupported Rules…") { Self.showReport(item.report, title: item.name) }
+                            Button("Remove") { Task { await localSources.remove(item.id) } }
+                        }
+                        .disabled(localSources.updating.contains(item.id))
+                    }
+                    .padding(.horizontal, Look.cardInset).padding(.vertical, 9)
+                }
+                if let failure = localSources.storageError { Footnote(failure) }
                 Footnote("Disk imports are local snapshots and never update over the network. Existing file references are retained (\((UserDefaults.vane.array(forKey: "blockerLists") ?? []).count) legacy references). URL subscriptions below update daily while Vane is running, including after startup and wake.")
                 SettingsRow("Subscribe by URL") {
                     TextField("https://example.com/filters.txt", text: $url)
@@ -77,7 +102,29 @@ struct BlockerSettingsSection: View {
             }
         }
         .animation(Motion.reduced ? nil : Look.quick, value: subscriptions.items)
+        .animation(Motion.reduced ? nil : Look.quick, value: localSources.items)
+        .task { await localSources.load() }
         .animation(Motion.reduced ? nil : Look.quick, value: status.revision)
+    }
+
+    private func localStatus(_ item: LocalFilterSource) -> String {
+        if localSources.updating.contains(item.id) { return "Checking local file…" }
+        let policy = item.enabled ? "Last working rules active." : "Rules disabled."
+        if let failure = item.lastError { return policy + " " + failure }
+        let checked = item.lastSuccess.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Never"
+        return policy + " Last checked: " + checked + (item.automaticUpdates ? "" : " · Automatic refresh paused.")
+    }
+
+    private func chooseLinked(replacing id: UUID? = nil) {
+        let panel = NSOpenPanel()
+        panel.title = id == nil ? "Link Local Filter File" : "Relink Local Filter File"
+        panel.message = "Vane will keep an owned last-good snapshot and check this file for changes. Import from Disk instead if you want a fixed snapshot."
+        panel.allowedContentTypes = [.plainText]
+        guard panel.runModal() == .OK, let file = panel.url else { return }
+        Task {
+            do { try await localSources.link(file, replacing: id); error = nil }
+            catch { self.error = error.localizedDescription }
+        }
     }
 
     private func subscriptionStatus(_ item: FilterSubscription) -> String {

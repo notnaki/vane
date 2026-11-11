@@ -9,3 +9,13 @@
   with no personal browsing data. SwiftUI frames the relevant controls at runtime.
 - The search capture uses Wikipedia’s Architecture article as a sample history
   and archived-tab title. The capture contains Vane’s own controls and background.
+
+- `WelcomeIcon.png` is a 256 px copy of the shipped `AppIcons/Previews/Normal.png`,
+  used by the onboarding concept approved on November 10, 2026. Regenerate with
+  `sips -Z 256 AppIcons/Previews/Normal.png --out Sources/Vane/WelcomeAssets/WelcomeIcon.png`.
+
+- `Search-*.png` are local PNG conversions of official engine favicons (retrieved November 10, 2026):
+  `https://www.google.com/favicon.ico`, `https://duckduckgo.com/favicon.ico`,
+  `https://www.bing.com/favicon.ico`, `https://brave.com/favicon.ico`,
+  `https://kagi.com/favicon.ico`, and `https://www.ecosia.org/favicon.ico`.
+  Onboarding never fetches these at runtime.

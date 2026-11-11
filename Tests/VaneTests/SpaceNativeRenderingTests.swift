@@ -4,12 +4,12 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceNativeRenderingTests: XCTestCase {
-    private func fixture(floatingWindow: Bool = false, coloured: Bool = false, defaultColours: Bool = false, activateWindow: Bool = true) throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
+    private func fixture(floatingWindow: Bool = false, coloured: Bool = false, defaultColours: Bool = false, activateWindow: Bool = true, registerTeardown: Bool = true) throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let activationPolicy = NSApp.activationPolicy()
         NSApp.setActivationPolicy(.accessory)
-        addTeardownBlock { @MainActor in NSApp.setActivationPolicy(activationPolicy) }
+        if registerTeardown { addTeardownBlock { @MainActor in NSApp.setActivationPolicy(activationPolicy) } }
         try XCTSkipIf(Motion.spaceReduced, "Animated interruption requires motion")
         let profile = ProfileManager.shared.create(name: "Continuity fixture").id
         let spaces = ["First", "Second", "Third", "Fourth"].enumerated().map { index, name in
@@ -38,20 +38,40 @@ import XCTest
         }
         let monitor = store.spaceGesture.monitor
         monitor.install(store)
-        addTeardownBlock { @MainActor in
-            monitor.remove()
-            window.orderOut(nil)
-            window.contentView = nil
-            store.window = nil
-            store.dropStashes()
-            let tabs = store.tabs
-            TabStore.all.removeAll { $0 === store }
-            SharedTabs.release(tabs)
-            Store.forget(profile)
-            ProfileManager.shared.delete(profile)
-            try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: profile, in: Store.directory))
+        if registerTeardown {
+            addTeardownBlock { @MainActor in self.retireFixture(store, window: window, monitor: monitor) }
         }
         return (store, spaces, window, monitor)
+    }
+
+    private func retireFixture(_ store: TabStore, window: NSWindow, monitor: SwipeMonitor) {
+        monitor.remove()
+        window.orderOut(nil)
+        window.contentView = nil
+        store.window = nil
+        store.dropStashes()
+        let tabs = store.tabs
+        TabStore.all.removeAll { $0 === store }
+        SharedTabs.release(tabs)
+        Store.forget(store.profileID)
+        ProfileManager.shared.delete(store.profileID)
+        try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: store.profileID, in: Store.directory))
+    }
+
+    private func withFixtureApplicationLoop(_ body: () async throws -> Void) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await body() } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Rendering fixture AppKit cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
     }
 
     private func colourSurface(in view: NSView) -> ThemeWashSurface? {
@@ -1244,10 +1264,22 @@ import XCTest
 
     func testRapidProfileBoundarySwipesCanImmediatelyReverse() async throws {
         TestEnvironment.prepare()
-        _ = NSApplication.shared
-        let activationPolicy = NSApp.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
-        defer { NSApp.setActivationPolicy(activationPolicy) }
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await checkRapidProfileBoundarySwipesCanImmediatelyReverse() }
+        catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Rapid profile AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkRapidProfileBoundarySwipesCanImmediatelyReverse() async throws {
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
         let manager = ProfileManager.shared
         let previous = manager.active
@@ -1263,7 +1295,16 @@ import XCTest
             manager.active = previous
         }
         source.palette = nil
-        try await Task.sleep(for: .milliseconds(150))
+        try await compatibilityWait {
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+                && window.isVisible && window.occlusionState.contains(.visible)
+                && NSApp.modalWindow == nil && window.attachedSheet == nil
+                && source.window === window && source.profileVisible
+                && source.spaceGesture.sectionsView?.window === window
+                && source.spaceGesture.monitor.isInstalled
+        }
         for leg in 0..<8 {
             let direction: CGFloat = leg.isMultiple(of: 2) ? -1 : 1
             NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
@@ -2506,6 +2547,32 @@ import XCTest
         XCTAssertNil(store.spaceGesture.footer.drag)
     }
 
+    func testCompletedCoverKeepsLiveRowsHiddenUntilPopulationIsReady() throws {
+        let (store, spaces, window, _) = try fixture()
+        let population = try EmptyNativeSidebarPopulationFixture(store: store, spaceID: spaces[1].id)
+        defer { population.close() }
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        window.contentView = container
+        let slide = ProfileSpaceSlide(frame: container.bounds,
+            outgoing: store.swipePreview(in: spaces[0]), incoming: store.swipePreview(in: spaces[1]),
+            drag: -80, direction: 1, source: store, includesFavorites: false, travelWidth: 250)
+        container.addSubview(slide)
+        defer { slide.cancel() }
+        slide.start(duration: 0.02) { store.switchTo(space: spaces[1]) }
+        slide.finish()
+        XCTAssertFalse(slide.isActive, "The animation has finished independently of live population")
+        XCTAssertTrue(store.spaceGesture.profileSliding,
+                      "A retained native cover must still hide the live rows beneath its translucent text")
+        slide.sidebarDidUpdate(store, renderedSpaceID: spaces[1].id, atRest: false)
+        XCTAssertTrue(slide.superview === container, "Live population still owns its readiness prerequisite")
+        population.complete()
+        XCTAssertFalse(store.spaceGesture.profileSliding, "Ready population can request the live visibility update")
+        XCTAssertTrue(slide.superview === container, "Population alone must not bypass the visibility acknowledgement")
+        slide.sidebarDidUpdate(store, renderedSpaceID: spaces[1].id, atRest: true)
+        XCTAssertNil(slide.superview)
+        XCTAssertFalse(store.spaceGesture.profileSliding, "Retirement releases live-row visibility")
+    }
+
     func testNativeCoverWaitsForTheLiveSidebarAcknowledgement() async throws {
         let (store, spaces, window, _) = try fixture()
         let population = try EmptyNativeSidebarPopulationFixture(store: store, spaceID: spaces[1].id)
@@ -2520,6 +2587,9 @@ import XCTest
         defer { slide.cancel() }
         slide.start(duration: 0.02) { store.switchTo(space: spaces[1]) }
         slide.sidebarDidUpdate(store, renderedSpaceID: spaces[1].id, atRest: true)
+        // This state-machine case owns an NSView-only destination. Deliver the
+        // completion after that premature acknowledgement, then test the final one.
+        slide.finish()
         try await Task.sleep(for: .milliseconds(120))
         XCTAssertTrue(slide.superview === container,
                       "One display tick alone does not prove the destination live sidebar exists")
@@ -2568,6 +2638,10 @@ import XCTest
             // before finish() arms its destination-specific retirement guard.
             slide.sidebarDidUpdate(store, renderedSpaceID: spaces[1].id, atRest: true)
         }
+        // This state-machine fixture has no live sidebar/application-loop owner.
+        // Deliver completion synchronously so the assertion exercises the
+        // acknowledgement reentering finish(), rather than CA startup timing.
+        slide.finish()
         try await Task.sleep(for: .milliseconds(180))
         XCTAssertNil(slide.superview,
                      "A valid acknowledgement during completion must retire without the safeguard")
@@ -2588,7 +2662,22 @@ import XCTest
     }
 
     func testCanceledNativeDragUsesTheReturnSpring() async throws {
-        let (store, _, window, monitor) = try fixture()
+        try await withFixtureApplicationLoop { try await self.checkCanceledNativeDragUsesTheReturnSpring() }
+    }
+
+    private func checkCanceledNativeDragUsesTheReturnSpring() async throws {
+        let app = NSApplication.shared
+        let (store, _, window, monitor) = try fixture(registerTeardown: false)
+        defer { retireFixture(store, window: window, monitor: monitor) }
+        try await compatibilityWait {
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            if !app.isActive { app.activate(ignoringOtherApps: true) }
+            return app.isRunning && app.isActive && window.isKeyWindow
+                && store.spaceGesture.sectionsView?.window === window
+                && SidebarNativeReadinessCoordinator.shared.isReady(
+                    SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID),
+                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)
+        }
         monitor.track(-60, width: 250, in: store)
         let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
         var completed = false
@@ -2605,6 +2694,31 @@ import XCTest
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertTrue(completed)
         XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide)
+    }
+
+    func testNativeLandingReusesItsCoverBeforeTheLiveAnchorMounts() async throws {
+        try await withFixtureApplicationLoop { try self.checkNativeLandingBeforeTheLiveAnchorMounts() }
+    }
+
+    private func checkNativeLandingBeforeTheLiveAnchorMounts() throws {
+        let (store, spaces, window, monitor) = try fixture(registerTeardown: false)
+        defer { retireFixture(store, window: window, monitor: monitor) }
+        monitor.track(-80, width: SidebarWidth.shared.width, in: store)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let slide = try XCTUnwrap(host.spaceSlide)
+        let anchor = store.spaceGesture.sectionsView
+        defer {
+            monitor.interruptLanding()
+            host.cancelSpaceSlide()
+            store.spaceGesture.sectionsView = anchor
+        }
+        // A cold arriving profile can own the captured native rows before its
+        // replacement live anchor exists. The valid cover already has geometry.
+        store.spaceGesture.sectionsView = nil
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 0.8)
+        XCTAssertTrue(host.spaceSlide === slide,
+                      "Missing live geometry must not discard an already owned native landing")
+        XCTAssertTrue(slide.isActive)
     }
 
     func testFingerTrackingCanCrossZeroAndReverseToAnotherNeighbour() throws {
@@ -2637,8 +2751,62 @@ import XCTest
         XCTAssertEqual(store.spaceDrag, 0)
     }
 
+    private func selectThroughApplicationEvent(_ space: Space, in store: TabStore,
+                                               window: NSWindow,
+                                               afterSelection: @escaping @MainActor () -> Void) async throws -> ContinuousClock.Instant {
+        // Dispatch through the admitted NSApplication loop, rather than reentering
+        // the action from an XCTest executor continuation between display commits.
+        let token = Int.random(in: 1...Int.max)
+        var selectedAt: ContinuousClock.Instant?
+        var admitted = false
+        let handler = try XCTUnwrap(NSEvent.addLocalMonitorForEvents(matching: .applicationDefined) { event in
+            guard event.type == .applicationDefined, event.data1 == token else { return event }
+            MainActor.assumeIsolated {
+                guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
+                      window.isKeyWindow, window.isVisible, window.occlusionState.contains(.visible),
+                      NSApp.modalWindow == nil, window.attachedSheet == nil,
+                      store.window === window, store.profileVisible,
+                      store.spaceGesture.sectionsView?.window === window,
+                      store.spaceGesture.monitor.isInstalled else {
+                    selectedAt = .now
+                    return
+                }
+                admitted = true
+                store.spaceGesture.monitor.select(space, in: store)
+                let returnedAt = ContinuousClock.now
+                afterSelection()
+                selectedAt = returnedAt
+            }
+            return nil
+        })
+        defer { NSEvent.removeMonitor(handler) }
+        let event = try XCTUnwrap(NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, subtype: 0, data1: token, data2: 0))
+        NSApp.postEvent(event, atStart: false)
+        try await compatibilityWait { selectedAt != nil }
+        return try XCTUnwrap(admitted ? selectedAt : nil,
+                            "Posted selection must still own the actual foreground sidebar when dispatched")
+    }
+
     func testProfileClickPreservesSlideAndReduceMotionAcrossHosts() async throws {
         TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await checkProfileClickPreservesSlideAndReduceMotionAcrossHosts() }
+        catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Profile click AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkProfileClickPreservesSlideAndReduceMotionAcrossHosts() async throws {
         let manager = ProfileManager.shared
         let previous = manager.active
         let firstProfile = manager.create(name: "Immediate origin")
@@ -2654,11 +2822,33 @@ import XCTest
             manager.active = previous
         }
         let reduced = Motion.spaceReduced
-        try await Task.sleep(for: .milliseconds(80))
-        source.spaceGesture.monitor.select(second, in: source)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        try await compatibilityWait {
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+                && window.isVisible && window.occlusionState.contains(.visible)
+                && NSApp.modalWindow == nil && window.attachedSheet == nil
+                && source.window === window && source.profileVisible
+                && source.spaceGesture.sectionsView?.window === window
+                && source.spaceGesture.monitor.isInstalled
+        }
+        let selectedAt = try await selectThroughApplicationEvent(second, in: source, window: window) {
+            if reduced {
+                let immediate = TabStore.all.first { $0.window === window }
+                XCTAssertEqual(immediate?.profileID, secondProfile.id)
+                XCTAssertEqual(immediate?.currentSpaceID, second.id)
+                XCTAssertFalse(source.spaceSwiping)
+                XCTAssertNil(window.contentView?.layer?.animation(forKey: "profile-space"))
+                XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide,
+                             "Reduce Motion must complete inside the action, before another AppKit turn")
+            } else {
+                XCTAssertTrue(source.window === window)
+            }
+        }
         if !reduced {
-            XCTAssertTrue(source.window === window)
-            try await Task.sleep(for: .milliseconds(310))
+            try await Task.sleep(until: selectedAt + .milliseconds(310))
         }
         let destination = try XCTUnwrap(TabStore.all.first { $0.window === window })
         XCTAssertEqual(destination.profileID, secondProfile.id)
@@ -2669,12 +2859,20 @@ import XCTest
             XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide,
                          "Reduce Motion switches the page and sidebar immediately")
         } else {
+            // Preserve the original second, post-arrival display interval. A
+            // delayed first wake after cold mounting must still yield to AppKit
+            // completion delivery rather than skip this phase as already late.
             try await Task.sleep(for: .milliseconds(100))
             XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide,
                          "Retire the overlay once the arriving profile has drawn")
         }
-        destination.spaceGesture.monitor.select(first, in: destination)
-        if !reduced { try await Task.sleep(for: .milliseconds(310)) }
+        let returnedAt = try await selectThroughApplicationEvent(first, in: destination, window: window) {
+            if reduced {
+                XCTAssertTrue(source.window === window)
+                XCTAssertEqual(source.currentSpaceID, first.id)
+            }
+        }
+        if !reduced { try await Task.sleep(until: returnedAt + .milliseconds(310)) }
         XCTAssertTrue(source.window === window, "A cached profile must also switch during its slide")
         XCTAssertEqual(source.currentSpaceID, first.id)
     }

@@ -574,7 +574,7 @@ import WebKit
     /// Runs once both gates are open: the pointer settled, and the DOM parsed. Whichever
     /// arrives second starts it.
     private func startSummary(id: Int) {
-        guard settled, domReady, summaryTask == nil, AppleAI.ready,
+        guard settled, domReady, summaryTask == nil, BrowserAI.ready(for: .summaries),
               summaryTries < Previews.summaryTryLimit,
               !Previews.stale(request: id, latest: latest), let web else { return }
         summaryTries += 1
@@ -599,7 +599,7 @@ import WebKit
 
         // Two sentences, not three: this is a hover card, and two is ~30% less generation.
         var fold = Fold()
-        for await element in AppleAI.summarizeStream(text, sentences: 2) {
+        for await element in BrowserAI.summarizeStream(text, sentences: 2, isPrivate: builtFor?.isPrivate ?? true) {
             guard latest == id else { return }        // pointer left; publish nothing more
             let carryOn = fold.take(element)
             edit(id) { $0.summary = fold.text }

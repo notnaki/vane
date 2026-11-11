@@ -84,7 +84,7 @@ prompt once. Local, debug, and prerelease builds skip it. The manual
 | Visual tools | Easels with notes, drawing, captures, live web views, and editable JSON or PNG export; per-site Boosts for styles, Zap, and opt-in scripts. |
 | Data | Separate profiles, local Keychain passwords and account chooser, browser imports, exports, complete library backups, and local recovery points. |
 | Controls | Custom search engines and site-search shortcuts, keyboard bindings, themes, app icons, Battery Saver, and site controls. |
-| Integrations | Chrome Web Store extensions, unpacked WebExtensions and verified Safari extensions from apps, EasyList-subset blocking and HTTPS subscriptions, GitHub Live Folders, and optional AI providers using your own keys. |
+| Integrations | Chrome Web Store extensions, unpacked WebExtensions and verified Safari extensions from apps, EasyList-subset blocking and HTTPS subscriptions, GitHub Live Folders, and multiple AI connections using your own keys or ChatGPT plan, with per-feature routing. |
 
 “Implemented” describes available behavior. Verification is scoped to the
 revision, macOS version, signing, and fixture or service recorded in each audit.
@@ -121,7 +121,7 @@ troubleshooting, specialist audits, and recorded validation.
 | [Everyday browsing](docs/BROWSING.md) | Tabs, Spaces, windows, search, shortcuts, Library, downloads, and media. |
 | [Reading and customization](docs/FEATURES.md) | Reader, offline articles, Easels, capture, Boosts, templates, appearance, and Battery Saver. |
 | [Profiles, data, and privacy](docs/DATA-AND-PRIVACY.md) | Passwords, imports/exports, website data, backups, folder locks, and recovery boundaries. |
-| [Extensions and integrations](docs/INTEGRATIONS.md) | Profile extension manager, reviewed updates, access/diagnostics, content blocking, AI keys, and GitHub Live Folders. |
+| [Extensions and integrations](docs/INTEGRATIONS.md) | Profile extension manager, reviewed updates, access/diagnostics, content blocking, AI connections, and GitHub Live Folders. |
 | [Development](docs/DEVELOPMENT.md) | Setup, CLI, focused tests, graphical smoke checks, project structure, and contribution workflow. |
 | [Releases and distribution](docs/RELEASING.md) | Publishing, signing/notarization, updater checks, and candidate validation. |
 
@@ -176,13 +176,21 @@ WebKit version, the website, and sometimes signing or Apple-managed capabilities
   reproduced a guard fault before submission. Ordinary files remain available;
   directory submission on other versions is unverified. See the matrix’s
   [directory investigation](docs/REAL-SITE-COMPATIBILITY.md#directory-form-root-cause-investigation--2026-10-08).
-- **Passwords and extensions have compatibility limits.** Autofill is heuristic;
-  Chrome Web Store installation and MV2/MV3 support do not guarantee arbitrary extension API compatibility.
-- **Blocking supports part of EasyList.** Unsupported rules are reported; local
-  disk lists do not update automatically. URL subscriptions do.
+- **Passwords and extensions have compatibility limits.** Autofill supports nested
+  open shadow roots and explicit multi-step username handoff, but remains heuristic;
+  closed roots and cross-origin frames remain inaccessible. Sidebar tab menus expose
+  available extension actions. Chrome Web Store installation and MV2/MV3 support
+  do not guarantee arbitrary extension API compatibility.
+- **Blocking supports part of EasyList.** Safe regular expressions and equivalent
+  `$badfilter` rules are supported; unsupported rules are reported. Linked local
+  files update automatically after opt-in linkage, can be checked manually, and
+  retain their last-good rules on failure. Disk imports remain fixed snapshots;
+  URL subscriptions also update automatically.
 - **Data does not sync between Macs.** Backup exports offer password encryption and exclude Keychain
   secrets, cookies/site storage, downloaded files, and extension code/data.
-  General browser imports exclude sessions; the dedicated Arc flow supports some.
+  Supported Chromium imports offer a separate, opt-in cookie/session copy;
+  unsupported encryption and device-bound credentials are excluded, and copied
+  cookies do not guarantee sign-in. Existing destination cookies are preserved.
 - **Live drafts are not recoverable backups.** Suspension protects detected or
   uncertain drafts, but crashes, page closure, or locking can lose volatile work.
   [Draft protection](docs/DRAFT-PROTECTION.md) and [crash recovery](docs/CRASH-RECOVERY.md)

@@ -395,6 +395,10 @@ final class TrafficLightRest: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        Self.drawDiscs(discs, key: key)
+    }
+
+    static func drawDiscs(_ discs: [CGRect], key: Bool) {
         let ringed = key ? Look.lightRingOpacity : Look.lightInactiveRingOpacity
         for (i, disc) in discs.enumerated() where i < Look.lightColours.count {
             (key ? Look.lightRest : Look.lightInactive).setFill()
@@ -1163,6 +1167,7 @@ private struct NativeSpacePreview: View {
     private weak var source: TabStore?
     private weak var destination: TabStore?
     private var finished = false
+    private var ownsSidebarVisibility = false
     private var completingSelection = false
     private let includesFavorites: Bool
     private let travelWidth: CGFloat
@@ -1258,6 +1263,7 @@ private struct NativeSpacePreview: View {
         // Both keep this overlay until the arriving sidebar acknowledges its rest state.
         guard (!finished || completingSelection), destination !== store else { return }
         destination = store
+        ownsSidebarVisibility = true
         store.spaceSwiping = true
         store.spaceGesture.outgoing = originPreview
         store.spaceGesture.neighbour = preparedTarget
@@ -1346,6 +1352,7 @@ private struct NativeSpacePreview: View {
     /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
     func track(drag: CGFloat) {
         guard isActive else { return }
+        ownsSidebarVisibility = true
         lastPublishedDrag = drag
         let now = ProcessInfo.processInfo.systemUptime
         if let previous = lastTracking {
@@ -1393,6 +1400,7 @@ private struct NativeSpacePreview: View {
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
+        ownsSidebarVisibility = true
         self.completion = completion
         restingSpaceID = returning ? preparedOrigin.id : targetID
         let animationID = UUID()
@@ -1550,10 +1558,8 @@ private struct NativeSpacePreview: View {
         finishGround?(source?.swipeSpace)
         finishGround = nil
         Motion.spaceHandoff {
-            source?.spaceGesture.profileSliding = false
             destination?.spaceDrag = 0
             destination?.spaceSwiping = false
-            destination?.spaceGesture.profileSliding = false
         }
         if let host = superview as? BrowserWindowHost, host.spaceSlide === self {
             host.footerPresentation.finishProgress()
@@ -1607,12 +1613,16 @@ private struct NativeSpacePreview: View {
 
     private func retireIfAcknowledged() {
         guard finished, let store = retirementStore,
-              let rendered = sidebarAcknowledgements[ObjectIdentifier(store)], rendered.atRest,
-              rendered.spaceID == retirementSpaceID, store.currentSpaceID == retirementSpaceID,
-              !store.spaceSwiping, !store.spaceGesture.profileSliding,
+              store.currentSpaceID == retirementSpaceID, !store.spaceSwiping,
               SidebarNativeReadinessCoordinator.shared.isReady(
                 SidebarNativeReadinessScope(store: store, spaceID: retirementSpaceID),
                 allowingUnregistered: !requiresNativePopulation) else { return }
+        // Completing the animation does not make the replacement native rows
+        // ready. Keep the covered live tree hidden until population can take
+        // over, then wait for SwiftUI's actual visibility/rest acknowledgement.
+        releaseSidebarVisibility()
+        guard let rendered = sidebarAcknowledgements[ObjectIdentifier(store)], rendered.atRest,
+              rendered.spaceID == retirementSpaceID, !store.spaceGesture.profileSliding else { return }
         // This acknowledgement is issued by SwiftUI while committing the live opacity
         // and identity. Remove the native list in that same transaction, not two frames
         // later when both lists would already have painted their translucent text.
@@ -1633,6 +1643,7 @@ private struct NativeSpacePreview: View {
     private func retire() {
         guard !retired else { return }
         retired = true
+        releaseSidebarVisibility()
         SidebarNativeReadinessCoordinator.shared.removeObservation(retirementReadinessObservation)
         retirementReadinessObservation = nil
         retirementTimeout?.cancel()
@@ -1642,6 +1653,17 @@ private struct NativeSpacePreview: View {
         let host = superview as? BrowserWindowHost
         removeFromSuperview()
         host?.didFinishSpaceSlide(self)
+    }
+
+    private func releaseSidebarVisibility() {
+        // Discarding an unused prepared preview must not unhide a different
+        // native cover's live rows. Clear ownership before reentrant publication.
+        guard ownsSidebarVisibility else { return }
+        ownsSidebarVisibility = false
+        Motion.spaceHandoff {
+            source?.spaceGesture.profileSliding = false
+            destination?.spaceGesture.profileSliding = false
+        }
     }
 }
 
@@ -1716,9 +1738,14 @@ extension TabStore {
             window.makeFirstResponder(page)
             return
         }
-        Motion.list {
-            libraryOpen = false
-            sidebarShown = true
+        if libraryOpen || !sidebarShown {
+            Motion.list {
+                libraryOpen = false
+                sidebarShown = true
+            }
+        } else {
+            librarySwipeMonitor.cancelPendingActivation(toward: false)
+            if mountedAddressEndpoint?.takeFocus(from: holder) == true { return }
         }
         DispatchQueue.main.async { [weak self, weak holder] in
             guard let self, let window = self.window, self.palette == nil,
