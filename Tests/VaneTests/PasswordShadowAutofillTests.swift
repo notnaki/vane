@@ -40,6 +40,11 @@ import XCTest
         _ = NSApplication.shared
         WebKitStartup.prepare()
         let config = WKWebViewConfiguration(), capture = Capture()
+        // This fixture never orders its window. JavaScript evaluation can wake
+        // WebContent just for the API reply, while discovery's delayed callbacks
+        // still need a runnable process after that reply. Admit that prerequisite
+        // explicitly instead of depending on background suspension timing.
+        config.preferences.inactiveSchedulingPolicy = .none
         config.websiteDataStore = .nonPersistent()
         config.userContentController.add(capture, contentWorld: Autofill.world, name: "vanepw")
         config.userContentController.addUserScript(WKUserScript(source: Autofill.script,
