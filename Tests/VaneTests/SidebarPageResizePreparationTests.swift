@@ -35,7 +35,7 @@ import XCTest
         var paint: (@MainActor @Sendable () -> Void)?
         var commits = 0
         let resize = SidebarPageResizePreparation(window: window, pages: [target],
-            presenter: { _, completion in paint = completion }, deadline: { _ in }, isCurrent: { true }) {
+            presenter: { _, completion in paint = completion }, deadline: { _, _ in }, isCurrent: { true }) {
                 commits += 1
                 XCTAssertEqual(child.frame.width, 817)
                 XCTAssertEqual(web.autoresizingMask, [])
@@ -61,7 +61,7 @@ import XCTest
         var commits = 0
         let resize = SidebarPageResizePreparation(window: window,
             pages: [PreparedPageResize(web: web, size: NSSize(width: 817, height: 400))],
-            presenter: { _, completion in paint = completion }, deadline: { _ in }, isCurrent: { true }) { commits += 1 }
+            presenter: { _, completion in paint = completion }, deadline: { _, _ in }, isCurrent: { true }) { commits += 1 }
         resize.start()
         resize.cancel()
         try XCTUnwrap(paint)()
@@ -78,7 +78,7 @@ import XCTest
         var commits = 0
         let resize = SidebarPageResizePreparation(window: window,
             pages: [PreparedPageResize(web: web, size: NSSize(width: 817, height: 400))],
-            presenter: { _, completion in paint = completion }, deadline: { _ in }, isCurrent: { true }) { commits += 1 }
+            presenter: { _, completion in paint = completion }, deadline: { _, _ in }, isCurrent: { true }) { commits += 1 }
         resize.start()
         host.setFrameSize(NSSize(width: 700, height: 400))
         try XCTUnwrap(paint)()
@@ -95,7 +95,7 @@ import XCTest
         var commits = 0
         let resize = SidebarPageResizePreparation(window: window,
             pages: [PreparedPageResize(web: web, size: NSSize(width: 817, height: 400))],
-            presenter: { _, completion in paint = completion }, deadline: { _ in }, isCurrent: { current.value }) { commits += 1 }
+            presenter: { _, completion in paint = completion }, deadline: { _, _ in }, isCurrent: { current.value }) { commits += 1 }
         resize.start()
         current.value = false
         try XCTUnwrap(paint)()
@@ -112,7 +112,7 @@ import XCTest
         var commits = 0
         let resize = SidebarPageResizePreparation(window: window,
             pages: [PreparedPageResize(web: web, size: NSSize(width: 817, height: 400))],
-            presenter: { _, completion in paint = completion }, deadline: { timeout = $0 }, isCurrent: { true }) {
+            presenter: { _, completion in paint = completion }, deadline: { _, callback in timeout = callback }, isCurrent: { true }) {
                 commits += 1
                 host.setFrameSize(NSSize(width: 817, height: 400))
             }
@@ -133,7 +133,7 @@ import XCTest
         var deadlines: [@MainActor @Sendable () -> Void] = []
         let resize = SidebarPageResizePreparation(window: window,
             pages: [PreparedPageResize(web: web, size: NSSize(width: 817, height: 400))],
-            presenter: { _, completion in paint = completion }, deadline: { deadlines.append($0) }, isCurrent: { true }) {
+            presenter: { _, completion in paint = completion }, deadline: { _, callback in deadlines.append(callback) }, isCurrent: { true }) {
                 // Native SwiftUI frame interpolation is still partway through its slide.
                 host.setFrameSize(NSSize(width: 750, height: 400))
             }
@@ -165,7 +165,7 @@ import XCTest
         let resize = SidebarPageResizePreparation(window: window, pages: [
             PreparedPageResize(web: web, size: NSSize(width: 817, height: 400)),
             PreparedPageResize(web: secondWeb, size: NSSize(width: 408.5, height: 400))],
-            presenter: { _, completion in paints.append(completion) }, deadline: { _ in }, isCurrent: { true }) {
+            presenter: { _, completion in paints.append(completion) }, deadline: { _, _ in }, isCurrent: { true }) {
                 commits += 1
                 first.setFrameSize(NSSize(width: 817, height: 400))
             }
@@ -189,7 +189,7 @@ import XCTest
         var paint: (@MainActor @Sendable () -> Void)?
         let resize = SidebarPageResizePreparation(window: window,
             pages: [PreparedPageResize(web: web, size: NSSize(width: 817, height: 400))],
-            presenter: { _, completion in paint = completion }, deadline: { _ in }, isCurrent: { true }) {
+            presenter: { _, completion in paint = completion }, deadline: { _, _ in }, isCurrent: { true }) {
                 host.setFrameSize(NSSize(width: 816.5, height: 400))
             }
         resize.start()

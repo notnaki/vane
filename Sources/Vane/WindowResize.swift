@@ -133,7 +133,7 @@ extension EnvironmentValues {
 /// There is at most one preparation and one latest request; no event-loop waits.
 @MainActor final class WindowResizePreparation {
     typealias Presenter = @MainActor (WKWebView, @escaping @MainActor @Sendable () -> Void) -> Void
-    typealias Deadline = @MainActor (@escaping @MainActor @Sendable () -> Void) -> Void
+    typealias Deadline = @MainActor (TimeInterval, @escaping @MainActor @Sendable () -> Void) -> Void
     struct Request {
         let frame: NSRect
         let display: Bool
@@ -194,6 +194,19 @@ extension EnvironmentValues {
         // inside the still-larger window before the window geometry commits.
         // Growth needs the opposite order: paint the extra area before exposing it.
         guard frame.size != window.frame.size else { return false }
+        let current = window.frame
+        if (frame.width < current.width && frame.height > current.height)
+            || (frame.height < current.height && frame.width > current.width) {
+            // A corner can shrink one dimension while growing the other. Clip
+            // the shrinking axis first so its smaller document can never paint
+            // inside the previous larger window while growth is being prepared.
+            let clipped = NSRect(x: frame.width < current.width ? frame.minX : current.minX,
+                                 y: frame.height < current.height ? frame.minY : current.minY,
+                                 width: min(frame.width, current.width),
+                                 height: min(frame.height, current.height))
+            commit(clipped, display)
+            return self.request(frame: frame, display: display)
+        }
         let nextSize = NSSize(width: root.bounds.width + frame.width - window.frame.width,
                               height: root.bounds.height + frame.height - window.frame.height)
         let targets = Self.targets(in: root, nextSize: nextSize)
@@ -226,11 +239,12 @@ extension EnvironmentValues {
             target.web.perform(Self.presentation, with: callback)
         }
         let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
-        if let deadline { deadline(timeout) }
+        let interval: TimeInterval = 0.25
+        if let deadline { deadline(interval, timeout) }
         else if generation == token, active != nil {
             // A real GitHub resize can paint after116ms. Treating that as a
             // stalled process exposed unpainted queued width for the whole drag.
-            let timer = Timer(timeInterval: 0.25, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
+            let timer = Timer(timeInterval: interval, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
             watchdog = timer
             RunLoop.main.add(timer, forMode: .common)
         }
@@ -440,7 +454,7 @@ extension EnvironmentValues {
         deadlineToken = UUID()
         let token = deadlineToken
         let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
-        if let deadline { deadline(timeout) }
+        if let deadline { deadline(interval, timeout) }
         else {
             let timer = Timer(timeInterval: interval, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
             self.timer = timer

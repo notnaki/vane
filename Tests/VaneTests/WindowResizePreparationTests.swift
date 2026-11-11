@@ -60,6 +60,32 @@ import XCTest
         XCTAssertEqual(web.autoresizingMask, [.width, .height])
     }
 
+    func testMixedAxisResizeClipsTheShrinkingAxisBeforePreparingGrowth() {
+        for target in [NSSize(width: 500, height: 500), NSSize(width: 700, height: 300)] {
+            let (host, web) = fixture()
+            let window = modelWindow(host)
+            defer { window.contentView = nil; host.removePage(); window.close() }
+            var paints: [@MainActor @Sendable () -> Void] = []
+            var commits: [NSSize] = []
+            let resize = WindowResizePreparation(window: window,
+                presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }) { frame, display in
+                    commits.append(frame.size)
+                    window.setFrame(frame, display: display)
+                }
+            let clipped = target.width == 500 ? NSSize(width: 500, height: 400) : NSSize(width: 600, height: 300)
+            XCTAssertTrue(resize.request(frame: NSRect(origin: .zero, size: target), display: true))
+            XCTAssertEqual(window.frame.size, clipped,
+                           "Clip the old larger pixels before preparing a smaller document dimension")
+            XCTAssertEqual(commits, [clipped])
+            XCTAssertEqual(paints.count, 1)
+            paints.removeFirst()()
+            XCTAssertEqual(commits, [clipped, target])
+            XCTAssertEqual(window.frame.size, target)
+            XCTAssertEqual(web.frame.size, target)
+            resize.cancel()
+        }
+    }
+
     func testReparentingDoesNotRestoreThePreviousHostsFrameOrMask() {
         let (oldHost, web) = fixture()
         let nextHost = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 250))
@@ -84,7 +110,7 @@ import XCTest
         var paints: [@MainActor @Sendable () -> Void] = []
         var commits: [NSSize] = []
         let resize = WindowResizePreparation(window: window,
-            presenter: { _, callback in paints.append(callback) }, deadline: { _ in }) { frame, display in
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }) { frame, display in
                 XCTAssertEqual(child.frame.size, frame.size,
                                "setFrame(display:true) can flush before returning")
                 XCTAssertEqual(web.autoresizingMask, [], "Do not apply the native delta twice")
@@ -114,7 +140,7 @@ import XCTest
         var commits = 0
         let resize = WindowResizePreparation(window: window,
             presenter: { _, callback in paints.append(callback) },
-            deadline: { deadlines.append($0) }) { frame, display in
+            deadline: { _, callback in deadlines.append(callback) }) { frame, display in
                 commits += 1
                 window.setFrame(frame, display: display)
             }
@@ -135,25 +161,40 @@ import XCTest
         XCTAssertFalse(resize.bypassForDrag)
     }
 
-    func testNormallyLatePaintDoesNotExposeAnUnpaintedQueuedFrame() async throws {
+    @MainActor private final class PaintClock {
+        private var now: TimeInterval = 0
+        private var pending: [(TimeInterval, @MainActor @Sendable () -> Void)] = []
+
+        func schedule(after interval: TimeInterval, _ action: @escaping @MainActor @Sendable () -> Void) {
+            pending.append((now + interval, action))
+        }
+
+        func advance(by interval: TimeInterval) {
+            now += interval
+            let due = pending.filter { $0.0 <= now }
+            pending.removeAll { $0.0 <= now }
+            due.forEach { $0.1() }
+        }
+    }
+
+    func testNormallyLatePaintDoesNotExposeAnUnpaintedQueuedFrame() throws {
         let (host, _) = fixture()
         let window = modelWindow(host)
         defer { window.contentView = nil; host.removePage(); window.close() }
+        let clock = PaintClock()
         var paints: [@MainActor @Sendable () -> Void] = []
         var commits: [NSSize] = []
         let resize = WindowResizePreparation(window: window,
-            presenter: { _, callback in paints.append(callback) }) { frame, display in
+            presenter: { _, callback in paints.append(callback) },
+            deadline: { interval, action in clock.schedule(after: interval, action) }) { frame, display in
                 commits.append(frame.size)
                 window.setFrame(frame, display: display)
             }
         XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 800, height: 500), display: true))
         XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), display: true))
-        // The user's real drag delivered its paint at116ms. A150ms page is still
-        // responsive; keep the painted window rather than expose the queued size.
-        let elapsed = XCTestExpectation(description: "Ordinarily late paint interval")
-        let timer = Timer(timeInterval: 0.15, repeats: false) { _ in elapsed.fulfill() }
-        RunLoop.main.add(timer, forMode: .common)
-        await fulfillment(of: [elapsed], timeout: 2)
+        // Advance the same elapsed interval without relying on an executor to
+        // resume before the independently running real watchdog expires.
+        clock.advance(by: 0.15)
         XCTAssertTrue(commits.isEmpty, "A responsive but late page must not expose unpainted width")
         XCTAssertFalse(resize.bypassForDrag)
         paints.removeFirst()()
@@ -177,7 +218,7 @@ import XCTest
         var deadline: (@MainActor @Sendable () -> Void)?
         var commits = 0
         let resize = WindowResizePreparation(window: window,
-            presenter: { _, callback in paints.append(callback) }, deadline: { deadline = $0 }) { frame, display in
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, callback in deadline = callback }) { frame, display in
                 commits += 1
                 window.setFrame(frame, display: display)
             }
@@ -199,7 +240,7 @@ import XCTest
         var paint: (@MainActor @Sendable () -> Void)?
         var commits = 0
         let resize = WindowResizePreparation(window: window,
-            presenter: { _, callback in paint = callback }, deadline: { _ in }) { _, _ in commits += 1 }
+            presenter: { _, callback in paint = callback }, deadline: { _, _ in }) { _, _ in commits += 1 }
         XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 800, height: 500), display: true))
         let requested = NSRect(x: 20, y: 30, width: 700, height: 450)
         window.setFrame(requested, display: false)
@@ -217,7 +258,7 @@ import XCTest
         var paints: [@MainActor @Sendable () -> Void] = []
         var commits = 0
         let resize = WindowResizePreparation(window: window,
-            presenter: { _, callback in paints.append(callback) }, deadline: { _ in }) { frame, display in
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }) { frame, display in
                 commits += 1
                 window.setFrame(frame, display: display)
             }
@@ -243,7 +284,7 @@ import XCTest
         var paints: [@MainActor @Sendable () -> Void] = []
         var commits: [NSSize] = []
         let resize = WindowResizePreparation(window: window,
-            presenter: { _, callback in paints.append(callback) }, deadline: { _ in }) { frame, display in
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }) { frame, display in
                 commits.append(frame.size)
                 window.setFrame(frame, display: display)
             }
@@ -278,7 +319,7 @@ import XCTest
             var timeout: (@MainActor @Sendable () -> Void)?
             var commits = 0
             let resize = WindowResizePreparation(window: window,
-                presenter: { _, callback in paint = callback }, deadline: { timeout = $0 }) { _, _ in commits += 1 }
+                presenter: { _, callback in paint = callback }, deadline: { _, callback in timeout = callback }) { _, _ in commits += 1 }
             let original = window.frame
             XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 800, height: 500), display: true))
             window.contentView = NSView(frame: host.frame)
