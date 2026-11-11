@@ -39,7 +39,14 @@ import SwiftUI
     /// Cached profile hosts retain SwiftUI state while detached. Only a visible patch
     /// in the receiving window can claim this mouse-down; a parked host cannot.
     func over(in window: NSWindow, at point: NSPoint) -> Bool {
-        patches.allObjects.contains { patch in
+        // The full-size sidebar reaches the native resize perimeter. Hover there
+        // is still bare ground, but claiming its mouse-down turns the resize
+        // cursor into a window move before AppKit can begin live resizing.
+        if window.styleMask.contains(.resizable), !window.styleMask.contains(.fullScreen),
+           !NSRect(origin: .zero, size: window.frame.size).insetBy(dx: 5, dy: 5).contains(point) {
+            return false
+        }
+        return patches.allObjects.contains { patch in
             patch.hovered && patch.window === window && !patch.isHiddenOrHasHiddenAncestor
                 && patch.bounds.intersection(patch.visibleRect).contains(patch.convert(point, from: nil))
         }
