@@ -4154,7 +4154,7 @@ private struct TidyRow: View {
             }
             if offering {
                 if tidy != .hidden { Text("|").foregroundStyle(Look.inkQuiet) }
-                Button("Clear") { clear() }
+                Button { clear() } label: { SidebarClearLabel() }
                     .nativeSidebarKeyboardControl()
                     .vaneTooltip("Clear Today", hint: "Move today’s tabs to the Archive", shortcut: Keybindings.binding(for: .clearTabs).display)
                     .accessibilityLabel("Clear Tabs")
