@@ -3444,7 +3444,7 @@ private struct PinnedTabs: View {
 }
 
 private struct PinnedSection: View {
-    @SidebarObserved var store: TabStore
+    @SidebarPresentationObserved var store: TabStore
     @ObservedObject var live: LiveFolders
     let snapshot: Feel02SidebarRowsCache.Snapshot
     @State private var sheet = false
@@ -3542,7 +3542,7 @@ private struct FolderRow: View {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
-    @SidebarObserved var store: TabStore
+    @SidebarPresentationObserved var store: TabStore
     let folder: Folder
     /// Which section's shape this folder is in — `\.pins` or `\.todayShape`.
     let shape: ReferenceWritableKeyPath<TabStore, Pins>

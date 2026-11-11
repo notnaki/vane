@@ -1215,8 +1215,6 @@ private struct SpaceSwipe: ViewModifier {
         preparationPeers.removeAll()
         for peer in TabStore.all where peer !== store && profiles.contains(peer.profileID) {
             preparationPeers[ObjectIdentifier(peer)] = peer.sidebarSnapshotChanges.sink { [weak self, weak store] _ in
-                let began = CACurrentMediaTime()
-                defer { ProfileHandoffTrace.end("PreparationPeer", began) }
                 self?.extendPreparationQuietInterval()
                 self?.invalidatePreparation()
                 DispatchQueue.main.async { [weak self, weak store] in
@@ -1228,8 +1226,6 @@ private struct SpaceSwipe: ViewModifier {
     }
 
     private func invalidatePreparation() {
-        let began = CACurrentMediaTime()
-        defer { ProfileHandoffTrace.end("SwipeMonitor.invalidatePreparation", began) }
         preparation?.cancel()
         preparation = nil
         // Detach and revoke immediately, including protected peer changes. Keep
@@ -1673,8 +1669,6 @@ private struct SpaceSwipe: ViewModifier {
             (ProfileManager.shared.objectWillChange.eraseToAnyPublisher(), true)
         ] {
             preparationObservers.append(publisher.sink { [weak self, weak store] _ in
-                let began = CACurrentMediaTime()
-                defer { ProfileHandoffTrace.end("PreparationOwner", began) }
                 if invalidates {
                     self?.extendPreparationQuietInterval()
                     self?.invalidatePreparation()
@@ -2026,10 +2020,7 @@ private struct SpaceSwipe: ViewModifier {
                 guard let self, self.transition == token, let store,
                       store.currentSpaceID == self.landingFrom,
                       store.spaceGesture.neighbour?.id == destination.id else { return }
-                let activationStarted = CACurrentMediaTime()
-                print("PROFILE_ACTIVATE_START t=\(activationStarted)")
                 _ = self.activate(destination, in: store)
-                print("PROFILE_ACTIVATE_END t=\(CACurrentMediaTime()) elapsedMS=\((CACurrentMediaTime() - activationStarted) * 1000)")
             }
         } else {
             if let host = store.window?.contentView as? BrowserWindowHost,

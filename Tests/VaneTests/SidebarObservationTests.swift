@@ -44,6 +44,7 @@ private struct ObservedSidebarProbe: View {
             store.sidebarPeeking.toggle()
             store.libraryOpen.toggle()
             store.findOpen.toggle()
+            store.profileVisible.toggle()
         }
         XCTAssertEqual(changes, 0,
                        "Window presentation and search input must not fan out through the tab outline")
@@ -70,7 +71,6 @@ private struct ObservedSidebarProbe: View {
         assertInvalidates("Space rename") { store.renamingSpace = UUID() }
         assertInvalidates("Pinned collapse") { store.togglePinnedSection() }
         assertInvalidates("Space creation") { store.creatingSpace.toggle() }
-        assertInvalidates("Profile visibility") { store.profileVisible.toggle() }
         assertInvalidates("Folder protection") { store.sidebarPreviewInvalidated.send() }
     }
 
@@ -113,30 +113,27 @@ private struct ObservedSidebarProbe: View {
                        "Protection revocation must publish synchronously without a shape assignment")
     }
 
-    func testCoveredVisibilityDefersOnlyVisibilityUntilItsLastOwnerEnds() {
+    func testProfileVisibilityRevokesCapturesAndUpdatesPresentationWithoutRebuildingRows() {
         let store = fixture()
-        var draws: [Bool] = []
+        var rows = 0
+        var presentations = 0
         var snapshots = 0
-        let redraw = store.sidebarObservation.objectWillChange.sink { draws.append(store.profileVisible) }
-        let capture = store.sidebarSnapshotChanges.sink { snapshots += 1 }
-        defer { redraw.cancel(); capture.cancel() }
-        let first = store.sidebarObservation.beginCoveredVisibilityChanges()
-        let second = store.sidebarObservation.beginCoveredVisibilityChanges()
+        let row = store.sidebarObservation.objectWillChange.sink { rows += 1 }
+        let presentation = store.sidebarPresentationObservation.objectWillChange.sink { presentations += 1 }
+        let snapshot = store.sidebarSnapshotChanges.sink { snapshots += 1 }
+        defer { row.cancel(); presentation.cancel(); snapshot.cancel() }
         store.profileVisible = false
-        XCTAssertTrue(draws.isEmpty)
-        XCTAssertEqual(snapshots, 1, "Snapshot authority must revoke on the original publication turn")
+        XCTAssertEqual(rows, 0, "Window visibility must not rebuild unchanged sidebar content")
+        XCTAssertEqual(presentations, 1, "Popover and sheet anchors must revoke presentation immediately")
+        XCTAssertEqual(snapshots, 1, "Cached snapshot authority still revokes on the publication turn")
         store.sidebarPreviewInvalidated.send()
-        XCTAssertEqual(draws, [false], "Protection changes must redraw immediately under a native cover")
+        XCTAssertEqual(rows, 1, "Protection revocation must still reach every row synchronously")
+        XCTAssertEqual(presentations, 2)
+        XCTAssertEqual(snapshots, 2)
         store.tabs = []
-        XCTAssertEqual(draws, [false, false], "Ordinary content changes must stay synchronous")
-        store.sidebarObservation.endCoveredVisibilityChanges(first)
-        XCTAssertEqual(draws.count, 2)
-        store.sidebarObservation.endCoveredVisibilityChanges(second)
-        XCTAssertEqual(draws, [false, false, false], "The final release renders completed visibility state")
-        store.sidebarObservation.endCoveredVisibilityChanges(second)
-        XCTAssertEqual(draws.count, 3, "A repeated release must not flush another redraw")
-        store.profileVisible = true
-        XCTAssertEqual(draws.count, 4, "Normal visibility redraws resume after the cover releases ownership")
+        XCTAssertEqual(rows, 2, "Real content changes still reach row rendering")
+        XCTAssertEqual(presentations, 3)
+        XCTAssertEqual(snapshots, 3)
     }
 
     func testMountedSidebarSkipsSearchUpdatesButRendersRenameChanges() async throws {

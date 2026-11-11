@@ -2836,6 +2836,7 @@ struct Stash {
     /// synchronization also invalidates previews, so it cannot supply this signal.
     let sidebarRowsProtectionRevoked = PassthroughSubject<Void, Never>()
     lazy var sidebarObservation = SidebarObservation(store: self)
+    lazy var sidebarPresentationObservation = SidebarPresentationObservation(store: self)
     var sharingReady = false
     var sharedUpdateQueued = false
     @Published var tabs: [Tab] = [] { didSet { SharedTabs.schedule(from: self) } }

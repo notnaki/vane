@@ -607,8 +607,6 @@ private final class NativeBatchMouseObservation {
         ownerObservations = [
             store.sidebarRowsProtectionRevoked.sink { [weak self] in self?.revokeInactiveOwners() },
             store.$profileVisible.dropFirst().sink { [weak self] visible in
-                let began = CACurrentMediaTime()
-                defer { ProfileHandoffTrace.end("NativeBatchVisibility", began) }
                 guard let self else { return }
                 self.ownerVisible = visible
                 if !visible { self.revokeInactiveOwners() }

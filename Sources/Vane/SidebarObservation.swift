@@ -9,6 +9,7 @@ extension TabStore {
         Publishers.Merge(sidebarContentChanges, sidebarChange($profileVisible)).eraseToAnyPublisher()
     }
 
+    /// Visibility changes the window's presentation authority, not its row content.
     var sidebarContentChanges: AnyPublisher<Void, Never> {
         Publishers.MergeMany([
             sidebarChange($tabs), sidebarChange($pins), sidebarChange($todayShape),
@@ -29,9 +30,6 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
 @MainActor final class SidebarObservation: @MainActor ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
     private var subscription: AnyCancellable?
-    private var visibilitySubscription: AnyCancellable?
-    private var coveredVisibilityOwners: Set<UUID> = []
-    private var pendingVisibilityChange = false
     private var mutationDepth = 0
     private var pendingChange = false
 
@@ -52,29 +50,7 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
         return try body()
     }
 
-    /// A native cover already owns the sidebar picture during profile travel.
-    /// Delay only its visibility redraw; content/protection invalidation stays immediate.
-    func beginCoveredVisibilityChanges() -> UUID {
-        let token = UUID()
-        coveredVisibilityOwners.insert(token)
-        return token
-    }
-
-    func endCoveredVisibilityChanges(_ token: UUID) {
-        guard coveredVisibilityOwners.remove(token) != nil,
-              coveredVisibilityOwners.isEmpty, pendingVisibilityChange else { return }
-        pendingVisibilityChange = false
-        changed()
-    }
-
-    private func visibilityChanged() {
-        if coveredVisibilityOwners.isEmpty { changed() }
-        else { pendingVisibilityChange = true }
-    }
-
     private func changed() {
-        let began = CACurrentMediaTime()
-        defer { ProfileHandoffTrace.end("SidebarObservation.changed", began) }
         if mutationDepth > 0 { pendingChange = true }
         else { objectWillChange.send() }
     }
@@ -87,9 +63,6 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
             sidebarChange(store.$renamingSpace), sidebarChange(store.$announcing),
             sidebarChange(store.$creatingSpace)
         ]).sink { [weak self] _ in self?.changed() }
-        visibilitySubscription = store.$profileVisible.dropFirst().sink { [weak self] _ in
-            self?.visibilityChanged()
-        }
     }
 }
 
@@ -102,6 +75,31 @@ private func sidebarChange<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, N
     init(wrappedValue: TabStore) {
         target = wrappedValue
         _observation = ObservedObject(wrappedValue: wrappedValue.sidebarObservation)
+    }
+
+    var wrappedValue: TabStore { target }
+}
+
+/// Popover/sheet anchors need visibility updates without invalidating every row.
+@MainActor final class SidebarPresentationObservation: @MainActor ObservableObject {
+    let objectWillChange = ObservableObjectPublisher()
+    private var subscription: AnyCancellable?
+
+    init(store: TabStore) {
+        subscription = Publishers.Merge(
+            store.sidebarObservation.objectWillChange.eraseToAnyPublisher(),
+            sidebarChange(store.$profileVisible)
+        ).sink { [weak self] _ in self?.objectWillChange.send() }
+    }
+}
+
+@MainActor @propertyWrapper struct SidebarPresentationObserved: DynamicProperty {
+    private let target: TabStore
+    @ObservedObject private var observation: SidebarPresentationObservation
+
+    init(wrappedValue: TabStore) {
+        target = wrappedValue
+        _observation = ObservedObject(wrappedValue: wrappedValue.sidebarPresentationObservation)
     }
 
     var wrappedValue: TabStore { target }
