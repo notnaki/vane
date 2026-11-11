@@ -136,6 +136,19 @@ import XCTest
     }
 
     func testNormallyLatePaintDoesNotExposeAnUnpaintedQueuedFrame() async throws {
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        var failure: (any Error)?
+        do { try await checkNormallyLatePaintDoesNotExposeAnUnpaintedQueuedFrame() }
+        catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Late paint fixture AppKit cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func checkNormallyLatePaintDoesNotExposeAnUnpaintedQueuedFrame() async throws {
         let (host, _) = fixture()
         let window = modelWindow(host)
         defer { window.contentView = nil; host.removePage(); window.close() }

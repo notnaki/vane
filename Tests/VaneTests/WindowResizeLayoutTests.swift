@@ -153,8 +153,7 @@ import XCTest
             try await Task.sleep(for: .milliseconds(650))
             let ended = CACurrentMediaTime()
             try await presentation(web)
-            let presented = CACurrentMediaTime()
-            try await compatibilityWait { (sampler.frames.last?.time ?? 0) >= presented }
+            try await sampler.captureFinalFrame(window)
             try await sampler.stop()
             try sampler.frames.saveImages(prefix: "sidebar-\(ProcessInfo.processInfo.processIdentifier)")
             let samples = sampler.frames.samples.filter { $0.time >= began && $0.time <= ended }
@@ -207,9 +206,9 @@ import XCTest
             let widths = Array(stride(from: 900, through: 1300, by: 40))
                 + Array(stride(from: 1260, through: 900, by: -40))
             let sizes = mixedAxes
-                ? [NSSize(width: 800, height: frameHeight + 100),
-                   NSSize(width: 1100, height: frameHeight - 100),
-                   NSSize(width: 800, height: frameHeight + 100),
+                ? [NSSize(width: 800, height: frameHeight + 40),
+                   NSSize(width: 1100, height: frameHeight - 40),
+                   NSSize(width: 800, height: frameHeight + 40),
                    NSSize(width: 900, height: frameHeight)]
                 : widths.map { NSSize(width: CGFloat($0), height: frameHeight) }
             for size in sizes {
@@ -234,8 +233,7 @@ import XCTest
             try await compatibilityWait { !window.isPreparingPageResize }
             let ended = CACurrentMediaTime()
             try await presentation(web)
-            let presented = CACurrentMediaTime()
-            try await compatibilityWait { (sampler.frames.last?.time ?? 0) >= presented }
+            try await sampler.captureFinalFrame(window)
             try await sampler.stop()
             let prefix = "\(direct ? "native" : "browser")-\(ProcessInfo.processInfo.processIdentifier)"
             try sampler.frames.saveImages(prefix: prefix)
@@ -313,10 +311,37 @@ import XCTest
         }
     }
 
+    // A static final picture need not produce another streaming callback on
+    // macOS 26. Request a fresh WindowServer sample after WebKit's final paint.
+    func captureFinalFrame(_ window: NSWindow) async throws {
+        try await stop()
+        let content = try await SCShareableContent.currentProcess
+        let target = try XCTUnwrap(content.windows.first { $0.windowID == CGWindowID(window.windowNumber) })
+        let configuration = SCStreamConfiguration()
+        configuration.width = 1400
+        configuration.height = 700
+        configuration.showsCursor = false
+        configuration.ignoreShadowsSingleWindow = true
+        configuration.captureDynamicRange = .SDR
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        let sample = try await SCScreenshotManager.captureSampleBuffer(
+            contentFilter: SCContentFilter(desktopIndependentWindow: target), configuration: configuration)
+        frames.queue.sync {}
+        let captured = CACurrentMediaTime()
+        consume(sample, time: captured)
+        guard frames.last?.time == captured else {
+            throw NSError(domain: "ResizeFinalCaptureFormat", code: 1)
+        }
+    }
+
     nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
                             of type: SCStreamOutputType) {
-        guard type == .screen, sampleBuffer.isValid else { return }
-        let time = CMTimeGetSeconds(sampleBuffer.presentationTimeStamp)
+        guard type == .screen else { return }
+        consume(sampleBuffer, time: CMTimeGetSeconds(sampleBuffer.presentationTimeStamp))
+    }
+
+    nonisolated private func consume(_ sampleBuffer: CMSampleBuffer, time: Double) {
+        guard sampleBuffer.isValid else { return }
         guard time.isFinite else { return }
         let info = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
             as? [[SCStreamFrameInfo: Any]]
