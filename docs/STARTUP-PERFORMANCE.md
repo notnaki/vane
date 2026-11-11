@@ -94,7 +94,9 @@ behavior was changed.
 Password discovery uses native selector queries within each admitted tree, then
 walks matches in the existing shadow-root order. A bounded preflight preserves the
 20,000-element limit before native queries allocate results; the 128-root and
-32-level limits still apply. Routine regression tests check selector work counts,
+32-level limits still apply. Frame discovery reuses the same bounded element
+snapshot as shadow-root discovery, and pages without inputs skip a redundant
+credential scan. Routine regression tests check selector work counts,
 oversized document/shadow-tree rejection, and successful credential filling.
 
 To measure the actual injected password script on a synthetic article with 16,000

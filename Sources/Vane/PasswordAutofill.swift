@@ -375,6 +375,7 @@ import WebKit
           if (visible(recent)) { return recent; }
           var usernameStep = null;
           var scopes = Array.from(new Set(deepQuery(document, 'input').map(rootFor)));
+          if (!scopes.length) return null;
           for (var i = 0; i < scopes.length; i++) {
             if (scopes[i] === document) continue;
             var candidate = pair(scopes[i], capture);
@@ -563,7 +564,7 @@ import WebKit
         });
         listen(window, 'pageshow', function () {
           if (retired || !attachedDocument()) return;
-          observe(); discoverFrames(); ready();
+          discoverFrames(observe()); ready();
         });
         function fill(account, password, automatic, target, continuation) {
           var p = targetPair();
@@ -628,9 +629,13 @@ import WebKit
         var context = { window: window, fill: fill, anchor: anchor, pair: targetPair, token: token, live: liveDocument, attached: attachedDocument, ready: ready, dispose: dispose,
           generate: generate, generation: function () { return generationToken(lastGeneration && generationFor(lastGeneration.field)); } };
         contexts.set(document, context);
-        function discoverFrames() {
+        function discoverFrames(elements) {
           // Access itself enforces the origin boundary, including opaque sandbox origins.
-          deepQuery(document, 'iframe,frame').forEach(function (frame) {
+          // Root discovery already admitted these elements, including shadow frames.
+          // A standalone frame-load event takes its own bounded snapshot.
+          (elements || deepQuery(document, '*')).forEach(function (frame) {
+            var name = frame.localName;
+            if (name !== 'iframe' && name !== 'frame') return;
             try { if (frame.contentDocument) install(frame.contentWindow); } catch (_) {}
           });
           // Remove navigated/detached documents rather than retaining their DOM and accounts.
@@ -649,7 +654,7 @@ import WebKit
           discoveryTimer = setTimeout(function () {
             discoveryTimer = null; pending = false;
             if (!attachedDocument()) { dispose(); return; }
-            discoverRoots(); discoverFrames();
+            discoverFrames(discoverRoots());
             rejectFailedAttempt();
             var cached = lastPair;
             if (listOpen && !(lastGeneration && generationFor(lastGeneration.field)) &&
@@ -661,7 +666,8 @@ import WebKit
           attributeFilter: ['type', 'autocomplete', 'name', 'id', 'disabled', 'readonly', 'hidden', 'style', 'class', 'inert',
             'aria-hidden', 'aria-invalid', 'aria-labelledby', 'role', 'slot', 'form', 'action', 'formaction'] };
         function discoverRoots() {
-          var roots = new Set(deepQuery(document, '*').filter(function (el) { return el.shadowRoot; })
+          var elements = deepQuery(document, '*');
+          var roots = new Set(elements.filter(function (el) { return el.shadowRoot; })
             .map(function (el) { return el.shadowRoot; }));
           // Disconnect first to stop observing detached trees; then re-admit only live roots.
           observer.disconnect();
@@ -677,17 +683,19 @@ import WebKit
             credentialListeners.forEach(function (entry) { root.addEventListener(entry[0], entry[1], true); });
             shadowListeners.set(root, credentialListeners.slice());
           });
+          return elements;
         }
         function observe() {
-          discoverRoots();
+          var elements = discoverRoots();
           // attachShadow on an already-connected host is invisible to MutationObserver
           // in an isolated world. A single paced scan covers that case without page hooks.
           if (rootTimer === null) rootTimer = setInterval(function () {
             if (!attachedDocument()) { dispose(); return; }
-            discoverRoots(); discoverFrames(); ready();
+            discoverFrames(discoverRoots()); ready();
           }, 1000);
+          return elements;
         }
-        observe(); discoverFrames(); ready();
+        discoverFrames(observe()); ready();
       }
       function currentContext(target) {
         if (target) {
