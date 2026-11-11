@@ -9,54 +9,85 @@ env:
   VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
   SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
 jobs:
-  native:
+  build:
     runs-on: macos-26
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - name: Identify diagnostic cache toolchain
+        id: toolchain
+        run: echo "key=$(python3 scripts/ci-build-artifact.py toolchain)" >> "$GITHUB_OUTPUT"
+      - name: Restore diagnostic debug build
+        id: diagnostic-cache
+        uses: actions/cache/restore@v6
         with:
-          ref: e889b23c46fe074e75ab85dd8dab4132bbd6eea5
+          path: .build
+          key: native-diag-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Sources/**', 'Tests/**') }}
+          restore-keys: |
+            native-diag-${{ steps.toolchain.outputs.key }}-
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+      - name: Restore unchanged source timestamps
+        run: python3 scripts/ci-source-state.py restore
+      - name: Build diagnostic runtime
+        run: swift build -c debug --build-tests --disable-index-store
+      - name: Preserve source timestamps for diagnostic debug cache
+        run: python3 scripts/ci-source-state.py save
+      - name: Save compiled diagnostic debug build before native assertions
+        uses: actions/cache/save@v6
+        with:
+          path: .build
+          key: ${{ steps.diagnostic-cache.outputs.cache-primary-key }}
+      - name: Bundle compiled application
+        env:
+          VANE_CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}
+        run: ./make-app.sh debug --skip-app-build
+      - name: Package exact diagnostic runtime
+        run: |
+          BIN_PATH=$(swift build -c debug --show-bin-path)
+          python3 scripts/ci-build-artifact.py pack --bin-path "$BIN_PATH" --revision "$GITHUB_SHA" --archive "$RUNNER_TEMP/native-diagnostic-runtime.tar.gz"
+      - name: Share compiled runtime
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-diagnostic-runtime
+          path: ${{ runner.temp }}/native-diagnostic-runtime.tar.gz
+          compression-level: 0
+          retention-days: 7
+  native:
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
       - name: Download exact diagnostic runtime
         uses: actions/download-artifact@v8
         with:
-          github-token: ${{ github.token }}
-          run-id: 43008137901
+          digest-mismatch: warn
           name: native-diagnostic-runtime
           path: ${{ runner.temp }}/native-diagnostic-runtime
       - name: Restore and verify diagnostic runtime
-        run: python3 scripts/ci-build-artifact.py restore --revision e889b23c46fe074e75ab85dd8dab4132bbd6eea5 --archive "$RUNNER_TEMP/native-diagnostic-runtime/native-diagnostic-runtime.tar.gz"
+        run: python3 scripts/ci-build-artifact.py restore --revision "$GITHUB_SHA" --archive "$RUNNER_TEMP/native-diagnostic-runtime/native-diagnostic-runtime.tar.gz"
       - name: Enable and verify animated motion on the hosted desktop
         run: |
           defaults write com.apple.universalaccess reduceMotion -bool false
           swift -e 'import AppKit; let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion; print("HOST_REDUCE_MOTION=\(reduced)"); exit(reduced ? 1 : 0)'
       - name: Predetermined focused attempt with retirement
         env:
-          ATTEMPT: '1'
+          ATTEMPT: ${{ matrix.attempt }}
         run: |
           python3 - <<'PYTHON'
           import os, pathlib, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           attempt = os.environ['ATTEMPT']
-          selection = 'WindowResizeLayoutTests.testClosingSidebarWithReducedMotionKeepsTheExpandingPagePainted|SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testFirstProfileVisitChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|SpaceNativeRenderingTests.testProfileOriginClickReversesBeforeTheCurrentLandingFinishes'
+          selection = 'BoundedSidebarMountingTests|KeyboardAccessibilityTests|SpaceNativeRenderingTests|ICloud|SidebarObservationTests|WindowResize|SidebarPageResizePreparationTests'
           log = root / f'icloud-native-preflight-{attempt}.log'
-          sample = root/'profile-main-thread-sample.txt'
-          with (root/'profile-sampler.log').open('w') as sampler_log:
-              sampler = subprocess.Popen(['/usr/bin/sample','xctest','60','5','-wait','-mayDie','-file',str(sample)], stdout=sampler_log, stderr=subprocess.STDOUT)
-              try:
-                  with log.open('w') as output:
-                      result = subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=output, stderr=subprocess.STDOUT)
-                  try:
-                      sampler.wait(timeout=75)
-                  except subprocess.TimeoutExpired:
-                      sampler.terminate()
-                      sampler.wait(timeout=10)
-              finally:
-                  if sampler.poll() is None:
-                      sampler.kill()
-                      sampler.wait()
-          print(f'HOSTED_SAMPLER_STATUS={sampler.returncode} EXISTS={sample.exists()}', flush=True)
+          with log.open('w') as output:
+              result = subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=output, stderr=subprocess.STDOUT)
           text = log.read_text()
-          status = result.returncode or (0 if sampler.returncode == 0 and sample.exists() else 1)
+          status = result.returncode
           if 'Native suite primary status=0; cleanup status=0' not in text or '*** Signal ' in text:
               status = status or 1
           print(f'ATTEMPT {attempt}: status={status}', flush=True)
@@ -67,9 +98,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: icloud-native-profile-sample
+          name: icloud-native-preflight-${{ matrix.attempt }}
           path: |
             ${{ runner.temp }}/icloud-native-preflight-*.log
-            ${{ runner.temp }}/profile-main-thread-sample.txt
-            ${{ runner.temp }}/profile-sampler.log
             /tmp/vane-resize-*.png
