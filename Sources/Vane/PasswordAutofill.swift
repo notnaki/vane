@@ -36,6 +36,12 @@ import WebKit
         if (contexts.has(document)) { contexts.get(document).ready(); return; }
         var documentID = Array.from(topWindow.crypto.getRandomValues(new Uint32Array(4))).join('-'), fields = new WeakMap(), fieldSerial = 0;
         var retired = false, observer = null, discoveryTimer = null, rootTimer = null;
+        var diagnostic = window.__vaneDiscoveryTrace = [];
+        function trace(stage, extra) {
+          diagnostic.push({ stage: stage, at: performance.now(), visibility: document.visibilityState,
+            pending: pending, attached: attachedDocument(), extra: extra || null });
+          if (diagnostic.length > 100) diagnostic.shift();
+        }
         var shadowListeners = new Map(), credentialListeners = [];
         var listeners = [];
         function listen(target, name, fn, capture) {
@@ -611,6 +617,8 @@ import WebKit
         var seen = new WeakMap(), pending = false;
         function ready() {
           var p = targetPair(), field = p && (p.pass || p.user);
+          trace('ready', { field: field && field.id, token: token(p), seen: field && seen.get(field),
+            active: deepActive(document) && deepActive(document).tagName, visible: !!field && shown(field) });
           if (!field || seen.get(field) === token(p)) return;
           seen.set(field, token(p));
           send({ ready: true });
@@ -631,14 +639,15 @@ import WebKit
           if (e.target.tagName === 'IFRAME' || e.target.tagName === 'FRAME') discoverFrames();
         }, true);
         observer = new MutationObserver(function (records) {
+          trace('mutation', records.map(function (r) { return { type: r.type, added: r.addedNodes.length, removed: r.removedNodes.length }; }));
           if (pending || !records.some(function (r) {
             return r.type === 'attributes' || (lastOfferID && (r.type === 'characterData' || r.addedNodes.length)) || r.removedNodes.length || Array.from(r.addedNodes).some(function (n) {
               return n.nodeType === 1;
             });
           })) return;
-          pending = true;
+          pending = true; trace('schedule');
           discoveryTimer = setTimeout(function () {
-            discoveryTimer = null; pending = false;
+            discoveryTimer = null; pending = false; trace('discoveryTimer');
             if (!attachedDocument()) { dispose(); return; }
             discoverRoots(); discoverFrames();
             rejectFailedAttempt();
@@ -674,6 +683,7 @@ import WebKit
           // attachShadow on an already-connected host is invisible to MutationObserver
           // in an isolated world. A single paced scan covers that case without page hooks.
           if (rootTimer === null) rootTimer = setInterval(function () {
+            trace('rootTimer');
             if (!attachedDocument()) { dispose(); return; }
             discoverRoots(); discoverFrames(); ready();
           }, 1000);

@@ -140,7 +140,14 @@ import XCTest
         let old = try XCTUnwrap(originalAnchor?["target"] as? String)
         let count = capture.messages.filter { $0["ready"] as? Bool == true }.count
         _ = try await js(web, "nested.getElementById('password').outerHTML='<input id=password type=password autocomplete=current-password>'")
-        try await wait("replacement shadow field discovery") { capture.messages.filter { $0["ready"] as? Bool == true }.count > count }
+        do {
+            try await wait("replacement shadow field discovery") { capture.messages.filter { $0["ready"] as? Bool == true }.count > count }
+        } catch {
+            let trace = try? await js(web, "JSON.stringify(window.__vaneDiscoveryTrace)", isolated: true)
+            let state = try? await js(web, "JSON.stringify({visibility:document.visibilityState,connected:nested.getElementById('password').isConnected,rect:nested.getElementById('password').getBoundingClientRect().toJSON()})")
+            print("SHADOW_DISCOVERY_TRACE=\(String(describing: trace)) STATE=\(String(describing: state)) READY_COUNT=\(capture.messages.filter { $0["ready"] as? Bool == true }.count) POLICY=\(web.configuration.preferences.inactiveSchedulingPolicy.rawValue)")
+            throw error
+        }
         let stale = try await fill(web, target: old)
         XCTAssertFalse(stale)
         let current = try await fill(web)
