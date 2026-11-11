@@ -10,8 +10,10 @@ private final class PreviewServer: @unchecked Sendable {
     private let lock = NSLock()
     private var hits = 0
     private var paths: [String] = []
+    private var fragments = 0
     var requests: Int { lock.withLock { hits } }
     var requestedPaths: [String] { lock.withLock { paths } }
+    var requestFragments: Int { lock.withLock { fragments } }
 
     init(body: String = "<html><body><h1>A preview</h1><p>Preview content</p></body></html>") throws {
         listener = try NWListener(using: .tcp, on: .any)
@@ -25,10 +27,13 @@ private final class PreviewServer: @unchecked Sendable {
     private func receiveRequest(on connection: NWConnection, body: String, buffered: Data = Data()) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, error in
             guard let self, let data, !data.isEmpty, error == nil else { connection.cancel(); return }
+            defer { self.lock.withLock { self.fragments += 1 } }
             let received = buffered + data
-            // TCP may split even the request line across receives. Record only a
-            // complete line so packet boundaries cannot change the asserted path.
-            guard let lineEnd = received.range(of: Data("\r\n".utf8)) else {
+            // Wait for every header, not just the request line. Replying and closing
+            // with unread request bytes can reset the connection during HTML parsing,
+            // leaving a title visible while the redirect script never executes.
+            guard received.range(of: Data("\r\n\r\n".utf8)) != nil,
+                  let lineEnd = received.range(of: Data("\r\n".utf8)) else {
                 if done { connection.cancel() }
                 else { self.receiveRequest(on: connection, body: body, buffered: received) }
                 return
@@ -73,6 +78,45 @@ private final class PreviewServer: @unchecked Sendable {
     }
     override func tearDown() async throws {
         if let previousBatteryMode { BatterySaver.shared.setMode(previousBatteryMode) }
+    }
+
+    func testFixtureWaitsForCompleteRequestHeaders() async throws {
+        let server = try PreviewServer()
+        let base = try await server.start()
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(base.port!))!, using: .tcp)
+        defer { connection.cancel(); server.stop() }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    connection.stateUpdateHandler = nil
+                    continuation.resume()
+                case .failed(let error):
+                    connection.stateUpdateHandler = nil
+                    continuation.resume(throwing: error)
+                default: break
+                }
+            }
+            connection.start(queue: DispatchQueue(label: "vane-preview-request-fragments"))
+        }
+        connection.stateUpdateHandler = nil
+        try await send("GET /next HTTP/1.1\r\n", to: connection)
+        try await compatibilityWait { server.requestFragments > 0 }
+        guard server.requests == 0 else {
+            return XCTFail("The fixture must consume the full request headers before replying and closing")
+        }
+        try await send("Host: localhost\r\nConnection: close\r\n\r\n", to: connection)
+        try await compatibilityWait { server.requests == 1 }
+        XCTAssertEqual(server.requestedPaths, ["/next"])
+    }
+
+    private func send(_ text: String, to connection: NWConnection) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            connection.send(content: Data(text.utf8), completion: .contentProcessed { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            })
+        }
     }
 
     func testPreviewHostCannotAppearOrInterceptClicksWhenMovedOntoScreen() async throws {
