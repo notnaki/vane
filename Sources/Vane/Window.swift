@@ -1126,17 +1126,12 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
             addSubview(host.content, positioned: .below, relativeTo: (spaceSlide as NSView?) ?? paletteLayer)
         }
         if host.palette.superview !== paletteLayer { paletteLayer.addSubview(host.palette) }
-        // Retain the profile's trees and query state, but park them outside the
-        // live window hierarchy. Hidden NSHostingViews still participate in its
-        // layout passes and can starve the arriving profile's animation callbacks.
+        // Keep both trees mounted when parking a profile, including a typed query.
         if let departing, let holder = window?.firstResponder as? NSView,
            departing.views.contains(where: { holder.isDescendant(of: $0) }) {
             window?.makeFirstResponder(nil)
         }
-        departing?.views.forEach {
-            $0.isHidden = true
-            $0.removeFromSuperview()
-        }
+        departing?.views.forEach { $0.isHidden = true }
         host.views.forEach { $0.isHidden = false }
         current = id
     }
