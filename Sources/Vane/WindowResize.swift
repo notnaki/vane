@@ -58,6 +58,7 @@ extension EnvironmentValues {
     private let size: NSSize
     private let originalSize: NSSize
     private let originalParentSize: NSSize
+    private var preparedParentSize: NSSize
     private let mask: NSView.AutoresizingMask
     private let autoSubviews: Bool
     private var installed = false
@@ -69,13 +70,14 @@ extension EnvironmentValues {
         parent = web.superview
         originalSize = web.frame.size
         originalParentSize = web.superview?.bounds.size ?? .zero
+        preparedParentSize = originalParentSize
         mask = web.autoresizingMask
         autoSubviews = web.autoresizesSubviews
     }
 
     var stillOwned: Bool {
         web.superview === parent && parent != nil && !web.isHiddenOrHasHiddenAncestor
-            && parent?.bounds.size == originalParentSize && web.frame.size == size
+            && parent?.bounds.size == preparedParentSize && web.frame.size == size
     }
 
     var parentReachedPreparedSize: Bool {
@@ -85,6 +87,10 @@ extension EnvironmentValues {
         return abs(parent.bounds.width - expected.width) < 0.001
             && abs(parent.bounds.height - expected.height) < 0.001
     }
+
+    func suspendNativeSizing() { web.autoresizingMask = [] }
+
+    func capturePreparedParentSize() { preparedParentSize = parent?.bounds.size ?? originalParentSize }
 
     func prepare() {
         web.autoresizingMask = []
@@ -195,22 +201,24 @@ extension EnvironmentValues {
         // Growth needs the opposite order: paint the extra area before exposing it.
         guard frame.size != window.frame.size else { return false }
         let current = window.frame
+        let nextSize = NSSize(width: root.bounds.width + frame.width - current.width,
+                              height: root.bounds.height + frame.height - current.height)
+        let targets = Self.targets(in: root, nextSize: nextSize)
+        guard !targets.isEmpty else { return false }
         if (frame.width < current.width && frame.height > current.height)
             || (frame.height < current.height && frame.width > current.width) {
-            // A corner can shrink one dimension while growing the other. Clip
-            // the shrinking axis first so its smaller document can never paint
-            // inside the previous larger window while growth is being prepared.
+            // Clip the shrinking axis without sending WebKit an intermediate
+            // viewport. Two immediate sizes can coalesce behind WebKit's pending
+            // geometry reply, letting the first paint satisfy the final callback.
+            // A slow resize handler would also run twice under one paint deadline.
             let clipped = NSRect(x: frame.width < current.width ? frame.minX : current.minX,
                                  y: frame.height < current.height ? frame.minY : current.minY,
                                  width: min(frame.width, current.width),
                                  height: min(frame.height, current.height))
+            targets.forEach { $0.suspendNativeSizing() }
             commit(clipped, display)
-            return self.request(frame: frame, display: display)
+            targets.forEach { $0.capturePreparedParentSize() }
         }
-        let nextSize = NSSize(width: root.bounds.width + frame.width - window.frame.width,
-                              height: root.bounds.height + frame.height - window.frame.height)
-        let targets = Self.targets(in: root, nextSize: nextSize)
-        guard !targets.isEmpty else { return false }
         guard frame.width > window.frame.width || frame.height > window.frame.height else {
             for target in targets {
                 styledPages.add(target.web)

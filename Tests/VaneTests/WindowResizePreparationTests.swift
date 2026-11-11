@@ -70,7 +70,16 @@ import XCTest
             let resize = WindowResizePreparation(window: window,
                 presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }) { frame, display in
                     commits.append(frame.size)
+                    if commits.count == 1 {
+                        XCTAssertEqual(web.frame.size, NSSize(width: 600, height: 400),
+                                       "The native clip must not send WebKit an intermediate viewport")
+                        XCTAssertEqual(web.autoresizingMask, [])
+                    }
                     window.setFrame(frame, display: display)
+                    if commits.count == 1 {
+                        XCTAssertEqual(web.frame.size, NSSize(width: 600, height: 400),
+                                       "Only the final mixed-axis viewport may reach WebKit")
+                    }
                 }
             let clipped = target.width == 500 ? NSSize(width: 500, height: 400) : NSSize(width: 600, height: 300)
             XCTAssertTrue(resize.request(frame: NSRect(origin: .zero, size: target), display: true))
@@ -83,6 +92,40 @@ import XCTest
             XCTAssertEqual(window.frame.size, target)
             XCTAssertEqual(web.frame.size, target)
             resize.cancel()
+        }
+    }
+
+    func testMixedAxisCancellationAndTimeoutRestoreNativeSizing() {
+        for target in [NSSize(width: 500, height: 500), NSSize(width: 700, height: 300)] {
+            for useTimeout in [false, true] {
+                let (host, web) = fixture()
+                let window = modelWindow(host)
+                defer { window.contentView = nil; host.removePage(); window.close() }
+                var paint: (@MainActor @Sendable () -> Void)?
+                var timeout: (@MainActor @Sendable () -> Void)?
+                var commits: [NSSize] = []
+                let resize = WindowResizePreparation(window: window,
+                    presenter: { _, callback in paint = callback },
+                    deadline: { _, callback in timeout = callback }) { frame, display in
+                        commits.append(frame.size)
+                        window.setFrame(frame, display: display)
+                    }
+                let clipped = NSSize(width: min(600, target.width), height: min(400, target.height))
+                XCTAssertTrue(resize.request(frame: NSRect(origin: .zero, size: target), display: true))
+                XCTAssertEqual(window.frame.size, clipped)
+                XCTAssertEqual(web.frame.size, target, "Prepare the original-to-final viewport exactly once")
+                if useTimeout { timeout?() } else { resize.cancel() }
+                let expected = useTimeout ? target : clipped
+                XCTAssertEqual(window.frame.size, expected)
+                XCTAssertEqual(web.frame.size, expected, "Cancellation follows the clipped parent's geometry")
+                XCTAssertTrue(web.autoresizesSubviews)
+                XCTAssertEqual(web.autoresizingMask, [.width, .height])
+                XCTAssertFalse(resize.isPreparing)
+                paint?()
+                XCTAssertEqual(window.frame.size, expected, "A late paint cannot restore the mixed-axis request")
+                XCTAssertEqual(commits.count, useTimeout ? 2 : 1)
+                resize.cancel()
+            }
         }
     }
 
