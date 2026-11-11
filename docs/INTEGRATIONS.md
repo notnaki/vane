@@ -387,6 +387,14 @@ and **Page summaries**. Adding a connection does not change those routes. Existi
 single-provider settings and saved keys migrate for naming/grouping; summaries stay
 on-device until you explicitly choose a cloud connection for them.
 
+Page summaries appear inside webpage link-hover cards. Enable **Settings → General →
+Previews → Preview links on hover**, then pause over a link to another page. The card
+shows the destination title, screenshot and description first; when Max is enabled
+and the selected summary connection is available, a two-sentence summary follows.
+Moving away, scrolling, clicking or pressing Escape dismisses the card. Cards stay
+within their source pane and do not intercept page clicks. Battery Saver pauses
+link previews. A failed or unavailable summary leaves the ordinary preview visible.
+
 API-key connections take a model ID and your own key: choose **Save Key**, then
 **Test Connection**. Groq defaults to `openai/gpt-oss-20b`. Custom providers need an HTTPS
 base URL such as `https://api.example.com/v1` and JSON chat-completions support. Each
