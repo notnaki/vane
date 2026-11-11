@@ -5,6 +5,56 @@ import XCTest
 @testable import vane
 
 @MainActor final class LinkPreviewPresentationTests: XCTestCase {
+    func testChangedAISettingsRejectCachedSummaryOnRehover() {
+        TestEnvironment.prepare()
+        let previews = Previews(), tab = vane.Tab(isPrivate: true)
+        let enabled = Previews.enabled, mode = BatterySaver.shared.mode
+        let revision = UserDefaults.vane.integer(forKey: "aiSettingsRevision")
+        Previews.enabled = true; BatterySaver.shared.setMode(.off)
+        defer {
+            previews.cancel(); tab.tearDown()
+            Previews.enabled = enabled; BatterySaver.shared.setMode(mode)
+            UserDefaults.vane.set(revision, forKey: "aiSettingsRevision")
+        }
+        let url = URL(string: "https://example.com/article")!
+        previews.request(url, from: tab)
+        var cached = Previews.Preview(url: url, title: "Cached article", image: NSImage())
+        cached.summary = "Summary from the previous AI settings."
+        previews.publish(cached, for: previews.begin())
+        previews.cancel()
+        previews.request(url, from: tab)
+        XCTAssertEqual(previews.preview(for: tab)?.summary, cached.summary,
+                       "Unchanged settings should retain the completed preview")
+        previews.cancel()
+        UserDefaults.vane.set(revision + 1, forKey: "aiSettingsRevision")
+        previews.request(url, from: tab)
+        XCTAssertEqual(previews.preview(for: tab)?.summary, "",
+                       "Disabling or rerouting AI must not revive a previous summary")
+        XCTAssertNil(previews.preview(for: tab)?.image, "Settings changes must revalidate the cached preview")
+    }
+
+    func testNavigationDismissesOnlyTheRequestingTabsPreview() throws {
+        TestEnvironment.prepare()
+        let previews = Previews.shared
+        let source = vane.Tab(isPrivate: true), other = vane.Tab(isPrivate: true)
+        let enabled = Previews.enabled, mode = BatterySaver.shared.mode
+        Previews.enabled = true; BatterySaver.shared.setMode(.off)
+        defer {
+            previews.cancel(); source.tearDown(); other.tearDown()
+            Previews.enabled = enabled; BatterySaver.shared.setMode(mode)
+        }
+        let otherWeb = other.web
+        let otherNavigation = try XCTUnwrap(otherWeb.loadHTMLString("<title>Other tab</title>", baseURL: nil))
+        previews.request(URL(string: "https://example.com/article")!, from: source)
+        other.webView(otherWeb, didStartProvisionalNavigation: otherNavigation)
+        XCTAssertNotNil(previews.preview(for: source), "Another tab's navigation must preserve the hovered card")
+
+        let sourceWeb = source.web
+        let sourceNavigation = try XCTUnwrap(sourceWeb.loadHTMLString("<title>New source page</title>", baseURL: nil))
+        source.webView(sourceWeb, didStartProvisionalNavigation: sourceNavigation)
+        XCTAssertNil(previews.preview(for: source), "Leaving the source document must dismiss its card")
+    }
+
     func testRejectedCachedSessionKeepsTheHoveredLinkPositionOnRetry() async throws {
         TestEnvironment.prepare()
         let profile = ProfileManager.shared.create(name: "Link preview geometry fixture")

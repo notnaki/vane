@@ -230,7 +230,15 @@ private final class PreviewServer: @unchecked Sendable {
         _ = NSApplication.shared
         XCTAssertTrue(NSApp.isRunning,
                       "Preview navigation requires an admitted AppKit loop before WebKit starts")
-        let server = try PreviewServer(body: "<title>Current preview</title><body>Fixture<script>if(location.pathname==='/next')location.replace('/final')</script></body>")
+        let server = try PreviewServer(body: """
+        <title>Current preview</title><body>Fixture<script>
+        window.redirectAttempted = location.pathname === '/next';
+        if (window.redirectAttempted) {
+            location.replace('/final');
+            window.redirectReturned = true;
+        }
+        </script></body>
+        """)
         let base = try await server.start(), previews = Previews(), tab = Tab(isPrivate: true)
         let enabled = Previews.enabled
         Previews.enabled = true
@@ -255,7 +263,8 @@ private final class PreviewServer: @unchecked Sendable {
         while web.url != base.appendingPathComponent("final") || web.isLoading
                 || previews.current?.title != "Current preview" {
             guard ContinuousClock.now < nextDeadline else {
-                return XCTFail("Replacement preview did not load: url=\(web.url?.absoluteString ?? "nil") loading=\(web.isLoading) webTitle=\(web.title ?? "nil") previewTitle=\(previews.current?.title ?? "nil") paths=\(server.requestedPaths) appRunning=\(NSApp.isRunning)")
+                let document = try? await web.evaluateJavaScript("JSON.stringify({url:location.href,ready:document.readyState,visibility:document.visibilityState,redirectAttempted:window.redirectAttempted,redirectReturned:window.redirectReturned,script:document.scripts[0]?.textContent})")
+                return XCTFail("Replacement preview did not load: url=\(web.url?.absoluteString ?? "nil") loading=\(web.isLoading) webTitle=\(web.title ?? "nil") previewTitle=\(previews.current?.title ?? "nil") paths=\(server.requestedPaths) appRunning=\(NSApp.isRunning) appActive=\(NSApp.isActive) document=\(String(describing: document))")
             }
             try await Task.sleep(for: .milliseconds(20))
         }

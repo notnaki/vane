@@ -149,6 +149,7 @@ import WebKit
     // MARK: - Requesting
 
     private var cache = Cache()
+    private var aiSettingsRevision = UserDefaults.vane.integer(forKey: "aiSettingsRevision")
     private var cacheScope: (profile: UUID, privateTab: UUID?)?
     private var sessionObserver: Feel04PreviewSessionObserver?
     private struct SessionCookie: Hashable {
@@ -250,6 +251,12 @@ import WebKit
     func request(_ url: URL, from tab: Tab, rect: CGRect = .zero) {
         guard Previews.enabled, !BatterySaver.shared.isActive else { cancel(); return }
         guard Previews.eligible(url, onPage: tab.currentURL) else { cancel(); return }
+        let revision = UserDefaults.vane.integer(forKey: "aiSettingsRevision")
+        if revision != aiSettingsRevision {
+            aiSettingsRevision = revision
+            cache = Cache()
+            stop()
+        }
         let scope = (profile: tab.profileID, privateTab: tab.isPrivate ? tab.id : nil)
         if let previous = cacheScope, previous != scope {
             cache = Cache(); sessionCookies = nil

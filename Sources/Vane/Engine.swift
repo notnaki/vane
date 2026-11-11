@@ -1875,7 +1875,7 @@ struct TitleReveal: Equatable, Sendable {
         hoveredLink = nil
         (w as? LinkContextWebView)?.navigationStarted()
         CertificateTrust.navigationStarted(in: self)
-        Previews.shared.cancel()      // the link that raised it is gone
+        Previews.shared.cancel(from: self)      // this page's hovered link is gone
         // Whatever was focused belongs to the page being left, frames and all; the incoming
         // one says so itself as soon as its script runs in each of them.
         editableFrames = []
