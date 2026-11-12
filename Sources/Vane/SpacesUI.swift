@@ -1594,6 +1594,8 @@ private struct SpaceSwipe: ViewModifier {
     /// Commit the page separately from the sidebar presentation. Profile hops replace
     /// the native host, so they finish this store's gesture before handing over.
     @discardableResult private func activate(_ target: Space, in store: TabStore) -> Bool {
+        SpaceClickPhaseTrace.record("activate.begin cross=\(target.profileID != store.profileID)")
+        defer { SpaceClickPhaseTrace.record("activate.end") }
         if target.profileID != store.profileID {
             transition = UUID()
             pendingSelection = nil

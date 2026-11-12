@@ -444,6 +444,7 @@ import XCTest
         var selectionTime = Duration.zero
         var deadline = ProcessInfo.processInfo.systemUptime
         try await performFixtureApplicationAction(in: window) {
+            SpaceClickPhaseTrace.begin()
             selectionStart = .now
             monitor.select(spaces[1], in: store)
             selectionTime = selectionStart.duration(to: .now)
@@ -463,6 +464,7 @@ import XCTest
         let end = try firstColour(of: surface, presented: true).redComponent
         samples.append(end)
         positions.append(1)
+        SpaceClickPhaseTrace.dump()
         XCTAssertGreaterThan(abs(start - end), 0.5)
         XCTAssertTrue(samples.contains { abs($0 - start) > 0.05 && abs($0 - end) > 0.05 },
                       "The actual BrowserWindowHost must show intermediate background colours")

@@ -90,6 +90,16 @@ import XCTest
 /// here establishes delivery, never an animation's desired outcome.
 @MainActor func performFixtureApplicationAction(in window: NSWindow,
     _ action: @escaping @MainActor () -> Void) async throws {
+    try await compatibilityWait {
+        if !NSApp.isActive || NSApp.keyWindow !== window {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return false
+        }
+        return NSApp.isRunning && window.isKeyWindow && window.isVisible
+            && window.occlusionState.contains(.visible)
+            && NSApp.modalWindow == nil && window.attachedSheet == nil
+    }
     let token = Int.random(in: 1...Int.max)
     var delivered = false
     var admitted = false
