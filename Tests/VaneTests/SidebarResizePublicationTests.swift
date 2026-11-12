@@ -1,10 +1,14 @@
 import AppKit
 import WebKit
+import SwiftUI
 import XCTest
 @testable import vane
 
 @MainActor final class SidebarResizePublicationTests: XCTestCase {
-    private final class Owner { var current = true }
+    private final class Owner {
+        var current = true
+        weak var publication: SidebarResizePublication?
+    }
     @MainActor private final class Frames {
         var callback: (@MainActor () -> Void)?
         var starts = 0
@@ -101,6 +105,164 @@ import XCTest
         XCTAssertNil(retired)
         XCTAssertEqual(frames.stops, 1)
         frames.tick()
+    }
+
+    func testFrameHookFollowsOneLatestPublicationAndNeverAnEmptyFrameOrRelease() {
+        let frames = Frames()
+        var events: [String] = []
+        let publication = SidebarResizePublication(frameDriver: frames.driver,
+            afterFrame: { events.append("frame") }, publish: { events.append("width\(Int($0))") })
+        defer { publication.cancel() }
+        publication.enqueue(240); publication.enqueue(246)
+        XCTAssertTrue(events.isEmpty)
+        frames.tick()
+        XCTAssertEqual(events, ["width246", "frame"])
+        frames.tick()
+        XCTAssertEqual(events, ["width246", "frame"])
+        publication.enqueue(250)
+        publication.finish()
+        publication.enqueue(260)
+        frames.tick()
+        XCTAssertEqual(events, ["width246", "frame", "width250", "width260"],
+            "Ending uses the existing exact-layout phase without an additional frame flush")
+    }
+
+    func testFrameHookRejectsCancellationFinishAndOwnerReplacementDuringPublish() {
+        for outcome in 0..<3 {
+            let frames = Frames()
+            let owner = Owner()
+            var widths: [CGFloat] = []
+            var flushes = 0
+            let publication = SidebarResizePublication(frameDriver: frames.driver, isCurrent: { owner.current },
+                afterFrame: { flushes += 1 }, publish: { width in
+                    widths.append(width)
+                    if outcome == 0 { owner.publication?.cancel() }
+                    else if outcome == 1 { owner.publication?.finish() }
+                    else { owner.current = false }
+                })
+            owner.publication = publication
+            publication.enqueue(240)
+            frames.tick()
+            XCTAssertEqual(widths, [240])
+            XCTAssertEqual(flushes, 0)
+            XCTAssertEqual(frames.stops, 1)
+        }
+    }
+
+    func testReentrantEnqueueAndNestedFrameWaitUntilTheNextFrame() {
+        let frames = Frames()
+        let owner = Owner()
+        var events: [String] = []
+        let publication = SidebarResizePublication(frameDriver: frames.driver,
+            afterFrame: { events.append("frame") }, publish: { width in
+                events.append("width\(Int(width))")
+                if width == 240 {
+                    owner.publication?.enqueue(242)
+                    frames.tick()
+                }
+            })
+        owner.publication = publication
+        defer { publication.cancel() }
+        publication.enqueue(240)
+        frames.tick()
+        XCTAssertEqual(events, ["width240", "frame"])
+        frames.tick()
+        XCTAssertEqual(events, ["width240", "frame", "width242", "frame"])
+    }
+
+    private final class NativeLayoutProbe: NSView {
+        var layouts = 0
+        override func layout() { super.layout(); layouts += 1 }
+    }
+
+    func testFittedEquivalentWidthDoesNotForceNativeLayout() {
+        TestEnvironment.prepare()
+        let root = NativeLayoutProbe(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        let window = NSWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = root
+        defer { window.contentView = nil; window.close() }
+        root.layoutSubtreeIfNeeded()
+        let layouts = root.layouts
+        let presentation = SidebarResizeFrameLayout(window: window, root: root)
+        presentation.didPublishWidth(from: 500, to: 400)
+        presentation.presentFrame()
+        XCTAssertEqual(root.layouts, layouts)
+        presentation.didPublishWidth(from: 400, to: 390)
+        presentation.presentFrame()
+        XCTAssertEqual(root.layouts, layouts + 1)
+        presentation.presentFrame()
+        XCTAssertEqual(root.layouts, layouts + 1)
+        XCTAssertFalse(window.isVisible)
+    }
+
+    func testNativeFrameLayoutRejectsReplacedRoot() {
+        TestEnvironment.prepare()
+        let root = NativeLayoutProbe(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        let window = NSWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = root
+        defer { window.contentView = nil; window.close() }
+        root.layoutSubtreeIfNeeded()
+        let layouts = root.layouts
+        let presentation = SidebarResizeFrameLayout(window: window, root: root)
+        presentation.didPublishWidth(from: 228, to: 300)
+        window.contentView = NSView(frame: root.frame)
+        presentation.presentFrame()
+        XCTAssertEqual(root.layouts, layouts)
+    }
+
+    private final class GeometryWidth: ObservableObject { @Published var width: CGFloat = 228 }
+    private struct GeometryPage: NSViewRepresentable {
+        let view: NSView
+        func makeNSView(context: Context) -> NSView { view }
+        func updateNSView(_ view: NSView, context: Context) { }
+        func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
+            CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
+        }
+    }
+    private struct GeometryContent: View {
+        @ObservedObject var width: GeometryWidth
+        let page: NSView
+        var body: some View {
+            HStack(spacing: 0) {
+                Color.clear.frame(width: width.width)
+                GeometryPage(view: page).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    func testUnshownHostingGeometryIsCurrentBeforeFrameReturns() {
+        TestEnvironment.prepare()
+        let width = GeometryWidth()
+        let page = NSView()
+        let root = NSHostingView(rootView: GeometryContent(width: width, page: page))
+        root.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        let window = NSWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = root
+        defer { window.contentView = nil; window.close() }
+        root.layoutSubtreeIfNeeded()
+        XCTAssertEqual(page.frame.width, 372, accuracy: 0.001)
+        let frames = Frames()
+        let presentation = SidebarResizeFrameLayout(window: window, root: root)
+        let publication = SidebarResizePublication(frameDriver: frames.driver,
+            afterFrame: { presentation.presentFrame() }, publish: { next in
+                let previous = width.width
+                width.width = next
+                presentation.didPublishWidth(from: previous, to: width.width)
+            })
+        defer { publication.cancel() }
+        publication.enqueue(240); publication.enqueue(300)
+        XCTAssertEqual(page.frame.width, 372, accuracy: 0.001)
+        let began = CACurrentMediaTime()
+        frames.tick()
+        let elapsed = (CACurrentMediaTime() - began) * 1000
+        print("SIDEBAR_FRAME_UNSHOWN nativeLayoutMS=\(elapsed)")
+        XCTAssertEqual(page.frame.width, 300, accuracy: 0.001,
+            "The published SwiftUI width must reach native geometry within this frame callback")
+        XCTAssertFalse(window.isVisible)
+        XCTAssertFalse(window.occlusionState.contains(.visible))
     }
 
     private final class ModelWindow: NSWindow {

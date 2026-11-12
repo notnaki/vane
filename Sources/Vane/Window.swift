@@ -91,11 +91,24 @@ final class VaneWindow: NSWindow {
                 self.livePageResizeBuffer = nil
                 self.sidebarDrag = false
             })
-        guard let buffer = livePageResizeBuffer else { sidebarDrag = false; return }
+        guard let buffer = livePageResizeBuffer, let root = contentView else {
+            livePageResizeBuffer?.cancel()
+            sidebarDrag = false
+            return
+        }
+        let frameLayout = SidebarResizeFrameLayout(window: self, root: root,
+            isCurrent: { [weak self, weak buffer] in
+                guard let self, let buffer, self.liveResizeOwner == owner,
+                      self.livePageResizeBuffer === buffer else { return false }
+                return buffer.validateSidebarPublication()
+            })
         sidebarResizePublication = SidebarResizePublication(buffer: buffer,
             frameDriver: frameDriver ?? SidebarResizePublication.displayFrames(for: self),
+            afterFrame: { frameLayout.presentFrame() },
             publish: { [weak store] width in
+                let previous = SidebarWidth.shared.width
                 SidebarWidth.shared.setLiveWidth(width, available: store?.window?.contentView?.bounds.width)
+                frameLayout.didPublishWidth(from: previous, to: SidebarWidth.shared.width)
             })
         buffer.start()
     }
