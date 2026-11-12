@@ -78,3 +78,28 @@ and the transient-return case in `NativeFixturePolicySettlementTests`. All three
 cleanup runs passed, and independent review found no actionable issues. Logs are
 `/tmp/vane-665-policy-baseline.log` and `/tmp/vane-665-policy-preflight-{1,2,3}.log`;
 the hosted failure is retained in `/tmp/vane-665-shard3-failure.log`.
+
+## Visible-document readmission follow-up
+
+On `ad1c833f`, the hosted late-shadow fixture failed its pre-action admission,
+before the first DOM mutation. Terminal diagnostics showed a visible document and
+key window but omitted other native readiness flags. The exact hosted trigger is
+not proven. The cancelled sibling shards and aggregate gate are consequences of
+that shard-4 failure.
+
+Two controlled regressions now exercise withdrawn presentation and a one-point
+offscreen displacement. Both failed before the repair; the offscreen case
+reproduced the hosted visible/key/active/document-visible signature and secondary
+`InvalidTransition` report. Admission now restores only its still-attached owned
+window's placement/presentation within the original five-second budget. It retains
+the complete native predicate and rechecks native readiness after awaiting the
+WebKit visibility result. Diagnostics preserve the last unready native sample,
+including geometry, identity, process state, and screen bounds.
+
+After repair, the original discovery, stale-target, and current-fill assertions
+pass in both controls. Three sequential broader preflights each passed 38 tests
+and cleanup (`PasswordShadowAutofillTests|SidebarSnapshotReadinessTests|EmptyPinnedSectionGeometryTests`).
+Independent review found no actionable issues. Evidence remains in
+`/tmp/vane-665-ad1-shard4-failure.log`, `/tmp/vane-665-readmission-red.log`,
+`/tmp/vane-665-readmission-green.log`, and
+`/tmp/vane-665-readmission-preflight-{1,2,3}.log`.
