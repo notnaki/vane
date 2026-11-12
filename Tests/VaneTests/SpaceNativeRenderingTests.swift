@@ -1243,10 +1243,13 @@ import XCTest
             try await compatibilityWait { source.base.presentation() != nil && arriving.base.presentation() != nil }
             let timing = CABasicAnimation(keyPath: "position")
             timing.duration = 0.8
+            timing.beginTime = CACurrentMediaTime()
             timing.timingFunction = CAMediaTimingFunction(name: .linear)
             let sourceToken = source.animateNative(from: red, to: blue, animation: timing)
             try await Task.sleep(for: .milliseconds(200))
             let arrivalToken = try XCTUnwrap(arriving.joinNativeAnimation(from: source))
+            let tracked = red.mixed(towards: blue, fraction: 0.5)
+            arriving.track(tracked)
             try await Task.sleep(for: .milliseconds(80))
             // No point-progress callback has painted the arriving surface.
             let sourceRed = try self.firstColour(of: source, presented: true).redComponent
@@ -1254,6 +1257,9 @@ import XCTest
             XCTAssertEqual(arrivalRed, sourceRed, accuracy: 0.03,
                            "A late arrival must join the original timeline rather than restart its duration")
             XCTAssertTrue(arriving.nativeAnimating)
+            XCTAssertEqual(try self.firstColour(of: arriving).redComponent,
+                try XCTUnwrap(tracked.colors[0].nsColor.usingColorSpace(.deviceRGB)).redComponent, accuracy: 0.001,
+                "Point-model updates must remain readable beneath the unchanged compositor curve")
             arriving.finishNative(token: arrivalToken, wash: blue)
             source.finishNative(token: sourceToken, wash: red)
             XCTAssertEqual(try self.firstColour(of: arriving).redComponent,

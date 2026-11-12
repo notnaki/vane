@@ -1427,6 +1427,19 @@ private struct NativeSpacePreview: View {
     private var finishGround: ((Space?) -> Void)?
     private var animationID: UUID?
 
+    /// Selection stays queued until after its input action returns. A sidebar
+    /// hidden before that turn must still finish the committed profile change.
+    func armLanding(to target: Space, completion: @escaping () -> Void) {
+        guard isActive else { return }
+        ownsSidebarVisibility = true
+        self.completion = completion
+        restingSpaceID = target.id
+        source?.spaceGesture.withPresentationUpdate {
+            source?.spaceGesture.profileSlidesFavorites = includesFavorites
+            source?.spaceGesture.profileSliding = true
+        }
+    }
+
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
         ownsSidebarVisibility = true
@@ -1463,6 +1476,7 @@ private struct NativeSpacePreview: View {
                 self.finish()
             }
         }
+        let animationStart = CACurrentMediaTime()
         for (layer, from) in [(outgoingLayer, fromOutgoing), (incomingLayer, fromIncoming)] {
             let animation: CABasicAnimation
             if returning {
@@ -1495,6 +1509,9 @@ private struct NativeSpacePreview: View {
                 spring.duration = duration
                 animation = spring
             }
+            // Resolve one shared clock before copying the curve to the wash and
+            // footer, including a destination joining on a later display turn.
+            animation.beginTime = layer.convertTime(animationStart, from: nil)
             animation.fromValue = NSValue(point: from)
             animation.toValue = NSValue(point: layer.position)
             animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)

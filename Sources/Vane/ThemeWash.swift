@@ -126,7 +126,7 @@ struct NativeThemeWash: NSViewRepresentable {
             let destination = gesture?.neighbour.map {
                 ThemeWash.space($0, fallback: fallback, profiles: profiles, systemDark: systemDark)
             } ?? to
-            view?.apply(origin.mixed(towards: destination, fraction: fraction), duration: 0)
+            view?.track(origin.mixed(towards: destination, fraction: fraction))
         }
         gesture.captureGround = { [weak view] in view?.capturePresentation() }
         gesture.animateGround = { [weak view] origin, destination, start, end, animation, presentedStart in
@@ -179,6 +179,7 @@ struct NativeThemeWashCopy: NSViewRepresentable {
     private let grain = ThemeGrainSurface()
     private var target: ThemeWash?
     private var nativeToken: UUID?
+    private var followsNativeTimeline = false
     private let copies = NSHashTable<ThemeWashSurface>.weakObjects()
     private weak var copySource: ThemeWashSurface?
     private let copyOrigin: CGPoint
@@ -231,11 +232,37 @@ struct NativeThemeWashCopy: NSViewRepresentable {
     /// Copy the animation already installed on the compositor, preserving its
     /// original begin time instead of starting a new blend at profile reveal.
     func joinNativeAnimation(from source: ThemeWashSurface) -> UUID? {
-        guard source !== self, source.nativeAnimating else { return nil }
-        source.addCopy(self)
+        guard source !== self, source.nativeAnimating,
+              let clock = source.base.animation(forKey: "colors"), clock.beginTime != 0 else { return nil }
+        finishAnimations()
+        // Attachment already primed the model at the finger's current progress.
+        // Copy only the curve; adopting the source's endpoint would erase it.
+        source.copyInstalledAnimations(to: self)
         let token = UUID()
         nativeToken = token
+        followsNativeTimeline = true
         return token
+    }
+
+    func track(_ wash: ThemeWash) {
+        guard nativeAnimating else { apply(wash, duration: 0); return }
+        // Preserve point-model reads for a newly exposed host without restarting
+        // or removing the compositor-owned curve above those model values.
+        guard followsNativeTimeline else { return }
+        trackModel(wash)
+    }
+
+    private func trackModel(_ wash: ThemeWash) {
+        target = wash
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        base.colors = [wash.colors[0].nsColor.cgColor, wash.baseEnd.nsColor.cgColor]
+        overlay.colors = [NSColor.clear.cgColor, wash.colors[2].nsColor.cgColor]
+        overlay.opacity = Float(wash.overlay)
+        tint.opacity = Float(wash.opacity)
+        grain.layer?.opacity = Float(wash.grain * Look.grainMax)
+        CATransaction.commit()
+        for copy in copies.allObjects { copy.trackModel(wash) }
     }
 
     override func layout() {
@@ -260,6 +287,7 @@ struct NativeThemeWashCopy: NSViewRepresentable {
             copySource = nil
         }
         nativeToken = nil
+        followsNativeTimeline = false
         for layer in [base, overlay, tint, grain.layer].compactMap({ $0 }) { layer.removeAllAnimations() }
         for copy in copies.allObjects { copy.finishAnimations() }
     }
@@ -280,11 +308,8 @@ struct NativeThemeWashCopy: NSViewRepresentable {
                                          presentedStart: ThemeWashPresentation? = nil) -> UUID {
         nativeToken = nil
         if presentedStart == nil { apply(from, duration: 0) }
-        let timing = animation.copy() as! CABasicAnimation
-        // Zero asks CA to choose a start at commit time. Resolve it once so a
-        // surface mounted later can copy the same timeline rather than restart.
-        if timing.beginTime == 0 { timing.beginTime = CACurrentMediaTime() }
-        apply(to, duration: timing.duration, native: timing, start: from, presentedStart: presentedStart)
+        followsNativeTimeline = false
+        apply(to, duration: animation.duration, native: animation, start: from, presentedStart: presentedStart)
         let token = UUID()
         nativeToken = token
         return token
@@ -314,6 +339,12 @@ struct NativeThemeWashCopy: NSViewRepresentable {
                 animation.toValue = value
                 animation.duration = duration
                 if native == nil { animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut) }
+                else {
+                    // Point-model values may lag a joined native timeline. Hold
+                    // its endpoint until the owning landing explicitly releases it.
+                    animation.fillMode = .forwards
+                    animation.isRemovedOnCompletion = false
+                }
                 animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
                 layer.add(animation, forKey: key)
             }

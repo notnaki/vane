@@ -160,8 +160,14 @@ failures. Pixel thresholds, frame counts, reversal bounds, timing checkpoints an
 cleanup requirements remain unchanged. Every failed attempt and its logs remain
 retained; a passing focused selection does not replace broader or required CI.
 
-Broader serial native validation and the fresh review of this repair are pending.
-Protected required CI on the final PR integration remains a merge gate.
+Broader serial run [43170232542](https://github.com/notnaki/vane/actions/runs/43170232542)
+completed 438 tests with two existing skips and 76 failed assertions; its cleanup
+passed. All 179 iCloud tests, including all 32 secret tests, passed. The overall
+run remains red: failures include native wash clock/model contracts, prepared
+surface ownership, warm-owner fixtures and footer artwork parity. Independent
+review also identified the cached-wash model-priming contract. These failures are
+preserved as repair gates; the original assertions are retained. Protected
+required CI and fresh review on the final integration remain merge gates.
 
 ## Verification limits and remaining integration gates
 
