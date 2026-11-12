@@ -259,7 +259,7 @@ import XCTest
 
     private func checkLateShadowDiscovery(withdrawal: DiscoveryWithdrawal = .none) async throws {
         TestEnvironment.prepare()
-        let app = NSApplication.shared, policy = app.activationPolicy()
+        let app = NSApplication.shared, policy = app.activationPolicy(), originallyHidden = app.isHidden
         var loop: NativeFixtureApplicationLoop?
         var retire: (@MainActor @Sendable () -> Void)?
         var failure: (any Error)?
@@ -343,20 +343,34 @@ import XCTest
             failure = error
         }
         // Closing the last window does not deactivate an accessory application.
-        // Finish the activation lifecycle while its event loop is still owned;
-        // otherwise restoring .prohibited can race the next fixture's activation.
+        // Hiding our host hands activation back to the system. Observe that
+        // handoff before stopping its loop and restoring .prohibited, so the
+        // next fixture cannot overlap an unfinished activation lifecycle.
         retire?()
         if let loop {
             if policy == .prohibited {
-                app.deactivate()
+                app.hide(nil)
                 do {
                     try await wait("shadow host deactivation", diagnostics: {
-                        "appActive=\(app.isActive) processActive=\(NSRunningApplication.current.isActive)"
-                    }) { !app.isActive && !NSRunningApplication.current.isActive }
-                    print("SHADOW_RETIREMENT inactive=true running=\(app.isRunning)")
+                        "appActive=\(app.isActive) processActive=\(NSRunningApplication.current.isActive) appHidden=\(app.isHidden) processHidden=\(NSRunningApplication.current.isHidden)"
+                    }) {
+                        !app.isActive && !NSRunningApplication.current.isActive &&
+                            app.isHidden && NSRunningApplication.current.isHidden
+                    }
                 } catch {
                     if failure == nil { failure = error }
                     else { XCTFail("Shadow discovery deactivation also failed: \(error)") }
+                }
+                if !originallyHidden { app.unhideWithoutActivation() }
+                do {
+                    try await wait("shadow host hidden-state restoration") {
+                        app.isHidden == originallyHidden && NSRunningApplication.current.isHidden == originallyHidden &&
+                            !app.isActive && !NSRunningApplication.current.isActive
+                    }
+                    print("SHADOW_RETIREMENT inactive=true running=\(app.isRunning) restoredHidden=\(originallyHidden)")
+                } catch {
+                    if failure == nil { failure = error }
+                    else { XCTFail("Shadow discovery hidden-state restoration also failed: \(error)") }
                 }
             }
             do { try await loop.close() }
