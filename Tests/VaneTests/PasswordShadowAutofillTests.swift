@@ -55,7 +55,10 @@ import XCTest
                       diagnostics: (() async -> String)? = nil, _ condition: () async throws -> Bool) async throws {
         let deadline = requestedDeadline ?? ContinuousClock.now.advanced(by: .seconds(5))
         while ContinuousClock.now < deadline {
-            if try await condition() { return }
+            if try await condition() {
+                if requestedDeadline != nil && ContinuousClock.now >= deadline { break }
+                return
+            }
             try await Task.sleep(for: .milliseconds(20))
         }
         let details = await diagnostics?() ?? ""
