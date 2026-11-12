@@ -35,6 +35,17 @@ enum UIAnimation: String, CaseIterable, Identifiable, Sendable {
         speeds.contains(speed) ? speed : 1
     }
 
+    /// Slider positions are evenly spaced; the speed multipliers are not.
+    static func step(for speed: Double) -> Double {
+        Double(speeds.firstIndex(of: normalized(speed)) ?? 0)
+    }
+
+    static func speed(atStep step: Double) -> Double {
+        guard step.isFinite else { return 1 }
+        let index = min(max(step.rounded(), 0), Double(speeds.count - 1))
+        return speeds[Int(index)]
+    }
+
     func speed(in defaults: UserDefaults = .vane) -> Double {
         Self.normalized(defaults.double(forKey: key))
     }

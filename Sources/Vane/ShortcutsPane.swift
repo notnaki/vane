@@ -46,13 +46,19 @@ import SwiftUI
 
     var body: some View {
         GeometryReader { geometry in
-            HStack(alignment: .top, spacing: Look.inset * 2) {
-                shortcutList
-                guidance
-                    .frame(width: min(280, geometry.size.width * 0.36))
+            VStack(spacing: Look.inset * 1.5) {
+                SettingsSearchField("Search shortcuts", text: $query,
+                    label: "Search Shortcuts",
+                    hint: "Search by feature name or keys, such as new tab or cmd t.")
+                    .onChange(of: query) { stopRecording() }
+                HStack(alignment: .top, spacing: Look.inset * 2) {
+                    shortcutList
+                    guidance
+                        .frame(width: min(280, geometry.size.width * 0.36))
+                }
             }
         }
-        .padding(.top, Look.inset * 3)
+        .padding(.top, Look.inset * 2)
         .onAppear { revision += 1 }
         .onDisappear { stopRecording() }
         .vaneMotionPolicy()
@@ -77,8 +83,6 @@ import SwiftUI
 
     private var shortcutList: some View {
         VStack(spacing: 0) {
-            searchField
-            Hairline()
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
@@ -125,30 +129,6 @@ import SwiftUI
         .clipShape(.rect(cornerRadius: Look.pillRadius))
         .hairline(radius: Look.pillRadius, Look.cardStroke)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var searchField: some View {
-        HStack(spacing: Look.inset) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            TextField("Feature name or shortcut (like “Command T”)", text: $query)
-                .textFieldStyle(.plain)
-                .font(Look.text)
-                .onChange(of: query) { stopRecording() }
-                .accessibilityLabel("Search Shortcuts")
-                .accessibilityHint("Search by feature name or keys, such as new tab or cmd t.")
-            if !query.isEmpty {
-                Button { query = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Clear search")
-            }
-        }
-        .padding(.horizontal, Look.cardInset)
-        .frame(height: Look.settingsRow)
-        .background(chromeTheme.controlFill)
     }
 
     // MARK: - Guidance
