@@ -1546,6 +1546,8 @@ private struct NativeSpacePreview: View {
             }
         }
         let animationStart = CACurrentMediaTime()
+        var groundTiming: CABasicAnimation?
+        var groundFraction = 0.0
         for (layer, from) in [(outgoingLayer, fromOutgoing), (incomingLayer, fromIncoming)] {
             let animation: CABasicAnimation
             if returning {
@@ -1586,21 +1588,27 @@ private struct NativeSpacePreview: View {
             animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
             layer.add(animation, forKey: "space-position")
             if layer === outgoingLayer {
-                releaseDestinationGround()
-                finishGround?(source?.swipeSpace)
-                let start = Double(min(1, abs((from.x - outgoingLayer.bounds.width * outgoingLayer.anchorPoint.x - contentInset) / travelWidth)))
-                finishGround = source?.spaceGesture.animateGround?(preparedOrigin, preparedTarget,
-                    start, returning ? 0 : 1, animation, presentedGround)
-                if let destination {
-                    destination.spaceGesture.nativeGroundDidUpdate = { [weak self] in self?.joinDestinationGround() }
-                    joinDestinationGround()
-                }
-                (superview as? BrowserWindowHost)?.footerPresentation.animate(
-                    origin: preparedOrigin.id, target: preparedTarget.id,
-                    from: start, to: returning ? 0 : 1, timing: animation)
+                groundTiming = animation
+                groundFraction = Double(min(1, abs((from.x - outgoingLayer.bounds.width * outgoingLayer.anchorPoint.x - contentInset) / travelWidth)))
             }
         }
         CATransaction.commit()
+        // Completion belongs to the two visible row surfaces. The source wash
+        // can be parked, and its retained copies deliberately hold their last
+        // frame until finish() releases them; they must not gate that release.
+        if let groundTiming {
+            releaseDestinationGround()
+            finishGround?(source?.swipeSpace)
+            finishGround = source?.spaceGesture.animateGround?(preparedOrigin, preparedTarget,
+                groundFraction, returning ? 0 : 1, groundTiming, presentedGround)
+            if let destination {
+                destination.spaceGesture.nativeGroundDidUpdate = { [weak self] in self?.joinDestinationGround() }
+                joinDestinationGround()
+            }
+            (superview as? BrowserWindowHost)?.footerPresentation.animate(
+                origin: preparedOrigin.id, target: preparedTarget.id,
+                from: groundFraction, to: returning ? 0 : 1, timing: groundTiming)
+        }
         if let screen = window?.screen ?? NSScreen.main {
             progressLink?.invalidate()
             let link = screen.displayLink(target: self, selector: #selector(advanceProgress(_:)))

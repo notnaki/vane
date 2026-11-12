@@ -1221,7 +1221,7 @@ struct PaletteSizing {
                                  font: sidebarAddress ? Look.Typography.addressInput.native
                                      : Look.Typography.input.native,
                                  focusRequest: fieldFocusRequest,
-                                 canFocus: { acceptingInput }, completion: completion?.text,
+                                 canFocus: { acceptingInput && store.profileVisible }, completion: completion?.text,
                                  onKey: key)
                 }
                 if let candidate = bangCandidate {

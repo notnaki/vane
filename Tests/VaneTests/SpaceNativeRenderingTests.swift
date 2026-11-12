@@ -393,7 +393,7 @@ import XCTest
         // its own coverage in SpaceSwipeLandingTests.
         store.switchTo(space: spaces[1])
         let tab = store.newBlankTab(focus: false)
-        tab.park(url: URL(string: "https://example.test/tint")!, Parked(title: "Tint fixture"))
+        tab.park(url: URL(string: "about:blank")!, Parked(title: "Tint fixture"))
         store.current = tab.id
         // This case isolates tint interpolation. Admit the target's existing
         // page before parking it, so first WebKit construction is not measured
@@ -402,7 +402,8 @@ import XCTest
             window.contentView?.layoutSubtreeIfNeeded()
             return tab.existingWeb?.window === window && tab.existingWeb?.isLoading == false
                 && SidebarNativeReadinessCoordinator.shared.isReady(
-                    SidebarNativeReadinessScope(store: store, spaceID: spaces[1].id))
+                    SidebarNativeReadinessScope(store: store, spaceID: spaces[1].id),
+                    allowingUnregistered: true)
         }
         store.switchTo(space: spaces[0])
         store.palette = nil
@@ -424,7 +425,7 @@ import XCTest
                   NSApp.modalWindow == nil, window.attachedSheet == nil,
                   SidebarNativeReadinessCoordinator.shared.isReady(
                     SidebarNativeReadinessScope(store: store, spaceID: spaces[0].id),
-                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled),
+                    allowingUnregistered: true),
                   surface.base.presentation() != nil,
                   let presented = try? self.firstColour(of: surface, presented: true).redComponent,
                   let model = try? self.firstColour(of: surface).redComponent else { return false }
@@ -1057,13 +1058,16 @@ import XCTest
         let sign = CGFloat(direction)
         try await Task.sleep(for: .milliseconds(150))
         try await compatibilityWait {
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
             if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
             if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
             return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
                 && window.isKeyWindow && store.window === window && store.profileVisible
+                && store.spaceGesture.sectionsView?.window === window
                 && SidebarNativeReadinessCoordinator.shared.isReady(
                     SidebarNativeReadinessScope(store: store, spaceID: origin.id),
-                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)
+                    allowingUnregistered: true)
         }
         monitor.track(-sign * 60, width: width, in: store)
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
