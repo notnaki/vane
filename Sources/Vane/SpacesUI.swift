@@ -387,7 +387,9 @@ extension View {
     /// The sidebar's Space-owned sections sliding in from the direction of travel while the
     /// tint cross-fades under them. Within a profile the shared favourites stay in place;
     /// at a profile boundary the grid travels with the incoming profile's sections.
-    func spaceSlide(_ store: TabStore) -> some View { modifier(SpaceSlide(store: store)) }
+    func spaceSlide(_ store: TabStore, identity: UUID, scope: SidebarNativeReadinessScope) -> some View {
+        modifier(SpaceSlide(store: store, identity: identity, readinessScope: scope))
+    }
 
     /// Two-finger horizontal swipe on the sidebar switches Space.
     func spaceSwipe(_ store: TabStore) -> some View {
@@ -409,7 +411,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
     @Environment(\.nativeCachedSidebarBatches) private var nativeCachedBatches
     @State private var readinessPinnedRows = Feel02SidebarRowsCache()
     @State private var readinessTodayRows = Feel02SidebarRowsCache()
-    @State private var readinessOwnerID = UUID()
+    @State private var liveIdentity = LiveSidebarIdentity()
 
     init(store: TabStore, favorites: Favorites, sections: Sections) {
         _store = SidebarObserved(wrappedValue: store)
@@ -432,28 +434,28 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
         store.window?.contentView is BrowserWindowHost && gesture.sectionsView != nil
     }
 
-    private func declareNativePopulation(_ scope: SidebarNativeReadinessScope) -> [String: [String]]? {
+    private func declareNativePopulation(_ scope: SidebarNativeReadinessScope, ownerID: UUID) -> [String: [String]]? {
         guard nativeCachedBatches || NativeCachedSidebarBatchesExperiment.enabled else { return nil }
         let pinned = readinessPinnedRows.resolve(in: store, shape: store.pins).rows
         let today = readinessTodayRows.resolve(in: store, shape: store.todayShape).rows
         let sections = ["today": today.map(\.id),
                         "pinned": store.pinnedSectionCollapsed ? [] : pinned.map(\.id)]
-        SidebarNativeReadinessCoordinator.shared.expectPopulation(scope, sections: sections, populationOwnerID: readinessOwnerID)
+        SidebarNativeReadinessCoordinator.shared.expectPopulation(scope, sections: sections, populationOwnerID: ownerID)
         return sections
     }
 
     var body: some View {
         let readinessScope = SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID)
-        let readinessSections = declareNativePopulation(readinessScope)
+        let covered = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.isActive == true
+        let readinessOwnerID = liveIdentity.resolve(spaceID: store.currentSpaceID, covered: covered)
+        let readinessSections = declareNativePopulation(readinessScope, ownerID: readinessOwnerID)
 
         // Keep both sections in one tree when a gesture starts, reverses or springs back.
         // Only profile boundaries move the grid; ordinary Space switches leave it fixed.
         VStack(spacing: Look.rowGap) {
             favorites.offset(x: gesture.travelsFavorites ? gesture.liveContentDrag : 0)
             ZStack(alignment: .topLeading) {
-                sections.spaceSlide(store)
-                    .environment(\.sidebarNativeReadinessScope, readinessScope)
-                    .environment(\.sidebarNativeReadinessOwnerID, readinessOwnerID)
+                sections.spaceSlide(store, identity: readinessOwnerID, scope: readinessScope)
                     .transaction(value: store.currentSpaceID) {
                         if gesture.swiping {
                             $0.animation = nil
@@ -593,21 +595,27 @@ private struct SpaceSlide: ViewModifier {
     @ObservedObject var store: TabStore
     @ObservedObject private var gesture: SpaceGesture
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var liveIdentity = LiveSidebarIdentity()
+    let identity: UUID
+    let readinessScope: SidebarNativeReadinessScope
 
-    init(store: TabStore) {
+    init(store: TabStore, identity: UUID, readinessScope: SidebarNativeReadinessScope) {
         self.store = store
+        self.identity = identity
+        self.readinessScope = readinessScope
         gesture = store.spaceGesture
     }
 
     func body(content: Content) -> some View {
         let forwards = store.spaceDirection > 0
-        let covered = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.isActive == true
         content
             // Native travel already owns replacement pixels. Keep its covered live
             // scroll/layout shell; rebuilding it here blocks the next finger sample.
             // Uncovered keyboard/menu changes retain their removal/insertion transition.
-            .id(liveIdentity.resolve(spaceID: store.currentSpaceID, covered: covered))
+            // Bind authority inside the identity boundary. A removal subtree
+            // keeps its old lease and cannot claim the replacement's ticket.
+            .environment(\.sidebarNativeReadinessScope, readinessScope)
+            .environment(\.sidebarNativeReadinessOwnerID, identity)
+            .id(identity)
             .transition(.asymmetric(
                 insertion: .move(edge: forwards ? .trailing : .leading).combined(with: .opacity),
                 removal: .move(edge: forwards ? .leading : .trailing).combined(with: .opacity)))
@@ -2031,27 +2039,29 @@ private struct SpaceSwipe: ViewModifier {
                 // captured rows before their animation clock starts; both routes
                 // can otherwise spend the visible landing's early frames mounting.
                 slide.armLanding(to: destination, completion: finish)
-                // Build only this committed target while source still owns the
-                // window. The queued handoff can then meet its landing deadline
-                // without selecting the destination inside the input action.
+                // Prepare the committed destination while source still owns
+                // input, then submit the captured rows' travel in this action.
+                // Visible travel must not wait behind another live-host layout.
                 Windows.prepareHop(store, to: destination)
-                DispatchQueue.main.async { [weak self, weak store, weak host, weak slide] in
-                    guard let self, self.transition == token, let store, let host, let slide,
-                          slide.isActive, host.spaceSlide === slide,
-                          store.currentSpaceID == self.landingFrom,
-                          store.spaceGesture.neighbour?.id == destination.id else { return }
-                    let window = store.window
-                    _ = self.activate(destination, in: store)
-                    guard let window, host.window === window, host.spaceSlide === slide,
-                          slide.isActive,
-                          TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
-                        slide.cancel()
-                        return
+                slide.start(duration: duration, completion: finish)
+                CATransaction.flush()
+                // Queue on AppKit's common-mode loop. Window authority remains
+                // with source until this input action returns.
+                RunLoop.main.perform(inModes: [.common]) { [weak self, weak store, weak host, weak slide] in
+                    MainActor.assumeIsolated {
+                        guard let self, self.transition == token, let store, let host, let slide,
+                              slide.isActive, host.spaceSlide === slide,
+                              store.currentSpaceID == self.landingFrom,
+                              store.spaceGesture.neighbour?.id == destination.id else { return }
+                        let window = store.window
+                        _ = self.activate(destination, in: store)
+                        guard let window, host.window === window, host.spaceSlide === slide,
+                              slide.isActive,
+                              TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
+                            slide.cancel()
+                            return
+                        }
                     }
-                    host.layoutSubtreeIfNeeded()
-                    window.displayIfNeeded()
-                    CATransaction.flush()
-                    slide.start(duration: duration, completion: finish)
                 }
             } else {
                 slide.start(duration: duration, completion: finish)

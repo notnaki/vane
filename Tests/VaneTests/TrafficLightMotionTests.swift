@@ -39,6 +39,9 @@ import XCTest
         store.window = window
         let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
+        // Match BrowserWindowHost: the native window supplies this root's
+        // size, so floating chrome must not also trigger three intrinsic fits.
+        host.sizingOptions = []
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()

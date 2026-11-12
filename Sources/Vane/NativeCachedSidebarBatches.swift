@@ -37,6 +37,7 @@ struct NativeCachedSidebarBatchCounts: Sendable {
     var residentRowRange: Range<Int> { get }
     var stagingEnabled: Bool { get }
     var attachedLogicalRows: Int { get }
+    var populationScope: SidebarNativeReadinessScope? { get }
     var cachedLogicalRows: Int { get }
     var attachedGraphCount: Int { get }
     /// Nominal viewport plus two endpoint owners; interaction keepalives,
@@ -520,6 +521,7 @@ private final class NativeBatchMouseObservation {
     var residentRowRange: Range<Int> { rowWindow.range }
     var stagingEnabled: Bool { false }
     var attachedLogicalRows: Int { mounted.reduce(0) { $0 + (groups[$1]?.count ?? 0) } }
+    var populationScope: SidebarNativeReadinessScope? { activeScope }
     var cachedLogicalRows: Int { cache.keys.reduce(0) { $0 + (groups[$1]?.count ?? 0) } }
     var attachedGraphCount: Int { mounted.count }
     var nominalAttachedGraphBudget: Int { usesThreeBatchBudget ? requestedMaxGraphBudget + 2 : 0 }

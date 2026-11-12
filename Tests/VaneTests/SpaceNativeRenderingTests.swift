@@ -182,7 +182,10 @@ import XCTest
                     && store.window === window && store.profileVisible
                     && SidebarNativeReadinessCoordinator.shared.isReady(
                         SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID))
-                    && self.warmOwnerReports(in: host).contains { $0.attachedLogicalRows >= 24 }
+                    && self.warmOwnerReports(in: host).contains {
+                        $0.populationScope == SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID)
+                            && $0.attachedLogicalRows >= 24
+                    }
             }
             if ProcessInfo.processInfo.environment["VANE_PROFILE_LIFETIME_TRACE"] == "1" {
                 print("WARM_ADMISSION test=\(name) active=\(NSApp.isActive) key=\(window.isKeyWindow) liveReady=\(SidebarNativeReadinessCoordinator.shared.isReady(SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID))) pressure=\(SidebarWarmOwnerBudget.underPressure) revocations=\(warmRevocations)")
