@@ -50,3 +50,11 @@ Native profiling and the optimized capture show a separate UI graph bottleneck a
 - [ ] Integrate only continuous admitted sidebar buffer publication. Flush latest covered width before release reconciliation; cancel pending values and invalidate the link on ownership loss or newer commands. Preserve exact buffer barriers, fallback behavior, resize detent/clamp/collapse/persistence/AX and discrete interactions.
 - [ ] Write meaningful RED/GREEN models for multiple proposals per frame, release flush, cancellation/owner replacement, latest uncovered versus queued covered width and in-flight reversal. Keep all native bounds unchanged.
 - [ ] Run covering resize/integration checks and independent source review; measure actual window/sidebar/coverage again. Debug and optimized RED evidence remains retained; no unchanged retry may count as a repair.
+
+### Task 3: Honor covered native window display requests
+
+The narrowed width build passes actual sidebar motion and all painted coverage. Window steady cadence passes but its first native move at~73ms reaches captured pixels at115ms. The existing commit path always passes displayfalse to AppKit and only marks views dirty.
+
+- [ ] Write a regression for a native frame commit that requests immediate display versus deferred display, recording geometry at the display call without ordering a test window.
+- [ ] Honor the display request synchronously after the admitted native frame change, preserving coverage and avoiding an additional root layout per input.
+- [ ] Validate covering models/product/pure and independent review, then measure the unchanged first-visible and steady-motion bounds.
