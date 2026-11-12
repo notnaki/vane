@@ -29,7 +29,7 @@ final class UpdateDownload: NSObject, URLSessionDataDelegate, @unchecked Sendabl
     private var cancelled = false
     private var deadline: TimeInterval = 0
 
-    private init(destination: URL, maxBytes: Int64, trusted: @escaping @Sendable (URL) -> Bool,
+    init(destination: URL, maxBytes: Int64, trusted: @escaping @Sendable (URL) -> Bool,
                  progress: @escaping @Sendable (Int64, Int64) -> Void,
                  completion: @escaping @Sendable (Result<URL, Error>) -> Void) throws {
         self.destination = destination
@@ -110,6 +110,10 @@ final class UpdateDownload: NSObject, URLSessionDataDelegate, @unchecked Sendabl
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+        // A declined redirect can still deliver its original response before
+        // cancellation completes. Preserve its trust failure rather than turning
+        // that 302 into a retryable HTTP failure and requesting the fallback.
+        guard failure == nil else { completionHandler(.cancel); return }
         guard let http = response as? HTTPURLResponse, let url = http.url, trusted(url) else {
             failure = Failure.invalidResponse
             completionHandler(.cancel)
