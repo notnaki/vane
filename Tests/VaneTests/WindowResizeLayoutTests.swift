@@ -230,7 +230,22 @@ import XCTest
                 }
         ]
         defer { observers.forEach(NotificationCenter.default.removeObserver) }
+#if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        let trace = environment["CI"] == "true" || environment["VANE_RESIZE_TIMING"] == "1"
+            ? ResizePaintTrace(label: "sidebar=\(sidebarStore != nil),direct=\(direct),mixed=\(mixedAxes)") : nil
+        trace?.install()
+        defer { trace?.stop(); trace?.dump() }
+        trace?.append("fixture.capture.begin", time: CACurrentMediaTime(), fields: [
+            "window": String(window.windowNumber), "scale": String(Double(window.backingScaleFactor)),
+            "os": ProcessInfo.processInfo.operatingSystemVersionString,
+            "page": String(describing: ObjectIdentifier(web)), "webFrame": NSStringFromRect(web.frame),
+            "zoom": String(Double(web.pageZoom)), "proposalInterval": String(describing: proposalInterval)
+        ])
+        let sampler = ResizePixelSampler(trace: trace)
+#else
         let sampler = ResizePixelSampler()
+#endif
         try await sampler.start(window)
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
@@ -257,8 +272,17 @@ import XCTest
                 : widths.map { NSSize(width: CGFloat($0), height: frameHeight) }
             for size in sizes {
                 let deadline = ContinuousClock.now + proposalInterval
+#if DEBUG
+                trace?.append("fixture.input", time: CACurrentMediaTime(), fields: ["size": NSStringFromSize(size)])
+#endif
                 if sidebarStore != nil {
-                    if !window.updateSidebarResize(size.width) {
+                    let handled = window.updateSidebarResize(size.width)
+#if DEBUG
+                    trace?.append("fixture.sidebar.route", time: CACurrentMediaTime(), fields: [
+                        "bufferHandled": String(handled), "requested": String(Double(size.width))
+                    ])
+#endif
+                    if !handled {
                         SidebarWidth.shared.setLiveWidth(size.width, available: window.contentView?.bounds.width)
                     }
                 } else {
@@ -267,6 +291,14 @@ import XCTest
                         window.setFrame(NSRect(origin: window.frame.origin, size: accepted), display: false)
                     }
                 }
+#if DEBUG
+                trace?.append("fixture.input.returned", time: CACurrentMediaTime(), fields: [
+                    "sidebar": String(Double(SidebarWidth.shared.width)), "webFrame": NSStringFromRect(web.frame),
+                    "parentBounds": web.superview.map { NSStringFromRect($0.bounds) } ?? "nil",
+                    "metadataSidebar": (web.superview as? WebHost).map { String(Double($0.resizeLayout.sidebarWidth)) } ?? "nil",
+                    "metadataRevision": (web.superview as? WebHost).map { String($0.resizeLayoutRevision) } ?? "nil"
+                ])
+#endif
                 try await ContinuousClock().sleep(until: deadline)
                 if mixedAxes {
                     // Keep sampling through each paint so coalescing cannot skip
@@ -274,8 +306,15 @@ import XCTest
                     try await compatibilityWait { !window.isPreparingPageResize && window.frame.size == size }
                 }
             }
+#if DEBUG
+            trace?.append("fixture.release", time: CACurrentMediaTime())
+#endif
             if sidebarStore != nil {
-                if !window.endSidebarResize(228, completion: {}) {
+                let handled = window.endSidebarResize(228, completion: {})
+#if DEBUG
+                trace?.append("fixture.sidebar.releaseRoute", time: CACurrentMediaTime(), fields: ["bufferHandled": String(handled)])
+#endif
+                if !handled {
                     SidebarWidth.shared.setLiveWidth(228, available: window.contentView?.bounds.width)
                 }
             } else { window.endPageResize() }
@@ -285,8 +324,17 @@ import XCTest
             try await presentation(web)
             try await sampler.captureFinalFrame(window)
             try await sampler.stop()
+#if DEBUG
+            trace?.append("fixture.capture.stopped", time: CACurrentMediaTime(), fields: [
+                "interrupted": String(owner.interrupted), "sidebar": String(Double(SidebarWidth.shared.width)),
+                "webFrame": NSStringFromRect(web.frame)
+            ])
+#endif
             let prefix = "\(direct ? "native" : "browser")-\(ProcessInfo.processInfo.processIdentifier)"
-            try sampler.frames.saveImages(prefix: prefix)
+            let imagePrefix = try sampler.frames.saveImages(prefix: prefix)
+#if DEBUG
+            trace?.append("fixture.artifacts", time: CACurrentMediaTime(), fields: ["prefix": "/tmp/vane-resize-" + imagePrefix])
+#endif
             let samples = sampler.frames.samples.filter { $0.time >= began && $0.time <= ended }
             XCTAssertGreaterThan(samples.count, 3, "Capture actual WindowServer frames during resizing")
             XCTAssertFalse(owner.interrupted, "Foreground admission was lost during the native resize capture")
@@ -344,6 +392,10 @@ import XCTest
 @MainActor private final class ResizePixelSampler: NSObject, SCStreamOutput {
     nonisolated let frames = ResizePixelFrames()
     private var stream: SCStream?
+#if DEBUG
+    nonisolated let trace: ResizePaintTrace?
+    init(trace: ResizePaintTrace? = nil) { self.trace = trace; super.init() }
+#endif
 
     func start(_ window: NSWindow) async throws {
         let content = try await SCShareableContent.currentProcess
@@ -418,11 +470,20 @@ import XCTest
     nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
                             of type: SCStreamOutputType) {
         guard type == .screen, sampleBuffer.isValid else { return }
+#if DEBUG
+        let received = trace == nil ? nil : CACurrentMediaTime()
+#endif
         let time = CMTimeGetSeconds(sampleBuffer.presentationTimeStamp)
         guard time.isFinite else { return }
         let info = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
             as? [[SCStreamFrameInfo: Any]]
         let status = info?.first?[.status] as? Int
+#if DEBUG
+        trace?.append("capture.received", time: received ?? time, fields: [
+            "pts": String(time), "status": status.map(String.init) ?? "nil",
+            "previousGap": frames.last.map { String($0.gap) } ?? "nil"
+        ])
+#endif
         if status == SCFrameStatus.idle.rawValue { frames.repeatFrame(time); return }
         guard status == SCFrameStatus.complete.rawValue, let pixel = sampleBuffer.imageBuffer else { return }
         let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
@@ -435,7 +496,7 @@ import XCTest
         let valid = CGRect(x: rect.minX * scale, y: rect.minY * scale,
                            width: rect.width * scale, height: rect.height * scale)
             .intersection(CGRect(x: 0, y: 0, width: width, height: height))
-        if frames.last == nil { print("RESIZE_CAPTURE info=\(String(describing: info?.first))") }
+        if frames.last == nil { frames.recordLog("RESIZE_CAPTURE info=\(String(describing: info?.first))") }
         record(pixel, valid: valid, pixelsPerPoint: pixelsPerPoint, time: time)
     }
 
@@ -477,8 +538,17 @@ import XCTest
         let snapshot = frames.needsImage(for: gap)
             ? ResizePixelFrames.Image(data: Data(bytes: bytes, count: CVPixelBufferGetBytesPerRow(pixel) * height),
                                       width: width, height: height, stride: CVPixelBufferGetBytesPerRow(pixel)) : nil
-        if snapshot != nil { print("RESIZE_CAPTURE_BOUND time=\(time) rect=\(valid) red=\(String(describing: firstRed))...\(String(describing: lastRed)) right=\(String(describing: rightWindow)) gap=\(gap)") }
+        if snapshot != nil { frames.recordLog("RESIZE_CAPTURE_BOUND time=\(time) rect=\(valid) red=\(String(describing: firstRed))...\(String(describing: lastRed)) right=\(String(describing: rightWindow)) gap=\(gap)") }
         let markerGap = lastRed.flatMap { red in rightWindow.map { Double($0 - red) / pixelsPerPoint } } ?? 10_000
+#if DEBUG
+        trace?.append("capture.parsed", time: CACurrentMediaTime(), fields: [
+            "pts": String(time), "gap": String(gap), "markerGap": String(markerGap),
+            "valid": NSStringFromRect(valid), "pixelsPerPoint": String(pixelsPerPoint),
+            "pixels": "\(width)x\(height)", "firstRed": firstRed.map(String.init) ?? "nil",
+            "lastRed": lastRed.map(String.init) ?? "nil", "lastPainted": lastPainted.map(String.init) ?? "nil",
+            "rightWindow": rightWindow.map(String.init) ?? "nil"
+        ])
+#endif
         frames.append(time: time, gap: gap, markerGap: markerGap, image: snapshot)
     }
 
@@ -493,8 +563,10 @@ private final class ResizePixelFrames: @unchecked Sendable {
     private var baselineImage: Image?
     private var worstImage: Image?
     private var worstGap = -Double.infinity
+    private var logs: [String] = []
     var last: Frame? { lock.withLock { recorded.last } }
     var samples: [Frame] { lock.withLock { recorded } }
+    func recordLog(_ line: String) { lock.withLock { if logs.count < 256 { logs.append(line) } } }
     func needsImage(for gap: Double) -> Bool { lock.withLock { baselineImage == nil || gap > worstGap } }
     func append(time: Double, gap: Double, markerGap: Double, image: Image?) {
         lock.withLock {
@@ -506,7 +578,8 @@ private final class ResizePixelFrames: @unchecked Sendable {
     func repeatFrame(_ time: Double) {
         lock.withLock { if let last = recorded.last { recorded.append(Frame(time: time, gap: last.gap, markerGap: last.markerGap)) } }
     }
-    @MainActor func saveImages(prefix: String) throws {
+    @discardableResult @MainActor func saveImages(prefix: String) throws -> String {
+        for line in lock.withLock({ logs }) { print(line) }
         let attemptPrefix = "\(prefix)-\(UUID().uuidString)"
         let images = lock.withLock { [("baseline", baselineImage), ("worst", worstImage)] }
         for (name, snapshot) in images {
@@ -522,5 +595,6 @@ private final class ResizePixelFrames: @unchecked Sendable {
             try data.write(to: output)
             print("RESIZE_ARTIFACT path=\(output.path)")
         }
+        return attemptPrefix
     }
 }

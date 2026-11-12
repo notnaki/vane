@@ -20,6 +20,15 @@ import WebKit
         guard let viewport = viewportSize(nextSize ?? web.bounds.size, insets: web.safeAreaInsets, zoom: web.pageZoom) else { return }
 #if DEBUG
         ResizeTimingDiagnostics.record("style.javascript.dispatched", width: viewport.width, height: viewport.height)
+        let traceID = ResizeTimingDiagnostics.stateSink == nil ? nil : UUID()
+        let tracePage = traceID.map { _ in String(describing: ObjectIdentifier(web)) }
+        if let traceID, let tracePage {
+            ResizeTimingDiagnostics.recordState("style.javascript.dispatched", fields: [
+                "operation": traceID.uuidString, "page": tracePage,
+                "viewport": NSStringFromSize(viewport), "frame": NSStringFromRect(web.frame),
+                "bounds": NSStringFromRect(web.bounds), "zoom": String(Double(web.pageZoom))
+            ])
+        }
 #endif
         web.evaluateJavaScript(source + "(\(Double(viewport.width)), \(Double(viewport.height)))", in: nil, in: world) { result in
 #if DEBUG
@@ -29,6 +38,12 @@ import WebKit
             case .failure: event = "style.javascript.failed"
             }
             ResizeTimingDiagnostics.record(event, width: viewport.width, height: viewport.height)
+            if let traceID, let tracePage {
+                ResizeTimingDiagnostics.recordState(event, fields: [
+                    "operation": traceID.uuidString, "page": tracePage,
+                    "viewport": NSStringFromSize(viewport)
+                ])
+            }
 #endif
         }
     }
@@ -40,6 +55,11 @@ import WebKit
     }
 
     static func finish(_ web: WKWebView) {
+#if DEBUG
+        ResizeTimingDiagnostics.recordState("style.finish.dispatched", fields: [
+            "page": String(describing: ObjectIdentifier(web)), "frame": NSStringFromRect(web.frame)
+        ])
+#endif
         web.evaluateJavaScript("""
         (() => { const state = globalThis.__vaneResizeStyle;
           if (state?.active) { state.sheet.disabled = true; state.active = false; }

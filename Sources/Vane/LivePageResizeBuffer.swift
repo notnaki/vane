@@ -6,10 +6,18 @@ import WebKit
 /// format log messages; the fixture installs a sink only for an opted-in run.
 @MainActor enum ResizeTimingDiagnostics {
     static var sink: ((String, TimeInterval, CGFloat?, CGFloat?) -> Void)?
+    static var stateSink: ((String, TimeInterval, [String: String]) -> Void)?
 
     static func record(_ event: String, width: CGFloat? = nil, height: CGFloat? = nil) {
         guard let sink else { return }
         sink(event, CACurrentMediaTime(), width, height)
+    }
+
+    /// Keep state collection lazy: the ordinary DEBUG path must not construct
+    /// dictionaries, format native geometry, or read a clock for this trace.
+    static func recordState(_ event: String, fields: @autoclosure () -> [String: String]) {
+        guard let stateSink else { return }
+        stateSink(event, CACurrentMediaTime(), fields())
     }
 }
 #endif
@@ -204,6 +212,59 @@ struct LivePageResizeAnchor {
     private var submittedSidebarRevisions: [UInt]?
     var isPreparing: Bool { active && (ending || !pendingPaints.isEmpty) }
 
+#if DEBUG
+    private func trace(_ event: String, token: UUID? = nil, page: ObjectIdentifier? = nil, sidebar: CGFloat? = nil) {
+        guard let stateSink = ResizeTimingDiagnostics.stateSink else { return }
+        let timestamp = CACurrentMediaTime()
+        var fields: [String: String] = [
+            "buffer": String(describing: ObjectIdentifier(self)), "generation": generation.uuidString,
+            "callbackGeneration": token?.uuidString ?? "nil", "callbackPage": page.map(String.init(describing:)) ?? "nil",
+            "active": String(active), "ending": String(ending), "bypass": String(bypassForDrag),
+            "started": String(started), "hasPresentedViewport": String(hasPresentedViewport),
+            "nativeSizing": String(usesNativeSidebarSizing), "applying": String(applying),
+            "exactPaint": String(exactPaint), "exactPresented": String(exactPresented),
+            "awaitingFinalLayout": String(awaitingFinalLayout), "ownsWindow": String(ownsWindow),
+            "ownsLayout": String(ownsLayout), "pending": String(pendingPaints.count),
+            "recoveryGeneration": recoveryToken?.uuidString ?? "nil", "recoveryPending": String(recoveryPaints.count),
+            "requestedFrame": NSStringFromRect(latest.frame), "expectedFrame": NSStringFromRect(expectedFrame),
+            "windowFrame": window.map { NSStringFromRect($0.frame) } ?? "nil",
+            "rootBounds": root.map { NSStringFromRect($0.bounds) } ?? "nil",
+            "requestedSidebar": latest.sidebar.map { String(Double($0)) } ?? "nil",
+            "candidateSidebar": sidebar.map { String(Double($0)) } ?? "nil",
+            "submittedSidebar": submittedSidebar.map { String(Double($0)) } ?? "nil",
+            "publishedSidebar": published?.sidebar.map { String(Double($0)) } ?? "nil"
+        ]
+        let desired = sizes(latest)
+        for (index, page) in pages.enumerated() {
+            let prefix = "page.\(index)."
+            fields[prefix + "id"] = String(describing: ObjectIdentifier(page.web))
+            fields[prefix + "owned"] = String(page.owned)
+            fields[prefix + "pending"] = String(pendingPaints.contains(ObjectIdentifier(page.web)))
+            fields[prefix + "desired"] = NSStringFromSize(desired[index])
+            fields[prefix + "prepared"] = NSStringFromSize(page.prepared)
+            fields[prefix + "painted"] = NSStringFromSize(page.painted)
+            fields[prefix + "visible"] = NSStringFromSize(page.currentVisibleSize)
+            fields[prefix + "webFrame"] = NSStringFromRect(page.web.frame)
+            fields[prefix + "webBounds"] = NSStringFromRect(page.web.bounds)
+            fields[prefix + "parentBounds"] = page.host.map { NSStringFromRect($0.bounds) } ?? "nil"
+            fields[prefix + "parentFrame"] = page.host.map { NSStringFromRect($0.frame) } ?? "nil"
+            fields[prefix + "parentClip"] = page.host.map { String($0.clipsToBounds) } ?? "nil"
+            fields[prefix + "metadataSidebar"] = page.host.map { String(Double($0.resizeLayout.sidebarWidth)) } ?? "nil"
+            fields[prefix + "metadataRevision"] = page.host.map { String($0.resizeLayoutRevision) } ?? "nil"
+            fields[prefix + "submittedRevision"] = submittedSidebarRevisions.map { String($0[index]) } ?? "nil"
+            fields[prefix + "submittedSize"] = submittedSidebarSizes.map { NSStringFromSize($0[index]) } ?? "nil"
+            fields[prefix + "submittedFloor"] = submittedSidebarFloor.map { NSStringFromSize($0[index]) } ?? "nil"
+            fields[prefix + "publicationReached"] = String(sidebarPublicationReached(page: page, index: index, afterEndingFlush: false))
+            fields[prefix + "nativeChildren"] = page.web.subviews.prefix(8).map { child in
+                "\(type(of: child)):\(NSStringFromRect(child.frame)) children=" + child.subviews.prefix(8).map {
+                    "\(type(of: $0)):\(NSStringFromRect($0.frame))"
+                }.joined(separator: ";")
+            }.joined(separator: "|")
+        }
+        stateSink(event, timestamp, fields)
+    }
+#endif
+
     init?(window: NSWindow, axes: NSSize,
           presenter: WindowResizePreparation.Presenter? = nil,
           deadline: WindowResizePreparation.Deadline? = nil,
@@ -255,6 +316,7 @@ struct LivePageResizeAnchor {
         guard active, !started else { return }
 #if DEBUG
         ResizeTimingDiagnostics.record("buffer.start")
+        trace("buffer.start")
 #endif
         started = true
         pages.forEach { page in
@@ -282,6 +344,7 @@ struct LivePageResizeAnchor {
     @discardableResult func request(frame: NSRect, sidebarWidth: CGFloat? = nil) -> Bool {
 #if DEBUG
         ResizeTimingDiagnostics.record("buffer.request", width: frame.width, height: sidebarWidth)
+        trace("buffer.request.before")
 #endif
         guard frame.width.isFinite, frame.height.isFinite, frame.width > 0, frame.height > 0,
               sidebarWidth?.isFinite != false else { return false }
@@ -290,6 +353,9 @@ struct LivePageResizeAnchor {
             latest = Request(frame: frame, sidebar: sidebarWidth)
             expectedFrame = frame
             apply(frame, sidebarWidth)
+#if DEBUG
+            trace("buffer.bypass.applied")
+#endif
             return true
         }
         guard active, !ending, ownsLayout else { if active { cancel() }; return false }
@@ -310,6 +376,9 @@ struct LivePageResizeAnchor {
         lastSize = size
         lastTime = now()
         latest = request
+#if DEBUG
+        trace("buffer.request.accepted")
+#endif
         if !started { start() }
         drive()
         return true
@@ -329,13 +398,22 @@ struct LivePageResizeAnchor {
     }
 
     func cancel() {
+#if DEBUG
+        trace("buffer.cancel")
+#endif
         usesNativeSidebarSizing = false
         if bypassForDrag {
             bypassForDrag = false
             recoveryToken = nil
             recoveryPaints.removeAll()
             pages.forEach { PageResizeStyle.finish($0.web) }
+#if DEBUG
+            trace("buffer.bypass.retired")
+#endif
             completion()
+#if DEBUG
+            trace("buffer.completion.returned")
+#endif
         } else { complete(exact: false) }
     }
 
@@ -347,6 +425,9 @@ struct LivePageResizeAnchor {
             host?.pageResizeLayoutNeedsUpdate = { [weak self, weak host] in
                 guard let self, let host, self.active, self.ownsLayout,
                       let index = self.pages.firstIndex(where: { $0.host === host }) else { return false }
+#if DEBUG
+                self.trace("buffer.sidebar.metadata.checked", page: ObjectIdentifier(self.pages[index].web))
+#endif
                 return self.sidebarPublicationReached(page: self.pages[index], index: index, afterEndingFlush: false)
             }
         }
@@ -355,6 +436,9 @@ struct LivePageResizeAnchor {
     /// A display callback is later than the covered apply callback. Revalidate
     /// the native owners and both paints at the point of actual publication.
     func validateSidebarPublication() -> Bool {
+#if DEBUG
+        trace("buffer.sidebar.validate")
+#endif
         guard (active || usesNativeSidebarSizing), ownsWindow, !active || ownsLayout else {
             cancel()
             return false
@@ -363,10 +447,18 @@ struct LivePageResizeAnchor {
     }
 
     func publishSidebarWidth(_ width: CGFloat, _ publication: @MainActor (CGFloat) -> Void) {
+#if DEBUG
+        trace("buffer.sidebar.candidate", sidebar: width)
+#endif
         guard validateSidebarPublication() else { return }
         if active {
             let desired = sizes(Request(frame: expectedFrame, sidebar: width))
-            guard covered(desired) else { return }
+            guard covered(desired) else {
+#if DEBUG
+                trace("buffer.sidebar.uncovered")
+#endif
+                return
+            }
             // Raw proposals can differ while fitting to identical geometry and
             // therefore cause no new SwiftUI state update. Keep the original
             // acknowledgment requirement for that same effective submission.
@@ -381,13 +473,22 @@ struct LivePageResizeAnchor {
                 }
             } else { submittedSidebarFloor = desired }
         }
+#if DEBUG
+        trace("buffer.sidebar.publication.before")
+#endif
         publication(width)
+#if DEBUG
+        trace("buffer.sidebar.publication.after")
+#endif
     }
 
     private func acknowledgeSidebarPublication(afterEndingFlush: Bool = false) {
         guard pages.enumerated().allSatisfy({ index, page in
             sidebarPublicationReached(page: page, index: index, afterEndingFlush: afterEndingFlush)
         }) else { return }
+#if DEBUG
+        trace(afterEndingFlush ? "buffer.sidebar.ack.endingFlush" : "buffer.sidebar.ack.layout")
+#endif
         submittedSidebar = nil
         submittedSidebarSizes = nil
         submittedSidebarFloor = nil
@@ -441,6 +542,7 @@ struct LivePageResizeAnchor {
         published = latest
 #if DEBUG
         ResizeTimingDiagnostics.record("buffer.publish.begin", width: latest.frame.width, height: latest.sidebar)
+        trace("buffer.publish.begin")
 #endif
         applying = true
         expectedFrame = latest.frame
@@ -449,6 +551,7 @@ struct LivePageResizeAnchor {
         applying = false
 #if DEBUG
         ResizeTimingDiagnostics.record("buffer.publish.end", width: window?.frame.width, height: latest.sidebar)
+        trace("buffer.publish.end")
 #endif
     }
 
@@ -541,6 +644,9 @@ struct LivePageResizeAnchor {
         exactPaint = exact && targets == desired
         guard targets.allSatisfy({ $0.width > 0 && $0.height > 0 && $0.width.isFinite && $0.height.isFinite }) else { cancel(); return }
         pendingPaints = Set(pages.map { ObjectIdentifier($0.web) })
+#if DEBUG
+        trace("buffer.prepare.before")
+#endif
         zip(pages, targets).forEach { page, target in
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.prepare.begin", width: target.width, height: target.height)
@@ -550,10 +656,14 @@ struct LivePageResizeAnchor {
             ResizeTimingDiagnostics.record("buffer.prepare.end", width: target.width, height: target.height)
 #endif
         }
+#if DEBUG
+        trace("buffer.prepare.after")
+#endif
         armDeadline(token)
         for page in pages {
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.presentation.request", width: page.prepared.width, height: page.prepared.height)
+            trace("buffer.presentation.request", token: token, page: ObjectIdentifier(page.web))
 #endif
             let id = ObjectIdentifier(page.web)
             let callback: @MainActor @Sendable () -> Void = { [weak self] in self?.presented(token, page: id) }
@@ -566,6 +676,9 @@ struct LivePageResizeAnchor {
     }
 
     private func presented(_ token: UUID, page: ObjectIdentifier) {
+#if DEBUG
+        trace("buffer.presentation.arrived", token: token, page: page)
+#endif
         if bypassForDrag, recoveryToken == token {
             recoveryPaints.remove(page)
             if recoveryPaints.isEmpty { cancel() }
@@ -588,6 +701,7 @@ struct LivePageResizeAnchor {
             hasPresentedViewport = true
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.install.end")
+            trace("buffer.paint.acknowledged", token: token, page: page)
 #endif
             if covered(sizes(latest)) { publish() }
         }
@@ -623,15 +737,22 @@ struct LivePageResizeAnchor {
         guard active else { return }
 #if DEBUG
         ResizeTimingDiagnostics.record("buffer.host.layout", width: pages.first?.host?.bounds.width, height: pages.first?.host?.bounds.height)
+        trace("buffer.host.layout.before")
 #endif
         // Native host callbacks may arrive inside apply(). Reposition the frozen
         // viewport immediately, without recursively laying out retained chrome.
         pages.forEach { $0.reanchor() }
         acknowledgeSidebarPublication()
+#if DEBUG
+        trace("buffer.host.layout.after")
+#endif
         drive()
     }
 
     private func armDeadline(_ token: UUID) {
+#if DEBUG
+        trace("buffer.deadline.armed", token: token)
+#endif
         timer?.invalidate()
         let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
         if let deadline { deadline(0.25, timeout) }
@@ -643,9 +764,13 @@ struct LivePageResizeAnchor {
     }
 
     private func timedOut(_ token: UUID) {
+#if DEBUG
+        trace("buffer.deadline.fired", token: token)
+#endif
         guard active, generation == token, !pendingPaints.isEmpty || (ending && (exactPresented || awaitingFinalLayout)) else { return }
 #if DEBUG
         ResizeTimingDiagnostics.record("buffer.timeout")
+        trace("buffer.timeout", token: token)
 #endif
         guard ownsLayout else { cancel(); return }
         // Preserve the existing bounded policy for an unresponsive WebContent
@@ -662,6 +787,9 @@ struct LivePageResizeAnchor {
         if released || outstanding.isEmpty {
             pages.forEach { PageResizeStyle.finish($0.web) }
             completion()
+#if DEBUG
+            trace("buffer.completion.returned")
+#endif
             endpoint?()
         } else {
             // Keep this retired buffer only as the drag's bounded bypass owner.
@@ -670,11 +798,17 @@ struct LivePageResizeAnchor {
             bypassForDrag = true
             recoveryToken = token
             recoveryPaints = outstanding
+#if DEBUG
+            trace("buffer.bypass.started", token: token)
+#endif
         }
     }
 
     private func complete(exact: Bool, notify: Bool = true) {
         guard active else { return }
+#if DEBUG
+        trace(exact ? "buffer.complete.exact" : "buffer.complete.restore")
+#endif
         active = false
         awaitingFinalLayout = false
         generation = UUID()
@@ -693,7 +827,15 @@ struct LivePageResizeAnchor {
             page.host?.pageResizeOwnershipWillChange = nil
             page.restore(exact: exact)
         }
-        if notify { completion() }
+#if DEBUG
+        trace("buffer.restored")
+#endif
+        if notify {
+            completion()
+#if DEBUG
+            trace("buffer.completion.returned")
+#endif
+        }
         if exact { endpointCompletion?() }
         endpointCompletion = nil
     }
