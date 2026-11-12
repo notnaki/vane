@@ -1607,12 +1607,17 @@ import XCTest
         defer { selection?.cancel() }
         let monitor = source.spaceGesture.monitor
         XCTAssertNotNil(source.beginSpaceSelection(second))
+        SpaceLandingDiagnostic.reset()
+        let diagnosticStart = ProcessInfo.processInfo.systemUptime
+        SpaceLandingDiagnostic.mark("gesture-track-begin")
         monitor.track(-60, width: fixtureSidebarWidth(in: source), in: source)
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
         monitor.land(1, to: second, width: fixtureSidebarWidth(in: source), store: source, duration: 0.8)
+        SpaceLandingDiagnostic.mark("land-return")
         try await Task.sleep(for: .milliseconds(100))
+        SpaceLandingDiagnostic.mark("early-sample")
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
         // Record the original observation points before reporting any failure.
         // XCTest symbolication can block AppKit for seconds and otherwise turn
@@ -1664,6 +1669,7 @@ import XCTest
         let sourceStillSliding = source.spaceGesture.profileSliding
         let sourceFinalDrag = source.spaceDrag
 
+        SpaceLandingDiagnostic.dump(from: diagnosticStart)
         for keptVisible in recordedSelectionVisibility {
             XCTAssertTrue(keptVisible, "Select the requested cached Space before uncovering its profile host")
         }
