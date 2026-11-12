@@ -28,6 +28,7 @@ enum TabTooltipLayout {
 /// receives clicks, and its panel never takes focus from a page or an inline rename field.
 @MainActor final class TabTooltip {
     static let shared = TabTooltip()
+    private let mouseLocation: () -> NSPoint
     private weak var anchor: TabTooltipAnchorView?
     private weak var owner: NSWindow?
     private var pending: Task<Void, Never>?
@@ -37,6 +38,10 @@ enum TabTooltipLayout {
     private let hovered = NSHashTable<TabTooltipAnchorView>.weakObjects()
     var isPending: Bool { pending != nil }
     var isVisible: Bool { panel != nil }
+
+    init(mouseLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) {
+        self.mouseLocation = mouseLocation
+    }
 
     func schedule(for anchor: TabTooltipAnchorView) {
         guard anchor.enabled else { return }
@@ -82,9 +87,9 @@ enum TabTooltipLayout {
         // rather than ancestry, so a small control wins over its containing row in
         // either tracking-event order.
         hovered.allObjects.filter {
-            $0.enabled && $0.window === window && !$0.isHiddenOrHasHiddenAncestor && !$0.visibleRect.isEmpty
+            $0.enabled && $0.window === window && !$0.isHiddenOrHasHiddenAncestor && !$0.tooltipRect.isEmpty
         }.min {
-            $0.visibleRect.width * $0.visibleRect.height < $1.visibleRect.width * $1.visibleRect.height
+            $0.tooltipRect.width * $0.tooltipRect.height < $1.tooltipRect.width * $1.tooltipRect.height
         }
     }
 
@@ -95,15 +100,15 @@ enum TabTooltipLayout {
 
     private func show(for anchor: TabTooltipAnchorView) {
         guard anchor.enabled, let owner = anchor.window, owner.isKeyWindow, NSApp.isActive,
-              !anchor.isHiddenOrHasHiddenAncestor, !anchor.visibleRect.isEmpty,
+              !anchor.isHiddenOrHasHiddenAncestor, !anchor.tooltipRect.isEmpty,
               let screen = owner.screen else { dismiss(); return }
-        let pointer = anchor.convert(owner.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-        guard anchor.visibleRect.contains(pointer) else { dismiss(); return }
+        let pointer = anchor.convert(owner.convertPoint(fromScreen: mouseLocation()), from: nil)
+        guard anchor.tooltipRect.contains(pointer) else { dismiss(); return }
         let surface = TabTooltipSurface(title: anchor.title, hint: anchor.hint,
                                         shortcut: anchor.shortcut, compact: anchor.centered, theme: anchor.theme)
         let hosting = NSHostingView(rootView: surface)
         let size = hosting.fittingSize
-        let rect = owner.convertToScreen(anchor.convert(anchor.visibleRect, to: nil))
+        let rect = owner.convertToScreen(anchor.convert(anchor.tooltipRect, to: nil))
         let frame = TabTooltipLayout.frame(anchor: rect, size: size, screen: screen.visibleFrame,
                                            centered: anchor.centered)
         let panel = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
@@ -132,11 +137,12 @@ enum TabTooltipLayout {
         guard self.anchor === anchor, let panel, let owner = anchor.window,
               let screen = owner.screen,
               let hosting = panel.contentView as? NSHostingView<TabTooltipSurface> else { return }
+        guard !anchor.tooltipRect.isEmpty else { dismiss(for: anchor); return }
         // Keep the mounted surface when a title or copy confirmation changes under the
         // pointer. Replacing its native host repeats setup and discards view identity.
         hosting.rootView = TabTooltipSurface(title: anchor.title,
             hint: anchor.hint, shortcut: anchor.shortcut, compact: anchor.centered, theme: anchor.theme)
-        let rect = owner.convertToScreen(anchor.convert(anchor.visibleRect, to: nil))
+        let rect = owner.convertToScreen(anchor.convert(anchor.tooltipRect, to: nil))
         panel.setFrame(TabTooltipLayout.frame(anchor: rect, size: hosting.fittingSize,
                                               screen: screen.visibleFrame, centered: anchor.centered), display: false)
     }
@@ -232,6 +238,9 @@ final class TabTooltipAnchorView: NSView {
     private(set) var shortcut: String?
     private(set) var centered = false
     private(set) var enabled = true
+    // SwiftUI can report an ancestor's clip beyond this representable's bounds.
+    // Position and admit tooltips only within the control's own visible portion.
+    var tooltipRect: NSRect { bounds.intersection(visibleRect) }
     private var tracking: NSTrackingArea?
     private let rebuildTracking = ProcessInfo.processInfo.environment["VANE_DIAG_REBUILD_TOOLTIP_TRACKING"] == "1"
 

@@ -148,6 +148,8 @@ durations in `scripts/native-test-durations.json`, assigns new classes automatic
 and verifies every selected required test completed. The worker navigator identity
 probe is included, and missing required identity coverage fails planning. Each group runs its own startup
 preflight and cleanup, and all four must pass the required `checks` gate.
+PR native shards cancel their remaining siblings after a failure to free runners;
+`main` runs retain every shard's outcome.
 The preflight's outer 90-second process limit includes SwiftPM planning before
 XCTest starts; the owned AppKit loop retains its separate 12-second lifecycle
 watchdogs. A slow CLI launch must not be mistaken for a failed native loop.

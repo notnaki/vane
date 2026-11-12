@@ -146,7 +146,7 @@ enum FavouriteLanding {
             panel.level = .floating
             panel.collectionBehavior = [.transient, .ignoresCycle, .fullScreenAuxiliary]
             panel.animationBehavior = .none
-            panel.setContentSize(CGSize(width: SidebarWidth.shared.width + 32,
+            panel.setContentSize(CGSize(width: SidebarWidth.inWindow(store) + 32,
                                         height: Look.tileHeight + 32))
             panel.contentView = NSHostingView(rootView: SidebarTabGhost(preview: self, store: store).spaceChrome(store))
             ghost = panel
@@ -197,13 +197,13 @@ enum FavouriteLanding {
         let displayed = FavouriteLanding.previewIDs(favourites: favourites, incoming: incoming,
                                                     index: destination?.index)
         let physicalColumns = SidebarWidth.favouriteColumns(max(1, displayed.count),
-                                                             width: SidebarWidth.shared.width)
+                                                             width: SidebarWidth.inWindow(store))
         let gap = FavouriteLanding.index(at: point, frame: frame, count: displayed.count,
                                          columns: physicalColumns)
         let index = FavouriteLanding.remainingIndex(gap: gap, favourites: displayed,
                                                      moving: moving)
         let finalColumns = SidebarWidth.favouriteColumns(remaining + incoming.count,
-                                                         width: SidebarWidth.shared.width)
+                                                         width: SidebarWidth.inWindow(store))
         setDestination(Destination(index: index,
                                    width: FavouriteLanding.tileWidth(width: frame.width,
                                                                      columns: finalColumns)))
@@ -243,7 +243,6 @@ struct SidebarDragAnchor: NSViewRepresentable {
 struct SidebarTabGhost: View {
     @ObservedObject var preview: SidebarDragPreview
     @ObservedObject private var dragging = Dragging.shared
-    @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let store: TabStore
@@ -252,9 +251,9 @@ struct SidebarTabGhost: View {
         if let id = dragging.tab, dragging.tabs.count <= 1,
            let tab = store.tabs.first(where: { $0.id == id }) {
             Ghost(tab: tab, tileWidth: dragging.favouriteGhostWidth,
-                  width: tab.kind == .favourite ? sidebar.width - Look.inset * 2
+                  width: tab.kind == .favourite ? SidebarWidth.inWindow(store) - Look.inset * 2
                     : dragging.rowGhostWidth.flatMap { $0 > 0 ? $0 : nil }
-                        ?? (sidebar.width - Look.inset * 2),
+                        ?? (SidebarWidth.inWindow(store) - Look.inset * 2),
                   store: store, reduced: reduceMotion || batterySaver.isActive)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)

@@ -405,6 +405,8 @@ struct TitleReveal: Equatable, Sendable {
 @MainActor final class Tab: NSObject, ObservableObject, Identifiable, WKUIDelegate,
                             WKNavigationDelegate, WKScriptMessageHandler {
     let id: UUID
+    /// Live opener metadata for extension APIs; never retains or restores a tab.
+    weak var extensionParent: Tab?
     /// One live page can be mounted in one window. Other windows draw its last snapshot.
     @Published var presentationOwner: UUID?
     @Published var windowSnapshot: NSImage?
@@ -565,6 +567,9 @@ struct TitleReveal: Equatable, Sendable {
     /// Only an account name crosses a submitted username step's next navigation.
     /// Never shared between tabs, profiles, frames, or origins; never a stored secret.
     private var passwordStep: (id: UUID, origin: PasswordOrigin, account: String, expires: Date, awaitingNavigation: Bool, continuationAllowed: Bool)?
+    /// A dispatched continuation owns one SDK result independently of later focus
+    /// metadata reads. Keep only the newest ready target until that result arrives.
+    private var passwordContinuationFill: (id: UUID, request: UUID, document: UUID, pendingTarget: String?)?
     /// A choice belongs to one document and field target. The page can fake a username
     /// submission, so another form or frame cannot reuse that choice for continuation.
     private var chosenAccount: (origin: PasswordOrigin, account: String, target: String, document: UUID, expires: Date)?
@@ -1041,7 +1046,7 @@ struct TitleReveal: Equatable, Sendable {
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
             self?.retitleTask = nil
-            store.retitle(url, title: title)
+            store.retitleNavigation(url, title: title)
         }
     }
 
@@ -1216,6 +1221,7 @@ struct TitleReveal: Equatable, Sendable {
         passwordSubmission = nil
         viewSourceTask?.cancel(); viewSourceRequest = UUID()
         readingDocumentGeneration = UUID()
+        passwordContinuationFill = nil
         Reader.forget(tab: self)
         passwordStep = nil
         chosenAccount = nil
@@ -1511,6 +1517,7 @@ struct TitleReveal: Equatable, Sendable {
                                               account: String? = nil) -> Bool {
         guard let step = passwordStep, step.id == continuation.id, step.expires == continuation.expires,
               step.continuationAllowed, !step.awaitingNavigation, step.expires > .now,
+              passwordContinuationFill?.id != continuation.id,
               step.origin == origin, secureOrigin == origin else { return false }
         return account.map { $0 == step.account } ?? true
     }
@@ -1639,19 +1646,48 @@ struct TitleReveal: Equatable, Sendable {
                       page.url == pageURL, self.readingDocumentGeneration == document,
                       self.secureOrigin == login.origin, self.passwordReadRequest == request else { return }
                 if let continuation, !self.permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) { return }
+                if let continuation {
+                    self.passwordContinuationFill = (continuation.id, request, document, nil)
+                }
                 page.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password,
                                                      automatic: automatic, target: target, continuation: continuation != nil),
                                        in: nil, in: Autofill.world) { [weak self, weak page] result in
-                    guard let self, let page, self.existingWeb === page, page.url == pageURL,
+                    guard let self else { return }
+                    var retryRejectedTarget = false
+                    defer {
+                        if self.passwordContinuationFill?.request == request {
+                            let target = self.passwordContinuationFill?.pendingTarget
+                            self.passwordContinuationFill = nil
+                            // Only an explicit false reports rejection before delivery.
+                            // A queued target still passes every ordinary authorization,
+                            // document, origin and DOM-target check on its fresh attempt.
+                            if retryRejectedTarget, self.passwordExplicitFillRequest == nil,
+                               let continuation, let target {
+                                self.fillPassword(automatic: true, target: target, accountHint: login.account,
+                                                  continuation: continuation)
+                            }
+                        }
+                    }
+                    guard let page, !self.tornDown, !self.suspended, !self.isPrivate,
+                          self.existingWeb === page, page.url == pageURL,
                           self.readingDocumentGeneration == document, self.secureOrigin == login.origin,
-                          self.passwordReadRequest == request, self.profileID == profile,
+                          self.profileID == profile,
                           case let .success(value) = result else { return }
+                    if let continuation {
+                        guard let claim = self.passwordContinuationFill, claim.request == request,
+                              claim.id == continuation.id, claim.document == document else { return }
+                        // Focus can supersede the metadata request after WebKit has
+                        // already delivered the secret. Consume only this owned,
+                        // scoped success, even when that newer request is current.
+                        if (value as? Bool) == true, self.passwordStep?.id == continuation.id,
+                           self.passwordStep?.expires == continuation.expires {
+                            self.passwordStep?.continuationAllowed = false
+                        } else if (value as? Bool) == false { retryRejectedTarget = true }
+                    }
+                    guard self.passwordReadRequest == request else { return }
                     if (value as? Bool) == true {
                         if !automatic {
                             self.chosenAccount = (login.origin, login.account, target, document, .now.addingTimeInterval(120))
-                            self.passwordStep?.continuationAllowed = false
-                        } else if let continuation, self.passwordStep?.id == continuation.id,
-                                  self.passwordStep?.expires == continuation.expires {
                             self.passwordStep?.continuationAllowed = false
                         }
                         self.lastFilledAt = .now
@@ -1765,7 +1801,7 @@ struct TitleReveal: Equatable, Sendable {
               navigationState.lastHistoryURL != url else { return }
         navigationState.lastHistoryURL = url
         bookmarked = history.isBookmarked(url)
-        if !isPrivate { history.record(url, title: w.title ?? "") }
+        if !isPrivate { history.recordNavigation(url, title: w.title ?? "") }
     }
 
     func allowCertificateNavigation(to url: URL?) {
@@ -1824,6 +1860,7 @@ struct TitleReveal: Equatable, Sendable {
         retitleTask?.cancel()
         if w === existingWeb {
             readingDocumentGeneration = UUID()
+            passwordContinuationFill = nil
             chosenAccount = nil
             Reader.forget(tab: self)
         }
@@ -1838,7 +1875,7 @@ struct TitleReveal: Equatable, Sendable {
         hoveredLink = nil
         (w as? LinkContextWebView)?.navigationStarted()
         CertificateTrust.navigationStarted(in: self)
-        Previews.shared.cancel()      // the link that raised it is gone
+        Previews.shared.cancel(from: self)      // this page's hovered link is gone
         // Whatever was focused belongs to the page being left, frames and all; the incoming
         // one says so itself as soon as its script runs in each of them.
         editableFrames = []
@@ -2014,6 +2051,7 @@ struct TitleReveal: Equatable, Sendable {
         finishCertificateNavigation(navigation, in: w)
         progress = 1
         loading = false
+        PageResizeStyle.warm(w)
         updatePageTitle(from: w)
         Trace.end(id)
         Trace.note("favicon")
@@ -2037,7 +2075,7 @@ struct TitleReveal: Equatable, Sendable {
         navigationState.lastHistoryURL = displayingNavigationError ? nil : url
         if !displayingNavigationError, !isPrivate {
             Trace.note("history")
-            history.record(url, title: w.title ?? "")
+            history.recordNavigation(url, title: w.title ?? "")
         }
         // A favourite or a pinned tab is the tab itself, wherever it has gone: the record
         // on disk follows it.
@@ -2300,9 +2338,10 @@ struct TitleReveal: Equatable, Sendable {
         }
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
-            if body["gone"] as? Bool == true { Previews.shared.cancel(); return }
+            if body["gone"] as? Bool == true { Previews.shared.cancel(from: self); return }
             guard let raw = body["url"] as? String, let url = URL(string: raw) else { return }
-            Previews.shared.request(url, from: self)
+            let rect = Previews.rect(from: body, pageZoom: m.webView?.pageZoom ?? 1) ?? .zero
+            Previews.shared.request(url, from: self, rect: rect)
             return
         }
         if m.name == PictureInPicture.messageName {
@@ -2390,6 +2429,11 @@ struct TitleReveal: Equatable, Sendable {
                   step.origin == secureOrigin, step.expires > .now else { return }
             let hint = body["accountHint"] as? String ?? ""
             guard hint.isEmpty || hint == step.account else { return }
+            if let claim = passwordContinuationFill, claim.id == step.id,
+               claim.document == readingDocumentGeneration {
+                passwordContinuationFill?.pendingTarget = target
+                return
+            }
             fillPassword(automatic: true, target: target, accountHint: step.account,
                          continuation: PasswordContinuation(id: step.id, expires: step.expires))
             return
@@ -2441,6 +2485,7 @@ struct TitleReveal: Equatable, Sendable {
         // Typed usernames still carry into save prompts. Only a choice in this exact
         // main-document username target authorizes the next page to read a secret.
         let allowed = selectedExpiry != nil
+        passwordContinuationFill = nil
         passwordStep = (UUID(), origin, account, selectedExpiry ?? .now.addingTimeInterval(120), true, allowed)
         return allowed
     }
@@ -2595,6 +2640,7 @@ struct TitleReveal: Equatable, Sendable {
     func stop() {
         navigationState.invalidate(preservingDocument: true)
         readingDocumentGeneration = UUID()
+        passwordContinuationFill = nil
         certificateDestinationURL = nil
         certificateNavigation = nil
         CertificateTrust.navigationStarted(in: self)
@@ -2842,6 +2888,7 @@ struct Stash {
     /// being renamed or being suspended. Everything done to them is in SplitView.swift.
     @Published var splits: [Split] = [] { didSet { SharedTabs.schedule(from: self) } }
     var folderAuthentication = FolderAuthentication.shared
+    let folderAccessIndex = FolderAccessIndex()
     @Published var lockedFolderBackdrop: NSImage?
     @Published var folderUnlockRequest: FolderUnlockRequest?
     @Published var current: Tab.ID? {
@@ -2901,11 +2948,13 @@ struct Stash {
     /// Library occupies the sidebar: hiding it also ends that visit, so the next
     /// toggle opens ordinary tabs rather than restoring the Library panel.
     func toggleSidebar() {
+        if (window as? VaneWindow)?.cancelSidebarResize() == true { return }
         if libraryOpen || librarySwipeMonitor.intendsOpen(in: self) {
             sidebarShown = false
             sidebarPeeking = false
             Library.close(self)
         } else {
+            if sidebarShown, (window as? VaneWindow)?.prepareSidebarClose(self) == true { return }
             sidebarShown.toggle()
         }
     }
@@ -2923,7 +2972,16 @@ struct Stash {
     /// A changed revision marks that update as restoration, rather than a fresh toggle.
     @Published var sidebarPresentationRevision: UInt = 0
     /// One-shot handoff from the webpage to the sidebar address pill.
-    @Published var chromeFocusRequested = false
+    @Published var chromeFocusRequested = false {
+        didSet {
+            addressFocusRequest = chromeFocusRequested
+                ? AddressFocusRequest(window: window ?? mountedAddressEndpoint?.window) : nil
+            mountedAddressEndpoint?.scheduleRequestedFocus()
+        }
+    }
+    var addressFocusRequest: AddressFocusRequest?
+    /// The actual mounted address control; cached/profile roots never retain it here.
+    weak var mountedAddressEndpoint: MountedAddressButton?
     /// Presentation only, per Space and window: hiding pins never changes their contents.
     @Published private(set) var collapsedPinnedSpaces: Set<UUID> = []
     var pinnedSectionCollapsed: Bool {
@@ -3042,7 +3100,9 @@ struct Stash {
     /// Presentation only: a Little Vane borrows its Open in destination's look without
     /// joining that Space, restoring its tabs, or changing the page's browsing identity.
     @Published var littleDestinationSpace: Space?
-    weak var window: NSWindow?
+    weak var window: NSWindow? {
+        didSet { mountedAddressEndpoint?.registerOwner() }
+    }
     /// Cached roots remain mounted for WebKit continuity, but only the shown profile
     /// may own presentation bindings and window-level gesture monitors.
     @Published var profileVisible = true
@@ -3348,9 +3408,10 @@ struct Stash {
     /// Deliberately after `kind`: its didSet reads `currentURL` to decide a row's home, and
     /// a load in flight is exactly the thing that would change the answer.
     func newBlankTab(focus: Bool = true, as kind: TabKind = .today,
-                     id: UUID = UUID(), loading url: URL? = nil) -> Tab {
+                     id: UUID = UUID(), loading url: URL? = nil, parent: Tab? = nil) -> Tab {
         if sharingReady { SharedTabs.flush() }
         let t = makeBlankTab(as: kind, id: id)
+        if parent?.profileID == profileID, parent?.isPrivate == isPrivate { t.extensionParent = parent }
         if let url { t.go(url) }
         // Into its own section, not onto the end of the strip: the sections are contiguous
         // runs (see `clampedDestination`), and a pinned row appended past the Today tabs
@@ -4288,18 +4349,26 @@ struct Stash {
     /// Opening it does not create a Space or leave the current one.
     func beginCreatingSpace() {
         guard !isPrivate, !isLittle else { return }
-        spaceGesture.monitor.prepareForCreation(in: self)
         palette = nil
         editingSpace = nil
         Motion.space(Look.spaceSlide) {
-            spacePull = 0
-            creatingSpace = true
+            // Native row hosts may synchronously flush the window while the row
+            // observer publishes. Let them see the assigned form state, rather
+            // than retaining the old sidebar during @Published's will-set.
+            sidebarObservation.withCompletedChanges {
+                creatingSpace = true
+                // Keep the pulled strip until the form owns its replacement.
+                // Resetting first exposes the resting sidebar before insertion.
+                spaceGesture.monitor.prepareForCreation(in: self)
+            }
         }
     }
 
     /// The form's Cancel, and ⎋: the sections come back.
     func cancelCreatingSpace() {
-        creatingSpace = false            // the sidebar animates the swap itself
+        sidebarObservation.withCompletedChanges {
+            creatingSpace = false        // the sidebar animates the swap itself
+        }
     }
 
     /// The form's Create button. The Space is switched into here whichever profile it was

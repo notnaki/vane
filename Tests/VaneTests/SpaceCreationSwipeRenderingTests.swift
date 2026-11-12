@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import XCTest
 @testable import vane
 
@@ -13,6 +14,7 @@ import XCTest
         do {
             try await exerciseCreation(holdingStill: false)
             try await exerciseCreation(holdingStill: true)
+            try await exerciseCreation(holdingStill: true, flushDuringPublication: true)
         } catch { failure = error }
         do { try await loop.close() }
         catch {
@@ -22,7 +24,267 @@ import XCTest
         if let failure { throw failure }
     }
 
-    private func exerciseCreation(holdingStill: Bool) async throws {
+    func testPacedRecordedPullOpensCreationAfterSwipingAcrossThreeProfiles() async throws {
+        try await checkRecordedCrossProfilePull()
+    }
+
+    func testRecordedPullKeepsTheExistingProfilesFooterMarkers() async throws {
+        try await checkRecordedCrossProfilePull(withAmbientSpace: true)
+    }
+
+    func testDelayedSamplingStillObservesReleaseThroughTheUsableForm() async throws {
+        try await checkRecordedCrossProfilePull(samplingDelay: .milliseconds(160))
+    }
+
+    func testRecordedPullReadmitsItsWindowAfterPreparation() async throws {
+        try await checkRecordedCrossProfilePull(hideBeforeReplay: true)
+    }
+
+    private func checkRecordedCrossProfilePull(withAmbientSpace: Bool = false,
+                                               samplingDelay: Duration = .zero,
+                                               hideBeforeReplay: Bool = false) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await exerciseRecordedCrossProfilePull(withAmbientSpace: withAmbientSpace,
+                                                       samplingDelay: samplingDelay,
+                                                       hideBeforeReplay: hideBeforeReplay) }
+        catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Recorded swipe AppKit loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func exerciseRecordedCrossProfilePull(withAmbientSpace: Bool,
+                                                  samplingDelay: Duration,
+                                                  hideBeforeReplay: Bool) async throws {
+        let oldWidth = SidebarWidth.shared.width
+        let iconKey = SpaceFooterPreferences.showIconsKey
+        let oldIcons = UserDefaults.vane.object(forKey: iconKey)
+        SidebarWidth.shared.width = 243
+        UserDefaults.vane.set(false, forKey: iconKey)
+        defer {
+            SidebarWidth.shared.width = oldWidth
+            if let oldIcons { UserDefaults.vane.set(oldIcons, forKey: iconKey) }
+            else { UserDefaults.vane.removeObject(forKey: iconKey) }
+        }
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let ambient = withAmbientSpace ? manager.create(name: "Existing footer profile") : nil
+        let ambientSpace = ambient.map { manager.createSpace(name: "Existing Space", in: $0.id) }
+        defer {
+            if let ambient { _ = manager.delete(ambient.id) }
+            manager.active = previous
+        }
+        let profiles = (1...3).map { manager.create(name: "Recorded swipe profile \($0)") }
+        let spaces = profiles.map { manager.createSpace(name: "Recorded swipe", in: $0.id) }
+        let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
+        let window = try XCTUnwrap(source.window)
+        defer {
+            window.close()
+            profiles.forEach { _ = manager.delete($0.id) }
+        }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        func showing() -> TabStore? { TabStore.all.first { $0.window === window } }
+        func admit(_ space: Space, requiresPreparedSlides: Bool = false) async throws {
+            try await compatibilityWait {
+                guard let store = showing() else { return false }
+                store.palette = nil
+                if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                return NSApp.isRunning && NSApp.isActive && window.isKeyWindow
+                    && window.isVisible && window.occlusionState.contains(.visible)
+                    && NSApp.modalWindow == nil && window.attachedSheet == nil
+                    && store.currentSpaceID == space.id && !store.spaceSwiping
+                    && store.spaceGesture.monitor.isInstalled
+                    && store.spaceGesture.sectionsView?.window === window
+                    && (!requiresPreparedSlides || Motion.spaceReduced
+                        || !store.spaceGesture.monitor.preparedSlides.isEmpty)
+            }
+        }
+        try await admit(spaces[0])
+        for (index, space) in spaces.dropFirst().enumerated() {
+            let time = Double(index + 1)
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .began, timestamp: time))
+            NSApp.sendEvent(ScrollEvent(window: window, dx: -SidebarWidth.shared.width,
+                                       timestamp: time + 0.1))
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .ended, timestamp: time + 0.11))
+            try await admit(space)
+        }
+        let store = try XCTUnwrap(showing())
+        XCTAssertEqual(store.strip.last?.id, spaces[2].id)
+        for index in 0..<6 {
+            let tab = store.newBlankTab(focus: false)
+            tab.park(url: URL(string: "https://example.test/\(index)")!, Parked(title: "Document \(index)"))
+        }
+        store.palette = nil
+        // Reduced-motion navigation intentionally does not prepare animated
+        // sidebar surfaces. Still replay the pull and verify the usable form.
+        if Motion.spaceReduced {
+            XCTAssertTrue(store.spaceGesture.monitor.preparedSlides.isEmpty)
+        } else {
+            try await compatibilityWait { !store.spaceGesture.monitor.preparedSlides.isEmpty }
+        }
+        print("RECORDED_CREATION_PREREQUISITES reducedMotion=\(Motion.spaceReduced) prepared=\(store.spaceGesture.monitor.preparedSlides.count)")
+        // The original shard can leave other registered Spaces. Derive the
+        // complete expected marker set independently of the rendered output.
+        let registeredSpaces = manager.profiles.flatMap { manager.spaces(for: $0.id) }
+        let expectedMarkerIDs = Set(registeredSpaces.map(\.id))
+        XCTAssertEqual(expectedMarkerIDs.count, registeredSpaces.count)
+        XCTAssertEqual(Array(registeredSpaces.suffix(spaces.count)).map(\.id), spaces.map(\.id))
+        XCTAssertEqual(store.strip.map(\.id), registeredSpaces.map(\.id))
+        XCTAssertEqual(store.currentSpaceID, registeredSpaces.last?.id)
+        if let ambientSpace { XCTAssertTrue(expectedMarkerIDs.contains(ambientSpace.id)) }
+        // Real trackpad packets from the reported failure: drift grows only after axis lock.
+        let samples: [(TimeInterval, CGFloat, CGFloat)] = [
+            (0.000000000, -1, 0),
+            (0.008340625, -5, 0),
+            (0.016660042, -7, 0),
+            (0.024984834, -8, 0),
+            (0.033324125, -9, 1),
+            (0.041731167, -9, 1),
+            (0.051237542, -21, 2),
+            (0.058497167, -22, 2),
+            (0.066626792, -25, 2),
+            (0.075786250, -22, 2),
+            (0.083296000, -33, 2),
+            (0.091651834, -30, 3),
+            (0.099973417, -30, 3),
+            (0.108316334, -30, 3),
+            (0.118274167, -23, 2),
+            (0.125044959, -39, 4),
+            (0.133248292, -13, 1),
+            (0.141984584, -19, 2),
+            (0.150615292, -38, 5),
+            (0.158842584, -20, 4),
+            (0.167128084, -21, 4),
+            (0.175500625, -20, 5),
+            (0.184081375, -19, 6),
+            (0.194727125, -5, 2),
+            (0.199998417, -31, 9),
+            (0.210953500, -19, 6),
+            (0.217527709, -16, 6),
+            (0.224994042, -13, 5),
+            (0.242215625, -23, 8),
+            (0.249978959, -12, 5),
+            (0.260093375, -11, 4),
+            (0.267180084, -9, 4),
+            (0.274986084, -6, 3),
+            (0.283322042, -9, 4),
+            (0.291645875, -4, 3),
+            (0.299974000, -6, 3),
+            (0.308310459, -6, 3),
+            (0.325026917, -6, 3),
+            (0.334388959, -4, 2),
+            (0.341661042, -2, 1),
+            (0.349564334, -4, 2),
+            (0.358328250, -6, 3),
+            (0.366629250, -4, 2),
+            (0.374996917, -5, 3),
+        ]
+        if hideBeforeReplay {
+            window.orderOut(nil)
+            XCTAssertFalse(window.isVisible, "Control foreground loss after sidebar preparation")
+        }
+        // Preparation and parked-tab publication can span main-loop turns. Admit
+        // the current foreground/presentation owner again immediately before input.
+        try await admit(spaces[2], requiresPreparedSlides: true)
+        XCTAssertTrue(NSApp.isActive && window.isKeyWindow && window.isVisible,
+                      "The exact owner must be foreground after preparation, before replay input")
+        let replayStart = ProcessInfo.processInfo.systemUptime
+        var replayNotes: [String] = []
+        let replayObservers = [NSApplication.didResignActiveNotification, NSWindow.didResignKeyNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { note in
+                let notifyingWindow = note.object as? NSWindow
+                MainActor.assumeIsolated {
+                    replayNotes.append("notification=\(name.rawValue) owner=\(notifyingWindow === window) t=\(ProcessInfo.processInfo.systemUptime - replayStart)")
+                }
+            }
+        }
+        defer { replayObservers.forEach(NotificationCenter.default.removeObserver) }
+        for (index, sample) in samples.enumerated() {
+            let remaining = sample.0 - (ProcessInfo.processInfo.systemUptime - replayStart)
+            if remaining > 0 { try await Task.sleep(for: .seconds(remaining)) }
+            NSApp.sendEvent(ScrollEvent(window: window, dx: sample.1, dy: sample.2,
+                                       phase: index == 0 ? .began : .changed,
+                                       timestamp: 3 + sample.0))
+            replayNotes.append("packet=\(index) stamp=\(sample.0) active=\(NSApp.isActive) key=\(window.isKeyWindow) monitor=\(store.spaceGesture.monitor.isInstalled) pull=\(store.spacePull)")
+        }
+        if store.spacePull != 2 {
+            FileHandle.standardError.write(Data(("RECORDED_CREATION_INPUT\n" + replayNotes.joined(separator: "\n") + "\n").utf8))
+        }
+        XCTAssertEqual(store.spacePull, 2, "The recorded deliberate pull must arm creation")
+        let host = try XCTUnwrap(window.contentView)
+        func footerViews(in view: NSView) -> [NativeSpaceFooterMarkerView] {
+            let own = (view as? NativeSpaceFooterMarkerView).map { [$0] } ?? []
+            return own + view.subviews.flatMap { footerViews(in: $0) }
+        }
+        func footerCenters(presented: Bool) -> [UUID: CGFloat] {
+            guard let root = presented ? host.layer?.presentation() : host.layer else { return [:] }
+            var result: [UUID: CGFloat] = [:]
+            for view in footerViews(in: host) where view.owner === store && !view.isHiddenOrHasHiddenAncestor {
+                guard let config = view.configuration, config.layout.count == expectedMarkerIDs.count + 1,
+                      let model = view.marker?.layer,
+                      let layer = presented ? model.presentation() : model else { continue }
+                result[config.id] = layer.convert(CGPoint(x: layer.bounds.midX, y: layer.bounds.midY), to: root).x
+            }
+            return result
+        }
+        var baseline: [UUID: CGFloat] = [:]
+        // Admit the already-expanded footer before release, not its post-release outcome.
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            CATransaction.flush()
+            let model = footerCenters(presented: false)
+            let visible = footerCenters(presented: true)
+            guard Set(model.keys) == expectedMarkerIDs, Set(visible.keys) == expectedMarkerIDs,
+                  model.allSatisfy({ id, x in abs((visible[id] ?? .infinity) - x) < 0.1 }) else { return false }
+            baseline = visible
+            return true
+        }
+        let slotPublication = store.spaceGesture.$presentation.dropFirst().sink { state in
+            guard state.pull == 0 else { return }
+            XCTAssertTrue(store.creatingSpace,
+                          "The form must own the filled creation slot before release publishes zero pull")
+        }
+        defer { slotPublication.cancel() }
+        NSApp.sendEvent(ScrollEvent(window: window, phase: .ended, timestamp: 3.375062042))
+        var excursions: [CGFloat] = []
+        var incompleteMarkerSamples = 0
+        let minimumSampleEnd = ContinuousClock.now + .milliseconds(350)
+        // Sample immediately after release within the existing form-readiness
+        // deadline, including frames after the form first becomes usable.
+        try await compatibilityWait {
+            let centers = footerCenters(presented: true)
+            if Set(centers.keys) == expectedMarkerIDs {
+                excursions.append(baseline.map { id, x in abs((centers[id] ?? x) - x) }.max() ?? 0)
+            } else { incompleteMarkerSamples += 1 }
+            // This is a minimum observation period, not the readiness deadline.
+            // A delayed main-actor poll can consume it with only three samples;
+            // keep observing within compatibilityWait's existing deadline.
+            let ready = ContinuousClock.now >= minimumSampleEnd && excursions.count > 3
+                && Set(centers.keys) == expectedMarkerIDs
+                && store.creatingSpace && formIsUsable(in: host, window: window)
+            if !ready, samplingDelay > .zero { try await Task.sleep(for: samplingDelay) }
+            return ready
+        }
+        print("CREATION_FOOTER_MAX_EXCURSION points=\(excursions.max() ?? .infinity) samples=\(excursions.count)")
+        XCTAssertGreaterThan(excursions.count, 3, "Observe native footer frames across release")
+        XCTAssertEqual(incompleteMarkerSamples, 0,
+                       "Every existing Space marker must remain present throughout release")
+        XCTAssertLessThanOrEqual(excursions.max() ?? .infinity, 0.5,
+                                 "Existing footer markers must not hop when the pulled creation slot becomes the form")
+        XCTAssertFalse(store.spaceSwiping)
+    }
+
+    private func exerciseCreation(holdingStill: Bool, flushDuringPublication: Bool = false) async throws {
         let profile = ProfileManager.shared.create(name: "Creation swipe rendering")
         let space = ProfileManager.shared.createSpace(name: "Last Space", in: profile.id)
         let store = TabStore(profileID: profile.id, space: space, session: [])
@@ -83,6 +345,23 @@ import XCTest
             send(-width * 0.3, at: 2.31)
         }
         XCTAssertFalse(store.creatingSpace, "Even a full deliberate pull waits for release")
+        // Other native hosting roots can ask AppKit to lay out while @Published is
+        // delivering its new value, before the backing property has been assigned.
+        // The live sidebar must still eventually show the completed creation state.
+        let layout = store.sidebarObservation.objectWillChange.sink {
+            guard flushDuringPublication else { return }
+            host.subviews.forEach { $0.layoutSubtreeIfNeeded() }
+            window.displayIfNeeded()
+        }
+        defer { layout.cancel() }
+        // Resetting the pull while the ordinary sidebar is still selected exposes
+        // a resting frame between fingers-up and the form's insertion transition.
+        let retirement = store.spaceGesture.$presentation.dropFirst().sink { presentation in
+            guard !presentation.swiping, presentation.drag == 0 else { return }
+            XCTAssertTrue(store.creatingSpace,
+                          "The form must own the sidebar before the completed pull publishes rest")
+        }
+        defer { retirement.cancel() }
         // Hold still, with no intermediate movement packets, then lift the fingers.
         send(phase: .ended, at: 2.42)
         XCTAssertTrue(store.creatingSpace)
@@ -96,6 +375,7 @@ import XCTest
         XCTAssertNil(host.spaceSlide, "An outgoing native sidebar must not cover the creation form")
         send(-width, phase: [], at: 2.44) // remaining gesture packets cannot dismiss the form
         XCTAssertTrue(store.creatingSpace)
+        retirement.cancel()
         store.cancelCreatingSpace()
         try await compatibilityWait {
             formField(in: host) == nil && store.spaceGesture.sectionsView?.window === window
@@ -104,4 +384,23 @@ import XCTest
         XCTAssertEqual(store.currentSpaceID, space.id)
         XCTAssertEqual(ProfileManager.shared.spaces(for: profile.id), before)
     }
+    private func formField(in view: NSView) -> NSTextField? {
+        if let field = view as? NSTextField, field.placeholderString == "Space name…" { return field }
+        return view.subviews.lazy.compactMap { self.formField(in: $0) }.first
+    }
+
+    private func formIsUsable(in host: NSView, window: NSWindow) -> Bool {
+        guard let field = formField(in: host), field.window === window,
+              !field.isHiddenOrHasHiddenAncestor, field.bounds.width > 0, field.bounds.height > 0,
+              field.visibleRect.intersects(field.bounds),
+              host.bounds.intersects(field.convert(field.bounds, to: host)),
+              let editor = field.currentEditor(), window.firstResponder === editor else { return false }
+        var ancestor: NSView? = field
+        while let view = ancestor {
+            if view.alphaValue < 0.99 { return false }
+            ancestor = view.superview
+        }
+        return true
+    }
+
 }

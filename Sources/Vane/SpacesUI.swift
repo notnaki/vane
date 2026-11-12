@@ -23,21 +23,30 @@ import UniformTypeIdentifiers
     @Published private(set) var presentation = Presentation()
     private var pendingPresentation: Presentation?
     private var presentationDepth = 0
+    private var publishingPresentation = false
 
     /// A native input mounts its overlay before publishing one complete state.
     /// Publishing each flag separately makes SwiftUI synchronously flush several
     /// intermediate browser layouts while the same input is still being handled.
     func beginPresentationUpdate() {
-        if presentationDepth == 0 { pendingPresentation = presentation }
+        if presentationDepth == 0, pendingPresentation == nil { pendingPresentation = presentation }
         presentationDepth += 1
     }
 
     func endPresentationUpdate() {
         precondition(presentationDepth > 0)
         presentationDepth -= 1
-        guard presentationDepth == 0, let next = pendingPresentation else { return }
-        pendingPresentation = nil
-        if next != presentation { presentation = next }
+        guard presentationDepth == 0, !publishingPresentation else { return }
+        // @Published notifies before assignment. A native host can synchronously
+        // lay out during that notification, so keep the completed values readable
+        // until assignment finishes. A callback's follow-up writes remain staged
+        // and publish after this assignment, rather than being overwritten by it.
+        publishingPresentation = true
+        defer { publishingPresentation = false }
+        while presentationDepth == 0, let next = pendingPresentation {
+            if next != presentation { presentation = next }
+            if presentationDepth == 0, pendingPresentation == next { pendingPresentation = nil }
+        }
     }
 
     func withPresentationUpdate<Result>(_ body: () throws -> Result) rethrows -> Result {
@@ -54,9 +63,7 @@ import UniformTypeIdentifiers
         guard read(key) != value else { return }
         if pendingPresentation != nil { pendingPresentation?[keyPath: key] = value }
         else {
-            var next = presentation
-            next[keyPath: key] = value
-            presentation = next
+            withPresentationUpdate { pendingPresentation?[keyPath: key] = value }
         }
     }
 
@@ -396,7 +403,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
     let sections: Sections
     private let favoriteCount: Int
     @ObservedObject private var gesture: SpaceGesture
-    @ObservedObject private var sidebar = SidebarWidth.shared
+    @WindowSidebarWidth private var sidebarWidth
     @Environment(\.nativeCachedSidebarBatches) private var nativeCachedBatches
     @State private var readinessPinnedRows = Feel02SidebarRowsCache()
     @State private var readinessTodayRows = Feel02SidebarRowsCache()
@@ -492,7 +499,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
                 // Within a profile the grid stays put, so its ghost starts below it.
                 // Across profiles the ghost includes its own grid and starts at the top.
                 .padding(.top, preview.includingFavorites ? 0 : favoriteHeight)
-                .offset(x: drag + CGFloat(gesture.previewDirection) * sidebar.width)
+                .offset(x: drag + CGFloat(gesture.previewDirection) * sidebarWidth)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
                 .opacity(gesture.profileSliding ? 0 : 1)
@@ -501,7 +508,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
 
     private var favoriteHeight: CGFloat {
         guard favoriteCount > 0 else { return 0 }
-        let columns = SidebarWidth.favouriteColumns(favoriteCount, width: sidebar.width)
+        let columns = SidebarWidth.favouriteColumns(favoriteCount, width: sidebarWidth)
         let rows = (favoriteCount + columns - 1) / columns
         // Tile rows, their gaps, and the inset before the Space heading. Matches Favorites.
         return CGFloat(rows) * (Look.tileHeight + Look.inset)
@@ -623,6 +630,7 @@ private struct SpaceSlide: ViewModifier {
 /// real row does — a typed name, the tidied name, the name it was pinned under, the title
 /// the sidecar saved — and only a row nothing has ever named is its host.
 struct SpacePreviewList: View, Equatable {
+    @WindowSidebarWidth private var sidebarWidth
     let space: Space
     let liveTabs: [Tab]?
     private let identity = UUID()
@@ -734,13 +742,13 @@ struct SpacePreviewList: View, Equatable {
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.identity == rhs.identity }
 
     enum Row {
-        case folder(Folder, depth: Int = 0)
+        case folder(Folder, depth: Int = 0, showsArrivals: Bool = false)
         case blank(Tab, depth: Int = 0)
         case site(URL, TabKind, Tab? = nil, depth: Int = 0, pr: GitHub.Row? = nil, savedIndex: Int? = nil)
 
         var depth: Int {
             switch self {
-            case .folder(_, let depth), .blank(_, let depth), .site(_, _, _, let depth, _, _): return depth
+            case .folder(_, let depth, _), .blank(_, let depth), .site(_, _, _, let depth, _, _): return depth
             }
         }
 
@@ -855,8 +863,15 @@ struct SpacePreviewList: View, Equatable {
         let byID = Dictionary(uniqueKeysWithValues: opened.map { ($0.id, $0.url) })
         let liveByID = Dictionary(uniqueKeysWithValues: (loaded ?? []).map { ($0.id.uuidString, $0) })
         let strip = (tabs ?? []).map { ($0.id, $0.kind) }
-        let rows: [Row] = shape.visible(unlocked: unlocked).compactMap { visible in
-            if let folder = visible.entry.folder { return .folder(folder, depth: visible.depth) }
+        let visibleRows = shape.visible(unlocked: unlocked)
+        let arrivalFolders = Set(visibleRows.compactMap {
+            $0.entry.liveArrival == true ? $0.entry.parent : nil
+        })
+        let rows: [Row] = visibleRows.compactMap { visible in
+            if let folder = visible.entry.folder {
+                return .folder(folder, depth: visible.depth,
+                               showsArrivals: folder.collapsed && folder.live != nil && arrivalFolders.contains(folder.id))
+            }
             guard let id = visible.entry.tab, let name = byID[id] else { return nil }
             let tab = liveByID[id]
             if let tab, let split = splits.first(where: { $0.contains(tab.id) }),
@@ -877,7 +892,7 @@ struct SpacePreviewList: View, Equatable {
         Group {
             if !favoriteItems.isEmpty {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),
-                    count: SidebarWidth.favouriteColumns(favoriteItems.count, width: SidebarWidth.shared.width)),
+                    count: SidebarWidth.favouriteColumns(favoriteItems.count, width: sidebarWidth)),
                     spacing: Look.inset) {
                     ForEach(Array(favoriteItems.enumerated()), id: \.offset) { _, item in
                         let tab = item.tab
@@ -906,14 +921,14 @@ struct SpacePreviewList: View, Equatable {
         return SidebarTidySurface {
             switch control {
             case .hidden: EmptyView()
-            case .tidy: Button("Tidy", action: {})
+            case .tidy: Button(action: {}) { SidebarTidyLabel() }
             case .tidying:
                 ProgressView().controlSize(.small).scaleEffect(Look.tidySpinnerScale)
                     .frame(height: Look.tidyRow)
             }
             if TidyTabs.offersClear(today: todayCount) {
                 if control != .hidden { Text("|").foregroundStyle(Look.inkQuiet) }
-                Button("Clear", action: {})
+                Button(action: {}) { SidebarClearLabel() }
             }
         }
     }
@@ -937,9 +952,9 @@ struct SpacePreviewList: View, Equatable {
                                            ticked: selection.contains(tab.id), previewing: true, renaming: false)
                         .environment(\.livePR, row.pr)
                 }
-            } else if case .folder(let folder, _) = row {
+            } else if case .folder(let folder, _, let showsArrivals) = row {
                 SidebarRow(selected: false, action: {}) {
-                    FolderGlyph(folder: folder, live: live)
+                    FolderGlyph(folder: folder, live: live, showsArrivals: showsArrivals)
                 } label: {
                     Text(folder.name).font(Look.folderTitle)
                 } trailing: {
@@ -998,7 +1013,7 @@ struct SpacePreviewList: View, Equatable {
 
     func title(for row: Row, saved: [String: Parked]) -> String {
         switch row {
-        case .folder(let folder, _): return folder.name
+        case .folder(let folder, _, _): return folder.name
         case .blank(let tab, _): return TidyTitles.title(for: tab)
         case .site(let url, let kind, _, _, _, _):
             return liveTab(for: row).map { TidyTitles.title(for: $0) }
@@ -1289,7 +1304,7 @@ private struct SpaceSwipe: ViewModifier {
                   let anchor = target.profileID != store.profileID
                     ? store.spaceGesture.stripView : store.spaceGesture.sectionsView else { return false }
             return slide.preparedFor(origin: origin, target: target,
-                frame: anchor.convert(anchor.bounds, to: host), width: SidebarWidth.shared.width)
+                frame: anchor.convert(anchor.bounds, to: host), width: SidebarWidth.inWindow(store))
         }
     }
 
@@ -1338,7 +1353,7 @@ private struct SpaceSwipe: ViewModifier {
                 let slide = ProfileSpaceSlide(frame: anchor.convert(anchor.bounds, to: host),
                     outgoing: store.swipePreview(in: origin, includingFavorites: favorites),
                     incoming: store.swipePreview(in: target), drag: 0, direction: direction,
-                    source: store, includesFavorites: favorites, travelWidth: SidebarWidth.shared.width)
+                    source: store, includesFavorites: favorites, travelWidth: SidebarWidth.inWindow(store))
                 slide.isHidden = true
                 // Claim this surface in place; moving it above live rows on the first
                 // finger sample would detach its compositor layer until a later frame.
@@ -1439,7 +1454,7 @@ private struct SpaceSwipe: ViewModifier {
            slide.resumeTracking(in: store, dx: CGFloat(store.spaceGesture.previewDirection)) != nil {
             // Both endpoints already have captured pixels. Rebase that same pair
             // at its presented position before any cross-profile queueing below.
-            land(store.spaceGesture.previewDirection, to: space, width: SidebarWidth.shared.width,
+            land(store.spaceGesture.previewDirection, to: space, width: SidebarWidth.inWindow(store),
                  store: store, animation: Look.spaceSlide, duration: Look.spaceSlideDuration)
             return
         }
@@ -1515,7 +1530,7 @@ private struct SpaceSwipe: ViewModifier {
                 return
             }
             pendingSelection = nil
-            land(direction, to: target, width: SidebarWidth.shared.width, store: store,
+            land(direction, to: target, width: SidebarWidth.inWindow(store), store: store,
                  animation: Look.spaceSlide, duration: Look.spaceSlideDuration)
             return
         }
@@ -1533,7 +1548,7 @@ private struct SpaceSwipe: ViewModifier {
         let anchor = target.profileID == store.profileID
             ? store.spaceGesture.sectionsView : store.spaceGesture.stripView
         if store.window?.contentView is BrowserWindowHost, anchor != nil {
-            land(direction, to: target, width: SidebarWidth.shared.width, store: store,
+            land(direction, to: target, width: SidebarWidth.inWindow(store), store: store,
                  animation: Look.spaceSlide, duration: Look.spaceSlideDuration)
             return
         }
@@ -1559,7 +1574,7 @@ private struct SpaceSwipe: ViewModifier {
                 store.spaceSwiping = false
                 return
             }
-            self.land(direction, to: target, width: SidebarWidth.shared.width, store: store,
+            self.land(direction, to: target, width: SidebarWidth.inWindow(store), store: store,
                       animation: Look.spaceSlide, duration: Look.spaceSlideDuration)
         }
     }
@@ -1709,7 +1724,7 @@ private struct SpaceSwipe: ViewModifier {
                 return event
             }
             let phase = Self.phase(of: event)
-            let width = SidebarWidth.shared.width
+            let width = SidebarWidth.inWindow(store)
             let dt = self.last > 0 ? event.timestamp - self.last : 0
             self.last = event.timestamp
             // The Create a Space form is one slot past the last Space: a swipe back from it
@@ -1731,12 +1746,16 @@ private struct SpaceSwipe: ViewModifier {
             if let offset = out.offset {
                 self.track(offset, width: width, in: store)
             }
-            store.spacePull = out.pull
+            let opensCreation = creatable && (out.commit ?? 0) > 0 && index == self.list.count - 1
+            // A committed creation keeps its filled footer slot until the form
+            // owns it. Publishing the verdict's zero pull first removes that
+            // slot for one layout and makes the existing markers hop sideways.
+            if !opensCreation { store.spacePull = out.pull }
             if let direction = out.commit {
                 if let window = store.window {
                     Self.committedSwipes.add(window)
                 }
-                if creatable, direction > 0, index == self.list.count - 1 {
+                if opensCreation {
                     self.create(store)
                 } else {
                     if self.list.indices.contains(index + direction) {
@@ -1954,21 +1973,26 @@ private struct SpaceSwipe: ViewModifier {
                 store.spaceSwiping = false
             }
         }
-        if let host = store.window?.contentView as? BrowserWindowHost,
-           let anchor = (includesFavorites ? store.spaceGesture.stripView : store.spaceGesture.sectionsView),
-           let origin = store.spaceGesture.outgoing?.space ?? store.swipeSpace {
+        let host = store.window?.contentView as? BrowserWindowHost
+        let active = host?.spaceSlide.flatMap { $0.isActive ? $0 : nil }
+        let origin = store.spaceGesture.outgoing?.space ?? store.swipeSpace
+        let nativeSlide: ProfileSpaceSlide?
+        // A profile can already own captured rows before its replacement live
+        // anchor mounts. Reusing that cover needs no new geometry or fallback.
+        if let active, origin != nil, active.follows(destination, direction: direction) {
+            nativeSlide = active
+        } else if let host,
+                  let anchor = (includesFavorites ? store.spaceGesture.stripView : store.spaceGesture.sectionsView),
+                  let origin {
             let frame = anchor.convert(anchor.bounds, to: host)
             let presentationOffset = store.spaceGesture.outgoingView?.layer?.presentation().map {
                 $0.convert(.zero, to: host.layer?.presentation()).x - frame.minX
             }
-            let active = host.spaceSlide.flatMap { $0.isActive ? $0 : nil }
             let drag = active?.offset ?? presentationOffset ?? store.spaceDrag
             let slide: ProfileSpaceSlide
-            if let tracking = active, tracking.follows(destination, direction: direction) {
-                slide = tracking
-            } else if drag == 0,
-                      let prepared = takePreparedSlide(origin: origin, target: destination, direction: direction,
-                                                       frame: frame, width: width, in: store) {
+            if drag == 0,
+               let prepared = takePreparedSlide(origin: origin, target: destination, direction: direction,
+                                                frame: frame, width: width, in: store) {
                 slide = prepared
                 host.beginSpaceSlide(slide, preservingGround: true)
                 slide.isHidden = false
@@ -1982,6 +2006,11 @@ private struct SpaceSwipe: ViewModifier {
                     travelWidth: width)
                 host.beginSpaceSlide(slide, preservingGround: true)
             }
+            nativeSlide = slide
+        } else {
+            nativeSlide = nil
+        }
+        if let slide = nativeSlide {
             // Keep native presentation as the footer/tint source across release. Updating
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
             Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }
@@ -2159,7 +2188,7 @@ private struct SpaceSwipe: ViewModifier {
         let bounds = window.contentView.map { $0.convert($0.bounds, to: nil) }
             ?? NSRect(origin: .zero, size: window.frame.size)
         return NSRect(x: bounds.minX + inset, y: bounds.minY + inset,
-                      width: SidebarWidth.shared.width,
+                      width: SidebarWidth.inWindow(store),
                       height: max(0, bounds.height - 2 * inset)).contains(event.locationInWindow)
     }
 

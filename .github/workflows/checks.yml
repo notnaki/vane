@@ -107,6 +107,8 @@ jobs:
         id: toolchain
         run: |
           set -euo pipefail
+          swift --version
+          xcodebuild -version
           KEY=$(python3 scripts/ci-build-artifact.py toolchain)
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
 
@@ -171,7 +173,7 @@ jobs:
     if: needs.changes.outputs.app_required == 'true' && needs.changes.outputs.native_reused != 'true'
     runs-on: macos-26
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         shard: [1, 2, 3, 4]
     env:
@@ -297,7 +299,12 @@ jobs:
         run: bash scripts/test-cli-import.sh .build/debug/vane
 
       - name: Cloud AI transport and privacy checks
-        run: scripts/check-cloud-ai.sh
+        run: |
+          scripts/check-cloud-ai.sh
+          scripts/check-ai-connections.sh
+          scripts/check-ai-routing.sh
+          scripts/check-chatgpt.sh
+          scripts/check-chatgpt-session.sh
 
       - name: DMG package
         run: ./scripts/test-build-dmg.sh

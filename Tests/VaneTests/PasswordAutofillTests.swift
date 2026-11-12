@@ -10,14 +10,21 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     private var result: DispatchTimeoutResult?
     private var operationEntered = false
     private var operationFinished = false
+    private var entryCount = 0
+    private var firstEntry: ContinuousClock.Instant?
 
     func record(_ result: DispatchTimeoutResult) { lock.withLock { self.result = result } }
     var completed: Bool { lock.withLock { result != nil } }
     var released: Bool { lock.withLock { result == .success } }
-    func enterOperation() { lock.withLock { operationEntered = true } }
+    func enterOperation() { lock.withLock {
+        if firstEntry == nil { firstEntry = .now }
+        operationEntered = true; entryCount += 1
+    } }
     var entered: Bool { lock.withLock { operationEntered } }
+    var entries: Int { lock.withLock { entryCount } }
     func finishOperation() { lock.withLock { operationFinished = true } }
     var finished: Bool { lock.withLock { operationFinished } }
+    var holdDeadline: ContinuousClock.Instant? { lock.withLock { firstEntry?.advanced(by: .seconds(3)) } }
 }
 
 @MainActor final class PasswordAutofillTests: XCTestCase {
@@ -295,8 +302,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 try (presentationLoop?.isReadyForInteraction() ?? true) && self.nativeContinuationReady(window, document: web)
             }
         } else {
+            // DOM-only fixtures need attachment and viewport geometry, not native
+            // presentation. Leave foreground ownership to the active UI task.
             window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
-            window.orderFront(nil)
         }
         web.loadSimulatedRequest(URLRequest(url: url),
                                  responseHTML: "<!doctype html><body>" + html + "</body>")
@@ -1056,11 +1064,21 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         func checkDeadline() throws {
             try Task.checkCancellation()
             guard clock.now < deadline else {
+                bufferContinuationDiagnostic(phase: "username-processing-timeout", receipt.diagnostics)
+                emitNativeContinuationReadiness(window, document: web, stage: "username-processing-timeout")
                 throw FixtureTimeout(stage: "submitted username native processing: " + receipt.diagnostics)
             }
             guard currentDocument() else {
                 throw FixtureTimeout(stage: "submitted username outgoing document changed: " + receipt.diagnostics)
             }
+        }
+        try checkDeadline()
+        // Foreground ownership can change after account selection. Re-admit only
+        // this still-attached document before its action, within the same budget.
+        if !nativeContinuationReady(window, document: web),
+           window.contentView === web, web.window === window {
+            window.makeKeyAndOrderFront(nil)
+            NSApplication.shared.activate(ignoringOtherApps: true)
         }
         while true {
             try checkDeadline()
@@ -1086,6 +1104,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             """, in: nil, in: .page) { [weak receipt] result in
                 receipt?.evaluation = result.map { _ in () }
             }
+        var requestedProcessingReadmission = false
         while true {
             try checkDeadline()
             if let evaluation = receipt.evaluation { try evaluation.get() }
@@ -1093,8 +1112,17 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 throw FixtureTimeout(stage: "submitted username receipt rejected: " + receipt.diagnostics)
             }
             // `false` is a genuine processed denial, never the initial absent ACK.
-            if receipt.evaluation != nil, receipt.processed != nil,
-               nativeContinuationReady(window, document: web) {
+            if receipt.evaluation != nil, receipt.processed != nil {
+                if !nativeContinuationReady(window, document: web), !requestedProcessingReadmission,
+                   window.contentView === web, web.window === window {
+                    requestedProcessingReadmission = true
+                    window.makeKeyAndOrderFront(nil)
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
+                guard nativeContinuationReady(window, document: web) else {
+                    try await Task.sleep(for: .milliseconds(20))
+                    continue
+                }
                 bufferContinuationDiagnostic(phase: "username-processing-admitted",
                     "tab=\(tab.id) web=\(ObjectIdentifier(web)) documentScope=\(scope.document) " +
                         receipt.diagnostics)
@@ -1195,6 +1223,23 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             tab.fillChosen(host: origin.host, account: "bob")
             try await wait { try await js(tab.web, "user.value") as? String == "bob" }
             try await assertHeldUsernameStep(tab, origin: origin, continuationAllowed: true)
+        }
+    }
+
+    func testSubmittedUsernameReadmitsItsExactPresentationOwner() async throws {
+        try await withNativeContinuationFixture { tab, origin in
+            try await loadContinuationPage(tab, origin: origin, path: "username",
+                html: "<form><input id=user autocomplete=username></form>")
+            tab.fillChosen(host: origin.host, account: "bob")
+            try await wait(for: "explicit selection native completion") {
+                Passwords.lastUsed(profileID: tab.profileID)[origin.key(account: "bob")] != nil
+            }
+            let window = try XCTUnwrap(tab.web.window)
+            window.orderOut(nil)
+            XCTAssertFalse(nativeContinuationReady(window, document: tab.web))
+            let admitRequest = try await submitUsername(tab, origin: origin)
+            try admitRequest()
+            XCTAssertTrue(nativeContinuationReady(window, document: tab.web))
         }
     }
 
@@ -1554,6 +1599,191 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
 
     func testSuccessfulContinuationIsConsumedEvenWhenSiteFocusStartsAnotherRead() async throws {
         try await exerciseConsumedContinuation(holdSubmission: false)
+    }
+
+    func testContinuationCannotRefillReplacementWhileSuccessfulReplyIsHeld() async throws {
+        try await exerciseHeldContinuationReply(releaseBeforeMetadata: false)
+    }
+
+    func testSuccessfulContinuationReceiptSurvivesNewerFocusMetadataRequest() async throws {
+        try await exerciseHeldContinuationReply(releaseBeforeMetadata: true)
+    }
+
+    func testRejectedContinuationFillRetriesQueuedEligibleReplacement() async throws {
+        try await exerciseHeldContinuationReply(releaseBeforeMetadata: false, firstReplyValue: false)
+    }
+
+    func testHeldContinuationReadmitsItsExactOwnerDuringReadHolds() async throws {
+        try await exerciseHeldContinuationReply(releaseBeforeMetadata: false, withdrawPresentation: true)
+    }
+
+    private func exerciseHeldContinuationReply(releaseBeforeMetadata: Bool, firstReplyValue: Bool = true,
+                                               withdrawPresentation: Bool = false) async throws {
+        try await withNativeContinuationFixture { tab, origin in
+            try await loadContinuationPage(tab, origin: origin, path: "username",
+                html: "<form><input id=user autocomplete=username></form>")
+            tab.fillChosen(host: origin.host, account: "bob")
+            try await wait(for: "explicit selection native completion") {
+                Passwords.lastUsed(profileID: tab.profileID)[origin.key(account: "bob")] != nil
+            }
+            let admitRequest = try await submitUsername(tab, origin: origin)
+            let secretEntered = expectation(description: "continuation secret worker entered")
+            let metadataEntered = expectation(description: "replacement focus metadata worker entered")
+            let secretRelease = DispatchSemaphore(value: 0), metadataRelease = DispatchSemaphore(value: 0)
+            let secretState = PasswordFixtureReadHold(), metadataState = PasswordFixtureReadHold()
+            let originalReader = tab.passwordReader
+            var reader = originalReader
+            reader.password = { origin, account, profile in
+                let first = !secretState.entered
+                secretState.enterOperation()
+                if first {
+                    secretEntered.fulfill()
+                    secretState.record(secretRelease.wait(timeout: .now() + 3))
+                }
+                return try originalReader.password(origin, account, profile)
+            }
+            reader.matches = { origin, profile in
+                if secretState.entered && !metadataState.entered {
+                    metadataState.enterOperation()
+                    metadataEntered.fulfill()
+                    metadataState.record(metadataRelease.wait(timeout: .now() + 3))
+                }
+                return try originalReader.matches(origin, profile)
+            }
+            tab.passwordReader = reader
+            defer {
+                secretRelease.signal(); metadataRelease.signal()
+                tab.passwordReader = originalReader
+            }
+            var heldReply: PasswordFillCompletionHold?
+            var operationError: Error?
+            do {
+                let autocomplete = firstReplyValue ? "current-password" : "off"
+                try await loadContinuationPage(tab, origin: origin, path: "password", html: """
+                    <form id=login><input id=password type=password autocomplete=\(autocomplete)></form>
+                    <script>
+                    password.addEventListener('input', function () {
+                        window.firstFilled = password.value;
+                        login.innerHTML = '<input id=replacement type=password autocomplete=current-password>';
+                        replacement.focus();
+                    });
+                    </script>
+                    """, beforeRequest: admitRequest)
+                await fulfillment(of: [secretEntered], timeout: 2)
+                guard secretState.entered, !secretState.completed else {
+                    throw FixtureTimeout(stage: "continuation secret must remain held before installing SDK reply control")
+                }
+                let web = tab.web, document = tab.readingDocumentGeneration, profile = tab.profileID
+                let window = try XCTUnwrap(web.window), pageURL = web.url
+                @MainActor func admitPasswordDocument(holding state: PasswordFixtureReadHold) async throws {
+                    func sameDocument() -> Bool {
+                        !web.isLoading && tab.existingWeb === web && tab.profileID == profile &&
+                            web.url == pageURL && tab.readingDocumentGeneration == document &&
+                            window.contentView === web && web.window === window
+                    }
+                    guard sameDocument(), let deadline = state.holdDeadline,
+                          ContinuousClock.now < deadline, !state.completed else {
+                        throw FixtureTimeout(stage: "held fill reply lost its exact foreground password document")
+                    }
+                    if !nativeContinuationReady(window, document: web) {
+                        window.makeKeyAndOrderFront(nil)
+                        NSApplication.shared.activate(ignoringOtherApps: true)
+                    }
+                    while true {
+                        try Task.checkCancellation()
+                        guard sameDocument(), ContinuousClock.now < deadline, !state.completed else {
+                            throw FixtureTimeout(stage: "held fill reply foreground admission exceeded its existing read hold")
+                        }
+                        if nativeContinuationReady(window, document: web) { return }
+                        try await Task.sleep(for: .milliseconds(20))
+                    }
+                }
+                if withdrawPresentation {
+                    window.orderOut(nil)
+                    XCTAssertFalse(nativeContinuationReady(window, document: web))
+                }
+                try await admitPasswordDocument(holding: secretState)
+                let raw = try await js(tab.web, "window.__vaneAnchor && window.__vaneAnchor()", world: Autofill.world) as? String
+                let anchor = try JSONSerialization.jsonObject(with: Data(try XCTUnwrap(raw).utf8)) as? [String: Any]
+                let target = try XCTUnwrap(anchor?["target"] as? String)
+                let hold = try PasswordFillCompletionHold(web: tab.web,
+                    script: Autofill.fillJS(account: "bob", password: "bob-secret", automatic: true,
+                                           target: target, continuation: true), expectedReply: firstReplyValue)
+                heldReply = hold
+                secretRelease.signal()
+                try await wait(for: "real continuation reply to be held") {
+                    try hold.check()
+                    return hold.isHoldingReply
+                }
+                if firstReplyValue {
+                    expectEqual(try await js(tab.web, "window.firstFilled") as? String, "bob-secret")
+                } else {
+                    expectEqual(try await js(tab.web, "password.value") as? String, "")
+                    _ = try await js(tab.web, "password.focus()")
+                }
+                await fulfillment(of: [metadataEntered], timeout: 2)
+                guard metadataState.entered, !metadataState.completed else {
+                    throw FixtureTimeout(stage: "newer focus metadata must remain held at successful fill receipt")
+                }
+                if withdrawPresentation {
+                    window.orderOut(nil)
+                    XCTAssertFalse(nativeContinuationReady(window, document: web))
+                }
+                try await admitPasswordDocument(holding: metadataState)
+                // Keep the real focus read above, then mount an unfocused target.
+                // ready() also re-reports a focused field; that extra focus read
+                // can cancel the automatic request and conceal a reusable step.
+                _ = try await js(tab.web, "login.innerHTML = '<input id=replacement type=password autocomplete=current-password>'")
+                if releaseBeforeMetadata { hold.release() }
+                metadataRelease.signal()
+                try await Passwords.flushPendingOperations()
+                try await Task.sleep(for: .milliseconds(250))
+                expectEqual(try await js(tab.web, "replacement.value") as? String, "")
+                XCTAssertEqual(secretState.entries, 1, "An in-flight or consumed continuation must not read another secret")
+                if !releaseBeforeMetadata { hold.release() }
+                if !firstReplyValue {
+                    try await wait(for: "eligible replacement after a rejected automatic fill") {
+                        try await js(tab.web, "replacement.value") as? String == "bob-secret"
+                    }
+                }
+                let expectedReads = firstReplyValue ? 1 : 2
+                _ = try await js(tab.web, """
+                    login.innerHTML = '<input id=afterReply type=password autocomplete=current-password>';
+                    """)
+                try await Task.sleep(for: .milliseconds(250))
+                expectEqual(try await js(tab.web, "afterReply.value") as? String, "")
+                XCTAssertEqual(secretState.entries, expectedReads, "A newer metadata request must not discard the successful consumption receipt")
+                XCTAssertEqual(hold.capturedReplies, 1)
+                XCTAssertEqual(hold.deliveredReplies, 1)
+                try hold.check()
+            } catch {
+                operationError = error
+                bufferContinuationDiagnostic(phase: "held-fill-failure",
+                    "error=\(error) secretEntered=\(secretState.entered) secretCompleted=\(secretState.completed) " +
+                        "metadataEntered=\(metadataState.entered) metadataCompleted=\(metadataState.completed)")
+                if let window = tab.existingWeb?.window {
+                    emitNativeContinuationReadiness(window, document: tab.web, stage: "held-fill-failure")
+                }
+            }
+            secretRelease.signal(); metadataRelease.signal()
+            do { try heldReply?.close() } catch {
+                if operationError == nil { operationError = error } else { XCTFail("SDK reply cleanup also failed: \(error)") }
+            }
+            do { try await finishOwnedPasswordRead(secretRelease) } catch {
+                if operationError == nil { operationError = error } else { XCTFail("Service worker cleanup also failed: \(error)") }
+            }
+            do {
+                try await wait(for: "owned SDK evaluation cleanup") { heldReply?.pendingReplies == 0 || heldReply == nil }
+                try heldReply?.dispose()
+            } catch {
+                if operationError == nil { operationError = error } else { XCTFail("SDK trampoline cleanup also failed: \(error)") }
+            }
+            XCTAssertTrue(secretState.released, "The owned secret worker must be signalled, never expire")
+            if metadataState.entered {
+                XCTAssertTrue(metadataState.released, "The owned metadata worker must be signalled, never expire")
+            }
+            if let operationError { throw operationError }
+        }
     }
 
     private func exerciseConsumedContinuation(holdSubmission: Bool) async throws {

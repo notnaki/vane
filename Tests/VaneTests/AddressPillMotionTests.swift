@@ -44,6 +44,10 @@ private struct AddressPillFixtureView: View {
             let previousMode = saver.mode
             saver.setMode(mode)
             let store = TabStore(isPrivate: true)
+            // This fixture mounts only the pill, not the empty-store command bar.
+            // Keep its model consistent with that presentation; a real palette
+            // remains a refusal gate in the production keyboard endpoint.
+            store.palette = nil
             let tab = Tab(isPrivate: true)
             tab.address = "github.com"
             let state = AddressPillFixture(tab: tab)
@@ -129,6 +133,64 @@ private struct AddressPillFixtureView: View {
             }
         }
         return bright
+    }
+
+    /// A hosting root can mount before its store receives the window. Readiness
+    /// admits the real native view, never the requested focus or its outcome.
+    private func withPillAwaitingWindowOwnership(
+        _ body: @MainActor (TabStore, NSWindow, NSView, MountedAddressButton) async throws -> Void
+    ) async throws {
+        try await withPill { state, store, window, _ in
+            window.contentView = nil
+            store.window = nil
+            store.chromeFocusRequested = true
+            let host = NSHostingView(rootView: AddressPillFixtureView(state: state, store: store))
+            window.contentView = host
+            @MainActor func endpoint(in view: NSView) -> MountedAddressButton? {
+                if let button = view as? MountedAddressButton { return button }
+                return view.subviews.lazy.compactMap { endpoint(in: $0) }.first
+            }
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                guard let button = endpoint(in: host) else { return false }
+                return NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
+                    && host.window === window && button.window === window
+                    && button.bounds.width > 0 && button.bounds.height > 0
+                    && !host.needsDisplay && host.layer?.presentation() != nil
+            }
+            let button = try XCTUnwrap(endpoint(in: host))
+            XCTAssertTrue(store.chromeFocusRequested,
+                          "Mounting before window ownership must not discard the pending request")
+            XCTAssertFalse(window.firstResponder === button,
+                           "An unowned endpoint must not acquire the keyboard")
+            try await body(store, window, host, button)
+        }
+    }
+
+    func testFocusRequestSurvivesMountBeforeStoreWindowOwnership() async throws {
+        try await withPillAwaitingWindowOwnership { store, window, _, button in
+            store.window = window
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertTrue(window.firstResponder === button,
+                          "Window installation must deliver the retained request to the exact mounted control")
+            XCTAssertFalse(store.chromeFocusRequested)
+        }
+    }
+
+    func testPendingMountRequestCannotTakeFocusFromAnInterveningField() async throws {
+        try await withPillAwaitingWindowOwnership { store, window, host, _ in
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 100, height: 24))
+            host.addSubview(field)
+            XCTAssertTrue(window.makeFirstResponder(field))
+            let holder = try XCTUnwrap(window.firstResponder)
+            store.window = window
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertTrue(window.firstResponder === holder,
+                          "A retained request belongs to its original responder, not later input")
+            XCTAssertFalse(store.chromeFocusRequested, "Superseded requests must retire")
+        }
     }
 
     func testPageActionsAreHiddenAtRestAndRevealForKeyboardFocus() async throws {

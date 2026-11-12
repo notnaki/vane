@@ -3,7 +3,7 @@ import SwiftUI
 import Combine
 import WebKit
 
-/// The window, only so the traffic lights can be nailed to the sidebar's top row.
+/// The native browser frame, page-paint coordination, and traffic-light placement.
 ///
 /// AppKit picks where the lights go from the titlebar's height, and it re-picks after every
 /// resize, every key/resign-key and every restored frame. An empty compact toolbar gets that
@@ -11,6 +11,94 @@ import WebKit
 /// close is what the user saw as "the traffic lights aren't in the same place as the others".
 /// So the buttons are moved back onto the line after every layout pass, whatever AppKit did.
 final class VaneWindow: NSWindow {
+    private var resizePreparation: WindowResizePreparation?
+    private var resizeAnchor: WindowResizeAnchor?
+    private var committingResize = false
+    private var sidebarResizePreparation: SidebarPageResizePreparation?
+
+    /// A second close command cancels the pending close; a command after its
+    /// publication may proceed as a normal reopen.
+    func cancelSidebarResize() -> Bool {
+        let waiting = sidebarResizePreparation?.awaitingPaint == true
+        sidebarResizePreparation?.cancel()
+        sidebarResizePreparation = nil
+        return waiting
+    }
+
+    func prepareSidebarClose(_ store: TabStore) -> Bool {
+        guard isVisible, !isPreparingPageResize, !inLiveResize, let root = contentView,
+              store.sidebarShown, !store.libraryOpen else { return false }
+        let expansion = SidebarWidth.inWindow(store) - Look.cardGap
+        let pages = WindowResizePreparation.targets(in: root, nextSize: root.bounds.size,
+                                                    leadingExpansion: expansion)
+        guard !pages.isEmpty else { return false }
+        let preparation = SidebarPageResizePreparation(window: self, pages: pages,
+            isCurrent: { [weak self, weak store] in
+                guard let self, let store else { return false }
+                return store.window === self && store.profileVisible && store.sidebarShown && !store.libraryOpen
+            }, commit: { [weak store] in store?.sidebarShown = false })
+        sidebarResizePreparation = preparation
+        preparation.start()
+        return true
+    }
+
+    var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true }
+
+    @discardableResult func preparePageResize(frame: NSRect, display: Bool) -> Bool {
+        _ = cancelSidebarResize()
+        if resizePreparation == nil {
+            resizePreparation = WindowResizePreparation(window: self) { [weak self] frame, display in
+                self?.commitPreparedResize(frame, display: display)
+            }
+        }
+        return resizePreparation?.request(frame: frame, display: display) == true
+    }
+
+    private func commitPreparedResize(_ frame: NSRect, display: Bool) {
+        committingResize = true
+        defer { committingResize = false }
+        super.setFrame(frame, display: false)
+        if display { viewsNeedDisplay = true }
+    }
+
+    func beginPageResize(at point: NSPoint = NSEvent.mouseLocation) {
+        _ = cancelSidebarResize()
+        resizeAnchor = WindowResizeAnchor(frame: frame, pointer: point)
+        resizePreparation?.beginLiveResize()
+    }
+
+    func proposedPageResize(_ size: NSSize) -> NSSize {
+        guard !committingResize, let resizeAnchor, !styleMask.contains(.fullScreen) else { return size }
+        let target = resizeAnchor.frame(for: size)
+        return preparePageResize(frame: target, display: true) ? frame.size : size
+    }
+
+    func endPageResize() {
+        resizeAnchor = nil
+        resizePreparation?.endLiveResize()
+    }
+
+    override func close() {
+        _ = cancelSidebarResize()
+        endPageResize()
+        resizePreparation?.cancel()
+        super.close()
+    }
+
+    override func miniaturize(_ sender: Any?) {
+        _ = cancelSidebarResize()
+        endPageResize()
+        resizePreparation?.cancel()
+        super.miniaturize(sender)
+    }
+
+    override func toggleFullScreen(_ sender: Any?) {
+        _ = cancelSidebarResize()
+        endPageResize()
+        resizePreparation?.cancel()
+        super.toggleFullScreen(sender)
+    }
+
     /// Where a light's frame origin has to sit for its centre to land `Look.lightsCentre`
     /// below the window's top edge. `top` is that top edge in the button's superview's own
     /// (unflipped, y-up) coordinates, so this is the same arithmetic whatever titlebar view
@@ -47,6 +135,21 @@ final class VaneWindow: NSWindow {
     /// by the inset every time the peek opens.
     private var baseX: [NSWindow.ButtonType: CGFloat] = [:]
 
+    /// Interpolated by the same SwiftUI transaction as the sidebar. Keep this
+    /// across AppKit relayouts instead of snapping back to the destination row.
+    private var trafficLightOffset: CGPoint?
+
+    func placeTrafficLights(offset: CGPoint, visibility: CGFloat, peeking: Bool) {
+        trafficLightOffset = offset
+        for kind in Self.lightKinds {
+            if let button = standardWindowButton(kind), button.isHidden != (visibility <= 0.001) {
+                button.isHidden = visibility <= 0.001
+            }
+        }
+        peekingSidebar = peeking
+        centreTrafficLights()
+    }
+
     /// The lights' resting face, laid over AppKit's own three. See `TrafficLightRest`.
     private var lightsAtRest: TrafficLightRest?
 
@@ -61,11 +164,12 @@ final class VaneWindow: NSWindow {
             // The window's top edge in base coordinates is its own height; convert that into
             // whatever space the buttons are laid out in.
             let top = host.convert(NSPoint(x: 0, y: frame.height), from: nil).y
-            let wantY = Self.lightOriginY(windowTop: top, buttonHeight: button.frame.height,
-                                          peeking: peeking)
+            let wantY = trafficLightOffset.map {
+                top - Look.lightsCentre - $0.y - button.frame.height / 2
+            } ?? Self.lightOriginY(windowTop: top, buttonHeight: button.frame.height, peeking: peeking)
             let base = baseX[kind] ?? button.frame.origin.x
             baseX[kind] = base
-            let wantX = base + Self.lightsOffsetX(peeking: peeking)
+            let wantX = base + (trafficLightOffset?.x ?? Self.lightsOffsetX(peeking: peeking))
             guard abs(button.frame.origin.y - wantY) > 0.01
                     || abs(button.frame.origin.x - wantX) > 0.01 else { continue }
             button.setFrameOrigin(NSPoint(x: wantX, y: wantY))
@@ -307,6 +411,10 @@ final class TrafficLightRest: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        Self.drawDiscs(discs, key: key)
+    }
+
+    static func drawDiscs(_ discs: [CGRect], key: Bool) {
         let ringed = key ? Look.lightRingOpacity : Look.lightInactiveRingOpacity
         for (i, disc) in discs.enumerated() where i < Look.lightColours.count {
             (key ? Look.lightRest : Look.lightInactive).setFill()
@@ -532,8 +640,6 @@ extension VaneWindow {
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
-        // Keep the sidebar and page usable, including when restoring an older saved frame.
-        window.minSize = NSSize(width: 800, height: 500)
         window.title = WindowTitle.current(in: store)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
@@ -566,6 +672,9 @@ extension VaneWindow {
         // `BrowserWindowHost`, not `BrowserWindow` directly: a window hops profiles in place,
         // so which store it is showing is a thing that changes. The host is what watches it.
         window.contentView = BrowserWindowHost(shown: delegate.shown)
+        // Full-size content fills the frame. The content limit avoids minSize's
+        // additional toolbar inset on compact windows.
+        window.contentMinSize = NSSize(width: 470, height: 380)
         // Position first, autosave second, as SettingsWindow does: `setFrameUsingName`
         // says whether there was a saved frame, and centring after it would throw the
         // saved position away and keep only the size — which is what every launch did.
@@ -744,7 +853,16 @@ extension VaneWindow {
             (store.window as? VaneWindow)?.centreTrafficLights()
         }
         func windowDidResize(_ n: Notification) { recentre() }
-        func windowDidEndLiveResize(_ n: Notification) { recentre() }
+        func windowWillStartLiveResize(_ n: Notification) {
+            (store.window as? VaneWindow)?.beginPageResize()
+        }
+        func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+            (sender as? VaneWindow)?.proposedPageResize(frameSize) ?? frameSize
+        }
+        func windowDidEndLiveResize(_ n: Notification) {
+            (store.window as? VaneWindow)?.endPageResize()
+            recentre()
+        }
         func windowDidBecomeKey(_ n: Notification) {
             recentre()
             MainActor.assumeIsolated { rebuild(); SharedTabs.refreshPresentation(); store.extensions.sync() }
@@ -855,6 +973,24 @@ extension VaneWindow {
 @MainActor final class ShownStore: ObservableObject {
     @Published var store: TabStore
     init(_ store: TabStore) { self.store = store }
+}
+
+/// The window owns this root's frame. Propagate a native size change through
+/// SwiftUI immediately so WebKit receives its viewport before the next commit.
+/// Only update the hosting root here; walking every native descendant's layout
+/// during the resize also reflows the sidebar's retained controls unnecessarily.
+@MainActor final class BrowserHostingView<Content: View>: NSHostingView<Content> {
+    private var applyingFrame = false
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let previous = frame.size
+        super.setFrameSize(newSize)
+        guard previous != newSize, window != nil, !isHiddenOrHasHiddenAncestor,
+              !applyingFrame else { return }
+        applyingFrame = true
+        defer { applyingFrame = false }
+        super.layout()
+    }
 }
 
 /// An empty search layer must pass clicks through to the page and sidebar.
@@ -977,11 +1113,14 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         let host: ProfileHosts
         if let existing = hosts[id] { host = existing }
         else {
-            let content = NSHostingView(rootView: BrowserWindow(presentsPalette: false)
+            let content = BrowserHostingView(rootView: BrowserWindow(presentsPalette: false)
                 .environmentObject(store)
                 .environmentObject(ProfileManager.shared)
                 .environment(\.spaceFooterPresentation, footerPresentation)
                 .font(Look.text))
+            // The outer native container supplies the frame; do not separately
+            // measure minimum, ideal and maximum sizes on each resize.
+            content.sizingOptions = []
             let palette = BrowserPaletteHost(rootView: AnyView(BrowserPaletteOverlay()
                 .environmentObject(store)
                 .environmentObject(ProfileManager.shared)
@@ -1020,9 +1159,11 @@ private struct NativeSpacePreview: View {
     let preview: SpacePreviewList
     let scope: SidebarNativeReadinessScope
     let theme: SpaceChromeTheme
+    let windowWidth: CGFloat
 
     var body: some View {
         preview.equatable()
+            .environment(\.sidebarWindowWidth, windowWidth)
             .environment(\.sidebarNativeReadinessScope, scope)
             .environment(\.spaceChromeTheme, theme)
             .environment(\.colorScheme, preview.colorScheme)
@@ -1045,6 +1186,7 @@ private struct NativeSpacePreview: View {
     private weak var source: TabStore?
     private weak var destination: TabStore?
     private var finished = false
+    private var ownsSidebarVisibility = false
     private var completingSelection = false
     private let includesFavorites: Bool
     private let travelWidth: CGFloat
@@ -1079,10 +1221,11 @@ private struct NativeSpacePreview: View {
         let incomingFallback = ProfileManager.shared.profiles.first { $0.id == incoming.space.profileID }?.colorHex
             ?? source.profile.colorHex
         let incomingTheme = SpaceChromeTheme(space: incoming.space, fallback: incomingFallback)
+        let windowWidth = source.window?.contentView?.bounds.width ?? .infinity
         let outgoingHost = NSHostingView(rootView: NativeSpacePreview(
-            preview: outgoing, scope: outgoingScope, theme: outgoingTheme))
+            preview: outgoing, scope: outgoingScope, theme: outgoingTheme, windowWidth: windowWidth))
         let incomingHost = NSHostingView(rootView: NativeSpacePreview(
-            preview: incoming, scope: incomingScope, theme: incomingTheme))
+            preview: incoming, scope: incomingScope, theme: incomingTheme, windowWidth: windowWidth))
         // Both captures have an explicit native frame. Intrinsic/min/max fitting
         // probes otherwise lay out the frozen rows again during window layout.
         outgoingHost.sizingOptions = []
@@ -1140,6 +1283,7 @@ private struct NativeSpacePreview: View {
         // Both keep this overlay until the arriving sidebar acknowledges its rest state.
         guard (!finished || completingSelection), destination !== store else { return }
         destination = store
+        ownsSidebarVisibility = true
         store.spaceSwiping = true
         store.spaceGesture.outgoing = originPreview
         store.spaceGesture.neighbour = preparedTarget
@@ -1228,6 +1372,7 @@ private struct NativeSpacePreview: View {
     /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
     func track(drag: CGFloat) {
         guard isActive else { return }
+        ownsSidebarVisibility = true
         lastPublishedDrag = drag
         let now = ProcessInfo.processInfo.systemUptime
         if let previous = lastTracking {
@@ -1275,6 +1420,7 @@ private struct NativeSpacePreview: View {
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
+        ownsSidebarVisibility = true
         self.completion = completion
         restingSpaceID = returning ? preparedOrigin.id : targetID
         let animationID = UUID()
@@ -1432,10 +1578,8 @@ private struct NativeSpacePreview: View {
         finishGround?(source?.swipeSpace)
         finishGround = nil
         Motion.spaceHandoff {
-            source?.spaceGesture.profileSliding = false
             destination?.spaceDrag = 0
             destination?.spaceSwiping = false
-            destination?.spaceGesture.profileSliding = false
         }
         if let host = superview as? BrowserWindowHost, host.spaceSlide === self {
             host.footerPresentation.finishProgress()
@@ -1489,12 +1633,16 @@ private struct NativeSpacePreview: View {
 
     private func retireIfAcknowledged() {
         guard finished, let store = retirementStore,
-              let rendered = sidebarAcknowledgements[ObjectIdentifier(store)], rendered.atRest,
-              rendered.spaceID == retirementSpaceID, store.currentSpaceID == retirementSpaceID,
-              !store.spaceSwiping, !store.spaceGesture.profileSliding,
+              store.currentSpaceID == retirementSpaceID, !store.spaceSwiping,
               SidebarNativeReadinessCoordinator.shared.isReady(
                 SidebarNativeReadinessScope(store: store, spaceID: retirementSpaceID),
                 allowingUnregistered: !requiresNativePopulation) else { return }
+        // Completing the animation does not make the replacement native rows
+        // ready. Keep the covered live tree hidden until population can take
+        // over, then wait for SwiftUI's actual visibility/rest acknowledgement.
+        releaseSidebarVisibility()
+        guard let rendered = sidebarAcknowledgements[ObjectIdentifier(store)], rendered.atRest,
+              rendered.spaceID == retirementSpaceID, !store.spaceGesture.profileSliding else { return }
         // This acknowledgement is issued by SwiftUI while committing the live opacity
         // and identity. Remove the native list in that same transaction, not two frames
         // later when both lists would already have painted their translucent text.
@@ -1515,6 +1663,7 @@ private struct NativeSpacePreview: View {
     private func retire() {
         guard !retired else { return }
         retired = true
+        releaseSidebarVisibility()
         SidebarNativeReadinessCoordinator.shared.removeObservation(retirementReadinessObservation)
         retirementReadinessObservation = nil
         retirementTimeout?.cancel()
@@ -1524,6 +1673,17 @@ private struct NativeSpacePreview: View {
         let host = superview as? BrowserWindowHost
         removeFromSuperview()
         host?.didFinishSpaceSlide(self)
+    }
+
+    private func releaseSidebarVisibility() {
+        // Discarding an unused prepared preview must not unhide a different
+        // native cover's live rows. Clear ownership before reentrant publication.
+        guard ownsSidebarVisibility else { return }
+        ownsSidebarVisibility = false
+        Motion.spaceHandoff {
+            source?.spaceGesture.profileSliding = false
+            destination?.spaceGesture.profileSliding = false
+        }
     }
 }
 
@@ -1598,9 +1758,14 @@ extension TabStore {
             window.makeFirstResponder(page)
             return
         }
-        Motion.list {
-            libraryOpen = false
-            sidebarShown = true
+        if libraryOpen || !sidebarShown {
+            Motion.list {
+                libraryOpen = false
+                sidebarShown = true
+            }
+        } else {
+            librarySwipeMonitor.cancelPendingActivation(toward: false)
+            if mountedAddressEndpoint?.takeFocus(from: holder) == true { return }
         }
         DispatchQueue.main.async { [weak self, weak holder] in
             guard let self, let window = self.window, self.palette == nil,

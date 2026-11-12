@@ -6,11 +6,12 @@ enum ReadingQueueSearch {
         articles.filter { (filter == .all || $0.isRead == (filter == .read)) && ReadingArticleCodec.matches($0, query: query) }
             .sorted { $0.capturedAt == $1.capturedAt ? $0.id.uuidString < $1.id.uuidString : $0.capturedAt > $1.capturedAt }
     }
-    static func results(items: [ReadingQueueItem], query: String, filter: ReadingQueueFilter) -> [ReadingQueueItem] {
+    static func results(items: [ReadingQueueItem], query: String, filter: ReadingQueueFilter, profileIDs: Set<UUID> = []) -> [ReadingQueueItem] {
         var found: [ReadingQueueItem] = []
         for item in items {
             guard !Task.isCancelled else { return [] }
-            if (filter == .all || item.article.isRead == (filter == .read)) && ReadingArticleCodec.matches(item.article, query: query) {
+            if (profileIDs.isEmpty || profileIDs.contains(item.profileID))
+                && (filter == .all || item.article.isRead == (filter == .read)) && ReadingArticleCodec.matches(item.article, query: query) {
                 found.append(item)
             }
         }
@@ -43,7 +44,7 @@ struct ReadingQueuePane: View {
     @State private var message: String?
     @State private var searching = true
     @FocusState private var focusedArticle: ReadingQueueIdentity?
-    private struct Request: Equatable, Sendable { var query: String; var filter: ReadingQueueFilter; var revisions: [ReadingQueueCollection.Revision] }
+    private struct Request: Equatable, Sendable { var query: String; var filter: ReadingQueueFilter; var profileIDs: Set<UUID>; var revisions: [ReadingQueueCollection.Revision] }
     private struct PreparationRequest: Equatable {
         var identity: ReadingQueueIdentity
         var revision: Int
@@ -55,7 +56,8 @@ struct ReadingQueuePane: View {
               let repository = collection.repository(for: identity.profileID) else { return nil }
         return .init(identity: identity, revision: repository.revision)
     }
-    private var request: Request { .init(query: library.query, filter: filter, revisions: collection.revisions) }
+    private var profileIDs: Set<UUID> { library.profileFilters[.readingQueue, default: []] }
+    private var request: Request { .init(query: library.query, filter: filter, profileIDs: profileIDs, revisions: collection.revisions) }
     private func size(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
     private func perform(_ work: @escaping @MainActor () async throws -> Void) {
         Task { do { try await work(); message = nil } catch { message = error.localizedDescription } }
@@ -64,6 +66,7 @@ struct ReadingQueuePane: View {
         VStack(alignment: .leading, spacing: Look.inset) {
             LibraryHead(section: .readingQueue, filtering: filter != .all, query: $library.query) {
                 Picker("Show", selection: $filter) { ForEach(ReadingQueueFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                    .pickerStyle(.menu)
             } actions: { Button("Retry / Refresh") { collection.reload(); message = nil } }
             Text("\(collection.usage.articleCount) saved · \(size(collection.usage.publishedBytes))").font(Look.caption).foregroundStyle(Look.inkSecondary)
             if collection.usage.pendingCleanupBytes > 0 {
@@ -91,7 +94,7 @@ struct ReadingQueuePane: View {
                         }.padding(.vertical, 18)
                     }
                     ForEach(results) { item in row(item) }
-                    ForEach(collection.damaged) { damage in
+                    ForEach(collection.damaged.filter { profileIDs.isEmpty || profileIDs.contains($0.profileID) }) { damage in
                         VStack(alignment: .leading, spacing: 5) {
                             Text("Unreadable saved article").font(Look.small)
                             Text(damage.profileName).font(Look.caption).foregroundStyle(Look.inkTertiary)
@@ -121,7 +124,7 @@ struct ReadingQueuePane: View {
             let asked = request, items = collection.items
             searching = true
             let worker = Task.detached(priority: .userInitiated) {
-                ReadingQueueSearch.results(items: items, query: asked.query, filter: asked.filter)
+                ReadingQueueSearch.results(items: items, query: asked.query, filter: asked.filter, profileIDs: asked.profileIDs)
             }
             let found = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
             guard !Task.isCancelled, request == asked else { return }

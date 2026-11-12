@@ -16,12 +16,15 @@ import Foundation
     private var listSubscriptions: [AnyCancellable] = []
     private var rowSubscriptions: [UUID: [AnyCancellable]] = [:]
 
-    var items: [Downloads.Item] {
-        managers.flatMap(\.items).enumerated().sorted { lhs, rhs in
-            let left = lhs.element.completed ?? lhs.element.started
-            let right = rhs.element.completed ?? rhs.element.started
-            return left == right ? lhs.offset < rhs.offset : left > right
-        }.map(\.element)
+    var items: [Downloads.Item] { ownedItems.map(\.item) }
+
+    var ownedItems: [(item: Downloads.Item, profileID: UUID)] {
+        managers.flatMap { manager in manager.items.map { (item: $0, profileID: manager.profileID) } }
+            .enumerated().sorted { lhs, rhs in
+                let left = lhs.element.item.completed ?? lhs.element.item.started
+                let right = rhs.element.item.completed ?? rhs.element.item.started
+                return left == right ? lhs.offset < rhs.offset : left > right
+            }.map(\.element)
     }
 
     init(managers: [Downloads]) {

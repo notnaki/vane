@@ -12,19 +12,43 @@ import WebKit
     static let script = """
     (function () {
       if (window.__vaneFill) return;
-      var topWindow = window, contexts = new Map(), recentContext = null;
+      var topWindow = window, topOrigin = window.origin, contexts = new Map(), recentContext = null;
+      // Follow only public open roots. Slots participate in ancestor visibility;
+      // closed roots never become reachable, even through a previously cached field.
+      function composedParent(el) {
+        return el.assignedSlot || el.parentElement || (el.getRootNode && el.getRootNode().host) || null;
+      }
+      function deepActive(document) {
+        var active = document.activeElement;
+        while (active && active.shadowRoot && active.shadowRoot.activeElement)
+          active = active.shadowRoot.activeElement;
+        return active;
+      }
+      function accessibleWindow(candidate) {
+        // WindowProxy [[GetPrototypeOf]] silently returns null when DOM access is
+        // forbidden. contentDocument instead makes WebKit log a security error.
+        try { return !!candidate && Object.getPrototypeOf(candidate) !== null; }
+        catch (_) { return false; }
+      }
+      function exactOriginWindow(candidate) {
+        if (!accessibleWindow(candidate)) return false;
+        var origin = candidate.origin;
+        return origin !== 'null' && origin === topOrigin;
+      }
       function install(window) {
         var document;
         try {
+          if (!accessibleWindow(window)) return;
           // document.domain can make another host or port DOM-accessible. Credentials
           // still require the exact serialized origin, including inherited srcdoc origins.
-          if (window !== topWindow && (window.origin === 'null' || window.origin !== topWindow.origin)) return;
+          if (window !== topWindow && !exactOriginWindow(window)) return;
           document = window.document;
         } catch (_) { return; }
         if (!document) return;
         if (contexts.has(document)) { contexts.get(document).ready(); return; }
         var documentID = Array.from(topWindow.crypto.getRandomValues(new Uint32Array(4))).join('-'), fields = new WeakMap(), fieldSerial = 0;
-        var retired = false, observer = null, discoveryTimer = null;
+        var retired = false, observer = null, discoveryTimer = null, rootTimer = null;
+        var shadowListeners = new Map(), credentialListeners = [];
         var listeners = [];
         function listen(target, name, fn, capture) {
           target.addEventListener(name, fn, capture);
@@ -33,23 +57,37 @@ import WebKit
         function pauseDiscovery() {
           if (observer) observer.disconnect();
           if (discoveryTimer !== null) clearTimeout(discoveryTimer);
-          discoveryTimer = null; pending = false;
+          if (rootTimer !== null) clearInterval(rootTimer);
+          rootTimer = null; discoveryTimer = null; pending = false;
+          shadowListeners.forEach(function (entries, root) {
+            entries.forEach(function (entry) { root.removeEventListener(entry[0], entry[1], true); });
+          });
+          shadowListeners.clear();
         }
         function dispose() {
           retired = true; pauseDiscovery();
-          listeners.forEach(function (l) { l[0].removeEventListener(l[1], l[2], l[3]); });
-          listeners = [];
+          listeners.forEach(function (l) {
+            // The stored WindowProxy may now target a foreign document. Its old
+            // global owns those listeners; do not probe methods on the new one.
+            if (l[0] === window && !accessibleWindow(window)) return;
+            l[0].removeEventListener(l[1], l[2], l[3]);
+          });
+          listeners = []; lastPair = lastCapturePair = lastGeneration = usernameStep = submittedAttempt = null;
+          selectedAccounts = new WeakMap();
         }
         function attachedDocument() {
           if (retired) return false;
           try {
-            if (window.document !== document || window.origin !== topWindow.origin) return false;
+            if (!accessibleWindow(window) || !accessibleWindow(topWindow)) return false;
+            if (window.document !== document || window.origin !== topOrigin || topWindow.origin !== topOrigin) return false;
             var child = window;
             while (child !== topWindow) {
-              if (child.origin === 'null' || child.origin !== topWindow.origin) return false;
+              if (!exactOriginWindow(child)) return false;
+              var parent = child.parent;
+              if (!exactOriginWindow(parent)) return false;
               var frame = child.frameElement;
-              if (!frame || !frame.isConnected || frame.contentDocument !== child.document) return false;
-              child = child.parent;
+              if (!frame || !frame.isConnected || frame.contentWindow !== child) return false;
+              child = parent;
             }
             return true;
           } catch (_) { return false; }
@@ -62,9 +100,10 @@ import WebKit
           return true;
         }
         function focusedFrame() {
+          if (!attachedDocument()) return false;
           try {
             for (var child = window; child !== topWindow; child = child.parent)
-              if (child.parent.document.activeElement !== child.frameElement) return false;
+              if (deepActive(child.parent.document) !== child.frameElement) return false;
             return true;
           } catch (_) { return false; }
         }
@@ -76,21 +115,28 @@ import WebKit
         function token(p) {
           var field = p && (p.pass || p.user);
           if (!field) return null;
-          return documentID + ':' + fieldID(field) + (p.pass ? ':password:' : ':username:') + fieldID(p.user);
+          return documentID + ':' + fieldID(field) + (p.pass ? ':password:' : ':username:') + fieldID(p.user || p.linkedUser);
         }
         // React and friends install their own value setter; assigning .value directly updates
         // the DOM but not the component state, and the site then submits an empty field.
         function setValue(el, v) {
           var d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
           if (d && d.set) { d.set.call(el, v); } else { el.value = v; }
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.dispatchEvent(new window.Event('input', { bubbles: true, composed: true }));
+          el.dispatchEvent(new window.Event('change', { bubbles: true, composed: true }));
         }
         function shown(el) {
-          var r = el.getBoundingClientRect(), style = el.ownerDocument.defaultView.getComputedStyle(el);
-          for (var parent = el; parent; parent = parent.parentElement) {
+          if (!attachedDocument()) return false;
+          var view = el.ownerDocument.defaultView;
+          if (!accessibleWindow(view)) return false;
+          var r = el.getBoundingClientRect(), style = view.getComputedStyle(el);
+          for (var parent = el; parent; parent = composedParent(parent)) {
+            var tree = parent.getRootNode();
+            if (tree.host && tree.host.shadowRoot !== tree) return false;
             var ps = parent.ownerDocument.defaultView.getComputedStyle(parent);
-            if (Number(ps.opacity) === 0 || ps.contentVisibility === 'hidden' || ps.clipPath !== 'none') return false;
+            if (parent.hidden || parent.inert || parent.getAttribute('aria-hidden') === 'true' ||
+                ps.display === 'none' || ps.visibility !== 'visible' || Number(ps.opacity) === 0 ||
+                ps.contentVisibility === 'hidden' || ps.clipPath !== 'none') return false;
             if (parent !== el && /(hidden|clip|scroll|auto)/.test(ps.overflow + ps.overflowX + ps.overflowY)) {
               var pr = parent.getBoundingClientRect();
               if (r.right <= pr.left || r.left >= pr.right || r.bottom <= pr.top || r.top >= pr.bottom) return false;
@@ -112,15 +158,98 @@ import WebKit
             !/captcha|verification|confirm|search/i.test(el.name + ' ' + el.id) &&
             (el.type === 'email' || hasRole(el, 'username') || /user|login|email|account|identifier/i.test(el.name + ' ' + el.id));
         }
-        function rootFor(el) { return el.form || el.closest('[role="form"], fieldset') || document; }
+        // Bound each scan; exhausting a budget refuses discovery rather than pairing
+        // controls from a partial tree. No prototype patches in the page's world.
+        function deepQuery(root, selector) {
+          var result = [], nodes = 0, roots = 0, exceeded = false;
+          function visit(scope, depth) {
+            if (++roots > 128 || depth > 32) { exceeded = true; return; }
+            // Admit a bounded tree before allocating native selector results. Count
+            // its light DOM up front; nested roots share the same total budget.
+            var elements = [], walker = document.createTreeWalker(scope, 1), el;
+            while ((el = walker.nextNode())) {
+              if (++nodes > 20000) { exceeded = true; return; }
+              elements.push(el);
+            }
+            // Match in WebKit once per tree instead of crossing into its selector
+            // engine for every decorative element. '*' needs no matching.
+            var matching = selector === '*' ? null : new Set(scope.querySelectorAll(selector));
+            for (var el of elements) {
+              if (exceeded) break;
+              if (!matching || matching.has(el)) result.push(el);
+              if (el.shadowRoot) visit(el.shadowRoot, depth + 1);
+            }
+          }
+          visit(root, 0);
+          if (exceeded) result = [];
+          result.complete = !exceeded;
+          return result;
+        }
+        function rootFor(el) {
+          if (el.form) return el.form;
+          for (var parent = composedParent(el); parent; parent = composedParent(parent))
+            if (parent.matches('form,[role="form"],fieldset')) return parent;
+          return el.getRootNode();
+        }
+        function composedOrder(a, b) {
+          if (a === b) return 0;
+          var left = [], right = [];
+          for (var node = a; node; node = composedParent(node)) left.push(node);
+          for (var node = b; node; node = composedParent(node)) right.push(node);
+          while (left.length && right.length && left[left.length - 1] === right[right.length - 1]) {
+            left.pop(); right.pop();
+          }
+          if (!left.length) return -1;
+          if (!right.length) return 1;
+          var order = left[left.length - 1].compareDocumentPosition(right[right.length - 1]);
+          return order & 4 ? -1 : (order & 2 ? 1 : 0);
+        }
+        function inputsFor(root) {
+          var inputs = deepQuery(root, 'input');
+          if (!inputs.complete) return [];
+          // Include native form= associations outside the form's physical subtree.
+          if (root.tagName === 'FORM') {
+            if (root.elements.length > 20000) return [];
+            var included = new Set(inputs);
+            Array.from(root.elements).forEach(function (el) {
+              if (el.tagName === 'INPUT' && !included.has(el)) { inputs.push(el); included.add(el); }
+            });
+            if (inputs.length > 20000) return [];
+          }
+          return inputs.filter(function (el) { return rootFor(el) === root; }).sort(composedOrder);
+        }
         function safeRoot(root) {
-          if (root.tagName !== 'FORM') return true;
           try {
-            var action = new URL(root.getAttribute('action') || document.baseURI, document.baseURI);
-            if (action.origin !== topWindow.origin || action.protocol !== 'https:') return false;
-            return Array.from(root.elements).filter(function (el) { return el.hasAttribute('formaction'); }).every(function (button) {
-              var override = new URL(button.getAttribute('formaction') || document.baseURI, document.baseURI);
-              return override.origin === topWindow.origin && override.protocol === 'https:';
+            // A form= control may live outside its native form and be slotted into
+            // a different composed form. Inspect both routes, including external
+            // controls, before discovery, capture, generation and each secret write.
+            var forms = [], starts = [root], visited = new Set();
+            if (root.tagName === 'FORM') {
+              if (root.elements.length > 20000) return false;
+              starts = starts.concat(Array.from(root.elements));
+            }
+            for (var start of starts) {
+              for (var parent = start; parent; parent = composedParent(parent)) {
+                if (visited.has(parent)) break;
+                visited.add(parent);
+                if (visited.size > 20000) return false;
+                if (parent.tagName !== 'FORM') continue;
+                var nested = deepQuery(parent, 'form');
+                if (!nested.complete) return false;
+                forms.push(parent); forms = forms.concat(nested);
+              }
+            }
+            return Array.from(new Set(forms)).every(function (form) {
+              if (form.elements.length > 20000) return false;
+              var action = new URL(form.getAttribute('action') || document.baseURI, document.baseURI);
+              if (action.origin !== topOrigin || action.protocol !== 'https:') return false;
+              var overrides = deepQuery(form, '[formaction]');
+              if (!overrides.complete) return false;
+              overrides = overrides.concat(Array.from(form.elements).filter(function (el) { return el.hasAttribute('formaction'); }));
+              return overrides.every(function (button) {
+                var override = new URL(button.getAttribute('formaction') || document.baseURI, document.baseURI);
+                return override.origin === topOrigin && override.protocol === 'https:';
+              });
             });
           } catch (_) { return false; }
         }
@@ -136,8 +265,7 @@ import WebKit
         // Never use a registration/reset password as an existing sign-in password.
         function pair(root, capture) {
           if (!safeRoot(root)) return null;
-          var inputs = Array.from(root.tagName === 'FORM' ? root.elements : root.querySelectorAll('input'))
-            .filter(function (el) { return el.tagName === 'INPUT'; });
+          var inputs = inputsFor(root);
           if (!capture) inputs = inputs.filter(usableInput);
           var passwords = inputs.filter(function (el) {
             return el.type === 'password' && !el.disabled && !hasRole(el, 'one-time-code') && shown(el) &&
@@ -171,7 +299,7 @@ import WebKit
           var user, before = pw ? inputs.slice(0, inputs.indexOf(pw)).reverse() : inputs;
           user = before.find(function (el) { return hasRole(el, 'username') && !hasRole(el, 'one-time-code') &&
               (['text', 'email', 'tel'].includes(el.type) || (capture && el.type === 'hidden')); });
-          if (!user && (!pw || pw.form)) {
+          if (!user && (!pw || root !== document)) {
             user = inputs.find(function (el) { return hasRole(el, 'username') && !hasRole(el, 'one-time-code') &&
               (['text', 'email', 'tel'].includes(el.type) || (capture && el.type === 'hidden')); });
           }
@@ -181,7 +309,10 @@ import WebKit
               return usernameInput(el) && (el.type === 'email' || /user|login|email|account/i.test(el.name + ' ' + el.id));
             });
           }
-          return pw || user ? { user: user, pass: pw } : null;
+          if (!pw && !user) return null;
+          var result = { user: user, pass: pw };
+          if (!user) result.linkedUser = linkedStepUser(result);
+          return result;
         }
         var lastPair = null, lastCapturePair = null, usernameStep = null;
         var selectedAccounts = new WeakMap();
@@ -193,9 +324,24 @@ import WebKit
             return;
           }
           usernameStep = { field: p.user, account: p.user.value, root: root,
-            parent: root.parentNode, before: root.previousSibling, after: root.nextSibling };
+            parent: root.parentNode, before: root.previousSibling, after: root.nextSibling, at: Date.now() };
+        }
+        function linkedStepUser(p) {
+          var step = usernameStep, pass = p && p.pass;
+          if (!step || !pass || Date.now() - step.at > 120000) return null;
+          var refs = (pass.getAttribute('aria-labelledby') || '').trim().split(/\\s+/);
+          var user = step.field, tree = pass.getRootNode();
+          if (refs.length !== 1 || !user.id || refs[0] !== user.id || user.getRootNode() !== tree ||
+              !user.isConnected || user.value !== step.account || !hasRole(user, 'username') ||
+              (!user.readOnly && shown(user)) || !safeRoot(rootFor(user))) return null;
+          var identified = tree.querySelectorAll('[id]');
+          if (identified.length > 20000) return null;
+          var matches = Array.from(identified).filter(function (el) { return el.id === refs[0]; });
+          return matches.length === 1 && matches[0] === user ? user : null;
         }
         function carriedAccount(p) {
+          var linked = linkedStepUser(p);
+          if (linked) return linked.value;
           if (selectedAccounts.has(p.pass)) return selectedAccounts.get(p.pass);
           var step = usernameStep, root = p.pass.form || p.pass;
           if (!step || (step.field.isConnected && step.field !== p.pass)) return '';
@@ -213,8 +359,7 @@ import WebKit
           if (!el || el.tagName !== 'INPUT' || el.type !== 'password' || !usableInput(el)) return null;
           var root = rootFor(el);
           if (!safeRoot(root)) return null;
-          var all = Array.from(root.tagName === 'FORM' ? root.elements : root.querySelectorAll('input'))
-            .filter(function (f) { return f.tagName === 'INPUT' && f.type === 'password' && usableInput(f); });
+          var all = inputsFor(root).filter(function (f) { return f.type === 'password' && usableInput(f); });
           // Require autocomplete or an explicit new/confirmation name. Two unlabelled
           // passwords could be current + new; generation must never overwrite both.
           var news = all.filter(function (f) { return passwordPurpose(f) === 'new'; });
@@ -225,7 +370,7 @@ import WebKit
           return g && documentID + ':new:' + g.fields.map(fieldID).join(':');
         }
         function generate(password, target) {
-          var g = generationFor(document.activeElement) || (lastGeneration && generationFor(lastGeneration.field));
+          var g = generationFor(deepActive(document)) || (lastGeneration && generationFor(lastGeneration.field));
           if (!g || !target || generationToken(g) !== target || !liveDocument() ||
               g.fields.some(function (f) { return f.maxLength >= 0 && password.length > f.maxLength; })) return false;
           if (!focusedFrame()) return false;
@@ -242,7 +387,7 @@ import WebKit
           return field && liveDocument() && shown(field);
         }
         function targetPair(capture) {
-          var active = document.activeElement;
+          var active = deepActive(document);
           var focused = pairFor(active, capture);
           // Focusing a different input is not permission to fill a cached login.
           if (active && active.tagName === 'INPUT' && !focused) return null;
@@ -253,8 +398,11 @@ import WebKit
           var recent = cached && pairFor(cached.pass || cached.user, capture);
           if (visible(recent)) { return recent; }
           var usernameStep = null;
-          for (var i = 0; i < document.forms.length; i++) {
-            var candidate = pair(document.forms[i], capture);
+          var scopes = Array.from(new Set(deepQuery(document, 'input').map(rootFor)));
+          if (!scopes.length) return null;
+          for (var i = 0; i < scopes.length; i++) {
+            if (scopes[i] === document) continue;
+            var candidate = pair(scopes[i], capture);
             if (!visible(candidate)) continue;
             if (candidate.pass) return candidate;
             if (!usernameStep) usernameStep = candidate;
@@ -268,7 +416,7 @@ import WebKit
         function anchor(proposed) {
           var p = proposed || targetPair();
           if (!p) { return null; }
-          var field = document.activeElement;
+          var field = deepActive(document);
           if (field !== p.user && field !== p.pass) field = p.user || p.pass;
           var r = field.getBoundingClientRect();
           var x = r.left, y = r.bottom, width = r.width, child = window;
@@ -330,21 +478,40 @@ import WebKit
           var a = anchor();
           if (a) { send({ focus: true, x: a.x, y: a.y, w: a.w }); }
         }
-        listen(document, 'focusin', function (e) { focused(e.target); }, true);
-        listen(document, 'click', function (e) { focused(e.target); }, true);
+        function eventField(e) {
+          return e.composedPath().find(function (node) { return node.nodeType === 1; }) || e.target;
+        }
+        function credentialListener(name, fn) {
+          var handled = new WeakSet();
+          var handler = function (e) {
+            if (!attachedDocument()) return;
+            if (handled.has(e)) return;
+            handled.add(e);
+            var field = eventField(e), tree = field.getRootNode && field.getRootNode();
+            // Focus/click can arrive before the paced attachShadow scan. Admit its
+            // public roots now so an immediate local submit/input is not missed.
+            if (rootTimer !== null && tree && tree.host && !shadowListeners.has(tree)) discoverRoots();
+            fn(e);
+          };
+          credentialListeners.push([name, handler]);
+          listen(document, name, handler, true);
+          return handler;
+        }
+        credentialListener('focusin', function (e) { focused(eventField(e)); });
+        credentialListener('click', function (e) { focused(eventField(e)); });
         // Everything that means "not interested any more". The list is anchored to a point
         // that stops being true the moment any of these happens, so each one closes it.
-        listen(document, 'focusout', function (e) {
-          if (ours(e.target)) { send({ dismiss: 'blur' }); }
-        }, true);
-        listen(document, 'pointerdown', function (e) {
-          if (!ours(e.target)) { send({ dismiss: 'click' }); }
-        }, true);
+        credentialListener('focusout', function (e) {
+          if (ours(eventField(e))) { send({ dismiss: 'blur' }); }
+        });
+        credentialListener('pointerdown', function (e) {
+          if (!ours(eventField(e))) { send({ dismiss: 'click' }); }
+        });
         // Only while the list is actually up. A scroll handler that posts on every wheel
         // event of every page, forever, is a message per frame for a list that is not there.
-        listen(window, 'scroll', function () {
+        listen(window, 'scroll', credentialListener('scroll', function () {
           if (listOpen) { send({ dismiss: 'scroll' }); }
-        }, true);
+        }), true);
         // A single-page app changes the form under us without a navigation.
         listen(window, 'popstate', function () { send({ dismiss: 'navigate' }); });
         var submittedAttempt = null;
@@ -374,45 +541,45 @@ import WebKit
           send({ account: account, password: p.pass.value, attempt: lastOfferID,
             mainDocument: window === topWindow });
         }
-        listen(document, 'submit', function (e) {
-          var form = e.target;
+        credentialListener('submit', function (e) {
+          var form = eventField(e);
           if (!form || form.tagName !== 'FORM' || !safeRoot(form)) return;
           submittedAttempt = {
             form: form, parent: form.parentNode,
             before: form.previousSibling, after: form.nextSibling,
-            formsAtSubmit: Array.prototype.slice.call(document.forms), retry: null
+            formsAtSubmit: deepQuery(document, 'form'), retry: null
           };
-          offer(pair(e.target, true));
-        }, true);
+          offer(pair(eventField(e), true));
+        });
         // A failed sign-in can leave the page in place. An edited field starts a new attempt.
-        listen(document, 'input', function (e) {
-          var p = pairFor(e.target);
+        credentialListener('input', function (e) {
+          var p = pairFor(eventField(e));
           if (p) {
             if (e.isTrusted) send({ dismiss: 'input' });
-            if (p.pass && e.target === p.user) selectedAccounts.delete(p.pass);
+            if (p.pass && eventField(e) === p.user) selectedAccounts.delete(p.pass);
             rememberStep(p);
           }
-          if (pairFor(e.target, true)) lastOffered = null;
-          if (!submittedAttempt || !pairFor(e.target, true)) { return; }
-          var form = e.target.form;
+          if (pairFor(eventField(e), true)) lastOffered = null;
+          if (!submittedAttempt || !pairFor(eventField(e), true)) { return; }
+          var form = eventField(e).form;
           if (form === submittedAttempt.form) { submittedAttempt = null; return; }
           // Only a newly created form in the submitted form's old slot is its retry.
           // Editing any other login form leaves the submitted offer in charge.
           submittedAttempt.retry = replacesSubmitted(form) ? form : null;
-        }, true);
+        });
         // Leaving a page is not a login attempt. For fetch-based forms, capture only
         // after a trusted submit-control activation or Enter in a credential field.
         var activated = null;
-        listen(document, 'click', function (e) {
+        credentialListener('click', function (e) {
           if (!e.isTrusted) return;
-          var button = e.target.closest && e.target.closest('button,input[type="submit"]');
+          var button = eventField(e).closest && eventField(e).closest('button,input[type="submit"]');
           if (!button || !button.form || button.type !== 'submit') return;
           activated = { form: button.form, at: Date.now() };
-        }, true);
-        listen(document, 'keydown', function (e) {
-          if (e.isTrusted && e.key === 'Enter' && pairFor(e.target, true))
-            activated = { form: e.target.form, at: Date.now() };
-        }, true);
+        });
+        credentialListener('keydown', function (e) {
+          if (e.isTrusted && e.key === 'Enter' && pairFor(eventField(e), true))
+            activated = { form: eventField(e).form, at: Date.now() };
+        });
         listen(window, 'pagehide', function () {
           if (!submittedAttempt && activated && activated.form && Date.now() - activated.at < 10000)
             offer(pair(activated.form, true));
@@ -422,7 +589,7 @@ import WebKit
         });
         listen(window, 'pageshow', function () {
           if (retired || !attachedDocument()) return;
-          observe(); discoverFrames(); ready();
+          discoverFrames(observe()); ready();
         });
         function fill(account, password, automatic, target, continuation) {
           var p = targetPair();
@@ -471,7 +638,7 @@ import WebKit
         function rejectFailedAttempt() {
           if (!lastOfferID || !submittedAttempt || !submittedAttempt.form.isConnected) return;
           var form = submittedAttempt.form;
-          var invalid = Array.from(form.querySelectorAll('input[aria-invalid="true"],[role="alert"]')).some(function (el) {
+          var invalid = deepQuery(form, 'input[aria-invalid="true"],[role="alert"]').some(function (el) {
             return shown(el) && (el.tagName === 'INPUT' ? (el.type === 'password' || usernameInput(el)) : el.textContent.trim());
           });
           if (invalid) { send({ rejectedAttempt: lastOfferID }); lastOfferID = null; }
@@ -482,15 +649,20 @@ import WebKit
           if (!field || seen.get(field) === token(p)) return;
           seen.set(field, token(p));
           send({ ready: true });
-          if (ours(document.activeElement)) focused(document.activeElement);
+          if (ours(deepActive(document))) focused(deepActive(document));
         }
         var context = { window: window, fill: fill, anchor: anchor, pair: targetPair, token: token, live: liveDocument, attached: attachedDocument, ready: ready, dispose: dispose,
           generate: generate, generation: function () { return generationToken(lastGeneration && generationFor(lastGeneration.field)); } };
         contexts.set(document, context);
-        function discoverFrames() {
-          // Access itself enforces the origin boundary, including opaque sandbox origins.
-          Array.from(document.getElementsByTagName('iframe')).concat(Array.from(document.getElementsByTagName('frame'))).forEach(function (frame) {
-            try { if (frame.contentDocument) install(frame.contentWindow); } catch (_) {}
+        function discoverFrames(elements) {
+          // Admit the actual WindowProxy before reading any protected properties,
+          // including for redirects and CSP sandboxing absent from iframe attributes.
+          // Root discovery already admitted these elements, including shadow frames.
+          // A standalone frame-load event takes its own bounded snapshot.
+          (elements || deepQuery(document, '*')).forEach(function (frame) {
+            var name = frame.localName;
+            if (name !== 'iframe' && name !== 'frame') return;
+            try { install(frame.contentWindow); } catch (_) {}
           });
           // Remove navigated/detached documents rather than retaining their DOM and accounts.
           contexts.forEach(function (ctx, doc) { if (!ctx.attached()) { ctx.dispose(); contexts.delete(doc); if (recentContext === ctx) recentContext = null; } });
@@ -498,8 +670,6 @@ import WebKit
         listen(document, 'load', function (e) {
           if (e.target.tagName === 'IFRAME' || e.target.tagName === 'FRAME') discoverFrames();
         }, true);
-        discoverFrames();
-        ready();
         observer = new MutationObserver(function (records) {
           if (pending || !records.some(function (r) {
             return r.type === 'attributes' || (lastOfferID && (r.type === 'characterData' || r.addedNodes.length)) || r.removedNodes.length || Array.from(r.addedNodes).some(function (n) {
@@ -510,7 +680,7 @@ import WebKit
           discoveryTimer = setTimeout(function () {
             discoveryTimer = null; pending = false;
             if (!attachedDocument()) { dispose(); return; }
-            discoverFrames();
+            discoverFrames(discoverRoots());
             rejectFailedAttempt();
             var cached = lastPair;
             if (listOpen && !(lastGeneration && generationFor(lastGeneration.field)) &&
@@ -518,11 +688,40 @@ import WebKit
             ready();
           }, 80);
         });
-        function observe() {
-          observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true,
-            attributeFilter: ['type', 'autocomplete', 'name', 'id', 'disabled', 'readonly', 'hidden', 'style', 'class', 'inert', 'aria-invalid', 'role'] });
+        var observation = { childList: true, subtree: true, attributes: true, characterData: true,
+          attributeFilter: ['type', 'autocomplete', 'name', 'id', 'disabled', 'readonly', 'hidden', 'style', 'class', 'inert',
+            'aria-hidden', 'aria-invalid', 'aria-labelledby', 'role', 'slot', 'form', 'action', 'formaction'] };
+        function discoverRoots() {
+          var elements = deepQuery(document, '*');
+          var roots = new Set(elements.filter(function (el) { return el.shadowRoot; })
+            .map(function (el) { return el.shadowRoot; }));
+          // Disconnect first to stop observing detached trees; then re-admit only live roots.
+          observer.disconnect();
+          observer.observe(document.documentElement, observation);
+          shadowListeners.forEach(function (entries, root) {
+            if (roots.has(root)) return;
+            entries.forEach(function (entry) { root.removeEventListener(entry[0], entry[1], true); });
+            shadowListeners.delete(root);
+          });
+          roots.forEach(function (root) {
+            observer.observe(root, observation);
+            if (shadowListeners.has(root)) return;
+            credentialListeners.forEach(function (entry) { root.addEventListener(entry[0], entry[1], true); });
+            shadowListeners.set(root, credentialListeners.slice());
+          });
+          return elements;
         }
-        observe();
+        function observe() {
+          var elements = discoverRoots();
+          // attachShadow on an already-connected host is invisible to MutationObserver
+          // in an isolated world. A single paced scan covers that case without page hooks.
+          if (rootTimer === null) rootTimer = setInterval(function () {
+            if (!attachedDocument()) { dispose(); return; }
+            discoverFrames(discoverRoots()); ready();
+          }, 1000);
+          return elements;
+        }
+        discoverFrames(observe()); ready();
       }
       function currentContext(target) {
         if (target) {
@@ -530,12 +729,14 @@ import WebKit
             return ctx.live() && (ctx.token(ctx.pair()) === target || ctx.generation() === target);
           });
         }
-        var doc = topWindow.document, active = doc.activeElement;
+        if (!accessibleWindow(topWindow) || topWindow.origin !== topOrigin) return null;
+        var doc = topWindow.document, active = deepActive(doc);
         try {
           while (active && (active.tagName === 'IFRAME' || active.tagName === 'FRAME')) {
-            if (!active.contentDocument) return null;
-            doc = active.contentDocument;
-            active = doc.activeElement;
+            var child = active.contentWindow;
+            if (!exactOriginWindow(child)) return null;
+            doc = child.document;
+            active = deepActive(doc);
           }
         } catch (_) { return null; }
         if (active && active.tagName === 'INPUT') return contexts.get(doc);

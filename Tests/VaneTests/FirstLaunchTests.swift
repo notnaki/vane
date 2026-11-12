@@ -2,6 +2,23 @@ import XCTest
 @testable import vane
 
 @MainActor final class FirstLaunchTests: XCTestCase {
+    func testAIIsOptInAndOnboardingExplainsItBeforeImport() {
+        TestEnvironment.prepare()
+        let previous = UserDefaults.vane.object(forKey: "appleAI")
+        defer {
+            if let previous { UserDefaults.vane.set(previous, forKey: "appleAI") }
+            else { UserDefaults.vane.removeObject(forKey: "appleAI") }
+        }
+        UserDefaults.vane.removeObject(forKey: "appleAI")
+        XCTAssertFalse(BrowserAI.enabled)
+        XCTAssertFalse(AppleAI.enabled)
+        for feature in AIFeature.allCases { XCTAssertFalse(BrowserAI.ready(for: feature)) }
+        XCTAssertFalse(AppleAI.ready)
+        let labels = WelcomeStep.allCases.map(\.label)
+        XCTAssertEqual(labels, ["Welcome", "Your tabs", "Your Spaces", "Search", "AI features", "Bring your browser", "Ready"])
+        AppleAI.enabled = true
+        XCTAssertTrue(BrowserAI.enabled, "An explicit existing opt-in must survive onboarding")
+    }
     private func fixture() throws -> (UserDefaults, URL) {
         let name = "vane-welcome-tests-\(UUID())"
         let defaults = UserDefaults(suiteName: name)!
@@ -15,7 +32,9 @@ import XCTest
     }
 
     func testActualLogoAndScreenshotsAreBundledAndReadable() {
-        for image in [WelcomeArtwork.logo, WelcomeArtwork.search, WelcomeArtwork.spaces] {
+        let images = [WelcomeArtwork.icon, WelcomeArtwork.logo, WelcomeArtwork.search, WelcomeArtwork.spaces]
+            + Search.builtIn.map(WelcomeArtwork.engineIcon)
+        for image in images {
             XCTAssertGreaterThan(image.size.width, 0)
             XCTAssertGreaterThan(image.size.height, 0)
             XCTAssertTrue(image.isValid)

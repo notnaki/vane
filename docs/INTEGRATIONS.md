@@ -197,8 +197,11 @@ Browser and native editing shortcuts take precedence; details disclose conflicts
 Command/Control extension shortcuts can work in login fields. Character-insertion
 shortcuts (including Option-only combinations) stay with native and detected website
 editors. Commands do not run from sheets, private/locked tabs, or manager windows. WebKit supplies webpage extension context-menu items; Vane preserves them
-alongside its link actions. Extension items in Vane’s sidebar tab menus are not yet
-integrated, although WebKit exposes a public API for them.
+alongside its link actions. Sidebar tab menus also include extension tab actions for the
+clicked tab, including favourites and split panes. Bulk menus keep their core commands;
+extension commands apply to the clicked row’s tab. Actions recheck the tab, profile,
+private access and extension permission before dispatch. See
+[sidebar menu behavior and validation](validation/sidebar-extension-menus.md).
 Popup/options behavior still depends on the extension and WebKit.
 Tab selection returns a clear error for rows hidden by folded folders, a collapsed
 Pinned section, or a non-leading Split View pane. Activating those tabs remains supported.
@@ -217,10 +220,26 @@ swift test --filter 'Extension.*Tests'
 ./.build/debug/vane selfcheck --pure
 ```
 
+### Manifest V2 request filtering
+
+MV2 background pages, content scripts, messaging, storage and actions can run.
+System WebKit's `webRequest` cannot cancel or redirect requests or change headers,
+even when it recognizes `webRequestBlocking`. Vane discloses that limitation.
+
+For full **uBlock Origin** MV2, Vane can compile supported selected static lists,
+enabled user filters and trusted-site settings into profile-isolated WebKit rules.
+The extension must retain all website access. The manager shows active rule counts,
+unsupported reasons or bridge failures. Changes apply after compilation; reload
+changed pages. Disabling the extension also removes its compiled rules. This is
+partial compatibility: dynamic filtering and other unrepresentable operations remain
+unavailable. uBlock Origin Lite uses its existing MV3 declarative rules instead.
+See [MV2 behavior, limits and browser research](MANIFEST-V2-COMPATIBILITY.md).
+
 ## Content blocking and filter subscriptions
 
 Settings → Privacy and Security → Content Blocking separates **Import from Disk** (local
-snapshots, never downloaded again) from **Subscribe by URL** (HTTPS lists). The built-in
+snapshots, never refreshed), **Link Local File** (explicit local refresh), and
+**Subscribe by URL** (HTTPS lists). The built-in
 starter list stays available offline. Existing imported snapshots and legacy file
 references are preserved. Sources are shared across profiles; the main blocking switch
 and site exceptions belong to each profile.
@@ -229,6 +248,65 @@ Case-sensitive URL rules (`$match-case`) are supported. Explicit positive resour
 exclude `script`, `image`, `stylesheet`, `font`, `media`, or `popup` with `~`; for example,
 `$script,image,~image` applies only to scripts. Negative-only sets and exclusions of types
 that WebKit combines into shared buckets remain unsupported and are reported.
+
+### Linked local files
+
+**Link Local File…** opts into reopening the chosen path every 30 seconds while Vane
+runs, at startup, and after wake. Observation, security-scoped resolution, bounded reads,
+and conversion run off the UI actor. Reopening the path handles editors that save by
+atomic replacement and files that disappear and later return. Links are limited to 64
+regular files, 8 MB each; symbolic links, pipes, devices, invalid UTF-8, HTML/error pages,
+unbalanced conditionals and updates with no usable rules are rejected. The combined
+policy retains its 64 MB, one-million-line and 64 KB-per-line admission bounds.
+
+Each row exposes **Use these rules**, **Refresh automatically**, **Retry / Check Now**,
+**Relink…**, **Unsupported Rules…**, and **Remove**. Pausing automatic refresh retains the
+snapshot; pausing can save even when another source is unavailable. Disabling rules removes
+that source from the active candidate and stops its automatic checks. Explicit Check Now still works while paused/disabled. Removal deletes
+the owned snapshot and its access grant only after the remaining policy compiles.
+Failures display in Settings and retain the accepted text. Repair the original path and
+retry, or Relink when access has expired or moved. Reload open pages after an update.
+
+Accepted text, diagnostics and status persist together in the `blockerLinkedSnapshots`
+preferences document. The complete candidate, including other local sources, subscriptions
+and profile exception variants, must compile under the shared source gate before a
+changed snapshot is published. Compilation or persistence failure keeps the old policy.
+The owned snapshots survive relaunch and are included in ordinary backups. File paths
+and security-scoped bookmarks live separately in `LocalFilterSources`, outside the backup
+owned-file allowlist; exporting/restoring a backup never carries a source access grant.
+A restored snapshot with no existing local grant needs **Relink…** before it can refresh.
+Import from Disk keeps its existing snapshot-only behavior.
+
+### Additional EasyList syntax
+
+Slash-delimited regex network filters support a deliberately conservative ASCII subset:
+literals, escaped regex punctuation, `.`, alphanumeric/underscore character classes
+(including same-category ranges such as `[0-9]` and negated classes), `?`, `+`, `*`, and
+`^`/`$` only at the beginning/end. For example, `/\/ad[0-9]+\.js$/$script` blocks numbered
+ad scripts. `$match-case`, resource restrictions and network exceptions also apply to
+these regexes. Patterns are limited to 4096 characters. Groups, alternation, lookarounds,
+backreferences, shorthand escapes (`\d`), counted or lazy quantifiers, and other regex
+syntax remain unsupported and reported; they are never approximated. Matching uses
+WebKit's canonical ASCII URL and defaults to case-insensitive matching.
+
+The `$badfilter` preprocessing modifier discards its exact supported network-filter
+counterpart across all source lists, including `@@` exception filters, without creating
+a broad WebKit exception. For example, `/ad.js$script,badfilter` disables `/ad.js$script`
+but leaves `/ad.js$image` and other overlapping blocks intact. Ordinary case-insensitive
+patterns, supported first/third-party aliases and domain-list ordering are normalized;
+`$match-case` patterns retain their case. Different EasyList resource types remain
+distinct even when WebKit puts them in one bucket. This is whole-filter identity;
+uBlock's special domain-list decomposition is not implemented. Unsupported target
+options, repeated semantic options, duplicate `badfilter`, cosmetic variants
+and conditional branches remain reported. A list containing only disabled/modifier rules
+has no usable rules and cannot replace an accepted local/subscription source.
+
+The subset follows [ABP regex syntax](https://help.adblockplus.org/adblock-plus-help-center/how-to-write-filters),
+[WebKit's public regex grammar](https://webkit.org/blog/3476/content-blockers-first-look/),
+and the [upstream badfilter definition](https://github.com/gorhill/uBlock/wiki/Static-filter-syntax#badfilter).
+Real WebKit loopback fixtures verify matching/nonmatching regexes, case options, exact
+badfilter removal, and overlapping blocks that must remain active, using ephemeral data
+stores and no foreground window activation.
 
 ### Subscription updates
 
@@ -262,8 +340,9 @@ sweeps crash leftovers while preserving other live Vane instances.
 
 The converter supports a subset of EasyList: host/start/end anchors, wildcards, network
 exceptions, supported resource/party options, positive-only or negative-only domain
-restrictions, and ordinary CSS hiding. Resource types follow WebKit's vocabulary:
-subdocuments use `document`, and XHR/WebSocket/ping use `raw`. Regex rules, scriptlets,
+restrictions, ordinary CSS hiding, the safe regex subset and exact network `$badfilter`
+preprocessing described above. Resource types follow WebKit's vocabulary:
+subdocuments use `document`, and XHR/WebSocket/ping use `raw`. Other regex constructs, scriptlets,
 procedural selectors, cosmetic exception variants, unknown options, mixed/invalid domain
 restrictions, and rules inside conditional branches are skipped. Unbalanced conditional
 directives reject a subscription update, and each source has independent preprocessing
@@ -274,7 +353,7 @@ Origin or AdGuard compatibility or expose request-by-request block counts.
 Focused regression checks (including real WebKit network and cosmetic behavior):
 
 ```sh
-swift test --filter 'BlockerTests|BlockerSubscriptionTests|BlockerWebKitTests'
+python3 scripts/run-native-tests.py --jobs 1 --filter 'BlockerTests|BlockerLocalSourceTests|BlockerSubscriptionTests|BlockerWebKitTests'
 ./.build/debug/vane selfcheck --pure
 ```
 
@@ -298,29 +377,54 @@ override a macOS denial. Screen-sharing selection and permission remain managed 
 WebKit and macOS. Vane has no supported screen-sharing persistence or per-source
 revocation API. See [permission lifecycle and platform limits](SITE-PERMISSIONS.md).
 
-## AI providers and your own keys
+## AI connections and feature routing
 
-Settings → Max lets you choose Apple (on-device), Groq, OpenAI, OpenRouter, or an
-OpenAI-compatible HTTPS API. For a cloud provider, enter its model ID, paste your own
-API key, choose **Save Key**, then **Test Connection**. Groq defaults to
-`openai/gpt-oss-20b`. Cloud providers may charge for usage or impose quotas. Custom
-providers need a base URL such as `https://api.example.com/v1` and support for JSON chat
-completions.
+Settings → Max lets you save multiple named connections, including several at the same
+provider. Choose **Add Connection** for ChatGPT, Groq, OpenAI, OpenRouter, or an
+OpenAI-compatible HTTPS API. Apple (on-device) is always available without an account.
+Choose a connection separately for **Tab titles**, **Tab grouping**, **Download names**,
+and **Page summaries**. Adding a connection does not change those routes. Existing
+single-provider settings and saved keys migrate for naming/grouping; summaries stay
+on-device until you explicitly choose a cloud connection for them.
 
-Every person uses their own key. Keys are stored as local, non-synchronizing macOS
-Keychain items, separately for each provider and custom endpoint. No key is bundled with
-the browser, committed to the repository, or sent through a Vane server. Test instances
-use separate credential namespaces. **Remove Key** deletes the selected provider's local
-credential.
+Page summaries appear inside webpage link-hover cards. Enable **Settings → General →
+Previews → Preview links on hover**, then pause over a link to another page. The card
+shows the destination title, screenshot and description first; when Max is enabled
+and the selected summary connection is available, a two-sentence summary follows.
+Moving away, scrolling, clicking or pressing Escape dismisses the card. Cards stay
+within their source pane and do not intercept page clicks. Battery Saver pauses
+link previews. A failed or unavailable summary leaves the ordinary preview visible.
 
-Cloud AI handles pinned tab names, download names, and tab grouping. It sends titles,
-hostnames, and download naming metadata (including the source URL path, with query
-strings and fragments removed) to your chosen provider; it does not upload file contents.
-Titles, filenames, and paths can contain personal information. Private windows never
-use these cloud API features; assistant websites are separate and receive questions
-you send them, including in private windows. See the [privacy policy](../PRIVACY.md#ai-features).
-Page summaries continue to use Apple's on-device model. Cloud requests are bounded,
-cancellable, and fall back to ordinary title cleanup and grouping on errors or quotas.
+API-key connections take a model ID and your own key: choose **Save Key**, then
+**Test Connection**. Groq defaults to `openai/gpt-oss-20b`. Custom providers need an HTTPS
+base URL such as `https://api.example.com/v1` and JSON chat-completions support. Each
+connection has separate credentials in local, non-synchronizing macOS Keychain items;
+test data directories use separate namespaces. No key or token is bundled with Vane
+or sent through a Vane server. Provider pricing and quotas apply.
+
+For ChatGPT, choose **Continue with ChatGPT** and authorize Vane in your system browser.
+Eligible accounts can grant access to their ChatGPT plan without an API key. Vane uses
+OpenAI’s [public open-source sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source),
+checks the returned signed identity and plan permission, and saves each registration's
+issued client ID and credentials separately. After connecting, choose **Refresh Models**
+and pick an available model, then assign features. **Manage Usage…** opens ChatGPT’s
+usage settings. ChatGPT plan/workspace restrictions and shared usage limits apply.
+Vane never automatically falls back to API-key billing. Reconnect to restore a revoked
+session or authorize plan usage after declining it. **Sign Out** keeps the registration
+for later reauthorization, attempts remote session revocation, and clears local tokens;
+a warning identifies when remote revocation could not be confirmed.
+
+Cloud naming/grouping sends titles, hostnames, and download naming metadata (source URL
+path included, query strings/fragments excluded). Cloud summaries additionally send
+bounded extracted page text when a link preview summarizes a page. These may contain
+personal information. Private windows never use any of these cloud AI features;
+assistant websites are separate and receive questions you send them even in private
+windows. See the [privacy policy](../PRIVACY.md#ai-features). Requests are bounded and
+cancellable. Errors and quotas keep the feature's ordinary non-AI fallback; no other
+cloud connection is selected automatically.
+
+**Remove Key** clears an API credential. **Remove Connection** clears that connection
+and returns its feature routes to Apple. ChatGPT removal also attempts session revocation.
 
 When AI and **Rename favorite and pinned tab titles** are enabled, right-click a pinned
 tab and choose **Regenerate Title** to request a fresh name. A successful result replaces
@@ -328,10 +432,14 @@ the current name, including a manual rename, with the usual AI title reveal anim
 If generation fails, the current name stays. Tabs browsed away from their pinned page
 are named from that pinned page's saved title.
 
-The cloud transport checks use an offline HTTP fixture:
+Offline transport, OAuth, renewal and migration checks require no real account or key:
 
 ```sh
 scripts/check-cloud-ai.sh
+scripts/check-ai-connections.sh
+scripts/check-ai-routing.sh
+scripts/check-chatgpt.sh
+scripts/check-chatgpt-session.sh
 scripts/check-cloud-ai.sh --keychain # optional isolated local Keychain integration
 ```
 

@@ -20,8 +20,8 @@ import WebKit
     /// **Default OFF.** Renaming files a user did not ask us to touch is not a default: the
     /// name a server sent is at least the name the user saw in the download bar, and a
     /// browser silently rewriting filenames in ~/Downloads is a support ticket, not a
-    /// feature. Arc ships this one off too. `AppleAI.enabled` defaults on because it only
-    /// ever *adds* text to a UI; this one edits the filesystem, so it asks first.
+    /// feature. Arc ships this one off too. Both this feature and the master AI switch
+    /// require opt-in before a model can suggest a filename.
     static var enabled: Bool {
         get { UserDefaults.vane.bool(forKey: "tidyDownloads") }   // absent == false
         set { UserDefaults.vane.set(newValue, forKey: "tidyDownloads") }

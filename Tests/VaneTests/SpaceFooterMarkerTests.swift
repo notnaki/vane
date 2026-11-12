@@ -33,9 +33,8 @@ import XCTest
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let policy = NSApp.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
         defer { NSApp.setActivationPolicy(policy) }
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var captured: NSBitmapImageRep?
         var failure: (any Error)?
         do {

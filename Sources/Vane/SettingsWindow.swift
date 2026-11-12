@@ -292,7 +292,7 @@ private struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(.windowBackground)
         .toggleStyle(SettingsToggleStyle())
-        .controlSize(.small)
+        .controlSize(.regular)
         .onAppear { SettingsWindow.retitle(current.title) }
         .onChange(of: selection.id) { SettingsWindow.retitle(current.title) }
         .vaneMotionPolicy()
@@ -316,8 +316,8 @@ private struct SettingsView: View {
             }
             current.pane(selection)
         }
-        .frame(maxWidth: 760, alignment: .leading)
-        .padding(.horizontal, 64)
+        .frame(maxWidth: current.id == "max" ? .infinity : 760, alignment: .leading)
+        .padding(.horizontal, current.id == "max" ? 0 : 64)
         .padding(.bottom, 24)
         .frame(maxWidth: .infinity, alignment: .top)
     }
@@ -326,7 +326,7 @@ private struct SettingsView: View {
 
 private struct SettingsToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
-        Toggle(configuration).toggleStyle(.switch).controlSize(.mini)
+        Toggle(configuration).toggleStyle(.switch).controlSize(.small)
     }
 }
 
@@ -377,18 +377,38 @@ private struct DividedRows: _VariadicView_MultiViewRoot {
     }
 }
 
+/// Decorative wayfinding shared by preference rows and navigation links.
+struct SettingsIcon: View {
+    let symbol: String
+    let tint: Color
+
+    var body: some View {
+        Image(systemName: symbol).font(Look.glyph)
+            .foregroundStyle(.white)
+            .frame(width: Look.iconTile, height: Look.iconTile)
+            .background(tint, in: .rect(cornerRadius: Look.iconTileRadius))
+            .accessibilityHidden(true)
+    }
+}
+
 /// A title on the left, one control on the right.
 struct SettingsRow<Trailing: View>: View {
     let title: String
+    let icon: String?
+    let tint: Color
     @ViewBuilder var trailing: Trailing
 
-    init(_ title: String, @ViewBuilder trailing: () -> Trailing) {
+    init(_ title: String, icon: String? = nil, tint: Color = .blue,
+         @ViewBuilder trailing: () -> Trailing) {
         self.title = title
+        self.icon = icon
+        self.tint = tint
         self.trailing = trailing()
     }
 
     var body: some View {
         HStack(spacing: Look.inset) {
+            if let icon { SettingsIcon(symbol: icon, tint: tint) }
             Text(title).font(Look.text).foregroundStyle(Look.inkPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: Look.inset)
@@ -396,7 +416,7 @@ struct SettingsRow<Trailing: View>: View {
         }
         .padding(.horizontal, Look.cardInset)
         .padding(.vertical, 9)
-        .frame(minHeight: Look.settingsRow)
+        .frame(maxWidth: .infinity, minHeight: Look.settingsRow)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
     }
@@ -438,11 +458,52 @@ struct SettingsSection<Content: View>: View {
     }
 }
 
+/// A compact category whose controls and explanations appear only when requested.
+struct SettingsDisclosure<Content: View>: View {
+    let title: String
+    let summary: String
+    let icon: String
+    let tint: Color
+    @ViewBuilder var content: Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var expanded = false
+
+    init(_ title: String, summary: String, icon: String, tint: Color,
+         @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.summary = summary
+        self.icon = icon
+        self.tint = tint
+        self.content = content()
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: Binding(get: { expanded }, set: { value in
+            if reduceMotion { expanded = value }
+            else { Motion.animate(Look.quick) { expanded = value } }
+        })) {
+            if expanded { content.padding(.top, Look.inset) }
+        } label: {
+            HStack(spacing: Look.inset) {
+                SettingsIcon(symbol: icon, tint: tint)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(Look.text).foregroundStyle(Look.inkPrimary)
+                    Text(summary).font(Look.footnote).foregroundStyle(Look.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: Look.settingsRow, alignment: .leading)
+        }
+    }
+}
+
 /// The vertical rhythm of a pane: cards a gap apart.
 private struct Pane<Content: View>: View {
+    var spacing: CGFloat = Look.inset * 1.5
     @ViewBuilder var content: Content
     var body: some View {
-        VStack(alignment: .leading, spacing: Look.inset * 1.5) { content }
+        VStack(alignment: .leading, spacing: spacing) { content }
             .padding(.top, Look.inset * 2)
     }
 }
@@ -453,8 +514,54 @@ private struct FieldStyle: ViewModifier {
     func body(content: Content) -> some View {
         content.textFieldStyle(.plain).font(Look.text)
             .padding(.horizontal, Look.inset)
-            .frame(height: Look.control)
+            .frame(height: Look.settingsControl)
             .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+    }
+}
+
+/// One search treatment throughout Settings, including focus and clear behavior.
+struct SettingsSearchField: View {
+    let placeholder: String
+    @Binding var text: String
+    var label: String
+    var hint: String
+    var focus: FocusState<Bool>.Binding?
+    @FocusState private var focused: Bool
+    @Environment(\.spaceChromeTheme) private var chromeTheme
+
+    init(_ placeholder: String, text: Binding<String>, label: String? = nil,
+         hint: String = "", focus: FocusState<Bool>.Binding? = nil) {
+        self.placeholder = placeholder
+        _text = text
+        self.label = label ?? placeholder
+        self.hint = hint
+        self.focus = focus
+    }
+
+    var body: some View {
+        let fieldFocus = focus ?? $focused
+        HStack(spacing: Look.inset) {
+            Image(systemName: "magnifyingglass").font(Look.fieldIcon)
+                .foregroundStyle(.secondary).accessibilityHidden(true)
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain).font(Look.text)
+                .focused(fieldFocus)
+                .accessibilityLabel(label).accessibilityHint(hint)
+            if !text.isEmpty {
+                Button { text = ""; fieldFocus.wrappedValue = true } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain).accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, Look.cardInset)
+        .frame(height: Look.settingsSearch)
+        .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+        .overlay {
+            RoundedRectangle(cornerRadius: Look.chipRadius)
+                .strokeBorder(fieldFocus.wrappedValue ? Color.accentColor : .clear, lineWidth: 2)
+        }
     }
 }
 
@@ -476,44 +583,44 @@ private struct GeneralPane: View {
     var body: some View {
         Pane {
             SettingsCard {
-                SettingsRow("Automatically check for Vane updates") {
-                    Toggle("Automatically check for Vane updates", isOn: $autoUpdate).labelsHidden()
-                }
-                UpdateChannelSettings(selection: $updateChannel)
-                SettingsRow("Warn before quitting") {
-                    Toggle("Warn before quitting", isOn: $warnQuit).labelsHidden()
-                }
-                SettingsRow("Play subtle interaction sounds") {
-                    Toggle("Play subtle interaction sounds", isOn: $interactionSounds).labelsHidden()
-                        .onChange(of: interactionSounds) { _, enabled in
-                            if enabled { InteractionSounds.play(.copy) }
-                        }
-                }
-            }
-
-            SettingsCard {
-                SettingsRow("Show Space icons in the footer") {
-                    Toggle("Show Space icons in the footer", isOn: $showSpaceIcons).labelsHidden()
-                }
-                Footnote("Keep every Space’s icon visible. Turn off to show dots for inactive Spaces.")
-            }
-
-            SettingsCard {
-                SettingsRow("Previews") {
-                    Button("Previews Settings…") { selection.id = "previews" }
-                }
-                SettingsRow("Manage your search engine, Auto-Archive, and downloads in Profile Settings.") {
-                    Button("Profile Settings…") { selection.id = "profiles" }
-                }
-            }
-
-            SettingsCard {
-                SettingsRow("Default browser") {
+                SettingsRow("Default browser", icon: "globe", tint: .blue) {
                     Button(isDefault ? "Vane is your default browser" : "Make Vane Default…") {
                         URLHandling.makeDefaultBrowser()
                         isDefault = URLHandling.isDefaultBrowser
                     }
                     .disabled(isDefault)
+                }
+                SettingsRow("Warn before quitting", icon: "hand.raised.fill", tint: .red) {
+                    Toggle("Warn before quitting", isOn: $warnQuit).labelsHidden()
+                }
+                SettingsRow("Interaction sounds", icon: "speaker.wave.2.fill", tint: .blue) {
+                    Toggle("Play subtle interaction sounds", isOn: $interactionSounds).labelsHidden()
+                        .onChange(of: interactionSounds) { _, enabled in
+                            if enabled { InteractionSounds.play(.copy) }
+                        }
+                }
+                SettingsRow("Space icons in the footer", icon: "square.grid.2x2.fill", tint: .purple) {
+                    Toggle("Show Space icons in the footer", isOn: $showSpaceIcons).labelsHidden()
+                        .help("Show every Space’s icon. Turn off to use dots for inactive Spaces.")
+                }
+            }
+
+            SettingsCard(divided: false) {
+                DataRow(icon: "rectangle.on.rectangle", tint: .purple, title: "Previews") {
+                    selection.id = "previews"
+                }
+                DataRow(icon: "person.fill", tint: .green, title: "Search, downloads, and profiles") {
+                    selection.id = "profiles"
+                }
+            }
+
+            SettingsDisclosure("Updates", summary: "Automatic checks and release channel",
+                               icon: "arrow.triangle.2.circlepath", tint: .blue) {
+                SettingsCard {
+                    SettingsRow("Check for updates automatically", icon: "arrow.triangle.2.circlepath", tint: .blue) {
+                        Toggle("Automatically check for Vane updates", isOn: $autoUpdate).labelsHidden()
+                    }
+                    UpdateChannelSettings(selection: $updateChannel)
                 }
             }
         }
@@ -527,7 +634,7 @@ struct UpdateChannelSettings: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SettingsRow("Update channel") {
+            SettingsRow("Update channel", icon: "arrow.triangle.branch", tint: .blue) {
                 Picker("Update channel", selection: Binding(
                     get: { selection },
                     set: { value in
@@ -538,7 +645,7 @@ struct UpdateChannelSettings: View {
                     ForEach(UpdateChannel.allCases, id: \.rawValue) { channel in
                         Text(channel.title).tag(channel.rawValue)
                     }
-                }.labelsHidden().frame(width: 120)
+                }.labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
             }
             Footnote(UpdateChannel.stored(selection).explanation)
                 .contentTransition(.opacity)
@@ -559,32 +666,32 @@ private struct PreviewsPane: View {
     var body: some View {
         Pane {
             SettingsCard {
-                SettingsRow("Preview favourites on hover") {
+                SettingsRow("Preview favourites on hover", icon: "star.fill", tint: .purple) {
                     Toggle("Preview favourites on hover", isOn: $favourites).labelsHidden()
                 }
-                SettingsRow("GitHub pull requests") { Toggle("GitHub favourite previews", isOn: $favouriteGitHub).labelsHidden().disabled(!favourites) }
-                SettingsRow("Gmail inbox") { Toggle("Gmail favourite previews", isOn: $favouriteGmail).labelsHidden().disabled(!favourites) }
-                SettingsRow("Google Calendar events") { Toggle("Google Calendar favourite previews", isOn: $favouriteCalendar).labelsHidden().disabled(!favourites) }
+                SettingsRow("GitHub pull requests", icon: "arrow.triangle.pull", tint: .purple) { Toggle("GitHub favourite previews", isOn: $favouriteGitHub).labelsHidden().disabled(!favourites) }
+                SettingsRow("Gmail inbox", icon: "envelope.fill", tint: .purple) { Toggle("Gmail favourite previews", isOn: $favouriteGmail).labelsHidden().disabled(!favourites) }
+                SettingsRow("Google Calendar events", icon: "calendar", tint: .purple) { Toggle("Google Calendar favourite previews", isOn: $favouriteCalendar).labelsHidden().disabled(!favourites) }
                 Footnote("Uses each favourite’s profile and signed-in website session. Loading a preview visits the site. Data stays in memory; unsupported page layouts show Open Site. Focus a favourite and press ⌥↓ to preview it. Private windows show a fallback.")
             }
             SettingsCard {
-                SettingsRow("Library hover preview") {
+                SettingsRow("Library hover preview", icon: "books.vertical.fill", tint: .purple) {
                     Picker("Library hover preview", selection: $libraryPreview) {
                         ForEach(LibraryHoverCategory.allCases) { category in
                             Text(category.title).tag(category.rawValue)
                         }
-                    }.labelsHidden().frame(width: 160)
+                    }.labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                 }
                 Footnote("Hover the sidebar bucket to see up to four items from this section, with the newest at the bottom. Downloads is the default. Off hides the preview. Private windows show only their own downloads, media, and archived tabs.")
             }
             SettingsCard {
-                SettingsRow("Preview links on hover") {
+                SettingsRow("Preview links on hover", icon: "link", tint: .purple) {
                     Toggle("Preview links on hover", isOn: $previews).labelsHidden()
                 }
-                Footnote("Hover over a link to preview the page. The website sees a visit when its preview loads. An on-device summary appears when Max is available.")
+                Footnote("Hover over a link to preview the page. The website sees a visit when its preview loads. A page summary follows when Max is enabled and its selected summary connection is available.")
             }
             SettingsCard {
-                SettingsRow("Open links from pinned tabs in Peek") {
+                SettingsRow("Open links from pinned tabs in Peek", icon: "rectangle.on.rectangle", tint: .purple) {
                     Toggle("Open links from pinned tabs in Peek", isOn: $peekLinks).labelsHidden()
                 }
                 Footnote("Links to other sites open over your window, keeping your pinned tab in place. Escape closes the preview; ⌘O keeps it as a tab. Shift-click reverses this preference for one link.")
@@ -841,16 +948,16 @@ private struct ProfilesPane: View {
 
     private var searchCard: some View {
         SettingsCard {
-            SettingsRow("Search engine") {
+            SettingsRow("Search engine", icon: "magnifyingglass", tint: .blue) {
                 Picker("Search engine", selection: $engineID) {
                     ForEach(Search.all) { Text($0.name).tag($0.id) }
                 }
-                .labelsHidden().frame(width: 145)
+                .labelsHidden().frame(width: 145, alignment: .trailing)
             }
-            SettingsRow("Manage search") {
+            SettingsRow("Manage search", icon: "slider.horizontal.3", tint: .blue) {
                 Button("Search Settings…") { selection.id = "search" }
             }
-            SettingsRow("Include search engine suggestions") {
+            SettingsRow("Include search engine suggestions", icon: "text.bubble.fill", tint: .blue) {
                 Toggle("Include search engine suggestions", isOn: $suggestions).labelsHidden()
             }
             Footnote("Search and archive preferences apply to all profiles. Suggestions send what you type to your search engine; they stay off in private windows.")
@@ -861,14 +968,14 @@ private struct ProfilesPane: View {
     /// cadence — work and personal do not file their downloads in the same place.
     private var downloadsCard: some View {
         SettingsCard {
-            SettingsRow("Archive tabs after") {
+            SettingsRow("Archive tabs after", icon: "archivebox.fill", tint: .green) {
                 Picker("Archive tabs after", selection: $archiveAfter) {
                     ForEach(Prefs.archiveChoices, id: \.after) { Text($0.name).tag($0.after) }
                 }
                 .labelsHidden().fixedSize()
                 .onChange(of: archiveAfter) { Prefs.archiveAfter = archiveAfter }
             }
-            SettingsRow("Download location") {
+            SettingsRow("Download location", icon: "folder.fill", tint: .green) {
                 Button(DownloadLocation.label(downloadDirectory)) {
                     if let picked = DownloadLocation.choose(for: profile.id,
                                                             current: downloadDirectory) {
@@ -880,7 +987,7 @@ private struct ProfilesPane: View {
                 .accessibilityHint("Choose the folder downloads are saved into.")
                 .disabled(askWhereToSave)
             }
-            SettingsRow("Ask where to save each file") {
+            SettingsRow("Ask where to save each file", icon: "square.and.arrow.down", tint: .green) {
                 Toggle("", isOn: $askWhereToSave).labelsHidden()
                     .onChange(of: askWhereToSave) {
                         DownloadLocation.setAskEveryTime(askWhereToSave, for: profile.id)
@@ -953,10 +1060,7 @@ private struct DataRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: Look.inset) {
-                Image(systemName: icon).font(Look.glyph)
-                    .foregroundStyle(.white)
-                    .frame(width: Look.iconTile, height: Look.iconTile)
-                    .background(tint, in: .rect(cornerRadius: Look.iconTileRadius))
+                SettingsIcon(symbol: icon, tint: tint)
                 Text(title).font(Look.text).foregroundStyle(Look.inkPrimary)
                 Spacer(minLength: Look.inset)
                 Image(systemName: "arrow.right").foregroundStyle(Color.accentColor)
@@ -973,58 +1077,6 @@ private struct DataRow: View {
 
 // MARK: - Max
 
-private struct MaxPane: View {
-    @AppStorage("appleAI") private var appleAI = true
-    @AppStorage("tidyTabs") private var tidyTabs = true
-    @AppStorage("tidyPreview") private var tidyPreview = true
-    @AppStorage("tidyDownloads") private var tidyDownloads = false
-    @AppStorage("tidyTitles") private var tidyTitles = true
-    @AppStorage("instantLinks") private var instant = true
-    @AppStorage("aiSettingsRevision") private var aiRevision = 0
-
-    private var off: Bool {
-        _ = aiRevision
-        return !appleAI || !BrowserAI.ready
-    }
-
-    var body: some View {
-        Pane {
-            AIProviderSettings()
-            SettingsCard {
-                SettingsRow("AI features") {
-                    Toggle("", isOn: $appleAI).labelsHidden()
-                }
-                // Each feature is separately switchable, because they do not cost the same.
-                // Grouping tabs is ~12 seconds of model time; the others are far cheaper or
-                // usually answered without the model at all.
-                SettingsRow("Group tabs by topic") {
-                    Toggle("", isOn: $tidyTabs).labelsHidden().disabled(off)
-                }
-                SettingsRow("Preview before tidying") {
-                    Toggle("Preview before tidying", isOn: $tidyPreview).labelsHidden()
-                }
-                Footnote("Turn off to apply Tidy groups immediately. You can undo the grouping afterward.")
-                SettingsRow("Rename messy downloads") {
-                    Toggle("", isOn: $tidyDownloads).labelsHidden().disabled(off)
-                }
-                SettingsRow("Rename favorite and pinned tab titles") {
-                    Toggle("", isOn: $tidyTitles).labelsHidden().disabled(off)
-                }
-                Footnote(BrowserAI.unavailableReason
-                         ?? "Names and groups use your selected AI provider. Grouping runs when you choose Tidy Tabs. The switches above control download naming and favorite and pinned tab naming.")
-            }
-
-            SettingsCard {
-                SettingsRow("Instant Links") { Toggle("", isOn: $instant).labelsHidden() }
-                Footnote("Shift-Return sends searches to DuckDuckGo to open the first result, "
-                         + "regardless of your selected search engine. If it cannot find a result, "
-                         + "it opens DuckDuckGo’s results page. Addresses and site searches keep their destinations. "
-                         + "Never resolves in a private window or for anything that looks like an address.")
-            }
-        }
-    }
-}
-
 // MARK: - Links
 
 private struct LinksPane: View {
@@ -1035,12 +1087,12 @@ private struct LinksPane: View {
     var body: some View {
         Pane {
             SettingsCard {
-                SettingsRow("Open links from other apps in") {
-                    Picker("", selection: $externalLinks) {
+                SettingsRow("Open links from other apps in", icon: "macwindow.on.rectangle", tint: .green) {
+                    Picker("Open links from other apps in", selection: $externalLinks) {
                         Text("Little Vane").tag(LinkTarget.littleArc)
                         Text("Current Space").tag(LinkTarget.currentSpace)
                     }
-                    .labelsHidden().fixedSize()
+                    .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                 }
                 Footnote("A Little Vane is a small window with one page and no sidebar: read "
                          + "it, then close it with \u{2318}W — or press \u{2318}O to keep it as a "
@@ -1049,10 +1101,10 @@ private struct LinksPane: View {
             }
 
             SettingsCard {
-                SettingsRow("Open ⌥⌘-clicked links in Little Vane") {
+                SettingsRow("Open ⌥⌘-clicked links in Little Vane", icon: "macwindow", tint: .green) {
                     Toggle("Open ⌥⌘-clicked links in Little Vane", isOn: $littleLinks).labelsHidden()
                 }
-                SettingsRow("Open ⇧-clicked links in Peek") {
+                SettingsRow("Open ⇧-clicked links in Peek", icon: "rectangle.on.rectangle", tint: .green) {
                     Toggle("Open ⇧-clicked links in Peek", isOn: $shiftPeek).labelsHidden()
                 }
                 Footnote("Hold ⌘ over a link to open a background tab, or ⇧⌘ to open and focus it. "
@@ -1098,11 +1150,11 @@ private struct SearchPane: View {
     var body: some View {
         Pane {
             SettingsCard {
-                SettingsRow("AI assistant") {
-                    Picker("", selection: $assistantID) {
+                SettingsRow("AI assistant", icon: "sparkles", tint: .purple) {
+                    Picker("AI assistant", selection: $assistantID) {
                         ForEach(AIChat.all) { Text($0.name).tag($0.id) }
                     }
-                    .labelsHidden().fixedSize()
+                    .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                 }
                 Footnote("Press Tab in the address bar to ask this assistant instead of "
                          + "searching. Starting with an assistant's name — \u{201C}claude …\u{201D}, "
@@ -1112,13 +1164,13 @@ private struct SearchPane: View {
             }
 
             SettingsCard {
-                SettingsRow("Search engine") {
-                    Picker("", selection: $engineID) {
+                SettingsRow("Search engine", icon: "magnifyingglass", tint: .blue) {
+                    Picker("Search engine", selection: $engineID) {
                         ForEach(engines) { Text($0.name).tag($0.id) }
                     }
-                    .labelsHidden().fixedSize()
+                    .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                 }
-                SettingsRow("Search suggestions") {
+                SettingsRow("Search suggestions", icon: "text.bubble.fill", tint: .blue) {
                     Toggle("", isOn: $suggestions).labelsHidden()
                 }
                 ForEach(Search.custom) { engine in
@@ -1158,16 +1210,16 @@ private struct SearchPane: View {
             }
 
             SettingsCard {
-                SettingsRow("Results shown") {
+                SettingsRow("Results shown", icon: "list.bullet", tint: .blue) {
                     Stepper("\(Look.clampedVisibleRows(visibleRows))", value: $visibleRows,
                             in: Look.barVisibleRowsRange)
                 }
-                SettingsRow("Bar position") {
+                SettingsRow("Bar position", icon: "rectangle.topthird.inset.filled", tint: .blue) {
                     Slider(value: $barTop, in: Look.barTopRange) { Text("Bar position") }
                         minimumValueLabel: { Text("Top") } maximumValueLabel: { Text("Middle") }
                         .labelsHidden().frame(width: 220)
                 }
-                SettingsRow("Animate results") {
+                SettingsRow("Animate results", icon: "waveform.path", tint: .blue) {
                     Toggle("", isOn: $barAnimations).labelsHidden()
                 }
                 Footnote("The search bar keeps its place as results come and go. Results past "
@@ -1177,7 +1229,7 @@ private struct SearchPane: View {
             }
 
             SettingsCard {
-                SettingsRow("Your bangs") {
+                SettingsRow("Your bangs", icon: "exclamationmark", tint: .purple) {
                     Button("Restore Defaults") { Bangs.reset(); bangs = Bangs.custom }
                         .disabled(bangs.isEmpty)
                 }
@@ -1298,20 +1350,9 @@ struct UIAnimationsPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 1.5) {
             HStack(spacing: Look.inset) {
-                HStack(spacing: Look.inset) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search animations", text: $query).textFieldStyle(.plain)
-                        .accessibilityLabel("Search animations")
-                    if !query.isEmpty {
-                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
-                            .buttonStyle(.plain).foregroundStyle(.secondary)
-                            .accessibilityLabel("Clear animation search")
-                    }
-                }
-                .padding(.horizontal, Look.inset)
-                .frame(height: Look.control)
-                .background(.quaternary, in: .rect(cornerRadius: Look.chipRadius))
+                SettingsSearchField("Search animations", text: $query)
                 Button("Reset All") { UIAnimation.resetAll() }
+                    .controlSize(.large)
                     .help("Restore every animation speed, including hidden search results")
             }
             Text("Below 1× is slower; above 1× is faster. Changes apply to the next animation.")
@@ -1353,24 +1394,36 @@ private struct UIAnimationSpeedRow: View {
     private var speed: Double { UIAnimation.normalized(storedSpeed) }
 
     var body: some View {
-        HStack(spacing: Look.inset) {
+        HStack(spacing: Look.inset * 2) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(animation.title).font(Look.text).foregroundStyle(Look.inkPrimary)
                 Text(animation.detail).font(Look.footnote).foregroundStyle(Look.inkQuiet)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Picker("\(animation.title) speed", selection: Binding(
-                get: { speed }, set: { storedSpeed = $0 }
-            )) {
-                ForEach(UIAnimation.speeds, id: \.self) { value in
-                    Text(UIAnimation.speedLabel(value)).tag(value)
+            VStack(spacing: Look.inset) {
+                HStack {
+                    Text(UIAnimation.speedLabel(speed))
+                        .font(Look.footnote).monospacedDigit()
+                    Spacer(minLength: Look.inset)
+                    Button("Reset") { animation.reset() }
+                        .controlSize(.small)
+                        .disabled(speed == 1)
+                        .accessibilityLabel("Reset \(animation.title) speed")
                 }
+                // Equal slider stops map to the existing, deliberately non-linear choices.
+                Slider(value: Binding(
+                    get: { UIAnimation.step(for: speed) },
+                    set: { storedSpeed = UIAnimation.speed(atStep: $0) }
+                ), in: 0...Double(UIAnimation.speeds.count - 1), step: 1,
+                       neutralValue: UIAnimation.step(for: 1)) {
+                    Text("\(animation.title) speed")
+                } tick: { SliderTick($0) }
+                .labelsHidden()
+                .accessibilityValue(UIAnimation.speedLabel(speed))
+                .help("Drag or use the arrow keys to choose an animation speed")
             }
-            .labelsHidden().frame(width: 126)
-            Button("Reset") { animation.reset() }
-                .disabled(speed == 1)
-                .accessibilityLabel("Reset \(animation.title) speed")
+            .frame(width: 220)
         }
         .padding(.horizontal, Look.cardInset)
         .padding(.vertical, 12)
@@ -1393,18 +1446,20 @@ private struct AdvancedPane: View {
     @State private var stackSplits = Prefs.stackSplits
 
     var body: some View {
-        Pane {
-            SettingsSection("Interface") {
+        Pane(spacing: Look.inset / 2) {
+            SettingsDisclosure("Interface", summary: "Animation speeds",
+                               icon: "waveform.path", tint: .blue) {
                 SettingsCard {
-                    SettingsRow("UI Animations") {
+                    SettingsRow("UI Animations", icon: "waveform.path", tint: .blue) {
                         Button("Animation Settings…") { selection.id = "animations" }
                     }
                     Footnote("Adjust animation speeds for the sidebar, tabs, panels, and more.")
                 }
             }
-            SettingsSection("Performance") {
+            SettingsDisclosure("Performance", summary: "Battery Saver and power status",
+                               icon: "battery.100percent", tint: .green) {
                 SettingsCard {
-                    SettingsRow("Battery Saver") {
+                    SettingsRow("Battery Saver", icon: "battery.100percent", tint: .green) {
                         Picker("Battery Saver", selection: Binding(
                             get: { batterySaver.mode }, set: { batterySaver.setMode($0) }
                         )) {
@@ -1412,7 +1467,7 @@ private struct AdvancedPane: View {
                                 Text($0.title).tag($0)
                             }
                         }
-                        .labelsHidden().fixedSize()
+                        .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                     }
                     SettingsRow("Status") {
                         Label(batterySaver.isActive ? "Active" : "Inactive",
@@ -1423,73 +1478,76 @@ private struct AdvancedPane: View {
                     Footnote("While active, eligible idle tabs sleep after five minutes, hover link previews pause, and sidebar motion is reduced. Active pages, pinned tabs, media, private tabs, and unfinished forms stay protected. Sleeping tabs reload when you return.")
                 }
             }
-            SettingsSection("Windows and Tabs") {
+            SettingsDisclosure("Windows and Tabs", summary: "Startup, homepage, and Split View",
+                               icon: "macwindow", tint: .green) {
                 SettingsCard {
-                    SettingsRow("Show page titles in window titles") {
+                    SettingsRow("Show page titles in window titles", icon: "macwindow", tint: .green) {
                         Toggle("Show page titles in window titles", isOn: $pageTitlesInWindows).labelsHidden()
                     }
                     Footnote("Helps password managers, window switchers, and accessibility tools identify the active page. Private windows always use a generic title.")
-                    SettingsRow("Reopen windows and tabs on launch") {
+                    SettingsRow("Reopen windows and tabs on launch", icon: "arrow.counterclockwise", tint: .green) {
                         Toggle("Reopen windows and tabs on launch", isOn: $restore).labelsHidden()
                             .onChange(of: restore) { Prefs.restoreSession = restore }
                     }
-                    SettingsRow("If Vane didn’t quit cleanly") {
+                    SettingsRow("If Vane didn’t quit cleanly", icon: "arrow.clockwise", tint: .green) {
                         Picker("After an unclean exit", selection: $afterCrash) {
                             ForEach(Prefs.afterCrashChoices, id: \.key) { Text($0.name).tag($0.key) }
                         }
-                        .labelsHidden().fixedSize()
+                        .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                         .onChange(of: afterCrash) { Prefs.afterCrash = afterCrash }
                     }
-                    SettingsRow("Homepage") {
+                    SettingsRow("Homepage", icon: "house.fill", tint: .green) {
                         TextField("Homepage", text: $homepage, prompt: Text(Prefs.homepage.absoluteString))
                             .onSubmit {
                                 if let url = Search.url(for: homepage) { homepage = url.absoluteString }
                             }
                             .settingsField().frame(width: 280)
                     }
-                    SettingsRow("Open new Split Views") {
+                    SettingsRow("Open new Split Views", icon: "rectangle.split.2x1", tint: .green) {
                         Picker("Open new Split Views", selection: $stackSplits) {
                             Text("Side by side").tag(false)
                             Text("Stacked").tag(true)
                         }
-                        .labelsHidden().fixedSize()
+                        .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                         .onChange(of: stackSplits) { Prefs.stackSplits = stackSplits }
                     }
                 }
             }
 
-            SettingsSection("Media and Notifications") {
+            SettingsDisclosure("Media and Notifications", summary: "Picture in Picture and notification timing",
+                               icon: "pip", tint: .purple) {
                 SettingsCard {
-                    SettingsRow("Automatically enter Picture in Picture") {
+                    SettingsRow("Automatically enter Picture in Picture", icon: "pip", tint: .purple) {
                         Toggle("Automatically enter Picture in Picture", isOn: $autoPiP).labelsHidden()
                     }
                     Footnote("Keep a playing video in view when switching tabs. Return to its tab to put it back in the page.")
-                    SettingsRow("Show notifications for") {
+                    SettingsRow("Show notifications for", icon: "bell.fill", tint: .purple) {
                         Picker("Show notifications for", selection: $toastSeconds) {
                             ForEach(Prefs.toastChoices, id: \.seconds) { Text($0.name).tag($0.seconds) }
                         }
-                        .labelsHidden().fixedSize()
+                        .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                         .onChange(of: toastSeconds) { Prefs.toastSeconds = toastSeconds }
                     }
                 }
             }
 
-            SettingsSection("Developer") {
+            SettingsDisclosure("Developer", summary: "Browser identity, Web Inspector, and extensions",
+                               icon: "chevron.left.forwardslash.chevron.right", tint: .blue) {
                 SettingsCard {
-                    SettingsRow("User agent") {
-                        Picker("", selection: Binding(
+                    SettingsRow("User agent", icon: "globe", tint: .blue) {
+                        Picker("User agent", selection: Binding(
                             get: { BrowserIdentity.resolve(userAgent) },
                             set: { userAgent = $0 == safariUA ? "" : $0 })) {
                             ForEach(Settings.userAgents, id: \.value) { Text($0.name).tag($0.value) }
                         }
-                        .labelsHidden().fixedSize()
+                        .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                         .onChange(of: userAgent) { Settings.apply(); rebuild() }
                     }
-                    SettingsRow("Allow Web Inspector") {
+                    SettingsRow("Allow Web Inspector", icon: "chevron.left.forwardslash.chevron.right", tint: .blue) {
                         Toggle("", isOn: $inspector).labelsHidden()
                             .onChange(of: inspector) { Settings.apply(); rebuild() }
                     }
-                    SettingsRow("Extensions") {
+                    SettingsRow("Extensions", icon: "puzzlepiece.extension.fill", tint: .blue) {
                         Button("Manage Extensions…") { ExtensionManagement.show() }
                         Button("Install from Chrome Web Store…") { ExtensionHost.shared.chooseStoreInstall(); rebuild() }
                         Button("Install Extension…") {
@@ -1505,13 +1563,15 @@ private struct AdvancedPane: View {
                 }
             }
 
-            SettingsSection("Backup and Restore") {
+            SettingsDisclosure("Backup and Restore", summary: "Export your library and recover saved data",
+                               icon: "externaldrive.fill", tint: .green) {
                 BackupSettings(controller: .shared)
             }
 
-            SettingsSection("Reset Vane") {
+            SettingsDisclosure("Reset Vane", summary: "Erase all browsing data and settings",
+                               icon: "trash.fill", tint: .red) {
                 SettingsCard {
-                    SettingsRow("Start over") {
+                    SettingsRow("Start over", icon: "trash.fill", tint: .red) {
                         Button("Erase Everything…") { EraseEverything.ask() }
                     }
                     Footnote("Erase all profiles, Spaces, passwords, browsing data, extensions, and settings. Vane asks you to type a confirmation before starting over.")
@@ -1546,14 +1606,14 @@ private struct PrivacyPane: View {
     var body: some View {
         Pane {
             SettingsCard {
-                SettingsRow("HTTPS-Only Mode") {
+                SettingsRow("HTTPS-Only Mode", icon: "lock.shield.fill", tint: .green) {
                     Toggle("", isOn: $httpsOnly).labelsHidden().onChange(of: httpsOnly) { rebuild() }
                 }
-                SettingsRow("Block ads and trackers") {
+                SettingsRow("Block ads and trackers", icon: "hand.raised.fill", tint: .green) {
                     Toggle("", isOn: $blocking).labelsHidden()
                         .onChange(of: blocking) { Blocker.setEnabled(blocking, for: profile.id); rebuild() }
                 }
-                SettingsRow("Search suggestions") {
+                SettingsRow("Search suggestions", icon: "text.bubble.fill", tint: .blue) {
                     Toggle("", isOn: $suggestions).labelsHidden()
                 }
                 Footnote("Pages load over an encrypted connection or stop on a warning. Ads and "
@@ -1595,7 +1655,7 @@ private struct PrivacyPane: View {
                                 .accessibilityLabel("Stop allowing \(host) without encryption")
                         }
                     }
-                    SettingsRow("Site permissions") {
+                    SettingsRow("Site permissions", icon: "checkmark.shield.fill", tint: .green) {
                         Button("Reset Permissions…") {
                             if confirm("Forget camera, microphone, and location permissions for every site in this profile?",
                                        "Reset") {
@@ -1605,7 +1665,7 @@ private struct PrivacyPane: View {
                         }
                         .disabled(grants.isEmpty)
                     }
-                    SettingsRow("Website Boosts") {
+                    SettingsRow("Website Boosts", icon: "paintbrush.fill", tint: .purple) {
                         Button("Reset Boosts…") {
                             if confirm("Reset every website Boost in this profile?", "Reset",
                                        "Fonts, colors, hidden elements, and custom code will be removed. Reload pages to remove script effects.") {
@@ -1614,7 +1674,7 @@ private struct PrivacyPane: View {
                             }
                         }
                     }
-                    SettingsRow("Certificates you trusted anyway") {
+                    SettingsRow("Certificates you trusted anyway", icon: "checkmark.seal.fill", tint: .red) {
                         Button("Forget Exceptions…") {
                             if confirm("Forget certificate exceptions for “\(profile.name)”?",
                                        "Forget",

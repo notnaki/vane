@@ -1,13 +1,41 @@
 import AppKit
 import SwiftUI
 
-/// The header and address editor use the same reflow, so editing still opens over the pill.
+private struct SidebarWindowWidth: EnvironmentKey {
+    static let defaultValue: CGFloat = .infinity
+}
+
+extension EnvironmentValues {
+    var sidebarWindowWidth: CGFloat {
+        get { self[SidebarWindowWidth.self] }
+        set { self[SidebarWindowWidth.self] = newValue }
+    }
+}
+
+/// Observe the shared preference, but fit its presentation independently in each window.
+@MainActor @propertyWrapper struct WindowSidebarWidth: DynamicProperty {
+    @ObservedObject private var sidebar = SidebarWidth.shared
+    @Environment(\.sidebarWindowWidth) private var available
+    var wrappedValue: CGFloat { SidebarWidth.fitting(sidebar.width, in: available) }
+}
+
+/// Keep full-size header targets until they touch, then move secondary actions into a menu.
 struct SidebarChromeLayout {
     let width: CGFloat
+    // The address pill has its own compact presentation, independent of header overflow.
     var compact: Bool { width < Look.sidebarWidth }
-    // 16pt outer insets + 62pt lights + 22pt toggle + 64pt navigation + three 8pt gaps.
-    var stacked: Bool { width < 188 }
-    var headerHeight: CGFloat { Look.topRow * (stacked ? 2 : 1) }
+    private var fullTargetsWidth: CGFloat { Look.inset * 2 + Look.trafficLights + Look.control * 4 }
+    var usesOverflow: Bool { width < fullTargetsWidth }
+
+    /// Close gaps continuously; never shrink the glyphs or their 24pt hit areas.
+    /// Header gaps are twice the navigation gaps, matching the normal 12pt / 6pt rhythm.
+    var navigationSpacing: CGFloat {
+        let targets = usesOverflow ? fullTargetsWidth - Look.control : fullTargetsWidth
+        let gapUnits: CGFloat = usesOverflow ? 6 : 8
+        return min(6, max(0, (width - targets) / gapUnits))
+    }
+    var headerSpacing: CGFloat { navigationSpacing * 2 }
+    var headerHeight: CGFloat { Look.topRow }
     var addressTop: CGFloat { Look.topInset + headerHeight + Look.inset }
 }
 
@@ -34,7 +62,7 @@ struct SidebarChromeLayout {
 
     /// Measured from the installed Arc for macOS resize handlers: 164–500pt,
     /// a 228pt reset width, and collapse when the pointer passes 82pt.
-    /// The compact header reflows at the minimum without hiding navigation controls.
+    /// At the minimum, Back and Forward remain visible beside the navigation menu.
     nonisolated static let minimum: CGFloat = 164
     nonisolated static let maximum: CGFloat = 500
     nonisolated static let collapseThreshold: CGFloat = 82
@@ -52,6 +80,16 @@ struct SidebarChromeLayout {
         return Swift.min(Swift.max(w, minimum), maximum)
     }
 
+    /// Leave a usable page column when the browser is narrower than a saved sidebar.
+    nonisolated static func fitting(_ proposed: CGFloat, in windowWidth: CGFloat) -> CGFloat {
+        guard windowWidth.isFinite, windowWidth > 0 else { return clamp(proposed) }
+        return min(clamp(proposed), max(minimum, windowWidth - 200))
+    }
+
+    static func inWindow(_ store: TabStore) -> CGFloat {
+        fitting(shared.width, in: store.window?.contentView?.bounds.width ?? .infinity)
+    }
+
     /// A width read back off disk. An unset key reads as 0, which clamps up to the minimum
     /// rather than to the default, so "never set" is checked before clamping.
     nonisolated static func load(_ defaults: UserDefaults = .vane) -> CGFloat {
@@ -67,8 +105,8 @@ struct SidebarChromeLayout {
 
     /// Pointer movement must follow the hand, even inside a window reveal transaction.
     /// At a clamp boundary repeated events should not publish identical widths.
-    func setLiveWidth(_ proposed: CGFloat) {
-        let next = Self.clamp(proposed)
+    func setLiveWidth(_ proposed: CGFloat, available: CGFloat? = nil) {
+        let next = available.map { Self.fitting(proposed, in: $0) } ?? Self.clamp(proposed)
         guard next != width else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -97,18 +135,124 @@ struct SidebarChromeLayout {
     }
 }
 
+/// A small magnetic catch at the default width. A wider release band prevents jitter
+/// while the pointer moves around the catch; widths outside it still follow the hand.
+struct SidebarResizeDetent {
+    private var engaged = false
+
+    mutating func width(for proposed: CGFloat) -> CGFloat {
+        let distance = abs(proposed - SidebarWidth.standard)
+        engaged = distance <= (engaged ? 12 : 6)
+        return engaged ? SidebarWidth.standard : SidebarWidth.clamp(proposed)
+    }
+}
+
+/// Keep the fade on its own layer: live-width transactions deliberately disable SwiftUI
+/// animation and must not cut short the resize affordance's entrance or exit.
+private struct SidebarResizeHighlight: NSViewRepresentable {
+    var active: Bool
+    var dragging: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    func makeNSView(context: Context) -> SidebarResizeHighlightView {
+        SidebarResizeHighlightView()
+    }
+
+    func updateNSView(_ view: SidebarResizeHighlightView, context: Context) {
+        view.setActive(active, animated: !reduceMotion && !batterySaver.isActive,
+                       delay: dragging ? 0 : 0.25)
+    }
+
+    static func dismantleNSView(_ view: SidebarResizeHighlightView, coordinator: ()) {
+        view.setActive(false, animated: false)
+    }
+}
+
+final class SidebarResizeHighlightView: NSView {
+    static let fadeKey = "resize-highlight-opacity"
+    private var revealTask: Task<Void, Never>?
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        // Arc's 4pt rule has elongated oval caps, not 2pt circular corners.
+        (layer as? CAShapeLayer)?.fillColor = NSColor.white.withAlphaComponent(0.4).cgColor
+        layer?.opacity = 0
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func makeBackingLayer() -> CALayer { CAShapeLayer() }
+
+    override func layout() {
+        super.layout()
+        guard let shape = layer as? CAShapeLayer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shape.path = CGPath(roundedRect: bounds, cornerWidth: bounds.width / 2,
+                            cornerHeight: min(5, bounds.height / 2), transform: nil)
+        CATransaction.commit()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func setActive(_ active: Bool, animated: Bool, delay: TimeInterval = 0) {
+        guard active && animated && delay > 0 else {
+            revealTask?.cancel()
+            revealTask = nil
+            applyActive(active, animated: animated)
+            return
+        }
+        // Repeated layout updates must not restart an already pending hover dwell.
+        guard layer?.opacity == 0, revealTask == nil else { return }
+        let wait = UIAnimation.feedback.duration(delay)
+        revealTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(wait)) }
+            catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.revealTask = nil
+            self.applyActive(true, animated: true)
+        }
+    }
+
+    private func applyActive(_ active: Bool, animated: Bool) {
+        guard let layer else { return }
+        let target: Float = active ? 1 : 0
+        let changed = layer.opacity != target
+        let presented = layer.presentation()?.opacity ?? layer.opacity
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.opacity = target
+        CATransaction.commit()
+        guard animated else {
+            layer.removeAnimation(forKey: Self.fadeKey)
+            return
+        }
+        // Width updates must keep an in-flight fade's original clock.
+        guard changed else { return }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = presented
+        fade.toValue = target
+        fade.duration = UIAnimation.feedback.duration(0.2)
+        fade.timingFunction = CAMediaTimingFunction(name: .linear)
+        layer.add(fade, forKey: Self.fadeKey)
+    }
+}
+
 /// The seam between the sidebar and the page card, as a thing you can grab.
-///
-/// It draws nothing: Arc's divider is the gap that is already there, and a visible rule would
-/// be one more line in a window whose whole point is that it has none. It is `hitTestWidth`
-/// wide, centred on the seam, which is the same forgiveness AppKit gives a split view.
+/// Its rule appears only while hovering or dragging. The forgiving hit area stays wider
+/// than the rule, centred on the seam like AppKit's split-view divider.
 struct SidebarHandle: View {
     @EnvironmentObject private var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
+    @WindowSidebarWidth private var presentedWidth
     /// The gap between the pointer and the seam, taken on the drag's first frame and held
     /// for the rest of it, so the seam does not jump to the pointer when the grab was a few
     /// points off centre.
     @State private var start: CGFloat?
+    @State private var hovered = false
+    @State private var detent = SidebarResizeDetent()
 
     /// Wide enough to hit without aiming, narrow enough that the first sidebar row's close
     /// button is still clickable.
@@ -118,7 +262,16 @@ struct SidebarHandle: View {
         Color.clear
             .frame(width: Self.hitTestWidth)
             .frame(maxHeight: .infinity)
+            .overlay {
+                SidebarResizeHighlight(active: hovered || start != nil, dragging: start != nil)
+                    .frame(width: 4)
+                    .padding(.vertical, 14)
+                    .allowsHitTesting(false)
+            }
             .contentShape(.rect)
+            .onHover { inside in
+                hovered = inside
+            }
             // macOS's own column-resize pointer, so the affordance is the system's rather
             // than a cursor we drew.
             .pointerStyle(.columnResize)
@@ -132,16 +285,23 @@ struct SidebarHandle: View {
                         // is in the window's own space and cannot drift, so the drag is
                         // "the seam is wherever the pointer is", plus the grab offset taken
                         // on the first frame.
-                        let grab = start ?? (sidebar.width - value.location.x)
-                        if start == nil { start = grab }
-                        sidebar.setLiveWidth(value.location.x + grab)
+                        let grab = start ?? (presentedWidth - value.startLocation.x)
+                        if start == nil {
+                            detent = SidebarResizeDetent()
+                            start = grab
+                        }
+                        sidebar.setLiveWidth(detent.width(for: value.location.x + grab),
+                                             available: store.window?.contentView?.bounds.width)
                     }
                     .onEnded { value in
                         let proposed = value.location.x + (start ?? 0)
+                        sidebar.setLiveWidth(detent.width(for: proposed),
+                                             available: store.window?.contentView?.bounds.width)
                         start = nil
+                        detent = SidebarResizeDetent()
                         sidebar.save()
                         if SidebarWidth.shouldCollapse(proposed) {
-                            store.sidebarShown = false
+                            if store.sidebarShown { store.toggleSidebar() }
                             axAnnounce("Sidebar hidden.")
                         } else {
                             axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")
@@ -163,7 +323,7 @@ struct SidebarHandle: View {
             // below, which VoiceOver can reach without a drag.
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Sidebar Width")
-            .accessibilityValue("\(Int(sidebar.width)) points")
+            .accessibilityValue("\(Int(presentedWidth)) points")
             .accessibilityHint("Drag to resize the sidebar. Double-click to reset it.")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction(named: "Widen Sidebar") { step(20) }
@@ -172,7 +332,13 @@ struct SidebarHandle: View {
     }
 
     private func step(_ delta: CGFloat) {
-        Motion.animate(Look.quick) { sidebar.width = SidebarWidth.clamp(sidebar.width + delta) }
+        let proposed = presentedWidth + delta
+        let next = store.window?.contentView.map {
+            SidebarWidth.fitting(proposed, in: $0.bounds.width)
+        } ?? SidebarWidth.clamp(proposed)
+        Motion.animate(Look.quick) {
+            sidebar.width = next
+        }
         sidebar.save()
         axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")
     }

@@ -5,6 +5,29 @@
 Start here for tabs, Spaces, search, windows, downloads, and media. For saved reading
 and visual tools, see [Reading and customization](FEATURES.md).
 
+## Page captures
+
+Press **⌘⇧2** or choose **File → Capture a Portion of This Page**. Move over an element to
+highlight it, click to capture it, or drag a rectangle. **Return** captures the highlighted
+region or visible page; **Escape** cancels. Choose **Full Page** in capture mode or
+**File → Capture Full Page** to include the rendered document below the viewport.
+Infinite-scroll content that has not loaded is not included, and unusually large pages
+may need a smaller region.
+
+The compact capture menu offers **Copy**, **Save PNG…**, **Share…**, **Edit…**, **Retake**,
+and **Save to Library**. Normal windows also offer **New Easel** and existing Easels for
+web-page captures. Filter the menu with **Send To…**. Click outside the result or press
+**Escape** to dismiss it.
+
+In **Edit**, drag with **Crop**, **Pen**, **Arrow**, or **Rectangle**, or choose **Text** and
+click to place a label. Pick a color and stroke width; **Undo**, **Redo**, and **Reset**
+keep changes reversible. **Apply** returns to the capture menu with the edited image;
+**Cancel** keeps the original capture.
+
+Explicitly saved captures appear in **Library → Media**, with the other saved images, source search, preview, and the usual media actions.
+They use the existing saved-file history rather than a separate capture collection. Private-window captures stay temporary, with copy, PNG export, share and
+editing available; the saved capture library and Easels are unavailable there.
+
 ## First launch
 
 Fresh installations open with a short, skippable welcome to search and Spaces. Finishing
@@ -37,6 +60,14 @@ Pinned tabs keep their saved name as you navigate within them. When a pinned tab
 its saved page, its sidebar row shows `/` before its title and offers **Return to Pinned
 Tab**; returning loads the pinned URL again. Favorites belong to a profile, while pinned
 and Today tabs belong to a Space. Library lists Spaces across all profiles.
+
+## Copy a clean link
+
+Press **⌘⇧C** (**View → Copy Page URL**) to copy the current page's URL with known
+tracking parameters removed, including `utm_*`, `fbclid`, and advertising click IDs.
+The address bar's **Copy Link** button uses the same cleanup. Page parameters such
+as searches and item IDs, URL encoding, and fragments are preserved. Copying does
+not navigate or change the page's address.
 
 ## Reorder, group, and clean up tabs
 
@@ -180,6 +211,10 @@ partial archives are removed rather than installed. An update already installed 
 waiting for **Restart** can finish without another update download. Manual checks and
 retries do not wait for the automatic check's backoff interval.
 
+The update status pill is shared across Spaces and profiles, including when the
+destination has an open command bar. Its current Update, Retry, or Restart action
+remains available there.
+
 ## Search and history
 
 **Instant Links** uses **Shift+Return** in the address or new-tab bar to open the
@@ -255,6 +290,15 @@ history remains available through **Archive → View History** or **⌘Y**. Regu
 windows share Library contents across all profiles and Spaces, including Easels,
 Boosts, Archived Tabs, and Reading Queue. Items keep their owning profile for
 opening, restoring, and other actions; profile labels distinguish matching items.
+
+In Downloads, Archived Tabs, and Reading Queue, **Filter** opens inline controls
+above the results. Select one or more profile chips to narrow the list; **All**
+clears the profile selection. Search and the section's other filters still apply.
+**Done** returns to search. Profile choices stay with each section while Library is
+open and reset when you reopen it. Private windows show only their own items and
+omit the regular profile controls. The filter panel's **…** menu holds additional
+filters such as Completed only and section actions such as Clear Downloads or
+Clear Archive.
 
 **Reopen Closed Tab** (`⇧⌘T`) remembers the last 32 closed regular tabs
 until Vane quits. Reopening in the same profile restores the page's Back/Forward

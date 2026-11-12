@@ -183,6 +183,10 @@ enum Look {
 
     // Settings. Arc's rows are 43 (86px), its link rows 34, its list rows 32 on a 40 pitch.
     static let settingsRow: CGFloat = 43
+    /// Settings fields and search share a comfortable height, independently of compact browser chrome.
+    static let settingsControl: CGFloat = 32
+    static let settingsSearch: CGFloat = 36
+    static let settingsPicker: CGFloat = 200
     /// From a card's edge to its row content, and where its dividers start and stop.
     static let cardInset: CGFloat = inset + 6
     /// A row that is only a title and an arrow ("Your Data and Settings").

@@ -56,6 +56,13 @@ import XCTest
             XCTAssertNil(browser.window)
             XCTAssertEqual(welcome.frame.size, frame.size)
             XCTAssertFalse(host.firstResponder === responder)
+            let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.windowNumber,
+                context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+            XCTAssertTrue(welcome.performKeyEquivalent(with: escape))
+            welcome.cancelOperation(nil)
+            XCTAssertTrue(host.contentView === welcome, "Escape must leave the guided setup mounted")
+            XCTAssertTrue(host.isVisible)
             presentation.show()
             XCTAssertTrue(host.contentView === welcome)
 
@@ -75,6 +82,20 @@ import XCTest
             NSApp.presentationOptions = [.autoHideDock]
             presentation.close()
             XCTAssertEqual(NSApp.presentationOptions, [.autoHideDock])
+
+            // This is the production boundary used by onboarding's import handoff.
+            var continued = false
+            let importing = FirstLaunchPresentation(host: host, content: AnyView(Text("Import")))
+            importing.show()
+            importing.closeAndContinue {
+                XCTAssertTrue(host.contentView === browser, "Import consent must follow browser restoration")
+                XCTAssertTrue(host.firstResponder === responder)
+                continued = true
+            }
+            XCTAssertTrue(host.contentView === browser)
+            let continuationDeadline = Date().addingTimeInterval(2)
+            while !continued && Date() < continuationDeadline { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertTrue(continued)
 
             var closed = false
             let closing = FirstLaunchPresentation(host: host, content: AnyView(Text("Welcome")),

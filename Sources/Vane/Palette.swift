@@ -906,6 +906,35 @@ private struct PaletteResultHover: ViewModifier {
     }
 }
 
+/// Resolve the bar from this layout pass, including the first frame and live resizing.
+struct PaletteSizing {
+    let window: CGSize
+    var preferredWidth = Look.barWidth
+    var visibleRows = Look.barVisibleRows
+    var rowCount: Int
+    var chromeHeight = Look.barFieldHeight
+    var topFraction = Look.barTop
+    var anchorTop: CGFloat?
+
+    var width: CGFloat { min(preferredWidth, max(0, window.width - Look.inset * 2)) }
+    var listPadding: CGFloat { Look.barInset * 2 - Look.barRowGap }
+    var rowCap: Int {
+        Palette.fittingRows(Look.clampedVisibleRows(visibleRows), windowHeight: window.height,
+                            chrome: chromeHeight + 1 + listPadding)
+    }
+    var listHeight: CGFloat { Palette.rowsHeight(min(rowCount, rowCap)) + listPadding }
+    var height: CGFloat { chromeHeight + (rowCount == 0 ? 0 : 1 + listHeight) }
+    var top: CGFloat {
+        if let anchorTop {
+            return max(Look.inset, min(anchorTop, window.height - height - Look.inset))
+        }
+        // Keep the input in place while results arrive; reserve the tallest fitted list.
+        let tallest = chromeHeight + 1 + Palette.rowsHeight(rowCap) + listPadding
+        return max(Look.inset, min(window.height * Look.clampedBarTop(topFraction),
+                                   window.height - tallest - Look.inset))
+    }
+}
+
 /// The search bar: one centred sheet over the page for typing a url, a search, a question
 /// for an assistant, or the name of a tab.
 ///
@@ -922,7 +951,8 @@ private struct PaletteResultHover: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var batterySaver = BatterySaver.shared
-    private var sidebarLayout: SidebarChromeLayout { SidebarChromeLayout(width: sidebar.width) }
+    private var sidebarLayout: SidebarChromeLayout { SidebarChromeLayout(width: SidebarWidth.inWindow(store)) }
+    var ownsAccessibilityModal = true
     let mode: PaletteMode
     let dismiss: () -> Void
 
@@ -947,8 +977,6 @@ private struct PaletteResultHover: ViewModifier {
     /// The last query's history and engine rows, held while this query's are pending so
     /// the list does not collapse to its defaults and refill on every keystroke.
     @State private var heldSuggestions: [PaletteRow] = []
-    /// The window's height, for capping the results to what fits under the field.
-    @State private var windowHeight: CGFloat = .infinity
     /// The host the field is completing to, and whether the last edit was typing forward —
     /// a delete or a paste over the middle turns completion off until the next character.
     @State private var completion: Palette.HostCompletion?
@@ -964,48 +992,22 @@ private struct PaletteResultHover: ViewModifier {
     @AppStorage(Look.barTopKey, store: .vane) private var barTop = Look.barTop
     @AppStorage(Look.barAnimationsKey, store: .vane) private var animations = true
 
-    /// At most `visibleRows` are visible; the rest are a scroll away. Arithmetic
-    /// rather than a preference-key measuring dance, which the fixed row height makes exact.
-    private var listHeight: CGFloat {
-        rowsHeight(min(rows.count, rowCap))
-    }
-    private func rowsHeight(_ count: Int) -> CGFloat { Palette.rowsHeight(count) }
-    /// Search Settings' row count, cut to what fits the window.
-    private var rowCap: Int {
-        Palette.fittingRows(Look.clampedVisibleRows(visibleRows), windowHeight: windowHeight,
-                            chrome: chromeHeight + 1 + listPadding)
-    }
     /// Everything in the bar but the rows.
     private var chromeHeight: CGFloat {
         fieldHeight + (mode == .tabs && !store.isPrivate && !store.isLittle && !actionsOnly
                        ? Look.control + Look.barRowGap : 0)
     }
-    /// Above and below the rows: a row gap's less at the top, where the divider already
-    /// separates, than at the bottom, where the bar's edge has to.
-    private var listPadding: CGFloat { Look.barInset - Look.barRowGap + Look.barInset }
     private var sidebarAddress: Bool {
         mode.usesSidebarAddress(in: store)
     }
     private var fieldHeight: CGFloat { sidebarAddress ? Look.barRowHeight : Look.barFieldHeight }
-    private var barHeight: CGFloat {
-        fieldHeight + (mode == .tabs && !store.isPrivate && !store.isLittle && !actionsOnly
-                       ? Look.control + Look.barRowGap : 0)
-            + (rows.isEmpty ? 0 : 1 + listHeight + listPadding)
-    }
-    /// The search bar's top edge stays put while results arrive and leave, so the field
-    /// does not chase the list's height. It is clamped against the tallest the list can
-    /// get, so a short window moves it once, not per keystroke.
-    private func searchTop(_ height: CGFloat) -> CGFloat {
-        let chrome = barHeight - (rows.isEmpty ? 0 : 1 + listHeight + listPadding)
-        let tallest = chrome + 1 + rowsHeight(rowCap) + listPadding
-        return max(Look.inset, min(height * Look.clampedBarTop(barTop),
-                                   height - tallest - Look.inset))
-    }
 
     /// Nil under Reduce Motion, Battery Saver or the Search Settings switch, which SwiftUI
     /// reads as "just change".
+    private var motionDisabled: Bool { reduceMotion || batterySaver.isActive || !animations }
+
     private func motion(_ a: Animation) -> Animation? {
-        reduceMotion || batterySaver.isActive || !animations ? nil : a
+        motionDisabled ? nil : a
     }
 
     private var bangCandidate: Bangs.Activation? {
@@ -1028,6 +1030,10 @@ private struct PaletteResultHover: ViewModifier {
 
     var body: some View {
         GeometryReader { geo in
+            let sizing = PaletteSizing(window: geo.size,
+                preferredWidth: sidebarAddress ? Look.sidebarSearchWidth : Look.barWidth,
+                visibleRows: visibleRows, rowCount: rows.count, chromeHeight: chromeHeight,
+                topFraction: barTop, anchorTop: sidebarAddress ? sidebarLayout.addressTop : nil)
             ZStack(alignment: sidebarAddress ? .topLeading : .top) {
                 // Click-off to dismiss. Decoration only — Esc is the accessible route out,
                 // and VoiceOver should never land on a full-screen unlabelled rectangle.
@@ -1041,23 +1047,21 @@ private struct PaletteResultHover: ViewModifier {
                     .onTapGesture { close() }
                     .accessibilityHidden(true)
 
-                bar
-                    .frame(width: min(sidebarAddress ? Look.sidebarSearchWidth : Look.barWidth,
-                                      geo.size.width - Look.inset * 2))
+                bar(listHeight: sizing.listHeight)
+                    .frame(width: sizing.width)
                     .scaleEffect(shown ? 1 : Look.appearScale)
                     .opacity(shown ? 1 : 0)
                     // Editing the current address opens over the sidebar pill. Other
                     // search modes sit at the position chosen in Search Settings.
                     .padding(.leading, sidebarAddress ? Look.inset : 0)
-                    .padding(.top, max(Look.inset,
-                                       sidebarAddress
-                                           ? min(sidebarLayout.addressTop,
-                                                 geo.size.height - barHeight - Look.inset)
-                                           : searchTop(geo.size.height)))
-                    .animation(motion(Look.quick), value: rows.count)
-                    .animation(motion(Look.quick), value: sidebarLayout.stacked)
+                    .padding(.top, sizing.top)
+                    .transaction(value: rows.count) {
+                        // Native Space handoff keeps covered sidebar rows immediate.
+                        // The floating search surface still owns its resize spring.
+                        $0.disablesAnimations = motionDisabled
+                        $0.animation = motion(Look.list)
+                    }
             }
-            .onChange(of: geo.size.height, initial: true) { _, height in windowHeight = height }
         }
         .vaneMotionPolicy()
         .onDisappear {
@@ -1177,7 +1181,7 @@ private struct PaletteResultHover: ViewModifier {
         }, set: { query = $0 })
     }
 
-    private var bar: some View {
+    private func bar(listHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Look.barRowInset) {
                 Group {
@@ -1282,13 +1286,22 @@ private struct PaletteResultHover: ViewModifier {
 
             if !rows.isEmpty {
                 Hairline().padding(.horizontal, Look.barInset)
-                list
+                list(height: listHeight)
             }
         }
         // Arc's bar is one flat surface, not glass: a blur of whatever is behind it,
         // darkened almost to opaque, and a single hairline. No specular edge, no
         // refraction — the shadow is what lifts it off the page.
-        .background(chromeTheme.barFill, in: .rect(cornerRadius: Look.barRadius))
+        .background {
+            RoundedRectangle(cornerRadius: Look.barRadius)
+                .fill(chromeTheme.barFill)
+                .transaction(value: chromeTheme) {
+                    // Search sits above the native handoff, so its colour must not
+                    // inherit that covered content's animation suppression.
+                    $0.disablesAnimations = motionDisabled
+                    $0.animation = motion(Look.spaceSlide)
+                }
+        }
         .background(Look.barMaterial, in: .rect(cornerRadius: Look.barRadius))
         .hairline(radius: Look.barRadius, Look.barStroke)
         .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
@@ -1298,10 +1311,10 @@ private struct PaletteResultHover: ViewModifier {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(mode.title)
         // The bar owns the window while it is up, so everything behind it is noise.
-        .accessibilityAddTraits(.isModal)
+        .accessibilityAddTraits(ownsAccessibilityModal ? .isModal : [])
     }
 
-    private var list: some View {
+    private func list(height: CGFloat) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: Look.barRowGap) {
@@ -1315,13 +1328,17 @@ private struct PaletteResultHover: ViewModifier {
                 .padding(.top, Look.barInset - Look.barRowGap)
                 .padding(.bottom, Look.barInset)
             }
-            .frame(height: listHeight + listPadding)
+            .frame(height: height)
             .scrollIndicators(.never)
             // The scroll view's edge, not the first row's: aligning the row would scroll
             // the list's top padding away whenever there are enough results to scroll.
             .modifier(ScrollViewportPosition(resetRequest: scrollRequest))
             .onChange(of: index) {
                 guard rows.indices.contains(index) else { return }
+                proxy.scrollTo(index)
+            }
+            .onChange(of: height) {
+                guard index > 0, rows.indices.contains(index) else { return }
                 proxy.scrollTo(index)
             }
         }
