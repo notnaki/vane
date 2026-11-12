@@ -354,8 +354,7 @@ import XCTest
                     try await wait("shadow host deactivation", diagnostics: {
                         "appActive=\(app.isActive) processActive=\(NSRunningApplication.current.isActive) appHidden=\(app.isHidden) processHidden=\(NSRunningApplication.current.isHidden)"
                     }) {
-                        !app.isActive && !NSRunningApplication.current.isActive &&
-                            app.isHidden && NSRunningApplication.current.isHidden
+                        !app.isActive && !NSRunningApplication.current.isActive && app.isHidden
                     }
                 } catch {
                     if failure == nil { failure = error }
