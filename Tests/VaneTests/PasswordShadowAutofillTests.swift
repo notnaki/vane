@@ -82,6 +82,22 @@ import XCTest
         config.userContentController.addUserScript(WKUserScript(source: Autofill.script,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: Autofill.world))
         let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600), configuration: config)
+        if present != nil {
+            // Match WebKit's PlatformWebViewMac test harness and our permission
+            // fixtures: isolate discovery timers from WindowServer occlusion.
+            // WebKit still checks native window visibility and hidden ancestors;
+            // the real orderOut -> DOM-hidden -> visible control below proves it.
+            let setter = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+            let getter = NSSelectorFromString("_windowOcclusionDetectionEnabled")
+            let configurable = try XCTUnwrap(web.responds(to: setter) && web.responds(to: getter) ? web : nil,
+                                             "WebKit test-view occlusion policy is unavailable")
+            configurable.setValue(false, forKey: "windowOcclusionDetectionEnabled")
+            typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
+            let implementation = try XCTUnwrap(configurable.method(for: getter))
+            let enabled = unsafeBitCast(implementation, to: Getter.self)(configurable, getter)
+            XCTAssertFalse(enabled, "Timer discovery requires the upstream WebKit test-view policy")
+            print("SHADOW_OCCLUSION_POLICY enabled=\(enabled)")
+        }
         let window = NSWindow(contentRect: web.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = web
@@ -276,7 +292,7 @@ import XCTest
         defer { print("SHADOW_LAUNCH_TRACE " + launch.observations.joined(separator: " | ")) }
         do {
             // NSWindow must be created after the host has admitted a UI-capable
-            // policy and running AppKit loop. Then admit its compositor visibility
+            // policy and running AppKit loop. Then admit its exact presentation
             // before WebKit navigation, within the same five-second startup budget.
             let startupDeadline = ContinuousClock.now.advanced(by: .seconds(5))
             loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
@@ -294,17 +310,16 @@ import XCTest
                 try self.positionDiscoveryWindow(window)
                 window.makeKeyAndOrderFront(nil)
                 app.activate(ignoringOtherApps: true)
-                try await self.wait("shadow initial compositor presentation", deadline: startupDeadline,
+                try await self.wait("shadow initial native presentation", deadline: startupDeadline,
                                     diagnostics: { self.discoveryNativeDiagnostics(web) }) {
                     let loopReady = try ownedLoop.isReadyForInteraction()
                     let nativeReady = self.discoveryPresentationReady(window, document: web)
-                    let compositorReady = window.occlusionState.contains(.visible)
                     let state = self.discoveryNativeDiagnostics(web) + " running=\(app.isRunning)"
                     if state != launch.previousState {
                         launch.previousState = state
                         launch.observations.append("elapsed=\(ProcessInfo.processInfo.systemUptime - launch.started) \(state)")
                     }
-                    let ready = loopReady && nativeReady && compositorReady
+                    let ready = loopReady && nativeReady
                     if ready { print("SHADOW_LAUNCH_PRESENTATION " + self.discoveryNativeDiagnostics(web)) }
                     return ready
                 }
@@ -325,7 +340,9 @@ import XCTest
                 try await wait("hidden shadow discovery control", diagnostics: { await self.discoveryDiagnostics(web) }) {
                     _ = try ownedLoop.isReadyForInteraction()
                     guard !owner.isVisible else { return false }
-                    return try await self.js(web, "document.visibilityState", isolated: true) as? String == "hidden"
+                    let hidden = try await self.js(web, "document.visibilityState", isolated: true) as? String == "hidden"
+                    if hidden { print("SHADOW_WITHDRAWAL nativeVisible=false documentVisibility=hidden") }
+                    return hidden
                 }
             case .offscreen:
                 let screen = try XCTUnwrap(owner.screen)
