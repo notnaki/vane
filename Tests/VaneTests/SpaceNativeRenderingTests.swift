@@ -47,6 +47,7 @@ import XCTest
     }
 
     private func retireFixture(_ store: TabStore, window: NSWindow, monitor: SwipeMonitor) {
+        SpaceLandingDiagnostic.drain(name)
         monitor.remove()
         window.orderOut(nil)
         window.contentView = nil
@@ -63,6 +64,7 @@ import XCTest
     /// A closed, retained NSWindow still owns its content tree. Retire native
     /// travel and both visible and parked roots before deleting fixture profiles.
     private func retireProfileWindow(_ window: NSWindow) {
+        SpaceLandingDiagnostic.drain(name)
         let held = TabStore.all.filter { $0.window === window || $0.parkedIn === window }
         for store in held {
             store.spaceGesture.monitor.interruptLanding()
@@ -400,8 +402,12 @@ import XCTest
         // as an absence of compositor colour frames.
         // Empty/legacy sections have no native population declaration. The
         // coordinator still requires every declared native population to finish.
+        var targetAdmission = "not sampled"
+        defer { print("TINT_TARGET_ADMISSION \(targetAdmission)") }
         try await compatibilityWait {
             window.contentView?.layoutSubtreeIfNeeded()
+            let scope = SidebarNativeReadinessScope(store: store, spaceID: spaces[1].id)
+            targetAdmission = "current=\(store.currentSpaceID == spaces[1].id) tab=\(store.current == tab.id) suspended=\(tab.suspended) web=\(tab.existingWeb != nil) mounted=\(tab.existingWeb?.window === window) loading=\(String(describing: tab.existingWeb?.isLoading)) anchor=\(store.spaceGesture.sectionsView?.window === window) " + SidebarNativeReadinessCoordinator.shared.diagnosticSnapshot(scope)
             return tab.existingWeb?.window === window && tab.existingWeb?.isLoading == false
                 && SidebarNativeReadinessCoordinator.shared.isReady(
                     SidebarNativeReadinessScope(store: store, spaceID: spaces[1].id),
@@ -1059,8 +1065,12 @@ import XCTest
         let width = fixtureSidebarWidth(in: store)
         let sign = CGFloat(direction)
         try await Task.sleep(for: .milliseconds(150))
+        var reverseAdmission = "not sampled"
+        defer { print("REVERSE_INITIAL_ADMISSION \(reverseAdmission)") }
         try await compatibilityWait {
             window.contentView?.layoutSubtreeIfNeeded()
+            let scope = SidebarNativeReadinessScope(store: store, spaceID: origin.id)
+            reverseAdmission = "running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window) owner=\(store.window === window) visible=\(store.profileVisible) anchor=\(store.spaceGesture.sectionsView?.window === window) " + SidebarNativeReadinessCoordinator.shared.diagnosticSnapshot(scope)
             window.displayIfNeeded()
             if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
             if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }

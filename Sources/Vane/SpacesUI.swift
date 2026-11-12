@@ -2040,17 +2040,21 @@ private struct SpaceSwipe: ViewModifier {
                           slide.isActive, host.spaceSlide === slide,
                           store.currentSpaceID == self.landingFrom,
                           store.spaceGesture.neighbour?.id == destination.id else { return }
+                    SpaceLandingDiagnostic.record("queued.activate.begin target=\(destination.id)")
                     let window = store.window
                     _ = self.activate(destination, in: store)
+                    SpaceLandingDiagnostic.record("queued.activate.end target=\(destination.id)")
                     guard let window, host.window === window, host.spaceSlide === slide,
                           slide.isActive,
                           TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
                         slide.cancel()
                         return
                     }
+                    SpaceLandingDiagnostic.record("queued.layout.begin target=\(destination.id)")
                     host.layoutSubtreeIfNeeded()
                     window.displayIfNeeded()
                     CATransaction.flush()
+                    SpaceLandingDiagnostic.record("queued.layout.end target=\(destination.id)")
                     slide.start(duration: duration, completion: finish)
                 }
             } else {

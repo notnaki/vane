@@ -836,6 +836,8 @@ extension VaneWindow {
     /// and hidden: window, footer, traffic lights and input still belong to source.
     @discardableResult
     static func prepareHop(_ source: TabStore, to space: Space) -> TabStore? {
+        SpaceLandingDiagnostic.record("prepareHop.begin target=\(space.id)")
+        defer { SpaceLandingDiagnostic.record("prepareHop.end target=\(space.id)") }
         guard !source.isPrivate, !source.isLittle, !source.isParked,
               space.profileID != source.profileID, let window = source.window,
               window.delegate is WindowDelegate,
@@ -1010,6 +1012,14 @@ extension VaneWindow {
 /// during the resize also reflows the sidebar's retained controls unnecessarily.
 @MainActor final class BrowserHostingView<Content: View>: NSHostingView<Content> {
     private var applyingFrame = false
+
+    override func layout() {
+        let began = CACurrentMediaTime()
+        super.layout()
+        if CACurrentMediaTime() - began > 0.005 {
+            SpaceLandingDiagnostic.record("host.layout ms=\((CACurrentMediaTime() - began) * 1000) hidden=\(isHiddenOrHasHiddenAncestor) root=\(ObjectIdentifier(self))")
+        }
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         let previous = frame.size
@@ -1510,6 +1520,7 @@ private struct NativeSpacePreview: View {
     }
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
+        SpaceLandingDiagnostic.record("slide.start target=\(targetID) active=\(isActive) duration=\(duration)")
         guard isActive else { return }
         ownsSidebarVisibility = true
         self.completion = completion
@@ -1669,6 +1680,7 @@ private struct NativeSpacePreview: View {
     }
 
     func finish() {
+        SpaceLandingDiagnostic.record("slide.finish target=\(targetID) finished=\(finished)")
         guard !finished else { return }
         finished = true
         animationID = nil

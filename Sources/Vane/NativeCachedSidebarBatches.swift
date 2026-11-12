@@ -640,6 +640,7 @@ private final class NativeBatchMouseObservation {
     }
 
     func revokeInactiveOwners() {
+        SpaceLandingDiagnostic.record("warm.revoke scope=\(String(describing: activeScope?.spaceID)) mounted=\(mounted.count) cache=\(cache.count) visible=\(ownerVisible)")
         visitMayBeArchived = false
         for retained in inactiveOwners.values { SidebarWarmOwnerBudget.release(retained.budget) }
         inactiveOwners.removeAll()
@@ -686,6 +687,7 @@ private final class NativeBatchMouseObservation {
         readiness = nil
         sampledGeometryRevision = nil
         for entry in cache.values { entry.host.removeFromSuperview() }
+        SpaceLandingDiagnostic.record("warm.change scope=\(String(describing: activeScope?.spaceID))->\(String(describing: next?.spaceID)) surface=\(String(describing: activeScope?.surfaceID)) allowed=\(visitMayBeArchived) retain=\(mayRetain(activeScope)) mounted=\(mounted.count) cache=\(cache.count) visible=\(ownerVisible) store=\(supplyingStore?.profileVisible == true) pressure=\(SidebarWarmOwnerBudget.underPressure)")
         if visitMayBeArchived, let previous = activeScope, mayRetain(previous) {
             // Retain only mounted owners, never every graph visited while scrolling.
             // Five eight-row roots per Space, three inactive Spaces per section.
