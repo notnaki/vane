@@ -14,12 +14,16 @@ jobs:
         env:
           VANE_DIAGNOSTIC_SOURCE: ${{ runner.temp }}/folder-geometry.swift
           VANE_DIAGNOSTIC_OUTPUT: ${{ runner.temp }}/folder-geometry-output
+          VANE_DIAGNOSTIC_PACKAGE: ${{ runner.temp }}/folder-geometry-tests
         run: |
           sw_vers
           swift --version
           python3 scripts/folder-geometry-diagnostic.py
           swiftc -parse-as-library "$VANE_DIAGNOSTIC_SOURCE" -o "$RUNNER_TEMP/folder-geometry"
           "$RUNNER_TEMP/folder-geometry"
+          swift test --package-path "$VANE_DIAGNOSTIC_PACKAGE" --jobs 2 --filter FolderArtworkTests > "$VANE_DIAGNOSTIC_OUTPUT/preflight-1.log" 2>&1
+          swift test --package-path "$VANE_DIAGNOSTIC_PACKAGE" --skip-build --filter FolderArtworkTests > "$VANE_DIAGNOSTIC_OUTPUT/preflight-2.log" 2>&1
+          swift test --package-path "$VANE_DIAGNOSTIC_PACKAGE" --skip-build --filter FolderArtworkTests > "$VANE_DIAGNOSTIC_OUTPUT/preflight-3.log" 2>&1
       - uses: actions/upload-artifact@v6
         if: always()
         with:

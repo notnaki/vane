@@ -73,3 +73,14 @@ diagnostic = r'''
 }
 '''
 Path(os.environ['VANE_DIAGNOSTIC_SOURCE']).write_text(prefix + source + diagnostic)
+package = Path(os.environ['VANE_DIAGNOSTIC_PACKAGE'])
+(package / 'Sources/vane').mkdir(parents=True, exist_ok=True)
+(package / 'Tests/VaneTests').mkdir(parents=True, exist_ok=True)
+(package / 'Package.swift').write_text('''// swift-tools-version: 6.0
+import PackageDescription
+let package = Package(name: "FolderGeometryPreflight", platforms: [.macOS("26.0")],
+    targets: [.target(name: "vane"), .testTarget(name: "VaneTests", dependencies: ["vane"])])
+''')
+(package / 'Sources/vane/FolderIcon.swift').write_text(prefix + source)
+(package / 'Tests/VaneTests/FolderArtworkTests.swift').write_text(
+    Path('Tests/VaneTests/FolderArtworkTests.swift').read_text())
