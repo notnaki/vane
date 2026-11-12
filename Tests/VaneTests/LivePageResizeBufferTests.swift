@@ -279,6 +279,23 @@ import XCTest
         XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
     }
 
+    func testDestinationShowCancelsOldBufferBeforeAssigningItsGeometry() {
+        let f = Fixture(); defer { f.close() }
+        f.buffer.start()
+        let destination = WebHost(nil)
+        destination.setFrameSize(NSSize(width: 320, height: 250))
+        defer { destination.removePage() }
+        destination.show(f.web)
+        XCTAssertTrue(f.web.superview === destination)
+        XCTAssertEqual(f.web.frame, destination.bounds)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+        XCTAssertTrue(f.web.autoresizesSubviews)
+        XCTAssertFalse(f.buffer.isPreparing)
+        XCTAssertEqual(f.completions, 1)
+        nextPaint(&f.paints)()
+        XCTAssertEqual(f.web.frame, destination.bounds, "The old paint cannot replace destination geometry")
+    }
+
     func testIdleRootOrPageRemovalRestoresNativeSizingWithoutAnotherPaint() {
         for change in 0..<3 {
             let f = Fixture(); defer { f.close() }

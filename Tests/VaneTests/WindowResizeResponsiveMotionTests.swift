@@ -141,13 +141,6 @@ import XCTest
                 return app.isRunning && app.isActive && window.isKeyWindow
                     && window.occlusionState.contains(.visible) && web.window === window && web.bounds.width > 100
             }
-            try await admitResizeBaseline(web, window: window, sidebar: sidebar)
-            let presented = XCTestExpectation(description: "Initial responsive page presentation")
-            let callback: @convention(block) () -> Void = { presented.fulfill() }
-            _ = web.perform(NSSelectorFromString("_doAfterNextPresentationUpdate:"), with: callback)
-            guard await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed else {
-                throw NSError(domain: "ResizeMotionPresentationReadiness", code: 1)
-            }
             let owner = ResponsiveMotionOwner()
             let observations = [
                 NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { _ in
@@ -158,9 +151,22 @@ import XCTest
                 }
             ]
             defer { observations.forEach(NotificationCenter.default.removeObserver) }
+            try await admitResizeBaseline(web, window: window, sidebar: sidebar)
+            let presented = XCTestExpectation(description: "Initial responsive page presentation")
+            let callback: @convention(block) () -> Void = { presented.fulfill() }
+            _ = web.perform(NSSelectorFromString("_doAfterNextPresentationUpdate:"), with: callback)
+            guard await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed else {
+                throw NSError(domain: "ResizeMotionPresentationReadiness", code: 1)
+            }
             let sampler = ResponsiveMotionSampler(sidebar: sidebar)
             try await sampler.start(window)
             do {
+                guard !owner.interrupted, app.isActive, window.isKeyWindow,
+                      app.keyWindow === window, web.window === window,
+                      window.occlusionState.contains(.visible) else {
+                    throw NSError(domain: "ResizeMotionForegroundReadiness", code: 1)
+                }
+                let baselineWidth = try XCTUnwrap(sampler.samples.values.last).width
                 let began = CACurrentMediaTime()
                 let frameHeight = window.frame.height
                 print("RESPONSIVE_INITIAL frame=\(window.frame.size) content=\(window.contentView?.bounds.size ?? .zero) page=\(web.bounds.size)")
@@ -201,7 +207,7 @@ import XCTest
                 window.endPageResize()
                 try await sampler.stop()
                 let samples = sampler.samples.values.filter { $0.time >= began && $0.time <= ended }
-                var changes = [ResponsiveMotionSamples.Frame(time: began, width: sidebar ? (samples.first?.width ?? 0) : 900)]
+                var changes = [ResponsiveMotionSamples.Frame(time: began, width: baselineWidth)]
                 for sample in samples where abs(sample.width - changes.last!.width) > 0.5 { changes.append(sample) }
                 let pauses = zip(changes, changes.dropFirst()).map { ($1.time - $0.time) * 1000 }.sorted()
                 let steps = zip(changes, changes.dropFirst()).map { abs($1.width - $0.width) }

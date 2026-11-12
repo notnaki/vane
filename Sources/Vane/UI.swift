@@ -271,6 +271,8 @@ final class WebHost: NSView {
         if next.superview !== self {
             if let previousHost = next.superview {
                 Inspector.hideAttached(to: next, in: previousHost)
+                // Retire the previous host's resize owner before destination geometry.
+                next.removeFromSuperview()
             }
             next.frame = bounds
             next.autoresizingMask = [.width, .height]
@@ -323,6 +325,7 @@ final class WebHost: NSView {
     /// Put a floating call back without replacing the newer tab this host now shows.
     func restoreCallPage(_ page: WKWebView) {
         if web == nil || web === page { show(page); return }
+        if page.superview !== self { page.removeFromSuperview() }
         page.frame = bounds
         page.autoresizingMask = [.width, .height]
         page.isHidden = true
