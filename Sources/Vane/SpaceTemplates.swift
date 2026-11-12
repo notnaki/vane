@@ -333,3 +333,24 @@ enum WorkspaceError: LocalizedError {
         return space
     }
 }
+
+extension WorkspaceTemplates {
+    /// Merge one entity through the existing validator and atomic writer.
+    func mergeICloudTemplate(_ template: WorkspaceTemplate?, id: UUID, profile: UUID) throws {
+        try ICloudApplyContext.check()
+        var all = try load(profile: profile)
+        let locked = Set(all.first { $0.id == id }?.layout.protectedFolders.map(\.id) ?? [])
+        all.removeAll { $0.id == id }
+        if var template {
+            for folder in template.layout.pins.entries.compactMap(\.folder) where locked.contains(folder.id) {
+                template.layout.pins.edit(folder: folder.id) { $0.requiresAuthentication = true }
+            }
+            for folder in template.layout.today.entries.compactMap(\.folder) where locked.contains(folder.id) {
+                template.layout.today.edit(folder: folder.id) { $0.requiresAuthentication = true }
+            }
+            all.append(template)
+        }
+        try ICloudApplyContext.check()
+        try write(all, profile: profile)
+    }
+}

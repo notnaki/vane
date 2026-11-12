@@ -29,8 +29,8 @@ enum Passwords {
 
     static func key(host: String, account: String) -> String { PasswordOrigin(host: host).key(account: account) }
 
-    /// ponytail: local items only. Add kSecAttrSynchronizable once the app has a real
-    /// Developer ID, and they ride iCloud Keychain to the user's other machines.
+    /// Originals stay local. The opt-in iCloud bridge maintains a separate verified
+    /// synchronizable mirror; switching it off keeps these originals available.
     /// 'Vane' as an OSType. Stamped on save and required on every read, so Vane can only
     /// ever see credentials Vane created. Without it the query matches any app's item for
     /// that host — your `gh` login, Safari's, a password manager's — and macOS puts up a
@@ -75,6 +75,7 @@ enum Passwords {
             kSecAttrServer as String: origin.host,
             kSecAttrProtocol as String: origin.keychainProtocol,
             kSecAttrCreator as String: creator,
+            kSecAttrSynchronizable as String: false,
         ]
         if let account { q[kSecAttrAccount as String] = account }
         if let d = domain(profileID) { q[kSecAttrSecurityDomain as String] = d }
@@ -166,7 +167,7 @@ enum Passwords {
     }
 
     static func saveChecked(origin: PasswordOrigin, account: String, password: String,
-                            profileID: UUID, replacingExisting: Bool = true) throws {
+                            profileID: UUID, replacingExisting: Bool = true, admission: () throws -> Void = {}) throws {
         return try serviceLane.sync {
             defer { invalidate() }
             guard origin != IntegrationTokens.legacyOrigin else { throw Failure(status: errSecParam) }
@@ -175,15 +176,19 @@ enum Passwords {
             add[kSecValueData as String] = Data(password.utf8)
             add[kSecAttrLabel as String] = "\(origin.url.absoluteString) (Vane)"
             try checkServiceCancellation()
+            try admission()
             let status = SecItemAdd(add as CFDictionary, nil)
-            if status == errSecSuccess { return }
+            if status == errSecSuccess { secretDidChange(); return }
             guard status == errSecDuplicateItem, replacingExisting else { throw Failure(status: status) }
+            try admission()
             guard let existing = try referenceChecked(origin: origin, account: account, profileID: profileID)
             else { throw Failure(status: status) }
             try checkServiceCancellation()
+            try admission()
             let updated = SecItemUpdate([kSecValuePersistentRef as String: existing] as CFDictionary,
                                         [kSecValueData as String: Data(password.utf8)] as CFDictionary)
             guard updated == errSecSuccess else { throw Failure(status: updated) }
+            secretDidChange()
         }
     }
 
@@ -206,6 +211,7 @@ enum Passwords {
                 kSecAttrLabel as String: "\(origin.url.absoluteString) (Vane)",
             ] as CFDictionary)
             guard status == errSecSuccess else { throw Failure(status: status) }
+            secretDidChange()
             if origin == login.origin {
                 renameUse(origin: origin, from: login.account, to: account, profileID: profileID)
             } else { forgetUse(origin: login.origin, account: login.account, profileID: profileID) }
@@ -268,10 +274,18 @@ enum Passwords {
 
     static func passwordChecked(origin: PasswordOrigin, account: String, profileID: UUID,
         copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching) throws -> String? {
+        try passwordCheckedForSync(origin: origin, account: account, profileID: profileID, admission: {}, copyMatching: copyMatching)
+    }
+
+    static func passwordCheckedForSync(origin: PasswordOrigin, account: String, profileID: UUID,
+        admission: () throws -> Void,
+        copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching) throws -> String? {
         guard origin != IntegrationTokens.legacyOrigin else { return nil }
+        try admission()
         guard let ref = try referenceChecked(origin: origin, account: account, profileID: profileID, copyMatching: copyMatching)
         else { return nil }
         try checkServiceCancellation()
+        try admission()
         var out: CFTypeRef?
         let status = copyMatching([
             kSecClass as String: kSecClassInternetPassword,
@@ -328,6 +342,7 @@ enum Passwords {
             var q: [String: Any] = [
                 kSecClass as String: kSecClassInternetPassword,
                 kSecAttrCreator as String: creator,
+                kSecAttrSynchronizable as String: false,
                 kSecReturnAttributes as String: true,
                 kSecReturnPersistentRef as String: true,
                 kSecMatchLimit as String: kSecMatchLimitAll,
@@ -382,6 +397,7 @@ enum Passwords {
         var q: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
             kSecAttrCreator as String: creator,
+            kSecAttrSynchronizable as String: false,
             kSecReturnAttributes as String: true,
             kSecMatchLimit as String: kSecMatchLimitAll,
         ]
@@ -415,16 +431,73 @@ enum Passwords {
         catch { return false }
     }
 
-    static func deleteChecked(origin: PasswordOrigin, account: String, profileID: UUID) throws {
+    static func deleteChecked(origin: PasswordOrigin, account: String, profileID: UUID, admission: () throws -> Void = {}) throws {
         return try serviceLane.sync {
             defer { invalidate() }
+            try admission()
             guard let ref = try referenceChecked(origin: origin, account: account, profileID: profileID)
             else { throw Failure(status: errSecItemNotFound) }
             try checkServiceCancellation()
+            try admission()
             let status = SecItemDelete([kSecClass as String: kSecClassInternetPassword,
                                        kSecValuePersistentRef as String: ref] as CFDictionary)
             guard status == errSecSuccess else { throw Failure(status: status) }
             forgetUse(origin: origin, account: account, profileID: profileID)
+            secretDidChange()
+        }
+    }
+
+    private static func secretDidChange() {
+        NotificationCenter.default.post(name: .vaneSecretsChanged, object: nil)
+    }
+
+    /// All Vane-owned instance credentials, including opaque profile contexts imported
+    /// before the profile category is enabled. The incognito and integration namespaces
+    /// never enter this mirror. Read on the existing serial password lane.
+    static func iCloudSnapshot(admission: () throws -> Void = {}) throws -> [ICloudSecrets.Identity: Data] {
+        try serialized {
+            try admission()
+            var output: CFTypeRef?
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            let query: [String: Any] = [kSecClass as String: kSecClassInternetPassword,
+                kSecAttrCreator as String: creator, kSecAttrSynchronizable as String: false,
+                kSecReturnAttributes as String: true, kSecReturnPersistentRef as String: true,
+                kSecUseAuthenticationContext as String: context,
+                kSecMatchLimit as String: kSecMatchLimitAll]
+            let status = SecItemCopyMatching(query as CFDictionary, &output)
+            if status == errSecItemNotFound { return [:] }
+            guard status == errSecSuccess else { throw Failure(status: status) }
+            guard let items = output as? [[String: Any]], items.count <= 20_000 else { throw Failure(status: errSecDecode) }
+            let dataDir = Store.overrideDirectory
+            let base = dataDir.map { namespace(profileID: ProfileManager.defaultID, dataDir: $0)! } ?? "vane"
+            var result: [ICloudSecrets.Identity: Data] = [:]
+            for item in items {
+                let itemDomain = item[kSecAttrSecurityDomain as String] as? String
+                guard ownsInstance(dataDir: dataDir, itemDomain: itemDomain) else { continue }
+                let profileID: UUID
+                if owns(scope: namespace(profileID: ProfileManager.defaultID, dataDir: dataDir), itemDomain: itemDomain) {
+                    profileID = ProfileManager.defaultID
+                } else {
+                    guard let itemDomain, itemDomain.hasPrefix(base + "-"),
+                          let parsed = UUID(uuidString: String(itemDomain.dropFirst(base.count + 1))) else { continue }
+                    profileID = parsed
+                }
+                guard profileID != Profile.incognito.id else { continue }
+                guard let origin = PasswordOrigin(attributes: item),
+                      let ref = item[kSecValuePersistentRef as String] as? Data else { throw Failure(status: errSecDecode) }
+                guard origin != IntegrationTokens.legacyOrigin else { continue }
+                try admission()
+                var secret: CFTypeRef?
+                let read = SecItemCopyMatching([kSecClass as String: kSecClassInternetPassword,
+                    kSecValuePersistentRef as String: ref, kSecReturnData as String: true,
+                    kSecUseAuthenticationContext as String: context] as CFDictionary, &secret)
+                guard read == errSecSuccess else { throw Failure(status: read) }
+                guard let bytes = secret as? Data, String(data: bytes, encoding: .utf8) != nil else { throw Failure(status: errSecDecode) }
+                result[.password(profileID: profileID, origin: origin.url.absoluteString,
+                                 account: item[kSecAttrAccount as String] as? String ?? "")] = bytes
+            }
+            return result
         }
     }
 
@@ -767,6 +840,7 @@ enum Passwords {
         return serialized {
             defer { invalidate() }
             guard deleteOwnedInternetPasswords(profileID: nil, dataDir: dataDir, keychain: keychain) else { return }
+            secretDidChange()
             if !IntegrationTokens.deleteEverything(dataDir: dataDir, keychain: keychain) {
                 NSLog("[vane] Native integration credentials could not be erased")
             }
@@ -778,6 +852,7 @@ enum Passwords {
         return serialized {
             defer { invalidate() }
             guard deleteOwnedInternetPasswords(profileID: profileID, dataDir: dataDir, keychain: keychain) else { return }
+            secretDidChange()
             if !IntegrationTokens(profileID: profileID, dataDir: dataDir, keychain: keychain, lastUsed: [:]).deleteAll() {
                 NSLog("[vane] Profile integration credentials could not be erased")
             }

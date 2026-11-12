@@ -24,12 +24,20 @@ struct WindowResizeAnchor {
 
 /// The same column sizing used by LibraryNavigationLayout, captured by its root.
 /// Native resize preparation needs the next viewport before SwiftUI's next layout.
-struct PageResizeLayout {
+struct PageResizeLayout: Sendable {
     var sidebarWidth: CGFloat = 0
     var librarySection: LibrarySection?
     var spaces = 0
     var isPrivate = false
     var enabled = true
+
+    /// Chrome stops depending on raw window width once both navigation columns
+    /// fit. Keep publishing that stable value while the page continues resizing.
+    func chromeWidth(at width: CGFloat) -> CGFloat {
+        let panel = Library.panelWidth(section: librarySection ?? .archived, spaces: spaces,
+                                       private: isPrivate, available: .greatestFiniteMagnitude)
+        return min(width, max(SidebarWidth.maximum + 200, panel + Look.libraryMinPage))
+    }
 
     func leadingWidth(at width: CGFloat) -> CGFloat {
         guard let librarySection else {
@@ -60,7 +68,7 @@ extension EnvironmentValues {
     private let size: NSSize
     private let originalSize: NSSize
     private let originalParentSize: NSSize
-    private var preparedParentSize: NSSize
+    private var preparationParentSize: NSSize
     private let mask: NSView.AutoresizingMask
     private let autoSubviews: Bool
     private var installed = false
@@ -72,14 +80,14 @@ extension EnvironmentValues {
         parent = web.superview
         originalSize = web.frame.size
         originalParentSize = web.superview?.bounds.size ?? .zero
-        preparedParentSize = originalParentSize
+        preparationParentSize = originalParentSize
         mask = web.autoresizingMask
         autoSubviews = web.autoresizesSubviews
     }
 
     var stillOwned: Bool {
         web.superview === parent && parent != nil && !web.isHiddenOrHasHiddenAncestor
-            && parent?.bounds.size == preparedParentSize && web.frame.size == size
+            && parent?.bounds.size == preparationParentSize && web.frame.size == size
     }
 
     var parentReachedPreparedSize: Bool {
@@ -90,13 +98,20 @@ extension EnvironmentValues {
             && abs(parent.bounds.height - expected.height) < 0.001
     }
 
-    func suspendNativeSizing() { web.autoresizingMask = [] }
-
-    func capturePreparedParentSize() { preparedParentSize = parent?.bounds.size ?? originalParentSize }
-
-    func prepare() {
+    func freezeNativeGeometry() {
         web.autoresizingMask = []
         web.autoresizesSubviews = false
+    }
+
+    func admitClippedParent() -> Bool {
+        guard let parent, web.superview === parent, !web.isHiddenOrHasHiddenAncestor,
+              web.frame.size == originalSize else { return false }
+        preparationParentSize = parent.bounds.size
+        return true
+    }
+
+    func prepare() {
+        freezeNativeGeometry()
         prepareStyle()
         web.setFrameSize(size)
         web.prepareContent(in: NSRect(origin: .zero, size: size))
@@ -203,24 +218,12 @@ extension EnvironmentValues {
         // Growth needs the opposite order: paint the extra area before exposing it.
         guard frame.size != window.frame.size else { return false }
         let current = window.frame
-        let nextSize = NSSize(width: root.bounds.width + frame.width - current.width,
-                              height: root.bounds.height + frame.height - current.height)
+        let mixedAxes = (frame.width < current.width && frame.height > current.height)
+            || (frame.height < current.height && frame.width > current.width)
+        let nextSize = NSSize(width: root.bounds.width + frame.width - window.frame.width,
+                              height: root.bounds.height + frame.height - window.frame.height)
         let targets = Self.targets(in: root, nextSize: nextSize)
         guard !targets.isEmpty else { return false }
-        if (frame.width < current.width && frame.height > current.height)
-            || (frame.height < current.height && frame.width > current.width) {
-            // Clip the shrinking axis without sending WebKit an intermediate
-            // viewport. Two immediate sizes can coalesce behind WebKit's pending
-            // geometry reply, letting the first paint satisfy the final callback.
-            // A slow resize handler would also run twice under one paint deadline.
-            let clipped = NSRect(x: frame.width < current.width ? frame.minX : current.minX,
-                                 y: frame.height < current.height ? frame.minY : current.minY,
-                                 width: min(frame.width, current.width),
-                                 height: min(frame.height, current.height))
-            targets.forEach { $0.suspendNativeSizing() }
-            commit(clipped, display)
-            targets.forEach { $0.capturePreparedParentSize() }
-        }
         guard frame.width > window.frame.width || frame.height > window.frame.height else {
             for target in targets {
                 styledPages.add(target.web)
@@ -236,6 +239,27 @@ extension EnvironmentValues {
         remaining = targets.count
         generation = UUID()
         let token = generation
+        if mixedAxes {
+            // Keep the already painted WK viewport while the native window clips.
+            // An intermediate WK resize can satisfy the next-presentation callback
+            // before the requested final viewport has actually painted.
+            targets.forEach { $0.freezeNativeGeometry() }
+            let clipped = NSRect(x: frame.width < current.width ? frame.minX : current.minX,
+                                 y: frame.height < current.height ? frame.minY : current.minY,
+                                 width: min(frame.width, current.width),
+                                 height: min(frame.height, current.height))
+            commit(clipped, display)
+            CATransaction.flush()
+            guard generation == token, self.active != nil else { return true }
+            guard window.frame == clipped, window.contentView === root,
+                  targets.allSatisfy({ $0.web.window === window && $0.admitClippedParent() }) else {
+                cancel()
+                return true
+            }
+            startingFrame = window.frame
+
+        }
+
         // All views must receive their new viewport before requesting any paint.
         targets.forEach { $0.prepare() }
         for target in targets {
@@ -279,6 +303,7 @@ extension EnvironmentValues {
     }
 
     private func presented(_ token: UUID) {
+
         guard generation == token, let active else {
             // A fallback must not stay latched after WebKit becomes responsive.
             // Its old callback only readmits coordination; it never commits a frame.
@@ -316,6 +341,7 @@ extension EnvironmentValues {
             pages.forEach { $0.installNativeGeometry() }
             commit(active.frame, active.display)
         }
+
         pages.forEach { $0.restore(committed: true) }
         pages = []
         self.active = nil
@@ -350,6 +376,7 @@ extension EnvironmentValues {
     }
 
     private func timedOut(_ token: UUID) {
+
         guard generation == token, let active else { return }
         guard let window, window.frame == startingFrame, window.isVisible,
               window.contentView === root,

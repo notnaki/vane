@@ -424,14 +424,19 @@ private struct BlockRule: Codable, Equatable {
     /// Keep validation and the manifest write under the same source gate as disk imports.
     /// An import cannot commit a different source set between validation and acceptance.
     static func commitSubscriptions(_ subscriptionText: String, items: [FilterSubscription]) async throws {
+        let admission = ICloudApplyContext.admission
+        try admission?.check()
         await compileGate.acquire()
         defer { compileGate.release() }
+        try admission?.check()
         let text = try await Task.detached(priority: .utility) {
             try sources(includeSubscriptions: false) + items.map(\.text)
         }.value
         _ = try await compile(text)
+        try admission?.check()
         try await Task.detached(priority: .utility) {
-            try FilterSubscriptions.write(items, directory: FilterSubscriptions.directory)
+            try admission?.check()
+            try FilterSubscriptions.write(items, directory: FilterSubscriptions.directory, admission: admission)
         }.value
     }
 

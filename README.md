@@ -189,7 +189,9 @@ WebKit version, the website, and sometimes signing or Apple-managed capabilities
   files update automatically after opt-in linkage, can be checked manually, and
   retain their last-good rules on failure. Disk imports remain fixed snapshots;
   URL subscriptions also update automatically.
-- **Data does not sync between Macs.** Backup exports offer password encryption and exclude Keychain
+- **iCloud sync requires a provisioned build.** Sync starts off, with individual category switches.
+  Downloaded files stay local; cross-Mac propagation is unverified. See
+  [iCloud setup and boundaries](docs/ICLOUD-PROVISIONING.md). Backup exports offer password encryption and exclude Keychain
   secrets, cookies/site storage, downloaded files, and extension code/data.
   Supported Chromium imports offer a separate, opt-in cookie/session copy;
   unsupported encryption and device-bound credentials are excluded, and copied

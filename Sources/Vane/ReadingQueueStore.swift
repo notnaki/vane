@@ -259,7 +259,10 @@ private struct ReadingQueueScan: Sendable {
         }
     }
     func remove(_ id: UUID) async throws {
+        let admission = ICloudApplyContext.admission
+        try admission?.check()
         try await acquire(allowError: true); defer { release() }
+        try admission?.check()
         guard articles.contains(where: { $0.id == id }) || damaged.contains(where: { $0.id == id }) else { throw ReadingQueueFailure.missing }
         try ready()
         let folder = ReadingQueueFiles.articleURL(profileID: profileID, articleID: id, in: directory)
@@ -267,6 +270,7 @@ private struct ReadingQueueScan: Sendable {
         // Root/profile/staging parents are checked; rename and removal do not follow it.
         guard ReadingQueueFiles.exists(folder) else { throw ReadingQueueFailure.missing }
         try checkpoint("delete")
+        try admission?.check()
         let trash = staging.appendingPathComponent(UUID().uuidString.lowercased())
         try FileManager.default.moveItem(at: folder, to: trash)
         let removedBytes = sizes[id] ?? 0
@@ -294,5 +298,93 @@ private struct ReadingQueueScan: Sendable {
         try Task.checkCancellation(); guard !invalidated else { throw ReadingQueueFailure.staleCapture }
         return candidate
     }
+    /// Capture an entire admitted inventory while holding the queue's publication gate.
+    /// Damaged entries make the category fail rather than appear deleted remotely.
+    func iCloudSnapshot(includeOffline: Bool = true) async throws -> [ReadingQueueCandidate] {
+        try await acquire(); defer { release() }
+        guard damaged.isEmpty else { throw ReadingQueueFailure.storage("Repair damaged saved articles before syncing this category.") }
+        let saved = articles, directory = directory, profile = profileID
+        let result = try await Task.detached(priority: .utility) {
+            var result: [ReadingQueueCandidate] = [], total = 0
+            for article in saved {
+                try Task.checkCancellation()
+                if !includeOffline || article.hasOfflineContent == false {
+                    result.append(.init(article: article, images: [:])); continue
+                }
+                let candidate = try ReadingQueueFiles.load(ReadingQueueFiles.articleURL(profileID: profile, articleID: article.id, in: directory), profileID: profile, articleID: article.id)
+                total += try ReadingArticleCodec.encode(candidate.article).count + candidate.images.values.reduce(0) { $0 + $1.count }
+                guard total <= ICloudLimits.cycleBytes else { throw ICloudFailure.limitExceeded }
+                result.append(candidate)
+            }
+            return result
+        }.value
+        try Task.checkCancellation()
+        guard !invalidated else { throw ReadingQueueFailure.staleCapture }
+        return result
+    }
+
+    /// Atomically install a single validated article, preserving unrelated inventory.
+    /// The same acquisition/retirement barrier protects local capture and sync imports.
+    func mergeICloudArticle(_ id: UUID,
+                           update: @escaping @Sendable (ReadingQueueCandidate?) throws -> ReadingQueueCandidate?) async throws {
+        let admission = ICloudApplyContext.admission
+        try admission?.check()
+        try await acquire(); defer { release() }
+        try admission?.check()
+        try ready()
+        let target = ReadingQueueFiles.articleURL(profileID: profileID, articleID: id, in: directory)
+        let replacing = articles.contains { $0.id == id }, profile = profileID
+        // Read and change while retaining acquisition: a metadata import cannot replace
+        // a newer local offline save (or the reverse) across two separate gate entries.
+        let candidate = try await Task.detached(priority: .utility) {
+            let current = replacing ? try ReadingQueueFiles.load(target, profileID: profile, articleID: id) : nil
+            let candidate = try update(current)
+            if let candidate, let current, candidate.article == current.article, candidate.images == current.images { return nil as ReadingQueueCandidate? }
+            return candidate
+        }.value
+        try Task.checkCancellation(); try admission?.check()
+        guard let candidate else { return }
+        guard !invalidated, candidate.article.profileID == profileID, candidate.article.id == id else { throw ReadingQueueFailure.staleCapture }
+        guard replacing || !ReadingQueueFiles.exists(target) else { throw ReadingQueueFailure.storage("A damaged saved article must be repaired before syncing.") }
+        guard replacing || articles.count + damaged.count < ReadingArticleCodec.articleLimit else { throw ReadingQueueFailure.tooLarge }
+        let stage = staging.appendingPathComponent(UUID().uuidString.lowercased())
+        try ReadingQueueFiles.ensureDirectory(stage)
+        defer { try? FileManager.default.removeItem(at: stage) }
+        let bytes = try await Task.detached(priority: .utility) {
+            try ReadingArticleCodec.validate(candidate)
+            let record = try ReadingArticleCodec.encode(candidate.article)
+            try record.write(to: stage.appendingPathComponent("article.json"), options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stage.appendingPathComponent("article.json").path)
+            if !candidate.images.isEmpty {
+                let images = stage.appendingPathComponent("images")
+                try ReadingQueueFiles.ensureDirectory(images)
+                for (name, data) in candidate.images {
+                    let file = images.appendingPathComponent(name)
+                    try data.write(to: file, options: .atomic)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+                }
+            }
+            _ = try ReadingQueueFiles.load(stage, profileID: candidate.article.profileID, articleID: candidate.article.id)
+            return Int64(record.count + candidate.images.values.reduce(0) { $0 + $1.count })
+        }.value
+        try Task.checkCancellation()
+        guard !invalidated else { throw ReadingQueueFailure.staleCapture }
+        try ReadingQueueFiles.checkRoot(directory); try ReadingQueueFiles.check(profileURL, directory: true)
+        try ReadingQueueFiles.check(stage, directory: true)
+        try checkpoint("sync-publish")
+        try admission?.check()
+        if replacing {
+            try ReadingQueueFiles.check(target, directory: true)
+            _ = try FileManager.default.replaceItemAt(target, withItemAt: stage)
+        } else { try FileManager.default.moveItem(at: stage, to: target) }
+        let oldSize = sizes[candidate.article.id] ?? 0
+        Motion.list {
+            articles = Self.sorted(articles.filter { $0.id != candidate.article.id } + [candidate.article])
+            sizes[candidate.article.id] = bytes
+            usage.articleCount = articles.count + damaged.count
+            usage.publishedBytes += bytes - oldSize; revision &+= 1
+        }
+    }
+
     func bytes(for article: ReadingArticle) -> Int64 { sizes[article.id] ?? 0 }
 }

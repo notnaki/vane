@@ -8,6 +8,145 @@ import XCTest
         ThemeWash(colors: [ThemeColor(hex: hex)!], strength: 1, opacity: 1, grain: 0)
     }
 
+    private func withGrainWindow(_ body: @MainActor (ThemeWashSurface, ThemeWashSurface) async throws -> Void) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do {
+            let source = ThemeWashSurface(), copy = ThemeWashSurface()
+            let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 240, height: 200),
+                                  styleMask: .titled, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.animationBehavior = .none
+            // The retained wallpaper and its copy occupy sibling native hosts
+            // in the application; a copy is not a child of its own source.
+            let root = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 200))
+            source.frame = root.bounds
+            copy.frame = root.bounds
+            root.addSubview(source)
+            root.addSubview(copy)
+            window.contentView = root
+            defer {
+                source.finishAnimations()
+                window.orderOut(nil); window.contentView = nil; window.close()
+            }
+            try await compatibilityWait {
+                if !app.isActive { app.activate(ignoringOtherApps: true) }
+                if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+                source.layoutSubtreeIfNeeded(); window.displayIfNeeded(); CATransaction.flush()
+                return app.isRunning && app.isActive && window.isKeyWindow && app.keyWindow === window
+                    && window.occlusionState.contains(.visible) && source.layer?.presentation() != nil
+            }
+            try await body(source, copy)
+        } catch { failure = error }
+        do { try await loop.close() } catch {
+            if failure == nil { failure = error } else { XCTFail("Grain fixture cleanup failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    func testOrdinaryGrainFadeHidesSettledSourceAndCopies() async throws {
+        try await withGrainWindow { source, copy in
+            let clear = self.wash("#000000")
+            let textured = ThemeWash(colors: clear.colors, strength: 1, opacity: 1, grain: 1)
+            source.apply(textured, duration: 0)
+            source.addCopy(copy)
+            let grain = try XCTUnwrap(source.subviews.first)
+            let copiedGrain = try XCTUnwrap(copy.subviews.first)
+            source.apply(clear, duration: 0.08)
+            XCTAssertFalse(grain.isHidden, "The zero endpoint must not cut off the visible fade")
+            XCTAssertFalse(copiedGrain.isHidden)
+            let joining = ThemeWashSurface()
+            joining.frame = source.bounds
+            source.superview?.addSubview(joining)
+            source.addCopy(joining)
+            let joiningGrain = try XCTUnwrap(joining.subviews.first)
+            XCTAssertFalse(joiningGrain.isHidden)
+            CATransaction.flush()
+            try await compatibilityWait {
+                source.window?.displayIfNeeded(); CATransaction.flush()
+                return grain.layer?.animation(forKey: "opacity") == nil
+                    && copiedGrain.layer?.animation(forKey: "opacity") == nil
+                    && joiningGrain.layer?.animation(forKey: "opacity") == nil
+                    && grain.isHidden && copiedGrain.isHidden && joiningGrain.isHidden
+            }
+            XCTAssertTrue(grain.isHidden, "A completed ordinary fade must stop invisible backing-store rasterization")
+            XCTAssertTrue(copiedGrain.isHidden)
+            XCTAssertTrue(joiningGrain.isHidden, "A copy joining an ordinary fade needs its own completion cleanup")
+            source.apply(clear, duration: 0)
+            XCTAssertTrue(grain.isHidden, "An identical update must retain the settled hidden state")
+        }
+    }
+
+    func testInterruptedOrdinaryGrainCompletionCannotHideNewOwnersVisibleFade() async throws {
+        try await withGrainWindow { source, copy in
+            let clear = self.wash("#000000")
+            let textured = ThemeWash(colors: clear.colors, strength: 1, opacity: 1, grain: 1)
+            source.apply(textured, duration: 0)
+            source.addCopy(copy)
+            let grain = try XCTUnwrap(copy.subviews.first)
+            source.apply(clear, duration: 0.4)
+            let oldAnimation = try XCTUnwrap(grain.layer?.animation(forKey: "opacity"))
+            let oldCompletion = try XCTUnwrap(oldAnimation.delegate, "Ordinary fades need owned completion cleanup")
+            let replacement = ThemeWashSurface()
+            replacement.apply(textured, duration: 0)
+            replacement.addCopy(copy)
+            let native = CABasicAnimation(keyPath: "opacity")
+            native.duration = 0.4
+            let token = replacement.animateNative(from: textured, to: clear, animation: native)
+            oldCompletion.animationDidStop?(oldAnimation, finished: true)
+            CATransaction.flush()
+            try await compatibilityWait {
+                guard let opacity = grain.layer?.presentation()?.opacity else { return false }
+                return opacity > 0 && opacity < Float(Look.grainMax)
+            }
+            XCTAssertFalse(grain.isHidden, "The former owner's completion must not hide a new native fade to zero")
+            XCTAssertNotNil(grain.layer?.animation(forKey: "opacity"))
+            replacement.finishNative(token: token, wash: clear)
+            XCTAssertTrue(grain.isHidden)
+        }
+    }
+
+    func testInvisibleGrainDoesNotRasterizeDuringResizeAndFadesRemainVisible() throws {
+        let source = ThemeWashSurface(), copy = ThemeWashSurface()
+        let clear = wash("#000000")
+        let textured = ThemeWash(colors: [ThemeColor(hex: "#000000")!], strength: 1,
+                                 opacity: 1, grain: 1)
+        source.apply(clear, duration: 0)
+        source.addCopy(copy)
+        let sourceGrain = try XCTUnwrap(source.subviews.first)
+        let copyGrain = try XCTUnwrap(copy.subviews.first)
+        XCTAssertTrue(sourceGrain.isHidden, "An invisible full-window texture must not allocate a resize backing store")
+        XCTAssertTrue(copyGrain.isHidden)
+        source.frame.size = NSSize(width: 940, height: 620)
+        source.layoutSubtreeIfNeeded()
+        XCTAssertTrue(sourceGrain.isHidden)
+
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.duration = 0.4
+        let fadeIn = source.animateNative(from: clear, to: textured, animation: animation)
+        XCTAssertFalse(sourceGrain.isHidden, "Grain must paint before its zero-to-visible fade")
+        XCTAssertFalse(copyGrain.isHidden)
+        XCTAssertNotNil(sourceGrain.layer?.animation(forKey: "opacity"))
+        source.finishNative(token: fadeIn, wash: textured)
+        XCTAssertFalse(sourceGrain.isHidden)
+
+        let fadeOut = source.animateNative(from: textured, to: clear, animation: animation)
+        XCTAssertFalse(sourceGrain.isHidden, "A zero model endpoint must not cut off visible presentation grain")
+        XCTAssertFalse(copyGrain.isHidden)
+        let joining = ThemeWashSurface()
+        source.addCopy(joining)
+        XCTAssertFalse(try XCTUnwrap(joining.subviews.first).isHidden,
+                       "A copy joining the fade must retain the source's visible presentation")
+        source.finishNative(token: fadeOut, wash: clear)
+        for surface in [source, copy, joining] {
+            XCTAssertTrue(try XCTUnwrap(surface.subviews.first).isHidden)
+        }
+    }
+
     func testFloatingCopyKeepsTheWindowWashAndNativeTransitions() throws {
         let source = ThemeWashSurface(), floating = ThemeWashSurface()
         source.apply(wash("#FF0000"), duration: 0)

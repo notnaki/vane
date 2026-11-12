@@ -253,6 +253,7 @@ struct SidebarHandle: View {
     @State private var start: CGFloat?
     @State private var hovered = false
     @State private var detent = SidebarResizeDetent()
+    @GestureState private var dragActive = false
 
     /// Wide enough to hit without aiming, narrow enough that the first sidebar row's close
     /// button is still clickable.
@@ -272,11 +273,28 @@ struct SidebarHandle: View {
             .onHover { inside in
                 hovered = inside
             }
+            .onDisappear {
+                (store.window as? VaneWindow)?.cancelLiveSidebarResize()
+            }
+            .onChange(of: dragActive) { wasActive, active in
+                guard wasActive, !active else { return }
+                // GestureState also resets on cancellation, when onEnded is absent.
+                // Give a normal onEnded its turn before discarding release work.
+                RunLoop.main.perform(inModes: [.common]) {
+                    MainActor.assumeIsolated {
+                        guard !dragActive, start != nil else { return }
+                        start = nil
+                        detent = SidebarResizeDetent()
+                        (store.window as? VaneWindow)?.cancelLiveSidebarResize()
+                    }
+                }
+            }
             // macOS's own column-resize pointer, so the affordance is the system's rather
             // than a cursor we drew.
             .pointerStyle(.columnResize)
             .gesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .updating($dragActive) { _, active, _ in active = true }
                     .onChanged { value in
                         // The live pointer, not `translation`. The handle sits at an offset
                         // that the drag itself changes, so the view moves out from under the
@@ -289,22 +307,30 @@ struct SidebarHandle: View {
                         if start == nil {
                             detent = SidebarResizeDetent()
                             start = grab
+                            (store.window as? VaneWindow)?.beginSidebarResize(store)
                         }
-                        sidebar.setLiveWidth(detent.width(for: value.location.x + grab),
-                                             available: store.window?.contentView?.bounds.width)
+                        let next = detent.width(for: value.location.x + grab)
+                        if (store.window as? VaneWindow)?.updateSidebarResize(next) != true {
+                            sidebar.setLiveWidth(next, available: store.window?.contentView?.bounds.width)
+                        }
                     }
                     .onEnded { value in
                         let proposed = value.location.x + (start ?? 0)
-                        sidebar.setLiveWidth(detent.width(for: proposed),
-                                             available: store.window?.contentView?.bounds.width)
+                        let next = detent.width(for: proposed)
                         start = nil
                         detent = SidebarResizeDetent()
-                        sidebar.save()
-                        if SidebarWidth.shouldCollapse(proposed) {
-                            if store.sidebarShown { store.toggleSidebar() }
-                            axAnnounce("Sidebar hidden.")
-                        } else {
-                            axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")
+                        let finished: @MainActor () -> Void = {
+                            sidebar.save()
+                            if SidebarWidth.shouldCollapse(proposed) {
+                                if store.sidebarShown { store.toggleSidebar() }
+                                axAnnounce("Sidebar hidden.")
+                            } else {
+                                axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")
+                            }
+                        }
+                        if (store.window as? VaneWindow)?.endSidebarResize(next, completion: finished) != true {
+                            sidebar.setLiveWidth(next, available: store.window?.contentView?.bounds.width)
+                            finished()
                         }
                     }
             )
@@ -315,6 +341,7 @@ struct SidebarHandle: View {
             // needs a point of movement, and a double-click has none.
             .simultaneousGesture(
                 TapGesture(count: 2).onEnded {
+                    _ = (store.window as? VaneWindow)?.cancelSidebarResize()
                     sidebar.reset()
                     axAnnounce("Sidebar width reset.")
                 }
@@ -328,10 +355,16 @@ struct SidebarHandle: View {
             .accessibilityAddTraits(.isButton)
             .accessibilityAction(named: "Widen Sidebar") { step(20) }
             .accessibilityAction(named: "Narrow Sidebar") { step(-20) }
-            .accessibilityAction(named: "Reset Sidebar Width") { sidebar.reset() }
+            .accessibilityAction(named: "Reset Sidebar Width") {
+                _ = (store.window as? VaneWindow)?.cancelSidebarResize()
+                sidebar.reset()
+            }
+            // The handle observes width already; position it without invalidating the browser.
+            .offset(x: presentedWidth - Self.hitTestWidth)
     }
 
     private func step(_ delta: CGFloat) {
+        _ = (store.window as? VaneWindow)?.cancelSidebarResize()
         let proposed = presentedWidth + delta
         let next = store.window?.contentView.map {
             SidebarWidth.fitting(proposed, in: $0.bounds.width)

@@ -954,6 +954,9 @@ struct LibraryHead<Filter: View, Actions: View>: View {
     private var hasFilters: Bool { filtering || (!store.isPrivate && !selectedProfiles.isEmpty) }
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.libraryHead")
+        #endif
         VStack(alignment: .leading, spacing: Look.sectionGap) {
             if expanded {
                 HStack {

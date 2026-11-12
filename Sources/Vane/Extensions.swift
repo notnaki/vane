@@ -36,6 +36,53 @@ import WebKit
     static var shared: ExtensionHost { host(for: ProfileManager.shared.active.id) }
 
     private static var hosts: [UUID: ExtensionHost] = [:]
+    private var iCloudStorageLeases: [String: [ICloudExtensionStorageLease]] = [:]
+
+    /// Inspect existing active, locally approved owners only. Sync never constructs a
+    /// host, enables an installation, or copies a runtime permission onto this Mac.
+    static func existingICloudStorageLease(for installation: ICloudExtensionInstallation) throws -> ICloudExtensionStorageLease? {
+        try ICloudApplyContext.check()
+        let ns = installation.namespace
+        try ns.validate()
+        guard ProfileManager.shared.profiles.contains(where: { $0.id == ns.profileID }),
+              let host = hosts[ns.profileID], !host.invalidated, host.metadataFailure == nil,
+              let entry = host.records.first(where: {
+                  $0.value.identity.lowercased() == installation.installationID.lowercased()
+                      && ICloudExtensionIdentity.portableID($0.value, profile: ns.profileID) == ns.extensionID
+              }), !host.disabled.contains(entry.key), host.operations[entry.key] == nil, host.restoring[entry.key] == nil,
+              let context = host.loaded.first(where: { $0.path == entry.key })?.context,
+              context.isLoaded, context.webExtensionController === host.controller,
+              context.hasPermission(WKWebExtension.Permission(rawValue: "storage")),
+              ExtensionConsent.saved(for: URL(fileURLWithPath: entry.key), profileID: ns.profileID) == entry.value.required else { return nil }
+        let generation = host.installationGenerations()[entry.key]
+        let runtimeID = context.uniqueIdentifier, origin = context.baseURL
+        let lease = ICloudExtensionStorageLease(namespace: ns, installationID: installation.installationID,
+            context: context, check: { [weak host, weak context] in
+                guard let host, let context, !host.invalidated, host.metadataFailure == nil,
+                      ProfileManager.shared.profiles.contains(where: { $0.id == ns.profileID }),
+                      host.installationGenerations()[entry.key] == generation,
+                      host.operations[entry.key] == nil, host.restoring[entry.key] == nil,
+                      !host.disabled.contains(entry.key),
+                      host.loaded.first(where: { $0.path == entry.key })?.context === context,
+                      context.webExtensionController === host.controller,
+                      context.uniqueIdentifier == runtimeID, context.baseURL == origin,
+                      ExtensionConsent.saved(for: URL(fileURLWithPath: entry.key), profileID: ns.profileID) == entry.value.required else {
+                    throw CancellationError()
+                }
+            })
+        host.iCloudStorageLeases[entry.key, default: []].removeAll(where: \.isRevoked)
+        host.iCloudStorageLeases[entry.key, default: []].append(lease)
+        return lease
+    }
+
+    private func revokeICloudStorageLeases(_ path: String? = nil) {
+        let paths = path.map { [$0] } ?? Array(iCloudStorageLeases.keys)
+        for key in paths {
+            let leases = iCloudStorageLeases.removeValue(forKey: key) ?? []
+            for lease in leases { lease.revoke() }
+        }
+        ICloudExtensionStorageAdapter.wake()
+    }
 
     private struct DataPurgeKey: Hashable {
         let profileID: UUID
@@ -63,6 +110,7 @@ import WebKit
         for bridge in host.filterBridges.values { bridge.invalidate() }
         host.filterBridges.removeAll()
         host.backgroundViews.removeAllObjects()
+        host.revokeICloudStorageLeases()
         host.nativeMessagingDenial.cancelAll()
         host.workerIdentityUpdate?.cancel()
         host.storeUpdateTimer?.invalidate()
@@ -80,6 +128,34 @@ import WebKit
         host.loaded.removeAll()
         SiteChanges.shared.bump()
         hosts[profileID] = nil
+    }
+
+    /// Cloud transfers publish only inactive revisions. Existing hosts stop the old
+    /// runtime before any accepted bytes or approval metadata can change.
+    static func prepareICloudImport(profileID: UUID, identity: String) throws {
+        guard profileID != Profile.incognito.id, let host = hosts[profileID] else { return }
+        guard let entry = host.records.first(where: { $0.value.identity.lowercased() == identity.lowercased() }) else { return }
+        host.cancelOperation(entry.key)
+        try host.deactivate(entry.key)
+        host.disabled.insert(entry.key)
+        host.saveManagement()
+    }
+
+    /// Do not create a host here: import must never start an extension or initialize
+    /// WebKit for an otherwise unopened profile. Normal startup observes disabled keys.
+    static func reloadICloudInstallations(profileID: UUID) throws {
+        guard profileID != Profile.incognito.id, let host = hosts[profileID] else { return }
+        let updated = try host.codeStore.records()
+        for (path, _) in host.records where updated[path] == nil {
+            host.folders[path] = nil; host.failures[path] = nil
+        }
+        host.records = updated
+        for (path, record) in updated { host.folders[path] = record.name }
+        host.disabled = Set(UserDefaults.vane.stringArray(forKey: ProfileManager.defaultsKey(Self.disabledKey, profileID)) ?? [])
+        host.metadataFailure = nil
+        host.saveManagement()
+        rebuild()
+        SiteChanges.shared.bump()
     }
 
     /// Normal launches retain the controller identifiers shipped before data-directory
@@ -605,6 +681,7 @@ import WebKit
     }
 
     private func unloadContext(_ context: WKWebExtensionContext) throws {
+        if let path = loaded.first(where: { $0.context === context })?.path { revokeICloudStorageLeases(path) }
         nativeMessagingDenial.cancel(contextID: ObjectIdentifier(context))
         try controller.unload(context)
         filterBridges.removeValue(forKey: ObjectIdentifier(context))?.invalidate()
@@ -612,6 +689,7 @@ import WebKit
     }
 
     private func deactivate(_ path: String) throws {
+        revokeICloudStorageLeases(path)
         if let context = candidates[path] {
             if context.isLoaded { try unloadContext(context) }
             closePages(for: context)
@@ -796,6 +874,8 @@ import WebKit
                 required: requested,
                 optional: ExtensionAccess(permissions: Set(ext.optionalPermissions.map(\.rawValue)), sites: Set(ext.optionalPermissionMatchPatterns.map(\.string))),
                 compatibility: issues, integratedCapabilities: requested.permissions.intersection(Self.integratedCapabilities), store: storeSource)
+            record.iCloudIdentity = oldRecord?.iCloudIdentity
+            record.iCloudStoreID = oldRecord?.iCloudStoreID
             record.nativeMessagingErrorCompatibilityVersion = ExtensionNativeMessagingErrors.retainedVersion(from: oldRecord,
                 for: record.required, optional: record.optional)
             if enable {
@@ -1012,6 +1092,8 @@ import WebKit
                 version: ext.version ?? "Unknown", summary: ext.displayDescription ?? "", required: requested,
                 optional: ExtensionAccess(permissions: Set(ext.optionalPermissions.map(\.rawValue)), sites: Set(ext.optionalPermissionMatchPatterns.map(\.string))),
                 compatibility: issues, integratedCapabilities: requested.permissions.intersection(Self.integratedCapabilities), safari: candidate.source)
+            record.iCloudIdentity = oldRecord?.iCloudIdentity
+            record.iCloudStoreID = oldRecord?.iCloudStoreID
             record.nativeMessagingErrorCompatibilityVersion = ExtensionNativeMessagingErrors.retainedVersion(from: oldRecord,
                 for: record.required, optional: record.optional)
             if enable {
@@ -1099,11 +1181,13 @@ import WebKit
     }
 
     private func publish(_ context: WKWebExtensionContext, at path: String) {
+        revokeICloudStorageLeases(path)
         loaded.append((path, context))
         if ExtensionFilterBridge.recognizes(context.webExtension) {
             filterBridges[ObjectIdentifier(context)] = ExtensionFilterBridge(profileID: profileID, context: context,
                 background: backgroundViews.object(forKey: context), changed: { [weak self] in self?.objectWillChange.send() })
         }
+        ICloudExtensionStorageAdapter.wake()
         scheduleWorkerIdentityUpdate()
     }
 

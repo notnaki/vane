@@ -16,6 +16,27 @@ case "${2:-}" in
   *) echo "Unknown packaging option: $2" >&2; exit 1 ;;
 esac
 
+# Restricted iCloud grants are opt-in build inputs. Never attach invented grants
+# to the ordinary ad-hoc app: CloudKit can terminate such a process on first use.
+ENT="$(pwd)/Vane.entitlements"
+ICLOUD_BUILD_INPUTS=""
+if [ -n "${VANE_ICLOUD_PROFILE:-}" ]; then
+  [ -n "${SIGN_ID:-}" ] && [ "$SIGN_ID" != - ] \
+    || { echo 'iCloud provisioning requires a real SIGN_ID' >&2; exit 1; }
+  [ -n "${VANE_ICLOUD_CONTAINER:-}" ] \
+    || { echo 'VANE_ICLOUD_CONTAINER must name the assigned CloudKit container' >&2; exit 1; }
+  [ -f "$VANE_ICLOUD_PROFILE" ] \
+    || { echo 'VANE_ICLOUD_PROFILE does not exist' >&2; exit 1; }
+  ICLOUD_BUILD_INPUTS="$(mktemp -d)"
+  trap 'rm -rf "$ICLOUD_BUILD_INPUTS"' EXIT
+  security cms -D -i "$VANE_ICLOUD_PROFILE" -o "$ICLOUD_BUILD_INPUTS/profile.plist"
+  python3 scripts/icloud-entitlements.py "$ICLOUD_BUILD_INPUTS/profile.plist" "$ENT" \
+    "$ICLOUD_BUILD_INPUTS/Vane.entitlements" "$VANE_ICLOUD_CONTAINER" "$SIGN_ID"
+  ENT="$ICLOUD_BUILD_INPUTS/Vane.entitlements"
+elif [ -n "${VANE_ICLOUD_CONTAINER:-}" ]; then
+  echo 'VANE_ICLOUD_CONTAINER requires VANE_ICLOUD_PROFILE' >&2; exit 1
+fi
+
 VERSION="${VANE_VERSION:-}"
 [ -z "$VERSION" ] && VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
 case "$VERSION" in [0-9]*) ;; *) VERSION="0.1.0" ;; esac
@@ -85,6 +106,9 @@ fi
 echo ">> assembling ${APP}..."
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+if [ -n "$ICLOUD_BUILD_INPUTS" ]; then
+  cp "$VANE_ICLOUD_PROFILE" "$APP/Contents/embedded.provisionprofile"
+fi
 cp "$BIN" "$APP/Contents/MacOS/Vane"
 cp -R ".build/$CONF/Vane_vane.bundle" "$APP/Contents/Resources/"
 INSTALLER="$APP/Contents/XPCServices/io.github.notnaki.vane.UpdateInstaller.xpc"
@@ -177,7 +201,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-ENT="$(dirname "$0")/Vane.entitlements"
 # The entitlements carry com.apple.security.app-sandbox, so signing is no longer cosmetic:
 # an unsigned bundle is an *unsandboxed* bundle, and it would write to a different data
 # directory than the sandboxed one. Fail loudly rather than shipping the wrong app.

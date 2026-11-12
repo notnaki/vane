@@ -13,10 +13,11 @@ extension EnvironmentValues {
     }
 }
 
-/// CA resolves a zero beginTime at commit. Its start callback provides a remaining-
-/// duration estimate for hover retargets without counting pre-commit layout time.
+/// Explicit media-clock starts stay shared with native travel. A zero start uses
+/// CA's commit callback without counting layout time before that commit.
 @MainActor private final class SpaceFooterAnimationClock: NSObject, @preconcurrency CAAnimationDelegate {
     private(set) var beganAt: CFTimeInterval?
+    init(beganAt: CFTimeInterval? = nil) { self.beganAt = beganAt; super.init() }
     func animationDidStart(_ anim: CAAnimation) {
         if beganAt == nil { beganAt = CACurrentMediaTime() }
     }
@@ -28,13 +29,18 @@ extension EnvironmentValues {
     final class Marker {
         let layer = CALayer()
         let symbol = CALayer()
+        let symbolInk = CALayer()
         let dot = CAShapeLayer()
         weak var view: NativeSpaceFooterMarkerView?
         var layout = SpaceStripLayout(count: 0, availableWidth: 0)
         var hovered = false
         var reduced = false
         var artwork: String?
-        init() { layer.addSublayer(dot); layer.addSublayer(symbol) }
+        init() {
+            layer.addSublayer(dot)
+            layer.addSublayer(symbol)
+            symbol.addSublayer(symbolInk)
+        }
     }
 
     private weak var owner: TabStore?
@@ -125,21 +131,28 @@ extension EnvironmentValues {
             view.marker = marker
             view.layer?.addSublayer(marker.layer)
         }
-        let scale = view.window?.backingScaleFactor ?? 2
-        let artwork = "\(icon):\(layout.iconSize):\(scheme):\(scale)"
+        let rasterScale = view.window?.backingScaleFactor ?? 2
+        // At 1x, baking the ink's alpha into antialiased pixels quantizes it
+        // before emphasis is composited. Apply ink strength in the layer instead
+        // so small, scaled glyphs keep the legacy artwork's coverage.
+        let compositesInk = rasterScale == 1
+        let artwork = "\(icon):\(layout.iconSize):\(scheme):\(rasterScale)"
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if marker.artwork != artwork {
             let renderer = ImageRenderer(content: SpaceIcon(icon, filledCloud: true)
-                .font(.system(size: layout.iconSize)).foregroundStyle(Look.inkPrimary)
+                .font(.system(size: layout.iconSize))
+                .foregroundStyle(compositesInk ? Look.ink(1) : Look.inkPrimary)
                 // SF Symbols can overhang their point-size square (notably cloud).
                 // Match the unclipped SwiftUI glyph inside the larger button target.
                 .frame(width: layout.iconSize * 2, height: layout.iconSize * 2)
                 .environment(\.colorScheme, scheme))
-            renderer.scale = scale
+            renderer.scale = rasterScale
             let appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
-            appearance?.performAsCurrentDrawingAppearance { marker.symbol.contents = renderer.cgImage }
-            marker.symbol.contentsScale = scale
+            appearance?.performAsCurrentDrawingAppearance { marker.symbolInk.contents = renderer.cgImage }
+            marker.symbolInk.opacity = compositesInk ? 0.8 : 1
+            marker.symbolInk.contentsScale = rasterScale
+            marker.symbol.contentsScale = rasterScale
             marker.artwork = artwork
         }
         let appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
@@ -199,6 +212,7 @@ extension EnvironmentValues {
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
         marker.symbol.bounds = CGRect(x: 0, y: 0, width: marker.layout.iconSize * 2, height: marker.layout.iconSize * 2)
         marker.symbol.position = center
+        marker.symbolInk.frame = marker.symbol.bounds
         marker.dot.bounds = CGRect(x: 0, y: 0, width: marker.layout.dotSize, height: marker.layout.dotSize)
         marker.dot.position = center
         marker.dot.path = CGPath(ellipseIn: marker.dot.bounds, transform: nil)
@@ -243,11 +257,11 @@ extension EnvironmentValues {
         progress = (origin, target, to)
         progressStart = from
         let clock = timing.copy() as! CABasicAnimation
-        // Like the sidebar position animation, start when CA commits the tree.
-        // An absolute wall-clock start can expire during expensive host layout.
-        clock.beginTime = 0
+        // Nonzero starts use the caller's shared media clock. Zero retains CA's
+        // commit-time behavior for independent selection/legacy callers.
         progressTiming = reduced || Motion.spaceReduced ? nil : clock
-        progressClock = progressTiming == nil ? nil : SpaceFooterAnimationClock()
+        progressClock = progressTiming == nil ? nil : SpaceFooterAnimationClock(
+            beganAt: clock.beginTime == 0 ? nil : clock.beginTime)
         for (id, marker) in markers {
             animateProgress(marker, id: id, from: weight(id, fraction: from), timing: clock)
         }
@@ -299,7 +313,7 @@ extension EnvironmentValues {
             animation.keyPath = path
             animation.fromValue = from
             animation.toValue = to
-            animation.beginTime = 0
+            animation.beginTime = timing.beginTime == 0 ? 0 : layer.convertTime(timing.beginTime, from: nil)
             if timing === progressTiming { animation.delegate = progressClock }
             setFrameRate(animation, for: marker)
             layer.add(animation, forKey: key)

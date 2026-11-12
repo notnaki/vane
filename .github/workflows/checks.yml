@@ -259,6 +259,8 @@ jobs:
             ${{ runner.temp }}/vane-native-tests.txt
             ${{ runner.temp }}/vane-native-shard.json
             ${{ runner.temp }}/vane-native-shard.filter
+            /tmp/vane-resize-*.png
+            /tmp/vane-resize-*.json
           if-no-files-found: ignore
           retention-days: 7
 

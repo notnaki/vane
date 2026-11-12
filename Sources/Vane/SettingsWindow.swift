@@ -217,6 +217,8 @@ enum LinkTarget {
               pane: { _ in AnyView(ShortcutsPane()) }),
         .init(id: "icon", title: "Icon", icon: "v.square",
               pane: { _ in AnyView(IconPane()) }),
+        .init(id: "icloud", title: "iCloud", icon: "icloud",
+              pane: { _ in AnyView(ICloudSettings(controller: .shared)) }),
         .init(id: "advanced", title: "Advanced", icon: "slider.horizontal.3",
               pane: { AnyView(AdvancedPane(selection: $0)) }),
         .init(id: "animations", title: "UI Animations", icon: "waveform.path", parent: "advanced",

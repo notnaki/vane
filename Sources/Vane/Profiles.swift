@@ -485,6 +485,7 @@ struct Space: Identifiable, Codable, Equatable {
     let sandboxed: Bool
 
     @Published private(set) var profiles: [Profile] = []
+    lazy var chromeObservation = ProfileChromeObservation(manager: self)
     struct SaveFailure: Identifiable, Equatable {
         enum Target: Hashable { case profiles, deletion, spaces(UUID) }
         let id: Target
@@ -508,6 +509,7 @@ struct Space: Identifiable, Codable, Equatable {
     /// A damaged existing list is kept for recovery; no mutation may replace it with a
     /// newly invented default profile.
     private var profileListReadable = true
+    private var iCloudPlaceholderCache: [String: Set<UUID>]?
     private var deletedProfileIDs = Set<UUID>()
 
     /// The profile everything unqualified resolves to. Falls back to the first profile, so
@@ -1825,5 +1827,70 @@ struct Space: Identifiable, Codable, Equatable {
         var done = false
         var ids: [UUID] = []
         var count = 0
+    }
+}
+
+// Committed, identity-preserving entry points for portable library reconciliation.
+extension ProfileManager {
+    func ensureICloudProfile(_ id: UUID) throws {
+        try ICloudApplyContext.check()
+        guard profileListReadable, !deletedProfileIDs.contains(id), id != Profile.incognito.id else { throw CocoaError(.fileReadCorruptFile) }
+        if profiles.contains(where: { $0.id == id }) { return }
+        try markICloudPlaceholder(id, category: "profiles", placeholder: true)
+        try mergeICloudProfile(Profile(id: id, name: "Synced profile"), placeholder: true)
+    }
+
+    func mergeICloudProfile(_ profile: Profile, position: Int? = nil, placeholder: Bool = false) throws {
+        guard profile.id != Profile.incognito.id, !deletedProfileIDs.contains(profile.id), profileListReadable else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        var next = profiles.filter { $0.id != profile.id }
+        let old = profiles.firstIndex { $0.id == profile.id } ?? next.count
+        next.insert(profile, at: min(max(0, position ?? old), next.count))
+        try ICloudApplyContext.check()
+        guard persist(Disk(profiles: next, activeID: activeID)) else { throw CocoaError(.fileWriteUnknown) }
+        profiles = next
+        if !placeholder { try markICloudPlaceholder(profile.id, category: "profiles", placeholder: false) }
+    }
+
+    private func iCloudPlaceholders() throws -> [String: Set<UUID>] {
+        if let iCloudPlaceholderCache { return iCloudPlaceholderCache }
+        let file = directory.appendingPathComponent("icloud-parent-placeholders.json")
+        let markers: [String: Set<UUID>]
+        do { markers = try JSONDecoder().decode([String: Set<UUID>].self, from: Data(contentsOf: file)) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { markers = [:] }
+        iCloudPlaceholderCache = markers
+        return markers
+    }
+
+    func markICloudPlaceholder(_ id: UUID, category: String, placeholder: Bool, profileID: UUID? = nil) throws {
+        try ICloudApplyContext.check()
+        var markers = try iCloudPlaceholders()
+        let key = profileID.map { category + ":" + $0.uuidString.lowercased() } ?? category
+        if (markers[key]?.contains(id) == true) == placeholder { return }
+        if placeholder { markers[key, default: []].insert(id) }
+        else { markers[key]?.remove(id) }
+        let file = directory.appendingPathComponent("icloud-parent-placeholders.json")
+        try ICloudApplyContext.check()
+        guard SnapshotPersistence.write(try JSONEncoder().encode(markers), to: file) else { throw CocoaError(.fileWriteUnknown) }
+        iCloudPlaceholderCache = markers
+    }
+
+    func isICloudPlaceholder(_ id: UUID, category: String, profileID: UUID? = nil) throws -> Bool {
+        let key = profileID.map { category + ":" + $0.uuidString.lowercased() } ?? category
+        return try iCloudPlaceholders()[key]?.contains(id) == true
+    }
+
+    func committedICloudSpaces(for id: UUID) throws -> [Space] {
+        let file = Self.spacesURL(for: id, in: directory)
+        do {
+            let spaces = try JSONDecoder().decode([Space].self, from: Data(contentsOf: file))
+            guard spaces.allSatisfy({ $0.profileID == id }), Set(spaces.map(\.id)).count == spaces.count else { throw CocoaError(.fileReadCorruptFile) }
+            return spaces
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+    }
+
+    func commitICloudProfiles() throws {
+        guard profileListReadable, retryProfileSave() else { throw CocoaError(.fileWriteUnknown) }
     }
 }

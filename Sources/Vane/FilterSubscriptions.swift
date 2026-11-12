@@ -56,7 +56,11 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
         if let persist { self.persist = { try persist($0) } }
         else {
             self.persist = { items in
-                try await Task.detached(priority: .utility) { try Self.write(items, directory: directory) }.value
+                let admission = ICloudApplyContext.admission
+                try await Task.detached(priority: .utility) {
+                    try admission?.check()
+                    try Self.write(items, directory: directory, admission: admission)
+                }.value
             }
         }
         self.changed = changed; self.transaction = transaction
@@ -72,6 +76,43 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
         do { items = try await loading.value }
         catch { loadFailed = true; storageError = error.localizedDescription }
         self.loading = nil
+    }
+
+    func iCloudSnapshot() async throws -> [FilterSubscription] {
+        await gate.acquire(); defer { gate.release() }
+        await finishLoading()
+        guard !loadFailed, storageError == nil else { throw BlockerFiles.Failure(storageError ?? "Filter subscriptions need recovery.") }
+        return items
+    }
+
+    /// Merges individual subscriptions without fetching remote URLs or replacing the
+    /// document. Compilation and durability use the existing subscription transaction.
+    func mergeICloudSubscription(_ item: FilterSubscription?, deleting id: UUID) async throws {
+        try await modifyICloudSubscription(id) { _ in item }
+    }
+
+    /// Resolve a portable field patch against the latest accepted source under the
+    /// same gate as fetch/compile. A snapshot taken before acquisition is insufficient.
+    func modifyICloudSubscription(_ id: UUID,
+                                 update: @escaping @Sendable (FilterSubscription?) throws -> FilterSubscription?) async throws {
+        let admission = ICloudApplyContext.admission
+        try ICloudApplyContext.check()
+        await gate.acquire(); defer { gate.release() }
+        try admission?.check()
+        await finishLoading()
+        try admission?.check()
+        guard !loadFailed else { throw BlockerFiles.Failure(storageError ?? "Filter subscriptions need recovery.") }
+        let current = items.first { $0.id == id }
+        let value = try await Task.detached(priority: .utility) { try update(current) }.value
+        try admission?.check()
+        if let value, value.id != id { throw BlockerFiles.Failure("A synced subscription changed identity.") }
+        var candidate = items
+        if let index = candidate.firstIndex(where: { $0.id == id }) {
+            if let value { candidate[index] = value } else { candidate.remove(at: index) }
+        } else if let value { candidate.append(value) }
+        guard candidate != items else { return }
+        try await commit(candidate)
+        items = candidate; storageError = nil; changed()
     }
 
     func start() {
@@ -167,9 +208,11 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
     }
 
     private func commit(_ candidate: [FilterSubscription]) async throws {
+        let admission = ICloudApplyContext.admission
         let text = await Task.detached(priority: .utility) { candidate.map(\.text).joined(separator: "\n") }.value
+        try admission?.check()
         if let transaction { try await transaction(text, candidate) }
-        else { try await validate(text); try await persist(candidate) }
+        else { try await validate(text); try admission?.check(); try await persist(candidate) }
     }
 
     nonisolated static func usableText(_ response: Response) throws -> String {
@@ -212,9 +255,12 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
         } catch { throw BlockerFiles.Failure("Couldn’t read saved filter subscriptions. Restore subscriptions.json before changing subscriptions.") }
     }
 
-    nonisolated static func write(_ items: [FilterSubscription], directory: URL) throws {
+    nonisolated static func write(_ items: [FilterSubscription], directory: URL, admission: ICloudAdmission? = nil) throws {
+        let bytes = try JSONEncoder().encode(Document(items: items))
+        try admission?.check()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try JSONEncoder().encode(Document(items: items)).write(to: directory.appendingPathComponent("subscriptions.json"), options: .atomic)
+        try admission?.check()
+        try bytes.write(to: directory.appendingPathComponent("subscriptions.json"), options: .atomic)
     }
 
     nonisolated static func request(for item: FilterSubscription) -> URLRequest {

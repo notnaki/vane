@@ -193,6 +193,7 @@ struct SiteBoost: Codable, Equatable, Sendable {
 
     static func prepare(profiles: [UUID]) async { await store.prepare(profiles: profiles) }
     static func flushPersistence() async -> Bool { await store.flush() }
+    static var synchronizationStore: SiteBoostStore { store }
 
     static func document(for tab: Tab) -> Document? { documents[tab.id] }
     static func records(profile: UUID) -> [String: SiteBoost] { store.records(profile: profile) }

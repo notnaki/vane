@@ -3,7 +3,9 @@
 [Documentation index](README.md) · [Project README](../README.md)
 
 This guide explains what is stored, how to move it, and what recovery can preserve.
-Nothing syncs between Macs.
+Optional iCloud sync is available only in explicitly provisioned builds. Ordinary
+local builds keep it unavailable. Cross-Mac propagation remains unverified and is
+an accepted verification limitation, not a merge or release gate.
 
 The [privacy policy](../PRIVACY.md) describes local storage, outgoing requests,
 optional services, retention, and the public contact for privacy questions.
@@ -34,6 +36,44 @@ Private windows do not inherit saved passwords or cloud AI, cannot save
 Easels/templates/offline articles, and keep temporary site decisions and Boosts in
 memory. Saving or sharing a page capture explicitly writes the chosen output. Private
 browsing does not make network activity anonymous.
+
+## iCloud choices
+
+In a provisioned build, open **Settings → iCloud** and review the individual
+categories before enabling the master switch. Your first sync preserves a local
+recovery point and merges libraries. History, extension sync data, passwords and AI keys start
+unselected. Controls apply independently on each Mac; turning one off keeps its
+existing copies. **Remove iCloud Data** is a separate confirmed action.
+
+Ordinary tabs and recently closed pages appear under **Other Macs**. Opening one
+creates a regular local tab; remote tab closure does not close local browsing.
+Download history syncs source URLs, filenames, sizes, dates and the owning Mac.
+Downloaded files, local paths/grants and resume data stay local. Remote history
+does not offer Open or Reveal for a file that is not on this Mac.
+
+Saved articles have independent metadata/content switches. An article without its
+offline content opens the live page; offline-only content has no invented live
+origin. Easels preserve a second board for conflicting edits. Imported Boost
+scripts and extension packages require local consent before execution. A separate
+opt-in transfers extension-defined `storage.sync` values through public WebKit APIs;
+local/session namespaces, opaque databases and grants stay local. Vendors can put
+sensitive values in sync storage, and Vane cannot infer their meaning. Imported
+values wait for approved local activation. Already submitted storage writes can
+finish after a switch is turned off. macOS-rejected keys remain pending with a
+visible error. The local extension sync shadow remains when sync is disabled;
+deleted-profile entries are pruned when this category next runs its inventory.
+
+Passwords and AI keys use separate optional iCloud Keychain mirrors, preserving
+local originals and reporting conflicts. GitHub authentication, website sign-ins,
+private browsing, system permissions, local file grants and biometric proofs stay
+device-specific. Disabling a secret category cannot stop Apple's transport for
+items already marked synchronizable. Account changes and observed cloud resets
+pause affected sync until a deliberate merge/re-enable choice.
+
+See [provisioning](ICLOUD-PROVISIONING.md) for signing/schema requirements and the
+signed service validation and unverified cross-Mac coverage. Local unit tests do
+not establish live service availability; missing second-Mac hardware is a
+documented verification limitation, not a merge gate.
 
 ## Passwords and bookmarks
 

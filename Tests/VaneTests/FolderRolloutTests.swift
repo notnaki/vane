@@ -18,6 +18,36 @@ import XCTest
         func updateNSView(_ view: NSView, context: Context) {}
     }
 
+    func testFolderStartWaitsForEveryAdmittedOwner() async {
+        let start = NativeSidebarRolloutStart(animation: .linear(duration: 1))
+        let first = UUID(), last = UUID()
+        let applied = expectation(description: "All admitted row owners start")
+        applied.expectedFulfillmentCount = 2
+        var rows = Set<UUID>()
+        start.admit([first, last])
+        start.enqueue(first, apply: { rows.insert(first); applied.fulfill() }, completed: {})
+        await Task.yield()
+        XCTAssertTrue(rows.isEmpty, "An early native owner cannot begin the strip alone")
+        start.enqueue(last, apply: { rows.insert(last); applied.fulfill() }, completed: {})
+        await fulfillment(of: [applied], timeout: 1)
+        XCTAssertEqual(rows, [first, last])
+    }
+
+    func testWithdrawnOwnerCannotStrandAQueuedFolderStart() async {
+        let start = NativeSidebarRolloutStart(animation: .linear(duration: 1))
+        let retained = UUID(), detached = UUID()
+        let applied = expectation(description: "Remaining native owner starts")
+        var detachedApplied = false
+        start.admit([retained, detached])
+        start.enqueue(retained, apply: { applied.fulfill() }, completed: {})
+        start.enqueue(detached, apply: { detachedApplied = true }, completed: {})
+        start.withdraw(detached)
+        // Reconciliation can still see the detached slot until its next pass.
+        start.admit([retained, detached])
+        await fulfillment(of: [applied], timeout: 1)
+        XCTAssertFalse(detachedApplied, "A cancelled row must not replay its queued disclosure")
+    }
+
     func testFolderChildrenFollowMotionPolicyAcrossNativeOwners() async throws {
         try await checkRollout(reduceDuringMotion: false)
     }
@@ -42,6 +72,10 @@ import XCTest
         try await checkRollout(reduceDuringMotion: false, reduceDuringClose: true)
     }
 
+    func testUnrelatedRefreshPreservesTheOpeningStrip() async throws {
+        try await checkRollout(reduceDuringMotion: false, refreshDuringOpen: true)
+    }
+
     func testUnrelatedRefreshPreservesTheClosingStrip() async throws {
         try await checkRollout(reduceDuringMotion: false, refreshDuringClose: true)
     }
@@ -53,6 +87,7 @@ import XCTest
     private func checkRollout(reduceDuringMotion: Bool, detachDuringStart: Bool = false,
                               largeFolder: Bool = false, startWithSaver: Bool = false,
                               reduceDuringClose: Bool = false, refreshDuringClose: Bool = false,
+                              refreshDuringOpen: Bool = false,
                               revokeDuringClose: Bool = false) async throws {
         TestEnvironment.prepare()
         let saver = BatterySaver.shared.mode
@@ -134,6 +169,10 @@ import XCTest
         }
         try await compatibilityWait { markers.views[tabs[11].id.uuidString]?.window != nil }
         try await Task.sleep(for: .milliseconds(120))
+        if refreshDuringOpen {
+            configure(expanded, animation: nil)
+            try await Task.sleep(for: .milliseconds(120))
+        }
         let child = try XCTUnwrap(markers.views[tabs[11].id.uuidString])
         let early = child.convert(child.bounds, to: view).minY
         let destination = 12 * (Look.rowHeight + Look.rowGap)
