@@ -300,7 +300,7 @@ import XCTest
             "A passive old layout cannot reacquire ownership")
     }
 
-    func testAttachedEmptySectionAcknowledgesDeclarationInstalledAfterItsLastLayout() {
+    func testAttachedEmptySectionAcknowledgesDeclarationInstalledAfterItsLastLayout() async {
         _ = NSApplication.shared
         let gate = SidebarNativeReadinessCoordinator.shared
         let owner = NSObject(), shell = NSObject()
@@ -334,6 +334,11 @@ import XCTest
         gate.expectPopulation(destination, sections: sections, populationOwnerID: ownerID)
         gate.retainPopulationExpectation(destination, owner: ObjectIdentifier(shell),
             sections: sections, populationOwnerID: ownerID)
+        // Drain the declaration's queued retry without forcing another layout
+        // or polling the desired readiness result.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
         XCTAssertTrue(gate.isReady(destination),
                       "The current attached empty section must acknowledge the late declaration without a new layout")
         native.removeFromSuperview()
@@ -341,6 +346,9 @@ import XCTest
         gate.expectPopulation(destination, sections: sections, populationOwnerID: ownerID)
         gate.retainPopulationExpectation(destination, owner: ObjectIdentifier(shell),
             sections: sections, populationOwnerID: ownerID)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
         XCTAssertFalse(gate.isReady(destination), "A declaration signal must never authorize a detached section")
     }
 

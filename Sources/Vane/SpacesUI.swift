@@ -446,7 +446,9 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
 
     var body: some View {
         let readinessScope = SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID)
-        let covered = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.isActive == true
+        // Finished motion can still cover pending live population. Keep those
+        // owners through acknowledgement so the departure can archive them.
+        let covered = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide != nil
         let readinessOwnerID = liveIdentity.resolve(spaceID: store.currentSpaceID, covered: covered)
         let readinessSections = declareNativePopulation(readinessScope, ownerID: readinessOwnerID)
 

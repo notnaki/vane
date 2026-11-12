@@ -484,6 +484,8 @@ private final class NativeBatchMouseObservation {
     private var generation: UInt64 = 0
     private var geometryRevision: UInt64 = 0
     private var readiness: SidebarNativeReadinessCoordinator.Ticket?
+    private var declarationObservation: UUID?
+    private var declarationScope: SidebarNativeReadinessScope?
     private var readinessSection: String?
     private var readinessRowIDs: [String] = []
     private var needsReconcile = true
@@ -1069,6 +1071,23 @@ private final class NativeBatchMouseObservation {
     }
     private func registerReadiness(claimingCurrentSection: Bool = false) {
         let coordinator = SidebarNativeReadinessCoordinator.shared
+        let scope = inherited.sidebarNativeReadinessScope
+        if declarationScope != scope || declarationObservation == nil && scope != nil {
+            coordinator.removeDeclarationObservation(declarationObservation)
+            declarationObservation = nil
+            declarationScope = scope
+            if let scope {
+                declarationObservation = coordinator.observeDeclaration(scope) { [weak self] in
+                    // A shell declares from SwiftUI body. Recheck native ownership
+                    // after that update rather than publish readiness during body.
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, !self.disposed,
+                              self.inherited.sidebarNativeReadinessScope == scope else { return }
+                        self.registerReadiness()
+                    }
+                }
+            }
+        }
         // A delayed old layout, including an empty section, has no authority once
         // removed from its current window/document. Never register it afresh.
         guard !disposed, let window, let scroll = enclosingScrollView, scroll.window === window,
@@ -1176,6 +1195,9 @@ private final class NativeBatchMouseObservation {
     override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); refreshClip() }
     func detach() {
         disposed = true
+        SidebarNativeReadinessCoordinator.shared.removeDeclarationObservation(declarationObservation)
+        declarationObservation = nil
+        declarationScope = nil
         SidebarNativeReadinessCoordinator.shared.unregister(readiness)
         readiness = nil
         observation = nil; clip = nil

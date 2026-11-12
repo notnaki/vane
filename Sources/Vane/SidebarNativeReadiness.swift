@@ -70,6 +70,7 @@ extension EnvironmentValues {
     private var expected = Set<SidebarNativeReadinessScope>()
     private var expectationOwners: [SidebarNativeReadinessScope: Set<ObjectIdentifier>] = [:]
     private var observations: [UUID: Observation] = [:]
+    private var declarationObservations: [UUID: Observation] = [:]
     private var declarations: [SidebarNativeReadinessScope: [String: ExpectedSection]] = [:]
     private var currentSections: [SidebarNativeReadinessScope: [String: Ticket]] = [:]
     private var declarationEpoch: UInt64 = 0
@@ -79,6 +80,7 @@ extension EnvironmentValues {
     /// still configure an empty native Today section and explicitly complete it.
     func expectPopulation(_ scope: SidebarNativeReadinessScope, sections: [String: [String]]? = nil,
                           populationOwnerID: UUID? = nil) {
+        let wasExpected = expected.contains(scope)
         expected.insert(scope)
         guard let sections else { return }
         let previous = declarations[scope] ?? [:]
@@ -102,6 +104,10 @@ extension EnvironmentValues {
                 && requirement.ticket.populationOwnerID == declaration.ownerID
         }
         if requirements[scope]?.isEmpty == true { requirements.removeValue(forKey: scope) }
+        if !wasExpected || previous.count != next.count
+            || next.contains(where: { previous[$0.key]?.epoch != $0.value.epoch }) {
+            signalDeclaration(scope)
+        }
     }
 
     func retainPopulationExpectation(_ scope: SidebarNativeReadinessScope, owner: ObjectIdentifier,
@@ -115,7 +121,9 @@ extension EnvironmentValues {
         // refresh an existing declaration already belonging to this owner.
         if let sections { expectPopulation(scope, sections: sections, populationOwnerID: populationOwnerID) }
         expected.insert(scope)
-        expectationOwners[scope, default: []].insert(owner)
+        if expectationOwners[scope, default: []].insert(owner).inserted {
+            signalDeclaration(scope)
+        }
     }
     func releasePopulationExpectation(_ scope: SidebarNativeReadinessScope, owner: ObjectIdentifier) {
         expectationOwners[scope]?.remove(owner)
@@ -205,6 +213,22 @@ extension EnvironmentValues {
         }
         if requirements[ticket.scope]?.isEmpty == true { requirements.removeValue(forKey: ticket.scope) }
         signalIfReady(ticket.scope, wasReady: wasReady)
+    }
+
+    /// Registration can precede the shell's declaration. A zero-height section
+    /// may have no later layout to retry from; declaration changes are a separate
+    /// signal from completed population and cannot themselves acknowledge pixels.
+    func observeDeclaration(_ scope: SidebarNativeReadinessScope, changed: @escaping () -> Void) -> UUID {
+        let token = UUID()
+        declarationObservations[token] = Observation(scope: scope, ready: changed)
+        return token
+    }
+    func removeDeclarationObservation(_ token: UUID?) {
+        if let token { declarationObservations.removeValue(forKey: token) }
+    }
+    private func signalDeclaration(_ scope: SidebarNativeReadinessScope) {
+        let callbacks = declarationObservations.values.filter { $0.scope == scope }.map(\.ready)
+        callbacks.forEach { $0() }
     }
 
     func observe(_ scope: SidebarNativeReadinessScope, ready: @escaping () -> Void) -> UUID {
