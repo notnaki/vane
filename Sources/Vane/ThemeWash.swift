@@ -112,7 +112,6 @@ struct NativeThemeWash: NSViewRepresentable {
 
     func makeNSView(context: Context) -> ThemeWashSurface { ThemeWashSurface() }
     func updateNSView(_ view: ThemeWashSurface, context: Context) {
-        SpaceLandingDiagnostic.mark("wash-update surface=\(ObjectIdentifier(view))")
         gesture.groundSurface = view
         let from = origin, to = destination
         let fallback = fallback, profiles = profiles, systemDark = systemDark

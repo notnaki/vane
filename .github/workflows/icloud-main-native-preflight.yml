@@ -6,8 +6,7 @@ permissions:
   contents: read
   actions: read
 env:
-  VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
-  VANE_COLD_LANDING_TRACE: '1'
+  VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
   SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
 jobs:
   focused:
@@ -54,7 +53,7 @@ jobs:
           import errno, os, pathlib, pty, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           attempt = os.environ['ATTEMPT']
-          selection = 'SpaceNativeRenderingTests.testFirstProfileVisitChangesPageAtStartOfNativeLanding'
+          selection = 'SpaceNativeRenderingTests.testArrivingWashJoinsTheExistingCompositorTimeline|ProfileChromeObservationTests|ProfilePersistenceTests|SpaceNativeRenderingTests.testDestinationVisibilityNotificationCannotAbortTheSourceLanding|SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testFirstProfileVisitChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|SpaceNativeRenderingTests.testHiddenProfileSynchronouslyDropsWarmOwnersDuringLanding|SpaceNativeRenderingTests.testProfileSwipeDoesNotRestoreItsDepartureColour|SpaceNativeRenderingTests.testReverseProfileSwipeTakesOverTheSamePresentedNativeRows'
           log = root / f'icloud-native-preflight-{attempt}.log'
           master, slave = pty.openpty()
           process = subprocess.Popen(['python3', '-u', 'scripts/run-native-tests.py', '--skip-build', '--jobs', '1', '--filter', selection], stdout=slave, stderr=slave)

@@ -3,24 +3,6 @@ import SwiftUI
 import Combine
 import WebKit
 
-// Temporary hosted-only timing trace; remove before the final PR push.
-@MainActor enum SpaceLandingDiagnostic {
-    static let enabled = ProcessInfo.processInfo.environment["VANE_COLD_LANDING_TRACE"] == "1"
-    static var records: [(String, Double, Double?)] = []
-    static func mark(_ label: String, elapsed: Double? = nil) {
-        guard enabled, records.count < 512 else { return }
-        records.append((label, ProcessInfo.processInfo.systemUptime, elapsed))
-    }
-    static func reset() { records.removeAll(keepingCapacity: true) }
-    static func dump(from start: Double) {
-        guard enabled else { return }
-        for (label, time, elapsed) in records {
-            print("COLD_LANDING tMS=\((time - start) * 1000) elapsedMS=\((elapsed ?? 0) * 1000) \(label)")
-        }
-        records.removeAll(keepingCapacity: true)
-    }
-}
-
 /// The native browser frame, page-paint coordination, and traffic-light placement.
 ///
 /// AppKit picks where the lights go from the titlebar's height, and it re-picks after every
@@ -197,8 +179,6 @@ final class VaneWindow: NSWindow {
     /// Every AppKit relayout ends here, which makes this the one hook that catches a resize,
     /// a live-resize step, a restored frame and a first ordering-in alike.
     override func layoutIfNeeded() {
-        let diagnosticStart = ProcessInfo.processInfo.systemUptime
-        defer { SpaceLandingDiagnostic.mark("window-layout", elapsed: ProcessInfo.processInfo.systemUptime - diagnosticStart) }
         super.layoutIfNeeded()
         centreTrafficLights()
     }
@@ -773,9 +753,6 @@ extension VaneWindow {
     /// window and a Little Vane are both spaceless.
     @discardableResult
     static func hop(_ store: TabStore, to space: Space) -> TabStore? {
-        let diagnosticStart = ProcessInfo.processInfo.systemUptime
-        SpaceLandingDiagnostic.mark("hop-begin")
-        defer { SpaceLandingDiagnostic.mark("hop-end", elapsed: ProcessInfo.processInfo.systemUptime - diagnosticStart) }
         guard !store.isPrivate, !store.isLittle, !store.isParked,
               space.profileID != store.profileID,
               let window = store.window,
@@ -988,12 +965,6 @@ extension VaneWindow {
 /// during the resize also reflows the sidebar's retained controls unnecessarily.
 @MainActor final class BrowserHostingView<Content: View>: NSHostingView<Content> {
     private var applyingFrame = false
-    var diagnosticOwner: UUID?
-    override func layout() {
-        let start = ProcessInfo.processInfo.systemUptime
-        defer { SpaceLandingDiagnostic.mark("content-layout owner=\(String(describing: diagnosticOwner)) hidden=\(isHiddenOrHasHiddenAncestor)", elapsed: ProcessInfo.processInfo.systemUptime - start) }
-        super.layout()
-    }
 
     override func setFrameSize(_ newSize: NSSize) {
         let previous = frame.size
@@ -1115,9 +1086,6 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func show(_ store: TabStore) {
-        let diagnosticStart = ProcessInfo.processInfo.systemUptime
-        SpaceLandingDiagnostic.mark("show-begin owner=\(store.profileID)")
-        defer { SpaceLandingDiagnostic.mark("show-end owner=\(store.profileID)", elapsed: ProcessInfo.processInfo.systemUptime - diagnosticStart) }
         let id = ObjectIdentifier(store)
         footerPresentation.activate(store)
         guard current != id else { return }
@@ -1137,7 +1105,6 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
             // The outer native container supplies the frame; do not separately
             // measure minimum, ideal and maximum sizes on each resize.
             content.sizingOptions = []
-            content.diagnosticOwner = store.profileID
             let palette = BrowserPaletteHost(rootView: AnyView(BrowserPaletteOverlay()
                 .environmentObject(store)
                 .environmentObject(ProfileManager.shared)
@@ -1461,9 +1428,6 @@ private struct NativeSpacePreview: View {
     private var animationID: UUID?
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
-        let diagnosticStart = ProcessInfo.processInfo.systemUptime
-        SpaceLandingDiagnostic.mark("slide-start-begin")
-        defer { SpaceLandingDiagnostic.mark("slide-start-end", elapsed: ProcessInfo.processInfo.systemUptime - diagnosticStart) }
         guard isActive else { return }
         ownsSidebarVisibility = true
         self.completion = completion
