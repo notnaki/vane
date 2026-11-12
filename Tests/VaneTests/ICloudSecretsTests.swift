@@ -176,6 +176,55 @@ import CloudKit
         await controller.setMasterEnabled(false)
     }
 
+    func testCredentialEditAfterSnapshotGetsImmediateAccountValidatedFollowup() async throws {
+        let store = MemorySecretKeychain(), local = MemoryLocalSecrets()
+        let bridge = bridge(store, local)
+        let controller = try secretController(bridge, transport: SecretRefreshCloud())
+        local.values[key] = Data("initial".utf8)
+        await controller.setMasterEnabled(true)
+        XCTAssertEqual(store.cloudCount, 1)
+        let edited = Data("edited-after-snapshot".utf8)
+        local.afterSnapshot = {
+            local.afterSnapshot = nil
+            local.values[self.key] = edited
+            NotificationCenter.default.post(name: .vaneSecretsChanged, object: nil)
+        }
+        await controller.syncNow()
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !store.containsSecret(edited) && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(store.containsSecret(edited), "An edit made after the active pass captured credentials needs an immediate validated follow-up")
+        XCTAssertEqual(local.values[key], edited)
+        await controller.setMasterEnabled(false)
+    }
+
+    func testQueuedCredentialFollowupRechecksChangedAccountBeforePublishing() async throws {
+        let store = MemorySecretKeychain(), local = MemoryLocalSecrets()
+        let transport = SecretRefreshCloud(), bridge = bridge(store, local)
+        let controller = try secretController(bridge, transport: transport)
+        local.values[key] = Data("initial".utf8)
+        await controller.setMasterEnabled(true)
+        let count = store.cloudCount, edited = Data("unapproved-followup".utf8)
+        local.afterSnapshot = {
+            local.afterSnapshot = nil
+            local.values[self.key] = edited
+            transport.identity = "changed-during-pass"
+            NotificationCenter.default.post(name: .vaneSecretsChanged, object: nil)
+        }
+        await controller.syncNow()
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !controller.needsAccountConsent && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(controller.needsAccountConsent)
+        XCTAssertFalse(controller.masterEnabled)
+        XCTAssertEqual(store.cloudCount, count)
+        XCTAssertFalse(store.containsSecret(edited))
+        XCTAssertEqual(local.values[key], edited)
+        await controller.setMasterEnabled(false)
+    }
+
     private func secretController(_ secrets: ICloudSecrets, transport: SecretRefreshCloud) throws -> ICloudController {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -683,9 +732,12 @@ private final class RevocationFlag: @unchecked Sendable {
 @MainActor private final class MemoryLocalSecrets: ICloudSecretsLocalStore {
     let deviceID = UUID().uuidString
     var values: [ICloudSecrets.Identity: Data] = [:]
+    var afterSnapshot: (@MainActor () -> Void)?
     func snapshot(kind: ICloudSecrets.Kind, admission: @escaping @Sendable () throws -> Void) async throws -> [ICloudSecrets.Identity: Data] {
         try admission()
-        return values.filter { $0.key.kind == kind }
+        let captured = values.filter { $0.key.kind == kind }
+        afterSnapshot?()
+        return captured
     }
     func apply(_ identity: ICloudSecrets.Identity, value: Data?, expected: Data?, admission: @escaping @Sendable () throws -> Void) async throws -> Bool {
         try admission()

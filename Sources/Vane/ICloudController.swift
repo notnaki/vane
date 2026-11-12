@@ -52,6 +52,7 @@ import Foundation
     private var activeSync: Task<Void, Never>?
     private var activeAdmission: ICloudAdmission?
     private var activeSyncID: UUID?
+    private var secretSyncRequested = false
     private var removalInProgress = false
     private var wake: NSObjectProtocol?
     private var accountChange: AnyCancellable?
@@ -108,7 +109,7 @@ import Foundation
         }
         lastSuccess = defaults.object(forKey: "icloud.lastSuccess") as? Date
         self.secrets?.onStatusChange = { [weak self] in self?.refreshSecretStatus() }
-        self.secrets?.onSyncRequested = { [weak self] in await self?.syncNow() }
+        self.secrets?.onSyncRequested = { [weak self] in await self?.requestSecretSync() }
         let observer = NotificationCenter.default.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.masterEnabled else { return }
@@ -133,6 +134,7 @@ import Foundation
 
     private static func key(_ category: ICloudCategory) -> String { "icloud.category." + category.rawValue }
     private func revoke() {
+        secretSyncRequested = false
         generation &+= 1
         activeAdmission?.revoke()
         activeSync?.cancel()
@@ -245,6 +247,12 @@ import Foundation
         return items
     }
 
+    private func requestSecretSync() async {
+        guard masterEnabled, canEnable, !stopped, !removalInProgress else { return }
+        if activeSync != nil { secretSyncRequested = true; return }
+        await syncNow()
+    }
+
     func syncNow() async {
         guard activeSync == nil, masterEnabled, canEnable, !stopped, !removalInProgress else { return }
         let identity = UUID()
@@ -254,7 +262,13 @@ import Foundation
         let work = Task { await ICloudApplyContext.$admission.withValue(admission) { await performSync() } }
         activeSync = work
         await work.value
-        if activeSyncID == identity { activeSync = nil; activeSyncID = nil; activeAdmission = nil }
+        if activeSyncID == identity {
+            activeSync = nil; activeSyncID = nil; activeAdmission = nil
+            if secretSyncRequested {
+                secretSyncRequested = false
+                await syncNow()
+            }
+        }
     }
 
     private func performSync() async {
