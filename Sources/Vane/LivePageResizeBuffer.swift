@@ -105,7 +105,7 @@ struct LivePageResizeAnchor {
             if web.frame != expectedFrame { web.frame = expectedFrame }
         }
 
-        func prepare(_ size: NSSize) {
+        func prepare(_ size: NSSize, progress: (() -> Void)? = nil) {
             prepared = size
             // Move and size together before reading safeAreaInsets. Growing up
             // into a titled window's unsafe area does not grow its CSS viewport.
@@ -113,7 +113,7 @@ struct LivePageResizeAnchor {
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.prepare.frameAssigned", width: size.width, height: size.height)
 #endif
-            PageResizeStyle.prepare(web, nextSize: size)
+            PageResizeStyle.prepare(web, nextSize: size, completion: progress)
             web.prepareContent(in: NSRect(origin: .zero, size: size))
         }
 
@@ -187,6 +187,9 @@ struct LivePageResizeAnchor {
     private var lead = NSSize(width: 48, height: 48)
     private var generation = UUID()
     private var pendingPaints = Set<ObjectIdentifier>()
+    private var pendingStyleReplies = Set<ObjectIdentifier>()
+    private var styleReplyDeadline: TimeInterval?
+    private var deadlineRevision = UUID()
     private var timer: Timer?
     private var started = false
     private var active = true
@@ -644,6 +647,7 @@ struct LivePageResizeAnchor {
         exactPaint = exact && targets == desired
         guard targets.allSatisfy({ $0.width > 0 && $0.height > 0 && $0.width.isFinite && $0.height.isFinite }) else { cancel(); return }
         pendingPaints = Set(pages.map { ObjectIdentifier($0.web) })
+        pendingStyleReplies = pendingPaints
 #if DEBUG
         trace("buffer.prepare.before")
 #endif
@@ -651,7 +655,8 @@ struct LivePageResizeAnchor {
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.prepare.begin", width: target.width, height: target.height)
 #endif
-            page.prepare(target)
+            let id = ObjectIdentifier(page.web)
+            page.prepare(target, progress: { [weak self] in self?.styleReplied(token, page: id) })
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.prepare.end", width: target.width, height: target.height)
 #endif
@@ -659,6 +664,7 @@ struct LivePageResizeAnchor {
 #if DEBUG
         trace("buffer.prepare.after")
 #endif
+        styleReplyDeadline = now() + 0.25
         armDeadline(token)
         for page in pages {
 #if DEBUG
@@ -705,9 +711,15 @@ struct LivePageResizeAnchor {
 #endif
             if covered(sizes(latest)) { publish() }
         }
+#if DEBUG
+        ResizeTimingDiagnostics.record("buffer.presentation.groupClosed")
+#endif
         exactPresented = exactPaint
         if exactPresented { flushFinalLayout() }
         drive()
+#if DEBUG
+        ResizeTimingDiagnostics.record("buffer.presentation.drained")
+#endif
         // Exact paint may precede SwiftUI's host layout. Its native callback can
         // finish normally; the same bounded watchdog covers a missing layout.
         if active, ending, exactPresented, pendingPaints.isEmpty { waitForFinalLayout() }
@@ -754,13 +766,36 @@ struct LivePageResizeAnchor {
         trace("buffer.deadline.armed", token: token)
 #endif
         timer?.invalidate()
-        let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
+        let revision = UUID()
+        deadlineRevision = revision
+        let timeout: @MainActor @Sendable () -> Void = { [weak self] in
+            guard let self, self.deadlineRevision == revision else { return }
+            self.timedOut(token)
+        }
         if let deadline { deadline(0.25, timeout) }
         else {
             let timer = Timer(timeInterval: 0.25, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
             self.timer = timer
             RunLoop.main.add(timer, forMode: .common)
         }
+    }
+
+    private func styleReplied(_ token: UUID, page: ObjectIdentifier) {
+        guard active, generation == token, pendingStyleReplies.remove(page) != nil,
+              pendingStyleReplies.isEmpty, !pendingPaints.isEmpty, ownsLayout else { return }
+        // An overdue timer can sit behind this reply in the main queue. Its
+        // original monotonic deadline still applies even before it is delivered.
+        guard let styleReplyDeadline, now() <= styleReplyDeadline else {
+            timedOut(token)
+            return
+        }
+#if DEBUG
+        trace("buffer.progress.styleReplied", token: token, page: page)
+#endif
+        // A reply proves the process is advancing through queued geometry, not
+        // hung. Renew once for the subsequent paint phase; absent replies still
+        // retain the original deadline, and paint itself remains bounded.
+        armDeadline(token)
     }
 
     private func timedOut(_ token: UUID) {
@@ -814,6 +849,8 @@ struct LivePageResizeAnchor {
         generation = UUID()
         timer?.invalidate(); timer = nil
         pendingPaints.removeAll()
+        pendingStyleReplies.removeAll()
+        styleReplyDeadline = nil
         submittedSidebar = nil
         submittedSidebarSizes = nil
         submittedSidebarFloor = nil

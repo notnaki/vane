@@ -43,12 +43,17 @@ import XCTest
         try await resizeFixture(capture: true, slowResize: true, sidebarDrag: true)
     }
 
+    func testQueuedNativeGeometryBeforeSidebarDragKeepsThePagePainted() async throws {
+        try await resizeFixture(capture: true, slowResize: true, sidebarDrag: true, queuedGeometry: true)
+    }
+
     func testCornerResizeKeepsTheShrinkingAxisPaintedWhileTheOtherAxisGrows() async throws {
         try await resizeFixture(capture: true, slowResize: true, mixedAxes: true)
     }
 
     private func resizeFixture(capture: Bool, slowResize: Bool = false, sidebarToggle: Bool = false,
-                               mixedAxes: Bool = false, sidebarDrag: Bool = false) async throws {
+                               mixedAxes: Bool = false, sidebarDrag: Bool = false,
+                               queuedGeometry: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -127,7 +132,8 @@ import XCTest
                 } else if capture {
                     try await captureResizePixels(window, web: page, direct: direct,
                                                   proposalInterval: slowResize ? .milliseconds(40) : .milliseconds(8),
-                                                  mixedAxes: mixedAxes, sidebarStore: sidebarDrag ? store : nil)
+                                                  mixedAxes: mixedAxes, sidebarStore: sidebarDrag ? store : nil,
+                                                  queuedGeometry: queuedGeometry)
                 } else {
                     for width: CGFloat in [1100, 470, 800, 1200, 900, 1100, 900] {
                         window.setContentSize(NSSize(width: width, height: 600))
@@ -209,7 +215,8 @@ import XCTest
     }
 
     private func captureResizePixels(_ window: VaneWindow, web: WKWebView, direct: Bool,
-                                     proposalInterval: Duration, mixedAxes: Bool = false, sidebarStore: TabStore? = nil) async throws {
+                                     proposalInterval: Duration, mixedAxes: Bool = false, sidebarStore: TabStore? = nil,
+                                     queuedGeometry: Bool = false) async throws {
         // Diagnostic reference: the original geometry-only path must remain RED.
         let baselineControl = ProcessInfo.processInfo.environment["VANE_RESIZE_BASELINE"] == "1"
         try await compatibilityWait {
@@ -252,6 +259,20 @@ import XCTest
             let began = CACurrentMediaTime()
             owner.stage = "resize proposals direct=\(direct) mixed=\(mixedAxes)"
             let frameHeight = window.frame.height
+            if queuedGeometry {
+                // Exercise WebKit's real coalesced geometry queue: a host layout
+                // can submit another viewport before the previous IPC replies.
+                // Return to the admitted native baseline before starting the drag.
+                let size = web.frame.size
+                web.setFrameSize(NSSize(width: size.width + 24, height: size.height))
+                web.setFrameSize(size)
+#if DEBUG
+                trace?.append("fixture.queuedGeometry", time: CACurrentMediaTime(), fields: [
+                    "intermediate": NSStringFromSize(NSSize(width: size.width + 24, height: size.height)),
+                    "baseline": NSStringFromSize(size)
+                ])
+#endif
+            }
             if let sidebarStore { window.beginSidebarResize(sidebarStore) }
             else if !baselineControl {
                 window.beginPageResize(at: NSPoint(x: window.frame.maxX,

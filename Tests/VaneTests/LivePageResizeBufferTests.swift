@@ -54,6 +54,50 @@ import XCTest
         return paints.removeFirst()
     }
 
+    func testStyleReplyProtectsPendingPaintFromTheSupersededDeadline() async throws {
+        let f = Fixture(); defer { f.close() }
+        f.buffer.start()
+        let originalDeadline = try XCTUnwrap(f.deadlines.first)
+        try await compatibilityWait { f.deadlines.count == 2 }
+        f.request(640)
+        originalDeadline()
+        XCTAssertFalse(f.buffer.bypassForDrag)
+        XCTAssertEqual(f.window.frame.width, 600, "An acknowledged style operation still does not authorize unpainted growth")
+        XCTAssertTrue(f.web.autoresizingMask.isEmpty)
+        try XCTUnwrap(f.deadlines.last)()
+        XCTAssertTrue(f.buffer.bypassForDrag, "The subsequent paint phase remains bounded")
+        XCTAssertEqual(f.window.frame.width, 640)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+    }
+
+    func testOverdueStyleReplyCannotRenewAnUndeliveredInitialDeadline() async throws {
+        let f = Fixture(); defer { f.close() }
+        f.buffer.start()
+        f.request(640)
+        f.time = 1
+        try await compatibilityWait { f.buffer.bypassForDrag }
+        XCTAssertEqual(f.deadlines.count, 1, "An overdue reply cannot grant another paint budget")
+        XCTAssertEqual(f.window.frame.width, 640)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+    }
+
+    func testPreviousGenerationStyleReplyCannotRenewTheCurrentPaint() async throws {
+        let f = Fixture(); defer { f.close() }
+        f.buffer.start()
+        nextPaint(&f.paints)()
+        f.request(640)
+        XCTAssertEqual(f.deadlines.count, 2)
+        try await compatibilityWait { f.deadlines.count == 3 }
+        XCTAssertEqual(f.window.frame.width, 640)
+        f.deadlines[0]()
+        f.deadlines[1]()
+        XCTAssertFalse(f.buffer.bypassForDrag)
+        XCTAssertTrue(f.web.autoresizingMask.isEmpty)
+        f.deadlines[2]()
+        XCTAssertTrue(f.buffer.bypassForDrag)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+    }
+
 #if DEBUG
     func testDiagnosticTimelineCorrelatesTimedOutPrimeWithLateCallbackAndRetirement() throws {
         let fixture = Fixture()

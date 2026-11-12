@@ -16,7 +16,7 @@ import WebKit
         return NSSize(width: width, height: height)
     }
 
-    static func prepare(_ web: WKWebView, nextSize: NSSize? = nil) {
+    static func prepare(_ web: WKWebView, nextSize: NSSize? = nil, completion: (() -> Void)? = nil) {
         guard let viewport = viewportSize(nextSize ?? web.bounds.size, insets: web.safeAreaInsets, zoom: web.pageZoom) else { return }
 #if DEBUG
         ResizeTimingDiagnostics.record("style.javascript.dispatched", width: viewport.width, height: viewport.height)
@@ -45,6 +45,7 @@ import WebKit
                 ])
             }
 #endif
+            completion?()
         }
     }
 
