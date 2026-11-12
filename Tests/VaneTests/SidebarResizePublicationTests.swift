@@ -363,6 +363,61 @@ import XCTest
             "A same-size native layout with newly accepted metadata permits the next bounded trim")
     }
 
+    private final class LayoutCounts { var callbacks = 0 }
+
+    private func countNativeLayoutCallbacks(_ host: WebHost, into counts: LayoutCounts) {
+        let resized = host.pageLayoutDidResize
+        let metadataLayout = host.pageResizeLayoutDidUpdate
+        host.pageLayoutDidResize = { counts.callbacks += 1; resized?() }
+        host.pageResizeLayoutDidUpdate = { counts.callbacks += 1; metadataLayout?() }
+    }
+
+    func testSizeChangingMetadataUsesOneNativeResizeAckWithoutAnExtraLayout() {
+        let f = Fixture(); defer { f.close() }
+        f.paint()
+        f.request(164); f.paint(); f.frames.tick()
+        f.host.layoutSubtreeIfNeeded()
+        XCTAssertFalse(f.host.needsLayout, "Begin with clean native layout")
+        let counts = LayoutCounts()
+        countNativeLayoutCallbacks(f.host, into: counts)
+        f.host.resizeLayout.sidebarWidth = 164
+        f.host.didUpdateResizeLayout()
+        XCTAssertFalse(f.host.needsLayout, "A size-changing metadata update already has a native frame callback pending")
+        f.host.setFrameSize(NSSize(width: 664, height: 400))
+        f.host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(counts.callbacks, 1, "The following normal host layout must not duplicate its native resize acknowledgment")
+        f.request(500); f.frames.tick()
+        f.host.resizeLayout.sidebarWidth = 400 //500 fits to400 in the fixed600pt root.
+        f.host.didUpdateResizeLayout()
+        XCTAssertFalse(f.host.needsLayout)
+        f.host.setFrameSize(NSSize(width: 428, height: 400))
+        f.host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(counts.callbacks, 2)
+        f.paint()
+        XCTAssertEqual(f.web.frame.width, 476,
+            "The actual latest native frame callback must clear submitted coverage debt and permit the bounded trim")
+    }
+
+    func testSameSizeMetadataAcknowledgesOnceThenNormalLayoutsDoNotRepeatIt() {
+        let f = Fixture(); defer { f.close() }
+        f.paint()
+        f.request(164); f.paint(); f.frames.tick()
+        f.request(228); f.frames.tick()
+        f.host.layoutSubtreeIfNeeded()
+        XCTAssertFalse(f.host.needsLayout)
+        let counts = LayoutCounts()
+        countNativeLayoutCallbacks(f.host, into: counts)
+        f.acknowledge(228)
+        XCTAssertTrue(f.host.needsLayout, "A real same-size metadata acknowledgment needs one native layout")
+        f.host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(counts.callbacks, 1)
+        f.host.needsLayout = true
+        f.host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(counts.callbacks, 1, "Acknowledged debt cannot drive the buffer again on an unrelated layout")
+        f.request(500)
+        XCTAssertEqual(f.web.frame.width, 600)
+    }
+
     func testCancelDuringSubmittedParentWaitDropsReleaseAndPreservesNewPageOwner() {
         let f = Fixture(); defer { f.close() }
         f.paint()

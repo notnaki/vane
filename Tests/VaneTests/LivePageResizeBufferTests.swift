@@ -116,7 +116,7 @@ import XCTest
         XCTAssertEqual(f.web.frame, NSRect(x: 13, y: 17, width: 580, height: 360))
     }
 
-    func testUnshownTitledWindowVerticalPrimeActuallyExpandsCSSViewportAndRestoresFrame() async throws {
+    func testUnshownTitledWindowPrimePreparesNativeChildrenAndBothCSSAxesBehindHostClip() async throws {
         TestEnvironment.prepare()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
@@ -137,25 +137,41 @@ import XCTest
         let originalFrame = web.frame
         let originalMask = web.autoresizingMask
         let originalAuto = web.autoresizesSubviews
+        let originalClip = host.clipsToBounds
+        let originalParent = host.bounds
+        let child = try XCTUnwrap(web.subviews.first)
+        let originalChild = child.frame.size
         let inset = web.safeAreaInsets
         XCTAssertGreaterThan(inset.top, 0, "The unshown titled host must exercise a real nonzero public inset")
         let baselineHeight = Double(web.bounds.height - inset.top - inset.bottom)
+        let baselineWidth = Double(web.bounds.width - inset.left - inset.right)
         try await compatibilityWait {
             let height = try await web.evaluateJavaScript("innerHeight") as? NSNumber
             return abs((height?.doubleValue ?? 0) - baselineHeight) <= 1
         }
         XCTAssertFalse(window.occlusionState.contains(.visible), "This local HTML regression must never order its window in")
-        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: window, axes: NSSize(width: 0, height: 1),
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 1),
             deadline: { _, _ in }, apply: { _, _ in }))
         defer { buffer.cancel() }
         buffer.start()
         XCTAssertEqual(web.frame.maxY, originalFrame.maxY)
         XCTAssertEqual(web.frame.minY, originalFrame.minY - 48)
+        XCTAssertEqual(child.frame.width, originalChild.width + 48,
+                       "Native WebKit child geometry must be prepared before the presentation callback")
+        XCTAssertEqual(child.frame.height, originalChild.height + 48)
+        XCTAssertEqual(host.bounds, originalParent)
+        XCTAssertTrue(host.clipsToBounds)
+        XCTAssertEqual(web.autoresizesSubviews, originalAuto)
+        XCTAssertLessThanOrEqual(web.visibleRect.width, host.bounds.width)
+        XCTAssertLessThanOrEqual(web.visibleRect.height, host.bounds.height)
         try await compatibilityWait { !buffer.isPreparing }
         let primedValue = try await web.evaluateJavaScript("innerHeight")
         let primedHeight = try XCTUnwrap(primedValue as? NSNumber).doubleValue
         XCTAssertEqual(primedHeight, baselineHeight + 48, accuracy: 1,
                        "Frozen vertical lookahead must enlarge CSS height rather than enter the titlebar")
+        let primedWidthValue = try await web.evaluateJavaScript("innerWidth")
+        let primedWidth = try XCTUnwrap(primedWidthValue as? NSNumber).doubleValue
+        XCTAssertEqual(primedWidth, baselineWidth + 48, accuracy: 1)
         let hintJSON: String = try await withCheckedThrowingContinuation { continuation in
             web.evaluateJavaScript("JSON.stringify({height:globalThis.__vaneResizeStyle?.height??null})", in: nil, in: PageResizeStyle.world) { result in
                 continuation.resume(with: result.map { $0 as? String ?? "{}" })
@@ -169,9 +185,71 @@ import XCTest
         XCTAssertEqual(web.frame, originalFrame)
         XCTAssertEqual(web.autoresizingMask, originalMask)
         XCTAssertEqual(web.autoresizesSubviews, originalAuto)
+        XCTAssertEqual(host.clipsToBounds, originalClip)
+        XCTAssertEqual(child.frame.size, originalChild)
         let finalValue = try await web.evaluateJavaScript("innerHeight")
         let finalHeight = try XCTUnwrap(finalValue as? NSNumber).doubleValue
         XCTAssertEqual(finalHeight, baselineHeight, accuracy: 1)
+        let finalWidthValue = try await web.evaluateJavaScript("innerWidth")
+        XCTAssertEqual(try XCTUnwrap(finalWidthValue as? NSNumber).doubleValue, baselineWidth, accuracy: 1)
+        XCTAssertEqual(web.pageZoom, 1)
+    }
+
+    func testUnshownNativeChildLayoutPreparesBothCSSAxesBehindFixedHostClip() async throws {
+        TestEnvironment.prepare()
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let web = WKWebView(frame: .zero, configuration: configuration)
+        let host = WebHost(web)
+        host.frame = NSRect(x: 233, y: 11, width: 661, height: 578)
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+        root.addSubview(host)
+        let window = ModelWindow(contentRect: root.bounds, styleMask: [.titled, .resizable, .fullSizeContentView],
+                                 backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = root
+        defer { web.stopLoading(); window.contentView = nil; host.removePage(); window.close() }
+        let variables = (0..<160).map { "--native-clip-fixture-\($0):\($0)px;" }.joined()
+        web.loadHTMLString("<html><title>Native clip ready</title><style>:root{\(variables)}body{margin:0}</style><body>Native child layout</body></html>", baseURL: nil)
+        try await compatibilityWait { !web.isLoading && web.title == "Native clip ready" }
+        root.layoutSubtreeIfNeeded()
+        let original = web.frame
+        let mask = web.autoresizingMask
+        let auto = web.autoresizesSubviews
+        let clip = host.clipsToBounds
+        let parent = host.bounds
+        let inset = web.safeAreaInsets
+        let child = try XCTUnwrap(web.subviews.first)
+        let childSize = child.frame.size
+        let cssWidth = web.bounds.width - inset.left - inset.right
+        let cssHeight = web.bounds.height - inset.top - inset.bottom
+        XCTAssertTrue(auto, "This probe must exercise ordinary native WebKit child sizing")
+        XCTAssertGreaterThan(inset.top, 0)
+        XCTAssertFalse(window.occlusionState.contains(.visible))
+        let anchor = LivePageResizeAnchor(originalFrame: original, originalParentBounds: parent, flipped: host.isFlipped)
+        web.autoresizingMask = []
+        host.clipsToBounds = true
+        let next = NSSize(width: original.width + 48, height: original.height + 48)
+        web.frame = anchor.frame(for: next, in: parent)
+        PageResizeStyle.prepare(web, nextSize: next)
+        web.prepareContent(in: web.bounds)
+        XCTAssertEqual(child.frame.width, childSize.width + 48)
+        XCTAssertEqual(child.frame.height, childSize.height + 48)
+        XCTAssertEqual(host.bounds, parent, "Native child preparation must leave the visible parent clip fixed")
+        XCTAssertTrue(host.clipsToBounds)
+        XCTAssertEqual(web.autoresizesSubviews, auto)
+        XCTAssertEqual(web.safeAreaInsets.top, inset.top, "Lead must enlarge CSS height rather than cancel its public inset")
+        try await compatibilityWait {
+            let size = try await web.evaluateJavaScript("[innerWidth,innerHeight]") as? [NSNumber]
+            return size?.count == 2 && abs(size![0].doubleValue - Double(cssWidth + 48)) <= 1
+                && abs(size![1].doubleValue - Double(cssHeight + 48)) <= 1
+        }
+        web.frame = original
+        web.autoresizingMask = mask
+        host.clipsToBounds = clip
+        PageResizeStyle.finish(web)
+        XCTAssertEqual(child.frame.size, childSize)
+        XCTAssertEqual(web.autoresizesSubviews, auto)
         XCTAssertEqual(web.pageZoom, 1)
     }
 
@@ -446,13 +524,18 @@ import XCTest
         XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
     }
 
-    func testPrimingFreezesNativeSizingAndCoveredRequestsCommitWithoutAnotherPaint() throws {
+    func testPrimingPreparesNativeChildrenBehindHostClipAndOnlyCoveredRequestsCommit() throws {
         let f = Fixture(); defer { f.close() }
         let child = try XCTUnwrap(f.web.subviews.first)
         let oldChild = child.frame.size
+        let originalParent = f.host.bounds
+        let originalAuto = f.web.autoresizesSubviews
         f.buffer.start()
         XCTAssertEqual(f.web.frame.width, 648)
-        XCTAssertEqual(child.frame.size, oldChild)
+        XCTAssertEqual(child.frame.width, oldChild.width + 48)
+        XCTAssertEqual(child.frame.height, oldChild.height)
+        XCTAssertEqual(f.host.bounds, originalParent)
+        XCTAssertTrue(f.host.clipsToBounds)
         XCTAssertEqual(f.web.autoresizingMask, [])
         f.request(620)
         XCTAssertTrue(f.commits.isEmpty)
@@ -461,7 +544,7 @@ import XCTest
         f.request(640)
         XCTAssertEqual(f.window.frame.width, 640)
         XCTAssertEqual(f.paints.count, 1, "Refilling must run independently of covered pointer movement")
-        XCTAssertFalse(f.web.autoresizesSubviews)
+        XCTAssertEqual(f.web.autoresizesSubviews, originalAuto)
     }
 
     func testWindowDragDoesNotScheduleSidebarMetadataAcknowledgmentLayout() {
@@ -626,7 +709,7 @@ import XCTest
         XCTAssertFalse(f.buffer.isPreparing)
     }
 
-    func testSplitPagesKeepTheirClipsUntilEveryIndependentPaintPresents() throws {
+    func testSplitHostClipsKeepVisibleGeometryCoveredUntilEveryIndependentPaintPresents() throws {
         let f = Fixture(); defer { f.close() }
         let rightWeb = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         let right = WebHost(rightWeb)
@@ -652,17 +735,27 @@ import XCTest
         buffer.start()
         XCTAssertEqual(f.web.frame.width, 324)
         XCTAssertEqual(rightWeb.frame.width, 324)
+        XCTAssertEqual(leftChild.frame.width, 324)
+        XCTAssertEqual(rightChild.frame.width, 324)
+        XCTAssertTrue(f.host.clipsToBounds)
+        XCTAssertTrue(right.clipsToBounds)
         XCTAssertTrue(buffer.request(frame: NSRect(x: 0, y: 0, width: 640, height: 400)))
         let first = try XCTUnwrap(paints.first)
         paints.removeFirst()
         first(); first()
         XCTAssertEqual(f.window.frame.width, 600)
-        XCTAssertEqual(leftChild.frame.width, 300)
-        XCTAssertEqual(rightChild.frame.width, 300)
-        nextPaint(&paints)()
-        XCTAssertEqual(f.window.frame.width, 640)
+        XCTAssertEqual(f.host.bounds.width, 300)
+        XCTAssertEqual(right.bounds.width, 300)
         XCTAssertEqual(leftChild.frame.width, 324)
         XCTAssertEqual(rightChild.frame.width, 324)
+        nextPaint(&paints)()
+        XCTAssertEqual(f.window.frame.width, 640)
+        XCTAssertEqual(f.host.bounds.width, 320)
+        XCTAssertEqual(right.bounds.width, 320)
+        XCTAssertEqual(leftChild.frame.width, f.web.frame.width)
+        XCTAssertEqual(rightChild.frame.width, rightWeb.frame.width)
+        XCTAssertGreaterThanOrEqual(leftChild.frame.width, f.host.bounds.width)
+        XCTAssertGreaterThanOrEqual(rightChild.frame.width, right.bounds.width)
     }
 
     func testSidebarPredictionUsesOriginalNavigationAndWaitsForFinalHostLayout() throws {
@@ -807,6 +900,88 @@ import XCTest
         XCTAssertFalse(f.web.autoresizesSubviews)
         nextPaint(&f.paints)()
         XCTAssertFalse(f.web.autoresizesSubviews)
+    }
+
+    func testOwnedHostClipAndOriginalChildSizingFlagsRestoreOnReleaseAndCancel() {
+        for originalClip in [false, true] {
+            for originalAuto in [false, true] {
+                for release in [false, true] {
+                    let f = Fixture(); defer { f.close() }
+                    f.host.clipsToBounds = originalClip
+                    f.web.autoresizesSubviews = originalAuto
+                    let originalFrame = f.web.frame
+                    f.buffer.start()
+                    XCTAssertTrue(f.host.clipsToBounds)
+                    XCTAssertEqual(f.web.autoresizesSubviews, originalAuto)
+                    let preparedChildren = f.web.subviews.map(\.frame)
+                    nextPaint(&f.paints)()
+                    XCTAssertEqual(f.web.subviews.map(\.frame), preparedChildren,
+                        "Acknowledging a presentation must not change native WebKit child drawing geometry")
+                    if release {
+                        f.buffer.finish()
+                        XCTAssertEqual(f.web.frame, originalFrame, "Exact native geometry is prepared before its final paint")
+                        XCTAssertTrue(f.host.clipsToBounds)
+                        for _ in 0..<4 where !f.paints.isEmpty { nextPaint(&f.paints)() }
+                    } else { f.buffer.cancel() }
+                    XCTAssertEqual(f.completions, 1)
+                    XCTAssertEqual(f.host.clipsToBounds, originalClip)
+                    XCTAssertEqual(f.web.autoresizesSubviews, originalAuto)
+                    XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+                    XCTAssertEqual(f.web.frame, originalFrame)
+                }
+            }
+        }
+    }
+
+    func testMovedPageKeepsNewOwnerFlagsWhileOriginalHostClipRestores() {
+        let f = Fixture(); defer { f.close() }
+        f.host.clipsToBounds = false
+        f.buffer.start()
+        XCTAssertTrue(f.host.clipsToBounds)
+        let newOwner = NSView(frame: NSRect(x: 0, y: 0, width: 333, height: 222))
+        newOwner.clipsToBounds = true
+        f.web.removeFromSuperview()
+        newOwner.addSubview(f.web)
+        f.web.frame = newOwner.bounds
+        f.web.autoresizingMask = [.height]
+        f.web.autoresizesSubviews = false
+        nextPaint(&f.paints)()
+        f.deadlines.forEach { $0() }
+        XCTAssertFalse(f.host.clipsToBounds)
+        XCTAssertTrue(newOwner.clipsToBounds)
+        XCTAssertEqual(f.web.frame, newOwner.bounds)
+        XCTAssertEqual(f.web.autoresizingMask, [.height])
+        XCTAssertFalse(f.web.autoresizesSubviews)
+        XCTAssertEqual(f.completions, 1)
+    }
+
+    func testSameHostReplacementSizingKeepsNewFrameMaskChildFlagAndClip() {
+        let f = Fixture(); defer { f.close() }
+        f.host.clipsToBounds = false
+        f.buffer.start()
+        let replacementFrame = NSRect(x: 11, y: 17, width: 333, height: 222)
+        f.web.frame = replacementFrame
+        f.web.autoresizingMask = [.height]
+        f.web.autoresizesSubviews = false
+        f.host.clipsToBounds = true
+        nextPaint(&f.paints)()
+        XCTAssertEqual(f.web.frame, replacementFrame)
+        XCTAssertEqual(f.web.autoresizingMask, [.height])
+        XCTAssertFalse(f.web.autoresizesSubviews)
+        XCTAssertTrue(f.host.clipsToBounds)
+        XCTAssertEqual(f.completions, 1)
+    }
+
+    func testExternallyChangedHostClipCancelsWithoutRestoringOverItsOwner() {
+        let f = Fixture(); defer { f.close() }
+        f.host.clipsToBounds = true
+        f.buffer.start()
+        f.host.clipsToBounds = false
+        nextPaint(&f.paints)()
+        XCTAssertEqual(f.completions, 1)
+        XCTAssertFalse(f.host.clipsToBounds)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+        XCTAssertTrue(f.web.autoresizesSubviews)
     }
 
     func testWatchdogUsesLatestRequestAndLateCallbacksCannotCommitAgain() {

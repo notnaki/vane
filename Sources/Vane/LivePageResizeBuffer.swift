@@ -31,7 +31,7 @@ struct LivePageResizeAnchor {
     }
 }
 
-/// A drag owns one persistent native freeze. Painted lookahead lets pointer geometry
+/// A drag suspends parent-driven page sizing behind a native host clip. Painted lookahead lets pointer geometry
 /// move independently of WebKit's presentation clock; only uncovered growth waits.
 @MainActor final class LivePageResizeBuffer {
     @MainActor private final class Page {
@@ -43,11 +43,11 @@ struct LivePageResizeAnchor {
         let parentSize: NSSize
         let mask: NSView.AutoresizingMask
         let autoSubviews: Bool
+        let hostClip: Bool
         let layout: PageResizeLayout
         let fraction: NSSize
         var painted: NSSize
         var prepared: NSSize
-        var installed: NSSize
         var restored = false
 
         init(web: WKWebView, host: WebHost) {
@@ -59,18 +59,18 @@ struct LivePageResizeAnchor {
             parentSize = host.bounds.size
             mask = web.autoresizingMask
             autoSubviews = web.autoresizesSubviews
+            hostClip = host.clipsToBounds
             layout = host.resizeLayout
             fraction = host.resizeFraction
             painted = originalSize
             prepared = originalSize
-            installed = originalSize
         }
 
         var owned: Bool {
             guard let host else { return false }
             return web.superview === host && host.web === web && !host.offscreen
                 && !web.isHiddenOrHasHiddenAncestor && web.frame == expectedFrame && host.isFlipped == anchor.flipped
-                && web.autoresizingMask.isEmpty && !web.autoresizesSubviews
+                && web.autoresizingMask.isEmpty && web.autoresizesSubviews == autoSubviews && host.clipsToBounds
                 && host.resizeFraction == fraction && host.resizeLayout.enabled
                 && host.resizeLayout.librarySection == layout.librarySection
                 && host.resizeLayout.spaces == layout.spaces
@@ -87,8 +87,8 @@ struct LivePageResizeAnchor {
         }
 
         func freeze() {
+            host?.clipsToBounds = true
             web.autoresizingMask = []
-            web.autoresizesSubviews = false
         }
 
         private func assignFrame(size: NSSize) {
@@ -117,15 +117,7 @@ struct LivePageResizeAnchor {
             PageResizeStyle.prepare(web, nextSize: prepared)
         }
 
-        func install() {
-            if autoSubviews {
-                web.autoresizesSubviews = true
-                web.resizeSubviews(withOldSize: installed)
-                web.autoresizesSubviews = false
-            }
-            installed = prepared
-            painted = prepared
-        }
+        func acknowledgePaint() { painted = prepared }
 
         var currentVisibleSize: NSSize {
             guard let host else { return originalSize }
@@ -143,16 +135,19 @@ struct LivePageResizeAnchor {
         func restore(exact: Bool) {
             guard !restored else { return }
             restored = true
-            if let host, web.superview === host {
-                assignFrame(size: exact ? prepared : currentVisibleSize)
-                web.autoresizingMask = mask
-                web.autoresizesSubviews = autoSubviews
-                if autoSubviews { web.resizeSubviews(withOldSize: installed) }
-            } else if !web.autoresizesSubviews {
-                // The new owner keeps its frame and mask, including any layout it
-                // installed while this page's old presentation was in flight.
-                web.autoresizesSubviews = autoSubviews
-                if autoSubviews { web.resizeSubviews(withOldSize: installed) }
+            if let host, host.web === web {
+                let ownsSizing = web.superview === host && web.frame == expectedFrame
+                    && web.autoresizingMask.isEmpty && web.autoresizesSubviews == autoSubviews
+                if ownsSizing {
+                    assignFrame(size: exact ? prepared : currentVisibleSize)
+                    web.autoresizingMask = mask
+                }
+                // A moved page keeps its new owner's native frame and flags.
+                // The old host can retire its clip only while that clip still
+                // belongs to this page, rather than a replacement in this host.
+                if host.clipsToBounds, ownsSizing || web.superview !== host {
+                    host.clipsToBounds = hostClip
+                }
             }
             PageResizeStyle.finish(web)
             web.prepareContent(in: web.bounds)
@@ -348,6 +343,12 @@ struct LivePageResizeAnchor {
     func trackSidebarPublicationLayout() {
         pages.forEach { page in
             page.host?.pageResizeLayoutDidUpdate = { [weak self] in self?.layoutChanged() }
+            let host = page.host
+            host?.pageResizeLayoutNeedsUpdate = { [weak self, weak host] in
+                guard let self, let host, self.active, self.ownsLayout,
+                      let index = self.pages.firstIndex(where: { $0.host === host }) else { return false }
+                return self.sidebarPublicationReached(page: self.pages[index], index: index, afterEndingFlush: false)
+            }
         }
     }
 
@@ -384,20 +385,24 @@ struct LivePageResizeAnchor {
     }
 
     private func acknowledgeSidebarPublication(afterEndingFlush: Bool = false) {
-        guard let sidebar = submittedSidebar, let target = submittedSidebarSizes,
-              let revisions = submittedSidebarRevisions else { return }
-        let rootWidth = viewportRoot(Request(frame: expectedFrame, sidebar: sidebar)).width
         guard pages.enumerated().allSatisfy({ index, page in
-            var layout = page.layout
-            layout.sidebarWidth = sidebar
-            return (afterEndingFlush || page.host?.resizeLayoutRevision != revisions[index])
-                && page.parentReached(target[index])
-                && page.host?.resizeLayout.leadingWidth(at: rootWidth) == layout.leadingWidth(at: rootWidth)
+            sidebarPublicationReached(page: page, index: index, afterEndingFlush: afterEndingFlush)
         }) else { return }
         submittedSidebar = nil
         submittedSidebarSizes = nil
         submittedSidebarFloor = nil
         submittedSidebarRevisions = nil
+    }
+
+    private func sidebarPublicationReached(page: Page, index: Int, afterEndingFlush: Bool) -> Bool {
+        guard let sidebar = submittedSidebar, let target = submittedSidebarSizes,
+              let revisions = submittedSidebarRevisions else { return false }
+        let rootWidth = viewportRoot(Request(frame: expectedFrame, sidebar: sidebar)).width
+        var layout = page.layout
+        layout.sidebarWidth = sidebar
+        return (afterEndingFlush || page.host?.resizeLayoutRevision != revisions[index])
+            && page.parentReached(target[index])
+            && page.host?.resizeLayout.leadingWidth(at: rootWidth) == layout.leadingWidth(at: rootWidth)
     }
 
     private var ownsWindow: Bool {
@@ -579,7 +584,7 @@ struct LivePageResizeAnchor {
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.install.begin")
 #endif
-            pages.forEach { $0.install() }
+            pages.forEach { $0.acknowledgePaint() }
             hasPresentedViewport = true
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.install.end")
@@ -684,6 +689,7 @@ struct LivePageResizeAnchor {
         pages.forEach { page in
             page.host?.pageLayoutDidResize = nil
             page.host?.pageResizeLayoutDidUpdate = nil
+            page.host?.pageResizeLayoutNeedsUpdate = nil
             page.host?.pageResizeOwnershipWillChange = nil
             page.restore(exact: exact)
         }

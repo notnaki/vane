@@ -101,17 +101,23 @@ final class WebHost: NSView {
     var pageLayoutDidResize: (() -> Void)?
     var pageResizeOwnershipWillChange: (() -> Void)?
     var pageResizeLayoutDidUpdate: (() -> Void)?
+    var pageResizeLayoutNeedsUpdate: (() -> Bool)?
     private(set) var resizeLayoutRevision: UInt = 0
+    private var resizeLayoutAckScheduled = false
 
     /// Same-size SwiftUI updates need an acknowledgment after native layout too.
     /// Schedule only this host's normal layout; never force the containing tree.
     func didUpdateResizeLayout() {
         resizeLayoutRevision &+= 1
-        if pageResizeLayoutDidUpdate != nil { needsLayout = true }
+        resizeLayoutAckScheduled = pageResizeLayoutNeedsUpdate?() == true
+        if resizeLayoutAckScheduled { needsLayout = true }
     }
 
     override func layout() {
         super.layout()
+        guard resizeLayoutAckScheduled else { return }
+        resizeLayoutAckScheduled = false
+        guard pageResizeLayoutNeedsUpdate?() == true else { return }
         pageResizeLayoutDidUpdate?()
     }
     private(set) var web: WKWebView?
@@ -178,7 +184,10 @@ final class WebHost: NSView {
             PageResizeStyle.prepare(web, nextSize: next)
         }
         super.setFrameSize(newSize)
-        if previous != newSize { pageLayoutDidResize?() }
+        if previous != newSize {
+            resizeLayoutAckScheduled = false
+            pageLayoutDidResize?()
+        }
         if wasEmpty, !offscreen, let web { PageResizeStyle.warm(web) }
     }
 
