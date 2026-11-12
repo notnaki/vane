@@ -22,11 +22,34 @@ enum FolderFace {
     static let bounds = CGRect(x: -0.5, y: 3.5, width: 17.75, height: 13.5)
     static let badgeOffset = CGSize(width: 0.375, height: 2.25)
 
+    static func panelBounds(_ openness: CGFloat) -> CGRect {
+        CGRect(x: -0.25 - 0.25 * openness, y: 3.375 + 0.125 * openness,
+               width: 17.5 + 0.25 * openness, height: 13.25 + 0.25 * openness)
+    }
+
     static func panel(_ openness: CGFloat) -> Path {
         FolderPanel(openness: openness).path
     }
 
+    // The recording keeps this lower-right spine corner and the bottom edge planted.
+    static let hinge = CGPoint(x: 17.25, y: 16.625)
+
     static func projection(_ openness: CGFloat) -> CGAffineTransform {
+        var transform = unanchoredProjection(openness)
+        let offset = hingeOffset(openness)
+        transform.tx += offset.width
+        transform.ty += offset.height
+        return transform
+    }
+
+    static func hingeOffset(_ openness: CGFloat) -> CGSize {
+        let bounds = panelBounds(openness)
+        let corner = CGPoint(x: bounds.maxX, y: bounds.maxY)
+            .applying(unanchoredProjection(openness))
+        return CGSize(width: hinge.x - corner.x, height: hinge.y - corner.y)
+    }
+
+    private static func unanchoredProjection(_ openness: CGFloat) -> CGAffineTransform {
         let scaleX: CGFloat = 14 / bounds.width
         let scaleY: CGFloat = 11.5 / bounds.height
         let shear: CGFloat = -3.5 / bounds.height
@@ -53,8 +76,7 @@ struct FolderFaceProjection: GeometryEffect {
 private struct FolderPanel {
     let openness: CGFloat
     var bounds: CGRect {
-        CGRect(x: -0.25 - 0.25 * openness, y: 3.375 + 0.125 * openness,
-               width: 17.5 + 0.25 * openness, height: 13.25 + 0.25 * openness)
+        FolderFace.panelBounds(openness)
     }
     var topRadius: CGFloat { 2.25 - 0.5 * openness }
     var bottomRadius: CGFloat { 2.75 - 0.75 * openness }
@@ -107,8 +129,10 @@ struct FolderArtwork: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
+        let offset = FolderFace.hingeOffset(openness)
         func point(_ cx: CGFloat, _ cy: CGFloat, _ ox: CGFloat, _ oy: CGFloat) -> CGPoint {
-            CGPoint(x: cx + (ox - cx) * openness, y: cy + (oy - cy) * openness)
+            CGPoint(x: cx + (ox - cx) * openness + offset.width,
+                    y: cy + (oy - cy) * openness + offset.height)
         }
         let panel = FolderPanel(openness: openness)
         let front = FolderFace.panel(openness)
