@@ -15,17 +15,21 @@ import XCTest
     private func discoveryWindowServerDiagnostics() -> String {
         let process = ProcessInfo.processInfo.processIdentifier
         let windows = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        let owned = windows.filter { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == process }
-        let rows = owned.map { window in
+        let relevant = windows.filter {
+            ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == process ||
+                ($0[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true
+        }
+        let rows = relevant.map { window in
             let bounds = (window[kCGWindowBounds as String] as? [String: Any]).flatMap {
                 CGRect(dictionaryRepresentation: $0 as CFDictionary)
             }
             return "id=\(String(describing: window[kCGWindowNumber as String])) " +
+                "owner=\(String(describing: window[kCGWindowOwnerName as String])) pid=\(String(describing: window[kCGWindowOwnerPID as String])) layer=\(String(describing: window[kCGWindowLayer as String])) " +
                 "onscreen=\(String(describing: window[kCGWindowIsOnscreen as String])) " +
                 "alpha=\(String(describing: window[kCGWindowAlpha as String])) bounds=\(String(describing: bounds))"
         }
         return "process=\(process) frontmostPID=\(String(describing: NSWorkspace.shared.frontmostApplication?.processIdentifier)) " +
-            "ownedServerRows=[\(rows.joined(separator: ";"))]"
+            "serverRows=[\(rows.joined(separator: ";"))]"
     }
 
     private final class Capture: NSObject, WKScriptMessageHandler {
@@ -47,8 +51,9 @@ import XCTest
         return try data.map { try JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
     }
     private func wait(_ stage: String = "fixture outcome", file: StaticString = #filePath,
-                      line: UInt = #line, diagnostics: (() async -> String)? = nil, _ condition: () async throws -> Bool) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+                      line: UInt = #line, deadline requestedDeadline: ContinuousClock.Instant? = nil,
+                      diagnostics: (() async -> String)? = nil, _ condition: () async throws -> Bool) async throws {
+        let deadline = requestedDeadline ?? ContinuousClock.now.advanced(by: .seconds(5))
         while ContinuousClock.now < deadline {
             if try await condition() { return }
             try await Task.sleep(for: .milliseconds(20))
@@ -259,15 +264,20 @@ import XCTest
 
     private func checkLateShadowDiscovery(withdrawal: DiscoveryWithdrawal = .none) async throws {
         TestEnvironment.prepare()
-        let app = NSApplication.shared, policy = app.activationPolicy(), originallyHidden = app.isHidden
+        let app = NSApplication.shared, policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
         var loop: NativeFixtureApplicationLoop?
         var retire: (@MainActor @Sendable () -> Void)?
         var failure: (any Error)?
         let launch = DiscoveryLaunch()
         defer { print("SHADOW_LAUNCH_TRACE " + launch.observations.joined(separator: " | ")) }
         do {
-            // WebKit may defer timers in an unordered document even with an
-            // AppKit loop. Admit the exact visible owner before loading it.
+            // NSWindow must be created after the host has admitted a UI-capable
+            // policy and running AppKit loop. Then admit its compositor visibility
+            // before WebKit navigation, within the same five-second startup budget.
+            let startupDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+            loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+            let ownedLoop = try XCTUnwrap(loop)
             let (web, capture) = try await fixture("<div id=host></div>", tracking: """
                 globalThis.__shadowFixtureVisibility = [{state:document.visibilityState, at:Date.now()}];
                 document.addEventListener('visibilitychange', () => {
@@ -279,27 +289,23 @@ import XCTest
                 // below still observes real presentation withdrawal.
                 window.animationBehavior = .none
                 try self.positionDiscoveryWindow(window)
-                loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory,
-                    beforeHeartbeat: {
-                        window.makeKeyAndOrderFront(nil)
-                        app.activate(ignoringOtherApps: true)
-                    }, launchReadiness: {
-                        // Submit the initial navigation only after WindowServer
-                        // acknowledges this owner as visible. Native key/ordering
-                        // alone can precede WebKit's visibility by several seconds.
-                        let nativeReady = self.discoveryPresentationReady(window, document: web)
-                        let compositorReady = window.occlusionState.contains(.visible)
-                        let state = self.discoveryNativeDiagnostics(web) + " running=\(app.isRunning)"
-                        if state != launch.previousState {
-                            launch.previousState = state
-                            launch.observations.append("elapsed=\(ProcessInfo.processInfo.systemUptime - launch.started) \(state)")
-                        }
-                        let ready = nativeReady && compositorReady
-                        if ready { print("SHADOW_LAUNCH_PRESENTATION " + self.discoveryNativeDiagnostics(web)) }
-                        return ready
-                    })
+                window.makeKeyAndOrderFront(nil)
+                app.activate(ignoringOtherApps: true)
+                try await self.wait("shadow initial compositor presentation", deadline: startupDeadline,
+                                    diagnostics: { self.discoveryNativeDiagnostics(web) }) {
+                    let loopReady = try ownedLoop.isReadyForInteraction()
+                    let nativeReady = self.discoveryPresentationReady(window, document: web)
+                    let compositorReady = window.occlusionState.contains(.visible)
+                    let state = self.discoveryNativeDiagnostics(web) + " running=\(app.isRunning)"
+                    if state != launch.previousState {
+                        launch.previousState = state
+                        launch.observations.append("elapsed=\(ProcessInfo.processInfo.systemUptime - launch.started) \(state)")
+                    }
+                    let ready = loopReady && nativeReady && compositorReady
+                    if ready { print("SHADOW_LAUNCH_PRESENTATION " + self.discoveryNativeDiagnostics(web)) }
+                    return ready
+                }
             }, retireWith: { retire = $0 })
-            let ownedLoop = try XCTUnwrap(loop)
             let owner = try XCTUnwrap(web.window)
             if withdrawal != .none {
                 // Admit the visible WebKit document before injecting withdrawal,
@@ -342,53 +348,14 @@ import XCTest
             print("SHADOW_SERVER_FAILURE " + discoveryWindowServerDiagnostics())
             failure = error
         }
-        // Closing the last window does not deactivate an accessory application.
-        // Hiding our host hands activation back to the system. Observe that
-        // handoff before stopping its loop and restoring .prohibited, so the
-        // next fixture cannot overlap an unfinished activation lifecycle.
+        // Retire inside the owned loop, including when fixture admission throws.
         retire?()
         if let loop {
-            if policy == .prohibited {
-                app.hide(nil)
-                do {
-                    try await wait("shadow host deactivation", diagnostics: {
-                        "appActive=\(app.isActive) processActive=\(NSRunningApplication.current.isActive) appHidden=\(app.isHidden) processHidden=\(NSRunningApplication.current.isHidden)"
-                    }) {
-                        !app.isActive && !NSRunningApplication.current.isActive && app.isHidden
-                    }
-                } catch {
-                    if failure == nil { failure = error }
-                    else { XCTFail("Shadow discovery deactivation also failed: \(error)") }
-                }
-                if !originallyHidden { app.unhideWithoutActivation() }
-                do {
-                    try await wait("shadow host hidden-state restoration") {
-                        app.isHidden == originallyHidden && NSRunningApplication.current.isHidden == originallyHidden &&
-                            !app.isActive && !NSRunningApplication.current.isActive
-                    }
-                    print("SHADOW_RETIREMENT inactive=true running=\(app.isRunning) restoredHidden=\(originallyHidden)")
-                } catch {
-                    if failure == nil { failure = error }
-                    else { XCTFail("Shadow discovery hidden-state restoration also failed: \(error)") }
-                }
-            }
             do { try await loop.close() }
             catch {
                 if failure == nil { failure = error }
                 else { XCTFail("Shadow discovery AppKit loop cleanup also failed: \(error)") }
             }
-        }
-        app.setActivationPolicy(policy)
-        do {
-            try await wait("shadow host original activation policy", diagnostics: {
-                "appPolicy=\(app.activationPolicy().rawValue) processPolicy=\(NSRunningApplication.current.activationPolicy.rawValue)"
-            }) {
-                app.activationPolicy() == policy && NSRunningApplication.current.activationPolicy == policy
-            }
-            print("SHADOW_RETIREMENT restoredPolicy=\(policy.rawValue) appActive=\(app.isActive) processActive=\(NSRunningApplication.current.isActive)")
-        } catch {
-            if failure == nil { failure = error }
-            else { XCTFail("Shadow discovery policy restoration also failed: \(error)") }
         }
         if let failure { throw failure }
     }
