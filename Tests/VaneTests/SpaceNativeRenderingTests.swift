@@ -1553,6 +1553,11 @@ import XCTest
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
+        if let path = ProcessInfo.processInfo.environment["VANE_DIAG_GESTURE_MARKER"] {
+            let event: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier,
+                                       "time": ProcessInfo.processInfo.systemUptime]
+            try JSONSerialization.data(withJSONObject: event).write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
         monitor.land(1, to: second, width: fixtureSidebarWidth(in: source), store: source, duration: 0.8)
         try await Task.sleep(for: .milliseconds(100))
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
