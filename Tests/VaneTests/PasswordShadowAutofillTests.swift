@@ -3,8 +3,8 @@ import WebKit
 import XCTest
 @testable import vane
 
-/// DOM-only cases use attached, unshown WebKit. The asynchronous notification
-/// case admits its exact visible document. No native input, screenshots or Keychain.
+/// Real WebKit without native input, screenshots, or Keychain access. DOM-only
+/// cases stay unordered; timer-driven discovery admits its exact visible owner.
 @MainActor final class PasswordShadowAutofillTests: XCTestCase {
     private final class Capture: NSObject, WKScriptMessageHandler {
         var messages: [[String: Any]] = []
@@ -25,18 +25,19 @@ import XCTest
         return try data.map { try JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
     }
     private func wait(_ stage: String = "fixture outcome", file: StaticString = #filePath,
-                      line: UInt = #line, _ condition: () async throws -> Bool) async throws {
+                      line: UInt = #line, diagnostics: (() async -> String)? = nil, _ condition: () async throws -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while ContinuousClock.now < deadline {
             if try await condition() { return }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTFail("Focus-free WebKit fixture timed out: \(stage); appRunning=\(NSApp.isRunning)", file: file, line: line)
+        let details = await diagnostics?() ?? ""
+        XCTFail("WebKit fixture timed out: \(stage); appRunning=\(NSApp.isRunning) \(details)", file: file, line: line)
         throw NSError(domain: "PasswordShadowFixtureTimeout", code: 1)
     }
     private func fixture(_ html: String,
                          url: URL = URL(string: "https://login.example.test/signin")!, tracking: String = "",
-                         present: ((NSWindow, WKWebView) async throws -> Void)? = nil,
+                         present: (@MainActor (NSWindow, WKWebView) async throws -> Void)? = nil,
                          retireWith: ((@escaping @MainActor @Sendable () -> Void) -> Void)? = nil) async throws -> (WKWebView, Capture) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -81,17 +82,6 @@ import XCTest
         guard let raw = try await js(web, "__vaneAnchor()", isolated: true) as? String,
               let data = raw.data(using: .utf8) else { return nil }
         return try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? [String: Any]
-    }
-    private func notificationOwnerReady(_ web: WKWebView) -> Bool {
-        guard let window = web.window else { return false }
-        let app = NSApplication.shared, running = NSRunningApplication.current
-        return app.isRunning && running.isFinishedLaunching && app.isActive &&
-            !app.isHidden && !running.isHidden && app.keyWindow === window &&
-            window.isKeyWindow && window.isVisible && !window.isMiniaturized &&
-            window.isOnActiveSpace && window.alphaValue > 0 &&
-            NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) } &&
-            window.contentView === web && !web.isHiddenOrHasHiddenAncestor &&
-            web.bounds.width > 0 && web.bounds.height > 0
     }
     private let login = "<form id=login><input id=user autocomplete=username><input id=password type=password autocomplete=current-password><button>Sign in</button></form>"
     // Wrap real WebKit getters without changing their results or suppressing their
@@ -148,18 +138,158 @@ import XCTest
         XCTAssertEqual(capture.messages.last { $0["password"] != nil }?["account"] as? String, "ada")
     }
 
+    // Match the ordinary autofill fixture: AppKit occlusion can be stale after
+    // activation. Admit WebKit's actual visibility state separately below.
+    private func discoveryPresentationReady(_ window: NSWindow, document: WKWebView) -> Bool {
+        let app = NSApplication.shared, running = NSRunningApplication.current
+        return app.isRunning && running.isFinishedLaunching && app.isActive &&
+            !app.isHidden && !running.isHidden && app.keyWindow === window &&
+            window.isKeyWindow && window.isVisible && !window.isMiniaturized &&
+            window.isOnActiveSpace && window.alphaValue > 0 &&
+            NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) } &&
+            window.contentView === document && document.window === window &&
+            !document.isHiddenOrHasHiddenAncestor && document.bounds.width > 0 && document.bounds.height > 0
+    }
+
+    private func discoveryNativeDiagnostics(_ web: WKWebView) -> String {
+        let window = web.window
+        let app = NSApplication.shared, running = NSRunningApplication.current
+        return "visible=\(window?.isVisible ?? false) key=\(window?.isKeyWindow ?? false) " +
+            "occlusion=\(window?.occlusionState.rawValue ?? 0) appActive=\(app.isActive) " +
+            "finished=\(running.isFinishedLaunching) appHidden=\(app.isHidden) processHidden=\(running.isHidden) " +
+            "keyOwner=\(window != nil && app.keyWindow === window) miniaturized=\(window?.isMiniaturized ?? false) " +
+            "activeSpace=\(window?.isOnActiveSpace ?? false) alpha=\(window?.alphaValue ?? 0) " +
+            "frame=\(String(describing: window?.frame)) screens=\(NSScreen.screens.map(\.visibleFrame)) " +
+            "attached=\(window?.contentView === web) documentHidden=\(web.isHiddenOrHasHiddenAncestor) bounds=\(web.bounds)"
+    }
+
+    private func discoveryDiagnostics(_ web: WKWebView, capture: Capture? = nil) async -> String {
+        let native = discoveryNativeDiagnostics(web)
+        let state = try? await js(web, "JSON.stringify({visibility:document.visibilityState, state:document.readyState, anchor:JSON.parse(__vaneAnchor())})", isolated: true)
+        return native + " " +
+            "readyMessages=\(capture?.messages.filter { $0["ready"] as? Bool == true }.count ?? 0) document=\(String(describing: state))"
+    }
+
+    private func positionDiscoveryWindow(_ window: NSWindow) throws {
+        let screen = try XCTUnwrap(window.screen ?? NSScreen.main ?? NSScreen.screens.first)
+        let available = screen.visibleFrame.insetBy(dx: 20, dy: 20)
+        let size = CGSize(width: min(window.frame.width, available.width),
+                          height: min(window.frame.height, available.height))
+        window.setFrame(CGRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
+                               width: size.width, height: size.height), display: false)
+    }
+
+    private func admitDiscoveryDocument(_ web: WKWebView, loop: NativeFixtureApplicationLoop) async throws {
+        var readmissionRequested = false
+        var lastUnready = ""
+        var lastDocumentProbe = "not sampled"
+        try await wait("visible shadow discovery document", diagnostics: {
+            "lastUnready={\(lastUnready)} lastDocumentProbe={\(lastDocumentProbe)} " + (await self.discoveryDiagnostics(web))
+        }) {
+            // Verify loop ownership/policy even while its presentation prerequisite
+            // is withdrawn; do not short-circuit before we can restore that owner.
+            _ = try loop.isReadyForInteraction()
+            guard let window = web.window, window.contentView === web else { return false }
+            if !self.discoveryPresentationReady(window, document: web) {
+                lastUnready = self.discoveryNativeDiagnostics(web)
+                if !readmissionRequested {
+                    if NSApp.isHidden { NSApp.unhide(nil) }
+                    if window.isMiniaturized { window.deminiaturize(nil) }
+                    if !NSScreen.screens.contains(where: { $0.visibleFrame.contains(window.frame) }) {
+                        try self.positionDiscoveryWindow(window)
+                    }
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    readmissionRequested = true
+                }
+                return false
+            }
+            readmissionRequested = false
+            let visibility = try await self.js(web, "document.visibilityState", isolated: true) as? String
+            let loopReady = try loop.isReadyForInteraction()
+            let nativeReady = self.discoveryPresentationReady(window, document: web)
+            lastDocumentProbe = "visibility=\(visibility ?? "unavailable") loopReady=\(loopReady) nativeReady=\(nativeReady)"
+            if !nativeReady { lastUnready = self.discoveryNativeDiagnostics(web) }
+            return visibility == "visible" && loopReady && nativeReady
+        }
+    }
+
     func testLateAttachedNestedRootsAndFieldsNotifyDiscoveryWithoutLightDOMMutation() async throws {
+        try await checkLateShadowDiscovery()
+    }
+
+    func testLateShadowDiscoveryRecoversAWithdrawnPresentation() async throws {
+        try await checkLateShadowDiscovery(withdrawal: .hidden)
+    }
+
+    func testLateShadowDiscoveryRecoversOffscreenGeometryWhileStillKey() async throws {
+        try await checkLateShadowDiscovery(withdrawal: .offscreen)
+    }
+
+    private enum DiscoveryWithdrawal: Equatable { case none, hidden, offscreen }
+
+    private func checkLateShadowDiscovery(withdrawal: DiscoveryWithdrawal = .none) async throws {
         TestEnvironment.prepare()
-        let app = NSApplication.shared, previousPolicy = app.activationPolicy()
-        defer { app.setActivationPolicy(previousPolicy) }
+        let app = NSApplication.shared, policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
         var loop: NativeFixtureApplicationLoop?
+        var retire: (@MainActor @Sendable () -> Void)?
         var failure: (any Error)?
         do {
-            // No document exists if loop acquisition fails and joins internally.
-            let acquired = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
-            loop = acquired
-            try await checkLateAttachedNestedRoots(loop: acquired)
+            // Acquisition can join its loop before throwing. Create no document
+            // until it succeeds, so every document retires inside the owned loop.
+            let ownedLoop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+            loop = ownedLoop
+            // Admit the exact visible owner before loading its timer-driven page.
+            let (web, capture) = try await fixture("<div id=host></div>", present: { window, web in
+                try self.positionDiscoveryWindow(window)
+                window.makeKeyAndOrderFront(nil)
+                app.activate(ignoringOtherApps: true)
+                try await self.wait("exact visible notification document") {
+                    try ownedLoop.isReadyForInteraction() && self.discoveryPresentationReady(window, document: web)
+                }
+            }, retireWith: { retire = $0 })
+            let owner = try XCTUnwrap(web.window)
+            if withdrawal != .none {
+                // Admit the visible WebKit document before injecting withdrawal,
+                // not just the native window that hosted its initial navigation.
+                try await admitDiscoveryDocument(web, loop: ownedLoop)
+            }
+            switch withdrawal {
+            case .none: break
+            case .hidden:
+                owner.orderOut(nil)
+                XCTAssertFalse(owner.isVisible, "The native presentation must actually withdraw before readmission")
+                // Native ordering and WebProcess visibility are asynchronous.
+                // Observe the hidden boundary before asking the fixture to show it.
+                try await wait("hidden shadow discovery control", diagnostics: { await self.discoveryDiagnostics(web) }) {
+                    _ = try ownedLoop.isReadyForInteraction()
+                    guard !owner.isVisible else { return false }
+                    return try await self.js(web, "document.visibilityState", isolated: true) as? String == "hidden"
+                }
+            case .offscreen:
+                let screen = try XCTUnwrap(owner.screen)
+                owner.setFrameOrigin(NSPoint(x: screen.visibleFrame.minX - 1, y: screen.visibleFrame.minY + 20))
+                XCTAssertTrue(owner.isVisible)
+                XCTAssertTrue(owner.isKeyWindow)
+                XCTAssertFalse(NSScreen.screens.contains { $0.visibleFrame.contains(owner.frame) })
+            }
+            try await admitDiscoveryDocument(web, loop: ownedLoop)
+            _ = try await js(web, "var root=host.attachShadow({mode:'open'}); root.innerHTML='<div id=inner></div>'; var inner=root.getElementById('inner'); var nested=inner.attachShadow({mode:'open'}); nested.innerHTML='<form><input autocomplete=username><input id=password type=password></form>'")
+            try await wait("late shadow root discovery", diagnostics: { await self.discoveryDiagnostics(web, capture: capture) }) { capture.messages.contains { $0["ready"] as? Bool == true } }
+            let originalAnchor = try await anchor(web)
+            let old = try XCTUnwrap(originalAnchor?["target"] as? String)
+            let count = capture.messages.filter { $0["ready"] as? Bool == true }.count
+            try await admitDiscoveryDocument(web, loop: ownedLoop)
+            _ = try await js(web, "nested.getElementById('password').outerHTML='<input id=password type=password autocomplete=current-password>'")
+            try await wait("replacement shadow field discovery", diagnostics: { await self.discoveryDiagnostics(web, capture: capture) }) { capture.messages.filter { $0["ready"] as? Bool == true }.count > count }
+            let stale = try await fill(web, target: old)
+            XCTAssertFalse(stale)
+            let current = try await fill(web)
+            XCTAssertTrue(current)
         } catch { failure = error }
+        // Retire inside the owned loop, including when fixture admission throws.
+        retire?()
         if let loop {
             do { try await loop.close() }
             catch {
@@ -168,43 +298,6 @@ import XCTest
             }
         }
         if let failure { throw failure }
-    }
-
-    private func admitNotificationOwner(_ web: WKWebView, loop: NativeFixtureApplicationLoop) async throws {
-        try await wait("exact visible notification document") {
-            try loop.isReadyForInteraction() && self.notificationOwnerReady(web)
-        }
-    }
-
-    private func checkLateAttachedNestedRoots(loop: NativeFixtureApplicationLoop) async throws {
-        var retire: (@MainActor @Sendable () -> Void)?
-        defer { retire?() }
-        // Retire inside the owned loop, including when fixture admission throws.
-        let (web, capture) = try await fixture("<div id=host></div>", present: { window, web in
-            let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first)
-            let available = screen.visibleFrame.insetBy(dx: 20, dy: 20)
-            let size = CGSize(width: min(window.frame.width, available.width),
-                              height: min(window.frame.height, available.height))
-            window.setFrame(CGRect(x: available.midX - size.width / 2,
-                                   y: available.midY - size.height / 2,
-                                   width: size.width, height: size.height), display: false)
-            window.makeKeyAndOrderFront(nil)
-            NSApplication.shared.activate(ignoringOtherApps: true)
-            try await self.admitNotificationOwner(web, loop: loop)
-        }, retireWith: { retire = $0 })
-        try await admitNotificationOwner(web, loop: loop)
-        _ = try await js(web, "var root=host.attachShadow({mode:'open'}); root.innerHTML='<div id=inner></div>'; var inner=root.getElementById('inner'); var nested=inner.attachShadow({mode:'open'}); nested.innerHTML='<form><input autocomplete=username><input id=password type=password></form>'")
-        try await wait("late shadow root discovery") { capture.messages.contains { $0["ready"] as? Bool == true } }
-        let originalAnchor = try await anchor(web)
-        let old = try XCTUnwrap(originalAnchor?["target"] as? String)
-        let count = capture.messages.filter { $0["ready"] as? Bool == true }.count
-        try await admitNotificationOwner(web, loop: loop)
-        _ = try await js(web, "nested.getElementById('password').outerHTML='<input id=password type=password autocomplete=current-password>'")
-        try await wait("replacement shadow field discovery") { capture.messages.filter { $0["ready"] as? Bool == true }.count > count }
-        let stale = try await fill(web, target: old)
-        XCTAssertFalse(stale)
-        let current = try await fill(web)
-        XCTAssertTrue(current)
     }
 
     func testShadowHostVisibilityAndInertBoundariesRefuseWriting() async throws {
