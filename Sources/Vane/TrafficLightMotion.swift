@@ -17,7 +17,8 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
     }
 
     func body(content: Content) -> some View {
-        content
+        TrafficMotionTrace.record("modifier slide=\(slide) inset=\(inset) visibility=\(visibility) peeking=\(peeking)")
+        return content
             .padding(inset)
             .offset(x: slide)
             .opacity(visibility)
@@ -39,11 +40,32 @@ private struct TrafficLightPlacement: NSViewRepresentable {
 
     func makeNSView(context: Context) -> TrafficLightPlacementView { TrafficLightPlacementView() }
     func updateNSView(_ view: TrafficLightPlacementView, context: Context) {
+        TrafficMotionTrace.record("placement offset=\(offset) visibility=\(visibility) peeking=\(peeking) mounted=\(view.window != nil)")
         view.store = store
         view.offset = offset
         view.visibility = visibility
         view.peeking = peeking
         view.place()
+    }
+}
+
+// Temporary buffered hosted phase diagnostic; removed before final PR push.
+@MainActor enum TrafficMotionTrace {
+    private static var began: TimeInterval?
+    private static var entries: [String] = []
+    static func begin(_ label: String) {
+        guard ProcessInfo.processInfo.environment["VANE_TRAFFIC_PHASE_TRACE"] == "1" else { return }
+        began = ProcessInfo.processInfo.systemUptime
+        entries = [label]
+    }
+    static func record(_ label: @autoclosure () -> String) {
+        guard let began, entries.count < 500 else { return }
+        entries.append("\((ProcessInfo.processInfo.systemUptime - began) * 1000)ms \(label())")
+    }
+    static func end() {
+        guard began != nil else { return }
+        began = nil
+        print("TRAFFIC_PHASE " + entries.joined(separator: " | "))
     }
 }
 

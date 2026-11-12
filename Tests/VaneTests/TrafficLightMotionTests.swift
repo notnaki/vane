@@ -37,7 +37,7 @@ import XCTest
         CGWarpMouseCursorPosition(CGPoint(x: 1, y: 1))
         defer { if let pointer { CGWarpMouseCursorPosition(pointer) } }
         store.window = window
-        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+        let host = TrafficPhaseHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         // Match BrowserWindowHost: the native window supplies this root's
         // size, so floating chrome must not also trigger three intrinsic fits.
@@ -60,9 +60,13 @@ import XCTest
             return view.subviews.lazy.compactMap { viewport(in: $0) }.first
         }
         func display() {
+            TrafficMotionTrace.record("fixture.layout.begin")
             host.layoutSubtreeIfNeeded()
+            TrafficMotionTrace.record("fixture.layout.end")
             window.displayIfNeeded()
+            TrafficMotionTrace.record("fixture.display.end")
             CATransaction.flush()
+            TrafficMotionTrace.record("fixture.flush.end")
         }
         func presentedX(_ view: NSView) throws -> CGFloat {
             let layer = try XCTUnwrap(view.layer?.presentation())
@@ -87,12 +91,20 @@ import XCTest
 
         func sample(_ label: String, expectsIntermediate: Bool = true,
                     afterSample: (Int) -> Void = { _ in }, action: @escaping @MainActor () -> Void) async throws {
-            try await performFixtureApplicationAction(in: window, action)
+            TrafficMotionTrace.begin(label)
+            defer { TrafficMotionTrace.end() }
+            try await performFixtureApplicationAction(in: window) {
+                TrafficMotionTrace.record("action.begin modelX=\(sidebar.convert(sidebar.bounds, to: host).minX) presentedX=\(String(describing: try? presentedX(sidebar))) shown=\(store.sidebarShown) peeking=\(store.sidebarPeeking) floating=\(store.sidebarFloatingChrome) lightHidden=\(button.isHidden) window=\(sidebar.window === window) sameRoot=\(window.contentView === host)")
+                action()
+                TrafficMotionTrace.record("action.end")
+            }
             var intermediate = false
             for index in 0..<20 {
                 try await Task.sleep(for: .milliseconds(16))
+                TrafficMotionTrace.record("sample.begin index=\(index)")
                 display()
                 let x = try presentedX(sidebar)
+                TrafficMotionTrace.record("sample.end index=\(index) x=\(x)")
                 let lightX = button.convert(button.bounds, to: host).minX
                 if x > -200 && x < -2 {
                     intermediate = true
@@ -105,6 +117,7 @@ import XCTest
                 }
                 afterSample(index)
             }
+            TrafficMotionTrace.end()
             XCTAssertEqual(intermediate, expectsIntermediate,
                 "\(label): normal motion must travel; reduced motion must settle immediately")
         }
@@ -133,5 +146,13 @@ import XCTest
         XCTAssertTrue(button.isHidden)
         try await sample("Battery Saver open", expectsIntermediate: false) { store.sidebarShown = true }
         XCTAssertFalse(button.isHidden)
+    }
+}
+
+@MainActor private final class TrafficPhaseHostingView<Content: View>: NSHostingView<Content> {
+    override func layout() {
+        TrafficMotionTrace.record("host.layout.begin")
+        defer { TrafficMotionTrace.record("host.layout.end") }
+        super.layout()
     }
 }
