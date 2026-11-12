@@ -35,6 +35,7 @@ import XCTest
         throw NSError(domain: "PasswordShadowFixtureTimeout", code: 1)
     }
     private func fixture(_ html: String,
+                         url: URL = URL(string: "https://login.example.test/signin")!, tracking: String = "",
                          retireWith: ((@escaping @MainActor @Sendable () -> Void) -> Void)? = nil) async throws -> (WKWebView, Capture) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -42,6 +43,10 @@ import XCTest
         let config = WKWebViewConfiguration(), capture = Capture()
         config.websiteDataStore = .nonPersistent()
         config.userContentController.add(capture, contentWorld: Autofill.world, name: "vanepw")
+        if !tracking.isEmpty {
+            config.userContentController.addUserScript(WKUserScript(source: tracking,
+                injectionTime: .atDocumentStart, forMainFrameOnly: true, in: Autofill.world))
+        }
         config.userContentController.addUserScript(WKUserScript(source: Autofill.script,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: Autofill.world))
         let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600), configuration: config)
@@ -56,7 +61,7 @@ import XCTest
         }
         if let retireWith { retireWith(retire) }
         else { addTeardownBlock { @MainActor in retire() } }
-        web.loadSimulatedRequest(URLRequest(url: URL(string: "https://login.example.test/signin")!),
+        web.loadSimulatedRequest(URLRequest(url: url),
             responseHTML: "<!doctype html><body>" + html + "</body>")
         try await wait("document load and isolated API") {
             guard !web.isLoading else { return false }
@@ -76,6 +81,25 @@ import XCTest
         return try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? [String: Any]
     }
     private let login = "<form id=login><input id=user autocomplete=username><input id=password type=password autocomplete=current-password><button>Sign in</button></form>"
+    // Wrap real WebKit getters without changing their results or suppressing their
+    // diagnostics. A caught exception does not conceal a forbidden native probe.
+    private static let frameAccessTracking = #"""
+    globalThis.__blockedFrameReads = 0;
+    globalThis.__frameSecurityErrors = [];
+    for (const type of [HTMLIFrameElement, HTMLFrameElement]) {
+      const doc = Object.getOwnPropertyDescriptor(type.prototype, 'contentDocument');
+      const win = Object.getOwnPropertyDescriptor(type.prototype, 'contentWindow');
+      Object.defineProperty(type.prototype, 'contentDocument', {...doc, get() {
+        const child = win.get.call(this);
+        if (child && Object.getPrototypeOf(child) === null) __blockedFrameReads++;
+        return doc.get.call(this);
+      }});
+    }
+    addEventListener('error', event => {
+      if (event.error?.name === 'SecurityError' || /blocked a frame|cross.origin/i.test(event.message))
+        __frameSecurityErrors.push(event.message);
+    });
+    """#
     private func shadow(_ content: String, nested: Bool = true) -> String {
         let literal = String(decoding: try! JSONSerialization.data(withJSONObject: [content]), as: UTF8.self)
         return """
@@ -293,6 +317,72 @@ import XCTest
         let filled = try await fill(web)
         XCTAssertFalse(filled)
         XCTAssertFalse(capture.messages.contains { $0["password"] != nil || $0["focus"] as? Bool == true })
+    }
+
+    func testCrossOriginRedirectedAndCSPFramesNeverProbeForbiddenDocuments() async throws {
+        let server = try NavigationHTTPFixture()
+        defer { server.stop() }
+        try await wait("loopback listener") { server.port != nil }
+        let foreign = try server.url("/foreign", host: "localhost")
+        server.redirects["/redirect"] = foreign
+        server.pages["/foreign"] = "<script>parent.postMessage('foreign-ready','*')</script><input type=password value=foreign-secret>"
+        server.pages["/csp"] = "<script>parent.postMessage('csp-ready','*')</script><input type=password value=opaque-secret>"
+        server.responseHeaders["/csp"] = ["Content-Security-Policy": "sandbox allow-scripts"]
+        let (web, capture) = try await fixture("""
+            <script>window.frameLoads=[];addEventListener('message',e=>frameLoads.push(e.data));</script>
+            <iframe id=foreign src="\(foreign)"></iframe>
+            <iframe id=redirected src="\(try server.url("/redirect"))"></iframe>
+            <iframe id=csp src="\(try server.url("/csp"))"></iframe>
+            """, url: try server.url("/top"), tracking: Self.frameAccessTracking)
+        try await wait("real foreign, redirected, and CSP sandbox documents") {
+            try await self.js(web, "frameLoads.filter(x=>x==='foreign-ready').length===2 && frameLoads.includes('csp-ready')") as? Bool == true
+        }
+        let inaccessible = try await js(web, "['foreign','redirected','csp'].every(id=>Object.getPrototypeOf(document.getElementById(id).contentWindow)===null)") as? Bool
+        XCTAssertEqual(inaccessible, true)
+        _ = try await js(web, """
+            for (const id of ['foreign','redirected','csp']) {
+              const frame=document.getElementById(id);
+              frame.dispatchEvent(new Event('load'));
+              frame.focus();
+            }
+            """)
+        expectEqual(try await fill(web), false)
+        expectEqual(try await js(web, "__blockedFrameReads", isolated: true) as? Int, 0)
+        expectEqual(try await js(web, "__frameSecurityErrors.length", isolated: true) as? Int, 0)
+        XCTAssertFalse(capture.messages.contains { $0["password"] != nil || $0["focus"] as? Bool == true })
+    }
+
+    func testShadowFrameBecomingOpaqueRetiresQuietlyAndCanReturnToSameOrigin() async throws {
+        let content = "<iframe id=embedded sandbox='allow-scripts allow-same-origin' srcdoc='\(login)'></iframe>"
+        let (web, capture) = try await fixture(shadow(content) + "<iframe id=discoveryTrigger srcdoc='<p>Ready</p>'></iframe>",
+                                               tracking: Self.frameAccessTracking)
+        try await wait("same-origin shadow frame") {
+            try await self.js(web, "!!root.getElementById('embedded').contentDocument?.getElementById('password')") as? Bool == true
+        }
+        _ = try await js(web, "var frame=root.getElementById('embedded');frame.contentDocument.getElementById('password').focus()")
+        try await wait("admitted frame focus") { capture.messages.contains { $0["focus"] as? Bool == true } }
+        let proposed = try await anchor(web)
+        let target = try XCTUnwrap(proposed?["target"] as? String)
+        expectEqual(try await fill(web), true)
+        _ = try await js(web, """
+            window.opaqueReady=false;addEventListener('message',e=>{if(e.data==='opaque-ready')opaqueReady=true;});
+            frame.removeAttribute('srcdoc');
+            frame.src='data:text/html,<script>parent.postMessage("opaque-ready","*")</script><input type=password>';
+            """)
+        try await wait("opaque replacement document") { try await self.js(web, "opaqueReady && Object.getPrototypeOf(frame.contentWindow)===null") as? Bool == true }
+        // A light-DOM frame load exercises discovery across all open shadow roots.
+        _ = try await js(web, "discoveryTrigger.dispatchEvent(new Event('load'));frame.focus()")
+        expectEqual(try await fill(web, target: target), false)
+        expectEqual(try await js(web, "__blockedFrameReads", isolated: true) as? Int, 0)
+        expectEqual(try await js(web, "__frameSecurityErrors.length", isolated: true) as? Int, 0)
+
+        let literal = String(decoding: try JSONSerialization.data(withJSONObject: [login]), as: UTF8.self)
+        _ = try await js(web, "frame.srcdoc=\(literal)[0]")
+        try await wait("same-origin replacement document") { try await self.js(web, "!!frame.contentDocument?.getElementById('password')") as? Bool == true }
+        _ = try await js(web, "discoveryTrigger.dispatchEvent(new Event('load'));frame.contentDocument.getElementById('password').focus()")
+        expectEqual(try await fill(web, target: target), false)
+        expectEqual(try await fill(web), true)
+        expectEqual(try await js(web, "frame.contentDocument.getElementById('password').value") as? String, "fixture-secret")
     }
 
     func testFocusedShadowControlsCannotBypassOuterFormAction() async throws {

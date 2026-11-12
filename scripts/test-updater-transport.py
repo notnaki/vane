@@ -105,7 +105,7 @@ with tempfile.TemporaryDirectory(prefix='vane-updater-transport-') as work:
     try:
         subprocess.run([str(executable), f'http://127.0.0.1:{server.server_port}', work], check=True, timeout=60)
         if forbidden_requests:
-            raise SystemExit('FAIL: rejected redirect was fetched')
+            raise SystemExit(f'FAIL: rejected redirect was fetched: {forbidden_requests}')
     finally:
         server.shutdown()
         server.server_close()
