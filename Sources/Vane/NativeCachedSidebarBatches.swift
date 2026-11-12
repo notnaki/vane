@@ -141,23 +141,40 @@ private struct SidebarFolderRolloutRow<Content: View>: View {
     private func begin() {
         guard attached, let requested, requested.id != requestID else { return }
         let reduced = reduceMotion || saver.isActive
+        // The surrounding list reverses from its current interpolated pose.
+        // Keep this strip's progress too, rather than resetting it underneath
+        // New Tab when an opening is interrupted by another disclosure.
+        let continuesRollout = geometry.map {
+            $0.headerID == requested.headerID && $0.distance == requested.distance
+                && $0.clipTop == requested.clipTop
+        } == true && requestID != nil && !suppressed
         Motion.instant {
             geometry = requested
             requestID = requested.id
             suppressed = reduced
-            progress = reduced || requested.closing ? 1 : 0
+            if !continuesRollout { progress = reduced || requested.closing ? 1 : 0 }
+        }
+        if continuesRollout || requested.closing {
+            // Only a newly mounted opening needs to commit its folded pose.
+            // Deferring an existing strip would put it a frame behind the list.
+            animate(requested)
+            return
         }
         // A detached root may have retained its old displayed membership. Let
         // this update install the new folded pose before starting its rollout.
         Task { @MainActor in
             await Task.yield()
             guard attached, requestID == requested.id else { return }
-            withAnimation(suppressed || reduceMotion || saver.isActive ? nil : requested.animation,
-                          completionCriteria: .removed) {
-                progress = requested.closing ? 0 : 1
-            } completion: {
-                if requested.closing { finished(requested.id) }
-            }
+            animate(requested)
+        }
+    }
+
+    private func animate(_ requested: SidebarFolderRolloutGeometry) {
+        withAnimation(suppressed || reduceMotion || saver.isActive ? nil : requested.animation,
+                      completionCriteria: .removed) {
+            progress = requested.closing ? 0 : 1
+        } completion: {
+            if requested.closing { finished(requested.id) }
         }
     }
 }
