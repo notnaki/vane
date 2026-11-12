@@ -18,6 +18,50 @@ import XCTest
         XCTAssertTrue(ResizePixelFrames.Frame(time: 0, gap: 1.714, markerGap: 1.714, extent: .zero).isPaintedBaseline)
     }
 
+    func testPaintCaptureDoesNotTreatTranslucentPixelsOutsideOpaqueWindowAsAGap() throws {
+        let sampler = ResizePixelSampler()
+        let pixel = try paintCapturePixel(blankColumns: 0)
+        sampler.record(pixel, valid: CGRect(x: 0, y: 0, width: 64, height: 4), pixelsPerPoint: 1, time: 1)
+        XCTAssertEqual(sampler.frames.samples.count, 1, "Keep the capture, including a stale wider content rectangle")
+        XCTAssertEqual(sampler.frames.last?.gap, 0)
+    }
+
+    func testPaintCaptureStillCountsAnOpaqueBlankStrip() throws {
+        let sampler = ResizePixelSampler()
+        let pixel = try paintCapturePixel(blankColumns: 4)
+        sampler.record(pixel, valid: CGRect(x: 0, y: 0, width: 64, height: 4), pixelsPerPoint: 1, time: 1)
+        XCTAssertEqual(sampler.frames.last?.gap, 4)
+    }
+
+    func testPaintCaptureStillRejectsAnEntirelyMissingPage() throws {
+        let sampler = ResizePixelSampler()
+        let pixel = try paintCapturePixel(blankColumns: 40)
+        sampler.record(pixel, valid: CGRect(x: 0, y: 0, width: 64, height: 4), pixelsPerPoint: 1, time: 1)
+        XCTAssertEqual(sampler.frames.last?.gap, 10_000)
+    }
+
+    private func paintCapturePixel(blankColumns: Int) throws -> CVPixelBuffer {
+        var result: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 64, 4, kCVPixelFormatType_32BGRA,
+                                          nil, &result), kCVReturnSuccess)
+        let pixel = try XCTUnwrap(result)
+        CVPixelBufferLockBaseAddress(pixel, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixel, []) }
+        let bytes = try XCTUnwrap(CVPixelBufferGetBaseAddress(pixel)?.assumingMemoryBound(to: UInt8.self))
+        let stride = CVPixelBufferGetBytesPerRow(pixel)
+        for y in 0..<4 {
+            for x in 0..<64 {
+                let p = y * stride + x * 4
+                // The opaque window ends at x=39; SCK's wider extent can retain
+                // translucent RGB outside it. Blue body, then an opaque gray gap.
+                let colour: [UInt8] = x < 40 - blankColumns ? [77, 50, 23, 254]
+                    : x < 40 ? [45, 45, 45, 255] : [90, 90, 90, 128]
+                for channel in 0..<4 { bytes[p + channel] = colour[channel] }
+            }
+        }
+        return pixel
+    }
+
     func testPageViewportFollowsTheNativeFrameBeforeItsNextPresentation() async throws {
         try await resizeFixture(capture: false)
     }
@@ -544,7 +588,7 @@ import XCTest
         record(pixel, valid: valid, pixelsPerPoint: pixelsPerPoint, time: time)
     }
 
-    nonisolated private func record(_ pixel: CVPixelBuffer, valid: CGRect,
+    nonisolated fileprivate func record(_ pixel: CVPixelBuffer, valid: CGRect,
                                    pixelsPerPoint: Double, time: Double) {
         guard time.isFinite, pixelsPerPoint.isFinite, pixelsPerPoint > 0, !valid.isEmpty,
               CVPixelBufferGetPixelFormatType(pixel) == kCVPixelFormatType_32BGRA else { return }
@@ -556,12 +600,21 @@ import XCTest
         // outside this frame's content rectangle. Those are not visible content.
         let row = Int(valid.midY) * CVPixelBufferGetBytesPerRow(pixel)
         var firstRed: Int?, lastRed: Int?, lastPainted: Int?, rightWindow: Int?
+        var rawRightWindow: Int?, rawLastPainted: Int?
         for x in max(0, Int(ceil(valid.minX)))..<min(width, Int(floor(valid.maxX))) {
             let p = row + x * 4
             let b = Int(bytes[p]), g = Int(bytes[p + 1]), r = Int(bytes[p + 2])
-            if r + g + b > 40 { rightWindow = x }
+            if r + g + b > 40 { rawRightWindow = x }
             let red = r > 180 && g < 110 && b < 100
             let blue = b > r + 20 && b > g + 15 && b < 130 && g > 20 && g < 100
+            if red || blue { rawLastPainted = x }
+            // This fixture's window and page are opaque. During a shrink SCK
+            // can deliver the old contentRect with translucent resampling pixels
+            // beyond the new window edge. RGB there is not visible window paint.
+            // Allow byte quantization of opaque alpha, not translucent padding;
+            // classify gray/unpainted window pixels using the same alpha mask.
+            guard bytes[p + 3] >= 250 else { continue }
+            if r + g + b > 40 { rightWindow = x }
             if red {
                 if firstRed == nil { firstRed = x }
                 lastRed = x
@@ -590,7 +643,9 @@ import XCTest
             "valid": NSStringFromRect(valid), "pixelsPerPoint": String(pixelsPerPoint),
             "pixels": "\(width)x\(height)", "firstRed": firstRed.map(String.init) ?? "nil",
             "lastRed": lastRed.map(String.init) ?? "nil", "lastPainted": lastPainted.map(String.init) ?? "nil",
-            "rightWindow": rightWindow.map(String.init) ?? "nil"
+            "rightWindow": rightWindow.map(String.init) ?? "nil",
+            "rawRightWindow": rawRightWindow.map(String.init) ?? "nil",
+            "rawLastPainted": rawLastPainted.map(String.init) ?? "nil"
         ])
 #endif
         frames.append(time: time, gap: gap, markerGap: markerGap,
