@@ -1177,6 +1177,50 @@ import XCTest
     }
 
 
+    func testAttachedArrivalSharesTheSourceWashClockWithoutPointUpdates() async throws {
+        try await withFixtureApplicationLoop {
+            let (source, spaces, window, monitor) = try self.fixture(coloured: true, registerTeardown: false)
+            defer { self.retireFixture(source, window: window, monitor: monitor) }
+            let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+            let sourceSurface = try XCTUnwrap(self.colourSurface(in: host))
+            let arriving = TabStore(profileID: source.profileID, space: spaces[1], session: [])
+            let target = ThemeWash.space(spaces[1], fallback: source.profile,
+                profiles: ProfileManager.shared.profiles, systemDark: true)
+            let cached = NSHostingView(rootView: NativeThemeWash(wash: target, reduced: false,
+                gesture: arriving.spaceGesture, origin: target, destination: target,
+                fallback: source.profile, profiles: ProfileManager.shared.profiles, systemDark: true))
+            cached.frame = NSRect(x: 0, y: 0, width: 100, height: 100)
+            host.addSubview(cached)
+            defer {
+                cached.removeFromSuperview()
+                arriving.dropStashes()
+                TabStore.all.removeAll { $0 === arriving }
+            }
+            try await compatibilityWait {
+                cached.layoutSubtreeIfNeeded()
+                return arriving.spaceGesture.trackGround != nil && sourceSurface.base.presentation() != nil
+                    && self.colourSurface(in: cached)?.base.presentation() != nil
+            }
+            let arrivingSurface = try XCTUnwrap(self.colourSurface(in: cached))
+            let slide = ProfileSpaceSlide(frame: cached.frame,
+                outgoing: source.swipePreview(in: spaces[0]), incoming: source.swipePreview(in: spaces[1]),
+                drag: -70, direction: 1, source: source, includesFavorites: true, travelWidth: 228)
+            host.beginSpaceSlide(slide, preservingGround: true)
+            defer { slide.cancel() }
+            slide.start(duration: 0.8) {}
+            try await Task.sleep(for: .milliseconds(200))
+            slide.attach(arriving)
+            // A parked destination receives no publishProgress callback. Its own
+            // compositor must join the curve already running on the source.
+            XCTAssertNil(arriving.window)
+            try await Task.sleep(for: .milliseconds(80))
+            let sourceRed = try self.firstColour(of: sourceSurface, presented: true).redComponent
+            let arrivingRed = try self.firstColour(of: arrivingSurface, presented: true).redComponent
+            XCTAssertEqual(arrivingRed, sourceRed, accuracy: 0.03,
+                           "A late-mounted profile must share the existing wash clock without point updates")
+        }
+    }
+
     func testCachedProfileColourStaysContinuousAcrossRepeatedSwipes() async throws {
         try await withFixtureApplicationLoop {
             for mixedThemes in [false, true] {
