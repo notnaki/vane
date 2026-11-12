@@ -1011,12 +1011,6 @@ extension VaneWindow {
 @MainActor final class BrowserHostingView<Content: View>: NSHostingView<Content> {
     private var applyingFrame = false
 
-    override func layout() {
-        SpaceClickPhaseTrace.record("host.layout.begin hidden=\(isHiddenOrHasHiddenAncestor)")
-        defer { SpaceClickPhaseTrace.record("host.layout.end hidden=\(isHiddenOrHasHiddenAncestor)") }
-        super.layout()
-    }
-
     override func setFrameSize(_ newSize: NSSize) {
         let previous = frame.size
         super.setFrameSize(newSize)
@@ -1524,8 +1518,6 @@ private struct NativeSpacePreview: View {
     }
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
-        SpaceClickPhaseTrace.record("slide.start.begin")
-        defer { SpaceClickPhaseTrace.record("slide.start.end") }
         guard isActive else { return }
         ownsSidebarVisibility = true
         self.completion = completion
@@ -2412,24 +2404,4 @@ extension TabStore {
         if stack.count > 32 { stack.removeFirst() }
     }
     static func pop() -> Entry? { stack.popLast() }
-}
-
-// Temporary buffered hosted diagnostic. Removed before final PR push.
-@MainActor enum SpaceClickPhaseTrace {
-    private static var began: TimeInterval?
-    private static var entries: [String] = []
-    static func begin() {
-        guard ProcessInfo.processInfo.environment["VANE_CLICK_PHASE_TRACE"] == "1" else { return }
-        entries.removeAll(keepingCapacity: true)
-        began = ProcessInfo.processInfo.systemUptime
-    }
-    static func record(_ label: @autoclosure () -> String) {
-        guard let began, entries.count < 128 else { return }
-        entries.append("\((ProcessInfo.processInfo.systemUptime - began) * 1000)ms \(label())")
-    }
-    static func dump() {
-        guard began != nil else { return }
-        began = nil
-        print("CLICK_PHASE " + entries.joined(separator: " | "))
-    }
 }

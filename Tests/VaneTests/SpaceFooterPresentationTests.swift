@@ -358,16 +358,6 @@ import XCTest
                             }
                         }
                         let label = "\(scheme) count=\(count) icons=\(showIcons) \(icon) emphasis=\(emphasis)"
-                        if ProcessInfo.processInfo.environment["VANE_FOOTER_ARTWORK_TRACE"] == "1",
-                           scheme == .light, !showIcons, count == 3, icon == "cloud", emphasis == 1,
-                           let directory = ProcessInfo.processInfo.environment["RUNNER_TEMP"] {
-                            let root = URL(fileURLWithPath: directory)
-                            try XCTUnwrap(actual.representation(using: .png, properties: [:]))
-                                .write(to: root.appendingPathComponent("icloud-footer-actual.png"))
-                            try XCTUnwrap(reference.representation(using: .png, properties: [:]))
-                                .write(to: root.appendingPathComponent("icloud-footer-reference.png"))
-                            print("FOOTER_ARTWORK windowScale=\(view.window?.backingScaleFactor ?? 0) contentsScale=\(view.marker?.symbol.contentsScale ?? 0) difference=\(difference) alpha=\(alphaExpected)")
-                        }
                         XCTAssertEqual(alphaActual, alphaExpected, accuracy: max(1, alphaExpected * 0.04), label)
                         XCTAssertLessThan(difference, max(2, alphaExpected * 0.15), label)
                         XCTAssertLessThan(colorDifference, max(6, alphaExpected * 0.45), label)
