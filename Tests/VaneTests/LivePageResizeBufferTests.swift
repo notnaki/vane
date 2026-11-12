@@ -492,6 +492,94 @@ import XCTest
         XCTAssertEqual(f.window.frame.width, 800)
     }
 
+    func testSlowSidebarShrinkReusesCoverageWithinTheAbsoluteLeadCeiling() throws {
+        let f = Fixture(); defer { f.close() }
+        f.host.resizeLayout.sidebarWidth = 228
+        var paints: [@MainActor @Sendable () -> Void] = []
+        var presentations = 0
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in presentations += 1; paints.append(callback) }, deadline: { _, _ in },
+            now: { f.time }, apply: { _, sidebar in
+                guard let sidebar else { return }
+                f.host.resizeLayout.sidebarWidth = sidebar
+                f.host.setFrameSize(NSSize(width: 828 - sidebar, height: 400))
+            }))
+        defer { buffer.cancel() }
+        buffer.start(); nextPaint(&paints)()
+        for sidebar in stride(from: 230, through: 400, by: 2) {
+            f.time += 1.0 / 60
+            XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: CGFloat(sidebar)))
+            XCTAssertEqual(f.host.bounds.width, CGFloat(828 - sidebar), "Covered shrinking geometry must publish immediately")
+            XCTAssertGreaterThanOrEqual(f.web.frame.width, f.host.bounds.width)
+            XCTAssertLessThanOrEqual(f.web.frame.width - f.host.bounds.width, 192.001)
+            if !paints.isEmpty { nextPaint(&paints)() }
+            XCTAssertTrue(paints.isEmpty, "One completed shrink trim must not immediately schedule another")
+        }
+        XCTAssertEqual(presentations, 2, "The prime plus one bounded trim covers this172pt shrink; repainting each2pt step defeats buffering")
+        buffer.finish()
+        nextPaint(&paints)()
+        XCTAssertEqual(f.web.frame.width, 428)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+        XCTAssertFalse(buffer.isPreparing)
+    }
+
+    func testShrinkHysteresisStillRefillsGrowthAndBlocksReversalPastPendingTrim() {
+        let f = Fixture(); defer { f.close() }
+        f.buffer.start(); nextPaint(&f.paints)()
+        f.time += 1
+        f.request(456)
+        XCTAssertEqual(f.window.frame.width, 456)
+        XCTAssertEqual(f.web.frame.width, 648, "Retain the existing paint at exactly192pt excess")
+        XCTAssertTrue(f.paints.isEmpty)
+        f.time += 1
+        f.request(454)
+        XCTAssertEqual(f.window.frame.width, 454)
+        XCTAssertEqual(f.web.frame.width, 502, "Crossing192pt must trim back to the48pt target")
+        XCTAssertEqual(f.paints.count, 1)
+        f.time += 1
+        f.request(520)
+        XCTAssertEqual(f.window.frame.width, 454, "The old648pt paint cannot cover a reversal beyond the pending502pt viewport")
+        nextPaint(&f.paints)()
+        XCTAssertEqual(f.window.frame.width, 454)
+        XCTAssertEqual(f.web.frame.width, 568)
+        nextPaint(&f.paints)()
+        XCTAssertEqual(f.window.frame.width, 520)
+        f.time += 1
+        f.request(546)
+        XCTAssertEqual(f.window.frame.width, 546)
+        XCTAssertEqual(f.web.frame.width, 594, "Growth still refills once less than half the48pt target remains")
+        XCTAssertEqual(f.paints.count, 1)
+    }
+
+    func testShrinkHysteresisCeilingScalesWithEachSplitAxis() throws {
+        for horizontal in [true, false] { try splitShrinkHysteresis(horizontal: horizontal) }
+    }
+
+    private func splitShrinkHysteresis(horizontal: Bool) throws {
+        let f = Fixture(); defer { f.close() }
+        f.host.resizeFraction = NSSize(width: 0.5, height: 0.5)
+        var paints: [@MainActor @Sendable () -> Void] = []
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 1),
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }, now: { f.time },
+            apply: { frame, _ in
+                f.window.setFrame(frame, display: false)
+                f.host.setFrameSize(NSSize(width: 600 + (frame.width - 600) / 2,
+                                          height: 400 + (frame.height - 400) / 2))
+            }))
+        defer { buffer.cancel() }
+        buffer.start(); nextPaint(&paints)()
+        f.time = 1
+        XCTAssertTrue(buffer.request(frame: NSRect(x: 0, y: 0,
+            width: horizontal ? 456 : 600, height: horizontal ? 400 : 256)))
+        XCTAssertEqual(f.web.frame.size, NSSize(width: 624, height: 424))
+        XCTAssertTrue(paints.isEmpty, "Each half-size pane may retain96pt, not just its24pt refill target")
+        f.time = 2
+        XCTAssertTrue(buffer.request(frame: NSRect(x: 0, y: 0,
+            width: horizontal ? 454 : 600, height: horizontal ? 400 : 254)))
+        XCTAssertEqual(f.web.frame.size, horizontal ? NSSize(width: 551, height: 424) : NSSize(width: 624, height: 351))
+        XCTAssertEqual(paints.count, 1, "Trim when either pane-local axis exceeds its96pt ceiling")
+    }
+
     func testFinishRetainsLatestEndpointThenRestoresExactNativeSizingOnce() {
         let f = Fixture(); defer { f.close() }
         f.buffer.start()

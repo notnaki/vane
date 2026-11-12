@@ -427,14 +427,16 @@ struct LivePageResizeAnchor {
             } else { prepare(exact: true) }
             return
         }
-        // Refill at half the rolling lead, and reduce obsolete coverage on shrink.
+        // Refill growth at half the adaptive lead. Shrink keeps useful painted
+        // coverage up to the absolute ceiling, then trims back to the target;
+        // trimming at the target itself repaints every small shrinking step.
         let needsRefill = zip(pages, desired).contains { page, size in
             let horizontal = page.mask.contains(.width) ? axes.width * lead.width * page.fraction.width : 0
             let vertical = page.mask.contains(.height) ? axes.height * lead.height * page.fraction.height : 0
             return (horizontal > 0 && (page.painted.width - size.width < horizontal / 2
-                || page.painted.width - size.width > horizontal + 0.001))
+                || page.painted.width - size.width > 192 * page.fraction.width + 0.001))
                 || (vertical > 0 && (page.painted.height - size.height < vertical / 2
-                    || page.painted.height - size.height > vertical + 0.001))
+                    || page.painted.height - size.height > 192 * page.fraction.height + 0.001))
         }
         if needsRefill { prepare(exact: false) }
     }
