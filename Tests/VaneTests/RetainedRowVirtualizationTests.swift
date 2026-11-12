@@ -384,20 +384,33 @@ import XCTest
                 coordinator.expectPopulation(scope, sections: ["today": today, "pinned": pinned],
                                              populationOwnerID: populationOwnerID)
                 var admission = "not sampled"
+                let started = ProcessInfo.processInfo.systemUptime
+                var polls = 0
+                var firstNativeReady: TimeInterval?
                 defer { print("RETAINED_VIEWPORT_ADMISSION phase=\(phase) \(admission)") }
                 try await compatibilityWait {
                     host.layoutSubtreeIfNeeded()
-                    let candidate = SidebarSectionsViewport.scrollView(in: host)
-                    let scrollReady = candidate.map {
-                        NativeFixtureMountAdmission.scrollReady($0, root: host, window: window,
-                            minimumHeight: CGFloat(today.count) * Look.rowHeight)
-                    } ?? false
+                    polls += 1
+                    let elapsed = ProcessInfo.processInfo.systemUptime - started
+                    let native = [("running", NSApp.isRunning), ("active", NSApp.isActive),
+                        ("exactKey", NSApp.keyWindow === window), ("key", window.isKeyWindow),
+                        ("visible", window.isVisible), ("occlusion", window.occlusionState.contains(.visible)),
+                        ("owner", window.contentView === host && host.window === window && store.window === window)]
+                    if let failed = native.first(where: { !$0.1 }) {
+                        admission = "polls=\(polls) elapsed=\(elapsed) firstNativeReady=\(String(describing: firstNativeReady)) failed=\(failed.0) native=\(native)"
+                        return false
+                    }
+                    if firstNativeReady == nil { firstNativeReady = elapsed }
+                    guard let candidate = SidebarSectionsViewport.scrollView(in: host) else {
+                        admission = "polls=\(polls) elapsed=\(elapsed) failed=missing-scroll"
+                        return false
+                    }
+                    let scrollReady = NativeFixtureMountAdmission.scrollReady(candidate, root: host, window: window,
+                        minimumHeight: CGFloat(today.count) * Look.rowHeight)
+                    admission = "polls=\(polls) elapsed=\(elapsed) firstNativeReady=\(String(describing: firstNativeReady)) today=\(today.count) pinned=\(pinned.count) scrollReady=\(scrollReady) document=\(String(describing: candidate.documentView?.frame)) clip=\(candidate.contentView.bounds)"
+                    guard scrollReady else { return false }
                     let populationReady = coordinator.isReady(scope)
-                    admission = "running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) owner=\(window.contentView === host && host.window === window && store.window === window) today=\(today.count) pinned=\(pinned.count) scrollReady=\(scrollReady) populationReady=\(populationReady) document=\(String(describing: candidate?.documentView?.frame)) clip=\(String(describing: candidate?.contentView.bounds))"
-                    guard NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow,
-                          window.isVisible && window.occlusionState.contains(.visible),
-                          window.contentView === host && host.window === window && store.window === window,
-                          scrollReady else { return false }
+                    admission += " populationReady=\(populationReady)"
                     return populationReady
                 }
             }

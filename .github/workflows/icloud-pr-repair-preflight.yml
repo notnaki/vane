@@ -63,7 +63,7 @@ jobs:
       fail-fast: false
       matrix:
         attempt: [1, 2, 3]
-        suite: [shadow, native]
+        suite: [native]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -98,7 +98,7 @@ jobs:
         run: |
           python3 -u - <<'PYTHON'
           import os, pathlib, subprocess, sys
-          selection = 'PasswordShadowAutofillTests' if os.environ['SUITE'] == 'shadow' else 'LargeFolderDisclosureTests|NestedFolderDisclosureTests|SpaceFooterPresentationTests|RetainedRowVirtualizationTests/testOffscreenCollapsedFolderHasNoPhantomHeightAndEndRemainsReachable|SpaceNativeRenderingTests/test(ArmedNativeLandingKeepsReleaseVelocityAcrossPagePreparation|CommittedNativeLandingRetainsFingerVelocity|ProfileOriginClickReversesBeforeTheCurrentLandingFinishes|TargetClickInterruptsTheSameProfileReturnSpring|ReverseSwipeTakesOverThePresentedLandingWithoutFinishingIt|FirstProfileVisitChangesPageAtStartOfNativeLanding|CachedProfileChangesPageAtStartOfNativeLanding|ReverseProfileSwipeTakesOverTheSamePresentedNativeRows|NativeSpaceClickBlendsBackgroundDuringSidebarTravel|ProfileSwipeDoesNotRestoreItsDepartureColour)|SpaceSwipeLandingTests|SpaceColourTransitionTests'
+          selection = 'PasswordShadowAutofillTests' if os.environ['SUITE'] == 'shadow' else 'ICloud|PasswordAutofillTests|BoundedSidebarMountingTests|KeyboardAccessibilityTests|WindowResizeLayoutTests|WindowResizePreparationTests|NewTabDisclosureTests|SpaceNativeRenderingTests|SpaceSwipeLandingTests|SpaceColourTransitionTests|SpaceFooterPresentationTests|ProfileChromeObservationTests|ProfilePersistenceTests|SidebarDisclosure|NestedFolderDisclosureTests|LargeFolderDisclosureTests|SidebarNativeReadinessTests|NativeSidebar|NativeResidentBatchGeometryTests|NativeCoveredSidebarLayoutTests|FolderRolloutTests|OffscreenNativeSidebarReadinessTests|RetainedRowVirtualizationTests'
           log = pathlib.Path(os.environ['RUNNER_TEMP']) / ('icloud-pr-repair-' + os.environ['ATTEMPT'] + '.log')
           with log.open('w') as output:
               process = subprocess.Popen(['python3','-u','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

@@ -1334,6 +1334,31 @@ private struct NativeSpacePreview: View {
     /// A completed cover can remain mounted for presentation handoff. Its identity is
     /// still useful for cleanup, but it must never reacquire input or animation ownership.
     var isActive: Bool { !finished }
+    /// Failure-only fixture evidence; reading this must not advance the handoff.
+    var retirementDiagnosticString: String {
+        let store = retirementStore ?? destination ?? source
+        let acknowledgement = store.flatMap { sidebarAcknowledgements[ObjectIdentifier($0)] }
+        let ready = retirementStore.map {
+            SidebarNativeReadinessCoordinator.shared.isReady(
+                SidebarNativeReadinessScope(store: $0, spaceID: retirementSpaceID),
+                allowingUnregistered: !requiresNativePopulation)
+        }
+        let sections = store?.spaceGesture.sectionsView
+        return "finished=\(finished) retired=\(retired) completingSelection=\(completingSelection)"
+            + " hasStartedLanding=\(hasStartedLanding) animationID=\(String(describing: animationID))"
+            + " ownsSidebarVisibility=\(ownsSidebarVisibility) requiresNativePopulation=\(requiresNativePopulation)"
+            + " retirementStore=\(String(describing: retirementStore.map { ObjectIdentifier($0) }))"
+            + " store=\(String(describing: store.map { ObjectIdentifier($0) }))"
+            + " currentSpaceID=\(String(describing: store?.currentSpaceID)) retirementSpaceID=\(String(describing: retirementSpaceID))"
+            + " acknowledgement=\(String(describing: acknowledgement)) populationReady=\(String(describing: ready))"
+            + " swiping=\(String(describing: store?.spaceSwiping)) profileSliding=\(String(describing: store?.spaceGesture.profileSliding))"
+            + " drag=\(String(describing: store?.spaceDrag)) attached=\(window != nil)"
+            + " storeWindowMatches=\(store?.window != nil && store?.window === window)"
+            + " sectionsWindowMatches=\(sections?.window != nil && sections?.window === window)"
+            + " sectionsFrame=\(String(describing: sections?.frame)) sectionsBounds=\(String(describing: sections?.bounds))"
+            + " retirementScheduled=\(retirementScheduled) observingReadiness=\(retirementReadinessObservation != nil)"
+            + " hasRetirementTimeout=\(retirementTimeout != nil) offset=\(offset)"
+    }
     private var restingSpaceID: UUID?
     fileprivate var completedSpaceID: UUID { restingSpaceID ?? targetID }
     func isDestination(_ store: TabStore) -> Bool { destination === store }

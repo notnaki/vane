@@ -936,11 +936,17 @@ import XCTest
         try await admitFixtureSidebar(store, window: window)
         try await waitForPreparation(monitor, target: spaces[1].id)
         XCTAssertNotNil(store.beginSpaceSelection(spaces[1]))
-        monitor.land(1, to: spaces[1], width: fixtureSidebarWidth(in: store), store: store, duration: 0.8)
+        // Slow the setup leg to admit a middle frame on a loaded desktop. Both
+        // interrupted clicks below still use their production spring timing.
+        let setupStart = CACurrentMediaTime()
+        monitor.land(1, to: spaces[1], width: fixtureSidebarWidth(in: store), store: store, duration: 2)
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
+        var middleState = "not sampled"
+        defer { print("RETURN_TARGET_MIDDLE \(middleState)") }
         try await compatibilityWait {
-            slide.isActive && abs(slide.offset) > fixtureSidebarWidth(in: store) * 0.4
+            middleState = "elapsed=\(CACurrentMediaTime() - setupStart) active=\(slide.isActive) offset=\(slide.offset) width=\(fixtureSidebarWidth(in: store)) appActive=\(NSApp.isActive) key=\(window.isKeyWindow)"
+            return slide.isActive && abs(slide.offset) > fixtureSidebarWidth(in: store) * 0.4
                 && abs(slide.offset) < fixtureSidebarWidth(in: store) * 0.65
         }
         monitor.select(spaces[0], in: store)
@@ -1740,6 +1746,9 @@ import XCTest
         defer { observation.cancel() }
         try await Task.sleep(for: .milliseconds(1000))
         XCTAssertGreaterThan(footerFrames, 2)
+        if let retained = host.spaceSlide {
+            print("EARLY_PROFILE_RETIREMENT cached=\(cached) sameSlide=\(retained === slide) \(retained.retirementDiagnosticString)")
+        }
         XCTAssertNil(host.spaceSlide)
         XCTAssertFalse(arriving.spaceGesture.profileSliding)
         XCTAssertFalse(source.spaceSwiping)

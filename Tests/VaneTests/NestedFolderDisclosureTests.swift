@@ -331,10 +331,19 @@ import XCTest
         // collapse. Assigning the already-collapsed target alone need not cancel
         // an active SwiftUI animation whose target value has not changed.
         Motion.instant { store.pins.edit(folder: folder.id) { $0.collapsed = false } }
-        display()
-        Motion.instant { store.pins.edit(folder: folder.id) { $0.collapsed = true } }
+        var requestedRestingCollapse = false
         try await compatibilityWait {
             display()
+            if !requestedRestingCollapse {
+                // Native layout and the animation completion are asynchronous.
+                // Observe the instant endpoint before submitting its reverse;
+                // two assignments in one turn can otherwise coalesce.
+                guard !section.clipsToBounds,
+                      section.bounds.height >= CGFloat(tabs.count + 1) * (Look.rowHeight + Look.rowGap) - Look.rowGap - 1 else { return false }
+                requestedRestingCollapse = true
+                Motion.instant { store.pins.edit(folder: folder.id) { $0.collapsed = true } }
+                return false
+            }
             return controls.views[tabs[0].id.uuidString]?.value?.window == nil
                 && !section.clipsToBounds && abs(newTab.convert(newTab.bounds, to: host).minY - start) < 1
         }

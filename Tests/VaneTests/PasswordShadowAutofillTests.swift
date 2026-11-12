@@ -181,8 +181,6 @@ import XCTest
 
     private func admitDiscoveryDocument(_ web: WKWebView, loop: NativeFixtureApplicationLoop) async throws {
         var readmissionRequested = false
-        var documentReadmissionRequested = false
-        var awaitingWithdrawnDocument = false
         let admissionStart = ProcessInfo.processInfo.systemUptime
         var probeTrace: [String] = []
         defer { print("SHADOW_ADMISSION_TRACE " + probeTrace.joined(separator: " | ")) }
@@ -195,22 +193,6 @@ import XCTest
             // is withdrawn; do not short-circuit before we can restore that owner.
             _ = try loop.isReadyForInteraction()
             guard let window = web.window, window.contentView === web else { return false }
-            if awaitingWithdrawnDocument {
-                guard !window.isVisible else { return false }
-                let probeStart = ProcessInfo.processInfo.systemUptime - admissionStart
-                let visibility = try await self.js(web, "document.visibilityState", isolated: true) as? String
-                _ = try loop.isReadyForInteraction()
-                let elapsed = ProcessInfo.processInfo.systemUptime - admissionStart
-                probeTrace.append("withdrawn start=\(probeStart) end=\(elapsed) visibility=\(visibility ?? "unavailable")")
-                guard web.window === window, window.contentView === web, !window.isVisible,
-                      visibility == "hidden" else { return false }
-                // Submit reappearance only after a separate native/WebProcess
-                // observation of the withdrawal. Same-turn out/front can coalesce.
-                awaitingWithdrawnDocument = false
-                window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
-                return false
-            }
             if !self.discoveryPresentationReady(window, document: web) {
                 lastUnready = self.discoveryNativeDiagnostics(web)
                 if !readmissionRequested {
@@ -234,17 +216,6 @@ import XCTest
             lastDocumentProbe = "start=\(probeStart) end=\(elapsed) visibility=\(visibility ?? "unavailable") loopReady=\(loopReady) nativeReady=\(nativeReady)"
             probeTrace.append(lastDocumentProbe)
             if !nativeReady { lastUnready = self.discoveryNativeDiagnostics(web) }
-            if visibility == "hidden", loopReady, nativeReady, !documentReadmissionRequested {
-                // WebKit can retain an initial hidden document after AppKit has
-                // already admitted this exact owner. Submit one fresh ordering
-                // transition within the existing deadline, without reloading or
-                // changing the document whose discovery behavior we exercise.
-                documentReadmissionRequested = true
-                print("SHADOW_DOCUMENT_READMISSION \(lastDocumentProbe) \(self.discoveryNativeDiagnostics(web))")
-                awaitingWithdrawnDocument = true
-                window.orderOut(nil)
-                return false
-            }
             return visibility == "visible" && loopReady && nativeReady
         }
     }
@@ -285,7 +256,13 @@ import XCTest
                         window.makeKeyAndOrderFront(nil)
                         app.activate(ignoringOtherApps: true)
                     }, launchReadiness: {
-                        self.discoveryPresentationReady(window, document: web)
+                        // Submit the initial navigation only after WindowServer
+                        // acknowledges this owner as visible. Native key/ordering
+                        // alone can precede WebKit's visibility by several seconds.
+                        let ready = self.discoveryPresentationReady(window, document: web)
+                            && window.occlusionState.contains(.visible)
+                        if ready { print("SHADOW_LAUNCH_PRESENTATION " + self.discoveryNativeDiagnostics(web)) }
+                        return ready
                     })
             }, retireWith: { retire = $0 })
             let ownedLoop = try XCTUnwrap(loop)

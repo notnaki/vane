@@ -263,6 +263,34 @@ jobs, with separate desktops, logs and cleanup from the other native diagnostics
 Independent static review found no actionable issues; hosted outcomes remain
 pending.
 
+Run [43232637738](https://github.com/notnaki/vane/actions/runs/43232637738),
+`043437b5`, retained three separate 31-case shadow attempts and three 37-case
+native attempts. Shadow attempts two and three passed; attempt one failed
+initial document admission, with cleanup verified for all three. Its trace
+observed native withdrawal, then hidden document replies until a 2.865 s IPC
+reply crossed the five-second deadline. The visibility event arrived around
+5.955 s after initial hidden state. The attempted ordering recovery therefore
+remains unverified.
+
+The native owner-bounds correction passed nested moving-child hit coverage in
+every attempt. Large-folder pixel and scheduled-click observations passed but
+instant cleanup still coalesced its two endpoints; the next candidate observes
+the first endpoint before reversing within the same ten-second wait. Raster
+diagnostics isolated the small-triangle excess ink to 1x cached artwork; a 2x
+cache sample met both existing alpha and pixel-difference tolerances. The next
+tree uses a minimum 2x cache density, preserves logical geometry and retains the
+48-case actual-window comparison. Target-click setup now admits a longer initial
+leg while its interruption clicks retain production timing. Failure-only cover
+retirement evidence and retained-viewport telemetry preserve outcome deadlines;
+the latter restores the original short-circuit evaluation order.
+
+The separately coordinated UI repair owns the next shadow-only preflight. Its
+fixture blob `3ba156f1` requires a positive native compositor visibility
+acknowledgement before the initial navigation, within the existing startup
+admission budget; document and discovery deadlines remain unchanged. This branch
+contains that exact public fixture file but launches no duplicate shadow jobs.
+Its next three hosted attempts cover the broader native selection independently.
+
 ## Verification limits and remaining integration gates
 
 - No second Mac is available. Cross-Mac convergence, offline/restart behavior

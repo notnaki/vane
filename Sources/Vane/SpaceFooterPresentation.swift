@@ -126,8 +126,11 @@ extension EnvironmentValues {
             view.marker = marker
             view.layer?.addSublayer(marker.layer)
         }
-        let scale = view.window?.backingScaleFactor ?? 2
-        let artwork = "\(icon):\(layout.iconSize):\(scheme):\(scale)"
+        // Markers shrink continuously after rasterization. Keep enough source
+        // detail for that transform even on 1x displays, where a 1x triangle's
+        // antialiased edge otherwise gains ink while becoming smaller.
+        let rasterScale = max(2, view.window?.backingScaleFactor ?? 2)
+        let artwork = "\(icon):\(layout.iconSize):\(scheme):\(rasterScale)"
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if marker.artwork != artwork {
@@ -137,10 +140,10 @@ extension EnvironmentValues {
                 // Match the unclipped SwiftUI glyph inside the larger button target.
                 .frame(width: layout.iconSize * 2, height: layout.iconSize * 2)
                 .environment(\.colorScheme, scheme))
-            renderer.scale = scale
+            renderer.scale = rasterScale
             let appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
             appearance?.performAsCurrentDrawingAppearance { marker.symbol.contents = renderer.cgImage }
-            marker.symbol.contentsScale = scale
+            marker.symbol.contentsScale = rasterScale
             marker.artwork = artwork
         }
         let appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
