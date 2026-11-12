@@ -172,6 +172,16 @@ struct NativeThemeWashCopy: NSViewRepresentable {
     }
 }
 
+private final class ThemeGrainFadeCompletion: NSObject, CAAnimationDelegate {
+    private let completion: @MainActor @Sendable () -> Void
+    init(_ completion: @escaping @MainActor @Sendable () -> Void) { self.completion = completion }
+    func animationDidStop(_ anim: CAAnimation, finished flag: Bool) {
+        // AppKit may still be flushing the transaction that removed this
+        // animation. Change native visibility on the next main-actor turn.
+        if flag { Task { @MainActor [completion] in completion() } }
+    }
+}
+
 @MainActor final class ThemeWashSurface: NSView {
     let base = CAGradientLayer()
     private let overlay = CAGradientLayer()
@@ -180,6 +190,7 @@ struct NativeThemeWashCopy: NSViewRepresentable {
     private var target: ThemeWash?
     private var nativeToken: UUID?
     private var followsNativeTimeline = false
+    private var grainFadeToken: UUID?
     private let copies = NSHashTable<ThemeWashSurface>.weakObjects()
     private weak var copySource: ThemeWashSurface?
     private let copyOrigin: CGPoint
@@ -222,6 +233,11 @@ struct NativeThemeWashCopy: NSViewRepresentable {
             for key in source.animationKeys() ?? [] {
                 if let installed = source.animation(forKey: key), let animation = installed.copy() as? CAAnimation {
                     animation.beginTime = destination.convertTime(source.convertTime(installed.beginTime, to: nil), from: nil)
+                    if source === grain.layer, grainFadeToken != nil {
+                        let token = UUID()
+                        copy.grainFadeToken = token
+                        animation.delegate = copy.grainFadeCompletion(token)
+                    }
                     destination.add(animation, forKey: key)
                 }
             }
@@ -290,6 +306,7 @@ struct NativeThemeWashCopy: NSViewRepresentable {
         }
         nativeToken = nil
         followsNativeTimeline = false
+        grainFadeToken = nil
         for layer in [base, overlay, tint, grain.layer].compactMap({ $0 }) { layer.removeAllAnimations() }
         grain.isHidden = (target?.grain ?? 0) <= 0
         for copy in copies.allObjects { copy.finishAnimations() }
@@ -324,10 +341,20 @@ struct NativeThemeWashCopy: NSViewRepresentable {
         apply(wash, duration: 0)
     }
 
+    private func grainFadeCompletion(_ token: UUID) -> ThemeGrainFadeCompletion {
+        ThemeGrainFadeCompletion { [weak self] in
+            guard let self, self.grainFadeToken == token, !self.nativeAnimating,
+                  (self.target?.grain ?? 0) <= 0 else { return }
+            self.grainFadeToken = nil
+            self.grain.isHidden = true
+        }
+    }
+
     func apply(_ wash: ThemeWash, duration: TimeInterval, native: CABasicAnimation? = nil, start: ThemeWash? = nil, presentedStart: ThemeWashPresentation? = nil) {
         guard !nativeAnimating, target != wash || native != nil else { return }
         let animate = duration > 0 && (target != nil || native != nil)
         target = wash
+        grainFadeToken = nil
         let rate = Float(window?.screen?.maximumFramesPerSecond ?? 60)
         func set(_ layer: CALayer, _ key: String, _ name: String, _ value: Any, _ initial: Any?) {
             let from = presentedStart?.values["\(name).\(key)"] ?? initial ?? layer.presentation()?.value(forKeyPath: key) ?? layer.value(forKeyPath: key)
@@ -349,6 +376,11 @@ struct NativeThemeWashCopy: NSViewRepresentable {
                     animation.isRemovedOnCompletion = false
                 }
                 animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+                if name == "grain", native == nil, wash.grain <= 0 {
+                    let token = UUID()
+                    grainFadeToken = token
+                    animation.delegate = grainFadeCompletion(token)
+                }
                 layer.add(animation, forKey: key)
             }
             CATransaction.commit()

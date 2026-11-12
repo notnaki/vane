@@ -12,10 +12,10 @@ import XCTest
     }
 
     func testMissingPaintMarkerCannotBeAnAdmittedBaseline() {
-        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 10_000, markerGap: 10_000).isPaintedBaseline)
-        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 64, markerGap: 0).isPaintedBaseline)
-        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 0, markerGap: 10_000).isPaintedBaseline)
-        XCTAssertTrue(ResizePixelFrames.Frame(time: 0, gap: 1.714, markerGap: 1.714).isPaintedBaseline)
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 10_000, markerGap: 10_000, extent: .zero).isPaintedBaseline)
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 64, markerGap: 0, extent: .zero).isPaintedBaseline)
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 0, markerGap: 10_000, extent: .zero).isPaintedBaseline)
+        XCTAssertTrue(ResizePixelFrames.Frame(time: 0, gap: 1.714, markerGap: 1.714, extent: .zero).isPaintedBaseline)
     }
 
     func testPageViewportFollowsTheNativeFrameBeforeItsNextPresentation() async throws {
