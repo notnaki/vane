@@ -437,6 +437,43 @@ qualification supports proceeding to full protected CI for the combined tree;
 it does not replace that final integration gate. Current main3882 is included,
 and its separate checks/pages runs completed successfully before this update.
 
+## Native motion admission follow-up, 12 November 2026
+
+Full PR run [43264140732](https://github.com/notnaki/vane/actions/runs/43264140732)
+on `74b2fc9c` failed one distinct case,
+`NativeSidebarMotionTests.testDisabledTransactionMovesReorderedNativeRowImmediately`,
+before the tested row mutation. Its independent 240 ms readiness sentinel was
+first sampled at 768 ms; all eight samples were the endpoint85. Shard one
+reported two assertions (one unexpected) and cleanup zero. Shards three/four
+passed; shard two was cancelled by PR fail-fast. This was an unanticipated
+failure, not a qualified full-CI result.
+
+Diagnostic run [43268678915](https://github.com/notnaki/vane/actions/runs/43268678915)
+on `5d11038c` added phase timestamps without changing behavior. Each of three
+hosts passed 20 selected cases, with one existing system-Reduce-Motion skip and
+primary/cleanup zero. Those prompt samples do not identify the source of the
+original 768 ms delay or establish a repair.
+
+Controlled regression run
+[43273319049](https://github.com/notnaki/vane/actions/runs/43273319049), `bfc6731b`,
+then reproduced two fixture defects as expected. Delaying the first observation
+750 ms produced the same eight endpoint85 samples and failed admission. A real
+presentation animation frozen at its interior position45 was wrongly accepted
+by the old single-interior-sample predicate. The nonmoving endpoint control was
+rejected correctly. Nine cases completed with one existing Reduce Motion skip,
+three assertions across those two distinct failures, and cleanup zero.
+
+The candidate keeps the independent readiness sentinel alive by autoreversing
+its original 240 ms cycle during the original eight observations, with deferred
+animation removal. Admission now requires both an interior position and actual
+displacement across observations. The existing ten-second compatibility budget
+is shared with sampling, never reset; the row mutation still begins afterward.
+Original row-animation durations, samples, tolerances, owner checks and outcome
+assertions remain unchanged. No product code changes. Qualification is planned
+on three ARM hosts: 23 related cases under the hosted policy, followed by all
+nine motion cases with Reduce Motion verified off and no allowed skips. This
+candidate is not yet qualified, and full current-base CI remains required.
+
 ## Verification limits and remaining integration gates
 
 - No second Mac is available. Cross-Mac convergence, offline/restart behavior

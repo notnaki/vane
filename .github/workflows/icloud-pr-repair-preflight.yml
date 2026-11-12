@@ -1,4 +1,4 @@
-name: iCloud motion admission regression proof
+name: iCloud motion admission qualification
 on:
   push:
     branches: [codex/icloud-pr-repair-20261112]
@@ -24,7 +24,7 @@ jobs:
           path: .build
           key: native-diag-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Sources/**', 'Tests/**') }}
           restore-keys: |
-            native-diag-${{ steps.toolchain.outputs.key }}-f0b7f99624d1366c1b07695ae79ac76501ae6819293e452b3aa616f12dd6e60c
+            native-diag-${{ steps.toolchain.outputs.key }}-1f57bac6b7ac56f3308694675a6c737407f118e41d4cf3e754d20aac8ec281b2
             native-diag-${{ steps.toolchain.outputs.key }}-
             swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
       - name: Restore unchanged source timestamps
@@ -63,7 +63,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1]
+        attempt: [1, 2, 3]
         suite: [native]
     steps:
       - uses: actions/checkout@v7
@@ -97,7 +97,7 @@ jobs:
         run: |
           python3 -u - <<'PYTHON'
           import os, pathlib, subprocess, sys
-          selection = 'NativeSidebarMotionTests'
+          selection = 'NativePageWorkTests|NativeSidebarMotionTests'
           log = pathlib.Path(os.environ['RUNNER_TEMP']) / ('icloud-pr-repair-' + os.environ['ATTEMPT'] + '.log')
           with log.open('w') as output:
               process = subprocess.Popen(['python3','-u','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -110,6 +110,21 @@ jobs:
           print('ATTEMPT ' + os.environ['ATTEMPT'] + ': passed=' + str(passed), flush=True)
           sys.exit(0 if passed else (status or 1))
           PYTHON
+      - name: Qualify normal-motion fixtures with Reduce Motion off
+        env:
+          ATTEMPT: ${{ matrix.attempt }}
+        run: |
+          set -euo pipefail
+          defaults write com.apple.universalaccess reduceMotion -bool false
+          swift -e 'import AppKit; let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion; print("HOST_REDUCE_MOTION=\(reduced)"); exit(reduced ? 1 : 0)'
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter NativeSidebarMotionTests 2>&1 | tee "$RUNNER_TEMP/icloud-motion-enabled-$ATTEMPT.log"
+          python3 - <<'PYTHON'
+          import os, pathlib
+          text = (pathlib.Path(os.environ['RUNNER_TEMP']) / ('icloud-motion-enabled-' + os.environ['ATTEMPT'] + '.log')).read_text()
+          assert 'Native suite primary status=0; cleanup status=0' in text
+          assert 'with 0 failures (0 unexpected)' in text
+          assert 'Test skipped' not in text
+          PYTHON
       - name: Preserve every attempt
         if: always()
         uses: actions/upload-artifact@v6
@@ -118,4 +133,5 @@ jobs:
           path: |
             ${{ runner.temp }}/icloud-pr-repair-*.log
             ${{ runner.temp }}/icloud-smoke.log
+            ${{ runner.temp }}/icloud-motion-enabled-*.log
             /tmp/vane-resize-*.png

@@ -7,7 +7,7 @@ import XCTest
 /// Real compositor positions are required. Model NSView frames cannot establish
 /// animation continuity, and an unavailable presentation baseline is a failure.
 @MainActor final class NativeSidebarMotionTests: XCTestCase {
-    private enum AdmissionError: Error { case noIntermediatePresentation }
+    private enum AdmissionError: Error { case noIntermediatePresentation, presentationTimedOut }
     private enum ProbeMode { case animated, frozen, stationary }
     private struct PresentationProbe {
         let initial: CGFloat
@@ -16,7 +16,10 @@ import XCTest
         var hasInteriorPosition: Bool {
             samples.contains { $0 > initial + 2 && $0 < initial + 78 }
         }
-        var observedMotion: Bool { hasInteriorPosition }
+        var observedMotion: Bool {
+            guard hasInteriorPosition, let low = samples.min(), let high = samples.max() else { return false }
+            return high - low > 2
+        }
     }
     private final class WeakField {
         weak var value: NSTextField?
@@ -90,7 +93,11 @@ import XCTest
                                             firstSampleDelay: Duration = .milliseconds(20),
                                             mode: ProbeMode = .animated) async throws -> PresentationProbe {
         XCTAssertTrue(NSApp.isRunning, "Native compositor sampling requires an owned AppKit loop")
+        // Share the existing compatibility admission budget with the probe. Eight
+        // asynchronous observations alone do not impose a wall-clock deadline.
+        let admissionDeadline = ContinuousClock.now + .seconds(10)
         try await compatibilityWait {
+            guard ContinuousClock.now < admissionDeadline else { throw AdmissionError.presentationTimedOut }
             if NSApp.isHidden { NSApp.unhide(nil) }
             if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
             if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
@@ -117,6 +124,7 @@ import XCTest
                 && abs(presented.minY - model.minY) < 0.5
                 && abs(marker.minX - sentinel.convert(sentinel.bounds, to: root).minX) < 0.5
         }
+        guard ContinuousClock.now < admissionDeadline else { throw AdmissionError.presentationTimedOut }
         let initial = try presentedRect(sentinel, in: root).minX
         let layer = try XCTUnwrap(sentinel.layer)
         let start = layer.position
@@ -130,6 +138,11 @@ import XCTest
         animation.toValue = NSValue(point: end)
         animation.duration = 0.24
         animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        // This independent readiness witness must still be moving when an
+        // executor-delayed observation arrives. The tested row action has not
+        // begun; its animation duration and samples remain unchanged.
+        animation.autoreverses = true
+        animation.repeatCount = .infinity
         if mode == .frozen {
             animation.speed = 0
             animation.timeOffset = 0.12
@@ -147,6 +160,7 @@ import XCTest
             let requestedAt = CACurrentMediaTime() - began
             try await Task.sleep(for: index == 0 ? firstSampleDelay : .milliseconds(20))
             let resumedAt = CACurrentMediaTime() - began
+            guard ContinuousClock.now < admissionDeadline else { throw AdmissionError.presentationTimedOut }
             window.contentView?.layoutSubtreeIfNeeded()
             let laidOutAt = CACurrentMediaTime() - began
             window.displayIfNeeded()
@@ -156,6 +170,7 @@ import XCTest
             samples.append(try presentedRect(sentinel, in: root).minX)
             elapsed.append(CACurrentMediaTime() - began)
             phases.append([requestedAt, resumedAt, laidOutAt, displayedAt, flushedAt])
+            guard ContinuousClock.now < admissionDeadline else { throw AdmissionError.presentationTimedOut }
         }
         print("NATIVE_MOTION_ADMISSION case=\(name) added=\(addedAt) committed=\(committedAt) phases=requested,resumed,layout,display,flush values=\(phases) samples=\(samples) elapsed=\(elapsed)")
         return PresentationProbe(initial: initial, samples: samples, elapsed: elapsed)
