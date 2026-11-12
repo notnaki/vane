@@ -110,15 +110,27 @@ import XCTest
         animation.timingFunction = CAMediaTimingFunction(name: .linear)
         let began = CACurrentMediaTime()
         layer.add(animation, forKey: "native-motion-admission")
+        let addedAt = CACurrentMediaTime() - began
         CATransaction.flush()
+        let committedAt = CACurrentMediaTime() - began
         var samples: [CGFloat] = []
         var elapsed: [CFTimeInterval] = []
+        var phases: [[CFTimeInterval]] = []
         for _ in 0..<8 {
+            let requestedAt = CACurrentMediaTime() - began
             try await Task.sleep(for: .milliseconds(20))
-            display(window)
+            let resumedAt = CACurrentMediaTime() - began
+            window.contentView?.layoutSubtreeIfNeeded()
+            let laidOutAt = CACurrentMediaTime() - began
+            window.displayIfNeeded()
+            let displayedAt = CACurrentMediaTime() - began
+            CATransaction.flush()
+            let flushedAt = CACurrentMediaTime() - began
             samples.append(try presentedRect(sentinel, in: root).minX)
             elapsed.append(CACurrentMediaTime() - began)
+            phases.append([requestedAt, resumedAt, laidOutAt, displayedAt, flushedAt])
         }
+        print("NATIVE_MOTION_ADMISSION case=\(name) added=\(addedAt) committed=\(committedAt) phases=requested,resumed,layout,display,flush values=\(phases) samples=\(samples) elapsed=\(elapsed)")
         layer.removeAnimation(forKey: "native-motion-admission")
         guard samples.contains(where: { $0 > initial + 2 && $0 < initial + 78 }) else {
             XCTFail("Native presentation sampling must observe real intermediate motion; samples=\(samples) elapsed=\(elapsed) running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow)")
