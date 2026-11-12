@@ -1,6 +1,19 @@
 import AppKit
 import WebKit
 
+#if DEBUG
+/// Fixture-owned, in-memory timing only. Ordinary drags do not read a clock or
+/// format log messages; the fixture installs a sink only for an opted-in run.
+@MainActor enum ResizeTimingDiagnostics {
+    static var sink: ((String, TimeInterval, CGFloat?, CGFloat?) -> Void)?
+
+    static func record(_ event: String, width: CGFloat? = nil, height: CGFloat? = nil) {
+        guard let sink else { return }
+        sink(event, CACurrentMediaTime(), width, height)
+    }
+}
+#endif
+
 /// Native overscan extends below the visible top edge in either coordinate system.
 /// Capture the full original frame so a parent resize never accumulates origin lead.
 struct LivePageResizeAnchor {
@@ -89,6 +102,9 @@ struct LivePageResizeAnchor {
             // Move and size together before reading safeAreaInsets. Growing up
             // into a titled window's unsafe area does not grow its CSS viewport.
             assignFrame(size: size)
+#if DEBUG
+            ResizeTimingDiagnostics.record("buffer.prepare.frameAssigned", width: size.width, height: size.height)
+#endif
             PageResizeStyle.prepare(web, nextSize: size)
             web.prepareContent(in: NSRect(origin: .zero, size: size))
         }
@@ -236,6 +252,9 @@ struct LivePageResizeAnchor {
 
     func start() {
         guard active, !started else { return }
+#if DEBUG
+        ResizeTimingDiagnostics.record("buffer.start")
+#endif
         started = true
         pages.forEach { page in
             page.freeze()
@@ -260,6 +279,9 @@ struct LivePageResizeAnchor {
 
     /// True means this buffer owns the proposal, even if it needs more coverage.
     @discardableResult func request(frame: NSRect, sidebarWidth: CGFloat? = nil) -> Bool {
+#if DEBUG
+        ResizeTimingDiagnostics.record("buffer.request", width: frame.width, height: sidebarWidth)
+#endif
         guard frame.width.isFinite, frame.height.isFinite, frame.width > 0, frame.height > 0,
               sidebarWidth?.isFinite != false else { return false }
         if bypassForDrag {
@@ -349,11 +371,17 @@ struct LivePageResizeAnchor {
         guard !applying else { return }
         if let published, published.frame == latest.frame, published.sidebar == latest.sidebar { return }
         published = latest
+#if DEBUG
+        ResizeTimingDiagnostics.record("buffer.publish.begin", width: latest.frame.width, height: latest.sidebar)
+#endif
         applying = true
         expectedFrame = latest.frame
         apply(latest.frame, latest.sidebar)
         pages.forEach { $0.reanchor() }
         applying = false
+#if DEBUG
+        ResizeTimingDiagnostics.record("buffer.publish.end", width: window?.frame.width, height: latest.sidebar)
+#endif
     }
 
     private func drive() {
@@ -427,9 +455,20 @@ struct LivePageResizeAnchor {
         exactPaint = exact && targets == desired
         guard targets.allSatisfy({ $0.width > 0 && $0.height > 0 && $0.width.isFinite && $0.height.isFinite }) else { cancel(); return }
         pendingPaints = Set(pages.map { ObjectIdentifier($0.web) })
-        zip(pages, targets).forEach { $0.prepare($1) }
+        zip(pages, targets).forEach { page, target in
+#if DEBUG
+            ResizeTimingDiagnostics.record("buffer.prepare.begin", width: target.width, height: target.height)
+#endif
+            page.prepare(target)
+#if DEBUG
+            ResizeTimingDiagnostics.record("buffer.prepare.end", width: target.width, height: target.height)
+#endif
+        }
         armDeadline(token)
         for page in pages {
+#if DEBUG
+            ResizeTimingDiagnostics.record("buffer.presentation.request", width: page.prepared.width, height: page.prepared.height)
+#endif
             let id = ObjectIdentifier(page.web)
             let callback: @MainActor @Sendable () -> Void = { [weak self] in self?.presented(token, page: id) }
             if let presenter { presenter(page.web, callback) }
@@ -447,13 +486,22 @@ struct LivePageResizeAnchor {
             return
         }
         guard active, generation == token, pendingPaints.remove(page) != nil else { return }
+#if DEBUG
+        ResizeTimingDiagnostics.record("buffer.presentation.callback")
+#endif
         guard ownsLayout else { cancel(); return }
         guard pendingPaints.isEmpty else { return }
         timer?.invalidate(); timer = nil
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
             context.allowsImplicitAnimation = false
+#if DEBUG
+            ResizeTimingDiagnostics.record("buffer.install.begin")
+#endif
             pages.forEach { $0.install() }
+#if DEBUG
+            ResizeTimingDiagnostics.record("buffer.install.end")
+#endif
             if covered(sizes(latest)) { publish() }
         }
         exactPresented = exactPaint
@@ -481,6 +529,9 @@ struct LivePageResizeAnchor {
 
     private func layoutChanged() {
         guard active else { return }
+#if DEBUG
+        ResizeTimingDiagnostics.record("buffer.host.layout", width: pages.first?.host?.bounds.width, height: pages.first?.host?.bounds.height)
+#endif
         // Native host callbacks may arrive inside apply(). Reposition the frozen
         // viewport immediately, without recursively laying out retained chrome.
         pages.forEach { $0.reanchor() }
@@ -500,6 +551,9 @@ struct LivePageResizeAnchor {
 
     private func timedOut(_ token: UUID) {
         guard active, generation == token, !pendingPaints.isEmpty || (ending && (exactPresented || awaitingFinalLayout)) else { return }
+#if DEBUG
+        ResizeTimingDiagnostics.record("buffer.timeout")
+#endif
         guard ownsLayout else { cancel(); return }
         // Preserve the existing bounded policy for an unresponsive WebContent
         // process: restore native sizing and allow the latest pointer geometry.

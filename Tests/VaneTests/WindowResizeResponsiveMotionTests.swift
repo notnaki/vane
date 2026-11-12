@@ -151,6 +151,16 @@ import XCTest
                 }
             ]
             defer { observations.forEach(NotificationCenter.default.removeObserver) }
+#if DEBUG
+            let timing = ResizeMotionTimingLog(sidebar: sidebar)
+            let traceTiming = environment["VANE_RESIZE_TIMING"] == "1"
+            if traceTiming { ResizeTimingDiagnostics.sink = { timing.append($0, time: $1, width: $2, height: $3) } }
+            defer {
+                if traceTiming { ResizeTimingDiagnostics.sink = nil; timing.dump() }
+            }
+#else
+            let traceTiming = false
+#endif
             try await admitResizeBaseline(web, window: window, sidebar: sidebar)
             let presented = XCTestExpectation(description: "Initial responsive page presentation")
             let callback: @convention(block) () -> Void = { presented.fulfill() }
@@ -158,7 +168,8 @@ import XCTest
             guard await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed else {
                 throw NSError(domain: "ResizeMotionPresentationReadiness", code: 1)
             }
-            let sampler = ResponsiveMotionSampler(sidebar: sidebar)
+            let sampler = ResponsiveMotionSampler(sidebar: sidebar, traceTiming: traceTiming)
+            defer { if traceTiming { sampler.samples.dumpTiming(sidebar: sidebar) } }
             try await sampler.start(window)
             do {
                 guard !owner.interrupted, app.isActive, window.isKeyWindow,
@@ -168,10 +179,23 @@ import XCTest
                 }
                 let baselineWidth = try XCTUnwrap(sampler.samples.values.last).width
                 let began = CACurrentMediaTime()
+#if DEBUG
+                if traceTiming { timing.append("fixture.began", time: began, width: baselineWidth) }
+                let nativeObservation = traceTiming ? NotificationCenter.default.addObserver(
+                    forName: NSWindow.didResizeNotification, object: window, queue: .main) { _ in
+                        MainActor.assumeIsolated {
+                            ResizeTimingDiagnostics.record("fixture.native.didResize", width: store.window?.frame.width)
+                        }
+                    } : nil
+                defer { if let nativeObservation { NotificationCenter.default.removeObserver(nativeObservation) } }
+#endif
                 let frameHeight = window.frame.height
                 print("RESPONSIVE_INITIAL frame=\(window.frame.size) content=\(window.contentView?.bounds.size ?? .zero) page=\(web.bounds.size)")
                 if sidebar { window.beginSidebarResize(store) }
                 else { window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.midY)) }
+#if DEBUG
+                ResizeTimingDiagnostics.record("fixture.begin.returned")
+#endif
                 let widths = sidebar
                     ? Array(stride(from: 228, through: 500, by: 2))
                         + Array(stride(from: 498, through: 164, by: -2))
@@ -181,6 +205,9 @@ import XCTest
                 for width in widths {
                     guard ContinuousClock.now < activeBy else { throw NSError(domain: "ResizeMotionActiveBudget", code: 1) }
                     let next = ContinuousClock.now + .milliseconds(8)
+#if DEBUG
+                    ResizeTimingDiagnostics.record("fixture.input", width: CGFloat(width))
+#endif
                     if sidebar {
                         if !window.updateSidebarResize(CGFloat(width)) {
                             SidebarWidth.shared.setLiveWidth(CGFloat(width), available: host.bounds.width)
@@ -192,6 +219,10 @@ import XCTest
                             window.setFrame(NSRect(origin: window.frame.origin, size: accepted), display: false)
                         }
                     }
+#if DEBUG
+                    ResizeTimingDiagnostics.record("fixture.input.returned", width: window.frame.width,
+                                                   height: SidebarWidth.shared.width)
+#endif
                     try await ContinuousClock().sleep(until: next)
                 }
                 if sidebar {
@@ -204,6 +235,9 @@ import XCTest
                     return !window.isPreparingPageResize && abs(window.frame.width - 900) < 1
                 }
                 let ended = CACurrentMediaTime()
+#if DEBUG
+                if traceTiming { timing.append("fixture.ended", time: ended) }
+#endif
                 window.endPageResize()
                 try await sampler.stop()
                 let samples = sampler.samples.values.filter { $0.time >= began && $0.time <= ended }
@@ -239,21 +273,76 @@ import XCTest
 
 @MainActor private final class ResponsiveMotionOwner { var interrupted = false }
 
+#if DEBUG
+@MainActor private final class ResizeMotionTimingLog {
+    private struct Entry {
+        let event: String
+        let time: Double
+        let width: CGFloat?
+        let height: CGFloat?
+    }
+    private let sidebar: Bool
+    private var entries: [Entry] = []
+    private var dropped = 0
+    init(sidebar: Bool) { self.sidebar = sidebar; entries.reserveCapacity(8192) }
+    func append(_ event: String, time: Double, width: CGFloat? = nil, height: CGFloat? = nil) {
+        guard entries.count < 20000 else { dropped += 1; return }
+        entries.append(Entry(event: event, time: time, width: width, height: height))
+    }
+    func dump() {
+        for entry in entries {
+            print("RESIZE_TIMING sidebar=\(sidebar) t=\(entry.time) event=\(entry.event) width=\(entry.width.map { String(Double($0)) } ?? "nil") height=\(entry.height.map { String(Double($0)) } ?? "nil")")
+        }
+        print("RESIZE_TIMING_END sidebar=\(sidebar) events=\(entries.count) dropped=\(dropped)")
+    }
+}
+#endif
+
 private final class ResponsiveMotionSamples: @unchecked Sendable {
     struct Frame { let time: Double; let width: Double }
     let queue = DispatchQueue(label: "vane.resize.responsive-motion")
     private let lock = NSLock()
     private var recorded: [Frame] = []
+    private struct CaptureTiming {
+        let time: Double
+        let received: Double
+        let status: Int
+        let width: Double?
+    }
+    private var captureTiming: [CaptureTiming] = []
+    private var droppedTiming = 0
     var values: [Frame] { lock.withLock { recorded } }
     func append(_ frame: Frame) { lock.withLock { recorded.append(frame) } }
+    func recordTiming(time: Double, received: Double, status: Int, width: Double?) {
+        lock.withLock {
+            guard captureTiming.count < 20000 else { droppedTiming += 1; return }
+            captureTiming.append(CaptureTiming(time: time, received: received, status: status, width: width))
+        }
+    }
+    func dumpTiming(sidebar: Bool) {
+        let (capture, parsed, dropped) = lock.withLock { (captureTiming, recorded, droppedTiming) }
+        for sample in capture {
+            print("RESIZE_CAPTURE sidebar=\(sidebar) pts=\(sample.time) received=\(sample.received) status=\(sample.status) windowWidth=\(sample.width.map(String.init(describing:)) ?? "nil")")
+        }
+        for sample in parsed {
+            print("RESIZE_CAPTURE_PARSED sidebar=\(sidebar) pts=\(sample.time) width=\(sample.width)")
+        }
+        print("RESIZE_CAPTURE_END sidebar=\(sidebar) samples=\(capture.count) parsed=\(parsed.count) dropped=\(dropped)")
+    }
 }
 
 @MainActor private final class ResponsiveMotionSampler: NSObject, SCStreamOutput {
     nonisolated let samples = ResponsiveMotionSamples()
     private var stream: SCStream?
     nonisolated let sidebar: Bool
-    init(sidebar: Bool) { self.sidebar = sidebar; super.init() }
+    nonisolated let traceTiming: Bool
+    init(sidebar: Bool, traceTiming: Bool) {
+        self.sidebar = sidebar; self.traceTiming = traceTiming; super.init()
+    }
     func start(_ window: NSWindow) async throws {
+#if DEBUG
+        ResizeTimingDiagnostics.record("capture.start.begin")
+#endif
         let content = try await SCShareableContent.currentProcess
         let target = try XCTUnwrap(content.windows.first { $0.windowID == CGWindowID(window.windowNumber) })
         let config = SCStreamConfiguration()
@@ -270,17 +359,29 @@ private final class ResponsiveMotionSamples: @unchecked Sendable {
         stream = capture
         do {
             try await capture.startCapture()
+#if DEBUG
+            ResizeTimingDiagnostics.record("capture.start.returned")
+#endif
             try await compatibilityWait { !self.samples.values.isEmpty }
+#if DEBUG
+            ResizeTimingDiagnostics.record("capture.firstSample.admitted")
+#endif
         } catch { try? await capture.stopCapture(); stream = nil; throw error }
     }
     func stop() async throws {
         if let stream { try await stream.stopCapture(); self.stream = nil; samples.queue.sync {} }
     }
     nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
+        let received = traceTiming ? CACurrentMediaTime() : 0
         guard type == .screen, sample.isValid,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let info = attachments.first, let status = info[.status] as? Int,
-              status == SCFrameStatus.complete.rawValue || status == SCFrameStatus.idle.rawValue,
+              let info = attachments.first, let status = info[.status] as? Int else { return }
+        if traceTiming {
+            let rect = (info[.screenRect] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
+            samples.recordTiming(time: CMTimeGetSeconds(sample.presentationTimeStamp), received: received,
+                                 status: status, width: rect.map { Double($0.width) })
+        }
+        guard status == SCFrameStatus.complete.rawValue || status == SCFrameStatus.idle.rawValue,
               let dictionary = info[.screenRect] as? NSDictionary,
               let rect = CGRect(dictionaryRepresentation: dictionary as CFDictionary) else { return }
         let time = CMTimeGetSeconds(sample.presentationTimeStamp)

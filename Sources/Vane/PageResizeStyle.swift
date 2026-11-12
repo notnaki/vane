@@ -18,7 +18,19 @@ import WebKit
 
     static func prepare(_ web: WKWebView, nextSize: NSSize? = nil) {
         guard let viewport = viewportSize(nextSize ?? web.bounds.size, insets: web.safeAreaInsets, zoom: web.pageZoom) else { return }
-        web.evaluateJavaScript(source + "(\(Double(viewport.width)), \(Double(viewport.height)))", in: nil, in: world) { _ in }
+#if DEBUG
+        ResizeTimingDiagnostics.record("style.javascript.dispatched", width: viewport.width, height: viewport.height)
+#endif
+        web.evaluateJavaScript(source + "(\(Double(viewport.width)), \(Double(viewport.height)))", in: nil, in: world) { result in
+#if DEBUG
+            let event: String
+            switch result {
+            case .success: event = "style.javascript.completed"
+            case .failure: event = "style.javascript.failed"
+            }
+            ResizeTimingDiagnostics.record(event, width: viewport.width, height: viewport.height)
+#endif
+        }
     }
 
     /// Warm a loaded visible page before its first drag, including host-only resizes.
