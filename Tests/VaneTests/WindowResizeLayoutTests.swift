@@ -507,6 +507,7 @@ private final class ResizePixelFrames: @unchecked Sendable {
         lock.withLock { if let last = recorded.last { recorded.append(Frame(time: time, gap: last.gap, markerGap: last.markerGap)) } }
     }
     @MainActor func saveImages(prefix: String) throws {
+        let attemptPrefix = "\(prefix)-\(UUID().uuidString)"
         let images = lock.withLock { [("baseline", baselineImage), ("worst", worstImage)] }
         for (name, snapshot) in images {
             let snapshot = try XCTUnwrap(snapshot)
@@ -517,7 +518,9 @@ private final class ResizePixelFrames: @unchecked Sendable {
                 space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: format, provider: provider,
                 decode: nil, shouldInterpolate: false, intent: .defaultIntent))
             let data = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
-            try data.write(to: URL(fileURLWithPath: "/tmp/vane-resize-\(prefix)-\(name).png"))
+            let output = URL(fileURLWithPath: "/tmp/vane-resize-\(attemptPrefix)-\(name).png")
+            try data.write(to: output)
+            print("RESIZE_ARTIFACT path=\(output.path)")
         }
     }
 }
