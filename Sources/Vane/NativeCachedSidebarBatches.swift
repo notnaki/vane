@@ -122,23 +122,30 @@ private extension EnvironmentValues {
     private var completionRevision: UUID?
     private(set) var rows = Set<String>()
     private(set) var revision = UUID()
-    private var needsRebase = false
+    private var needsCompletion = false
+    private var targetCaptured = false
     private(set) var visibility = NativeSidebarDisclosureVisibility.zero
     func capture(_ ids: Set<String>, scope: SidebarNativeReadinessScope?) {
         if !captured || self.scope != scope {
             captured = true
             self.scope = scope
             rows = ids
+            targetCaptured = false
+            needsCompletion = false
+            revision = UUID(); scheduledRevision = nil; completionRevision = nil
         }
-        if target != ids { revision = UUID(); target = ids; scheduledRevision = nil; completionRevision = nil }
+        if target != ids {
+            needsCompletion = targetCaptured
+            revision = UUID(); target = ids; scheduledRevision = nil; completionRevision = nil
+        }
+        targetCaptured = true
         let changes = Dictionary(uniqueKeysWithValues: rows.symmetricDifference(target).map {
             ($0, target.contains($0) ? CGFloat(1) : CGFloat(-1))
         })
         visibility = NativeSidebarDisclosureVisibility(rowCount: CGFloat(target.count), changes: changes)
-        needsRebase = !changes.isEmpty
     }
     func registerCompletion(in transaction: inout Transaction) {
-        guard needsRebase, completionRevision != revision else { return }
+        guard needsCompletion, completionRevision != revision else { return }
         completionRevision = revision
         let value = visibility
         let revision = revision
@@ -147,7 +154,7 @@ private extension EnvironmentValues {
         }
     }
     private func finished(_ value: NativeSidebarDisclosureVisibility, revision: UUID) {
-        guard self.revision == revision, needsRebase, value == visibility,
+        guard self.revision == revision, needsCompletion, value == visibility,
               scheduledRevision != revision else { return }
         scheduledRevision = revision
         // Updating the basis during native/SwiftUI update is unsafe. At rest,
@@ -157,12 +164,12 @@ private extension EnvironmentValues {
         }
     }
     @discardableResult func commitSettledVisibility(_ value: NativeSidebarDisclosureVisibility, revision: UUID) -> Bool {
-        guard self.revision == revision, value == visibility, needsRebase else { return false }
+        guard self.revision == revision, value == visibility, needsCompletion else { return false }
         Motion.instant {
             objectWillChange.send()
             rows = target
             visibility = NativeSidebarDisclosureVisibility(rowCount: CGFloat(target.count), changes: [:])
-            needsRebase = false
+            needsCompletion = false
             scheduledRevision = nil
         }
         return true
@@ -207,60 +214,104 @@ struct NativeSidebarDisclosureLayout {
             }
         }
     }
-    private func sum(_ range: Range<Int>, visibility: NativeSidebarDisclosureVisibility) -> CGFloat {
-        var value = baselinePrefix[range.upperBound] - baselinePrefix[range.lowerBound]
-        for (row, delta) in visibility.changes {
-            if let index = positions[row]?.index, range.contains(index) { value += delta }
+    func frame(visibility: NativeSidebarDisclosureVisibility) -> Frame { Frame(layout: self, visibility: visibility) }
+    /// One sparse index and geometry cache is shared by every native owner for
+    /// this sample. Prefix queries never rescan the changing descendant set.
+    final class Frame {
+        private let layout: NativeSidebarDisclosureLayout
+        private let visibility: NativeSidebarDisclosureVisibility
+        private let changedIndices: [Int]
+        private let changedPrefix: [CGFloat]
+        private var origins: [String: CGFloat] = [:]
+        private var edges: [String: CGFloat] = [:]
+        private var clips: [String: CGFloat] = [:]
+        private(set) var indexProbes = 0
+        var indexedContributionCount: Int { changedIndices.count }
+        init(layout: NativeSidebarDisclosureLayout, visibility: NativeSidebarDisclosureVisibility) {
+            self.layout = layout
+            self.visibility = visibility
+            let changes = visibility.changes.compactMap { row, delta -> (Int, CGFloat)? in
+                layout.positions[row].map { ($0.index, delta) }
+            }.sorted { $0.0 < $1.0 }
+            changedIndices = changes.map(\.0)
+            var prefix: [CGFloat] = [0]
+            for (_, delta) in changes { prefix.append(prefix.last! + delta) }
+            changedPrefix = prefix
         }
-        return value
-    }
-    private func progress(_ row: String, visibility: NativeSidebarDisclosureVisibility) -> CGFloat {
-        min(1, max(0, (positions[row]?.shownInBaseline == true ? 1 : 0) + visibility.change(for: row)))
-    }
-    func position(for row: String, visibility: NativeSidebarDisclosureVisibility) -> CGFloat? {
-        origin(for: row, visibility: visibility, depth: 0)
-    }
-    private func origin(for row: String, visibility: NativeSidebarDisclosureVisibility, depth: Int) -> CGFloat? {
-        guard let position = positions[row], depth < 64 else { return nil }
-        guard let parent = position.parent, let header = positions[parent],
-              header.index < position.index,
-              let headerY = origin(for: parent, visibility: visibility, depth: depth + 1),
-              let representative = representatives[parent] else {
-            return sum(0..<position.index, visibility: visibility)
+        private func changedPrefix(before bound: Int) -> CGFloat {
+            guard bound > 0 else { return 0 }
+            var lower = 0
+            var upper = changedIndices.count
+            while lower < upper {
+                indexProbes += 1
+                let middle = (lower + upper) / 2
+                if changedIndices[middle] < bound { lower = middle + 1 }
+                else { upper = middle }
+            }
+            return changedPrefix[lower]
         }
-        let end = subtreeEnds[parent, default: header.index + 1]
-        let revealed = min(progress(parent, visibility: visibility), progress(representative, visibility: visibility))
-        let headerVisibility = progress(parent, visibility: visibility)
-        let fraction = headerVisibility > 0 ? revealed / headerVisibility : 0
-        let prefix: CGFloat
-        let extent: CGFloat
-        if revealed > 0 {
-            prefix = sum((header.index + 1)..<position.index, visibility: visibility) / revealed
-            extent = max(0, sum((header.index + 1)..<end, visibility: visibility) / revealed)
-        } else {
-            // A completely folded group is masked. Its full-spacing hidden pose
-            // remains defined even when both visibility factors are zero.
-            prefix = CGFloat(position.index - header.index - 1)
-            extent = CGFloat(end - header.index - 1)
+        private func sum(_ range: Range<Int>) -> CGFloat {
+            layout.baselinePrefix[range.upperBound] - layout.baselinePrefix[range.lowerBound]
+                + changedPrefix(before: range.upperBound) - changedPrefix(before: range.lowerBound)
         }
-        return headerY + 1 + prefix - min(extent, travelLimits[parent] ?? extent) * (1 - fraction)
-    }
-    func revealEdge(for header: String, visibility: NativeSidebarDisclosureVisibility) -> CGFloat? {
-        guard let y = position(for: header, visibility: visibility) else { return nil }
-        var edge = y + 1
-        var ancestor = positions[header]?.parent
-        var visited = Set<String>()
-        while let parent = ancestor, visited.insert(parent).inserted {
-            if let y = position(for: parent, visibility: visibility) { edge = max(edge, y + 1) }
-            ancestor = positions[parent]?.parent
+        private func progress(_ row: String) -> CGFloat {
+            min(1, max(0, (layout.positions[row]?.shownInBaseline == true ? 1 : 0) + visibility.change(for: row)))
         }
-        return edge
-    }
-    func clipTop(for row: String, visibility: NativeSidebarDisclosureVisibility) -> CGFloat? {
-        guard let parent = positions[row]?.parent,
-              let edge = revealEdge(for: parent, visibility: visibility),
-              let y = position(for: row, visibility: visibility) else { return nil }
-        return edge - y
+        func position(for row: String) -> CGFloat? {
+            origin(for: row, depth: 0)
+        }
+        private func origin(for row: String, depth: Int) -> CGFloat? {
+            if let cached = origins[row] { return cached }
+            guard let position = layout.positions[row], depth < 64 else { return nil }
+            guard let parent = position.parent, let header = layout.positions[parent],
+                  header.index < position.index,
+                  let headerY = origin(for: parent, depth: depth + 1),
+                  let representative = layout.representatives[parent] else {
+                let value = sum(0..<position.index)
+                origins[row] = value
+                return value
+            }
+            let end = layout.subtreeEnds[parent, default: header.index + 1]
+            let revealed = min(progress(parent), progress(representative))
+            let headerVisibility = progress(parent)
+            let fraction = headerVisibility > 0 ? revealed / headerVisibility : 0
+            let prefix: CGFloat
+            let extent: CGFloat
+            if revealed > 0 {
+                prefix = sum((header.index + 1)..<position.index) / revealed
+                extent = max(0, sum((header.index + 1)..<end) / revealed)
+            } else {
+                // A completely folded group is masked. Its full-spacing hidden pose
+                // remains defined even when both visibility factors are zero.
+                prefix = CGFloat(position.index - header.index - 1)
+                extent = CGFloat(end - header.index - 1)
+            }
+            let value = headerY + 1 + prefix - min(extent, layout.travelLimits[parent] ?? extent) * (1 - fraction)
+            origins[row] = value
+            return value
+        }
+        func revealEdge(for header: String) -> CGFloat? {
+            if let cached = edges[header] { return cached }
+            guard let y = position(for: header) else { return nil }
+            var edge = y + 1
+            var ancestor = layout.positions[header]?.parent
+            var visited = Set<String>()
+            while let parent = ancestor, visited.insert(parent).inserted {
+                if let y = position(for: parent) { edge = max(edge, y + 1) }
+                ancestor = layout.positions[parent]?.parent
+            }
+            edges[header] = edge
+            return edge
+        }
+        func clipTop(for row: String) -> CGFloat? {
+            if let cached = clips[row] { return cached }
+            guard let parent = layout.positions[row]?.parent,
+                  let edge = revealEdge(for: parent),
+                  let y = position(for: row) else { return nil }
+            let value = edge - y
+            clips[row] = value
+            return value
+        }
     }
 }
 
@@ -546,7 +597,7 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
     let inherited: EnvironmentValues
     let transaction: Transaction
     let disclosureSample: NativeSidebarDisclosureSample?
-    let disclosureLayout: NativeSidebarDisclosureLayout?
+    let disclosureFrame: NativeSidebarDisclosureLayout.Frame?
     let viewport: SidebarRowsViewport
     let navigation: NativeSidebarNavigation
     weak var interactionOwner: (any NativeSidebarInteractionRetaining)?
@@ -582,17 +633,15 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
         .animation(placementAnimation, value: slots.map(\.index))
     }
     private func position(of slot: NativeSidebarOwnedSlot) -> CGFloat {
-        if let disclosureSample, let disclosureLayout,
-           let position = disclosureLayout.position(for: slot.id, visibility: disclosureSample.visibility) { return position }
+        if let position = disclosureFrame?.position(for: slot.id) { return position }
         return CGFloat(slot.index)
     }
     private func clipTop(of slot: NativeSidebarOwnedSlot) -> CGFloat? {
-        guard let disclosureSample, let disclosureLayout else { return nil }
-        return disclosureLayout.clipTop(for: slot.id, visibility: disclosureSample.visibility)
+        return disclosureFrame?.clipTop(for: slot.id)
             .map { $0 * (Look.rowHeight + Look.rowGap) }
     }
     private var placementAnimation: Animation? {
-        if disclosureLayout != nil { return nil }
+        if disclosureFrame != nil { return nil }
         return NativeSidebarPlacementMotion.animation(transaction: transaction,
             reduceMotion: inherited.accessibilityReduceMotion, reducedByPolicy: Motion.reduced)
     }
@@ -752,6 +801,7 @@ private final class NativeBatchMouseObservation {
     private var transaction = Transaction()
     private var disclosureSample: NativeSidebarDisclosureSample?
     private var disclosureLayout: NativeSidebarDisclosureLayout?
+    private var disclosureFrame: NativeSidebarDisclosureLayout.Frame?
     private var disclosureKnownRows: [String: SidebarRows.Row] = [:]
     private var rowWindow = NativeSidebarResidentWindow()
     private var generation: UInt64 = 0
@@ -976,7 +1026,7 @@ private final class NativeBatchMouseObservation {
             }
         }
         cache.removeAll(); mounted.removeAll(); groups.removeAll(); ownership.removeAll(); anchors.removeAll()
-        disclosureLayout = nil
+        disclosureLayout = nil; disclosureFrame = nil
         disclosureKnownRows.removeAll()
         interactions.removeAll(); pressedRows.removeAll(); menuRows.removeAll(); requestedProtection.removeAll()
         visit = UUID()
@@ -1125,6 +1175,9 @@ private final class NativeBatchMouseObservation {
         }
         for key in Array(groups.keys) { groups[key]?.sort { $0.index < $1.index } }
         updateDisclosureLayout(previousOrder: disclosureLayout?.order ?? previousOrder.map(\.id))
+        // Viewport-capped strips must not paint through the authoritative outer
+        // extent. Restore ordinary focus/selection overhang after disclosure.
+        clipsToBounds = disclosureFrame != nil
         let currentOwners = Set(ownership.values)
         for key in Array(cache.keys) where !currentOwners.contains(key) {
             cache.removeValue(forKey: key)?.host.removeFromSuperview()
@@ -1303,8 +1356,7 @@ private final class NativeBatchMouseObservation {
             entry.host.occupy(slots, width: bounds.width)
             entry.host.revealEdge = { [weak self] header in
                 guard let self else { return nil }
-                if let layout = self.disclosureLayout, let sample = self.disclosureSample,
-                   let edge = layout.revealEdge(for: header, visibility: sample.visibility) { return edge * self.pitch }
+                if let edge = self.disclosureFrame?.revealEdge(for: header) { return edge * self.pitch }
                 guard self.authorizedRowIDs.contains(header),
                       let anchor = self.anchors[header]?.value, anchor.window === self.window else { return nil }
                 return self.convert(anchor.bounds, from: anchor).maxY + Look.rowGap
@@ -1331,7 +1383,7 @@ private final class NativeBatchMouseObservation {
         }
         return Root(slots: slots, total: rows.count, generation: generation,
              inherited: inherited, transaction: placementTransaction, disclosureSample: disclosureSample,
-             disclosureLayout: disclosureLayout, viewport: viewport, navigation: navigation,
+             disclosureFrame: disclosureFrame, viewport: viewport, navigation: navigation,
              interactionOwner: (interactionLease as (any NativeSidebarInteractionRetaining)?) ?? self,
              committed: { [weak self] anchor in self?.rowDidLayout(anchor) },
              finishedClosing: { [weak self] row, request in
@@ -1340,10 +1392,11 @@ private final class NativeBatchMouseObservation {
              }, content: content!)
     }
     private func updateDisclosureLayout(previousOrder: [String]) {
-        guard let sample = disclosureSample else { disclosureLayout = nil; return }
+        guard let sample = disclosureSample else { disclosureLayout = nil; disclosureFrame = nil; return }
         let rolling = groups.values.flatMap { $0 }.filter { $0.rollout != nil }
         guard !rolling.isEmpty else {
             disclosureLayout = nil
+            disclosureFrame = nil
             disclosureKnownRows = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             return
         }
@@ -1376,10 +1429,13 @@ private final class NativeBatchMouseObservation {
         }
         disclosureLayout = NativeSidebarDisclosureLayout(order: order, baseline: sample.baseline,
             groups: [:], parents: parents, travelLimits: limits)
+        disclosureFrame = disclosureLayout?.frame(visibility: sample.visibility)
     }
     fileprivate func presentDisclosure(_ sample: NativeSidebarDisclosureSample?) {
         guard !disposed, let sample else { return }
         disclosureSample = sample
+        disclosureFrame = disclosureLayout?.frame(visibility: sample.visibility)
+        clipsToBounds = disclosureFrame != nil
         for key in mounted {
             guard let slots = groups[key], let entry = cache[key],
                   disclosureLayout != nil || slots.contains(where: { $0.rollout != nil }) else { continue }
@@ -1541,7 +1597,7 @@ private final class NativeBatchMouseObservation {
         visit = UUID(); interactionLease = nil
         interactions.removeAll(); pressedRows.removeAll(); requestedProtection.removeAll()
         readinessRowIDs.removeAll(); authorizedRowIDs.removeAll(); rowIndexByID.removeAll()
-        disclosureSample = nil; disclosureLayout = nil; disclosureKnownRows.removeAll()
+        disclosureSample = nil; disclosureLayout = nil; disclosureFrame = nil; disclosureKnownRows.removeAll()
         content = nil; inherited = EnvironmentValues()
     }
 }

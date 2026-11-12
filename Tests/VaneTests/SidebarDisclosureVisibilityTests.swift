@@ -22,19 +22,44 @@ final class SidebarDisclosureVisibilityTests: XCTestCase {
             baseline: basis, groups: ["a1": "a", "a2": "a", "b1": "b", "b2": "b"])
         let sample = NativeSidebarDisclosureVisibility(rowCount: 4,
             changes: ["a1": -0.5, "a2": -0.5, "b1": 0.5, "b2": 0.5])
-        XCTAssertEqual(layout.position(for: "b", visibility: sample), 2)
-        XCTAssertEqual(layout.position(for: "b1", visibility: sample), 2)
-        XCTAssertEqual(layout.position(for: "b2", visibility: sample), 3)
-        XCTAssertEqual(layout.position(for: "a2", visibility: sample), 1)
+        let frame = layout.frame(visibility: sample)
+        XCTAssertEqual(frame.position(for: "b"), 2)
+        XCTAssertEqual(frame.position(for: "b1"), 2)
+        XCTAssertEqual(frame.position(for: "b2"), 3)
+        XCTAssertEqual(frame.position(for: "a2"), 1)
     }
 
     func testRetainedChildBeforeItsReorderedParentHasASafeMaskedPose() throws {
         let layout = NativeSidebarDisclosureLayout(order: ["child", "other", "folder"],
             baseline: ["child", "other", "folder"], groups: [:], parents: ["child": "folder"])
         let sample = NativeSidebarDisclosureVisibility(rowCount: 2.5, changes: ["child": -0.5])
-        XCTAssertEqual(layout.position(for: "child", visibility: sample), 0)
-        XCTAssertGreaterThan(try XCTUnwrap(layout.clipTop(for: "child", visibility: sample)), 1,
+        let frame = layout.frame(visibility: sample)
+        XCTAssertEqual(frame.position(for: "child"), 0)
+        XCTAssertGreaterThan(try XCTUnwrap(frame.clipTop(for: "child")), 1,
                              "A retained child preceding its moved parent must stay masked, with no invalid prefix range")
+    }
+
+    func testLargeOpeningIndexesContributionsOnceAndCachesResidentQueries() throws {
+        let children = (0..<3_000).map { "child-\($0)" }
+        let layout = NativeSidebarDisclosureLayout(order: ["folder"] + children, baseline: ["folder"], groups: [:],
+            parents: Dictionary(uniqueKeysWithValues: children.map { ($0, "folder") }), travelLimits: ["folder": 20])
+        let visibility = NativeSidebarDisclosureVisibility(rowCount: 751,
+            changes: Dictionary(uniqueKeysWithValues: children.map { ($0, CGFloat(0.25)) }))
+        let frame = layout.frame(visibility: visibility)
+        XCTAssertEqual(frame.indexedContributionCount, 3_000)
+        for row in children.prefix(24) {
+            _ = try XCTUnwrap(frame.position(for: row))
+            _ = try XCTUnwrap(frame.clipTop(for: row))
+        }
+        XCTAssertEqual(try XCTUnwrap(frame.position(for: "child-23")), 9, accuracy: 0.0001)
+        XCTAssertLessThanOrEqual(frame.indexProbes, 24 * 4 * 16,
+                                 "Resident geometry must use logarithmic prefix lookups, not rescan3,000 changes per row")
+        let probes = frame.indexProbes
+        for _ in 0..<8 {
+            for row in children.prefix(24) { _ = frame.position(for: row); _ = frame.clipTop(for: row) }
+        }
+        XCTAssertEqual(frame.indexProbes, probes,
+                       "All native owners must share this frame's cached origins and ancestor clip edges")
     }
 
     func testInnerFolderCanCloseWhileItsAncestorIsOpening() throws {
@@ -48,12 +73,13 @@ final class SidebarDisclosureVisibilityTests: XCTestCase {
             let inner = 0.5 * (1 - t)
             let sample = NativeSidebarDisclosureVisibility(rowCount: 1 + 2 * outer + 2 * inner,
                 changes: ["inner": outer, "tail": outer, "c1": inner, "c2": inner])
-            let tail = try XCTUnwrap(layout.position(for: "tail", visibility: sample))
+            let frame = layout.frame(visibility: sample)
+            let tail = try XCTUnwrap(frame.position(for: "tail"))
             XCTAssertEqual(tail + 1, sample.rowCount, accuracy: 0.0001,
                            "The last native row and outer extent must share the nested disclosure pose")
             if inner > 0 {
-                let first = try XCTUnwrap(layout.position(for: "c1", visibility: sample))
-                let last = try XCTUnwrap(layout.position(for: "c2", visibility: sample))
+                let first = try XCTUnwrap(frame.position(for: "c1"))
+                let last = try XCTUnwrap(frame.position(for: "c2"))
                 XCTAssertEqual(last - first, 1, accuracy: 0.0001)
             }
         }
@@ -91,6 +117,18 @@ final class SidebarDisclosureVisibilityTests: XCTestCase {
         visible.insert("opening-child")
         baseline.capture(visible, scope: nil)
         XCTAssertEqual(baseline.visibility.changes, ["opening-child": 1])
+    }
+
+    func testReversalToOriginalBasisStillCommitsSettledCleanup() {
+        let baseline = NativeSidebarDisclosureBaseline()
+        baseline.capture(["folder"], scope: nil)
+        baseline.capture(["folder", "child"], scope: nil)
+        baseline.capture(["folder"], scope: nil)
+        XCTAssertTrue(baseline.visibility.changes.isEmpty)
+        XCTAssertTrue(baseline.commitSettledVisibility(baseline.visibility, revision: baseline.revision),
+                      "Returning to the resting basis must still release retained closing visuals")
+        XCTAssertFalse(baseline.commitSettledVisibility(baseline.visibility, revision: baseline.revision),
+                       "A completed target must not repeatedly rebuild resting native roots")
     }
 
     func testReversalRevokesAnOldRebaseWithoutChangingThePresentedBasis() {
