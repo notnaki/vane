@@ -352,7 +352,7 @@ import XCTest
                 do {
                     try await wait("shadow host deactivation", diagnostics: {
                         "appActive=\(app.isActive) processActive=\(NSRunningApplication.current.isActive)"
-                    }) { !app.isActive }
+                    }) { !app.isActive && !NSRunningApplication.current.isActive }
                     print("SHADOW_RETIREMENT inactive=true running=\(app.isRunning)")
                 } catch {
                     if failure == nil { failure = error }
