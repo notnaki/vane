@@ -1468,7 +1468,11 @@ import XCTest
                        "Profile activation must not wait for the sidebar animation to finish")
         XCTAssertEqual(arriving.currentSpaceID, second.id)
         if cached { XCTAssertTrue(observedCachedSelection) }
-        XCTAssertTrue(arriving.active?.web.window === window,
+        let pageMounted = arriving.active?.web.window === window
+        if !pageMounted {
+            print("EARLY_PROFILE_PAGE cached=\(cached) tabs=\(arriving.tabs.count) active=\(String(describing: arriving.active?.id)) superview=\(String(describing: arriving.active?.web.superview)) profileVisible=\(arriving.profileVisible) activeApp=\(NSApp.isActive) key=\(window.isKeyWindow)")
+        }
+        XCTAssertTrue(pageMounted,
                       "The destination web content must be mounted during landing")
         let surface = try XCTUnwrap(colourSurface(in: host))
         let colour = try firstColour(of: surface, presented: true)
@@ -1876,17 +1880,35 @@ import XCTest
     }
 
     func testSlowNativeSpaceLandingNeverReversesItsPresentation() async throws {
-        let (store, spaces, window, monitor) = try fixture()
+        try await withFixtureApplicationLoop { try await checkSlowNativeSpaceLanding() }
+    }
+
+    private func checkSlowNativeSpaceLanding() async throws {
+        let (store, spaces, window, monitor) = try fixture(registerTeardown: false)
+        defer { retireFixture(store, window: window, monitor: monitor) }
         store.palette = nil
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
-        try await Task.sleep(for: .milliseconds(400))
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        try await compatibilityWait {
+            if !NSApp.isActive || NSApp.keyWindow !== window {
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                return false
+            }
+            return NSApp.isRunning && window.isKeyWindow
+                && window.isVisible && window.occlusionState.contains(.visible)
+                && host.window === window && host.layer?.presentation() != nil
+        }
         var samples: [CGFloat] = []
         for index in 1...40 {
             monitor.track(-CGFloat(index) * 3, width: fixtureSidebarWidth(in: store), in: store)
             try await Task.sleep(for: .milliseconds(10))
             samples.append(try XCTUnwrap(host.spaceSlide).offset)
         }
-        monitor.land(1, to: spaces[1], width: fixtureSidebarWidth(in: store), store: store)
+        // This case samples 35 x 8 ms and then checks completion. Give that
+        // fixed window a known 200 ms landing; the 300 ms product default can
+        // legitimately still be running at its 280 ms minimum observation.
+        monitor.land(1, to: spaces[1], width: fixtureSidebarWidth(in: store), store: store, duration: 0.2)
         for _ in 0..<35 {
             try await Task.sleep(for: .milliseconds(8))
             samples.append(host.spaceSlide?.offset ?? -fixtureSidebarWidth(in: store))

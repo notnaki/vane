@@ -50,7 +50,7 @@ jobs:
           python3 - <<'PYTHON'
           import os, pathlib, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          selection = 'ICloud|PasswordShadowAutofillTests|PasswordAutofillTests|BoundedSidebarMountingTests|KeyboardAccessibilityTests|WindowResizeLayoutTests|WindowResizePreparationTests|SpaceNativeRenderingTests|NewTabDisclosureTests'
+          selection = 'ICloud|PasswordShadowAutofillTests|BoundedSidebarMountingTests|KeyboardAccessibilityTests|WindowResizeLayoutTests|WindowResizePreparationTests|NewTabDisclosureTests|PasswordAutofillTests.testSelectedAccountCannotContinueIntoDifferentHiddenOrReadOnlyIdentity|PasswordAutofillTests.testSubmittedMainUsernameAwaitsProcessedDenialBeforeNavigation|SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testFirstProfileVisitChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testSlowNativeSpaceLandingNeverReversesItsPresentation|SpaceNativeRenderingTests.testNativeSpaceClickBlendsBackgroundDuringSidebarTravel|SpaceNativeRenderingTests.testProfileClickDoesNotRestoreItsDepartureColour|SpaceNativeRenderingTests.testProfileSwipeDoesNotRestoreItsDepartureColour|SpaceNativeRenderingTests.testReverseProfileSwipeTakesOverTheSamePresentedNativeRows|SpaceNativeRenderingTests.testRealSwipePresentedColourFollowsNativeLandingPosition'
           failed = False
           for attempt in range(1, 4):
               log = root / f'icloud-pr-repair-{attempt}.log'
