@@ -110,6 +110,61 @@ import XCTest
         if let failure { throw failure }
     }
 
+    func testSnapshotRecoversAnOccludedWindowThatStillOwnsKeyboardFocus() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do {
+            let covering = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+            covering.isReleasedWhenClosed = false
+            covering.backgroundColor = .black
+            covering.isOpaque = true
+            var covered = false
+            let occlusion = SnapshotOcclusion()
+            var recovered = false
+            var observation: NSObjectProtocol?
+            defer {
+                if let observation { NotificationCenter.default.removeObserver(observation) }
+                covering.orderOut(nil); covering.close()
+            }
+            _ = try await SidebarSnapshot.imageWhenReady(Color.gray) { host in
+                guard let window = host.window else { return false }
+                if !covered {
+                    observation = NotificationCenter.default.addObserver(
+                        forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+                    ) { [weak window] _ in
+                        MainActor.assumeIsolated {
+                            if let window, window.isKeyWindow, NSApp.keyWindow === window,
+                               !window.occlusionState.contains(.visible) { occlusion.observed = true }
+                        }
+                    }
+                    // Cover the shadow too; equal frames can leave an edge exposed
+                    // and never establish full native occlusion.
+                    covering.setFrame(window.frame.insetBy(dx: -40, dy: -40), display: true)
+                    covering.orderFrontRegardless()
+                    window.order(.below, relativeTo: covering.windowNumber)
+                    XCTAssertTrue(window.isKeyWindow, "Occlusion must leave keyboard ownership unchanged")
+                    covered = true
+                    return false
+                }
+                guard occlusion.observed else { return false }
+                recovered = true
+                XCTAssertTrue(window.isKeyWindow)
+                XCTAssertTrue(window.occlusionState.contains(.visible))
+                return true
+            }
+            XCTAssertTrue(occlusion.observed, "The fixture must actually obscure its exact snapshot owner")
+            XCTAssertTrue(recovered, "Admission must restore the obscured owner before sampling")
+        } catch { failure = error }
+        do { try await loop.close() } catch {
+            if failure == nil { failure = error } else { XCTFail("Occluded snapshot loop cleanup: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
     func testSnapshotDoesNotSampleBeforeItsCurrentNativeRowsCommit() throws {
         TestEnvironment.prepare()
         let owner = NSObject()
@@ -159,6 +214,10 @@ import XCTest
 @MainActor private final class SnapshotInteractiveState {
     weak var probe: SnapshotInteractiveProbe.Native?
     var setHovered: ((Bool) -> Void)?
+}
+
+@MainActor private final class SnapshotOcclusion {
+    var observed = false
 }
 
 private struct SnapshotInteractiveSurface: View {

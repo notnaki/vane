@@ -43,11 +43,12 @@ import XCTest
                     window.contentView = host
                     return false
                 }
-                // Replacing a host or another native fixture can take keyboard focus
-                // after the initial presentation. Waiting alone cannot restore it.
+                // Another fixture can take focus or obscure a still-key window.
+                // Waiting alone cannot restore that exact visible owner.
                 if NSApp.isHidden { NSApp.unhide(nil) }
                 if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-                if !window.isVisible || !window.isKeyWindow || NSApp.keyWindow !== window {
+                if !window.isVisible || !window.isKeyWindow || NSApp.keyWindow !== window
+                    || !window.occlusionState.contains(.visible) {
                     window.makeKeyAndOrderFront(nil)
                 }
                 host.layoutSubtreeIfNeeded()
