@@ -498,13 +498,10 @@ struct BrowserWindow: View {
         nonmutating set { store.sidebarPeeking = newValue }
     }
     @State private var peekTask: Task<Void, Never>?
-    /// App-wide, so every window's sidebar is the width the user last dragged one to.
-    @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var library = Library.shared
     /// Available chrome width, capped once both navigation columns fit. The page
     /// still receives exact native geometry without republishing every window pixel.
     @State private var windowWidth: CGFloat = 0
-    private var sidebarWidth: CGFloat { SidebarWidth.fitting(sidebar.width, in: windowWidth) }
 
     /// Whether the window is showing any chrome at all, which is what the traffic lights
     /// follow. The Library counts: it stands where the sidebar does, with the lights' own
@@ -526,6 +523,9 @@ struct BrowserWindow: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.browser")
+        #endif
         let chromeLayout = PageResizeLayout(librarySection: library.section, spaces: spaceCount,
                                             isPrivate: store.isPrivate)
         return ZStack(alignment: .leading) {
@@ -533,10 +533,14 @@ struct BrowserWindow: View {
             SpaceGround()
             LibraryNavigationLayout(gesture: store.libraryGesture,
                 libraryOpen: store.libraryOpen, sidebarShown: store.sidebarShown,
-                floating: store.sidebarFloatingChrome, sidebarWidth: sidebarWidth,
+                floating: store.sidebarFloatingChrome,
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
                 page: WebCard().modifier(DownloadFeedbackAnchor(target: .page))
+                    .modifier(SidebarPageResizeMetadata(sidebarShown: store.sidebarShown,
+                        layout: PageResizeLayout(librarySection: store.libraryOpen ? library.section : nil,
+                            spaces: spaceCount, isPrivate: store.isPrivate,
+                            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping)))
                     .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
                 sidebar: sidebarSurface, panel: LibraryPanel())
             edgeStrip
@@ -545,7 +549,7 @@ struct BrowserWindow: View {
             // Not while the Library is up: the rail is not the sidebar, and is not dragged.
             if store.sidebarShown && !store.libraryOpen {
                 // Arc's rounded rule sits 4pt inside the sidebar's trailing edge.
-                SidebarHandle().offset(x: sidebarWidth - SidebarHandle.hitTestWidth)
+                SidebarHandle()
                     .zIndex(1)
             }
             if presentsPalette { BrowserPaletteOverlay().zIndex(2) }
@@ -555,7 +559,7 @@ struct BrowserWindow: View {
         // traffic lights instead of beside them, and the card loses its top inset.
         .ignoresSafeArea()
         .modifier(PeekContentTracking(area: store.peekContent))
-        .modifier(ToastPresentation(store: store, sidebarWidth: sidebarWidth))
+        .modifier(SidebarToastPresentation(store: store))
         .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
@@ -611,11 +615,6 @@ struct BrowserWindow: View {
         .librarySwipe(store)
         .onAppear { store.applySpaceAppearance() }
         .environmentObject(store.spaceGesture)
-        .environment(\.pageResizeLayout, PageResizeLayout(
-            sidebarWidth: store.sidebarShown ? sidebar.width : 0,
-            librarySection: store.libraryOpen ? library.section : nil,
-            spaces: spaceCount, isPrivate: store.isPrivate,
-            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping))
         // A cached profile adopts the window's current presentation at rest. The
         // revision survives detachment, unlike the transaction used to write the model.
         .transaction(value: store.sidebarPresentationRevision) {
@@ -651,27 +650,7 @@ struct BrowserWindow: View {
         return Sidebar()
             .disabled(!visible || store.palette != nil || store.libraryOpen)
             .accessibilityHidden(!visible || store.palette != nil || store.libraryOpen)
-            .frame(width: sidebarWidth)
-            .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
-            .background {
-                ZStack {
-                    WindowGlass()
-                    NativeThemeWashCopy(gesture: store.spaceGesture)
-                }
-                    .clipShape(.rect(cornerRadius: Look.floatingSidebarRadius))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
-                            .strokeBorder(Look.floatingSidebarStroke,
-                                          lineWidth: Look.floatingSidebarStrokeWidth)
-                    }
-                    .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
-                    .opacity(floating ? 1 : 0)
-                    .allowsHitTesting(false)
-            }
-            .modifier(SidebarTrafficLightMotion(store: store,
-                slide: visible ? 0 : -(sidebarWidth + 2 * Look.floatingSidebarGap),
-                inset: floating ? Look.floatingSidebarGap : 0,
-                visibility: visible ? 1 : 0,
+            .modifier(SidebarSurfaceLayout(store: store, visible: visible, floating: floating,
                 libraryOpen: store.libraryOpen, peeking: !store.sidebarShown && peeking))
             .allowsHitTesting(visible && !store.libraryOpen)
             // Above the page during edge reveal and dismissal; below the resize handle.
@@ -693,6 +672,63 @@ struct BrowserWindow: View {
         }
     }
 
+}
+
+/// Width changes relayout the surface without rebuilding its sidebar content.
+private struct SidebarSurfaceLayout: ViewModifier {
+    @WindowSidebarWidth private var width
+    let store: TabStore
+    let visible: Bool
+    let floating: Bool
+    let libraryOpen: Bool
+    let peeking: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: width)
+            .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
+            .background {
+                ZStack {
+                    WindowGlass()
+                    NativeThemeWashCopy(gesture: store.spaceGesture)
+                }
+                .clipShape(.rect(cornerRadius: Look.floatingSidebarRadius))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
+                        .strokeBorder(Look.floatingSidebarStroke, lineWidth: Look.floatingSidebarStrokeWidth)
+                }
+                .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
+                .opacity(floating ? 1 : 0)
+                .allowsHitTesting(false)
+            }
+            .modifier(SidebarTrafficLightMotion(store: store,
+                slide: visible ? 0 : -(width + 2 * Look.floatingSidebarGap),
+                inset: floating ? Look.floatingSidebarGap : 0,
+                visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking))
+    }
+}
+
+private struct SidebarToastPresentation: ViewModifier {
+    @WindowSidebarWidth private var width
+    let store: TabStore
+
+    func body(content: Content) -> some View {
+        content.modifier(ToastPresentation(store: store, sidebarWidth: width))
+    }
+}
+
+/// The native page hosts need the raw shared preference for future window fitting.
+/// Scope its changing environment to the page tree, including splits and offscreen pages.
+private struct SidebarPageResizeMetadata: ViewModifier {
+    @ObservedObject private var sidebar = SidebarWidth.shared
+    let sidebarShown: Bool
+    var layout: PageResizeLayout
+
+    func body(content: Content) -> some View {
+        var current = layout
+        current.sidebarWidth = sidebarShown ? sidebar.width : 0
+        return content.environment(\.pageResizeLayout, current)
+    }
 }
 
 /// Shared by standalone SwiftUI windows and the native overlay above Space travel.
@@ -991,7 +1027,6 @@ private struct Sidebar: View {
     @AppStorage(LibraryHoverCategory.key, store: .vane) private var hoverCategory = "downloads"
     @State private var previewItems: [LibraryHoverItem] = []
     @ObservedObject private var batterySaver = BatterySaver.shared
-    @WindowSidebarWidth private var sidebarWidth
     @ObservedObject private var previewProfiles = ProfileManager.shared
     @State private var sidebarHeight: CGFloat = 0
 
@@ -1010,6 +1045,9 @@ private struct Sidebar: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.sidebar")
+        #endif
         SidebarChrome {
             TopRow()
             AddressPill(tab: store.active)
@@ -1112,7 +1150,6 @@ private struct Sidebar: View {
         .onChange(of: store.profileVisible) { _, visible in
             if !visible { downloadsHover.dismiss() }
         }
-        .frame(width: sidebarWidth, alignment: .leading)
         .background(SidebarDragAnchor(preview: dragPreview, store: store, region: .root))
         .environmentObject(dragPreview)
         .environment(\.sidebarDragPreview, dragPreview)
@@ -1177,6 +1214,9 @@ struct TopRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.header")
+        #endif
         HStack(spacing: layout.headerSpacing) {
             Spacer().frame(width: Look.trafficLights)
             if !layout.usesOverflow { toggle }
@@ -1414,6 +1454,9 @@ private struct PillBody: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.pill")
+        #endif
         field
         .animation(reduced ? nil : Look.quick, value: hovering)
         .animation(reduced ? nil : Look.quick, value: compact)
@@ -1826,6 +1869,9 @@ private struct Favorites: View {
     @State private var side: Landing.Band?
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.favorites")
+        #endif
         let pinned = previewTabs
         if !pinned.isEmpty {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),

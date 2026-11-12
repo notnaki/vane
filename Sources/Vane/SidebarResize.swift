@@ -359,6 +359,8 @@ struct SidebarHandle: View {
                 _ = (store.window as? VaneWindow)?.cancelSidebarResize()
                 sidebar.reset()
             }
+            // The handle observes width already; position it without invalidating the browser.
+            .offset(x: presentedWidth - Self.hitTestWidth)
     }
 
     private func step(_ delta: CGFloat) {

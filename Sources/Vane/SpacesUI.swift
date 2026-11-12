@@ -403,7 +403,6 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
     let sections: Sections
     private let favoriteCount: Int
     @ObservedObject private var gesture: SpaceGesture
-    @WindowSidebarWidth private var sidebarWidth
     @Environment(\.nativeCachedSidebarBatches) private var nativeCachedBatches
     @State private var readinessPinnedRows = Feel02SidebarRowsCache()
     @State private var readinessTodayRows = Feel02SidebarRowsCache()
@@ -441,6 +440,9 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.strip")
+        #endif
         let readinessScope = SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID)
         let readinessSections = declareNativePopulation(readinessScope)
 
@@ -488,29 +490,39 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
     }
 
     @ViewBuilder private var preview: some View {
-        let drag = gesture.drag
         if !usesNativePresentation, gesture.swiping, !gesture.profileSliding, let space = gesture.neighbour {
-            let preview = store.swipePreview(in: space)
-            preview.equatable()
-                .id(space.id)
-                .transition(.identity)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .environment(\.colorScheme, preview.colorScheme)
-                // Within a profile the grid stays put, so its ghost starts below it.
-                // Across profiles the ghost includes its own grid and starts at the top.
-                .padding(.top, preview.includingFavorites ? 0 : favoriteHeight)
-                .offset(x: drag + CGFloat(gesture.previewDirection) * sidebarWidth)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-                .opacity(gesture.profileSliding ? 0 : 1)
+            SpaceSidebarPreview(preview: store.swipePreview(in: space), spaceID: space.id,
+                drag: gesture.drag, direction: gesture.previewDirection, favoriteCount: favoriteCount)
         }
+    }
+}
+
+/// Only the mounted fallback preview needs width; resting section readiness does not.
+private struct SpaceSidebarPreview: View {
+    @WindowSidebarWidth private var sidebarWidth
+    let preview: SpacePreviewList
+    let spaceID: UUID
+    let drag: CGFloat
+    let direction: Int
+    let favoriteCount: Int
+
+    var body: some View {
+        preview.equatable()
+            .id(spaceID)
+            .transition(.identity)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .environment(\.colorScheme, preview.colorScheme)
+            // Profile boundaries carry the grid; ordinary Space previews start below it.
+            .padding(.top, preview.includingFavorites ? 0 : favoriteHeight)
+            .offset(x: drag + CGFloat(direction) * sidebarWidth)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     private var favoriteHeight: CGFloat {
         guard favoriteCount > 0 else { return 0 }
         let columns = SidebarWidth.favouriteColumns(favoriteCount, width: sidebarWidth)
         let rows = (favoriteCount + columns - 1) / columns
-        // Tile rows, their gaps, and the inset before the Space heading. Matches Favorites.
         return CGFloat(rows) * (Look.tileHeight + Look.inset)
     }
 }
