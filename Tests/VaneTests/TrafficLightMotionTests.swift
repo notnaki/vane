@@ -59,12 +59,12 @@ import XCTest
             if let scroll = view as? NSScrollView { return scroll }
             return view.subviews.lazy.compactMap { viewport(in: $0) }.first
         }
-        @MainActor func display() {
+        func display() {
             host.layoutSubtreeIfNeeded()
             window.displayIfNeeded()
             CATransaction.flush()
         }
-        @MainActor func presentedX(_ view: NSView) throws -> CGFloat {
+        func presentedX(_ view: NSView) throws -> CGFloat {
             let layer = try XCTUnwrap(view.layer?.presentation())
             let root = try XCTUnwrap(host.layer?.presentation())
             return layer.convert(layer.bounds, to: root).minX
@@ -86,36 +86,24 @@ import XCTest
         let separation = dockedX - (try presentedX(sidebar))
 
         func sample(_ label: String, expectsIntermediate: Bool = true,
-                    afterSample: @escaping @MainActor (Int) -> Void = { _ in },
-                    action: @escaping @MainActor () -> Void) async throws {
-            // Observe from the owned AppKit loop, beginning with the delivered
-            // action. An XCTest executor continuation can resume after the whole
-            // transition even while the compositor and AppKit timer are running.
-            let observation = TrafficLightObservation(capture: {
-                display()
-                return .init(x: try presentedX(sidebar),
-                    lightX: button.convert(button.bounds, to: host).minX, hidden: button.isHidden)
-            }, afterSample: afterSample)
-            defer { observation.stop() }
-            try await performFixtureApplicationAction(in: window) {
-                action()
-                observation.start()
-            }
-            try await compatibilityWait { observation.completed }
-            if let error = observation.error { throw error }
-            XCTAssertEqual(observation.samples.count, 20)
+                    afterSample: (Int) -> Void = { _ in }, action: @escaping @MainActor () -> Void) async throws {
+            try await performFixtureApplicationAction(in: window, action)
             var intermediate = false
-            for sample in observation.samples {
-                let x = sample.x
+            for index in 0..<20 {
+                try await Task.sleep(for: .milliseconds(16))
+                display()
+                let x = try presentedX(sidebar)
+                let lightX = button.convert(button.bounds, to: host).minX
                 if x > -200 && x < -2 {
                     intermediate = true
                     // At least one of the three lights is still on-screen here.
                     if x > -60 {
-                        XCTAssertFalse(sample.hidden, "\(label): lights must leave with the panel")
+                        XCTAssertFalse(button.isHidden, "\(label): lights must leave with the panel")
                     }
-                    XCTAssertEqual(sample.lightX - x, separation, accuracy: 3,
+                    XCTAssertEqual(lightX - x, separation, accuracy: 3,
                         "\(label): lights must share the sidebar's intermediate position")
                 }
+                afterSample(index)
             }
             XCTAssertEqual(intermediate, expectsIntermediate,
                 "\(label): normal motion must travel; reduced motion must settle immediately")
@@ -145,58 +133,5 @@ import XCTest
         XCTAssertTrue(button.isHidden)
         try await sample("Battery Saver open", expectsIntermediate: false) { store.sidebarShown = true }
         XCTAssertFalse(button.isHidden)
-    }
-}
-
-/// Timer and observations share one actor owner, including cancellation. Keeping
-/// the timer here avoids transferring Foundation's non-Sendable callback value
-/// into the fixture's actor-isolated measurement closure.
-@MainActor private final class TrafficLightObservation {
-    struct Sample {
-        let x: CGFloat
-        let lightX: CGFloat
-        let hidden: Bool
-    }
-    private let capture: @MainActor () throws -> Sample
-    private let afterSample: @MainActor (Int) -> Void
-    private var timer: Timer?
-    private(set) var samples: [Sample] = []
-    private(set) var error: (any Error)?
-    private(set) var completed = false
-
-    init(capture: @escaping @MainActor () throws -> Sample,
-         afterSample: @escaping @MainActor (Int) -> Void) {
-        self.capture = capture
-        self.afterSample = afterSample
-    }
-
-    func start() {
-        precondition(timer == nil && samples.isEmpty)
-        let observer = Timer(timeInterval: 0.016, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.observe() }
-        }
-        observer.fireDate = Date(timeIntervalSinceNow: 0.016)
-        timer = observer
-        RunLoop.main.add(observer, forMode: .common)
-    }
-
-    private func observe() {
-        do {
-            samples.append(try capture())
-            afterSample(samples.count - 1)
-        } catch { self.error = error }
-        if error != nil || samples.count == 20 {
-            stop()
-            completed = true
-        } else {
-            // Preserve the original interval after each sample; delayed callbacks
-            // must not produce catch-up samples.
-            timer?.fireDate = Date(timeIntervalSinceNow: 0.016)
-        }
-    }
-
-    func stop() {
-        timer?.invalidate()
-        timer = nil
     }
 }
