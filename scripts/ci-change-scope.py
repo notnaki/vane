@@ -65,6 +65,19 @@ def main():
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0 for ref in refs)
     app_required = True
     if known:
+        # A PR event can retain an older target SHA while checkout supplies a
+        # newer integration merge. Compare that merge with its actual target,
+        # only after authenticating both the merge and PR source parents.
+        base, head = refs
+        if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+            parents = subprocess.check_output(
+                ["git", "rev-list", "--parents", "-n", "1", "--end-of-options", head],
+                text=True).split()
+            if (len(parents) == 3 and parents[0] == os.environ.get("GITHUB_SHA")
+                    and parents[2] == os.environ.get("PR_HEAD_SHA")):
+                base = parents[1]
+                print(f"Comparing PR integration with actual target {base}", file=sys.stderr)
+        refs = (base, head)
         # Disable rename detection so both old and new paths count.
         result = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", *refs, "--"],
                                 check=True, capture_output=True)

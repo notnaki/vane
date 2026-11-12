@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise cheap-check scope against real Git diffs, including renames."""
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tempfile
@@ -29,9 +30,10 @@ class ChangeScopeTests(unittest.TestCase):
         self.git("commit", "-qm", "fixture")
         return self.git("rev-parse", "HEAD")
 
-    def scope(self, expected, base=None):
+    def scope(self, expected, base=None, env=None):
         result = subprocess.run([sys.executable, str(SCRIPT), "--base", self.base if base is None else base,
-                                 "--head", "HEAD"], cwd=self.root, capture_output=True, text=True)
+                                 "--head", "HEAD"], cwd=self.root, capture_output=True, text=True,
+                                env={**os.environ, **(env or {})})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("app_required=" + str(expected).lower(), result.stdout)
 
@@ -106,6 +108,34 @@ class ChangeScopeTests(unittest.TestCase):
         (self.root / "App.swift").write_text("changed\n")
         self.commit()
         self.scope(True)
+
+    def test_pr_merge_compares_actual_target_parent_when_event_base_is_stale(self):
+        (self.root / "docs").mkdir()
+        (self.root / "docs/index.html").write_text("Website\n")
+        feature = self.commit()
+        self.git("checkout", "-qb", "target", self.base)
+        (self.root / "App.swift").write_text("New target source\n")
+        self.commit()
+        self.git("merge", "--no-ff", feature, "-m", "PR integration")
+        merge = self.git("rev-parse", "HEAD")
+        context = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_SHA": merge,
+                   "PR_HEAD_SHA": feature}
+        self.scope(False, env=context)
+        self.scope(True, env={**context, "PR_HEAD_SHA": self.base})
+        self.scope(True, env={**context, "GITHUB_SHA": feature})
+        self.scope(True, env={**context, "GITHUB_EVENT_NAME": "push"})
+
+    def test_pr_source_changes_still_require_app_checks_against_actual_target(self):
+        (self.root / "Sources").mkdir()
+        (self.root / "Sources/Feature.swift").write_text("New feature\n")
+        feature = self.commit()
+        self.git("checkout", "-qb", "target", self.base)
+        (self.root / "README.md").write_text("Target docs\n")
+        self.commit()
+        self.git("merge", "--no-ff", feature, "-m", "PR integration")
+        self.scope(True, env={"GITHUB_EVENT_NAME": "pull_request",
+                             "GITHUB_SHA": self.git("rev-parse", "HEAD"),
+                             "PR_HEAD_SHA": feature})
 
     def test_website_video_fonts_and_licenses_skip_app_work(self):
         for name in ("docs/media/session.webm", "docs/media/session.mp4",
