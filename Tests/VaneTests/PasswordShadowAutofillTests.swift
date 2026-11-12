@@ -6,6 +6,32 @@ import XCTest
 /// Real WebKit without native input, screenshots, or Keychain access. DOM-only
 /// cases stay unordered; timer-driven discovery admits its exact visible owner.
 @MainActor final class PasswordShadowAutofillTests: XCTestCase {
+    @MainActor private final class DiscoveryLaunch {
+        let started = ProcessInfo.processInfo.systemUptime
+        var previousState = ""
+        var observations: [String] = []
+    }
+
+    private func discoveryWindowServerDiagnostics() -> String {
+        let process = ProcessInfo.processInfo.processIdentifier
+        let windows = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let relevant = windows.filter {
+            ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == process ||
+                ($0[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true
+        }
+        let rows = relevant.map { window in
+            let bounds = (window[kCGWindowBounds as String] as? [String: Any]).flatMap {
+                CGRect(dictionaryRepresentation: $0 as CFDictionary)
+            }
+            return "id=\(String(describing: window[kCGWindowNumber as String])) " +
+                "owner=\(String(describing: window[kCGWindowOwnerName as String])) pid=\(String(describing: window[kCGWindowOwnerPID as String])) layer=\(String(describing: window[kCGWindowLayer as String])) " +
+                "onscreen=\(String(describing: window[kCGWindowIsOnscreen as String])) " +
+                "alpha=\(String(describing: window[kCGWindowAlpha as String])) bounds=\(String(describing: bounds))"
+        }
+        return "process=\(process) frontmostPID=\(String(describing: NSWorkspace.shared.frontmostApplication?.processIdentifier)) " +
+            "serverRows=[\(rows.joined(separator: ";"))]"
+    }
+
     private final class Capture: NSObject, WKScriptMessageHandler {
         var messages: [[String: Any]] = []
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -25,10 +51,14 @@ import XCTest
         return try data.map { try JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
     }
     private func wait(_ stage: String = "fixture outcome", file: StaticString = #filePath,
-                      line: UInt = #line, diagnostics: (() async -> String)? = nil, _ condition: () async throws -> Bool) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+                      line: UInt = #line, deadline requestedDeadline: ContinuousClock.Instant? = nil,
+                      diagnostics: (() async -> String)? = nil, _ condition: () async throws -> Bool) async throws {
+        let deadline = requestedDeadline ?? ContinuousClock.now.advanced(by: .seconds(5))
         while ContinuousClock.now < deadline {
-            if try await condition() { return }
+            if try await condition() {
+                if requestedDeadline != nil && ContinuousClock.now >= deadline { break }
+                return
+            }
             try await Task.sleep(for: .milliseconds(20))
         }
         let details = await diagnostics?() ?? ""
@@ -52,6 +82,22 @@ import XCTest
         config.userContentController.addUserScript(WKUserScript(source: Autofill.script,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: Autofill.world))
         let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600), configuration: config)
+        if present != nil {
+            // Match WebKit's PlatformWebViewMac test harness and our permission
+            // fixtures: isolate discovery timers from WindowServer occlusion.
+            // WebKit still checks native window visibility and hidden ancestors;
+            // the real orderOut -> DOM-hidden -> visible control below proves it.
+            let setter = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+            let getter = NSSelectorFromString("_windowOcclusionDetectionEnabled")
+            let configurable = try XCTUnwrap(web.responds(to: setter) && web.responds(to: getter) ? web : nil,
+                                             "WebKit test-view occlusion policy is unavailable")
+            configurable.setValue(false, forKey: "windowOcclusionDetectionEnabled")
+            typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
+            let implementation = try XCTUnwrap(configurable.method(for: getter))
+            let enabled = unsafeBitCast(implementation, to: Getter.self)(configurable, getter)
+            XCTAssertFalse(enabled, "Timer discovery requires the upstream WebKit test-view policy")
+            print("SHADOW_OCCLUSION_POLICY enabled=\(enabled)")
+        }
         let window = NSWindow(contentRect: web.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = web
@@ -156,6 +202,7 @@ import XCTest
         let app = NSApplication.shared, running = NSRunningApplication.current
         return "visible=\(window?.isVisible ?? false) key=\(window?.isKeyWindow ?? false) " +
             "occlusion=\(window?.occlusionState.rawValue ?? 0) appActive=\(app.isActive) " +
+            "appPolicy=\(app.activationPolicy().rawValue) processPolicy=\(running.activationPolicy.rawValue) " +
             "finished=\(running.isFinishedLaunching) appHidden=\(app.isHidden) processHidden=\(running.isHidden) " +
             "keyOwner=\(window != nil && app.keyWindow === window) miniaturized=\(window?.isMiniaturized ?? false) " +
             "activeSpace=\(window?.isOnActiveSpace ?? false) alpha=\(window?.alphaValue ?? 0) " +
@@ -165,7 +212,7 @@ import XCTest
 
     private func discoveryDiagnostics(_ web: WKWebView, capture: Capture? = nil) async -> String {
         let native = discoveryNativeDiagnostics(web)
-        let state = try? await js(web, "JSON.stringify({visibility:document.visibilityState, state:document.readyState, anchor:JSON.parse(__vaneAnchor())})", isolated: true)
+        let state = try? await js(web, "JSON.stringify({visibility:document.visibilityState, state:document.readyState, anchorFunction:typeof __vaneAnchor, host:!!document.getElementById('host'), shadow:!!document.getElementById('host')?.shadowRoot, visibilityHistory:globalThis.__shadowFixtureVisibility||[], anchor:typeof __vaneAnchor==='function'?JSON.parse(__vaneAnchor()):null})", isolated: true)
         return native + " " +
             "readyMessages=\(capture?.messages.filter { $0["ready"] as? Bool == true }.count ?? 0) document=\(String(describing: state))"
     }
@@ -181,6 +228,9 @@ import XCTest
 
     private func admitDiscoveryDocument(_ web: WKWebView, loop: NativeFixtureApplicationLoop) async throws {
         var readmissionRequested = false
+        let admissionStart = ProcessInfo.processInfo.systemUptime
+        var probeTrace: [String] = []
+        defer { print("SHADOW_ADMISSION_TRACE " + probeTrace.joined(separator: " | ")) }
         var lastUnready = ""
         var lastDocumentProbe = "not sampled"
         try await wait("visible shadow discovery document", diagnostics: {
@@ -205,10 +255,13 @@ import XCTest
                 return false
             }
             readmissionRequested = false
+            let probeStart = ProcessInfo.processInfo.systemUptime - admissionStart
             let visibility = try await self.js(web, "document.visibilityState", isolated: true) as? String
+            let elapsed = ProcessInfo.processInfo.systemUptime - admissionStart
             let loopReady = try loop.isReadyForInteraction()
             let nativeReady = self.discoveryPresentationReady(window, document: web)
-            lastDocumentProbe = "visibility=\(visibility ?? "unavailable") loopReady=\(loopReady) nativeReady=\(nativeReady)"
+            lastDocumentProbe = "start=\(probeStart) end=\(elapsed) visibility=\(visibility ?? "unavailable") loopReady=\(loopReady) nativeReady=\(nativeReady)"
+            probeTrace.append(lastDocumentProbe)
             if !nativeReady { lastUnready = self.discoveryNativeDiagnostics(web) }
             return visibility == "visible" && loopReady && nativeReady
         }
@@ -235,20 +288,42 @@ import XCTest
         var loop: NativeFixtureApplicationLoop?
         var retire: (@MainActor @Sendable () -> Void)?
         var failure: (any Error)?
+        let launch = DiscoveryLaunch()
+        defer { print("SHADOW_LAUNCH_TRACE " + launch.observations.joined(separator: " | ")) }
         do {
-            // WebKit may defer timers in an unordered document even with an
-            // AppKit loop. Admit the exact visible owner before loading it.
-            let (web, capture) = try await fixture("<div id=host></div>", present: { window, web in
-                try self.positionDiscoveryWindow(window)
-                loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory,
-                    beforeHeartbeat: {
-                        window.makeKeyAndOrderFront(nil)
-                        app.activate(ignoringOtherApps: true)
-                    }, launchReadiness: {
-                        self.discoveryPresentationReady(window, document: web)
-                    })
-            }, retireWith: { retire = $0 })
+            // NSWindow must be created after the host has admitted a UI-capable
+            // policy and running AppKit loop. Then admit its exact presentation
+            // before WebKit navigation, within the same five-second startup budget.
+            let startupDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+            loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
             let ownedLoop = try XCTUnwrap(loop)
+            let (web, capture) = try await fixture("<div id=host></div>", tracking: """
+                globalThis.__shadowFixtureVisibility = [{state:document.visibilityState, at:Date.now()}];
+                document.addEventListener('visibilitychange', () => {
+                    __shadowFixtureVisibility.push({state:document.visibilityState, at:Date.now()});
+                });
+                """, present: { window, web in
+                // Discovery starts in a stable host, not AppKit's automatic
+                // show/hide animation. The explicit orderOut/DOM-hidden control
+                // below still observes real presentation withdrawal.
+                window.animationBehavior = .none
+                try self.positionDiscoveryWindow(window)
+                window.makeKeyAndOrderFront(nil)
+                app.activate(ignoringOtherApps: true)
+                try await self.wait("shadow initial native presentation", deadline: startupDeadline,
+                                    diagnostics: { self.discoveryNativeDiagnostics(web) }) {
+                    let loopReady = try ownedLoop.isReadyForInteraction()
+                    let nativeReady = self.discoveryPresentationReady(window, document: web)
+                    let state = self.discoveryNativeDiagnostics(web) + " running=\(app.isRunning)"
+                    if state != launch.previousState {
+                        launch.previousState = state
+                        launch.observations.append("elapsed=\(ProcessInfo.processInfo.systemUptime - launch.started) \(state)")
+                    }
+                    let ready = loopReady && nativeReady
+                    if ready { print("SHADOW_LAUNCH_PRESENTATION " + self.discoveryNativeDiagnostics(web)) }
+                    return ready
+                }
+            }, retireWith: { retire = $0 })
             let owner = try XCTUnwrap(web.window)
             if withdrawal != .none {
                 // Admit the visible WebKit document before injecting withdrawal,
@@ -265,7 +340,9 @@ import XCTest
                 try await wait("hidden shadow discovery control", diagnostics: { await self.discoveryDiagnostics(web) }) {
                     _ = try ownedLoop.isReadyForInteraction()
                     guard !owner.isVisible else { return false }
-                    return try await self.js(web, "document.visibilityState", isolated: true) as? String == "hidden"
+                    let hidden = try await self.js(web, "document.visibilityState", isolated: true) as? String == "hidden"
+                    if hidden { print("SHADOW_WITHDRAWAL nativeVisible=false documentVisibility=hidden") }
+                    return hidden
                 }
             case .offscreen:
                 let screen = try XCTUnwrap(owner.screen)
@@ -287,7 +364,10 @@ import XCTest
             XCTAssertFalse(stale)
             let current = try await fill(web)
             XCTAssertTrue(current)
-        } catch { failure = error }
+        } catch {
+            print("SHADOW_SERVER_FAILURE " + discoveryWindowServerDiagnostics())
+            failure = error
+        }
         // Retire inside the owned loop, including when fixture admission throws.
         retire?()
         if let loop {
