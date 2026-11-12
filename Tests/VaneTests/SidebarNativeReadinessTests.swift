@@ -300,6 +300,50 @@ import XCTest
             "A passive old layout cannot reacquire ownership")
     }
 
+    func testAttachedEmptySectionAcknowledgesDeclarationInstalledAfterItsLastLayout() {
+        _ = NSApplication.shared
+        let gate = SidebarNativeReadinessCoordinator.shared
+        let owner = NSObject(), shell = NSObject()
+        let destination = scope(owner)
+        let ownerID = UUID()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 250, height: 300),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let scroll = NSScrollView(frame: window.contentView!.bounds)
+        let document = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 300))
+        scroll.documentView = document
+        window.contentView = scroll
+        let native = NativeCachedSidebarBatchesView<EmptyView>(frame: .zero)
+        native.geometryScheduler = { _ in }
+        document.addSubview(native)
+        var environment = EnvironmentValues()
+        environment.sidebarNativeReadinessScope = destination
+        environment.sidebarNativeReadinessOwnerID = ownerID
+        let sections: [String: [String]] = ["today": []]
+        defer {
+            native.detach()
+            gate.releasePopulationExpectation(destination, owner: ObjectIdentifier(shell))
+            window.contentView = nil
+            window.close()
+        }
+        native.configure(rows: [], modelIDs: [], environment: environment, readinessSection: "today") { _, _, _ in EmptyView() }
+        native.layout()
+        XCTAssertFalse(gate.isReady(destination), "Attachment alone cannot invent a shell declaration")
+        // A zero-height section need not receive another layout when the body
+        // declaration/anchor catches up with its already attached representable.
+        gate.expectPopulation(destination, sections: sections, populationOwnerID: ownerID)
+        gate.retainPopulationExpectation(destination, owner: ObjectIdentifier(shell),
+            sections: sections, populationOwnerID: ownerID)
+        XCTAssertTrue(gate.isReady(destination),
+                      "The current attached empty section must acknowledge the late declaration without a new layout")
+        native.removeFromSuperview()
+        gate.releasePopulationExpectation(destination, owner: ObjectIdentifier(shell))
+        gate.expectPopulation(destination, sections: sections, populationOwnerID: ownerID)
+        gate.retainPopulationExpectation(destination, owner: ObjectIdentifier(shell),
+            sections: sections, populationOwnerID: ownerID)
+        XCTAssertFalse(gate.isReady(destination), "A declaration signal must never authorize a detached section")
+    }
+
     func testDetachedEmptyNativeSectionCannotAcknowledgeReactivatedScope() {
         _ = NSApplication.shared
         let gate = SidebarNativeReadinessCoordinator.shared
