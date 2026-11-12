@@ -135,6 +135,21 @@ final class VaneWindow: NSWindow {
     /// by the inset every time the peek opens.
     private var baseX: [NSWindow.ButtonType: CGFloat] = [:]
 
+    /// Interpolated by the same SwiftUI transaction as the sidebar. Keep this
+    /// across AppKit relayouts instead of snapping back to the destination row.
+    private var trafficLightOffset: CGPoint?
+
+    func placeTrafficLights(offset: CGPoint, visibility: CGFloat, peeking: Bool) {
+        trafficLightOffset = offset
+        for kind in Self.lightKinds {
+            if let button = standardWindowButton(kind), button.isHidden != (visibility <= 0.001) {
+                button.isHidden = visibility <= 0.001
+            }
+        }
+        peekingSidebar = peeking
+        centreTrafficLights()
+    }
+
     /// The lights' resting face, laid over AppKit's own three. See `TrafficLightRest`.
     private var lightsAtRest: TrafficLightRest?
 
@@ -149,11 +164,12 @@ final class VaneWindow: NSWindow {
             // The window's top edge in base coordinates is its own height; convert that into
             // whatever space the buttons are laid out in.
             let top = host.convert(NSPoint(x: 0, y: frame.height), from: nil).y
-            let wantY = Self.lightOriginY(windowTop: top, buttonHeight: button.frame.height,
-                                          peeking: peeking)
+            let wantY = trafficLightOffset.map {
+                top - Look.lightsCentre - $0.y - button.frame.height / 2
+            } ?? Self.lightOriginY(windowTop: top, buttonHeight: button.frame.height, peeking: peeking)
             let base = baseX[kind] ?? button.frame.origin.x
             baseX[kind] = base
-            let wantX = base + Self.lightsOffsetX(peeking: peeking)
+            let wantX = base + (trafficLightOffset?.x ?? Self.lightsOffsetX(peeking: peeking))
             guard abs(button.frame.origin.y - wantY) > 0.01
                     || abs(button.frame.origin.x - wantX) > 0.01 else { continue }
             button.setFrameOrigin(NSPoint(x: wantX, y: wantY))
