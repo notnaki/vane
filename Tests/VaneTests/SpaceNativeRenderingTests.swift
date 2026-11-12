@@ -11,7 +11,7 @@ import XCTest
         NSApp.setActivationPolicy(.accessory)
         if registerTeardown { addTeardownBlock { @MainActor in NSApp.setActivationPolicy(activationPolicy) } }
         try XCTSkipIf(Motion.spaceReduced, "Animated interruption requires motion")
-        let profile = ProfileManager.shared.create(name: "Continuity fixture").id
+        let profile = fixtureProfile(named: "Continuity fixture").id
         let spaces = ["First", "Second", "Third", "Fourth"].enumerated().map { index, name in
             coloured ? Space(name: name, profileID: profile,
                              colorHex: index == 0 ? "#FF0000" : "#0000FF", appearance: "dark", tint: 1)
@@ -97,9 +97,17 @@ import XCTest
         if let failure { throw failure }
     }
 
-    /// Gestures and compositor measurements must use the same fitted width as
-    /// the native sidebar. A parked source retains the geometry of its window.
+    private func fixtureProfile(named name: String) -> Profile {
+        let profile = ProfileManager.shared.create(name: name)
+        // Register before the fixture's teardown so its windows/tabs retire first.
+        // The wrapper then verifies this exact backend after the host has exited.
+        addTeardownBlock { @MainActor in try await NativeFixtureProfileCleanup.release([profile.id]) }
+        return profile
+    }
+
     private func fixtureSidebarWidth(in store: TabStore) -> CGFloat {
+        // The 300pt fixture fits its sidebar to 164pt, independently of the
+        // saved preference. Parked source stores still belong to that window.
         let window = store.window ?? store.parkedIn
         return SidebarWidth.fitting(SidebarWidth.shared.width,
                                     in: window?.contentView?.bounds.width ?? .infinity)
@@ -388,10 +396,20 @@ import XCTest
         let surface = try XCTUnwrap(colourSurface(in: XCTUnwrap(window.contentView)))
         // Admit the exact visible source and its row population before the
         // action. A guessed startup delay can miss the spring's entire early travel.
+        var admission = "starting"
+        defer { print("NATIVE_CLICK_ADMISSION \(admission)") }
         do { try await compatibilityWait {
             host.layoutSubtreeIfNeeded()
             window.displayIfNeeded()
             CATransaction.flush()
+            let population = SidebarNativeReadinessCoordinator.shared.isReady(
+                SidebarNativeReadinessScope(store: store, spaceID: spaces[0].id),
+                allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)
+            let presented = try? self.firstColour(of: surface, presented: true).redComponent
+            let model = try? self.firstColour(of: surface).redComponent
+            admission = "running=\(NSApp.isRunning) active=\(NSApp.isActive) hidden=\(NSApp.isHidden) "
+                + "key=\(NSApp.keyWindow === window) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) "
+                + "population=\(population) presented=\(String(describing: presented)) model=\(String(describing: model))"
             if !NSApp.isActive || NSApp.keyWindow !== window {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
@@ -400,12 +418,9 @@ import XCTest
             guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
                   window.isVisible, window.occlusionState.contains(.visible),
                   NSApp.modalWindow == nil, window.attachedSheet == nil,
-                  SidebarNativeReadinessCoordinator.shared.isReady(
-                    SidebarNativeReadinessScope(store: store, spaceID: spaces[0].id),
-                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled),
+                  population,
                   surface.base.presentation() != nil,
-                  let presented = try? self.firstColour(of: surface, presented: true).redComponent,
-                  let model = try? self.firstColour(of: surface).redComponent else { return false }
+                  let presented, let model else { return false }
             return abs(presented - model) < 0.001
         } } catch {
             print("CLICK_TINT_ADMISSION running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) modal=\(NSApp.modalWindow != nil) sheet=\(window.attachedSheet != nil) ready=\(SidebarNativeReadinessCoordinator.shared.isReady(SidebarNativeReadinessScope(store: store, spaceID: spaces[0].id), allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)) presentation=\(surface.base.presentation() != nil) model=\(try? firstColour(of: surface).redComponent) presented=\(try? firstColour(of: surface, presented: true).redComponent)")
@@ -455,8 +470,8 @@ import XCTest
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
         let manager = ProfileManager.shared
         let previous = manager.active
-        let blackProfile = manager.create(name: "Black profile")
-        let blueProfile = manager.create(name: "Blue profile")
+        let blackProfile = fixtureProfile(named: "Black profile")
+        let blueProfile = fixtureProfile(named: "Blue profile")
         var black = manager.createSpace(name: "Black", in: blackProfile.id)
         black.colorHex = "#000000"; black.tint = 1; black.appearance = "dark"
         manager.updateSpace(black)
@@ -465,6 +480,7 @@ import XCTest
         manager.updateSpace(blue)
         let source = Windows.open(profile: blackProfile, space: black, focus: false)
         let window = try XCTUnwrap(source.window)
+        window.animationBehavior = .none
         defer {
             retireProfileWindow(window)
             _ = manager.delete(blackProfile.id)
@@ -509,10 +525,25 @@ import XCTest
         let tab = store.newBlankTab(focus: false)
         tab.park(url: URL(string: "https://example.test/source")!, Parked(title: "Visible source row"))
         store.palette = nil
-        window.contentView?.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(250))
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let surface = try XCTUnwrap(colourSurface(in: host))
+        // Native completion and its visibility publication require the exact
+        // foreground owner, not merely a constructed window or a startup delay.
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            if NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
+            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
+                  window.isVisible, window.occlusionState.contains(.visible),
+                  NSApp.modalWindow == nil, window.attachedSheet == nil,
+                  let anchor = store.spaceGesture.sectionsView, anchor.window === window,
+                  let layer = anchor.layer, let presented = layer.presentation(),
+                  let root = host.layer, let presentedRoot = root.presentation(),
+                  SidebarNativeReadinessCoordinator.shared.isReady(
+                    SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID),
+                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled) else { return false }
+            return abs(presented.convert(.zero, to: presentedRoot).x - layer.convert(.zero, to: root).x) < 0.125
+        }
         func capture() throws -> NSBitmapImageRep {
             let image = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
             host.cacheDisplay(in: host.bounds, to: image)
@@ -543,9 +574,15 @@ import XCTest
         XCTAssertNotNil(host.spaceSlide, "The real monitor must mount its native finger track")
         let originalCover = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(host.spaceSlide === originalCover && store.spaceGesture.profileSliding)
+        var observedNativeCover = false
         var queuedRepeat = false
         let observer = store.spaceGesture.$presentation.map(\.profileSliding).removeDuplicates().sink { hidden in
-            guard !hidden, !queuedRepeat else { return }
+            print("SHORT_SWIPE_VISIBILITY hidden=\(hidden) cover=\(host.spaceSlide != nil) running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow)")
+            if hidden, host.spaceSlide != nil { observedNativeCover = true }
+            // Presentation publishes one coherent state after native retirement.
+            // Witness the covered state first; its cover may already be detached
+            // when the matching live-visibility notification is delivered.
+            guard !hidden, observedNativeCover, !queuedRepeat else { return }
             queuedRepeat = true
             DispatchQueue.main.async {
                 // The acknowledged cover can already be retired. A new zero-travel
@@ -557,6 +594,7 @@ import XCTest
         defer { observer.cancel() }
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
         try await Task.sleep(for: .milliseconds(700))
+        XCTAssertTrue(observedNativeCover, "Replay must follow a real native-covered gesture")
         XCTAssertTrue(queuedRepeat)
         XCTAssertFalse(surface.nativeAnimating)
         XCTAssertNil(surface.base.animation(forKey: "colors"))
@@ -905,7 +943,7 @@ import XCTest
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
         let manager = ProfileManager.shared
         let previous = manager.active
-        let profiles = [manager.create(name: "Catch origin"), manager.create(name: "Catch arrival")]
+        let profiles = [fixtureProfile(named: "Catch origin"), fixtureProfile(named: "Catch arrival")]
         let spaces = profiles.map { manager.createSpace(name: "Catch", in: $0.id) }
         let store = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
         let window = try XCTUnwrap(store.window)
@@ -983,10 +1021,11 @@ import XCTest
     private func checkProfileOriginClickReversal() async throws {
         let manager = ProfileManager.shared
         let previous = manager.active
-        let profiles = [manager.create(name: "Click origin"), manager.create(name: "Click arrival")]
+        let profiles = [fixtureProfile(named: "Click origin"), fixtureProfile(named: "Click arrival")]
         let spaces = profiles.map { manager.createSpace(name: "Click", in: $0.id) }
         let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
         let window = try XCTUnwrap(source.window)
+        window.animationBehavior = .none
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         defer {
@@ -1286,13 +1325,14 @@ import XCTest
         try await withFixtureApplicationLoop {
             let manager = ProfileManager.shared
             let previous = manager.active
-            let profiles = [manager.create(name: "Prepared source"), manager.create(name: "Prepared arrival")]
+            let profiles = [fixtureProfile(named: "Prepared source"), fixtureProfile(named: "Prepared arrival")]
             let first = manager.createSpace(name: "Source", in: profiles[0].id)
             var second = manager.createSpace(name: "Arrival", in: profiles[1].id)
             second.tabURLs = [URL(string: "about:blank")!]
             XCTAssertTrue(manager.updateSpace(second))
             let source = Windows.open(profile: profiles[0], space: first, focus: false)
             let window = try XCTUnwrap(source.window)
+        window.animationBehavior = .none
             defer {
                 self.retireProfileWindow(window)
                 profiles.forEach { _ = manager.delete($0.id) }
@@ -1441,7 +1481,7 @@ import XCTest
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
         let manager = ProfileManager.shared
         let previous = manager.active
-        let profiles = [manager.create(name: "Repeated red"), manager.create(name: "Repeated blue")]
+        let profiles = [fixtureProfile(named: "Repeated red"), fixtureProfile(named: "Repeated blue")]
         let spaces = profiles.enumerated().map { index, profile in
             Space(name: "Repeated \(index)", profileID: profile.id,
                   colorHex: mixedThemes ? (index == 0 ? "#000000" : "#26456B") : (index == 0 ? "#FF0000" : "#0000FF"),
@@ -1452,6 +1492,7 @@ import XCTest
         }
         let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
         let window = try XCTUnwrap(source.window)
+        window.animationBehavior = .none
         window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -1544,10 +1585,11 @@ import XCTest
         _ = NSApplication.shared
         let manager = ProfileManager.shared
         let previous = manager.active
-        let profiles = [manager.create(name: "Input origin"), manager.create(name: "Input arrival")]
+        let profiles = [fixtureProfile(named: "Input origin"), fixtureProfile(named: "Input arrival")]
         let spaces = profiles.map { manager.createSpace(name: "Input", in: $0.id) }
         let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
         let window = try XCTUnwrap(source.window)
+        window.animationBehavior = .none
         defer {
             retireProfileWindow(window)
             profiles.forEach { _ = manager.delete($0.id) }
@@ -1585,10 +1627,11 @@ import XCTest
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
         let manager = ProfileManager.shared
         let previous = manager.active
-        let profiles = [manager.create(name: "Rapid origin"), manager.create(name: "Rapid arrival")]
+        let profiles = [fixtureProfile(named: "Rapid origin"), fixtureProfile(named: "Rapid arrival")]
         let spaces = profiles.map { manager.createSpace(name: "Rapid", in: $0.id) }
         let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
         let window = try XCTUnwrap(source.window)
+        window.animationBehavior = .none
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         defer {
@@ -1629,8 +1672,8 @@ import XCTest
         try XCTSkipIf(Motion.spaceReduced, "Native landing requires animation")
         let manager = ProfileManager.shared
         let previous = manager.active
-        let firstProfile = manager.create(name: "Early page origin")
-        let secondProfile = manager.create(name: "Early page arrival")
+        let firstProfile = fixtureProfile(named: "Early page origin")
+        let secondProfile = fixtureProfile(named: "Early page arrival")
         var first = manager.createSpace(name: "A", in: firstProfile.id)
         first.colorHex = "#FF0000"; first.tint = 1; first.appearance = "dark"
         XCTAssertTrue(manager.updateSpace(first))
@@ -1641,6 +1684,7 @@ import XCTest
         let other = manager.createSpace(name: "Other parked Space", in: secondProfile.id)
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
+        window.animationBehavior = .none
         window.orderFrontRegardless()
         defer {
             retireProfileWindow(window)
@@ -1687,6 +1731,24 @@ import XCTest
                 && source.spaceGesture.monitor.isInstalled
         }
         let sourcePage = try XCTUnwrap(source.active?.web)
+        try await compatibilityWait {
+            window.contentView?.layoutSubtreeIfNeeded()
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            if NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
+            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
+                  window.isVisible, window.occlusionState.contains(.visible),
+                  NSApp.modalWindow == nil, window.attachedSheet == nil,
+                  sourcePage.window === window, !sourcePage.isHiddenOrHasHiddenAncestor,
+                  let anchor = source.spaceGesture.stripView, anchor.window === window,
+                  let surface = self.colourSurface(in: try XCTUnwrap(window.contentView)),
+                  surface.base.presentation() != nil,
+                  let presented = try? self.firstColour(of: surface, presented: true),
+                  let model = try? self.firstColour(of: surface),
+                  SidebarNativeReadinessCoordinator.shared.isReady(
+                    SidebarNativeReadinessScope(store: source, spaceID: first.id),
+                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled) else { return false }
+            return abs(presented.redComponent - model.redComponent) < 0.001
+        }
         var observedCachedSelection = false
         let selection = TabStore.all.first { $0.parkedIn === window && $0.profileID == secondProfile.id }?
             .$currentSpaceID.sink { id in
@@ -1772,13 +1834,14 @@ import XCTest
         try XCTSkipIf(Motion.spaceReduced, "Native queue requires animation")
         let manager = ProfileManager.shared
         let previous = manager.active
-        let firstProfile = manager.create(name: "Queued origin")
-        let secondProfile = manager.create(name: "Queued arrival")
+        let firstProfile = fixtureProfile(named: "Queued origin")
+        let secondProfile = fixtureProfile(named: "Queued arrival")
         let first = manager.createSpace(name: "A", in: firstProfile.id)
         let second = manager.createSpace(name: "B", in: secondProfile.id)
         let third = manager.createSpace(name: "C", in: secondProfile.id)
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
+        window.animationBehavior = .none
         defer {
             retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
@@ -1860,6 +1923,8 @@ import XCTest
         }
         let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
         let layer = try XCTUnwrap(prepared.layer)
+        let searchLayer = try XCTUnwrap(host.subviews.last?.layer)
+        XCTAssertFalse(searchLayer === layer, "Search must remain above the captured sidebar")
         XCTAssertTrue(layer.superlayer === host.layer, "Idle preparation must already reach the compositor")
         XCTAssertTrue(prepared.isHidden, "Idle surfaces must not paint over the live sidebar")
         var content: NSView = try XCTUnwrap(store.spaceGesture.sectionsView)
@@ -1879,6 +1944,9 @@ import XCTest
         let contentIndex = try XCTUnwrap(layers.firstIndex { $0 === contentLayer })
         XCTAssertGreaterThan(replacementIndex, contentIndex,
                              "The already attached replacement must paint above the live hosting tree")
+        XCTAssertTrue(layers.last === searchLayer, "Search must retain its compositor position above the preview")
+        XCTAssertTrue(layers.dropLast().last === layer,
+                      "The already attached replacement must paint immediately above live content and below search")
     }
 
     func testFreshSurfaceReachesCompositorBeforeCoveringLiveSidebar() async throws {
@@ -2407,7 +2475,7 @@ import XCTest
     }
 
     private func adjacentProfile(to store: TabStore, after space: Space) -> (UUID, Space) {
-        let profile = ProfileManager.shared.create(name: "Prepared destination").id
+        let profile = fixtureProfile(named: "Prepared destination").id
         let target = Space(name: "Remote", profileID: profile)
         XCTAssertTrue(ProfileManager.shared.saveSpaces([target], for: profile))
         store.switchTo(space: space)
@@ -3067,15 +3135,20 @@ import XCTest
         let (store, _, window, monitor) = try fixture(registerTeardown: false)
         defer { retireFixture(store, window: window, monitor: monitor) }
         try await compatibilityWait {
+            window.contentView?.layoutSubtreeIfNeeded()
             if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
             if !app.isActive { app.activate(ignoringOtherApps: true) }
-            return app.isRunning && app.isActive && window.isKeyWindow
-                && store.spaceGesture.sectionsView?.window === window
-                && SidebarNativeReadinessCoordinator.shared.isReady(
+            guard app.isRunning, app.isActive, window.isKeyWindow,
+                  window.occlusionState.contains(.visible),
+                  let anchor = store.spaceGesture.sectionsView, anchor.window === window,
+                  let root = window.contentView?.layer, let presentedRoot = root.presentation(),
+                  let layer = anchor.layer, let presented = layer.presentation(),
+                  SidebarNativeReadinessCoordinator.shared.isReady(
                     SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID),
-                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)
+                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled) else { return false }
+            return abs(presented.convert(.zero, to: presentedRoot).x - layer.convert(.zero, to: root).x) < 0.125
         }
-        monitor.track(-60, width: 250, in: store)
+        monitor.track(-60, width: fixtureSidebarWidth(in: store), in: store)
         let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
         var completed = false
         slide.start(duration: 0.16, returning: true) {
@@ -3089,6 +3162,7 @@ import XCTest
                         "The visible native surface must spring back, not just its hidden SwiftUI copy")
         XCTAssertFalse(completed)
         try await Task.sleep(for: .milliseconds(500))
+        print("RETURN_SPRING completed=\(completed) active=\(slide.isActive) cover=\((window.contentView as? BrowserWindowHost)?.spaceSlide === slide) appActive=\(app.isActive) key=\(window.isKeyWindow)")
         XCTAssertTrue(completed)
         XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide)
     }
@@ -3206,12 +3280,13 @@ import XCTest
     private func checkProfileClickPreservesSlideAndReduceMotionAcrossHosts() async throws {
         let manager = ProfileManager.shared
         let previous = manager.active
-        let firstProfile = manager.create(name: "Immediate origin")
-        let secondProfile = manager.create(name: "Immediate destination")
+        let firstProfile = fixtureProfile(named: "Immediate origin")
+        let secondProfile = fixtureProfile(named: "Immediate destination")
         let first = manager.createSpace(name: "First", in: firstProfile.id)
         let second = manager.createSpace(name: "Second", in: secondProfile.id)
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
+        window.animationBehavior = .none
         defer {
             retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
@@ -3279,12 +3354,13 @@ import XCTest
         try XCTSkipIf(Motion.spaceReduced, "A committed native profile landing requires motion")
         let manager = ProfileManager.shared
         let previous = manager.active
-        let firstProfile = manager.create(name: "Hidden profile origin")
-        let secondProfile = manager.create(name: "Hidden profile destination")
+        let firstProfile = fixtureProfile(named: "Hidden profile origin")
+        let secondProfile = fixtureProfile(named: "Hidden profile destination")
         let first = manager.createSpace(name: "First", in: firstProfile.id)
         let second = manager.createSpace(name: "Second", in: secondProfile.id)
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
+        window.animationBehavior = .none
         defer {
             retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
@@ -3316,13 +3392,14 @@ import XCTest
         try XCTSkipIf(Motion.spaceReduced, "Interrupting a native slide requires animation")
         let manager = ProfileManager.shared
         let previous = manager.active
-        let firstProfile = manager.create(name: "Interrupted origin")
-        let secondProfile = manager.create(name: "Interrupted destination")
+        let firstProfile = fixtureProfile(named: "Interrupted origin")
+        let secondProfile = fixtureProfile(named: "Interrupted destination")
         let first = manager.createSpace(name: "First", in: firstProfile.id)
         let local = manager.createSpace(name: "Local", in: firstProfile.id)
         let remote = manager.createSpace(name: "Remote", in: secondProfile.id)
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
+        window.animationBehavior = .none
         defer {
             retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)

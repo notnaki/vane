@@ -53,6 +53,7 @@ import XCTest
         sidebar.width = 250
         defer { sidebar.width = previousWidth }
         let profile = ProfileManager.shared.create(name: "Landing fixture").id
+        addTeardownBlock { @MainActor in try await NativeFixtureProfileCleanup.release([profile]) }
         let first = Space(name: "First", profileID: profile)
         let second = Space(name: "Second", profileID: profile)
         XCTAssertTrue(ProfileManager.shared.saveSpaces([first, second], for: profile))
