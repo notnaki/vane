@@ -291,6 +291,54 @@ admission budget; document and discovery deadlines remain unchanged. This branch
 contains that exact public fixture file but launches no duplicate shadow jobs.
 Its next three hosted attempts cover the broader native selection independently.
 
+## Broader native follow-up, 12 November 2026
+
+Run [43235158021](https://github.com/notnaki/vane/actions/runs/43235158021),
+`f0ab4187`, completed three 556-test attempts, each with two skips and verified
+cleanup. They failed with 26, 26 and 28 assertions respectively (one, one and two
+unexpected failures). The minimum-2x artwork candidate introduced 23 failed
+comparisons per attempt and is rejected. Large-folder settled cleanup failed in
+all three; individual attempts additionally exposed fallback selection timing,
+one New Tab opening sample, delayed velocity setup, and reverse-landing setup.
+The selected iCloud tests passed throughout; this run is not a passing preflight.
+
+Source analysis found that a non-nil shared disclosure sample outlived its
+completion and retained closing rows indefinitely. The sample now carries an
+explicit settled state through native configuration, including empty-delta
+reversals. Structural updates retain the previous sampled visibility until the
+first animated sample, while adopting the new baseline; this prevents a target
+row pose appearing against the old footer extent. Pure regressions cover these
+state transitions without changing the original native pixel or hit assertions.
+
+The footer uses its actual backing density again. At 1x, opaque glyph artwork
+receives its ink alpha during composition; at 2x, the original baked-alpha artwork
+is retained. A standalone offscreen probe using the actual marker and symbol
+views reproduced the low-density quantization and checked all 48 artwork cases
+at both densities: zero failed cases with this candidate. The probe created no
+NSApplication or windows. This is local raster evidence, not macOS 26 native
+qualification; the original hosted comparisons remain required.
+
+Fallback commit timing now observes the selected-space publisher's new value,
+rather than inspecting old state during objectWillChange. The delayed-preparation
+velocity regression supplies explicit event timestamps, isolating the intended
+post-release delay from CI scheduling before release. Reverse-landing setup
+admits an actually presented intermediate pose before release. Existing outcome
+deadlines and tolerances remain unchanged.
+
+The fixture-only `c1baa829` changes from PR #667 are integrated with these repairs:
+exact profile backend retirement, fitted geometry, palette-above-preview ordering,
+and a covered-then-live cancellation witness. Early profile cases retain one
+owned AppKit loop each after resolving the overlapping helper changes. These
+combined changes require fresh three-attempt hosted native validation.
+
+Shadow qualification remains separately owned. The initial compositor gate at
+blob `3ba156f1` failed one of three hosts at startup; explicit-display and window
+animation candidates also failed. Run
+[43240610066](https://github.com/notnaki/vane/actions/runs/43240610066) recorded an
+onscreen, opaque, full-sized owned WindowServer surface while AppKit's occlusion
+visible bit remained false. The animation candidate is rejected. No verified
+shadow repair is claimed, and this branch dispatches no duplicate shadow jobs.
+
 ## Verification limits and remaining integration gates
 
 - No second Mac is available. Cross-Mac convergence, offline/restart behavior

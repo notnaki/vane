@@ -1332,7 +1332,7 @@ import XCTest
             XCTAssertTrue(manager.updateSpace(second))
             let source = Windows.open(profile: profiles[0], space: first, focus: false)
             let window = try XCTUnwrap(source.window)
-        window.animationBehavior = .none
+            window.animationBehavior = .none
             defer {
                 self.retireProfileWindow(window)
                 profiles.forEach { _ = manager.delete($0.id) }
