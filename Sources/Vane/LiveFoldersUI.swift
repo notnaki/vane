@@ -306,8 +306,7 @@ struct LiveBadge: View {
     var body: some View {
         Group {
             if showsArrivals {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 9, weight: .bold))
+                FolderArrivalDots()
             } else {
                 GitHubMark().fill(.foreground)
             }
