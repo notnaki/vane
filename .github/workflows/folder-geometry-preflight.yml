@@ -1,0 +1,28 @@
+name: Folder geometry diagnostic
+on:
+  push:
+    branches: [codex/folder-geometry-preflight]
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: macos-26
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+      - name: Inspect platform path and actual SwiftUI coverage
+        env:
+          VANE_DIAGNOSTIC_SOURCE: ${{ runner.temp }}/folder-geometry.swift
+          VANE_DIAGNOSTIC_OUTPUT: ${{ runner.temp }}/folder-geometry-output
+        run: |
+          sw_vers
+          swift --version
+          python3 scripts/folder-geometry-diagnostic.py
+          swiftc -parse-as-library "$VANE_DIAGNOSTIC_SOURCE" -o "$RUNNER_TEMP/folder-geometry"
+          "$RUNNER_TEMP/folder-geometry"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: folder-geometry-diagnostic
+          path: ${{ runner.temp }}/folder-geometry-output
+          retention-days: 7
