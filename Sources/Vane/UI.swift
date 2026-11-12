@@ -68,6 +68,7 @@ struct WebView: NSViewRepresentable {
             host.resizeFraction = NSSize(width: split.vertical ? 1 : weight,
                                          height: split.vertical ? weight : 1)
         }
+        host.didUpdateResizeLayout()
     }
     static func dismantleNSView(_ host: WebHost, coordinator: ()) {
         host.removePage()
@@ -99,6 +100,20 @@ final class WebHost: NSView {
     var resizeFraction = NSSize(width: 1, height: 1)
     var pageLayoutDidResize: (() -> Void)?
     var pageResizeOwnershipWillChange: (() -> Void)?
+    var pageResizeLayoutDidUpdate: (() -> Void)?
+    private(set) var resizeLayoutRevision: UInt = 0
+
+    /// Same-size SwiftUI updates need an acknowledgment after native layout too.
+    /// Schedule only this host's normal layout; never force the containing tree.
+    func didUpdateResizeLayout() {
+        resizeLayoutRevision &+= 1
+        if pageResizeLayoutDidUpdate != nil { needsLayout = true }
+    }
+
+    override func layout() {
+        super.layout()
+        pageResizeLayoutDidUpdate?()
+    }
     private(set) var web: WKWebView?
     /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
     /// of the window's key loop and out of the accessibility tree, so an invisible page is

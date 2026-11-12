@@ -18,6 +18,7 @@ final class VaneWindow: NSWindow {
     private var livePageResizeBuffer: LivePageResizeBuffer?
     private var liveResizeOwner = UUID()
     private var sidebarDrag = false
+    private var sidebarResizePublication: SidebarResizePublication?
 
     /// A second close command cancels the pending close; a command after its
     /// publication may proceed as a normal reopen.
@@ -32,7 +33,10 @@ final class VaneWindow: NSWindow {
     /// Gesture disappearance belongs only to the continuous drag. The separate
     /// discrete close may already be painting/animating its covered endpoint.
     func cancelLiveSidebarResize() {
-        if sidebarDrag { livePageResizeBuffer?.cancel() }
+        if sidebarDrag {
+            sidebarResizePublication?.cancel()
+            livePageResizeBuffer?.cancel()
+        }
     }
 
     override var contentView: NSView? {
@@ -66,7 +70,7 @@ final class VaneWindow: NSWindow {
 
     var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true || livePageResizeBuffer?.isPreparing == true }
 
-    func beginSidebarResize(_ store: TabStore) {
+    func beginSidebarResize(_ store: TabStore, frameDriver: SidebarResizePublication.FrameDriver? = nil) {
         _ = cancelSidebarResize()
         livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
@@ -78,15 +82,22 @@ final class VaneWindow: NSWindow {
                 guard let self, let store else { return false }
                 return self.liveResizeOwner == owner && store.window === self && store.profileVisible
                     && store.sidebarShown && !store.libraryOpen
-            }, apply: { [weak store] _, width in
-                if let width { SidebarWidth.shared.setLiveWidth(width, available: store?.window?.contentView?.bounds.width) }
+            }, apply: { [weak self] _, width in
+                if let width { self?.sidebarResizePublication?.enqueue(width) }
             }, completion: { [weak self] in
                 guard let self, self.liveResizeOwner == owner else { return }
+                self.sidebarResizePublication?.cancel()
+                self.sidebarResizePublication = nil
                 self.livePageResizeBuffer = nil
                 self.sidebarDrag = false
             })
-        livePageResizeBuffer?.start()
-        if livePageResizeBuffer == nil { sidebarDrag = false }
+        guard let buffer = livePageResizeBuffer else { sidebarDrag = false; return }
+        sidebarResizePublication = SidebarResizePublication(buffer: buffer,
+            frameDriver: frameDriver ?? SidebarResizePublication.displayFrames(for: self),
+            publish: { [weak store] width in
+                SidebarWidth.shared.setLiveWidth(width, available: store?.window?.contentView?.bounds.width)
+            })
+        buffer.start()
     }
 
     @discardableResult func updateSidebarResize(_ width: CGFloat) -> Bool {
@@ -96,6 +107,7 @@ final class VaneWindow: NSWindow {
 
     @discardableResult func endSidebarResize(_ width: CGFloat, completion: @escaping @MainActor () -> Void) -> Bool {
         guard updateSidebarResize(width), let buffer = livePageResizeBuffer else { return false }
+        sidebarResizePublication?.finish()
         buffer.finish(completion)
         return true
     }

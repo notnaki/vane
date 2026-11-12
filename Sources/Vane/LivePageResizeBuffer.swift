@@ -200,7 +200,12 @@ struct LivePageResizeAnchor {
     private var recoveryToken: UUID?
     private var recoveryPaints = Set<ObjectIdentifier>()
     private(set) var bypassForDrag = false
+    private(set) var usesNativeSidebarSizing = false
     private var published: Request?
+    private var submittedSidebar: CGFloat?
+    private var submittedSidebarSizes: [NSSize]?
+    private var submittedSidebarFloor: [NSSize]?
+    private var submittedSidebarRevisions: [UInt]?
     var isPreparing: Bool { active && (ending || !pendingPaints.isEmpty) }
 
     init?(window: NSWindow, axes: NSSize,
@@ -328,6 +333,7 @@ struct LivePageResizeAnchor {
     }
 
     func cancel() {
+        usesNativeSidebarSizing = false
         if bypassForDrag {
             bypassForDrag = false
             recoveryToken = nil
@@ -335,6 +341,62 @@ struct LivePageResizeAnchor {
             pages.forEach { PageResizeStyle.finish($0.web) }
             completion()
         } else { complete(exact: false) }
+    }
+
+    /// Only a sidebar coalescer needs same-size metadata acknowledgment layouts.
+    func trackSidebarPublicationLayout() {
+        pages.forEach { page in
+            page.host?.pageResizeLayoutDidUpdate = { [weak self] in self?.layoutChanged() }
+        }
+    }
+
+    /// A display callback is later than the covered apply callback. Revalidate
+    /// the native owners and both paints at the point of actual publication.
+    func validateSidebarPublication() -> Bool {
+        guard (active || usesNativeSidebarSizing), ownsWindow, !active || ownsLayout else {
+            cancel()
+            return false
+        }
+        return true
+    }
+
+    func publishSidebarWidth(_ width: CGFloat, _ publication: @MainActor (CGFloat) -> Void) {
+        guard validateSidebarPublication() else { return }
+        if active {
+            let desired = sizes(Request(frame: expectedFrame, sidebar: width))
+            guard covered(desired) else { return }
+            // Raw proposals can differ while fitting to identical geometry and
+            // therefore cause no new SwiftUI state update. Keep the original
+            // acknowledgment requirement for that same effective submission.
+            if submittedSidebarSizes != desired {
+                submittedSidebarRevisions = pages.map { $0.host?.resizeLayoutRevision ?? 0 }
+            }
+            submittedSidebar = width
+            submittedSidebarSizes = desired
+            if let floor = submittedSidebarFloor {
+                submittedSidebarFloor = zip(floor, desired).map {
+                    NSSize(width: max($0.width, $1.width), height: max($0.height, $1.height))
+                }
+            } else { submittedSidebarFloor = desired }
+        }
+        publication(width)
+    }
+
+    private func acknowledgeSidebarPublication(afterEndingFlush: Bool = false) {
+        guard let sidebar = submittedSidebar, let target = submittedSidebarSizes,
+              let revisions = submittedSidebarRevisions else { return }
+        let rootWidth = viewportRoot(Request(frame: expectedFrame, sidebar: sidebar)).width
+        guard pages.enumerated().allSatisfy({ index, page in
+            var layout = page.layout
+            layout.sidebarWidth = sidebar
+            return (afterEndingFlush || page.host?.resizeLayoutRevision != revisions[index])
+                && page.parentReached(target[index])
+                && page.host?.resizeLayout.leadingWidth(at: rootWidth) == layout.leadingWidth(at: rootWidth)
+        }) else { return }
+        submittedSidebar = nil
+        submittedSidebarSizes = nil
+        submittedSidebarFloor = nil
+        submittedSidebarRevisions = nil
     }
 
     private var ownsWindow: Bool {
@@ -412,9 +474,12 @@ struct LivePageResizeAnchor {
         }
         guard pendingPaints.isEmpty else { return }
         if ending {
-            if hasCoverage && zip(pages, desired).contains(where: {
+            let submittedParentIsLarger = submittedSidebarFloor.map { floor in
+                zip(floor, desired).contains { $0.width > $1.width + 0.001 || $0.height > $1.height + 0.001 }
+            } ?? false
+            if hasCoverage && (submittedParentIsLarger || zip(pages, desired).contains(where: {
                 $0.currentVisibleSize.width > $1.width + 0.001 || $0.currentVisibleSize.height > $1.height + 0.001
-            }) {
+            })) {
                 // SwiftUI can still owe a native host update after the flush.
                 // Await that callback instead of repainting its stale larger
                 // extent forever (or spinning a synchronous presenter).
@@ -448,11 +513,19 @@ struct LivePageResizeAnchor {
         generation = UUID()
         let token = generation
         let desired = sizes(latest)
-        let targets = zip(pages, desired).map { page, size in
+        let targets = zip(pages, desired).enumerated().map { index, pair in
+            let (page, size) = pair
+            // SwiftUI may still install an earlier submitted parent after a
+            // newer width was queued. Keep those actual submissions covered
+            // until native layout acknowledges the latest one, even if it
+            // coalesces past every intermediate parent.
+            let submitted = submittedSidebarFloor?[index] ?? .zero
             // A mixed-axis proposal can wait for growth while its other axis
             // shrinks. Do not prepare a viewport smaller than the still-visible clip.
-            NSSize(width: max(page.currentVisibleSize.width, size.width + (exact || !page.mask.contains(.width) ? 0 : axes.width * lead.width * page.fraction.width)),
-                   height: max(page.currentVisibleSize.height, size.height + (exact || !page.mask.contains(.height) ? 0 : axes.height * lead.height * page.fraction.height)))
+            return NSSize(width: max(submitted.width, page.currentVisibleSize.width,
+                                    size.width + (exact || !page.mask.contains(.width) ? 0 : axes.width * lead.width * page.fraction.width)),
+                          height: max(submitted.height, page.currentVisibleSize.height,
+                                     size.height + (exact || !page.mask.contains(.height) ? 0 : axes.height * lead.height * page.fraction.height)))
         }
         exactPaint = exact && targets == desired
         guard targets.allSatisfy({ $0.width > 0 && $0.height > 0 && $0.width.isFinite && $0.height.isFinite }) else { cancel(); return }
@@ -518,6 +591,11 @@ struct LivePageResizeAnchor {
         applying = true
         root?.layoutSubtreeIfNeeded()
         pages.forEach { $0.reanchor() }
+        // SwiftUI can diff-elide a child when several publications return to its
+        // existing value. The explicit ending flush is its acknowledgment even
+        // without a new representable revision, but only if metadata and every
+        // actual native parent already match the latest submission.
+        if ending { acknowledgeSidebarPublication(afterEndingFlush: true) }
         applying = false
     }
 
@@ -537,6 +615,7 @@ struct LivePageResizeAnchor {
         // Native host callbacks may arrive inside apply(). Reposition the frozen
         // viewport immediately, without recursively laying out retained chrome.
         pages.forEach { $0.reanchor() }
+        acknowledgeSidebarPublication()
         drive()
     }
 
@@ -566,6 +645,7 @@ struct LivePageResizeAnchor {
         let released = ending
         complete(exact: false, notify: false)
         expectedFrame = request.frame
+        usesNativeSidebarSizing = true
         apply(request.frame, request.sidebar)
         if released || outstanding.isEmpty {
             pages.forEach { PageResizeStyle.finish($0.web) }
@@ -588,10 +668,15 @@ struct LivePageResizeAnchor {
         generation = UUID()
         timer?.invalidate(); timer = nil
         pendingPaints.removeAll()
+        submittedSidebar = nil
+        submittedSidebarSizes = nil
+        submittedSidebarFloor = nil
+        submittedSidebarRevisions = nil
         windowObservers.forEach(NotificationCenter.default.removeObserver)
         windowObservers.removeAll()
         pages.forEach { page in
             page.host?.pageLayoutDidResize = nil
+            page.host?.pageResizeLayoutDidUpdate = nil
             page.host?.pageResizeOwnershipWillChange = nil
             page.restore(exact: exact)
         }

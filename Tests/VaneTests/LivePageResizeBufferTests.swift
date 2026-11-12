@@ -464,6 +464,16 @@ import XCTest
         XCTAssertFalse(f.web.autoresizesSubviews)
     }
 
+    func testWindowDragDoesNotScheduleSidebarMetadataAcknowledgmentLayout() {
+        let f = Fixture(); defer { f.close() }
+        f.buffer.start()
+        f.host.layoutSubtreeIfNeeded()
+        XCTAssertFalse(f.host.needsLayout, "Native layout must be clean before measuring added work")
+        f.host.didUpdateResizeLayout()
+        XCTAssertFalse(f.host.needsLayout,
+            "Sidebar publication acknowledgment must not add native host layout work to a window drag")
+    }
+
     func testFirstNearImmediatePointerSampleDoesNotInflateTheMinimumPrime() {
         let f = Fixture(); defer { f.close() }
         f.buffer.start()
