@@ -98,6 +98,65 @@ The exported schema was reviewed and CloudKit Console confirmed deployment to
 Production. The release profile secret and container variable were configured;
 no signing private key was exported or changed for this task.
 
+## PR repair validation, 12 November 2026
+
+The repair integrates main through `5f6a2923`, retaining its current AI settings
+layout and the optional iCloud API-key guidance. Separate unfinished animation
+experiments remain preserved on their original branches.
+
+Two account-admission regressions reproduced six failed assertions locally:
+background credential edits could publish after an account switch, and account
+notifications did not immediately pause sync. Background secret refreshes now
+revalidate through the controller, and account notifications revoke admission
+before another edit can be submitted. A deletion-only extension-storage update
+also reproduced three failed assertions by creating a missing parent profile.
+Only live values now create parents; tombstones retain validation and apply to
+existing profiles without recreating absent ones.
+
+The asynchronous shadow-discovery fixture now admits its exact visible window
+and WebKit document before mutations. Its five-second outcome deadline and
+original discovery/stale-target assertions are retained; DOM-only cases remain
+unordered. The prior inactive-scheduling workaround is removed.
+
+At `1d0b3892`, all 210 iCloud and shadow-autofill tests passed in each of three
+local attempts, with primary and cleanup statuses both 0. The extension-storage
+adapter's 13-test suite also passed after its deletion regression was observed
+failing. Provisioning, release-workflow and update-channel fixtures passed.
+
+Review then found that a local edit made after a credential snapshot could lose
+its immediate follow-up while the controller still owned its active task. Its
+regression failed before the controller gained a coalesced request, replayed only
+after the active task clears. Revocation clears queued requests, and the next
+pass revalidates the account. All 34 secret tests passed, including a queued edit
+with a changed account. Compact Space fixtures now use their window's fitted
+sidebar width for gestures and compositor fractions. The new compact-width,
+click-tint and reversal selection passed after the original fraction/frame
+assertions were observed failing. Independent review at `42e61f8f` found no
+further actionable issues in these repairs.
+
+A broader local attempt at `42e61f8f` completed 447 tests with one skip and ten
+failed assertions across seven cases; cleanup passed. Another native XCTest
+host overlapped this run on the shared desktop. Shadow discovery recorded a
+visible but non-key window, an inactive app and a hidden WebKit document. This
+is failed coverage, not a passing retry or proof that every failure had the same
+cause. The failures remain recorded:
+
+- `BoundedSidebarMountingTests.testSameHost127To129To127PreservesActiveRenameDraft`
+- `KeyboardAccessibilityTests.testLittleAddressEndpointRemainsAvailableWithoutSidebar`
+- `PasswordAutofillTests.testSelectedAccountCannotContinueIntoDifferentHiddenOrReadOnlyIdentity`
+- `PasswordAutofillTests.testSubmittedMainUsernameAwaitsProcessedDenialBeforeNavigation`
+- `PasswordShadowAutofillTests.testLateAttachedNestedRootsAndFieldsNotifyDiscoveryWithoutLightDOMMutation`
+- `SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding`
+- `SpaceNativeRenderingTests.testSlowNativeSpaceLandingNeverReversesItsPresentation`
+
+Hosted three-attempt native preflight
+[43205593084](https://github.com/notnaki/vane/actions/runs/43205593084) checks
+`42e61f8f` on an isolated macOS 26 desktop. The earlier
+[43204799551](https://github.com/notnaki/vane/actions/runs/43204799551) checks
+`ed210849`, before the queued-follow-up and fitted-width corrections. Both retain
+all attempted outcomes. Hosted results and required current-head PR CI remain
+integration gates.
+
 ## Verification limits and remaining integration gates
 
 - No second Mac is available. Cross-Mac convergence, offline/restart behavior
