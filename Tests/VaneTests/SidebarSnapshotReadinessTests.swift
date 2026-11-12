@@ -118,45 +118,30 @@ import XCTest
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do {
-            let covering = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
-            covering.isReleasedWhenClosed = false
-            covering.backgroundColor = .black
-            covering.isOpaque = true
-            var covered = false
+            var displaced = false
             let occlusion = SnapshotOcclusion()
             var recovered = false
-            var observation: NSObjectProtocol?
-            defer {
-                if let observation { NotificationCenter.default.removeObserver(observation) }
-                covering.orderOut(nil); covering.close()
-            }
-            _ = try await SidebarSnapshot.imageWhenReady(Color.gray) { host in
+            _ = try await SidebarSnapshot.imageWhenReady(Color.gray, observePresentation: { window in
+                if displaced, window.isKeyWindow, NSApp.keyWindow === window,
+                   !window.occlusionState.contains(.visible) { occlusion.observed = true }
+            }) { host in
                 guard let window = host.window else { return false }
-                if !covered {
-                    observation = NotificationCenter.default.addObserver(
-                        forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
-                    ) { [weak window] _ in
-                        MainActor.assumeIsolated {
-                            if let window, window.isKeyWindow, NSApp.keyWindow === window,
-                               !window.occlusionState.contains(.visible) { occlusion.observed = true }
-                        }
-                    }
-                    // Cover the shadow too; equal frames can leave an edge exposed
-                    // and never establish full native occlusion.
-                    covering.setFrame(window.frame.insetBy(dx: -40, dy: -40), display: true)
-                    covering.orderFrontRegardless()
-                    window.order(.below, relativeTo: covering.windowNumber)
+                if !displaced {
+                    // A fully offscreen ordered window produces real native
+                    // occlusion without relying on same-app covering detection.
+                    window.setFrameOrigin(NSPoint(x: -40_000, y: -40_000))
                     XCTAssertTrue(window.isKeyWindow, "Occlusion must leave keyboard ownership unchanged")
-                    covered = true
+                    displaced = true
                     return false
                 }
                 guard occlusion.observed else { return false }
                 recovered = true
                 XCTAssertTrue(window.isKeyWindow)
                 XCTAssertTrue(window.occlusionState.contains(.visible))
+                XCTAssertTrue(NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) })
                 return true
             }
-            XCTAssertTrue(occlusion.observed, "The fixture must actually obscure its exact snapshot owner")
+            XCTAssertTrue(occlusion.observed, "The fixture must observe actual native occlusion of its exact owner")
             XCTAssertTrue(recovered, "Admission must restore the obscured owner before sampling")
         } catch { failure = error }
         do { try await loop.close() } catch {
