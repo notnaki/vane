@@ -67,8 +67,30 @@ final class ResizePaintTrace: @unchecked Sendable {
         return try snapshot().entries.map { String(decoding: try encoder.encode($0), as: UTF8.self) }
     }
 
+    func writeArtifact(to url: URL) throws {
+        struct Artifact: Encodable {
+            let attempt: String
+            let label: String
+            let entries: [Entry]
+            let dropped: Int
+        }
+        let snapshot = snapshot()
+        let artifact = Artifact(attempt: attempt, label: label,
+                                entries: snapshot.entries, dropped: snapshot.dropped)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(artifact).write(to: url, options: .atomic)
+    }
+
     func dump() {
         let snapshot = snapshot()
+        let artifact = URL(fileURLWithPath: "/tmp/vane-resize-trace-\(attempt).json")
+        do {
+            try writeArtifact(to: artifact)
+            print("RESIZE_PAINT_TRACE_ARTIFACT path=\(artifact.path)")
+        } catch {
+            print("RESIZE_PAINT_TRACE_ARTIFACT_ERROR \(error)")
+        }
         print("RESIZE_PAINT_TRACE_BEGIN attempt=\(attempt) label=\(label)")
         do {
             for line in try encodedEntries() { print("RESIZE_PAINT_TRACE \(line)") }

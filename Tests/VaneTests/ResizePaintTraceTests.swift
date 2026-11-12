@@ -4,6 +4,26 @@ import XCTest
 
 #if DEBUG
 @MainActor final class ResizePaintTraceTests: XCTestCase {
+    func testArtifactPreservesCompleteBoundedTraceWithoutConsoleInterleaving() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let trace = ResizePaintTrace(label: "sidebar=true\nfixture", limit: 2)
+        let details = ["native": String(repeating: "WKChild {12, 34}\n\"quoted\" Test Case 'fixture' passed. ", count: 200)]
+        trace.append("buffer.timeout", time: 1.25, fields: details, channel: "state")
+        trace.append("buffer.bypass.retired", time: 2.5, channel: "state")
+        trace.append("overflow", time: 3)
+        let artifact = directory.appendingPathComponent("trace.json")
+        try trace.writeArtifact(to: artifact)
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: artifact)) as? [String: Any])
+        XCTAssertEqual(document["attempt"] as? String, trace.attempt)
+        XCTAssertEqual(document["label"] as? String, trace.label)
+        XCTAssertEqual(document["dropped"] as? Int, 1)
+        let entries = try XCTUnwrap(document["entries"] as? [[String: Any]])
+        XCTAssertEqual(entries.compactMap { $0["event"] as? String }, ["buffer.timeout", "buffer.bypass.retired"])
+        XCTAssertEqual(entries.first?["fields"] as? [String: String], details)
+    }
+
     func testTraceBoundsRetainedEventsAndEscapesMultilineNativeDetails() throws {
         let trace = ResizePaintTrace(label: "format", limit: 2)
         let details = ["native": "WKChild {12, 34}\n\"quoted\"\\path"]
