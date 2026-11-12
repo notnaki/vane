@@ -126,6 +126,15 @@ import XCTest
         return view.subviews.lazy.compactMap { self.colourSurface(in: $0) }.first
     }
 
+    private func presentedColourSurfaces(in view: NSView) -> [ThemeWashSurface] {
+        if let layer = view.layer {
+            guard let presented = layer.presentation(), !presented.isHidden,
+                  presented.opacity > 0 else { return [] }
+        } else if view.isHidden { return [] }
+        if let surface = view as? ThemeWashSurface { return [surface] }
+        return view.subviews.flatMap { presentedColourSurfaces(in: $0) }
+    }
+
     private func firstColour(of surface: ThemeWashSurface, presented: Bool = false) throws -> NSColor {
         let layer = presented ? surface.base.presentation() ?? surface.base : surface.base
         let colours = try XCTUnwrap(layer.colors as? [CGColor])
@@ -1293,6 +1302,18 @@ import XCTest
         }
         TabStore.all.first { $0.window === window }?.switchTo(space: spaces[0])
         try await Task.sleep(for: .milliseconds(150))
+        struct Measurement {
+            let selectionStarted: Bool
+            let selected: UUID?
+            let target: UUID
+            let foregroundInterrupted: Bool
+            let frames: Int
+            let unadmitted: Int
+            let reversal: Double
+            let retired: Bool
+            let parkedDrag: CGFloat
+        }
+        var measurements: [Measurement] = []
         // Alternate twelve times with both saturated themes and mixed default themes.
         for leg in 0..<12 {
             let index = (leg + 1) % 2
@@ -1323,7 +1344,7 @@ import XCTest
             ]
             defer { observers.forEach(NotificationCenter.default.removeObserver) }
             let actionBegan = CACurrentMediaTime()
-            XCTAssertNotNil(showing.beginSpaceSelection(spaces[index]))
+            let selectionStarted = showing.beginSpaceSelection(spaces[index]) != nil
             monitor.track(-CGFloat(direction) * 70, width: fixtureSidebarWidth(in: source), in: showing)
             monitor.land(direction, to: spaces[index], width: fixtureSidebarWidth(in: source),
                          store: showing, duration: 0.3)
@@ -1336,22 +1357,32 @@ import XCTest
                 try await Task.sleep(for: .milliseconds(10))
             }
             sampler.stop()
-            XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, spaces[index].id)
-            XCTAssertFalse(sampler.foregroundInterrupted, "Profile sampling must retain actual foreground ownership")
-            XCTAssertGreaterThan(sampler.reds.count, 3)
-            XCTAssertEqual(sampler.unadmittedTransitionCallbacks, 0,
-                           "Every transition callback must identify exactly one presented wash; missing samples cannot pass continuity")
             let reversals = zip(sampler.reds, sampler.reds.dropFirst()).map { previous, next in
                 (direction == 1) != mixedThemes ? next - previous : previous - next
             }
+            measurements.append(Measurement(selectionStarted: selectionStarted,
+                selected: TabStore.all.first { $0.window === window }?.currentSpaceID,
+                target: spaces[index].id, foregroundInterrupted: sampler.foregroundInterrupted,
+                frames: sampler.reds.count, unadmitted: sampler.unadmittedTransitionCallbacks,
+                reversal: reversals.max() ?? 0, retired: host.spaceSlide == nil,
+                parkedDrag: showing.spaceDrag))
             print("PROFILE_WASH_SAMPLE mixed=\(mixedThemes) leg=\(leg) direction=\(direction) frames=\(sampler.reds.count) max_reverse=\(reversals.max() ?? 0) max_gap_ms=\(sampler.maxGap * 1000) first_callback_ms=\((sampler.firstCallbackLatency ?? 0) * 1000)")
             if (reversals.max() ?? 0) >= 0.08 || sampler.unadmittedTransitionCallbacks > 0 {
                 sampler.dumpDiagnostics(label: "mixed=\(mixedThemes) leg=\(leg) direction=\(direction)")
             }
-            XCTAssertLessThan(reversals.max() ?? 0, 0.08,
+        }
+        // Failure reporting must not block the next measured gesture's run loop.
+        for measured in measurements {
+            XCTAssertTrue(measured.selectionStarted)
+            XCTAssertEqual(measured.selected, measured.target)
+            XCTAssertFalse(measured.foregroundInterrupted, "Profile sampling must retain actual foreground ownership")
+            XCTAssertGreaterThan(measured.frames, 3)
+            XCTAssertEqual(measured.unadmitted, 0,
+                           "Every transition callback must identify exactly one presented wash; missing samples cannot pass continuity")
+            XCTAssertLessThan(measured.reversal, 0.08,
                               "The displayed background must not flash back toward its source after profile activation")
-            XCTAssertNil(host.spaceSlide)
-            XCTAssertEqual(showing.spaceDrag, 0, "Parked profile progress must be released at every landing")
+            XCTAssertTrue(measured.retired)
+            XCTAssertEqual(measured.parkedDrag, 0, "Parked profile progress must be released at every landing")
         }
     }
 
@@ -1508,12 +1539,12 @@ import XCTest
         }
         let sourcePage = try XCTUnwrap(source.active?.web)
         var observedCachedSelection = false
+        var selectionKeptSourceVisible: [Bool] = []
         let selection = TabStore.all.first { $0.parkedIn === window && $0.profileID == secondProfile.id }?
             .$currentSpaceID.sink { id in
                 guard id == second.id else { return }
                 observedCachedSelection = true
-                XCTAssertTrue(sourcePage.window === window && !sourcePage.isHiddenOrHasHiddenAncestor,
-                              "Select the requested cached Space before uncovering its profile host")
+                selectionKeptSourceVisible.append(sourcePage.window === window && !sourcePage.isHiddenOrHasHiddenAncestor)
             }
         defer { selection?.cancel() }
         let monitor = source.spaceGesture.monitor
@@ -1522,72 +1553,95 @@ import XCTest
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
-        if let path = ProcessInfo.processInfo.environment["VANE_DIAG_GESTURE_MARKER"] {
-            let event: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier,
-                                       "time": ProcessInfo.processInfo.systemUptime]
-            try JSONSerialization.data(withJSONObject: event).write(to: URL(fileURLWithPath: path), options: .atomic)
-        }
-        let diagnosticStart = ProcessInfo.processInfo.systemUptime
         monitor.land(1, to: second, width: fixtureSidebarWidth(in: source), store: source, duration: 0.8)
         try await Task.sleep(for: .milliseconds(100))
-        if ProcessInfo.processInfo.environment["VANE_DIAG_GESTURE_MARKER"] != nil {
-            print("GESTURE_EARLY_SAMPLE elapsedMS=\((ProcessInfo.processInfo.systemUptime - diagnosticStart) * 1000) active=\(slide.isActive)")
-            fflush(nil)
-        }
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
-        XCTAssertEqual(arriving.profileID, secondProfile.id,
-                       "Profile activation must not wait for the sidebar animation to finish")
-        XCTAssertEqual(arriving.currentSpaceID, second.id)
-        if cached { XCTAssertTrue(observedCachedSelection) }
-        XCTAssertTrue(arriving.active?.web.window === window,
-                      "The destination web content must be mounted during landing")
-        let surface = try XCTUnwrap(colourSurface(in: host))
-        let colour = try firstColour(of: surface, presented: true)
-        XCTAssertGreaterThan(colour.redComponent, 0.1,
-                             "The background must continue blending after the early profile handoff")
-        XCTAssertTrue(host.spaceSlide === slide && slide.isActive,
-                      "The original captured sidebar must continue travelling over the new profile")
-        XCTAssertTrue(arriving.spaceGesture.profileSliding,
-                      "Live incoming rows must stay hidden underneath the moving sidebar")
-        XCTAssertFalse(source.profileVisible)
-        XCTAssertTrue(arriving.profileVisible)
-        XCTAssertTrue(source.spaceGesture.monitor.preparedSlides.isEmpty,
-                      "Parked roots must release their gesture preparation and observers")
+        // Record the original observation points before reporting any failure.
+        // XCTest symbolication can block AppKit for seconds and otherwise turn
+        // the first failure into false endpoint/footer failures later in this case.
+        let earlyProfile = arriving.profileID
+        let earlySpace = arriving.currentSpaceID
+        let cachedSelectedAtSample = observedCachedSelection
+        let earlyWebMounted = arriving.active?.web.window === window
+        let visibleSurfaces = presentedColourSurfaces(in: host)
+        let earlySurfaceCount = visibleSurfaces.count
+        let earlyLayer = visibleSurfaces.first.map { $0.base.presentation() ?? $0.base }
+        let earlyColour = (earlyLayer?.colors as? [CGColor])?.first
+            .flatMap { NSColor(cgColor: $0)?.usingColorSpace(.deviceRGB) }
+        let earlySlideActive = host.spaceSlide === slide && slide.isActive
+        let earlyRowsCovered = arriving.spaceGesture.profileSliding
+        let earlySourceVisible = source.profileVisible
+        let earlyArrivalVisible = arriving.profileVisible
+        let parkedPreparationEmpty = source.spaceGesture.monitor.preparedSlides.isEmpty
         source.liveFolderSheet = true
         source.externalApp = ExternalApps.Prompt(url: URL(string: "example-app://background")!,
             scope: nil, tabID: source.active!.id, documentID: UUID(), scheme: "example-app", app: nil, name: nil)
         try await Task.sleep(for: .milliseconds(40))
-        XCTAssertNil(window.attachedSheet,
-                     "A late result from a parked root must not present over the arriving profile")
+        let parkedSheetPresented = window.attachedSheet != nil
         source.liveFolderSheet = false
         source.externalApp = nil
         let arrivingMonitor = arriving.spaceGesture.monitor
-        XCTAssertFalse(arrivingMonitor.mine(ScrollEvent(window: window, phase: .began, x: 900), arriving))
-        XCTAssertFalse(arrivingMonitor.mine(ScrollEvent(window: window, dy: 20, x: 900), arriving))
-        XCTAssertTrue(host.spaceSlide === slide && slide.isActive,
-                      "Scrolling over the page must not cut the sidebar landing short")
-        XCTAssertFalse(arrivingMonitor.mine(ScrollEvent(window: window, phase: .began), arriving))
-        XCTAssertFalse(arrivingMonitor.mine(ScrollEvent(window: window, dy: 20), arriving))
-        XCTAssertTrue(host.spaceSlide === slide && slide.isActive,
-                      "Vertical sidebar scrolling must not cut the landing short")
-        XCTAssertEqual(arriving.spaceGesture.outgoing?.space.id, first.id,
-                       "The arriving footer must keep the gesture's original Space")
-        XCTAssertNotNil(arriving.spaceGesture.footer.drag)
-        var footerFrames = 0
+        let claimedPageBeginning = arrivingMonitor.mine(ScrollEvent(window: window, phase: .began, x: 900), arriving)
+        let claimedPageScroll = arrivingMonitor.mine(ScrollEvent(window: window, dy: 20, x: 900), arriving)
+        let activeAfterPageScroll = host.spaceSlide === slide && slide.isActive
+        let claimedSidebarBeginning = arrivingMonitor.mine(ScrollEvent(window: window, phase: .began), arriving)
+        let claimedSidebarScroll = arrivingMonitor.mine(ScrollEvent(window: window, dy: 20), arriving)
+        let activeAfterSidebarScroll = host.spaceSlide === slide && slide.isActive
+        let outgoingSpace = arriving.spaceGesture.outgoing?.space.id
+        let initialFooterDrag = arriving.spaceGesture.footer.drag
+        var footerSamples: [(CGFloat, CGFloat)] = []
         let observation = arriving.spaceGesture.footer.$drag.dropFirst().sink { drag in
             guard let drag else { return }
-            footerFrames += 1
-            XCTAssertEqual(drag, slide.offset, accuracy: 2,
-                           "Each arriving footer frame must follow the same native presentation")
+            footerSamples.append((drag, slide.offset))
         }
         defer { observation.cancel() }
         try await Task.sleep(for: .milliseconds(1000))
-        XCTAssertGreaterThan(footerFrames, 2)
-        XCTAssertNil(host.spaceSlide)
-        XCTAssertFalse(arriving.spaceGesture.profileSliding)
-        XCTAssertFalse(source.spaceSwiping)
-        XCTAssertFalse(source.spaceGesture.profileSliding)
-        XCTAssertEqual(source.spaceDrag, 0, "A parked source must not retain stale native travel")
+        let recordedFooterSamples = footerSamples
+        let recordedSelectionVisibility = selectionKeptSourceVisible
+        observation.cancel()
+        selection?.cancel()
+        let slideRetired = host.spaceSlide == nil
+        let arrivalStillSliding = arriving.spaceGesture.profileSliding
+        let sourceStillSwiping = source.spaceSwiping
+        let sourceStillSliding = source.spaceGesture.profileSliding
+        let sourceFinalDrag = source.spaceDrag
+
+        for keptVisible in recordedSelectionVisibility {
+            XCTAssertTrue(keptVisible, "Select the requested cached Space before uncovering its profile host")
+        }
+        XCTAssertEqual(earlyProfile, secondProfile.id,
+                       "Profile activation must not wait for the sidebar animation to finish")
+        XCTAssertEqual(earlySpace, second.id)
+        if cached { XCTAssertTrue(cachedSelectedAtSample) }
+        XCTAssertTrue(earlyWebMounted, "The destination web content must be mounted during landing")
+        XCTAssertEqual(earlySurfaceCount, 1, "The early sample must identify exactly one presented wash")
+        let colour = try XCTUnwrap(earlyColour)
+        XCTAssertGreaterThan(colour.redComponent, 0.1,
+                             "The background must continue blending after the early profile handoff")
+        XCTAssertTrue(earlySlideActive, "The original captured sidebar must continue travelling over the new profile")
+        XCTAssertTrue(earlyRowsCovered, "Live incoming rows must stay hidden underneath the moving sidebar")
+        XCTAssertFalse(earlySourceVisible)
+        XCTAssertTrue(earlyArrivalVisible)
+        XCTAssertTrue(parkedPreparationEmpty, "Parked roots must release their gesture preparation and observers")
+        XCTAssertFalse(parkedSheetPresented, "A late result from a parked root must not present over the arriving profile")
+        XCTAssertFalse(claimedPageBeginning)
+        XCTAssertFalse(claimedPageScroll)
+        XCTAssertTrue(activeAfterPageScroll, "Scrolling over the page must not cut the sidebar landing short")
+        XCTAssertFalse(claimedSidebarBeginning)
+        XCTAssertFalse(claimedSidebarScroll)
+        XCTAssertTrue(activeAfterSidebarScroll, "Vertical sidebar scrolling must not cut the landing short")
+        XCTAssertEqual(outgoingSpace, first.id, "The arriving footer must keep the gesture's original Space")
+        XCTAssertNotNil(initialFooterDrag)
+        for (drag, offset) in recordedFooterSamples {
+            XCTAssertEqual(drag, offset, accuracy: 2,
+                           "Each arriving footer frame must follow the same native presentation")
+        }
+        XCTAssertGreaterThan(recordedFooterSamples.count, 2)
+        XCTAssertTrue(slideRetired)
+        XCTAssertFalse(arrivalStillSliding)
+        XCTAssertFalse(sourceStillSwiping)
+        XCTAssertFalse(sourceStillSliding)
+        XCTAssertEqual(sourceFinalDrag, 0, "A parked source must not retain stale native travel")
     }
 
     func testQueuedDestinationStartsFromActualArrivingProfileStore() async throws {
