@@ -6,6 +6,7 @@ import Foundation
 /// encoding and output happen only after the stream has stopped.
 final class ResizePaintTrace: @unchecked Sendable {
     struct Entry: Codable, Equatable {
+        let channel: String
         let event: String
         let time: TimeInterval
         let fields: [String: String]
@@ -25,10 +26,10 @@ final class ResizePaintTrace: @unchecked Sendable {
         entries.reserveCapacity(min(self.limit, 8192))
     }
 
-    func append(_ event: String, time: TimeInterval, fields: [String: String] = [:]) {
+    func append(_ event: String, time: TimeInterval, fields: [String: String] = [:], channel: String = "fixture") {
         lock.withLock {
             guard entries.count < limit else { dropped += 1; return }
-            entries.append(Entry(event: event, time: time, fields: fields))
+            entries.append(Entry(channel: channel, event: event, time: time, fields: fields))
         }
     }
 
@@ -44,10 +45,10 @@ final class ResizePaintTrace: @unchecked Sendable {
             self?.append(event, time: time, fields: [
                 "width": width.map { String(Double($0)) } ?? "nil",
                 "height": height.map { String(Double($0)) } ?? "nil"
-            ])
+            ], channel: "timing")
         }
         ResizeTimingDiagnostics.stateSink = { [weak self] event, time, fields in
-            self?.append(event, time: time, fields: fields)
+            self?.append(event, time: time, fields: fields, channel: "state")
         }
     }
 

@@ -54,6 +54,38 @@ import XCTest
         return paints.removeFirst()
     }
 
+#if DEBUG
+    func testDiagnosticTimelineCorrelatesTimedOutPrimeWithLateCallbackAndRetirement() throws {
+        let fixture = Fixture()
+        let trace = ResizePaintTrace(label: "timeout-model")
+        trace.install()
+        defer { fixture.close(); trace.stop() }
+        fixture.buffer.start()
+        let paint = nextPaint(&fixture.paints)
+        let prepared = try XCTUnwrap(trace.snapshot().entries.first { $0.event == "buffer.prepare.after" })
+        XCTAssertEqual(prepared.fields["hasPresentedViewport"], "false")
+        XCTAssertNotEqual(prepared.fields["page.0.prepared"], prepared.fields["page.0.painted"])
+        fixture.request(640)
+        try XCTUnwrap(fixture.deadlines.first)()
+        XCTAssertTrue(fixture.buffer.bypassForDrag)
+        paint()
+        XCTAssertFalse(fixture.buffer.bypassForDrag)
+        XCTAssertEqual(fixture.completions, 1)
+        let entries = trace.snapshot().entries.filter { $0.channel == "state" }
+        let timeout = try XCTUnwrap(entries.first { $0.event == "buffer.timeout" })
+        let arrival = try XCTUnwrap(entries.first { $0.event == "buffer.presentation.arrived" })
+        XCTAssertEqual(timeout.fields["generation"], prepared.fields["generation"])
+        XCTAssertEqual(arrival.fields["callbackGeneration"], prepared.fields["generation"])
+        XCTAssertNotEqual(arrival.fields["generation"], arrival.fields["callbackGeneration"])
+        XCTAssertEqual(arrival.fields["callbackPage"], prepared.fields["page.0.id"])
+        XCTAssertEqual(arrival.fields["bypass"], "true")
+        let retired = try XCTUnwrap(entries.first { $0.event == "buffer.bypass.retired" })
+        XCTAssertEqual(retired.fields["bypass"], "false")
+        XCTAssertGreaterThanOrEqual(retired.time, arrival.time)
+        XCTAssertEqual(entries.last?.event, "buffer.completion.returned")
+    }
+#endif
+
     private func baselineSnapshot(_ changes: [String: Any] = [:]) throws -> ResizeMotionBaselineSnapshot {
         var values: [String: Any] = ["active": true, "sheetAdopted": true, "sheetDisabled": false,
             "targetWidth": 661.5, "targetHeight": 578.5, "innerWidth": 662, "innerHeight": 579,

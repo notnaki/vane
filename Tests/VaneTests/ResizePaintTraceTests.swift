@@ -16,6 +16,7 @@ import XCTest
         XCTAssertFalse(lines[0].contains("\n"), "Each trace entry must remain one machine-readable log line")
         let decoded = try lines.map { try JSONDecoder().decode(ResizePaintTrace.Entry.self, from: Data($0.utf8)) }
         XCTAssertEqual(decoded.map(\.event), ["first", "second"])
+        XCTAssertEqual(decoded.map(\.channel), ["fixture", "fixture"])
         XCTAssertEqual(decoded[0].fields, details)
         XCTAssertEqual(decoded[0].time, 1.25)
     }
@@ -43,6 +44,7 @@ import XCTest
         ResizeTimingDiagnostics.record("after")
         ResizeTimingDiagnostics.recordState("after.state", fields: [:])
         XCTAssertEqual(trace.snapshot().entries.map(\.event), ["during", "during.state"])
+        XCTAssertEqual(trace.snapshot().entries.map(\.channel), ["timing", "state"])
         XCTAssertEqual(timingCalls, 1)
         XCTAssertEqual(stateCalls, 1)
     }
