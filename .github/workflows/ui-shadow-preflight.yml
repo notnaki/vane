@@ -91,6 +91,10 @@ jobs:
           assert 'AppKit loop smoke: delayedHeartbeat=true, completed=true' in text
           assert '*** Signal ' not in text
           PYTHON
+      - name: Fresh process withdrawn control
+        run: |
+          set -o pipefail
+          python3 -u scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests[.]PasswordShadowAutofillTests/testLateShadowDiscoveryRecoversAWithdrawnPresentation$' 2>&1 | tee "$RUNNER_TEMP/shadow-fresh-control.log"
       - name: Focused native attempt with retirement
         env:
           ATTEMPT: ${{ matrix.attempt }}
@@ -119,4 +123,5 @@ jobs:
           path: |
             ${{ runner.temp }}/icloud-pr-repair-*.log
             ${{ runner.temp }}/icloud-smoke.log
+            ${{ runner.temp }}/shadow-fresh-control.log
             /tmp/vane-resize-*.png

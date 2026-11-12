@@ -260,7 +260,6 @@ import XCTest
     private func checkLateShadowDiscovery(withdrawal: DiscoveryWithdrawal = .none) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared, policy = app.activationPolicy()
-        defer { app.setActivationPolicy(policy) }
         var loop: NativeFixtureApplicationLoop?
         var retire: (@MainActor @Sendable () -> Void)?
         var failure: (any Error)?
@@ -343,14 +342,40 @@ import XCTest
             print("SHADOW_SERVER_FAILURE " + discoveryWindowServerDiagnostics())
             failure = error
         }
-        // Retire inside the owned loop, including when fixture admission throws.
+        // Closing the last window does not deactivate an accessory application.
+        // Finish the activation lifecycle while its event loop is still owned;
+        // otherwise restoring .prohibited can race the next fixture's activation.
         retire?()
         if let loop {
+            if policy == .prohibited {
+                app.deactivate()
+                do {
+                    try await wait("shadow host deactivation", diagnostics: {
+                        "appActive=\(app.isActive) processActive=\(NSRunningApplication.current.isActive)"
+                    }) { !app.isActive }
+                    print("SHADOW_RETIREMENT inactive=true running=\(app.isRunning)")
+                } catch {
+                    if failure == nil { failure = error }
+                    else { XCTFail("Shadow discovery deactivation also failed: \(error)") }
+                }
+            }
             do { try await loop.close() }
             catch {
                 if failure == nil { failure = error }
                 else { XCTFail("Shadow discovery AppKit loop cleanup also failed: \(error)") }
             }
+        }
+        app.setActivationPolicy(policy)
+        do {
+            try await wait("shadow host original activation policy", diagnostics: {
+                "appPolicy=\(app.activationPolicy().rawValue) processPolicy=\(NSRunningApplication.current.activationPolicy.rawValue)"
+            }) {
+                app.activationPolicy() == policy && NSRunningApplication.current.activationPolicy == policy
+            }
+            print("SHADOW_RETIREMENT restoredPolicy=\(policy.rawValue) appActive=\(app.isActive) processActive=\(NSRunningApplication.current.isActive)")
+        } catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Shadow discovery policy restoration also failed: \(error)") }
         }
         if let failure { throw failure }
     }
