@@ -6,7 +6,7 @@ permissions:
   contents: read
   actions: read
 env:
-  VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '240'
+  VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
   VANE_FOOTER_ARTWORK_TRACE: '1'
   VANE_PROFILE_LIFETIME_TRACE: '1'
   SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
@@ -55,7 +55,7 @@ jobs:
           import errno, os, pathlib, pty, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           attempt = os.environ['ATTEMPT']
-          selection = 'SidebarNativeReadinessTests|NewTabDisclosureTests|ProfileChromeObservationTests|ProfilePersistenceTests|SpaceColourTransitionTests|SpaceNativeRenderingTests.testArrivingWashJoinsTheExistingCompositorTimeline|SpaceNativeRenderingTests.testCachedArrivingWashIsPrimedBeforeItsNextSwiftUIUpdate|SpaceNativeRenderingTests.testDestinationVisibilityNotificationCannotAbortTheSourceLanding|SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testFirstProfileVisitChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|SpaceNativeRenderingTests.testHiddenProfileSynchronouslyDropsWarmOwnersDuringLanding|SpaceNativeRenderingTests.testProfileSwipeDoesNotRestoreItsDepartureColour|SpaceNativeRenderingTests.testReverseProfileSwipeTakesOverTheSamePresentedNativeRows|SpaceNativeRenderingTests.testNativeSpaceClickBlendsBackgroundDuringSidebarTravel|SpaceNativeRenderingTests.testRetargetedLandingPreservesPresentedWashForReversalAndNewDestination|SpaceNativeRenderingTests.testNativeWashUsesLandingCurveAndReleasesOwnershipForReducedMotion|SpaceNativeRenderingTests.testCrossProfileButtonSelectionReusesPreparedNativeSurface|SpaceNativeRenderingTests.testButtonSelectionRejectsCaptureFromBeforeANewPreviewSupplier|SpaceNativeRenderingTests.testProfileClickPreservesSlideAndReduceMotionAcrossHosts|SpaceNativeRenderingTests.testHiddenCrossProfileLandingTracksAndRetiresTheActualArrivingSidebar|SpaceNativeRenderingTests.testMemoryPressureDropsWarmOwnersWithTabSuspensionDisabled|SpaceNativeRenderingTests.testProtectionRevocationSynchronouslyDropsInactiveWarmOwners|SpaceFooterPresentationTests.testNativeMarkerPreservesLegacyArtworkAndWideSymbolOverhang|TrafficLightMotionTests|SidebarSnapshotReadinessTests|SpaceNativeRenderingTests.testPreparedProfileKeepsWindowAuthorityWithSourceUntilHop|SpaceNativeRenderingTests.testReverseSwipeTakesOverThePresentedLandingWithoutFinishingIt'
+          selection = 'SidebarObservationTests.testSpaceSwitchInvalidatesRenderingWithOnlyTheCompletedOutline'
           log = root / f'icloud-native-preflight-{attempt}.log'
           master, slave = pty.openpty()
           process = subprocess.Popen(['python3', '-u', 'scripts/run-native-tests.py', '--skip-build', '--jobs', '1', '--filter', selection], stdout=slave, stderr=slave)

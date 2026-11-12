@@ -2039,29 +2039,27 @@ private struct SpaceSwipe: ViewModifier {
                 // captured rows before their animation clock starts; both routes
                 // can otherwise spend the visible landing's early frames mounting.
                 slide.armLanding(to: destination, completion: finish)
-                // Prepare the committed destination while source still owns
-                // input, then submit the captured rows' travel in this action.
-                // Visible travel must not wait behind another live-host layout.
+                // Build only this committed target while source still owns the
+                // window. The queued handoff can then meet its landing deadline
+                // without selecting the destination inside the input action.
                 Windows.prepareHop(store, to: destination)
-                slide.start(duration: duration, completion: finish)
-                CATransaction.flush()
-                // Queue on AppKit's common-mode loop. Window authority remains
-                // with source until this input action returns.
-                RunLoop.main.perform(inModes: [.common]) { [weak self, weak store, weak host, weak slide] in
-                    MainActor.assumeIsolated {
-                        guard let self, self.transition == token, let store, let host, let slide,
-                              slide.isActive, host.spaceSlide === slide,
-                              store.currentSpaceID == self.landingFrom,
-                              store.spaceGesture.neighbour?.id == destination.id else { return }
-                        let window = store.window
-                        _ = self.activate(destination, in: store)
-                        guard let window, host.window === window, host.spaceSlide === slide,
-                              slide.isActive,
-                              TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
-                            slide.cancel()
-                            return
-                        }
+                DispatchQueue.main.async { [weak self, weak store, weak host, weak slide] in
+                    guard let self, self.transition == token, let store, let host, let slide,
+                          slide.isActive, host.spaceSlide === slide,
+                          store.currentSpaceID == self.landingFrom,
+                          store.spaceGesture.neighbour?.id == destination.id else { return }
+                    let window = store.window
+                    _ = self.activate(destination, in: store)
+                    guard let window, host.window === window, host.spaceSlide === slide,
+                          slide.isActive,
+                          TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
+                        slide.cancel()
+                        return
                     }
+                    host.layoutSubtreeIfNeeded()
+                    window.displayIfNeeded()
+                    CATransaction.flush()
+                    slide.start(duration: duration, completion: finish)
                 }
             } else {
                 slide.start(duration: duration, completion: finish)

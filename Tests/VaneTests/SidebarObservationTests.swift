@@ -113,6 +113,41 @@ private struct ObservedSidebarProbe: View {
                        "Protection revocation must publish synchronously without a shape assignment")
     }
 
+    func testSpaceSwitchInvalidatesRenderingWithOnlyTheCompletedOutline() throws {
+        TestEnvironment.prepare()
+        let manager = ProfileManager.shared
+        let profile = manager.create(name: "Atomic sidebar switch")
+        let origin = manager.createSpace(name: "Origin", in: profile.id)
+        let target = manager.createSpace(name: "Target", in: profile.id)
+        let store = TabStore(profileID: profile.id, space: origin, session: [])
+        store.sharingReady = false
+        let tab = store.newBlankTab(focus: false)
+        defer {
+            store.dropStashes()
+            let tabs = store.tabs + [tab]
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(tabs)
+            Store.forget(profile.id)
+            _ = manager.delete(profile.id)
+        }
+        var rendered: [(UUID?, [UUID])] = []
+        var modelChanges = 0
+        let rendering = store.sidebarObservation.objectWillChange.sink {
+            rendered.append((store.currentSpaceID, store.tabs.map(\.id)))
+        }
+        let model = store.sidebarSnapshotChanges.sink { modelChanges += 1 }
+        defer { rendering.cancel(); model.cancel() }
+        store.switchTo(space: target)
+        XCTAssertEqual(store.currentSpaceID, target.id)
+        XCTAssertTrue(store.tabs.isEmpty)
+        XCTAssertGreaterThan(modelChanges, 1,
+                             "Model and protection invalidation must still publish synchronously")
+        XCTAssertEqual(rendered.count, 1,
+                       "Rendering must not retain intermediate empty rows under the departing Space")
+        XCTAssertTrue(rendered.allSatisfy { $0.0 == target.id && $0.1.isEmpty },
+                      "Every rendering invalidation must see the destination's completed outline")
+    }
+
     func testMountedSidebarSkipsSearchUpdatesButRendersRenameChanges() async throws {
         let store = fixture()
         let draws = SidebarDrawCount()
