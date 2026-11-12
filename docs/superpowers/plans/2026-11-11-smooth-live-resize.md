@@ -58,3 +58,9 @@ The narrowed width build passes actual sidebar motion and all painted coverage. 
 - [ ] Use the existing actual WindowServer first-frame regression as RED evidence; preserve its maximum80ms and p95≤25ms assertions. Avoid a spy-only test that merely repeats the display call.
 - [ ] Evaluate native presentation changes against the actual capture. Reject per-input synchronous drawing when it adds cost without meeting the original limits; measure the optimized narrowed graph before another scheduling change.
 - [ ] Validate covering models/product/pure and independent review, then measure the unchanged first-visible and steady-motion bounds.
+
+### Remaining startup experiment (2026-11-12)
+
+- [ ] Existing actual optimized95.220ms first-movement failure is RED. Evaluate one Core Animation flush after the first changed, still-owned covered window commit; later commits retain deferred drawing. No private snapshot-hold release.
+- [ ] Measure actual first-visible, steady cadence and painted coverage without changing thresholds/input/baseline. If the hypothesis fails, remove the experiment rather than carry it as a fix.
+- [ ] Correlate hosted continuous-sidebar trace with the retained24pt failure, reproduce its causal path, repair and verify it separately. A green unchanged trace alone is not resolution.
