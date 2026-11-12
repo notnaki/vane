@@ -376,25 +376,32 @@ import XCTest
                 coordinator.releasePopulationExpectation(scope, owner: ObjectIdentifier(populationOwner))
             }
             NSApp.activate(ignoringOtherApps: true)
-            @MainActor func admitCurrentViewport() async throws {
+            @MainActor func admitCurrentViewport(_ phase: String) async throws {
                 NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
                 let today = cache.resolve(in: store, shape: store.todayShape).rows.map(\.id)
                 let pinned = store.pinnedSectionCollapsed ? [] : cache.resolve(in: store, shape: store.pins).rows.map(\.id)
                 coordinator.expectPopulation(scope, sections: ["today": today, "pinned": pinned],
                                              populationOwnerID: populationOwnerID)
+                var admission = "not sampled"
+                defer { print("RETAINED_VIEWPORT_ADMISSION phase=\(phase) \(admission)") }
                 try await compatibilityWait {
                     host.layoutSubtreeIfNeeded()
+                    let candidate = SidebarSectionsViewport.scrollView(in: host)
+                    let scrollReady = candidate.map {
+                        NativeFixtureMountAdmission.scrollReady($0, root: host, window: window,
+                            minimumHeight: CGFloat(today.count) * Look.rowHeight)
+                    } ?? false
+                    let populationReady = coordinator.isReady(scope)
+                    admission = "running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) owner=\(window.contentView === host && host.window === window && store.window === window) today=\(today.count) pinned=\(pinned.count) scrollReady=\(scrollReady) populationReady=\(populationReady) document=\(String(describing: candidate?.documentView?.frame)) clip=\(String(describing: candidate?.contentView.bounds))"
                     guard NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow,
                           window.isVisible && window.occlusionState.contains(.visible),
                           window.contentView === host && host.window === window && store.window === window,
-                          let scroll = SidebarSectionsViewport.scrollView(in: host),
-                          NativeFixtureMountAdmission.scrollReady(scroll, root: host, window: window,
-                              minimumHeight: CGFloat(today.count) * Look.rowHeight) else { return false }
-                    return coordinator.isReady(scope)
+                          scrollReady else { return false }
+                    return populationReady
                 }
             }
-            try await admitCurrentViewport()
+            try await admitCurrentViewport("initial")
             let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
             let document = try XCTUnwrap(scroll.documentView)
             // Lazy row realization can finish after the initial window layout. Establish
@@ -419,8 +426,8 @@ import XCTest
                 }
                 XCTAssertGreaterThan(checked, 0, "The sampled viewport must contain real rows; position checks cannot pass vacuously")
             }
-            @MainActor func reachEnd() async throws -> CGFloat {
-                try await admitCurrentViewport()
+            @MainActor func reachEnd(_ phase: String) async throws -> CGFloat {
+                try await admitCurrentViewport(phase)
                 for _ in 0..<3 {
                     try await scrollNatively(scroll, to: max(0, document.frame.height - scroll.contentView.bounds.height), in: host)
                 }
@@ -430,20 +437,20 @@ import XCTest
                 assertVisibleRowPositions()
                 return document.frame.height
             }
-            let closedHeight = try await reachEnd()
+            let closedHeight = try await reachEnd("closed-end")
             try await scrollNatively(scroll, to: closedHeight / 2, in: host)
             assertVisibleRowPositions()
             try await scrollNatively(scroll, to: 0, in: host)
             assertVisibleRowPositions()
             Motion.instant { store.todayShape.edit(folder: folder.id) { $0.collapsed = false } }
-            let openHeight = try await reachEnd()
+            let openHeight = try await reachEnd("opened-end")
             try await scrollNatively(scroll, to: openHeight / 2, in: host)
             assertVisibleRowPositions()
             XCTAssertEqual(openHeight - closedHeight, 7 * (Look.rowHeight + Look.rowGap), accuracy: 1,
                            "Opening an offscreen group must add precisely its seven slots")
             try await scrollNatively(scroll, to: 0, in: host)
             Motion.instant { store.todayShape.edit(folder: folder.id) { $0.collapsed = true } }
-            let closedAgain = try await reachEnd()
+            let closedAgain = try await reachEnd("reclosed-end")
             XCTAssertEqual(closedAgain, closedHeight, accuracy: 1,
                            "Closing an offscreen group must not preserve lazy estimated-height gaps")
         }

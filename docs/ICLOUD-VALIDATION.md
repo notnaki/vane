@@ -210,9 +210,37 @@ its reversal/completion assertions; its explicit 200 ms landing fits the existin
 280 ms minimum observation window, unlike the 300 ms product default. The repaired
 slow-swipe case passed three local attempts with verified cleanup.
 
-Disclosure repair and final integrated hosted/required CI remain pending. The
-next preflight uses one revision/toolchain-verified runtime and three isolated
-native desktops, with every outcome and cleanup receipt retained independently.
+Disclosure now uses one sampled visibility clock for section extent, native row
+positions, clipping and hit geometry, including nested reversals and equal-height
+swaps. Settled completion rebases the sparse state without retaining replaced
+tabs. Independent review identified two further issues: repeated descendant scans
+per row, and capped large-folder rows painting past the shared section extent.
+The final repair shares a sorted prefix index and frame query cache, and clips
+the native section while shared disclosure is active. Resting overhang and the
+direct-native fallback retain their existing behavior. New coverage includes
+3,000-descendant work probes and a 300-child, 48-sample opening/reversal pixel and
+hit-test fixture. Original disclosure samples, spacing and tolerances remain.
+
+Fresh independent review of `0849402b` found no actionable issues. The exact
+integrated tree built locally; entitlement, release-workflow, relocated-resource
+and default-browser packaging fixtures passed. Hosted preflight
+[43225580239](https://github.com/notnaki/vane/actions/runs/43225580239) uses one
+revision/toolchain-verified runtime and three isolated native desktops, with every
+outcome and cleanup receipt retained independently. All three attempts completed
+586 tests (two skips each), with 67, 71 and 67 assertion failures respectively and
+verified cleanup in every attempt. Eleven distinct cases failed across the three
+attempts. All selected iCloud tests and the earlier first/cached page, click tint,
+profile-colour and New Tab disclosure cases passed; this does not resolve the
+newly exposed failures or replace protected integration CI.
+
+The next diagnostic preflight narrows to the failed cases and related profile,
+footer, disclosure, shadow and colour coverage. It tests release-velocity capture
+before page preparation, immediate retargeting of already travelling profile
+surfaces, native-density artwork comparison, admitted hover presentation, and one
+bounded document-hidden readmission within the shadow fixture's existing
+deadline. Disclosure and retained-viewport diagnostics preserve every original
+outcome assertion and sample. These candidates remain unverified until their
+hosted outcomes are retained; protected current-head PR CI remains pending.
 
 ## Verification limits and remaining integration gates
 

@@ -102,6 +102,24 @@ import XCTest
                                     in: window?.contentView?.bounds.width ?? .infinity)
     }
 
+    private func admitFixtureSidebar(_ store: TabStore, window: NSWindow) async throws {
+        try await compatibilityWait {
+            window.contentView?.layoutSubtreeIfNeeded()
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            if NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
+            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
+                  window.isVisible, window.occlusionState.contains(.visible),
+                  store.window === window, let host = window.contentView,
+                  let root = host.layer, let presentedRoot = root.presentation(),
+                  let anchor = store.spaceGesture.sectionsView, anchor.window === window,
+                  let layer = anchor.layer, let presented = layer.presentation(),
+                  SidebarNativeReadinessCoordinator.shared.isReady(
+                    SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID),
+                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled) else { return false }
+            return abs(presented.convert(.zero, to: presentedRoot).x - layer.convert(.zero, to: root).x) < 0.125
+        }
+    }
+
     func testCompactWindowReusesPreparedSurfaceAtItsFittedSidebarWidth() async throws {
         try await withFixtureApplicationLoop {
             let (store, spaces, window, monitor) = try self.fixture()
@@ -900,9 +918,14 @@ import XCTest
     }
 
     func testTargetClickInterruptsTheSameProfileReturnSpring() async throws {
-        let (store, spaces, window, monitor) = try fixture()
+        try await withFixtureApplicationLoop { try await checkTargetClickInterruptsTheSameProfileReturnSpring() }
+    }
+
+    private func checkTargetClickInterruptsTheSameProfileReturnSpring() async throws {
+        let (store, spaces, window, monitor) = try fixture(registerTeardown: false)
+        defer { retireFixture(store, window: window, monitor: monitor) }
         store.palette = nil
-        try await Task.sleep(for: .milliseconds(150))
+        try await admitFixtureSidebar(store, window: window)
         XCTAssertNotNil(store.beginSpaceSelection(spaces[1]))
         monitor.land(1, to: spaces[1], width: fixtureSidebarWidth(in: store), store: store, duration: 0.8)
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
@@ -1030,8 +1053,12 @@ import XCTest
         let slide = try XCTUnwrap(host.spaceSlide)
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
+        let middleStart = CACurrentMediaTime()
+        var middleState = "not sampled"
+        defer { print("REVERSE_LANDING_MIDDLE \(middleState)") }
         try await compatibilityWait {
-            slide.isActive && abs(slide.offset) > width * 0.45 && abs(slide.offset) < width * 0.8
+            middleState = "elapsed=\(CACurrentMediaTime() - middleStart) active=\(slide.isActive) offset=\(slide.offset) width=\(width) source=\(store.currentSpaceID == origin.id) target=\(store.currentSpaceID == target.id) app=\(NSApp.isActive) key=\(window.isKeyWindow) animation=\(String(describing: slide.outgoing.layer?.animation(forKey: "space-position")))"
+            return slide.isActive && abs(slide.offset) > width * 0.45 && abs(slide.offset) < width * 0.8
         }
         XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, target.id)
         let originalRows = slide.outgoing
@@ -2955,11 +2982,19 @@ import XCTest
     }
 
     func testCommittedNativeLandingRetainsFingerVelocity() async throws {
-        let (store, spaces, window, monitor) = try fixture()
-        monitor.track(-20, width: 250, in: store)
+        try await withFixtureApplicationLoop { try await checkCommittedNativeLandingRetainsFingerVelocity() }
+    }
+
+    private func checkCommittedNativeLandingRetainsFingerVelocity() async throws {
+        let (store, spaces, window, monitor) = try fixture(registerTeardown: false)
+        defer { retireFixture(store, window: window, monitor: monitor) }
+        try await admitFixtureSidebar(store, window: window)
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        let width = fixtureSidebarWidth(in: store)
+        monitor.track(-20, width: width, in: store)
         try await Task.sleep(for: .milliseconds(20))
-        monitor.track(-60, width: 250, in: store)
-        monitor.land(1, to: spaces[1], width: 250, store: store)
+        monitor.track(-60, width: width, in: store)
+        monitor.land(1, to: spaces[1], width: width, store: store)
         let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
         let animation = try XCTUnwrap(slide.outgoing.layer?.animation(forKey: "space-position") as? CASpringAnimation)
         XCTAssertGreaterThan(animation.initialVelocity, 0, "Release must retain the finger's forward velocity")

@@ -1503,11 +1503,22 @@ private struct NativeSpacePreview: View {
     }
     private var finishGround: ((Space?) -> Void)?
     private var animationID: UUID?
+    private(set) var hasStartedLanding = false
+    private var committedTrackingVelocity: CGFloat?
+
+    private var freshTrackingVelocity: CGFloat {
+        guard let lastTracking,
+              ProcessInfo.processInfo.systemUptime - lastTracking.time < 0.1 else { return 0 }
+        return trackingVelocity
+    }
 
     /// Selection stays queued until after its input action returns. A sidebar
     /// hidden before that turn must still finish the committed profile change.
     func armLanding(to target: Space, completion: @escaping () -> Void) {
         guard isActive else { return }
+        // A committed release owns this sample even if page preparation takes
+        // longer than the finger-event freshness window.
+        committedTrackingVelocity = freshTrackingVelocity
         ownsSidebarVisibility = true
         self.completion = completion
         restingSpaceID = target.id
@@ -1519,6 +1530,9 @@ private struct NativeSpacePreview: View {
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
+        let releaseVelocity = committedTrackingVelocity ?? freshTrackingVelocity
+        committedTrackingVelocity = nil
+        hasStartedLanding = true
         ownsSidebarVisibility = true
         self.completion = completion
         restingSpaceID = returning ? preparedOrigin.id : targetID
@@ -1579,11 +1593,10 @@ private struct NativeSpacePreview: View {
                 spring.stiffness = frequency * frequency
                 spring.damping = 2 * frequency
                 let distance = layer.position.x - from.x
-                let fresh = lastTracking.map { ProcessInfo.processInfo.systemUptime - $0.time < 0.1 } ?? false
-                if fresh, distance != 0 {
+                if distance != 0 {
                     // Critical damping stays monotonic up to this normalized speed.
                     // Preserve the flick without allowing a fast release to overshoot.
-                    spring.initialVelocity = max(0, min(frequency, Double(trackingVelocity / distance)))
+                    spring.initialVelocity = max(0, min(frequency, Double(releaseVelocity / distance)))
                 }
                 spring.duration = duration
                 animation = spring

@@ -94,6 +94,8 @@ import XCTest
         var checkedMovingHit = false
         var ancestorAtInnerMutation: CGFloat?
         var movingHits: [(presentedY: CGFloat, nativeY: CGFloat, selected: UUID?, palette: PaletteMode?)] = []
+        var hitDiagnostics: [String] = []
+        let samplingStarted = ProcessInfo.processInfo.systemUptime
         for frame in 0..<48 {
             if frame == 0 {
                 Motion.animate(.linear(duration: 0.8)) { store.pins.toggle(folder: folder.id) }
@@ -109,6 +111,15 @@ import XCTest
                     let presentedY = try presentedRect(current).midY
                     let nativeY = rect(current).midY
                     let point = current.convert(NSPoint(x: current.bounds.midX, y: current.bounds.midY), to: nil)
+                    // Capture native clipping owners before dispatch, without a
+                    // second hitTest that could mutate the batch hit cache.
+                    var owners: [String] = []
+                    var owner: NSView? = current
+                    while let view = owner {
+                        owners.append("\(type(of: view)) frame=\(view.frame) bounds=\(view.bounds) visible=\(view.visibleRect) clips=\(view.clipsToBounds)")
+                        owner = view.superview
+                    }
+                    let elapsed = ProcessInfo.processInfo.systemUptime - samplingStarted
                     for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                         window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point,
                             modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
@@ -116,11 +127,13 @@ import XCTest
                             clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)))
                     }
                     movingHits.append((presentedY, nativeY, store.current, store.palette))
+                    hitDiagnostics.append("frame=\(frame) elapsed=\(elapsed) point=\(point) selected=\(String(describing: store.current)) owners=\(owners)")
                     checkedMovingHit = true
                 }
             }
         }
         print("NESTED_FOLDER_DISCLOSURE start=\(start) samples=\(samples)")
+        print("NESTED_FOLDER_DISCLOSURE_HITS \(hitDiagnostics)")
         // Capture every scheduled frame and event before reporting failures:
         // XCTest's main-actor symbolication must not delay later reversals.
         for hit in movingHits {
@@ -237,6 +250,8 @@ import XCTest
         var newTabHits: [String?] = []
         var witnessedCappedOverflow = false
         var witnessedVisibleChildPaint = false
+        var clickDiagnostics: [String] = []
+        let samplingStarted = ProcessInfo.processInfo.systemUptime
         for frame in 0..<48 {
             if [0, 6, 12, 18].contains(frame) {
                 // A slow explicit animation exposes the short-extent/large-travel
@@ -248,6 +263,9 @@ import XCTest
             let footer = try presentedRect(newTab)
             let extent = section.convert(section.bounds, to: host)
             clipping.append(section.clipsToBounds)
+            if [3, 9, 21].contains(frame) {
+                clickDiagnostics.append("frame=\(frame) elapsed=\(ProcessInfo.processInfo.systemUptime - samplingStarted) footer=\(footer) extent=\(extent) host=\(host.bounds) eligible=\(footer.maxY + 28 < host.bounds.maxY)")
+            }
             for (id, weak) in controls.views where id != "new-tab" && id != folder.id.uuidString {
                 if let child = weak.value, child.window === window {
                     let raw = try presentedRect(child)
@@ -278,13 +296,14 @@ import XCTest
             }
         }
         // Report only after all scheduled observations and reversals complete.
+        print("LARGE_FOLDER_DISCLOSURE_CLICKS \(clickDiagnostics) hits=\(newTabHits)")
         XCTAssertTrue(witnessedCappedOverflow, "The fixture must exercise raw children extending past the short outer extent")
         XCTAssertTrue(witnessedVisibleChildPaint, "The bitmap probe must capture actual visible child paint")
         XCTAssertFalse(bottomPaint.isEmpty)
         XCTAssertGreaterThan(gapProbes, 0, "The fixture must probe the gap above New Tab as well as the area below it")
         XCTAssertTrue(bottomPaint.allSatisfy { $0 == 0 }, "Children must stay inside their section near New Tab: \(bottomPaint)")
         XCTAssertTrue(clipping.allSatisfy { $0 }, "Shared native clipping must cover every active-disclosure sample")
-        XCTAssertFalse(newTabHits.isEmpty)
+        XCTAssertFalse(newTabHits.isEmpty, "Scheduled footer clicks must be visible: \(clickDiagnostics)")
         for hit in newTabHits { XCTAssertEqual(hit, "new-tab", "Overflowing rows must not take New Tab's native hit") }
         Motion.instant { store.pins.edit(folder: folder.id) { $0.collapsed = true } }
         try await compatibilityWait {

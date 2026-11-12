@@ -2022,6 +2022,8 @@ private struct SpaceSwipe: ViewModifier {
             nativeSlide = nil
         }
         if let slide = nativeSlide {
+            let continuingTravel = slide.hasStartedLanding
+            slide.armLanding(to: destination, completion: finish)
             // Keep native presentation as the footer/tint source across release. Updating
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
             Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }
@@ -2030,11 +2032,14 @@ private struct SpaceSwipe: ViewModifier {
                 // inside a retained one. Resolve its native layout beneath the
                 // captured rows before their animation clock starts; both routes
                 // can otherwise spend the visible landing's early frames mounting.
-                slide.armLanding(to: destination, completion: finish)
                 // Build only this committed target while source still owns the
                 // window. The queued handoff can then meet its landing deadline
                 // without selecting the destination inside the input action.
                 Windows.prepareHop(store, to: destination)
+                // Reversing an existing landing already owns both endpoint
+                // surfaces. Retarget that curve before returning from the input
+                // action; its page selection still belongs to the queued handoff.
+                if continuingTravel { slide.start(duration: duration, completion: finish) }
                 DispatchQueue.main.async { [weak self, weak store, weak host, weak slide] in
                     guard let self, self.transition == token, let store, let host, let slide,
                           slide.isActive, host.spaceSlide === slide,
@@ -2051,14 +2056,13 @@ private struct SpaceSwipe: ViewModifier {
                     host.layoutDisplayedProfile()
                     window.displayIfNeeded()
                     CATransaction.flush()
-                    slide.start(duration: duration, completion: finish)
+                    if !continuingTravel { slide.start(duration: duration, completion: finish) }
                 }
             } else {
                 // Within a profile, prepare under the captured rows before starting
                 // travel, while retaining the immediate native-animation contract
                 // of select/land. Commit the new wash and curve together.
                 guard let host else { slide.cancel(); return }
-                slide.armLanding(to: destination, completion: finish)
                 CATransaction.begin()
                 defer { CATransaction.commit(); CATransaction.flush() }
                 _ = self.activate(destination, in: store)

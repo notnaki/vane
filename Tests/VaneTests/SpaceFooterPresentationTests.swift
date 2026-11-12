@@ -215,31 +215,38 @@ import XCTest
         XCTAssertEqual(scale.beginTime, 0)
     }
 
-    func testExplicitSidebarClockIsPreservedAndBoundsHoverRetargets() throws {
-        let (presentation, stores, ids, _, views) = try fixture()
-        let layout = SpaceStripLayout(count: 2, availableWidth: 64)
-        presentation.mount(views[0], owner: stores[0], id: ids[0], icon: "square.fill",
-            layout: layout, hovered: true, scheme: .dark, reduced: false)
-        let timing = CABasicAnimation(keyPath: "position")
-        timing.duration = 0.8
-        timing.beginTime = CACurrentMediaTime() - 0.2
-        timing.timingFunction = CAMediaTimingFunction(name: .linear)
-        presentation.animate(origin: ids[0], target: ids[1], from: 0, to: 1, timing: timing)
-        let incoming = try XCTUnwrap(views[1].marker?.symbol)
-        let installed = try XCTUnwrap(incoming.animation(forKey: "space-progress-scale"))
-        let installedStart = installed.beginTime
-        let expectedStart = incoming.convertTime(timing.beginTime, from: nil)
-        presentation.mount(views[0], owner: stores[0], id: ids[0], icon: "square.fill",
-            layout: layout, hovered: false, scheme: .dark, reduced: false)
-        let outgoing = try XCTUnwrap(views[0].marker?.symbol)
-        let hover = try XCTUnwrap(outgoing.animation(forKey: "space-emphasis"))
-        // Capture every native observation before XCTest reports a failure:
-        // symbolication can otherwise consume the rest of the animation.
-        let remaining = hover.duration
-        XCTAssertEqual(installedStart, expectedStart, accuracy: 0.0001,
-                       "Footer ink must retain the explicit clock already driving native rows")
-        XCTAssertEqual(remaining, 0.6, accuracy: 0.03,
-                       "Hover retargets must use time remaining on the original clock before its commit callback")
+    func testExplicitSidebarClockIsPreservedAndBoundsHoverRetargets() async throws {
+        try await withPresentationLoop {
+            let (presentation, stores, ids, window, views) = try fixture(nativePresentation: true)
+            let layout = SpaceStripLayout(count: 2, availableWidth: 64)
+            presentation.mount(views[0], owner: stores[0], id: ids[0], icon: "square.fill",
+                layout: layout, hovered: true, scheme: .dark, reduced: false)
+            let marker = try XCTUnwrap(views[0].marker)
+            try await admitMarkerPresentation(marker, in: views[0], window: window)
+            // Retargeting starts at the presented ink. Admit the hover-on baseline
+            // before starting the clock; stale unhovered ink needs no fade at all.
+            try await compatibilityWait { abs((marker.symbol.presentation()?.opacity ?? -1) - 1) < 0.001 }
+            let timing = CABasicAnimation(keyPath: "position")
+            timing.duration = 0.8
+            timing.beginTime = CACurrentMediaTime() - 0.2
+            timing.timingFunction = CAMediaTimingFunction(name: .linear)
+            presentation.animate(origin: ids[0], target: ids[1], from: 0, to: 1, timing: timing)
+            let incoming = try XCTUnwrap(views[1].marker?.symbol)
+            let installed = try XCTUnwrap(incoming.animation(forKey: "space-progress-scale"))
+            let installedStart = installed.beginTime
+            let expectedStart = incoming.convertTime(timing.beginTime, from: nil)
+            presentation.mount(views[0], owner: stores[0], id: ids[0], icon: "square.fill",
+                layout: layout, hovered: false, scheme: .dark, reduced: false)
+            let outgoing = try XCTUnwrap(views[0].marker?.symbol)
+            let hover = try XCTUnwrap(outgoing.animation(forKey: "space-emphasis"))
+            // Capture every native observation before XCTest reports a failure:
+            // symbolication can otherwise consume the rest of the animation.
+            let remaining = hover.duration
+            XCTAssertEqual(installedStart, expectedStart, accuracy: 0.0001,
+                           "Footer ink must retain the explicit clock already driving native rows")
+            XCTAssertEqual(remaining, 0.6, accuracy: 0.03,
+                           "Hover retargets must use time remaining on the original clock before its commit callback")
+        }
     }
 
     func testBatterySaverCancelsAnUncoveredSelectionPulse() throws {
@@ -345,8 +352,14 @@ import XCTest
     }
 
     func testNativeMarkerPreservesLegacyArtworkAndWideSymbolOverhang() throws {
-        let (presentation, stores, ids, _, views) = try fixture()
+        let (presentation, stores, ids, window, views) = try fixture()
         let view = views[0]
+        // The native artwork is rasterized for its actual window. Hosted runners
+        // can use a 1x display; comparing that ink enlarged to a 2x reference
+        // measures resampling blur rather than a change to the marker artwork.
+        let scale = window.backingScaleFactor
+        let pixelSize = Int((32 * scale).rounded())
+        print("FOOTER_ARTWORK windowScale=\(scale) cachedScale=\(view.marker?.symbol.contentsScale ?? 0) rasterPixels=\(pixelSize)")
         for scheme in [ColorScheme.light, .dark] {
             for showIcons in [false, true] {
                 for (count, icon) in [(3, "cloud"), (3, "triangle.fill"), (12, "cloud"), (12, "triangle.fill")] {
@@ -356,25 +369,25 @@ import XCTest
                     for emphasis in [0.0, 0.5, 1.0] {
                         presentation.track(origin: ids[1], target: ids[0], fraction: emphasis)
                         let layer = try XCTUnwrap(view.marker?.layer)
-                        let context = try XCTUnwrap(CGContext(data: nil, width: 64, height: 64,
+                        let context = try XCTUnwrap(CGContext(data: nil, width: pixelSize, height: pixelSize,
                             bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-                        context.scaleBy(x: 2, y: 2)
+                        context.scaleBy(x: scale, y: scale)
                         layer.render(in: context)
                         let actual = NSBitmapImageRep(cgImage: try XCTUnwrap(context.makeImage()))
                         let renderer = ImageRenderer(content:
                             SpaceFooterMarker(icon: icon, layout: layout, emphasis: emphasis, selected: true,
                                               sizeEmphasis: emphasis)
                                 .frame(width: 32, height: 32).environment(\.colorScheme, scheme))
-                        renderer.scale = 2
+                        renderer.scale = scale
                         var expected: CGImage?
                         NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
                             expected = renderer.cgImage
                         }
                         let reference = NSBitmapImageRep(cgImage: try XCTUnwrap(expected))
                         var alphaActual = 0.0, alphaExpected = 0.0, difference = 0.0, colorDifference = 0.0
-                        for y in 0..<64 {
-                            for x in 0..<64 {
+                        for y in 0..<pixelSize {
+                            for x in 0..<pixelSize {
                                 let ac = try XCTUnwrap(actual.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
                                 let bc = try XCTUnwrap(reference.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
                                 let a = Double(ac.alphaComponent), b = Double(bc.alphaComponent)
@@ -384,7 +397,7 @@ import XCTest
                                     + abs(Double(ac.blueComponent) * a - Double(bc.blueComponent) * b)
                             }
                         }
-                        let label = "\(scheme) count=\(count) icons=\(showIcons) \(icon) emphasis=\(emphasis)"
+                        let label = "\(scheme) scale=\(scale) count=\(count) icons=\(showIcons) \(icon) emphasis=\(emphasis)"
                         XCTAssertEqual(alphaActual, alphaExpected, accuracy: max(1, alphaExpected * 0.04), label)
                         XCTAssertLessThan(difference, max(2, alphaExpected * 0.15), label)
                         XCTAssertLessThan(colorDifference, max(6, alphaExpected * 0.45), label)
