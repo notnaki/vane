@@ -165,7 +165,7 @@ import XCTest
 
     private func discoveryDiagnostics(_ web: WKWebView, capture: Capture? = nil) async -> String {
         let native = discoveryNativeDiagnostics(web)
-        let state = try? await js(web, "JSON.stringify({visibility:document.visibilityState, state:document.readyState, anchor:JSON.parse(__vaneAnchor())})", isolated: true)
+        let state = try? await js(web, "JSON.stringify({visibility:document.visibilityState, state:document.readyState, anchorFunction:typeof __vaneAnchor, host:!!document.getElementById('host'), shadow:!!document.getElementById('host')?.shadowRoot, anchor:typeof __vaneAnchor==='function'?JSON.parse(__vaneAnchor()):null})", isolated: true)
         return native + " " +
             "readyMessages=\(capture?.messages.filter { $0["ready"] as? Bool == true }.count ?? 0) document=\(String(describing: state))"
     }
@@ -181,6 +181,7 @@ import XCTest
 
     private func admitDiscoveryDocument(_ web: WKWebView, loop: NativeFixtureApplicationLoop) async throws {
         var readmissionRequested = false
+        var documentReadmissionRequested = false
         var lastUnready = ""
         var lastDocumentProbe = "not sampled"
         try await wait("visible shadow discovery document", diagnostics: {
@@ -210,6 +211,18 @@ import XCTest
             let nativeReady = self.discoveryPresentationReady(window, document: web)
             lastDocumentProbe = "visibility=\(visibility ?? "unavailable") loopReady=\(loopReady) nativeReady=\(nativeReady)"
             if !nativeReady { lastUnready = self.discoveryNativeDiagnostics(web) }
+            if visibility == "hidden", loopReady, nativeReady, !documentReadmissionRequested {
+                // WebKit can retain an initial hidden document after AppKit has
+                // already admitted this exact owner. Submit one fresh ordering
+                // transition within the existing deadline, without reloading or
+                // changing the document whose discovery behavior we exercise.
+                documentReadmissionRequested = true
+                print("SHADOW_DOCUMENT_READMISSION \(lastDocumentProbe) \(self.discoveryNativeDiagnostics(web))")
+                window.orderOut(nil)
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                return false
+            }
             return visibility == "visible" && loopReady && nativeReady
         }
     }
