@@ -58,9 +58,121 @@ import XCTest
         var values: [String: Any] = ["active": true, "sheetAdopted": true, "sheetDisabled": false,
             "targetWidth": 661.5, "targetHeight": 578.5, "innerWidth": 662, "innerHeight": 579,
             "documentWidth": 662, "customProperties": 300, "nativeWidth": 661.5,
-            "nativeHeight": 578.5, "pageZoom": 1]
+            "nativeHeight": 578.5, "pageZoom": 1,
+            "safeAreaTop": 0, "safeAreaLeft": 0, "safeAreaBottom": 0, "safeAreaRight": 0]
         values.merge(changes) { _, next in next }
         return try JSONDecoder().decode(ResizeMotionBaselineSnapshot.self, from: JSONSerialization.data(withJSONObject: values))
+    }
+
+    func testBaselineAdmissionMapsActualTwentyOnePointInsetAndZoom() throws {
+        XCTAssertTrue(try baselineSnapshot(["nativeWidth": 661, "nativeHeight": 578,
+            "safeAreaTop": 21, "targetWidth": 661, "targetHeight": 557,
+            "innerWidth": 661, "innerHeight": 557]).isReady)
+        XCTAssertTrue(try baselineSnapshot(["nativeWidth": 661, "nativeHeight": 578, "pageZoom": 1.5,
+            "safeAreaTop": 21, "safeAreaLeft": 3, "safeAreaBottom": 4, "safeAreaRight": 5,
+            "targetWidth": 435.3333333333333, "targetHeight": 368.6666666666667,
+            "innerWidth": 435, "innerHeight": 369]).isReady)
+        XCTAssertFalse(try baselineSnapshot(["nativeHeight": 578.5, "safeAreaTop": 21]).isReady,
+                       "A native-sized hint remains stale when CSS excludes its public inset")
+    }
+
+    func testTopAnchorHandlesFlippedCoordinatesAndNonzeroParentBounds() {
+        let original = NSRect(x: 15, y: 25, width: 560, height: 340)
+        let parent = NSRect(x: 5, y: 7, width: 600, height: 400)
+        let next = NSRect(x: 8, y: 11, width: 650, height: 450)
+        let size = NSSize(width: 608, height: 388)
+        for flipped in [false, true] {
+            let anchor = LivePageResizeAnchor(originalFrame: original, originalParentBounds: parent, flipped: flipped)
+            XCTAssertEqual(anchor.frame(for: original.size, in: parent), original)
+            XCTAssertEqual(anchor.frame(for: size, in: next),
+                           NSRect(x: 18, y: flipped ? 29 : 31, width: 608, height: 388))
+        }
+    }
+
+    func testBufferKeepsTheOriginalTopGapDuringPreparationOwnedPublishAndCancellation() throws {
+        let f = Fixture(); defer { f.close() }
+        f.web.frame = NSRect(x: 13, y: 17, width: 560, height: 340)
+        let topGap = f.host.bounds.maxY - f.web.frame.maxY
+        var paints: [@MainActor @Sendable () -> Void] = []
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 1),
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }, now: { f.time },
+            apply: { frame, _ in
+                f.window.setFrame(frame, display: false)
+                XCTAssertEqual(f.host.bounds.maxY - f.web.frame.maxY, topGap,
+                               "Host callbacks must reanchor even inside the owned native publication")
+            }))
+        defer { buffer.cancel() }
+        buffer.start()
+        XCTAssertEqual(f.web.frame, NSRect(x: 13, y: -31, width: 608, height: 388))
+        nextPaint(&paints)()
+        f.time += 1.0 / 60
+        XCTAssertTrue(buffer.request(frame: NSRect(x: 0, y: 0, width: 620, height: 420)))
+        XCTAssertEqual(f.host.bounds.maxY - f.web.frame.maxY, topGap)
+        buffer.cancel()
+        XCTAssertEqual(f.web.frame, NSRect(x: 13, y: 17, width: 580, height: 360))
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+        XCTAssertTrue(f.web.autoresizesSubviews)
+        paints.forEach { $0() }
+        XCTAssertEqual(f.web.frame, NSRect(x: 13, y: 17, width: 580, height: 360))
+    }
+
+    func testUnshownTitledWindowVerticalPrimeActuallyExpandsCSSViewportAndRestoresFrame() async throws {
+        TestEnvironment.prepare()
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let web = WKWebView(frame: .zero, configuration: configuration)
+        let host = WebHost(web)
+        host.frame = NSRect(x: 233, y: 11, width: 661, height: 578)
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+        root.addSubview(host)
+        let window = ModelWindow(contentRect: root.bounds, styleMask: [.titled, .resizable, .fullSizeContentView],
+                                 backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = root
+        defer { web.stopLoading(); window.contentView = nil; host.removePage(); window.close() }
+        let variables = (0..<160).map { "--inset-fixture-\($0):\($0)px;" }.joined()
+        web.loadHTMLString("<html><title>Frozen inset ready</title><style>:root{\(variables)}body{margin:0}</style><body>Local inset fixture</body></html>", baseURL: nil)
+        try await compatibilityWait { !web.isLoading && web.title == "Frozen inset ready" }
+        root.layoutSubtreeIfNeeded()
+        let originalFrame = web.frame
+        let originalMask = web.autoresizingMask
+        let originalAuto = web.autoresizesSubviews
+        let inset = web.safeAreaInsets
+        XCTAssertGreaterThan(inset.top, 0, "The unshown titled host must exercise a real nonzero public inset")
+        let baselineHeight = Double(web.bounds.height - inset.top - inset.bottom)
+        try await compatibilityWait {
+            let height = try await web.evaluateJavaScript("innerHeight") as? NSNumber
+            return abs((height?.doubleValue ?? 0) - baselineHeight) <= 1
+        }
+        XCTAssertFalse(window.occlusionState.contains(.visible), "This local HTML regression must never order its window in")
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: window, axes: NSSize(width: 0, height: 1),
+            deadline: { _, _ in }, apply: { _, _ in }))
+        defer { buffer.cancel() }
+        buffer.start()
+        XCTAssertEqual(web.frame.maxY, originalFrame.maxY)
+        XCTAssertEqual(web.frame.minY, originalFrame.minY - 48)
+        try await compatibilityWait { !buffer.isPreparing }
+        let primedValue = try await web.evaluateJavaScript("innerHeight")
+        let primedHeight = try XCTUnwrap(primedValue as? NSNumber).doubleValue
+        XCTAssertEqual(primedHeight, baselineHeight + 48, accuracy: 1,
+                       "Frozen vertical lookahead must enlarge CSS height rather than enter the titlebar")
+        let hintJSON: String = try await withCheckedThrowingContinuation { continuation in
+            web.evaluateJavaScript("JSON.stringify({height:globalThis.__vaneResizeStyle?.height??null})", in: nil, in: PageResizeStyle.world) { result in
+                continuation.resume(with: result.map { $0 as? String ?? "{}" })
+            }
+        }
+        let hints = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(hintJSON.utf8)) as? [String: Any])
+        XCTAssertEqual((hints["height"] as? NSNumber)?.doubleValue ?? -1, primedHeight, accuracy: 1)
+        XCTAssertEqual(web.safeAreaInsets.top, inset.top)
+        buffer.finish()
+        try await compatibilityWait { !buffer.isPreparing }
+        XCTAssertEqual(web.frame, originalFrame)
+        XCTAssertEqual(web.autoresizingMask, originalMask)
+        XCTAssertEqual(web.autoresizesSubviews, originalAuto)
+        let finalValue = try await web.evaluateJavaScript("innerHeight")
+        let finalHeight = try XCTUnwrap(finalValue as? NSNumber).doubleValue
+        XCTAssertEqual(finalHeight, baselineHeight, accuracy: 1)
+        XCTAssertEqual(web.pageZoom, 1)
     }
 
     func testBaselineAdmissionAllowsIntegerCSSViewportRounding() throws {

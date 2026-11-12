@@ -18,6 +18,7 @@ import XCTest
 
     private func baselineSnapshot(_ web: WKWebView) async throws -> (ResizeMotionBaselineSnapshot, String) {
         let width = web.bounds.width, height = web.bounds.height, zoom = web.pageZoom
+        let insets = web.safeAreaInsets
         let json: String = try await withCheckedThrowingContinuation { continuation in
             web.evaluateJavaScript("""
             (()=>{const s=globalThis.__vaneResizeStyle,root=document.documentElement;
@@ -28,7 +29,9 @@ import XCTest
                 targetWidth:s?.width??null,targetHeight:s?.height??null,
                 innerWidth,innerHeight,documentWidth:root?.getBoundingClientRect().width??0,
                 customProperties:Array.from(computed).filter(k=>k.startsWith('--')).length,
-                nativeWidth:\(width),nativeHeight:\(height),pageZoom:\(zoom)});})()
+                nativeWidth:\(width),nativeHeight:\(height),pageZoom:\(zoom),
+                safeAreaTop:\(insets.top),safeAreaLeft:\(insets.left),
+                safeAreaBottom:\(insets.bottom),safeAreaRight:\(insets.right)});})()
             """, in: nil, in: PageResizeStyle.world) { result in
                 continuation.resume(with: result.flatMap { value in
                     guard let json = value as? String else { return .failure(NSError(domain: "ResizeMotionBaselineSnapshot", code: 1)) }
@@ -319,11 +322,18 @@ struct ResizeMotionBaselineSnapshot: Decodable {
     let nativeWidth: Double
     let nativeHeight: Double
     let pageZoom: Double
+    let safeAreaTop: Double
+    let safeAreaLeft: Double
+    let safeAreaBottom: Double
+    let safeAreaRight: Double
 
     var targetMatchesNative: Bool {
-        guard let targetWidth, let targetHeight, pageZoom.isFinite, pageZoom > 0 else { return false }
-        return abs(targetWidth - nativeWidth / pageZoom) < 0.001
-            && abs(targetHeight - nativeHeight / pageZoom) < 0.001
+        guard let targetWidth, let targetHeight,
+              let viewport = PageResizeStyle.viewportSize(NSSize(width: nativeWidth, height: nativeHeight),
+                insets: NSEdgeInsets(top: safeAreaTop, left: safeAreaLeft, bottom: safeAreaBottom, right: safeAreaRight),
+                zoom: pageZoom) else { return false }
+        return abs(targetWidth - viewport.width) < 0.001
+            && abs(targetHeight - viewport.height) < 0.001
     }
 
     var isReady: Bool {

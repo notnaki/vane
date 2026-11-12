@@ -226,7 +226,7 @@ import XCTest
                 object: NSApp, queue: .main) { _ in MainActor.assumeIsolated { owner.lostForeground("application resigned active") } },
             NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification,
                 object: window, queue: .main) { _ in
-                    MainActor.assumeIsolated { owner.maxWidth = max(owner.maxWidth, window.frame.width) }
+                    MainActor.assumeIsolated { owner.maxWidth = max(owner.maxWidth, owner.window?.frame.width ?? 0) }
                 }
         ]
         defer { observers.forEach(NotificationCenter.default.removeObserver) }

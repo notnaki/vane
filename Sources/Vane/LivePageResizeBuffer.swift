@@ -1,6 +1,23 @@
 import AppKit
 import WebKit
 
+/// Native overscan extends below the visible top edge in either coordinate system.
+/// Capture the full original frame so a parent resize never accumulates origin lead.
+struct LivePageResizeAnchor {
+    let originalFrame: NSRect
+    let originalParentBounds: NSRect
+    let flipped: Bool
+
+    func frame(for size: NSSize, in parentBounds: NSRect) -> NSRect {
+        let left = originalFrame.minX - originalParentBounds.minX
+        let top = flipped ? originalFrame.minY - originalParentBounds.minY
+            : originalParentBounds.maxY - originalFrame.maxY
+        return NSRect(x: parentBounds.minX + left,
+                      y: flipped ? parentBounds.minY + top : parentBounds.maxY - top - size.height,
+                      width: size.width, height: size.height)
+    }
+}
+
 /// A drag owns one persistent native freeze. Painted lookahead lets pointer geometry
 /// move independently of WebKit's presentation clock; only uncovered growth waits.
 @MainActor final class LivePageResizeBuffer {
@@ -8,6 +25,8 @@ import WebKit
         let web: WKWebView
         weak var host: WebHost?
         let originalSize: NSSize
+        let anchor: LivePageResizeAnchor
+        private var expectedFrame: NSRect
         let parentSize: NSSize
         let mask: NSView.AutoresizingMask
         let autoSubviews: Bool
@@ -22,6 +41,8 @@ import WebKit
             self.web = web
             self.host = host
             originalSize = web.frame.size
+            anchor = LivePageResizeAnchor(originalFrame: web.frame, originalParentBounds: host.bounds, flipped: host.isFlipped)
+            expectedFrame = web.frame
             parentSize = host.bounds.size
             mask = web.autoresizingMask
             autoSubviews = web.autoresizesSubviews
@@ -35,7 +56,7 @@ import WebKit
         var owned: Bool {
             guard let host else { return false }
             return web.superview === host && host.web === web && !host.offscreen
-                && !web.isHiddenOrHasHiddenAncestor && web.frame.size == prepared
+                && !web.isHiddenOrHasHiddenAncestor && web.frame == expectedFrame && host.isFlipped == anchor.flipped
                 && web.autoresizingMask.isEmpty && !web.autoresizesSubviews
                 && host.resizeFraction == fraction && host.resizeLayout.enabled
                 && host.resizeLayout.librarySection == layout.librarySection
@@ -57,11 +78,27 @@ import WebKit
             web.autoresizesSubviews = false
         }
 
+        private func assignFrame(size: NSSize) {
+            guard let host, web.superview === host else { return }
+            expectedFrame = anchor.frame(for: size, in: host.bounds)
+            if web.frame != expectedFrame { web.frame = expectedFrame }
+        }
+
         func prepare(_ size: NSSize) {
             prepared = size
+            // Move and size together before reading safeAreaInsets. Growing up
+            // into a titled window's unsafe area does not grow its CSS viewport.
+            assignFrame(size: size)
             PageResizeStyle.prepare(web, nextSize: size)
-            web.setFrameSize(size)
             web.prepareContent(in: NSRect(origin: .zero, size: size))
+        }
+
+        func reanchor() {
+            guard owned, let host else { return }
+            let frame = anchor.frame(for: prepared, in: host.bounds)
+            guard frame != expectedFrame else { return }
+            assignFrame(size: prepared)
+            PageResizeStyle.prepare(web, nextSize: prepared)
         }
 
         func install() {
@@ -91,9 +128,7 @@ import WebKit
             guard !restored else { return }
             restored = true
             if let host, web.superview === host {
-                if !exact {
-                    web.setFrameSize(currentVisibleSize)
-                }
+                assignFrame(size: exact ? prepared : currentVisibleSize)
                 web.autoresizingMask = mask
                 web.autoresizesSubviews = autoSubviews
                 if autoSubviews { web.resizeSubviews(withOldSize: installed) }
@@ -317,6 +352,7 @@ import WebKit
         applying = true
         expectedFrame = latest.frame
         apply(latest.frame, latest.sidebar)
+        pages.forEach { $0.reanchor() }
         applying = false
     }
 
@@ -431,6 +467,7 @@ import WebKit
     private func flushFinalLayout() {
         applying = true
         root?.layoutSubtreeIfNeeded()
+        pages.forEach { $0.reanchor() }
         applying = false
     }
 
@@ -444,6 +481,9 @@ import WebKit
 
     private func layoutChanged() {
         guard active else { return }
+        // Native host callbacks may arrive inside apply(). Reposition the frozen
+        // viewport immediately, without recursively laying out retained chrome.
+        pages.forEach { $0.reanchor() }
         drive()
     }
 

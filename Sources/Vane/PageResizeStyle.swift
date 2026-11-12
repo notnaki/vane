@@ -7,18 +7,23 @@ import WebKit
 @MainActor enum PageResizeStyle {
     static let world = WKContentWorld.world(name: "vane.resize-style")
 
+    /// WebKit excludes the public native safe area before applying page zoom.
+    nonisolated static func viewportSize(_ size: NSSize, insets: NSEdgeInsets, zoom: CGFloat) -> NSSize? {
+        guard zoom.isFinite, zoom > 0 else { return nil }
+        let width = (size.width - insets.left - insets.right) / zoom
+        let height = (size.height - insets.top - insets.bottom) / zoom
+        guard width.isFinite, height.isFinite, width > 0, height > 0 else { return nil }
+        return NSSize(width: width, height: height)
+    }
+
     static func prepare(_ web: WKWebView, nextSize: NSSize? = nil) {
-        let size = nextSize ?? web.bounds.size
-        let width = Double(size.width / web.pageZoom), height = Double(size.height / web.pageZoom)
-        guard width.isFinite, height.isFinite, width > 0, height > 0 else { return }
-        web.evaluateJavaScript(source + "(\(width), \(height))", in: nil, in: world) { _ in }
+        guard let viewport = viewportSize(nextSize ?? web.bounds.size, insets: web.safeAreaInsets, zoom: web.pageZoom) else { return }
+        web.evaluateJavaScript(source + "(\(Double(viewport.width)), \(Double(viewport.height)))", in: nil, in: world) { _ in }
     }
 
     /// Warm a loaded visible page before its first drag, including host-only resizes.
     static func warm(_ web: WKWebView) {
         guard web.window != nil, !web.isHiddenOrHasHiddenAncestor, !web.isLoading else { return }
-        let width = web.bounds.width / web.pageZoom, height = web.bounds.height / web.pageZoom
-        guard width.isFinite, height.isFinite, width > 0, height > 0 else { return }
         prepare(web)
     }
 

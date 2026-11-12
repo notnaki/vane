@@ -5,6 +5,22 @@ import XCTest
 
 /// Unshown private documents only: no focus, native loop, input, or capture.
 @MainActor final class PageResizeStyleTests: XCTestCase {
+    func testHintTargetsSubtractPublicSafeAreaInsetsBeforePageZoom() async throws {
+        let web = try await page(variables: 160, insets: NSEdgeInsets(top: 21, left: 3, bottom: 5, right: 7))
+        defer { web.stopLoading() }
+        for zoom: CGFloat in [1, 1.5] {
+            web.pageZoom = zoom
+            let before = try await read(web, fingerprint)
+            PageResizeStyle.prepare(web)
+            let json = try await read(web, "JSON.stringify([globalThis.__vaneResizeStyle.width,globalThis.__vaneResizeStyle.height])", world: PageResizeStyle.world)
+            let sizes = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [Double])
+            XCTAssertEqual(sizes[0], 890 / Double(zoom), accuracy: 0.001)
+            XCTAssertEqual(sizes[1], 574 / Double(zoom), accuracy: 0.001)
+            let after = try await read(web, fingerprint)
+            XCTAssertEqual(after, before)
+        }
+    }
+
     func testAttachingALoadedPageWarmsWithoutChangingTheDocument() async throws {
         for mountAfter in [false, true] {
             let web = try await page(variables: 160)
@@ -241,12 +257,17 @@ import XCTest
         XCTAssertEqual(remaining, "[]")
     }
 
-    private func page(variables: Int) async throws -> WKWebView {
+    private func page(variables: Int, insets: NSEdgeInsets? = nil) async throws -> WKWebView {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
-        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 900, height: 600), configuration: configuration)
+        let web: WKWebView
+        if let insets {
+            let insetWeb = ResizeInsetStyleWebView(frame: NSRect(x: 0, y: 0, width: 900, height: 600), configuration: configuration)
+            insetWeb.fixtureInsets = insets
+            web = insetWeb
+        } else { web = WKWebView(frame: NSRect(x: 0, y: 0, width: 900, height: 600), configuration: configuration) }
         let values = (0..<variables).map { "--site-\($0):\($0)px;" }.joined()
         web.loadHTMLString("""
         <html data-owner="site"><title>Resize style ready</title><style>
@@ -289,4 +310,9 @@ import XCTest
 private final class ResizeStyleModelWindow: NSWindow {
     override var isVisible: Bool { true }
     override var inLiveResize: Bool { true }
+}
+
+private final class ResizeInsetStyleWebView: WKWebView {
+    var fixtureInsets = NSEdgeInsetsZero
+    override var safeAreaInsets: NSEdgeInsets { fixtureInsets }
 }
