@@ -8,9 +8,21 @@ import XCTest
 @MainActor final class PasswordShadowAutofillTests: XCTestCase {
     @MainActor private final class DiscoveryLaunch {
         let started = ProcessInfo.processInfo.systemUptime
-        var requestedDisplay = false
         var previousState = ""
         var observations: [String] = []
+    }
+
+    private func discoveryWindowServerDiagnostics() -> String {
+        let windows = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let native = NSApp.windows.map {
+            "number=\($0.windowNumber),visible=\($0.isVisible),key=\($0.isKeyWindow),occlusion=\($0.occlusionState.rawValue),frame=\($0.frame)"
+        }
+        let server = windows.prefix(24).map { window in
+            [kCGWindowNumber, kCGWindowOwnerPID, kCGWindowLayer, kCGWindowIsOnscreen, kCGWindowAlpha, kCGWindowBounds].map { key in
+                "\(key)=\(String(describing: window[key as String]))"
+            }.joined(separator: ",")
+        }
+        return "process=\(ProcessInfo.processInfo.processIdentifier) native=[\(native.joined(separator: ";"))] server=[\(server.joined(separator: ";"))]"
     }
 
     private final class Capture: NSObject, WKScriptMessageHandler {
@@ -273,18 +285,7 @@ import XCTest
                         let state = self.discoveryNativeDiagnostics(web) + " running=\(app.isRunning)"
                         if state != launch.previousState {
                             launch.previousState = state
-                            launch.observations.append("elapsed=\(ProcessInfo.processInfo.systemUptime - launch.started) \(state)")
-                        }
-                        if nativeReady, !compositorReady, !launch.requestedDisplay {
-                            // Ordering can be acknowledged before the first display
-                            // transaction reaches WindowServer. Submit that display
-                            // for this exact owner rather than waiting on stale flags.
-                            launch.requestedDisplay = true
-                            window.orderFrontRegardless()
-                            web.layoutSubtreeIfNeeded()
-                            window.displayIfNeeded()
-                            CATransaction.flush()
-                            return false
+                            launch.observations.append("elapsed=\(ProcessInfo.processInfo.systemUptime - launch.started) \(state) \(self.discoveryWindowServerDiagnostics())")
                         }
                         let ready = nativeReady && compositorReady
                         if ready { print("SHADOW_LAUNCH_PRESENTATION " + self.discoveryNativeDiagnostics(web)) }
@@ -330,7 +331,10 @@ import XCTest
             XCTAssertFalse(stale)
             let current = try await fill(web)
             XCTAssertTrue(current)
-        } catch { failure = error }
+        } catch {
+            print("SHADOW_SERVER_FAILURE " + discoveryWindowServerDiagnostics())
+            failure = error
+        }
         // Retire inside the owned loop, including when fixture admission throws.
         retire?()
         if let loop {
