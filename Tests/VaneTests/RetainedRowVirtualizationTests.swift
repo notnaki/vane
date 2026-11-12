@@ -376,25 +376,45 @@ import XCTest
                 coordinator.releasePopulationExpectation(scope, owner: ObjectIdentifier(populationOwner))
             }
             NSApp.activate(ignoringOtherApps: true)
-            @MainActor func admitCurrentViewport() async throws {
+            @MainActor func admitCurrentViewport(_ phase: String) async throws {
                 NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
                 let today = cache.resolve(in: store, shape: store.todayShape).rows.map(\.id)
                 let pinned = store.pinnedSectionCollapsed ? [] : cache.resolve(in: store, shape: store.pins).rows.map(\.id)
                 coordinator.expectPopulation(scope, sections: ["today": today, "pinned": pinned],
                                              populationOwnerID: populationOwnerID)
+                var admission = "not sampled"
+                let started = ProcessInfo.processInfo.systemUptime
+                var polls = 0
+                var firstNativeReady: TimeInterval?
+                defer { print("RETAINED_VIEWPORT_ADMISSION phase=\(phase) \(admission)") }
                 try await compatibilityWait {
                     host.layoutSubtreeIfNeeded()
-                    guard NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow,
-                          window.isVisible && window.occlusionState.contains(.visible),
-                          window.contentView === host && host.window === window && store.window === window,
-                          let scroll = SidebarSectionsViewport.scrollView(in: host),
-                          NativeFixtureMountAdmission.scrollReady(scroll, root: host, window: window,
-                              minimumHeight: CGFloat(today.count) * Look.rowHeight) else { return false }
-                    return coordinator.isReady(scope)
+                    polls += 1
+                    let elapsed = ProcessInfo.processInfo.systemUptime - started
+                    let native = [("running", NSApp.isRunning), ("active", NSApp.isActive),
+                        ("exactKey", NSApp.keyWindow === window), ("key", window.isKeyWindow),
+                        ("visible", window.isVisible), ("occlusion", window.occlusionState.contains(.visible)),
+                        ("owner", window.contentView === host && host.window === window && store.window === window)]
+                    if let failed = native.first(where: { !$0.1 }) {
+                        admission = "polls=\(polls) elapsed=\(elapsed) firstNativeReady=\(String(describing: firstNativeReady)) failed=\(failed.0) native=\(native)"
+                        return false
+                    }
+                    if firstNativeReady == nil { firstNativeReady = elapsed }
+                    guard let candidate = SidebarSectionsViewport.scrollView(in: host) else {
+                        admission = "polls=\(polls) elapsed=\(elapsed) failed=missing-scroll"
+                        return false
+                    }
+                    let scrollReady = NativeFixtureMountAdmission.scrollReady(candidate, root: host, window: window,
+                        minimumHeight: CGFloat(today.count) * Look.rowHeight)
+                    admission = "polls=\(polls) elapsed=\(elapsed) firstNativeReady=\(String(describing: firstNativeReady)) today=\(today.count) pinned=\(pinned.count) scrollReady=\(scrollReady) document=\(String(describing: candidate.documentView?.frame)) clip=\(candidate.contentView.bounds)"
+                    guard scrollReady else { return false }
+                    let populationReady = coordinator.isReady(scope)
+                    admission += " populationReady=\(populationReady)"
+                    return populationReady
                 }
             }
-            try await admitCurrentViewport()
+            try await admitCurrentViewport("initial")
             let scroll = try XCTUnwrap(descendants(host, NSScrollView.self).first)
             let document = try XCTUnwrap(scroll.documentView)
             // Lazy row realization can finish after the initial window layout. Establish
@@ -419,8 +439,8 @@ import XCTest
                 }
                 XCTAssertGreaterThan(checked, 0, "The sampled viewport must contain real rows; position checks cannot pass vacuously")
             }
-            @MainActor func reachEnd() async throws -> CGFloat {
-                try await admitCurrentViewport()
+            @MainActor func reachEnd(_ phase: String) async throws -> CGFloat {
+                try await admitCurrentViewport(phase)
                 for _ in 0..<3 {
                     try await scrollNatively(scroll, to: max(0, document.frame.height - scroll.contentView.bounds.height), in: host)
                 }
@@ -430,20 +450,20 @@ import XCTest
                 assertVisibleRowPositions()
                 return document.frame.height
             }
-            let closedHeight = try await reachEnd()
+            let closedHeight = try await reachEnd("closed-end")
             try await scrollNatively(scroll, to: closedHeight / 2, in: host)
             assertVisibleRowPositions()
             try await scrollNatively(scroll, to: 0, in: host)
             assertVisibleRowPositions()
             Motion.instant { store.todayShape.edit(folder: folder.id) { $0.collapsed = false } }
-            let openHeight = try await reachEnd()
+            let openHeight = try await reachEnd("opened-end")
             try await scrollNatively(scroll, to: openHeight / 2, in: host)
             assertVisibleRowPositions()
             XCTAssertEqual(openHeight - closedHeight, 7 * (Look.rowHeight + Look.rowGap), accuracy: 1,
                            "Opening an offscreen group must add precisely its seven slots")
             try await scrollNatively(scroll, to: 0, in: host)
             Motion.instant { store.todayShape.edit(folder: folder.id) { $0.collapsed = true } }
-            let closedAgain = try await reachEnd()
+            let closedAgain = try await reachEnd("reclosed-end")
             XCTAssertEqual(closedAgain, closedHeight, accuracy: 1,
                            "Closing an offscreen group must not preserve lazy estimated-height gaps")
         }

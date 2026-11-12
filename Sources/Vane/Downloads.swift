@@ -2308,3 +2308,21 @@ import Darwin
         url.path == systemDownloads.path ? "Downloads" : url.lastPathComponent
     }
 }
+
+extension Downloads {
+    /// Sync reads only a successfully committed owner snapshot. Unlike the interactive
+    /// best-effort autosave, this boundary propagates disk errors to the sync controller.
+    static func committedICloudHistory(profileID: UUID, directory: URL) throws -> [Record] {
+        guard profileID != Profile.incognito.id else { return [] }
+        let file = listURL(for: profileID, in: directory)
+        if let manager = cache[profileID], manager.directory.standardizedFileURL == directory.standardizedFileURL {
+            guard !manager.invalidated else { throw CocoaError(.fileWriteUnknown) }
+            let records = manager.items.map(\.record)
+            let bytes = try JSONEncoder().encode(records)
+            try bytes.write(to: file, options: .atomic)
+            return records
+        }
+        do { return try JSONDecoder().decode([Record].self, from: Data(contentsOf: file)) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+    }
+}

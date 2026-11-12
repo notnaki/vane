@@ -177,10 +177,12 @@ import XCTest
             owner.stage = "sidebar final presentation"
             try await presentation(web)
             try await sampler.captureFinalFrame(window)
+            let coverageEnded = CACurrentMediaTime()
             try await sampler.stop()
             try sampler.frames.saveImages(prefix: "sidebar-\(ProcessInfo.processInfo.processIdentifier)")
-            let samples = sampler.frames.samples.filter { $0.time >= began && $0.time <= ended }
-            let maximum = samples.map(\.gap).max() ?? 0
+            let coverage = sampler.frames.samples.filter { $0.time >= began && $0.time <= coverageEnded }
+            let samples = coverage.filter { $0.time <= ended }
+            let maximum = coverage.map(\.gap).max() ?? 0
             print("SIDEBAR_PIXELS reducedMotion=\(reducedMotion) samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum) width=\(originalWidth)->\(web.bounds.width)")
             XCTAssertFalse(owner.interrupted, "Sidebar capture must retain actual foreground ownership")
             if reducedMotion {
@@ -246,6 +248,7 @@ import XCTest
                    NSSize(width: 900, height: frameHeight)]
                 : widths.map { NSSize(width: CGFloat($0), height: frameHeight) }
             for size in sizes {
+                let proposalBegan = CACurrentMediaTime()
                 let deadline = ContinuousClock.now + proposalInterval
                 let accepted = baselineControl ? size : window.proposedPageResize(size)
                 if accepted != window.frame.size {
@@ -256,6 +259,15 @@ import XCTest
                     // Keep sampling through each paint so coalescing cannot skip
                     // the corner geometry this regression is meant to exercise.
                     try await compatibilityWait { !window.isPreparingPageResize && window.frame.size == size }
+                    // Admit the actual WindowServer geometry before the next
+                    // proposal. Keep every earlier pixel sample, including gaps.
+                    try await compatibilityWait {
+                        sampler.frames.samples.contains { sample in
+                            sample.time >= proposalBegan
+                                && abs(sample.extent.width - size.width) < 1
+                                && abs(sample.extent.height - size.height) < 1
+                        }
+                    }
                 }
             }
             try await compatibilityWait { !window.isPreparingPageResize }
@@ -263,17 +275,19 @@ import XCTest
             owner.stage = "resize final presentation direct=\(direct) mixed=\(mixedAxes)"
             try await presentation(web)
             try await sampler.captureFinalFrame(window)
+            let coverageEnded = CACurrentMediaTime()
             try await sampler.stop()
             let prefix = "\(direct ? "native" : "browser")-\(ProcessInfo.processInfo.processIdentifier)"
             try sampler.frames.saveImages(prefix: prefix)
-            let samples = sampler.frames.samples.filter { $0.time >= began && $0.time <= ended }
+            let coverage = sampler.frames.samples.filter { $0.time >= began && $0.time <= coverageEnded }
+            let samples = coverage.filter { $0.time <= ended }
             XCTAssertGreaterThan(samples.count, 3, "Capture actual WindowServer frames during resizing")
             XCTAssertFalse(owner.interrupted, "Foreground admission was lost during the native resize capture")
             XCTAssertGreaterThanOrEqual(owner.maxWidth, 1100, "The window must actually grow during capture")
             XCTAssertEqual(window.frame.width, 900, accuracy: 1, "Commit the latest queued request")
             XCTAssertEqual(window.frame.height, frameHeight, accuracy: 1,
                            "Native width proposals must not repeatedly add the titlebar height")
-            let maximum = samples.map(\.gap).max() ?? 0
+            let maximum = coverage.map(\.gap).max() ?? 0
             print("RESIZE_PIXELS baselineControl=\(baselineControl) direct=\(direct) samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum)")
             XCTAssertLessThanOrEqual(maximum, baseline.gap + 2,
                                      "Drawn page content must reach the visible window edge without an empty strip")
@@ -453,13 +467,14 @@ import XCTest
                                       width: width, height: height, stride: CVPixelBufferGetBytesPerRow(pixel)) : nil
         if snapshot != nil { print("RESIZE_CAPTURE_BOUND time=\(time) rect=\(valid) red=\(String(describing: firstRed))...\(String(describing: lastRed)) right=\(String(describing: rightWindow)) gap=\(gap)") }
         let markerGap = lastRed.flatMap { red in rightWindow.map { Double($0 - red) / pixelsPerPoint } } ?? 10_000
-        frames.append(time: time, gap: gap, markerGap: markerGap, image: snapshot)
+        frames.append(time: time, gap: gap, markerGap: markerGap,
+                      extent: CGSize(width: valid.width / pixelsPerPoint, height: valid.height / pixelsPerPoint), image: snapshot)
     }
 
 }
 
 private final class ResizePixelFrames: @unchecked Sendable {
-    struct Frame { let time: Double; let gap: Double; let markerGap: Double }
+    struct Frame { let time: Double; let gap: Double; let markerGap: Double; let extent: CGSize }
     struct Image { let data: Data; let width: Int; let height: Int; let stride: Int }
     let queue = DispatchQueue(label: "vane.resize.pixel-capture")
     private let lock = NSLock()
@@ -470,15 +485,15 @@ private final class ResizePixelFrames: @unchecked Sendable {
     var last: Frame? { lock.withLock { recorded.last } }
     var samples: [Frame] { lock.withLock { recorded } }
     func needsImage(for gap: Double) -> Bool { lock.withLock { baselineImage == nil || gap > worstGap } }
-    func append(time: Double, gap: Double, markerGap: Double, image: Image?) {
+    func append(time: Double, gap: Double, markerGap: Double, extent: CGSize, image: Image?) {
         lock.withLock {
-            recorded.append(Frame(time: time, gap: gap, markerGap: markerGap))
+            recorded.append(Frame(time: time, gap: gap, markerGap: markerGap, extent: extent))
             if baselineImage == nil { baselineImage = image }
             if gap > worstGap { worstGap = gap; worstImage = image }
         }
     }
     func repeatFrame(_ time: Double) {
-        lock.withLock { if let last = recorded.last { recorded.append(Frame(time: time, gap: last.gap, markerGap: last.markerGap)) } }
+        lock.withLock { if let last = recorded.last { recorded.append(Frame(time: time, gap: last.gap, markerGap: last.markerGap, extent: last.extent)) } }
     }
     @MainActor func saveImages(prefix: String) throws {
         let images = lock.withLock { [("baseline", baselineImage), ("worst", worstImage)] }

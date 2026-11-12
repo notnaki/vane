@@ -427,7 +427,7 @@ struct BrowserWindow: View {
     var presentsPalette = true
     @ObservedObject private var batterySaver = BatterySaver.shared
     @EnvironmentObject var store: TabStore
-    @EnvironmentObject var profiles: ProfileManager
+    @ProfileChromeObserved var profiles = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The sidebar sliding in over the page because the pointer went to the window's edge.
     private var peeking: Bool {
@@ -678,7 +678,7 @@ struct SpaceGround: View {
     @WindowSidebarWidth private var sidebarWidth
     @EnvironmentObject var store: TabStore
     @EnvironmentObject private var gesture: SpaceGesture
-    @EnvironmentObject var profiles: ProfileManager
+    @ProfileChromeObserved var profiles = ProfileManager.shared
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -735,7 +735,7 @@ struct WebCard: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.libraryPageLeadingInset) private var libraryPageLeadingInset
     @ObservedObject private var batterySaver = BatterySaver.shared
-    @ObservedObject private var profileManager = ProfileManager.shared
+    @ProfileChromeObserved private var profileManager = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Clearance between the chrome and the page; Little Vane uses no gap.
     var topGap: CGFloat = Look.cardGap
@@ -926,7 +926,7 @@ private struct Sidebar: View {
     @State private var previewItems: [LibraryHoverItem] = []
     @ObservedObject private var batterySaver = BatterySaver.shared
     @WindowSidebarWidth private var sidebarWidth
-    @ObservedObject private var previewProfiles = ProfileManager.shared
+    @ProfileChromeObserved private var previewProfiles = ProfileManager.shared
     @State private var sidebarHeight: CGFloat = 0
 
     private var downloads: DownloadLibrary { DownloadLibrary.library(for: store.profileID) }

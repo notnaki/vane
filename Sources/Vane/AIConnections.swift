@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 enum AIFeature: String, CaseIterable, Codable, Sendable {
     case tabTitles, tabGroups, downloads, summaries
@@ -27,6 +28,9 @@ struct AIConnection: Identifiable, Codable, Equatable, Sendable {
     var model: String
     var registration: ChatGPTRegistration?
     var legacyCredentialAccount: String?
+    /// A device-local storage choice. Synced definitions cannot select a legacy
+    /// credential saved for another destination, even when API-key sync is off.
+    var credentialUsesEndpointScope: Bool?
 
     init(provider: AIProvider) {
         self.provider = provider
@@ -34,7 +38,17 @@ struct AIConnection: Identifiable, Codable, Equatable, Sendable {
         baseURL = provider.baseURL
         model = provider.defaultModel
     }
-    var credentialAccount: String { legacyCredentialAccount ?? "connection:" + id.uuidString }
+    var credentialEndpointScope: String {
+        let base = provider == .custom ? baseURL : provider.baseURL
+        return provider.rawValue + "|" + (CloudAI.endpoint(base)?.absoluteString ?? "")
+    }
+    var endpointCredentialAccount: String {
+        let digest = SHA256.hash(data: Data(credentialEndpointScope.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "connection:" + id.uuidString + ":" + digest
+    }
+    var credentialAccount: String {
+        credentialUsesEndpointScope == true ? endpointCredentialAccount : legacyCredentialAccount ?? "connection:" + id.uuidString
+    }
     var configuration: CloudAI.Configuration { .init(provider: provider, baseURL: baseURL, model: model) }
 }
 

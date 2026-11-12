@@ -529,6 +529,9 @@ enum Command: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// Adopt a portable table written by iCloud through the same defaults owner.
+    static func reloadICloudPreferences() { cached = nil }
+
     // MARK: Bindings
 
     static func binding(for command: Command) -> Keybinding {

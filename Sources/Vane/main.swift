@@ -122,6 +122,8 @@ if args.first == "import" {
         }
     }
     Updater.shared.begin() // a first look five seconds in, then a conditional one on a tick
+    if backupLaunchResult == .restored { ICloudController.shared.pauseAfterRestore() }
+    ICloudController.shared.start()
     app.mainMenu = buildMenu()
     // Rebound keys are resolved here, before AppKit dispatches menu key equivalents. Commands
     // with no registered action fall through untouched. A Little Arc gets first refusal: three

@@ -91,6 +91,8 @@ import UniformTypeIdentifiers
     }
     var captureGround: (() -> ThemeWashPresentation?)?
     var animateGround: ((Space, Space, Double, Double, CABasicAnimation, ThemeWashPresentation?) -> ((Space?) -> Void))?
+    var joinNativeGround: ((ThemeWashSurface) -> ((Space?) -> Void)?)?
+    var nativeGroundDidUpdate: (() -> Void)?
     var colourDuration = Look.spaceSlideDuration
     weak var paletteScrimView: NSView?
     /// Read the scrim's actual compositor opacity, including its enclosing fade.
@@ -1744,7 +1746,7 @@ private struct SpaceSwipe: ViewModifier {
                 return nil
             }
             if let offset = out.offset {
-                self.track(offset, width: width, in: store)
+                self.track(offset, width: width, in: store, at: event.timestamp)
             }
             let opensCreation = creatable && (out.commit ?? 0) > 0 && index == self.list.count - 1
             // A committed creation keeps its filled footer slot until the form
@@ -1759,7 +1761,7 @@ private struct SpaceSwipe: ViewModifier {
                     self.create(store)
                 } else {
                     if self.list.indices.contains(index + direction) {
-                        self.land(direction, to: self.list[index + direction], width: width, store: store)
+                        self.land(direction, to: self.list[index + direction], width: width, store: store, at: event.timestamp)
                     } else {
                         self.settle(store)
                     }
@@ -1804,6 +1806,15 @@ private struct SpaceSwipe: ViewModifier {
         removeInput()
         if let store, !store.sidebarShown, !store.sidebarPeeking {
             (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidDisappear(store)
+        }
+        // A profile's will-set visibility notification can remove its old input
+        // before the incoming value is readable. Its attached cover still belongs
+        // to the departing monitor; removing this destination's input must not
+        // abort that committed landing. Explicit aborts retain their usual effect.
+        if let store, let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
+           slide.isActive, slide.isDestination(store), !slide.isSource(store) {
+            forget()
+            return
         }
         abort()
     }
@@ -1872,20 +1883,21 @@ private struct SpaceSwipe: ViewModifier {
 
     /// Mount once when the gesture acquires a neighbour, then follow scroll deltas without
     /// asking SwiftUI to render a translated list for every event.
-    func track(_ offset: CGFloat, width: CGFloat, in store: TabStore) {
+    func track(_ offset: CGFloat, width: CGFloat, in store: TabStore,
+               at eventTime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if hasNativePresentation(store), store.swipeNeighbour(for: offset) != nil
             || offset == 0 && (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.isActive == true {
-            store.spaceGesture.withPresentationUpdate { trackImmediately(offset, width: width, in: store) }
-        } else { trackImmediately(offset, width: width, in: store) }
+            store.spaceGesture.withPresentationUpdate { trackImmediately(offset, width: width, in: store, at: eventTime) }
+        } else { trackImmediately(offset, width: width, in: store, at: eventTime) }
     }
 
-    private func trackImmediately(_ offset: CGFloat, width: CGFloat, in store: TabStore) {
+    private func trackImmediately(_ offset: CGFloat, width: CGFloat, in store: TabStore, at eventTime: TimeInterval) {
         guard width > 0 else { return }
         store.spaceSwiping = true
         if offset == 0, let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
            slide.isActive, slide.isSource(store) {
             store.spaceGesture.nativeDrag = 0
-            slide.track(drag: 0)
+            slide.track(drag: 0, at: eventTime)
             store.spaceGesture.trackGround?(0)
             return
         }
@@ -1895,7 +1907,7 @@ private struct SpaceSwipe: ViewModifier {
            let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
            slide.follows(target, direction: direction) {
             store.spaceGesture.nativeDrag = offset
-            slide.track(drag: offset)
+            slide.track(drag: offset, at: eventTime)
             store.spaceGesture.trackGround?(Double(min(1, abs(offset / width))))
             return
         }
@@ -1913,7 +1925,7 @@ private struct SpaceSwipe: ViewModifier {
                                          frame: frame, width: width, in: store) {
             host.beginSpaceSlide(slide)
             slide.isHidden = false
-            slide.track(drag: offset)
+            slide.track(drag: offset, at: eventTime)
             store.spaceGesture.nativeDrag = offset
             return
         }
@@ -1923,24 +1935,25 @@ private struct SpaceSwipe: ViewModifier {
             source: store, includesFavorites: includesFavorites, travelWidth: width)
         host.beginSpaceSlide(slide)
         slide.prepare()
-        slide.track(drag: offset)
+        slide.track(drag: offset, at: eventTime)
         store.spaceGesture.nativeDrag = offset
     }
 
     /// Continue the captured sidebar to rest while selecting the committed page underneath.
     func land(_ direction: Int, to target: Space, width: CGFloat, store: TabStore,
-              animation: Animation = Look.spaceLanding, duration: TimeInterval = Look.spaceLandingDuration) {
+              animation: Animation = Look.spaceLanding, duration: TimeInterval = Look.spaceLandingDuration,
+              at eventTime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if hasNativePresentation(store) {
             store.spaceGesture.withPresentationUpdate {
-                landImmediately(direction, to: target, width: width, store: store, animation: animation, duration: duration)
+                landImmediately(direction, to: target, width: width, store: store, animation: animation, duration: duration, at: eventTime)
             }
         } else {
-            landImmediately(direction, to: target, width: width, store: store, animation: animation, duration: duration)
+            landImmediately(direction, to: target, width: width, store: store, animation: animation, duration: duration, at: eventTime)
         }
     }
 
     private func landImmediately(_ direction: Int, to target: Space, width: CGFloat, store: TabStore,
-                                 animation: Animation, duration: TimeInterval) {
+                                 animation: Animation, duration: TimeInterval, at eventTime: TimeInterval) {
         let token = UUID()
         transition = token
         pendingSelection = nil
@@ -2011,17 +2024,61 @@ private struct SpaceSwipe: ViewModifier {
             nativeSlide = nil
         }
         if let slide = nativeSlide {
+            let continuingTravel = slide.hasStartedLanding
+            // Scroll events retain their input clock through synchronous native work.
+            // Click callers use invocation time and still expire stale finger input.
+            slide.armLanding(to: destination, at: eventTime, completion: finish)
             // Keep native presentation as the footer/tint source across release. Updating
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
             Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }
-            slide.start(duration: duration, completion: finish)
-            // Submit compositor travel first, then restore the page under its covering
-            // sidebar. Selection must not wait for the animation's endpoint.
-            DispatchQueue.main.async { [weak self, weak store] in
-                guard let self, self.transition == token, let store,
-                      store.currentSpaceID == self.landingFrom,
-                      store.spaceGesture.neighbour?.id == destination.id else { return }
+            if includesFavorites, let host {
+                // A profile hop can build a new host or restore a different Space
+                // inside a retained one. Resolve its native layout beneath the
+                // captured rows before their animation clock starts; both routes
+                // can otherwise spend the visible landing's early frames mounting.
+                // Build only this committed target while source still owns the
+                // window. The queued handoff can then meet its landing deadline
+                // without selecting the destination inside the input action.
+                Windows.prepareHop(store, to: destination)
+                // Reversing an existing landing already owns both endpoint
+                // surfaces. Retarget that curve before returning from the input
+                // action; its page selection still belongs to the queued handoff.
+                if continuingTravel { slide.start(duration: duration, completion: finish) }
+                DispatchQueue.main.async { [weak self, weak store, weak host, weak slide] in
+                    guard let self, self.transition == token, let store, let host, let slide,
+                          slide.isActive, host.spaceSlide === slide,
+                          store.currentSpaceID == self.landingFrom,
+                          store.spaceGesture.neighbour?.id == destination.id else { return }
+                    let window = store.window
+                    _ = self.activate(destination, in: store)
+                    guard let window, host.window === window, host.spaceSlide === slide,
+                          slide.isActive,
+                          TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
+                        slide.cancel()
+                        return
+                    }
+                    host.layoutDisplayedProfile()
+                    window.displayIfNeeded()
+                    CATransaction.flush()
+                    if !continuingTravel { slide.start(duration: duration, completion: finish) }
+                }
+            } else {
+                // Within a profile, prepare under the captured rows before starting
+                // travel, while retaining the immediate native-animation contract
+                // of select/land. Commit the new wash and curve together.
+                guard let host else { slide.cancel(); return }
+                CATransaction.begin()
+                defer { CATransaction.commit(); CATransaction.flush() }
                 _ = self.activate(destination, in: store)
+                guard self.transition == token, host.spaceSlide === slide, slide.isActive,
+                      let window = store.window, host.window === window,
+                      store.currentSpaceID == destination.id else {
+                    slide.cancel()
+                    return
+                }
+                host.layoutDisplayedProfile()
+                window.displayIfNeeded()
+                slide.start(duration: duration, completion: finish)
             }
         } else {
             if let host = store.window?.contentView as? BrowserWindowHost,

@@ -1,6 +1,23 @@
 import Foundation
 import Security
 
+// This standalone transport harness compiles the real AIKeys implementation without
+// the app's sync controller or password UI. Supply their value-only boundary types;
+// the app/test-target build and ICloudSecretsTests verify the real integration.
+enum ICloudSecrets {
+    struct Identity: Hashable {
+        let account: String
+        static func aiKey(account: String) -> Self { .init(account: account) }
+    }
+    enum Failure: Error { case invalidData }
+}
+enum Passwords {
+    struct Failure: Error { let status: OSStatus }
+}
+extension Notification.Name {
+    static let vaneSecretsChanged = Notification.Name("VaneSecretsChanged")
+}
+
 private final class FixtureProtocol: URLProtocol, @unchecked Sendable {
     final class State: @unchecked Sendable {
         private let lock = NSLock()
