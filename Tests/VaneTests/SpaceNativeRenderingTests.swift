@@ -3082,19 +3082,41 @@ import XCTest
         try await withFixtureApplicationLoop { try await checkCommittedNativeLandingRetainsFingerVelocity() }
     }
 
-    private func checkCommittedNativeLandingRetainsFingerVelocity() async throws {
+    func testNativeLandingKeepsEventVelocityAcrossDelayedDelivery() async throws {
+        try await withFixtureApplicationLoop {
+            try await checkCommittedNativeLandingRetainsFingerVelocity(delayedDelivery: true)
+        }
+    }
+
+    func testNativeLandingDiscardsVelocityAfterAnEventTimeHold() async throws {
+        try await withFixtureApplicationLoop {
+            try await checkCommittedNativeLandingRetainsFingerVelocity(staleRelease: true)
+        }
+    }
+
+    private func checkCommittedNativeLandingRetainsFingerVelocity(
+        delayedDelivery: Bool = false, staleRelease: Bool = false
+    ) async throws {
         let (store, spaces, window, monitor) = try fixture(registerTeardown: false)
         defer { retireFixture(store, window: window, monitor: monitor) }
         try await admitFixtureSidebar(store, window: window)
         try await waitForPreparation(monitor, target: spaces[1].id)
-        let width = fixtureSidebarWidth(in: store)
-        monitor.track(-20, width: width, in: store)
+        // Deliver actual monitor events with the finger's 20ms sample interval.
+        // Rendering/scheduling may delay delivery without changing event time.
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began, timestamp: 1))
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -20, timestamp: 1))
         try await Task.sleep(for: .milliseconds(20))
-        monitor.track(-60, width: width, in: store)
-        monitor.land(1, to: spaces[1], width: width, store: store)
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -40, timestamp: 1.02))
+        if delayedDelivery { try await Task.sleep(for: .milliseconds(150)) }
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended,
+            timestamp: staleRelease ? 1.22 : 1.03))
         let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
         let animation = try XCTUnwrap(slide.outgoing.layer?.animation(forKey: "space-position") as? CASpringAnimation)
-        XCTAssertGreaterThan(animation.initialVelocity, 0, "Release must retain the finger's forward velocity")
+        if staleRelease {
+            XCTAssertEqual(animation.initialVelocity, 0, "A stationary hold must expire the finger velocity")
+        } else {
+            XCTAssertGreaterThan(animation.initialVelocity, 0, "Release must retain the finger's forward velocity")
+        }
         XCTAssertLessThanOrEqual(animation.initialVelocity, sqrt(animation.stiffness / animation.mass),
                                  "A fast flick must not overshoot the destination")
         try await Task.sleep(for: .milliseconds(400))

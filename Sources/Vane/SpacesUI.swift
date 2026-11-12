@@ -1746,7 +1746,7 @@ private struct SpaceSwipe: ViewModifier {
                 return nil
             }
             if let offset = out.offset {
-                self.track(offset, width: width, in: store)
+                self.track(offset, width: width, in: store, at: event.timestamp)
             }
             let opensCreation = creatable && (out.commit ?? 0) > 0 && index == self.list.count - 1
             // A committed creation keeps its filled footer slot until the form
@@ -1761,7 +1761,7 @@ private struct SpaceSwipe: ViewModifier {
                     self.create(store)
                 } else {
                     if self.list.indices.contains(index + direction) {
-                        self.land(direction, to: self.list[index + direction], width: width, store: store)
+                        self.land(direction, to: self.list[index + direction], width: width, store: store, at: event.timestamp)
                     } else {
                         self.settle(store)
                     }
@@ -1883,20 +1883,21 @@ private struct SpaceSwipe: ViewModifier {
 
     /// Mount once when the gesture acquires a neighbour, then follow scroll deltas without
     /// asking SwiftUI to render a translated list for every event.
-    func track(_ offset: CGFloat, width: CGFloat, in store: TabStore) {
+    func track(_ offset: CGFloat, width: CGFloat, in store: TabStore,
+               at eventTime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if hasNativePresentation(store), store.swipeNeighbour(for: offset) != nil
             || offset == 0 && (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.isActive == true {
-            store.spaceGesture.withPresentationUpdate { trackImmediately(offset, width: width, in: store) }
-        } else { trackImmediately(offset, width: width, in: store) }
+            store.spaceGesture.withPresentationUpdate { trackImmediately(offset, width: width, in: store, at: eventTime) }
+        } else { trackImmediately(offset, width: width, in: store, at: eventTime) }
     }
 
-    private func trackImmediately(_ offset: CGFloat, width: CGFloat, in store: TabStore) {
+    private func trackImmediately(_ offset: CGFloat, width: CGFloat, in store: TabStore, at eventTime: TimeInterval) {
         guard width > 0 else { return }
         store.spaceSwiping = true
         if offset == 0, let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
            slide.isActive, slide.isSource(store) {
             store.spaceGesture.nativeDrag = 0
-            slide.track(drag: 0)
+            slide.track(drag: 0, at: eventTime)
             store.spaceGesture.trackGround?(0)
             return
         }
@@ -1906,7 +1907,7 @@ private struct SpaceSwipe: ViewModifier {
            let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
            slide.follows(target, direction: direction) {
             store.spaceGesture.nativeDrag = offset
-            slide.track(drag: offset)
+            slide.track(drag: offset, at: eventTime)
             store.spaceGesture.trackGround?(Double(min(1, abs(offset / width))))
             return
         }
@@ -1924,7 +1925,7 @@ private struct SpaceSwipe: ViewModifier {
                                          frame: frame, width: width, in: store) {
             host.beginSpaceSlide(slide)
             slide.isHidden = false
-            slide.track(drag: offset)
+            slide.track(drag: offset, at: eventTime)
             store.spaceGesture.nativeDrag = offset
             return
         }
@@ -1934,24 +1935,25 @@ private struct SpaceSwipe: ViewModifier {
             source: store, includesFavorites: includesFavorites, travelWidth: width)
         host.beginSpaceSlide(slide)
         slide.prepare()
-        slide.track(drag: offset)
+        slide.track(drag: offset, at: eventTime)
         store.spaceGesture.nativeDrag = offset
     }
 
     /// Continue the captured sidebar to rest while selecting the committed page underneath.
     func land(_ direction: Int, to target: Space, width: CGFloat, store: TabStore,
-              animation: Animation = Look.spaceLanding, duration: TimeInterval = Look.spaceLandingDuration) {
+              animation: Animation = Look.spaceLanding, duration: TimeInterval = Look.spaceLandingDuration,
+              at eventTime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if hasNativePresentation(store) {
             store.spaceGesture.withPresentationUpdate {
-                landImmediately(direction, to: target, width: width, store: store, animation: animation, duration: duration)
+                landImmediately(direction, to: target, width: width, store: store, animation: animation, duration: duration, at: eventTime)
             }
         } else {
-            landImmediately(direction, to: target, width: width, store: store, animation: animation, duration: duration)
+            landImmediately(direction, to: target, width: width, store: store, animation: animation, duration: duration, at: eventTime)
         }
     }
 
     private func landImmediately(_ direction: Int, to target: Space, width: CGFloat, store: TabStore,
-                                 animation: Animation, duration: TimeInterval) {
+                                 animation: Animation, duration: TimeInterval, at eventTime: TimeInterval) {
         let token = UUID()
         transition = token
         pendingSelection = nil
@@ -2023,7 +2025,9 @@ private struct SpaceSwipe: ViewModifier {
         }
         if let slide = nativeSlide {
             let continuingTravel = slide.hasStartedLanding
-            slide.armLanding(to: destination, completion: finish)
+            // Scroll events retain their input clock through synchronous native work.
+            // Click callers use invocation time and still expire stale finger input.
+            slide.armLanding(to: destination, at: eventTime, completion: finish)
             // Keep native presentation as the footer/tint source across release. Updating
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
             Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }
