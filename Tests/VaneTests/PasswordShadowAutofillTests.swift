@@ -182,8 +182,9 @@ import XCTest
     private func admitDiscoveryDocument(_ web: WKWebView, loop: NativeFixtureApplicationLoop) async throws {
         var readmissionRequested = false
         var lastUnready = ""
+        var lastDocumentProbe = "not sampled"
         try await wait("visible shadow discovery document", diagnostics: {
-            "lastUnready={\(lastUnready)} " + (await self.discoveryDiagnostics(web))
+            "lastUnready={\(lastUnready)} lastDocumentProbe={\(lastDocumentProbe)} " + (await self.discoveryDiagnostics(web))
         }) {
             // Verify loop ownership/policy even while its presentation prerequisite
             // is withdrawn; do not short-circuit before we can restore that owner.
@@ -204,8 +205,12 @@ import XCTest
                 return false
             }
             readmissionRequested = false
-            guard try await self.js(web, "document.visibilityState === 'visible'", isolated: true) as? Bool == true else { return false }
-            return try loop.isReadyForInteraction() && self.discoveryPresentationReady(window, document: web)
+            let visibility = try await self.js(web, "document.visibilityState", isolated: true) as? String
+            let loopReady = try loop.isReadyForInteraction()
+            let nativeReady = self.discoveryPresentationReady(window, document: web)
+            lastDocumentProbe = "visibility=\(visibility ?? "unavailable") loopReady=\(loopReady) nativeReady=\(nativeReady)"
+            if !nativeReady { lastUnready = self.discoveryNativeDiagnostics(web) }
+            return visibility == "visible" && loopReady && nativeReady
         }
     }
 
@@ -221,7 +226,7 @@ import XCTest
         try await checkLateShadowDiscovery(withdrawal: .offscreen)
     }
 
-    private enum DiscoveryWithdrawal { case none, hidden, offscreen }
+    private enum DiscoveryWithdrawal: Equatable { case none, hidden, offscreen }
 
     private func checkLateShadowDiscovery(withdrawal: DiscoveryWithdrawal = .none) async throws {
         TestEnvironment.prepare()
@@ -245,11 +250,23 @@ import XCTest
             }, retireWith: { retire = $0 })
             let ownedLoop = try XCTUnwrap(loop)
             let owner = try XCTUnwrap(web.window)
+            if withdrawal != .none {
+                // Admit the visible WebKit document before injecting withdrawal,
+                // not just the native window that hosted its initial navigation.
+                try await admitDiscoveryDocument(web, loop: ownedLoop)
+            }
             switch withdrawal {
             case .none: break
             case .hidden:
                 owner.orderOut(nil)
                 XCTAssertFalse(owner.isVisible, "The native presentation must actually withdraw before readmission")
+                // Native ordering and WebProcess visibility are asynchronous.
+                // Observe the hidden boundary before asking the fixture to show it.
+                try await wait("hidden shadow discovery control", diagnostics: { await self.discoveryDiagnostics(web) }) {
+                    _ = try ownedLoop.isReadyForInteraction()
+                    guard !owner.isVisible else { return false }
+                    return try await self.js(web, "document.visibilityState", isolated: true) as? String == "hidden"
+                }
             case .offscreen:
                 let screen = try XCTUnwrap(owner.screen)
                 owner.setFrameOrigin(NSPoint(x: screen.visibleFrame.minX - 1, y: screen.visibleFrame.minY + 20))

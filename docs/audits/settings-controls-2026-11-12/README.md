@@ -103,3 +103,29 @@ Independent review found no actionable issues. Evidence remains in
 `/tmp/vane-665-ad1-shard4-failure.log`, `/tmp/vane-665-readmission-red.log`,
 `/tmp/vane-665-readmission-green.log`, and
 `/tmp/vane-665-readmission-preflight-{1,2,3}.log`.
+
+## Hidden-control visibility-boundary follow-up
+
+The [run on `dea8d959`](https://github.com/notnaki/vane/actions/runs/43210954780)
+passed the original late-shadow discovery and offscreen readmission cases, but
+failed the new hide/show control's document-visibility admission. Its last native
+unready sample showed the initial hidden window, while terminal native and WebKit
+visibility were ready. The sibling cancellation and aggregate failure followed
+that shard-3 failure.
+
+The control previously hid the owner before confirming its document-visible
+baseline, then requested restoration without observing WebKit's hidden boundary.
+[WebKit coalesces activity-state updates](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Cocoa/WebPageProxyCocoa.mm#L1030),
+so native ordering alone does not establish that fault prerequisite. Withdrawal
+controls now first admit the visible document; the hide/show control additionally
+observes the actual hidden document before starting recovery. These are bounded
+fault-setup prerequisites, not added time for recovery or discovery outcomes. The
+original five-second recovery and discovery budgets and all assertions remain.
+Diagnostics now retain each last JavaScript visibility sample and its post-await
+loop/native readiness.
+
+The focused four-case run and three sequential broader 38-test preflights passed,
+including cleanup. Independent review found no actionable issues. Evidence remains
+in `/tmp/vane-665-dea-shard3-failure.log`,
+`/tmp/vane-665-visibility-boundaries-focused.log`, and
+`/tmp/vane-665-visibility-boundaries-preflight-{1,2,3}.log`.
