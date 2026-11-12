@@ -3721,7 +3721,8 @@ struct FolderGlyph: View {
     private var reduced: Bool { reduceMotion || batterySaver.isActive }
     private var expanded: Bool { !folder.collapsed || dropOpen }
     private var previewing: Bool { allowsHoverPreview && hovering && !reduced }
-    private var openness: CGFloat { expanded ? 1 : previewing ? 0.22 : 0 }
+    private var iconOpen: Bool { expanded || previewing }
+    private var openness: CGFloat { iconOpen ? 1 : 0 }
     var body: some View {
         Group {
             if folder.icon == Folder.defaultIcon {
@@ -3756,15 +3757,14 @@ struct FolderGlyph: View {
                         .frame(width: Look.tileIcon, height: Look.tileIcon)
                         .modifier(FolderFaceProjection(openness: openness))
                         .id(reduced)
-                        .animation(reduced ? nil : Look.quick, value: expanded)
-                        .animation(reduced ? nil : Look.feedback, value: previewing)
+                        .animation(reduced ? nil : FolderMotion.animation(opening: iconOpen), value: iconOpen)
                 } else {
                     LiveBadge(live: live, folder: folder.id)
                         .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
                 }
             }
         }
-        .animation(reduced ? nil : Look.quick, value: arrivalMark)
+        .animation(reduced ? nil : FolderMotion.animation(opening: iconOpen), value: arrivalMark)
         .transaction { if reduced { $0.disablesAnimations = true } }
     }
 }

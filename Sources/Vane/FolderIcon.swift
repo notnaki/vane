@@ -6,13 +6,32 @@ struct FolderIcon: View {
     var previewing = false
 
     var body: some View {
-        let openness: CGFloat = open ? 1 : previewing ? 0.22 : 0
-        FolderArtwork(openness: openness)
+        let opened = open || previewing
+        FolderArtwork(openness: opened ? 1 : 0)
             .fill()
-            .animation(Motion.reduced ? nil : Look.quick, value: open)
-            .animation(Motion.reduced ? nil : Look.feedback, value: previewing)
+            .animation(Motion.reduced ? nil : FolderMotion.animation(opening: opened), value: opened)
             .transaction { if Motion.reduced { $0.disablesAnimations = true } }
             .accessibilityHidden(true)
+    }
+}
+
+/// Disclosure timing is shared by the outline and the artwork on its face.
+enum FolderMotion {
+    struct Curve {
+        let duration: Double
+        let x1: Double
+        let y1: Double
+        let x2: Double
+        let y2: Double
+    }
+    // Separate curves fitted to the supplied Arc recording, including its slower settle.
+    static let opening = Curve(duration: 0.24, x1: 0.28, y1: 0.245, x2: 0.39, y2: 1)
+    static let closing = Curve(duration: 0.24, x1: 0.185, y1: 0.04, x2: 0.25, y2: 1)
+
+    @MainActor static func animation(opening: Bool) -> Animation {
+        let curve = opening ? self.opening : closing
+        return .timingCurve(curve.x1, curve.y1, curve.x2, curve.y2,
+                            duration: UIAnimation.feedback.duration(curve.duration))
     }
 }
 
@@ -39,7 +58,17 @@ enum FolderFace {
         let offset = hingeOffset(openness)
         transform.tx += offset.width
         transform.ty += offset.height
-        return transform
+        return transform.concatenating(rotation(openness))
+    }
+
+    static func rotation(_ openness: CGFloat) -> CGAffineTransform {
+        guard openness > 0, openness < 1 else { return .identity }
+        // Arc briefly rolls clockwise in transit; both settled outlines stay level.
+        let angle = 1.75 * CGFloat.pi / 180 * sin(.pi * openness)
+        let c = cos(angle), s = sin(angle)
+        return CGAffineTransform(a: c, b: s, c: -s, d: c,
+                                 tx: hinge.x - c * hinge.x + s * hinge.y,
+                                 ty: hinge.y - s * hinge.x - c * hinge.y)
     }
 
     static func hingeOffset(_ openness: CGFloat) -> CGSize {
@@ -130,9 +159,10 @@ struct FolderArtwork: Shape {
 
     func path(in rect: CGRect) -> Path {
         let offset = FolderFace.hingeOffset(openness)
+        let rotation = FolderFace.rotation(openness)
         func point(_ cx: CGFloat, _ cy: CGFloat, _ ox: CGFloat, _ oy: CGFloat) -> CGPoint {
             CGPoint(x: cx + (ox - cx) * openness + offset.width,
-                    y: cy + (oy - cy) * openness + offset.height)
+                    y: cy + (oy - cy) * openness + offset.height).applying(rotation)
         }
         let panel = FolderPanel(openness: openness)
         let front = FolderFace.panel(openness)
