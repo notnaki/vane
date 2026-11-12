@@ -7,6 +7,61 @@ import XCTest
 @testable import vane
 
 @MainActor final class WindowResizeLayoutTests: XCTestCase {
+    func testHiddenApplicationIsUnhiddenBeforeResizeAdmission() async throws {
+        try await resizeFixture(capture: false, hideBeforeAdmission: true)
+    }
+
+    func testMissingPaintMarkerCannotBeAnAdmittedBaseline() {
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 10_000, markerGap: 10_000, extent: .zero).isPaintedBaseline)
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 64, markerGap: 0, extent: .zero).isPaintedBaseline)
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 0, markerGap: 10_000, extent: .zero).isPaintedBaseline)
+        XCTAssertTrue(ResizePixelFrames.Frame(time: 0, gap: 1.714, markerGap: 1.714, extent: .zero).isPaintedBaseline)
+    }
+
+    func testPaintCaptureDoesNotTreatTranslucentPixelsOutsideOpaqueWindowAsAGap() throws {
+        let sampler = ResizePixelSampler()
+        let pixel = try paintCapturePixel(blankColumns: 0)
+        sampler.record(pixel, valid: CGRect(x: 0, y: 0, width: 64, height: 4), pixelsPerPoint: 1, time: 1)
+        XCTAssertEqual(sampler.frames.samples.count, 1, "Keep the capture, including a stale wider content rectangle")
+        XCTAssertEqual(sampler.frames.last?.gap, 0)
+    }
+
+    func testPaintCaptureStillCountsAnOpaqueBlankStrip() throws {
+        let sampler = ResizePixelSampler()
+        let pixel = try paintCapturePixel(blankColumns: 4)
+        sampler.record(pixel, valid: CGRect(x: 0, y: 0, width: 64, height: 4), pixelsPerPoint: 1, time: 1)
+        XCTAssertEqual(sampler.frames.last?.gap, 4)
+    }
+
+    func testPaintCaptureStillRejectsAnEntirelyMissingPage() throws {
+        let sampler = ResizePixelSampler()
+        let pixel = try paintCapturePixel(blankColumns: 40)
+        sampler.record(pixel, valid: CGRect(x: 0, y: 0, width: 64, height: 4), pixelsPerPoint: 1, time: 1)
+        XCTAssertEqual(sampler.frames.last?.gap, 10_000)
+    }
+
+    private func paintCapturePixel(blankColumns: Int) throws -> CVPixelBuffer {
+        var result: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 64, 4, kCVPixelFormatType_32BGRA,
+                                          nil, &result), kCVReturnSuccess)
+        let pixel = try XCTUnwrap(result)
+        CVPixelBufferLockBaseAddress(pixel, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixel, []) }
+        let bytes = try XCTUnwrap(CVPixelBufferGetBaseAddress(pixel)?.assumingMemoryBound(to: UInt8.self))
+        let stride = CVPixelBufferGetBytesPerRow(pixel)
+        for y in 0..<4 {
+            for x in 0..<64 {
+                let p = y * stride + x * 4
+                // The opaque window ends at x=39; SCK's wider extent can retain
+                // translucent RGB outside it. Blue body, then an opaque gray gap.
+                let colour: [UInt8] = x < 40 - blankColumns ? [77, 50, 23, 254]
+                    : x < 40 ? [45, 45, 45, 255] : [90, 90, 90, 128]
+                for channel in 0..<4 { bytes[p + channel] = colour[channel] }
+            }
+        }
+        return pixel
+    }
+
     func testPageViewportFollowsTheNativeFrameBeforeItsNextPresentation() async throws {
         try await resizeFixture(capture: false)
     }
@@ -39,12 +94,21 @@ import XCTest
         try await resizeFixture(capture: true, slowResize: true, sidebarToggle: true)
     }
 
+    func testContinuousSidebarDragKeepsThePagePaintedThroughReversals() async throws {
+        try await resizeFixture(capture: true, slowResize: true, sidebarDrag: true)
+    }
+
+    func testQueuedNativeGeometryBeforeSidebarDragKeepsThePagePainted() async throws {
+        try await resizeFixture(capture: true, slowResize: true, sidebarDrag: true, queuedGeometry: true)
+    }
+
     func testCornerResizeKeepsTheShrinkingAxisPaintedWhileTheOtherAxisGrows() async throws {
         try await resizeFixture(capture: true, slowResize: true, mixedAxes: true)
     }
 
     private func resizeFixture(capture: Bool, slowResize: Bool = false, sidebarToggle: Bool = false,
-                               mixedAxes: Bool = false) async throws {
+                               mixedAxes: Bool = false, sidebarDrag: Bool = false,
+                               queuedGeometry: Bool = false, hideBeforeAdmission: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -80,19 +144,21 @@ import XCTest
                 SharedTabs.release(store.tabs, excluding: store)
                 TabStore.all.removeAll { $0 === store }
             }
-            try await compatibilityWait {
-                host.layoutSubtreeIfNeeded()
-                return app.isRunning && window.isVisible
-                    && window.occlusionState.contains(.visible) && tab.web.window === window
-                    && tab.web.bounds.width > 100
+            let admittedFrame = window.frame
+            if hideBeforeAdmission {
+                app.hide(nil)
+                try await compatibilityWait { app.isHidden }
             }
+            try await ResizeNativeWindowAdmission.wait(window, web: tab.web, layout: true)
+            XCTAssertFalse(app.isHidden)
+            XCTAssertEqual(window.frame, admittedFrame, "Admission must not prime a different viewport")
             let delay = slowResize ? "<script>addEventListener('resize',()=>{let end=performance.now()+120;while(performance.now()<end){}})</script>" : ""
             let variables = (0..<160).map { "--resize-fixture-\($0):\($0)px;" }.joined()
             let html = "<html><title>Resize ready</title><style>:root{\(variables)}body{margin:0;background:#17324d}aside{position:fixed;right:0;top:0;width:100px;height:100vh;background:#f04020}</style><body><aside></aside>\(delay)</body></html>"
             tab.web.loadHTMLString(html, baseURL: nil)
             try await compatibilityWait { !tab.web.isLoading && tab.web.title == "Resize ready" }
             for direct in [false, true] {
-                if sidebarToggle && direct { continue }
+                if (sidebarToggle || sidebarDrag) && direct { continue }
                 // The control has an independent page. Borrowing a page from a
                 // retained SwiftUI root lets a later update mount it back there.
                 let page: WKWebView
@@ -123,7 +189,8 @@ import XCTest
                 } else if capture {
                     try await captureResizePixels(window, web: page, direct: direct,
                                                   proposalInterval: slowResize ? .milliseconds(40) : .milliseconds(8),
-                                                  mixedAxes: mixedAxes)
+                                                  mixedAxes: mixedAxes, sidebarStore: sidebarDrag ? store : nil,
+                                                  queuedGeometry: queuedGeometry)
                 } else {
                     for width: CGFloat in [1100, 470, 800, 1200, 900, 1100, 900] {
                         window.setContentSize(NSSize(width: width, height: 600))
@@ -148,11 +215,7 @@ import XCTest
     }
 
     private func captureSidebarPixels(_ window: VaneWindow, store: TabStore, web: WKWebView) async throws {
-        try await compatibilityWait {
-            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
-            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-            return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
-        }
+        try await ResizeNativeWindowAdmission.wait(window, web: web)
         let originalFrame = window.frame
         let originalWidth = web.bounds.width
         let owner = ResizeCaptureOwner(window: window, stage: "sidebar stream start")
@@ -167,6 +230,7 @@ import XCTest
         try await sampler.start(window)
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
+            guard baseline.isPaintedBaseline else { throw NSError(domain: "ResizePaintBaselineReadiness", code: 1) }
             let reducedMotion = Motion.reduced
             let began = CACurrentMediaTime()
             owner.stage = "sidebar transition"
@@ -207,14 +271,11 @@ import XCTest
     }
 
     private func captureResizePixels(_ window: VaneWindow, web: WKWebView, direct: Bool,
-                                     proposalInterval: Duration, mixedAxes: Bool = false) async throws {
+                                     proposalInterval: Duration, mixedAxes: Bool = false, sidebarStore: TabStore? = nil,
+                                     queuedGeometry: Bool = false) async throws {
         // Diagnostic reference: the original geometry-only path must remain RED.
         let baselineControl = ProcessInfo.processInfo.environment["VANE_RESIZE_BASELINE"] == "1"
-        try await compatibilityWait {
-            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
-            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-            return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
-        }
+        try await ResizeNativeWindowAdmission.wait(window, web: web)
         let owner = ResizeCaptureOwner(window: window, stage: "resize stream start direct=\(direct) mixed=\(mixedAxes)")
         owner.maxWidth = window.frame.width
         let observers = [
@@ -224,23 +285,59 @@ import XCTest
                 object: NSApp, queue: .main) { _ in MainActor.assumeIsolated { owner.lostForeground("application resigned active") } },
             NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification,
                 object: window, queue: .main) { _ in
-                    MainActor.assumeIsolated { owner.maxWidth = max(owner.maxWidth, window.frame.width) }
+                    MainActor.assumeIsolated { owner.maxWidth = max(owner.maxWidth, owner.window?.frame.width ?? 0) }
                 }
         ]
         defer { observers.forEach(NotificationCenter.default.removeObserver) }
+#if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        let trace = environment["CI"] == "true" || environment["VANE_RESIZE_TIMING"] == "1"
+            ? ResizePaintTrace(label: "sidebar=\(sidebarStore != nil),direct=\(direct),mixed=\(mixedAxes)") : nil
+        trace?.install()
+        defer { trace?.stop(); trace?.dump() }
+        trace?.append("fixture.capture.begin", time: CACurrentMediaTime(), fields: [
+            "window": String(window.windowNumber), "scale": String(Double(window.backingScaleFactor)),
+            "os": ProcessInfo.processInfo.operatingSystemVersionString,
+            "page": String(describing: ObjectIdentifier(web)), "webFrame": NSStringFromRect(web.frame),
+            "zoom": String(Double(web.pageZoom)), "proposalInterval": String(describing: proposalInterval)
+        ])
+        let sampler = ResizePixelSampler(trace: trace)
+#else
         let sampler = ResizePixelSampler()
+#endif
         try await sampler.start(window)
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
+            guard baseline.isPaintedBaseline else { throw NSError(domain: "ResizePaintBaselineReadiness", code: 1) }
             let began = CACurrentMediaTime()
             owner.stage = "resize proposals direct=\(direct) mixed=\(mixedAxes)"
             let frameHeight = window.frame.height
-            if !baselineControl {
-                window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.maxY))
+            if queuedGeometry {
+                // Exercise WebKit's real coalesced geometry queue: a host layout
+                // can submit another viewport before the previous IPC replies.
+                // Return to the admitted native baseline before starting the drag.
+                let size = web.frame.size
+                web.setFrameSize(NSSize(width: size.width + 24, height: size.height))
+                web.setFrameSize(size)
+#if DEBUG
+                trace?.append("fixture.queuedGeometry", time: CACurrentMediaTime(), fields: [
+                    "intermediate": NSStringFromSize(NSSize(width: size.width + 24, height: size.height)),
+                    "baseline": NSStringFromSize(size)
+                ])
+#endif
+            }
+            if let sidebarStore { window.beginSidebarResize(sidebarStore) }
+            else if !baselineControl {
+                window.beginPageResize(at: NSPoint(x: window.frame.maxX,
+                    y: mixedAxes ? window.frame.maxY : window.frame.midY))
             }
             defer { window.endPageResize() }
-            let widths = Array(stride(from: 900, through: 1300, by: 40))
-                + Array(stride(from: 1260, through: 900, by: -40))
+            let widths = sidebarStore != nil
+                ? Array(stride(from: 228, through: 500, by: 8))
+                    + Array(stride(from: 492, through: 164, by: -8))
+                    + Array(stride(from: 172, through: 228, by: 8))
+                : Array(stride(from: 900, through: 1300, by: 40))
+                    + Array(stride(from: 1260, through: 900, by: -40))
             let sizes = mixedAxes
                 ? [NSSize(width: 800, height: frameHeight + 40),
                    NSSize(width: 1100, height: frameHeight - 40),
@@ -250,10 +347,33 @@ import XCTest
             for size in sizes {
                 let proposalBegan = CACurrentMediaTime()
                 let deadline = ContinuousClock.now + proposalInterval
-                let accepted = baselineControl ? size : window.proposedPageResize(size)
-                if accepted != window.frame.size {
-                    window.setFrame(NSRect(origin: window.frame.origin, size: accepted), display: false)
+#if DEBUG
+                trace?.append("fixture.input", time: CACurrentMediaTime(), fields: ["size": NSStringFromSize(size)])
+#endif
+                if sidebarStore != nil {
+                    let handled = window.updateSidebarResize(size.width)
+#if DEBUG
+                    trace?.append("fixture.sidebar.route", time: CACurrentMediaTime(), fields: [
+                        "bufferHandled": String(handled), "requested": String(Double(size.width))
+                    ])
+#endif
+                    if !handled {
+                        SidebarWidth.shared.setLiveWidth(size.width, available: window.contentView?.bounds.width)
+                    }
+                } else {
+                    let accepted = baselineControl ? size : window.proposedPageResize(size)
+                    if accepted != window.frame.size {
+                        window.setFrame(NSRect(origin: window.frame.origin, size: accepted), display: false)
+                    }
                 }
+#if DEBUG
+                trace?.append("fixture.input.returned", time: CACurrentMediaTime(), fields: [
+                    "sidebar": String(Double(SidebarWidth.shared.width)), "webFrame": NSStringFromRect(web.frame),
+                    "parentBounds": web.superview.map { NSStringFromRect($0.bounds) } ?? "nil",
+                    "metadataSidebar": (web.superview as? WebHost).map { String(Double($0.resizeLayout.sidebarWidth)) } ?? "nil",
+                    "metadataRevision": (web.superview as? WebHost).map { String($0.resizeLayoutRevision) } ?? "nil"
+                ])
+#endif
                 try await ContinuousClock().sleep(until: deadline)
                 if mixedAxes {
                     // Keep sampling through each paint so coalescing cannot skip
@@ -270,6 +390,18 @@ import XCTest
                     }
                 }
             }
+#if DEBUG
+            trace?.append("fixture.release", time: CACurrentMediaTime())
+#endif
+            if sidebarStore != nil {
+                let handled = window.endSidebarResize(228, completion: {})
+#if DEBUG
+                trace?.append("fixture.sidebar.releaseRoute", time: CACurrentMediaTime(), fields: ["bufferHandled": String(handled)])
+#endif
+                if !handled {
+                    SidebarWidth.shared.setLiveWidth(228, available: window.contentView?.bounds.width)
+                }
+            } else { window.endPageResize() }
             try await compatibilityWait { !window.isPreparingPageResize }
             let ended = CACurrentMediaTime()
             owner.stage = "resize final presentation direct=\(direct) mixed=\(mixedAxes)"
@@ -277,13 +409,27 @@ import XCTest
             try await sampler.captureFinalFrame(window)
             let coverageEnded = CACurrentMediaTime()
             try await sampler.stop()
+#if DEBUG
+            trace?.append("fixture.capture.stopped", time: CACurrentMediaTime(), fields: [
+                "interrupted": String(owner.interrupted), "sidebar": String(Double(SidebarWidth.shared.width)),
+                "webFrame": NSStringFromRect(web.frame)
+            ])
+#endif
             let prefix = "\(direct ? "native" : "browser")-\(ProcessInfo.processInfo.processIdentifier)"
-            try sampler.frames.saveImages(prefix: prefix)
+            let imagePrefix = try sampler.frames.saveImages(prefix: prefix)
+#if DEBUG
+            trace?.append("fixture.artifacts", time: CACurrentMediaTime(), fields: ["prefix": "/tmp/vane-resize-" + imagePrefix])
+#endif
             let coverage = sampler.frames.samples.filter { $0.time >= began && $0.time <= coverageEnded }
             let samples = coverage.filter { $0.time <= ended }
             XCTAssertGreaterThan(samples.count, 3, "Capture actual WindowServer frames during resizing")
             XCTAssertFalse(owner.interrupted, "Foreground admission was lost during the native resize capture")
-            XCTAssertGreaterThanOrEqual(owner.maxWidth, 1100, "The window must actually grow during capture")
+            if sidebarStore == nil {
+                XCTAssertGreaterThanOrEqual(owner.maxWidth, 1100, "The window must actually grow during capture")
+            } else {
+                XCTAssertEqual(SidebarWidth.shared.width, 228)
+                XCTAssertEqual(web.frame.width, 661, accuracy: 1)
+            }
             XCTAssertEqual(window.frame.width, 900, accuracy: 1, "Commit the latest queued request")
             XCTAssertEqual(window.frame.height, frameHeight, accuracy: 1,
                            "Native width proposals must not repeatedly add the titlebar height")
@@ -332,6 +478,10 @@ import XCTest
 @MainActor private final class ResizePixelSampler: NSObject, SCStreamOutput {
     nonisolated let frames = ResizePixelFrames()
     private var stream: SCStream?
+#if DEBUG
+    nonisolated let trace: ResizePaintTrace?
+    init(trace: ResizePaintTrace? = nil) { self.trace = trace; super.init() }
+#endif
 
     func start(_ window: NSWindow) async throws {
         let content = try await SCShareableContent.currentProcess
@@ -351,7 +501,9 @@ import XCTest
         stream = capture
         do {
             try await capture.startCapture()
-            try await compatibilityWait { self.frames.last != nil }
+            // A missing marker uses a sentinel gap, not a settled baseline.
+            // Admit only the initial fixture paint, before any resize begins.
+            try await compatibilityWait { self.frames.last?.isPaintedBaseline == true }
         } catch {
             try? await capture.stopCapture()
             stream = nil
@@ -406,11 +558,20 @@ import XCTest
     nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
                             of type: SCStreamOutputType) {
         guard type == .screen, sampleBuffer.isValid else { return }
+#if DEBUG
+        let received = trace == nil ? nil : CACurrentMediaTime()
+#endif
         let time = CMTimeGetSeconds(sampleBuffer.presentationTimeStamp)
         guard time.isFinite else { return }
         let info = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
             as? [[SCStreamFrameInfo: Any]]
         let status = info?.first?[.status] as? Int
+#if DEBUG
+        trace?.append("capture.received", time: received ?? time, fields: [
+            "pts": String(time), "status": status.map(String.init) ?? "nil",
+            "previousGap": frames.last.map { String($0.gap) } ?? "nil"
+        ])
+#endif
         if status == SCFrameStatus.idle.rawValue { frames.repeatFrame(time); return }
         guard status == SCFrameStatus.complete.rawValue, let pixel = sampleBuffer.imageBuffer else { return }
         let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
@@ -423,11 +584,11 @@ import XCTest
         let valid = CGRect(x: rect.minX * scale, y: rect.minY * scale,
                            width: rect.width * scale, height: rect.height * scale)
             .intersection(CGRect(x: 0, y: 0, width: width, height: height))
-        if frames.last == nil { print("RESIZE_CAPTURE info=\(String(describing: info?.first))") }
+        if frames.last == nil { frames.recordLog("RESIZE_CAPTURE info=\(String(describing: info?.first))") }
         record(pixel, valid: valid, pixelsPerPoint: pixelsPerPoint, time: time)
     }
 
-    nonisolated private func record(_ pixel: CVPixelBuffer, valid: CGRect,
+    nonisolated fileprivate func record(_ pixel: CVPixelBuffer, valid: CGRect,
                                    pixelsPerPoint: Double, time: Double) {
         guard time.isFinite, pixelsPerPoint.isFinite, pixelsPerPoint > 0, !valid.isEmpty,
               CVPixelBufferGetPixelFormatType(pixel) == kCVPixelFormatType_32BGRA else { return }
@@ -439,12 +600,21 @@ import XCTest
         // outside this frame's content rectangle. Those are not visible content.
         let row = Int(valid.midY) * CVPixelBufferGetBytesPerRow(pixel)
         var firstRed: Int?, lastRed: Int?, lastPainted: Int?, rightWindow: Int?
+        var rawRightWindow: Int?, rawLastPainted: Int?
         for x in max(0, Int(ceil(valid.minX)))..<min(width, Int(floor(valid.maxX))) {
             let p = row + x * 4
             let b = Int(bytes[p]), g = Int(bytes[p + 1]), r = Int(bytes[p + 2])
-            if r + g + b > 40 { rightWindow = x }
+            if r + g + b > 40 { rawRightWindow = x }
             let red = r > 180 && g < 110 && b < 100
             let blue = b > r + 20 && b > g + 15 && b < 130 && g > 20 && g < 100
+            if red || blue { rawLastPainted = x }
+            // This fixture's window and page are opaque. During a shrink SCK
+            // can deliver the old contentRect with translucent resampling pixels
+            // beyond the new window edge. RGB there is not visible window paint.
+            // Allow byte quantization of opaque alpha, not translucent padding;
+            // classify gray/unpainted window pixels using the same alpha mask.
+            guard bytes[p + 3] >= 250 else { continue }
+            if r + g + b > 40 { rightWindow = x }
             if red {
                 if firstRed == nil { firstRed = x }
                 lastRed = x
@@ -465,8 +635,19 @@ import XCTest
         let snapshot = frames.needsImage(for: gap)
             ? ResizePixelFrames.Image(data: Data(bytes: bytes, count: CVPixelBufferGetBytesPerRow(pixel) * height),
                                       width: width, height: height, stride: CVPixelBufferGetBytesPerRow(pixel)) : nil
-        if snapshot != nil { print("RESIZE_CAPTURE_BOUND time=\(time) rect=\(valid) red=\(String(describing: firstRed))...\(String(describing: lastRed)) right=\(String(describing: rightWindow)) gap=\(gap)") }
+        if snapshot != nil { frames.recordLog("RESIZE_CAPTURE_BOUND time=\(time) rect=\(valid) red=\(String(describing: firstRed))...\(String(describing: lastRed)) right=\(String(describing: rightWindow)) gap=\(gap)") }
         let markerGap = lastRed.flatMap { red in rightWindow.map { Double($0 - red) / pixelsPerPoint } } ?? 10_000
+#if DEBUG
+        trace?.append("capture.parsed", time: CACurrentMediaTime(), fields: [
+            "pts": String(time), "gap": String(gap), "markerGap": String(markerGap),
+            "valid": NSStringFromRect(valid), "pixelsPerPoint": String(pixelsPerPoint),
+            "pixels": "\(width)x\(height)", "firstRed": firstRed.map(String.init) ?? "nil",
+            "lastRed": lastRed.map(String.init) ?? "nil", "lastPainted": lastPainted.map(String.init) ?? "nil",
+            "rightWindow": rightWindow.map(String.init) ?? "nil",
+            "rawRightWindow": rawRightWindow.map(String.init) ?? "nil",
+            "rawLastPainted": rawLastPainted.map(String.init) ?? "nil"
+        ])
+#endif
         frames.append(time: time, gap: gap, markerGap: markerGap,
                       extent: CGSize(width: valid.width / pixelsPerPoint, height: valid.height / pixelsPerPoint), image: snapshot)
     }
@@ -474,7 +655,14 @@ import XCTest
 }
 
 private final class ResizePixelFrames: @unchecked Sendable {
-    struct Frame { let time: Double; let gap: Double; let markerGap: Double; let extent: CGSize }
+    struct Frame {
+        let time: Double
+        let gap: Double
+        let markerGap: Double
+        let extent: CGSize
+        // These documents paint to the edge apart from the native <=2pt gutter.
+        var isPaintedBaseline: Bool { gap >= 0 && gap <= 2 && markerGap >= 0 && markerGap <= 2 }
+    }
     struct Image { let data: Data; let width: Int; let height: Int; let stride: Int }
     let queue = DispatchQueue(label: "vane.resize.pixel-capture")
     private let lock = NSLock()
@@ -482,20 +670,25 @@ private final class ResizePixelFrames: @unchecked Sendable {
     private var baselineImage: Image?
     private var worstImage: Image?
     private var worstGap = -Double.infinity
+    private var logs: [String] = []
     var last: Frame? { lock.withLock { recorded.last } }
     var samples: [Frame] { lock.withLock { recorded } }
+    func recordLog(_ line: String) { lock.withLock { if logs.count < 256 { logs.append(line) } } }
     func needsImage(for gap: Double) -> Bool { lock.withLock { baselineImage == nil || gap > worstGap } }
     func append(time: Double, gap: Double, markerGap: Double, extent: CGSize, image: Image?) {
         lock.withLock {
-            recorded.append(Frame(time: time, gap: gap, markerGap: markerGap, extent: extent))
-            if baselineImage == nil { baselineImage = image }
-            if gap > worstGap { worstGap = gap; worstImage = image }
+            let frame = Frame(time: time, gap: gap, markerGap: markerGap, extent: extent)
+            recorded.append(frame)
+            if baselineImage == nil, frame.isPaintedBaseline { baselineImage = image }
+            if baselineImage != nil, gap > worstGap { worstGap = gap; worstImage = image }
         }
     }
     func repeatFrame(_ time: Double) {
         lock.withLock { if let last = recorded.last { recorded.append(Frame(time: time, gap: last.gap, markerGap: last.markerGap, extent: last.extent)) } }
     }
-    @MainActor func saveImages(prefix: String) throws {
+    @discardableResult @MainActor func saveImages(prefix: String) throws -> String {
+        for line in lock.withLock({ logs }) { print(line) }
+        let attemptPrefix = "\(prefix)-\(UUID().uuidString)"
         let images = lock.withLock { [("baseline", baselineImage), ("worst", worstImage)] }
         for (name, snapshot) in images {
             let snapshot = try XCTUnwrap(snapshot)
@@ -506,7 +699,10 @@ private final class ResizePixelFrames: @unchecked Sendable {
                 space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: format, provider: provider,
                 decode: nil, shouldInterpolate: false, intent: .defaultIntent))
             let data = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
-            try data.write(to: URL(fileURLWithPath: "/tmp/vane-resize-\(prefix)-\(name).png"))
+            let output = URL(fileURLWithPath: "/tmp/vane-resize-\(attemptPrefix)-\(name).png")
+            try data.write(to: output)
+            print("RESIZE_ARTIFACT path=\(output.path)")
         }
+        return attemptPrefix
     }
 }

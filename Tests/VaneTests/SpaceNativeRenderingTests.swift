@@ -165,13 +165,13 @@ import XCTest
         return own + view.subviews.flatMap { warmOwnerReports(in: $0) }
     }
 
-    private func warmOwnerFixture(pinnedRows: Int = 0, registerTeardown: Bool = true) async throws -> (TabStore, [Space], NSWindow, SwipeMonitor, BrowserWindowHost) {
+    private func warmOwnerFixture(pinnedRows: Int = 0, todayRows: Int = 32, windowHeight: CGFloat = 800, registerTeardown: Bool = true) async throws -> (TabStore, [Space], NSWindow, SwipeMonitor, BrowserWindowHost) {
         try XCTSkipIf(ProcessInfo.processInfo.environment["VANE_RETAIN_INACTIVE_SPACE_ROW_OWNERS"] == "0")
         let (store, spaces, window, monitor) = try fixture(registerTeardown: registerTeardown)
-        window.setContentSize(NSSize(width: 1100, height: 800))
+        window.setContentSize(NSSize(width: 1100, height: windowHeight))
         for space in spaces {
             store.switchTo(space: space)
-            store.tabs = (0..<(32 + pinnedRows)).map { index in
+            store.tabs = (0..<(todayRows + pinnedRows)).map { index in
                 let tab = Tab(profileID: store.profileID)
                 if index < pinnedRows { tab.kind = .pinned }
                 tab.park(url: URL(string: "about:blank#warm-authority-\(space.id)-\(index)")!,
@@ -208,25 +208,49 @@ import XCTest
     }
 
     func testWarmReturnAtStoreBudgetReusesSurvivingSectionOwners() async throws {
-        let (store, spaces, _, monitor, host) = try await warmOwnerFixture(pinnedRows: 24)
+        try await warmReturnAtStoreBudget(windowHeight: 800)
+    }
+
+    func testWarmReturnAtStoreBudgetWithTallViewportReusesBothSections() async throws {
+        try await warmReturnAtStoreBudget(windowHeight: 2600)
+    }
+
+    private func warmReturnAtStoreBudget(windowHeight: CGFloat) async throws {
+        // Three pinned graphs plus two Today graphs per Space fit three complete
+        // visits in the shared 16-graph budget, even when every row is visible.
+        // The former 32 Today rows relied on offscreen geometry mounting only two
+        // of four graphs; transient/tall geometry could legitimately evict First.
+        let (store, spaces, _, monitor, host) = try await warmOwnerFixture(
+            pinnedRows: 24, todayRows: 16, windowHeight: windowHeight)
+        func admitPopulation() async throws {
+            try await compatibilityWait {
+                self.warmOwnerReports(in: host).map(\.attachedLogicalRows).sorted() == [16, 24]
+            }
+        }
+        try await admitPopulation()
         for target in spaces.dropFirst() {
             try await visitWarmSpace(target, store: store, monitor: monitor, host: host)
+            try await admitPopulation()
         }
         let reports = warmOwnerReports(in: host)
-        // This fixed fixture retains the same number of native owners on every
-        // visit. Three full inactive visits means its oldest (First) survived.
         let expected = Dictionary(uniqueKeysWithValues: reports.filter {
             $0.attachedGraphCount > 0 && $0.inactiveGraphCount == 3 * $0.attachedGraphCount
         }.map { (ObjectIdentifier($0), $0.batchCounts.inactiveScopeHits) })
         XCTAssertEqual(expected.count, 2, "Both sections' three inactive visits must fit before the return reservation")
+        XCTAssertEqual(reports.reduce(0) { $0 + $1.inactiveGraphCount }, 15)
+        XCTAssertEqual(reports.reduce(0) { $0 + $1.batchCounts.inactiveScopeEvictions }, 0)
         try await visitWarmSpace(spaces[0], store: store, monitor: monitor, host: host)
-        for report in warmOwnerReports(in: host) {
+        try await admitPopulation()
+        let returned = warmOwnerReports(in: host)
+        XCTAssertEqual(Set(returned.map(ObjectIdentifier.init)), Set(expected.keys),
+                       "Both supplying section owners must survive the return")
+        for report in returned {
             if let before = expected[ObjectIdentifier(report)] {
                 XCTAssertEqual(report.batchCounts.inactiveScopeHits, before + 1,
                                "Every surviving arriving section must be reused before outgoing budget reservations")
             }
         }
-        XCTAssertLessThanOrEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 16)
+        XCTAssertLessThanOrEqual(returned.reduce(0) { $0 + $1.inactiveGraphCount }, 16)
     }
 
 

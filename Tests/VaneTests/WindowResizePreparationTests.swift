@@ -5,6 +5,26 @@ import XCTest
 
 /// Unshown native objects only: no focus, input, or capture is needed.
 @MainActor final class WindowResizePreparationTests: XCTestCase {
+    func testChromeWidthStopsPublishingWindowPixelsWithoutChangingNavigationSizing() {
+        for section: LibrarySection? in [nil, .archived, .spaces, .easels] {
+            for isPrivate in [false, true] {
+                for spaces in [0, 1, 10] {
+                    let layout = PageResizeLayout(librarySection: section, spaces: spaces, isPrivate: isPrivate)
+                    for width: CGFloat in stride(from: 250, through: 8000, by: 25) {
+                        let bounded = layout.chromeWidth(at: width)
+                        for sidebar: CGFloat in [164, 228, 500] {
+                            XCTAssertEqual(SidebarWidth.fitting(sidebar, in: bounded), SidebarWidth.fitting(sidebar, in: width))
+                        }
+                        XCTAssertEqual(layout.leadingWidth(at: bounded), layout.leadingWidth(at: width))
+                    }
+                }
+            }
+        }
+        let ordinary = PageResizeLayout()
+        XCTAssertEqual(ordinary.chromeWidth(at: 900), ordinary.chromeWidth(at: 1350),
+                       "Ordinary window resizing must not rebuild unchanged sidebar chrome for each pixel")
+    }
+
     func testCompactWindowReservesPageSpaceBesideAWideSidebar() {
         let layout = PageResizeLayout(sidebarWidth: 500)
         XCTAssertEqual(layout.leadingWidth(at: 470), 270)

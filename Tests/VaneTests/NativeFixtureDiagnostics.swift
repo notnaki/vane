@@ -171,6 +171,13 @@ import WebKit
             && observed.map { $0.pid == captured.pid && $0.start == captured.start && $0.path == captured.path } == true
     }
 
+    /// Opt-in profiling uses the same live-view ownership rule as failure samples.
+    static func ownedContentIdentity(for web: WKWebView) -> Identity? {
+        guard let pid = contentPID(web), let captured = identity(pid),
+              maySample(captured, observed: identity(pid), ownedPID: contentPID(web)) else { return nil }
+        return captured
+    }
+
     nonisolated static func symbolsOnly(_ output: String) -> String {
         guard let start = output.range(of: "Call graph:")?.upperBound else { return "symbolic call graph unavailable" }
         let graph = output[start...]

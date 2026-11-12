@@ -34,7 +34,7 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
     let libraryOpen: Bool
     let sidebarShown: Bool
     let floating: Bool
-    let sidebarWidth: CGFloat
+    @WindowSidebarWidth private var sidebarWidth
     let panelWidth: CGFloat
     let palettePresented: Bool
     let monitor: LibrarySwipeMonitor
