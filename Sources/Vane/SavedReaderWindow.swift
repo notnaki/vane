@@ -19,9 +19,10 @@ import CFNetwork
         }
         let mapping = Dictionary(uniqueKeysWithValues: article.resources.map { ("images/" + $0.name, "images/" + $0.name) })
         let extraction = Reader.Extraction(title: article.title, byline: article.byline, nodes: nodes(article.nodes))
-        let html = Reader.html(for: extraction, url: URL(string: article.sourceURL), localImages: mapping)
+        let html = Reader.html(for: extraction, url: article.hasQueueMetadata == false ? nil : URL(string: article.sourceURL), localImages: mapping)
         let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; connect-src 'none'\">"
-        let notice = "<p class=\"by\">Saved copy · \(Reader.esc(article.capturedAt.formatted(date: .abbreviated, time: .shortened)))\(article.missingImages > 0 ? " · Some images were unavailable" : "")</p>"
+        let details = article.hasQueueMetadata == false ? "Article details not synced" : article.capturedAt.formatted(date: .abbreviated, time: .shortened)
+        let notice = "<p class=\"by\">Saved copy · \(Reader.esc(details))\(article.missingImages > 0 ? " · Some images were unavailable" : "")</p>"
         return "<!doctype html><html>" + html.replacingOccurrences(of: "<head>", with: "<head>" + csp)
             .replacingOccurrences(of: "<header>", with: "<header>" + notice) + "</html>"
     }
@@ -83,6 +84,9 @@ enum SavedReaderNavigation {
                 let candidate: ReadingQueueCandidate
                 if let prepared = await preparation?.takeOrWait(articleID, repository: repository) { candidate = prepared }
                 else { candidate = try await repository.candidate(articleID) }
+                guard candidate.article.hasOfflineContent != false else {
+                    throw ReadingQueueFailure.storage("The offline copy is unavailable on this Mac. Open the live page or enable Offline article content in iCloud settings.")
+                }
                 let html = SavedReaderDocument.html(article: candidate.article)
                 let content = try await Task.detached(priority: .userInitiated) {
                     try SavedReaderContent(candidate: candidate, html: html)
@@ -219,7 +223,7 @@ private struct SavedReaderView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Saved copy").font(.headline)
                     if let article = session.article {
-                        Text("\(URL(string: article.sourceURL)?.host ?? "") · \(article.capturedAt.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+                        Text(article.hasQueueMetadata == false ? "Article details not synced" : "\(URL(string: article.sourceURL)?.host ?? "") · \(article.capturedAt.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
@@ -227,9 +231,11 @@ private struct SavedReaderView: View {
                     Button(article.isRead ? "Mark Unread" : "Mark Read") {
                         Task { do { try await repository.setRead(!article.isRead, id: article.id) } catch { session.message = error.localizedDescription } }
                     }
-                    .frame(width: 92)
+                    .frame(width: 92).disabled(article.hasQueueMetadata == false)
                     ReaderPreferencesMenu(onChange: { session.applyPreferences() })
-                    Button("Open Live Page") { if let url = URL(string: article.sourceURL) { session.open(url) } }
+                    Button("Open Live Page") {
+                        if article.hasQueueMetadata != false, let url = ReadingArticleCodec.webURL(article.sourceURL) { session.open(url) }
+                    }.disabled(article.hasQueueMetadata == false)
                 }
             }.padding(14)
             if let message = session.message { Text(message).font(.caption).foregroundStyle(.secondary).padding(8).accessibilityLabel(message) }

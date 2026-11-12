@@ -57,6 +57,15 @@ fixture. Use it only with that fixture’s recorded identity; do not point it at
 profile. Password-import format, duplicate, and partial-failure rules are in [data
 imports](DATA-AND-PRIVACY.md#imports-and-exports).
 
+## iCloud development
+
+Optional iCloud development builds require matching Apple provisioning and an
+assigned CloudKit container. Ordinary ad-hoc builds intentionally keep sync
+unavailable. See [iCloud provisioning](ICLOUD-PROVISIONING.md) for the explicit
+profile/container inputs, encrypted schema, transfer limits, signed service evidence
+and unverified cross-Mac follow-up coverage. Missing second-Mac hardware is not a
+merge gate; local unit tests alone do not establish live service availability.
+
 ## WebKit and protected media
 
 Vane uses the system WebKit engine rather than bundling Chromium. `drmcheck` tests the

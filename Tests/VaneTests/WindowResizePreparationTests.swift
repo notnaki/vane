@@ -95,6 +95,8 @@ import XCTest
             defer { window.contentView = nil; host.removePage(); window.close() }
             var paints: [@MainActor @Sendable () -> Void] = []
             var commits: [NSSize] = []
+            var committedViewports: [NSSize] = []
+            let originalViewport = web.frame.size
             let resize = WindowResizePreparation(window: window,
                 presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }) { frame, display in
                     commits.append(frame.size)
@@ -108,12 +110,15 @@ import XCTest
                         XCTAssertEqual(web.frame.size, NSSize(width: 600, height: 400),
                                        "Only the final mixed-axis viewport may reach WebKit")
                     }
+                    committedViewports.append(web.frame.size)
                 }
             let clipped = target.width == 500 ? NSSize(width: 500, height: 400) : NSSize(width: 600, height: 300)
             XCTAssertTrue(resize.request(frame: NSRect(origin: .zero, size: target), display: true))
             XCTAssertEqual(window.frame.size, clipped,
                            "Clip the old larger pixels before preparing a smaller document dimension")
             XCTAssertEqual(commits, [clipped])
+            XCTAssertEqual(committedViewports, [originalViewport],
+                           "Native clipping must not submit an intermediate smaller WK viewport")
             XCTAssertEqual(paints.count, 1)
             paints.removeFirst()()
             XCTAssertEqual(commits, [clipped, target])
@@ -155,6 +160,25 @@ import XCTest
                 resize.cancel()
             }
         }
+    }
+
+    func testCancellingMixedAxisPreparationRestoresTheClippedParentSize() {
+        let (host, web) = fixture()
+        let window = modelWindow(host)
+        defer { window.contentView = nil; host.removePage(); window.close() }
+        var paints: [@MainActor @Sendable () -> Void] = []
+        let resize = WindowResizePreparation(window: window,
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in }) { frame, display in
+                window.setFrame(frame, display: display)
+            }
+        XCTAssertTrue(resize.request(frame: NSRect(x: 0, y: 0, width: 500, height: 500), display: true))
+        resize.cancel()
+        XCTAssertEqual(window.frame.size, NSSize(width: 500, height: 400))
+        XCTAssertEqual(web.frame.size, NSSize(width: 500, height: 400))
+        XCTAssertEqual(web.autoresizingMask, [.width, .height])
+        XCTAssertTrue(web.autoresizesSubviews)
+        paints.forEach { $0() }
+        XCTAssertEqual(window.frame.size, NSSize(width: 500, height: 400), "A stale paint cannot commit after cancellation")
     }
 
     func testReparentingDoesNotRestoreThePreviousHostsFrameOrMask() {

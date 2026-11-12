@@ -19,9 +19,8 @@ import XCTest
     private func withNativeContext(_ operation: @MainActor () async throws -> Void) async throws {
         TestEnvironment.prepare()
         let policy = NSApplication.shared.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
         defer { NSApp.setActivationPolicy(policy) }
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         ownsAppKitLoop = true
         var failure: (any Error)?
         do { try await operation() } catch { failure = error }
@@ -118,16 +117,16 @@ import XCTest
     private func mount<V: View>(_ content: V) async throws -> (NSWindow, NSHostingView<ModifiedContent<V, NativeFixtureSnapshotReceipt>>) {
         _ = NSApplication.shared
         let policy = NSApp.activationPolicy()
-        NSApp.setActivationPolicy(.accessory)
+        if !ownsAppKitLoop { NSApp.setActivationPolicy(.accessory) }
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 260, height: 300),
                               styleMask: .titled, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: content.modifier(NativeFixtureSnapshotReceipt()))
         host.sizingOptions = []
         let attachment = NativeFixtureMountAdmission.attach(host, to: window)
+        window.makeKeyAndOrderFront(nil)
         if ownsAppKitLoop { NSApp.activate(ignoringOtherApps: true) }
         else { NSApp.activate() }
-        window.makeKeyAndOrderFront(nil)
         registerRetirement {
             attachment?.cancel()
             window.orderOut(nil); window.contentView = nil; window.close()

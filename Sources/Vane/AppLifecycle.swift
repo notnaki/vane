@@ -233,6 +233,7 @@ enum QuitAsk {
     func beginPersistenceExit() -> Bool {
         guard !persistenceExitInProgress else { return false }
         persistenceExitInProgress = true
+        ICloudController.quiesceIfRunning()
         Store.setAdmissionPaused(true)
         bootstrapIngress.block()
         exitEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [
@@ -262,6 +263,7 @@ enum QuitAsk {
         allowPersistenceExitDialog()
         persistenceExitInProgress = false
         Store.setAdmissionPaused(false)
+        ICloudController.resumeIfRunning()
         if bootstrapTask == nil { bootstrapIngress.complete() }
     }
 
@@ -336,6 +338,7 @@ enum QuitAsk {
         Crash.stopAutosave()
         Task { [self] in
             var succeeded = true
+            await ICloudController.suspendIfRunning()
             await ImportOperations.drain()
             await PendingSessionTransactions.drain()
             await ProfileManager.shared.waitForTransactions()
@@ -345,6 +348,7 @@ enum QuitAsk {
             do { try await EaselStore.flushAll(directory: Store.directory) } catch { succeeded = false }
             do { try await Passwords.flushPendingOperations() } catch { succeeded = false }
             if !(await AppIcon.flushPersistence()) { succeeded = false }
+            if !(await ICloudController.finishIfRunning()) { succeeded = false }
             await Updater.markHealthyLaunchAsync()
             if succeeded && !discarding {
                 if !(await Crash.markCleanAsync()) { succeeded = false }

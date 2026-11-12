@@ -58,13 +58,14 @@ import XCTest
         let second = Space(name: "Second", profileID: profile)
         XCTAssertTrue(ProfileManager.shared.saveSpaces([first, second], for: profile))
         let store = TabStore(profileID: profile, space: first, session: [])
-        // Observe the already-assigned target before hosting work can delay the
-        // polling task. That scheduling delay is not a second animation tail.
+        // Timestamp the target's own publication. objectWillChange runs before
+        // assignment, so inspecting currentSpaceID there misses this change and
+        // timestamps a later notification after restoration/hosting work instead.
         var measuringSelection = false
         var committedStateObservedAt: TimeInterval?
-        let committedState = store.objectWillChange.sink {
+        let committedState = store.$currentSpaceID.sink { selected in
             if measuringSelection, committedStateObservedAt == nil,
-               store.currentSpaceID == second.id {
+               selected == second.id {
                 committedStateObservedAt = ProcessInfo.processInfo.systemUptime
             }
         }
@@ -72,9 +73,11 @@ import XCTest
         let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 300, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
         store.window = window
         let width = SidebarWidth.inWindow(store)
-        XCTAssertEqual(width, SidebarWidth.minimum, "Exercise the narrow-window fit, not the saved 250pt preference")
+        XCTAssertEqual(width, 164, accuracy: 0.001)
+        XCTAssertLessThan(width, sidebar.width, "Keep this a narrow-window clamping fixture")
         let monitor = SwipeMonitor()
         defer {
             monitor.abort()
@@ -103,7 +106,8 @@ import XCTest
         store.palette = nil
         let position = LandingPosition(target: second.id)
         window.contentView = NSHostingView(rootView: LandingStrip(store: store, position: position, width: width)
-            .environment(\.sidebarWindowWidth, window.contentLayoutRect.width).vaneMotionPolicy())
+            .environment(\.sidebarWindowWidth, window.contentLayoutRect.width)
+            .vaneMotionPolicy())
         var nativeHandoffOffset: CGFloat?
         var nativeOrigin: CGFloat = 0
         let observation = store.$currentSpaceID.sink { id in
