@@ -469,10 +469,28 @@ animation removal. Admission now requires both an interior position and actual
 displacement across observations. The existing ten-second compatibility budget
 is shared with sampling, never reset; the row mutation still begins afterward.
 Original row-animation durations, samples, tolerances, owner checks and outcome
-assertions remain unchanged. No product code changes. Qualification is planned
-on three ARM hosts: 23 related cases under the hosted policy, followed by all
-nine motion cases with Reduce Motion verified off and no allowed skips. This
-candidate is not yet qualified, and full current-base CI remains required.
+assertions remain unchanged. No product code changes.
+
+Run [43277450579](https://github.com/notnaki/vane/actions/runs/43277450579),
+`2ed35334`, passed the predetermined qualification on all three ARM hosts.
+Each passed 23 related cases under the hosted policy (one existing Reduce Motion
+skip), then all nine motion cases with Reduce Motion verified off, zero skips
+and zero failures. Default-policy durations were 19.140, 14.371 and 13.730 seconds;
+enabled-motion durations were 7.127, 6.376 and 5.890 seconds. All smoke, default
+and enabled-motion primary/cleanup receipts were zero. Delayed observation now
+witnessed real motion, while frozen-interior and nonmoving controls were rejected.
+Independent Astra review found no actionable findings. The original scheduling
+stall's underlying source remains unknown; the reproduced readiness-window
+assumption is repaired rather than treating unchanged retries as a fix.
+
+PR #667 merged as `ca9833ee`; its main checks43271177183 and pages43271176651
+completed successfully before reconciliation. The merge retains the already
+qualified fitted-width, currentSpaceID-publication, covered-then-live replay and
+native retirement changes. Both early-profile entry points own exactly one
+AppKit loop; the automatic merge's duplicate helper-level acquisition was
+removed. The reconciled source tree is identical to the qualified candidate.
+The temporary diagnostic workflow is removed before updating PR #647. Full
+protected CI on this current-base integration remains required before merge.
 
 ## Verification limits and remaining integration gates
 
