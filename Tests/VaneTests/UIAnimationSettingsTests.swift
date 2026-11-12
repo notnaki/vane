@@ -4,6 +4,29 @@ import XCTest
 @testable import vane
 
 @MainActor final class UIAnimationSettingsTests: XCTestCase {
+    func testSliderStepsMapToSupportedSpeedsAndTheirDurations() {
+        TestEnvironment.prepare()
+        let key = UIAnimation.sidebar.key
+        let old = UserDefaults.vane.object(forKey: key)
+        defer {
+            if let old { UserDefaults.vane.set(old, forKey: key) }
+            else { UserDefaults.vane.removeObject(forKey: key) }
+        }
+        let stops: [(Double, Double)] = [
+            (0, 0.25), (1, 0.5), (2, 0.75), (3, 1), (4, 1.5), (5, 2), (6, 3), (7, 4),
+        ]
+        for (step, speed) in stops {
+            XCTAssertEqual(UIAnimation.step(for: speed), step)
+            UserDefaults.vane.set(UIAnimation.speed(atStep: step), forKey: key)
+            XCTAssertEqual(UIAnimation.sidebar.duration(1), 1 / speed, accuracy: 0.0001)
+        }
+        XCTAssertEqual(UIAnimation.speed(atStep: -1), 0.25)
+        XCTAssertEqual(UIAnimation.speed(atStep: 8), 4)
+        XCTAssertEqual(UIAnimation.speed(atStep: 3.8), 1.5)
+        XCTAssertEqual(UIAnimation.speed(atStep: .nan), 1)
+        XCTAssertEqual(UIAnimation.step(for: 99), 3)
+    }
+
     // Catch stale cached timings and a reversed speed multiplier in actual consumers.
     func testSpeedChangesAffectAnimationAndCompletionDurationsImmediately() {
         TestEnvironment.prepare()
@@ -140,7 +163,7 @@ import XCTest
             for dark in [false, true] {
                 for height in [350.0, 650.0] {
                     let host = NSHostingView(rootView: UIAnimationsPane()
-                        .font(Look.text).controlSize(.small).padding(20)
+                        .font(Look.text).controlSize(.regular)
                         .frame(width: 632, height: height)
                         .background(.windowBackground)
                         .environment(\.colorScheme, dark ? .dark : .light))

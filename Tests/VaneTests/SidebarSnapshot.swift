@@ -11,11 +11,13 @@ import XCTest
     static func imageWhenReady<V: View>(_ view: V, width: CGFloat = 250, height: CGFloat = 400,
                                         sidebarScope: SidebarNativeReadinessScope? = nil,
                                         pointerLocation: () -> NSPoint = { NSEvent.mouseLocation },
+                                        observePresentation: (NSWindow) -> Void = { _ in },
                                         ready: (NSView) -> Bool) async throws -> CGImage {
         _ = NSApplication.shared
         let bounds = NSRect(x: 0, y: 0, width: width, height: height)
         let window = SidebarSnapshotWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
         window.appearance = NSAppearance(named: .darkAqua)
         try positionAwayFromPointer(window, pointer: pointerLocation())
         func newHost() -> NSView {
@@ -29,24 +31,56 @@ import XCTest
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         defer { window.contentView = nil; window.close() }
-        try await compatibilityWait {
-            // The live return tile has its own SwiftUI hover caption. A static
-            // parity sample must not admit a pointer-hovered live presentation.
-            // Recreate the graph if the user moved into this task-owned window:
-            // moving it away alone preserves the return tile's animated hover exit.
-            if window.frame.contains(pointerLocation()) {
-                window.contentView = nil
-                try positionAwayFromPointer(window, pointer: pointerLocation())
-                host = newHost()
-                window.contentView = host
-                return false
+        var admission = "starting"
+        var occlusionRecoveryPending = false
+        do {
+            try await compatibilityWait {
+                // The live return tile has its own SwiftUI hover caption. A static
+                // parity sample must not admit a pointer-hovered live presentation.
+                // Recreate the graph if the user moved into this task-owned window:
+                // moving it away alone preserves the return tile's animated hover exit.
+                if window.frame.contains(pointerLocation()) {
+                    window.contentView = nil
+                    try positionAwayFromPointer(window, pointer: pointerLocation())
+                    host = newHost()
+                    window.contentView = host
+                    return false
+                }
+                // Another fixture can take focus or obscure a still-key window.
+                // Waiting alone cannot restore that exact visible owner.
+                if NSApp.isHidden { NSApp.unhide(nil) }
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                if window.occlusionState.contains(.visible) { occlusionRecoveryPending = false }
+                observePresentation(window)
+                let placed = NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) }
+                if !window.isVisible || !window.isKeyWindow || NSApp.keyWindow !== window
+                    || !window.occlusionState.contains(.visible) || !placed {
+                    if !placed && !window.occlusionState.contains(.visible) {
+                        try positionAwayFromPointer(window, pointer: pointerLocation())
+                    }
+                    // Re-keying an already-key window can leave its occlusion
+                    // state stale. Re-present that exact owner to refresh it.
+                    if window.isVisible && window.isKeyWindow && !window.occlusionState.contains(.visible)
+                        && !occlusionRecoveryPending {
+                        window.orderOut(nil)
+                        occlusionRecoveryPending = true
+                    }
+                    window.makeKeyAndOrderFront(nil)
+                }
+                host.layoutSubtreeIfNeeded()
+                admission = "running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow) "
+                    + "owner=\(NSApp.keyWindow === window) visible=\(window.isVisible) "
+                    + "occlusion=\(window.occlusionState.rawValue) attached=\(host.window === window)"
+                return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
+                    && window.isVisible && window.occlusionState.contains(.visible)
+                    && NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) }
+                    && NSApp.modalWindow == nil && window.attachedSheet == nil && host.window === window
+                    && !window.frame.contains(pointerLocation())
+                    && (sidebarScope.map { nativePopulationIsReady(in: host, scope: $0) } ?? true) && ready(host)
             }
-            host.layoutSubtreeIfNeeded()
-            return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
-                && window.isVisible && window.occlusionState.contains(.visible)
-                && NSApp.modalWindow == nil && window.attachedSheet == nil && host.window === window
-                && !window.frame.contains(pointerLocation())
-                && (sidebarScope.map { nativePopulationIsReady(in: host, scope: $0) } ?? true) && ready(host)
+        } catch {
+            print("Sidebar snapshot admission failed: \(admission)")
+            throw error
         }
         host.layoutSubtreeIfNeeded()
         return try XCTUnwrap(captureBitmap(in: host).cgImage)

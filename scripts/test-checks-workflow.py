@@ -148,7 +148,7 @@ def main():
         assert 'actions/cache/' not in section
         assert './make-app.sh' not in section
     assert 'secrets.' not in build + native + packaging
-    assert 'fail-fast: false' in native
+    assert "fail-fast: ${{ github.event_name == 'pull_request' }}" in native
     assert 'shard: [1, 2, 3, 4]' in native
     assert '--index "$NATIVE_SHARD" --count 4' in native
     assert 'NATIVE_SHARD: ${{ matrix.shard }}' in native

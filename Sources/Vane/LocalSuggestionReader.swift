@@ -158,18 +158,32 @@ actor LocalSuggestionReader {
                                     score: Int(sqlite3_column_int($0, 2)), hits: 0,
                                     last: sqlite3_column_double($0, 4)))
                 }
+            // Aggregate matching visits once, then recover titles only for the top
+            // pages. A bounded recent probe usually finds the winning visit through
+            // visits_url_at; the scored fallback preserves ancient titles without
+            // rescanning rejected visits. Ranking itself always sees the full history.
             rows(db, sql: """
                 WITH scored AS MATERIALIZED (
-                    SELECT id, url, title, at, vane_match(title, url) AS score
+                    SELECT id, url, at, vane_match(title, url) AS score
                     FROM visits WHERE \(candidates)),
-                pages AS (
-                    SELECT *, COUNT(*) OVER (PARTITION BY url) AS hits,
-                           MAX(at) OVER (PARTITION BY url) AS last,
-                           ROW_NUMBER() OVER (PARTITION BY url ORDER BY score DESC, at DESC, id DESC) AS n
-                    FROM scored WHERE score >= 0)
-                SELECT url, title, score, hits, last,
-                       EXISTS(SELECT 1 FROM bookmarks b WHERE b.url = pages.url) AS bookmarked
-                FROM pages WHERE n = 1
+                pages AS MATERIALIZED (
+                    SELECT url, MAX(score) AS score, COUNT(*) AS hits, MAX(at) AS last,
+                           EXISTS(SELECT 1 FROM bookmarks b WHERE b.url = scored.url) AS bookmarked
+                    FROM scored WHERE score >= 0 GROUP BY url
+                    ORDER BY score DESC, bookmarked DESC, hits DESC, last DESC, url LIMIT ?2)
+                SELECT url, (
+                    SELECT title FROM visits
+                    WHERE id = COALESCE((
+                        SELECT id FROM (
+                            SELECT id, url, title, at FROM visits WHERE url = pages.url
+                            ORDER BY at DESC, id DESC LIMIT 32)
+                        WHERE \(candidates) AND vane_match(title, url) = pages.score
+                        ORDER BY at DESC, id DESC LIMIT 1), (
+                        SELECT id FROM scored AS matched
+                        WHERE matched.url = pages.url AND matched.score = pages.score
+                        ORDER BY matched.at DESC, matched.id DESC LIMIT 1))
+                    ), score, hits, last, bookmarked
+                FROM pages
                 ORDER BY score DESC, bookmarked DESC, hits DESC, last DESC, url LIMIT ?2
                 """, pattern: match.candidatePattern, limit: limit) {
                     hits.append(Hit(suggestion: Suggestion(url: text($0, 0), title: text($0, 1),

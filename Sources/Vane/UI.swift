@@ -536,21 +536,11 @@ struct BrowserWindow: View {
         .animation(reduceMotion || batterySaver.isActive ? nil
                    : Look.floatingSidebarAnimation, value: peeking)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.libraryOpen)
-        // Arc hides the traffic lights along with the sidebar: a collapsed window is the
-        // page and nothing else. They come back the moment either sidebar does.
-        .onChange(of: chrome, initial: true) { showTrafficLights(chrome) }
-        // ⌘S while the peek is up keeps `chrome` true, so the line above never fires and the
-        // lights would stay on the peeked panel's inset line. Docking or hiding the sidebar
-        // always ends the peek, and the lights follow the row that is actually there.
-        // The store ends the peek synchronously when visibility changes. A cached profile
-        // host may observe that change only on return, after a new peek was handed to it.
-        .onChange(of: store.sidebarShown) { peekTask?.cancel(); showTrafficLights(chrome) }
-        .onChange(of: peeking) { showTrafficLights(chrome) }
+        .onChange(of: store.sidebarShown) { peekTask?.cancel() }
         // Opening the Library ends any peek in flight, for the same reason: the lights
         // belong to the rail's row now, not to a panel sliding in behind it.
         .onChange(of: store.libraryOpen) {
             if store.libraryOpen { peekTask?.cancel(); peeking = false }
-            showTrafficLights(chrome)
         }
         .librarySwipe(store)
         .onAppear { store.applySpaceAppearance() }
@@ -612,9 +602,11 @@ struct BrowserWindow: View {
                     .opacity(floating ? 1 : 0)
                     .allowsHitTesting(false)
             }
-            .padding(floating ? Look.floatingSidebarGap : 0)
-            .offset(x: visible ? 0 : -(sidebarWidth + 2 * Look.floatingSidebarGap))
-            .opacity(visible ? 1 : 0)
+            .modifier(SidebarTrafficLightMotion(store: store,
+                slide: visible ? 0 : -(sidebarWidth + 2 * Look.floatingSidebarGap),
+                inset: floating ? Look.floatingSidebarGap : 0,
+                visibility: visible ? 1 : 0,
+                libraryOpen: store.libraryOpen, peeking: !store.sidebarShown && peeking))
             .allowsHitTesting(visible && !store.libraryOpen)
             // Above the page during edge reveal and dismissal; below the resize handle.
             .zIndex(1)
@@ -633,19 +625,6 @@ struct BrowserWindow: View {
             guard !Task.isCancelled else { return }
             peeking = false
         }
-    }
-
-    private func showTrafficLights(_ visible: Bool) {
-        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            store.window?.standardWindowButton(kind)?.isHidden = !visible
-        }
-        // Which row the lights belong to depends on which sidebar is showing: the docked one
-        // starts at the window's edge, the peeked panel is inset by `Look.floatingSidebarGap` all round.
-        let window = store.window as? VaneWindow
-        window?.peekingSidebar = !store.sidebarShown && peeking
-        // Unhiding re-lays the group, so put it back on the row's centre line before the
-        // frame it comes back in — otherwise ⌘S twice leaves the lights off the row.
-        window?.centreTrafficLights()
     }
 
 }
@@ -3719,11 +3698,14 @@ struct FolderGlyph: View {
     var showsArrivals = false
     private var arrivalMark: Bool { showsArrivals && folder.collapsed && !dropOpen }
     private var reduced: Bool { reduceMotion || batterySaver.isActive }
+    private var expanded: Bool { !folder.collapsed || dropOpen }
+    private var previewing: Bool { allowsHoverPreview && hovering && !reduced }
+    private var iconOpen: Bool { expanded || previewing }
+    private var openness: CGFloat { iconOpen ? 1 : 0 }
     var body: some View {
         Group {
             if folder.icon == Folder.defaultIcon {
-                FolderIcon(open: !folder.collapsed || dropOpen,
-                           previewing: allowsHoverPreview && hovering && !reduceMotion && !batterySaver.isActive)
+                FolderIcon(open: expanded, previewing: previewing)
                     .frame(width: Look.tileIcon, height: Look.tileIcon)
                     .id(reduceMotion || batterySaver.isActive)
             } else if folder.iconIsEmoji {
@@ -3737,20 +3719,32 @@ struct FolderGlyph: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 9, weight: .bold))
                 .offset(y: 1.5)
-                .opacity(arrivalMark ? 1 : 0)
+                .opacity(arrivalMark && (folder.icon != Folder.defaultIcon || live == nil) ? 1 : 0)
                 .animation(reduced ? nil : Look.quick, value: arrivalMark)
                 .transaction { if reduced { $0.disablesAnimations = true } }
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
-        // A live folder wears its source in the corner of its own glyph, so a folded folder
-        // still says it fills itself.
+        // Source artwork belongs to the front panel and follows its exact shear.
+        // Arrival dots replace it on collapsed default folders; custom icons keep
+        // their corner badge because their artwork has no folder face to project.
         .overlay(alignment: .bottomTrailing) {
             if folder.live != nil, let live {
-                LiveBadge(live: live, folder: folder.id)
-                    .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
+                if folder.icon == Folder.defaultIcon {
+                    LiveBadge(live: live, folder: folder.id, showsArrivals: arrivalMark)
+                        .offset(FolderFace.badgeOffset)
+                        .frame(width: Look.tileIcon, height: Look.tileIcon)
+                        .modifier(FolderFaceProjection(openness: openness))
+                        .id(reduced)
+                        .animation(reduced ? nil : FolderMotion.animation(opening: iconOpen), value: iconOpen)
+                } else {
+                    LiveBadge(live: live, folder: folder.id)
+                        .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
+                }
             }
         }
+        .animation(reduced ? nil : FolderMotion.animation(opening: iconOpen), value: arrivalMark)
+        .transaction { if reduced { $0.disablesAnimations = true } }
     }
 }
 

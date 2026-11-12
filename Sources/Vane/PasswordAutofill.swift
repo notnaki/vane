@@ -12,7 +12,7 @@ import WebKit
     static let script = """
     (function () {
       if (window.__vaneFill) return;
-      var topWindow = window, contexts = new Map(), recentContext = null;
+      var topWindow = window, topOrigin = window.origin, contexts = new Map(), recentContext = null;
       // Follow only public open roots. Slots participate in ancestor visibility;
       // closed roots never become reachable, even through a previously cached field.
       function composedParent(el) {
@@ -24,12 +24,24 @@ import WebKit
           active = active.shadowRoot.activeElement;
         return active;
       }
+      function accessibleWindow(candidate) {
+        // WindowProxy [[GetPrototypeOf]] silently returns null when DOM access is
+        // forbidden. contentDocument instead makes WebKit log a security error.
+        try { return !!candidate && Object.getPrototypeOf(candidate) !== null; }
+        catch (_) { return false; }
+      }
+      function exactOriginWindow(candidate) {
+        if (!accessibleWindow(candidate)) return false;
+        var origin = candidate.origin;
+        return origin !== 'null' && origin === topOrigin;
+      }
       function install(window) {
         var document;
         try {
+          if (!accessibleWindow(window)) return;
           // document.domain can make another host or port DOM-accessible. Credentials
           // still require the exact serialized origin, including inherited srcdoc origins.
-          if (window !== topWindow && (window.origin === 'null' || window.origin !== topWindow.origin)) return;
+          if (window !== topWindow && !exactOriginWindow(window)) return;
           document = window.document;
         } catch (_) { return; }
         if (!document) return;
@@ -54,20 +66,28 @@ import WebKit
         }
         function dispose() {
           retired = true; pauseDiscovery();
-          listeners.forEach(function (l) { l[0].removeEventListener(l[1], l[2], l[3]); });
+          listeners.forEach(function (l) {
+            // The stored WindowProxy may now target a foreign document. Its old
+            // global owns those listeners; do not probe methods on the new one.
+            if (l[0] === window && !accessibleWindow(window)) return;
+            l[0].removeEventListener(l[1], l[2], l[3]);
+          });
           listeners = []; lastPair = lastCapturePair = lastGeneration = usernameStep = submittedAttempt = null;
           selectedAccounts = new WeakMap();
         }
         function attachedDocument() {
           if (retired) return false;
           try {
-            if (window.document !== document || window.origin !== topWindow.origin) return false;
+            if (!accessibleWindow(window) || !accessibleWindow(topWindow)) return false;
+            if (window.document !== document || window.origin !== topOrigin || topWindow.origin !== topOrigin) return false;
             var child = window;
             while (child !== topWindow) {
-              if (child.origin === 'null' || child.origin !== topWindow.origin) return false;
+              if (!exactOriginWindow(child)) return false;
+              var parent = child.parent;
+              if (!exactOriginWindow(parent)) return false;
               var frame = child.frameElement;
-              if (!frame || !frame.isConnected || frame.contentDocument !== child.document) return false;
-              child = child.parent;
+              if (!frame || !frame.isConnected || frame.contentWindow !== child) return false;
+              child = parent;
             }
             return true;
           } catch (_) { return false; }
@@ -80,6 +100,7 @@ import WebKit
           return true;
         }
         function focusedFrame() {
+          if (!attachedDocument()) return false;
           try {
             for (var child = window; child !== topWindow; child = child.parent)
               if (deepActive(child.parent.document) !== child.frameElement) return false;
@@ -105,7 +126,10 @@ import WebKit
           el.dispatchEvent(new window.Event('change', { bubbles: true, composed: true }));
         }
         function shown(el) {
-          var r = el.getBoundingClientRect(), style = el.ownerDocument.defaultView.getComputedStyle(el);
+          if (!attachedDocument()) return false;
+          var view = el.ownerDocument.defaultView;
+          if (!accessibleWindow(view)) return false;
+          var r = el.getBoundingClientRect(), style = view.getComputedStyle(el);
           for (var parent = el; parent; parent = composedParent(parent)) {
             var tree = parent.getRootNode();
             if (tree.host && tree.host.shadowRoot !== tree) return false;
@@ -140,10 +164,19 @@ import WebKit
           var result = [], nodes = 0, roots = 0, exceeded = false;
           function visit(scope, depth) {
             if (++roots > 128 || depth > 32) { exceeded = true; return; }
-            var walker = document.createTreeWalker(scope, 1), el;
-            while (!exceeded && (el = walker.nextNode())) {
-              if (++nodes > 20000) { exceeded = true; break; }
-              if (el.matches(selector)) result.push(el);
+            // Admit a bounded tree before allocating native selector results. Count
+            // its light DOM up front; nested roots share the same total budget.
+            var elements = [], walker = document.createTreeWalker(scope, 1), el;
+            while ((el = walker.nextNode())) {
+              if (++nodes > 20000) { exceeded = true; return; }
+              elements.push(el);
+            }
+            // Match in WebKit once per tree instead of crossing into its selector
+            // engine for every decorative element. '*' needs no matching.
+            var matching = selector === '*' ? null : new Set(scope.querySelectorAll(selector));
+            for (var el of elements) {
+              if (exceeded) break;
+              if (!matching || matching.has(el)) result.push(el);
               if (el.shadowRoot) visit(el.shadowRoot, depth + 1);
             }
           }
@@ -209,13 +242,13 @@ import WebKit
             return Array.from(new Set(forms)).every(function (form) {
               if (form.elements.length > 20000) return false;
               var action = new URL(form.getAttribute('action') || document.baseURI, document.baseURI);
-              if (action.origin !== topWindow.origin || action.protocol !== 'https:') return false;
+              if (action.origin !== topOrigin || action.protocol !== 'https:') return false;
               var overrides = deepQuery(form, '[formaction]');
               if (!overrides.complete) return false;
               overrides = overrides.concat(Array.from(form.elements).filter(function (el) { return el.hasAttribute('formaction'); }));
               return overrides.every(function (button) {
                 var override = new URL(button.getAttribute('formaction') || document.baseURI, document.baseURI);
-                return override.origin === topWindow.origin && override.protocol === 'https:';
+                return override.origin === topOrigin && override.protocol === 'https:';
               });
             });
           } catch (_) { return false; }
@@ -366,6 +399,7 @@ import WebKit
           if (visible(recent)) { return recent; }
           var usernameStep = null;
           var scopes = Array.from(new Set(deepQuery(document, 'input').map(rootFor)));
+          if (!scopes.length) return null;
           for (var i = 0; i < scopes.length; i++) {
             if (scopes[i] === document) continue;
             var candidate = pair(scopes[i], capture);
@@ -450,6 +484,7 @@ import WebKit
         function credentialListener(name, fn) {
           var handled = new WeakSet();
           var handler = function (e) {
+            if (!attachedDocument()) return;
             if (handled.has(e)) return;
             handled.add(e);
             var field = eventField(e), tree = field.getRootNode && field.getRootNode();
@@ -554,7 +589,7 @@ import WebKit
         });
         listen(window, 'pageshow', function () {
           if (retired || !attachedDocument()) return;
-          observe(); discoverFrames(); ready();
+          discoverFrames(observe()); ready();
         });
         function fill(account, password, automatic, target, continuation) {
           var p = targetPair();
@@ -619,10 +654,15 @@ import WebKit
         var context = { window: window, fill: fill, anchor: anchor, pair: targetPair, token: token, live: liveDocument, attached: attachedDocument, ready: ready, dispose: dispose,
           generate: generate, generation: function () { return generationToken(lastGeneration && generationFor(lastGeneration.field)); } };
         contexts.set(document, context);
-        function discoverFrames() {
-          // Access itself enforces the origin boundary, including opaque sandbox origins.
-          deepQuery(document, 'iframe,frame').forEach(function (frame) {
-            try { if (frame.contentDocument) install(frame.contentWindow); } catch (_) {}
+        function discoverFrames(elements) {
+          // Admit the actual WindowProxy before reading any protected properties,
+          // including for redirects and CSP sandboxing absent from iframe attributes.
+          // Root discovery already admitted these elements, including shadow frames.
+          // A standalone frame-load event takes its own bounded snapshot.
+          (elements || deepQuery(document, '*')).forEach(function (frame) {
+            var name = frame.localName;
+            if (name !== 'iframe' && name !== 'frame') return;
+            try { install(frame.contentWindow); } catch (_) {}
           });
           // Remove navigated/detached documents rather than retaining their DOM and accounts.
           contexts.forEach(function (ctx, doc) { if (!ctx.attached()) { ctx.dispose(); contexts.delete(doc); if (recentContext === ctx) recentContext = null; } });
@@ -640,7 +680,7 @@ import WebKit
           discoveryTimer = setTimeout(function () {
             discoveryTimer = null; pending = false;
             if (!attachedDocument()) { dispose(); return; }
-            discoverRoots(); discoverFrames();
+            discoverFrames(discoverRoots());
             rejectFailedAttempt();
             var cached = lastPair;
             if (listOpen && !(lastGeneration && generationFor(lastGeneration.field)) &&
@@ -652,7 +692,8 @@ import WebKit
           attributeFilter: ['type', 'autocomplete', 'name', 'id', 'disabled', 'readonly', 'hidden', 'style', 'class', 'inert',
             'aria-hidden', 'aria-invalid', 'aria-labelledby', 'role', 'slot', 'form', 'action', 'formaction'] };
         function discoverRoots() {
-          var roots = new Set(deepQuery(document, '*').filter(function (el) { return el.shadowRoot; })
+          var elements = deepQuery(document, '*');
+          var roots = new Set(elements.filter(function (el) { return el.shadowRoot; })
             .map(function (el) { return el.shadowRoot; }));
           // Disconnect first to stop observing detached trees; then re-admit only live roots.
           observer.disconnect();
@@ -668,17 +709,19 @@ import WebKit
             credentialListeners.forEach(function (entry) { root.addEventListener(entry[0], entry[1], true); });
             shadowListeners.set(root, credentialListeners.slice());
           });
+          return elements;
         }
         function observe() {
-          discoverRoots();
+          var elements = discoverRoots();
           // attachShadow on an already-connected host is invisible to MutationObserver
           // in an isolated world. A single paced scan covers that case without page hooks.
           if (rootTimer === null) rootTimer = setInterval(function () {
             if (!attachedDocument()) { dispose(); return; }
-            discoverRoots(); discoverFrames(); ready();
+            discoverFrames(discoverRoots()); ready();
           }, 1000);
+          return elements;
         }
-        observe(); discoverFrames(); ready();
+        discoverFrames(observe()); ready();
       }
       function currentContext(target) {
         if (target) {
@@ -686,11 +729,13 @@ import WebKit
             return ctx.live() && (ctx.token(ctx.pair()) === target || ctx.generation() === target);
           });
         }
+        if (!accessibleWindow(topWindow) || topWindow.origin !== topOrigin) return null;
         var doc = topWindow.document, active = deepActive(doc);
         try {
           while (active && (active.tagName === 'IFRAME' || active.tagName === 'FRAME')) {
-            if (!active.contentDocument) return null;
-            doc = active.contentDocument;
+            var child = active.contentWindow;
+            if (!exactOriginWindow(child)) return null;
+            doc = child.document;
             active = deepActive(doc);
           }
         } catch (_) { return null; }

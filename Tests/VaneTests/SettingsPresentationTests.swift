@@ -10,7 +10,7 @@ import XCTest
             let tab = try XCTUnwrap(SettingsTab.all.first { $0.id == id })
             for dark in [false, true] {
                 let host = NSHostingView(rootView: tab.pane(SettingsSelection())
-                    .font(Look.text).controlSize(.small).toggleStyle(.switch).defaultAppStorage(.vane)
+                    .font(Look.text).controlSize(.regular).toggleStyle(.switch).defaultAppStorage(.vane)
                     .frame(width: 632)
                     .background(.windowBackground)
                     .environment(\.colorScheme, dark ? .dark : .light))
@@ -28,6 +28,29 @@ import XCTest
                     try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
                         .write(to: directory.appendingPathComponent("\(id)-\(dark ? "dark" : "light").png"))
                 }
+            }
+        }
+    }
+
+    func testSettingsDetailSnapshotsWhenRequested() throws {
+        guard let path = ProcessInfo.processInfo.environment["VANE_SETTINGS_SNAPSHOTS"] else { return }
+        TestEnvironment.prepare()
+        let directory = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for id in ["previews", "profiles", "search", "links", "shortcuts"] {
+            let tab = try XCTUnwrap(SettingsTab.all.first { $0.id == id })
+            for dark in [false, true] {
+                let host = NSHostingView(rootView: tab.pane(SettingsSelection())
+                    .font(Look.text).controlSize(.regular).toggleStyle(.switch).defaultAppStorage(.vane)
+                    .frame(width: 632, height: 650, alignment: .top)
+                    .background(.windowBackground)
+                    .environment(\.colorScheme, dark ? .dark : .light))
+                host.frame = CGRect(x: 0, y: 0, width: 632, height: 650)
+                host.layoutSubtreeIfNeeded()
+                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                    .write(to: directory.appendingPathComponent("\(id)-\(dark ? "dark" : "light").png"))
             }
         }
     }

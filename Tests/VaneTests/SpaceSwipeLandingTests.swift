@@ -53,6 +53,7 @@ import XCTest
         sidebar.width = 250
         defer { sidebar.width = previousWidth }
         let profile = ProfileManager.shared.create(name: "Landing fixture").id
+        addTeardownBlock { @MainActor in try await NativeFixtureProfileCleanup.release([profile]) }
         let first = Space(name: "First", profileID: profile)
         let second = Space(name: "Second", profileID: profile)
         XCTAssertTrue(ProfileManager.shared.saveSpaces([first, second], for: profile))
@@ -72,6 +73,8 @@ import XCTest
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         store.window = window
+        let width = SidebarWidth.inWindow(store)
+        XCTAssertEqual(width, SidebarWidth.minimum, "Exercise the narrow-window fit, not the saved 250pt preference")
         let monitor = SwipeMonitor()
         defer {
             monitor.abort()
@@ -99,7 +102,8 @@ import XCTest
         store.switchTo(space: first)
         store.palette = nil
         let position = LandingPosition(target: second.id)
-        window.contentView = NSHostingView(rootView: LandingStrip(store: store, position: position).vaneMotionPolicy())
+        window.contentView = NSHostingView(rootView: LandingStrip(store: store, position: position, width: width)
+            .environment(\.sidebarWindowWidth, window.contentLayoutRect.width).vaneMotionPolicy())
         var nativeHandoffOffset: CGFloat?
         var nativeOrigin: CGFloat = 0
         let observation = store.$currentSpaceID.sink { id in
@@ -118,7 +122,7 @@ import XCTest
                   window.isVisible, window.occlusionState.contains(.visible),
                   NSApp.modalWindow == nil, window.attachedSheet == nil,
                   let marker = position.marker, marker.window === window,
-                  marker.bounds.width == 250, let model = marker.layer,
+                  marker.bounds.width == width, let model = marker.layer,
                   let presented = model.presentation(), let root = window.contentView?.layer,
                   let presentedRoot = root.presentation() else { return false }
             return abs(presented.convert(.zero, to: presentedRoot).x - model.convert(.zero, to: root).x) < 0.125
@@ -140,7 +144,7 @@ import XCTest
         measuringSelection = true
         let start = ProcessInfo.processInfo.systemUptime
         if clicking { monitor.select(second, in: store) }
-        else { monitor.land(1, to: second, width: 250, store: store) }
+        else { monitor.land(1, to: second, width: width, store: store) }
         while store.currentSpaceID != second.id,
               ProcessInfo.processInfo.systemUptime - start < 2 {
             try await Task.sleep(for: .milliseconds(5))
@@ -159,7 +163,7 @@ import XCTest
         if !empty { XCTAssertEqual(store.active?.currentURL, URL(string: "https://remembered.example/")) }
         XCTAssertEqual(store.spaceDrag, 0)
         print("NATIVE_HANDOFF_PRESENTATION_OFFSET: \(nativeHandoffOffset ?? 0)")
-        XCTAssertEqual(try XCTUnwrap(nativeHandoffOffset), -250, accuracy: 0.125,
+        XCTAssertEqual(try XCTUnwrap(nativeHandoffOffset), -width, accuracy: 0.125,
                        "The ghost must reach its endpoint before the live sidebar replaces it")
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertFalse(position.handoffAnimations.isEmpty, "Observe the incoming live sidebar")
@@ -171,18 +175,19 @@ import XCTest
 private struct LandingStrip: View {
     @ObservedObject var store: TabStore
     let position: LandingPosition
+    let width: CGFloat
 
     var body: some View {
         SpaceSidebarStrip(store: store, favorites: EmptyView(),
                           sections: Text(store.currentSpaceID?.uuidString ?? "Empty")
-                            .frame(width: 250, alignment: .leading)
+                            .frame(width: width, alignment: .leading)
                             .background(LandingNativePosition(position: position))
                             .transaction { transaction in
                                 if store.currentSpaceID == position.target {
                                     position.handoffAnimations.append(transaction.animation != nil && !transaction.disablesAnimations)
                                 }
                             })
-            .frame(width: 250, height: 300)
+            .frame(width: width, height: 300)
             // Match BrowserWindow's palette animation when an empty Space opens Cmd+T.
             .animation(Motion.reduced ? nil : Look.appear, value: store.palette == nil)
     }

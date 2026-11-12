@@ -1,0 +1,164 @@
+import SwiftUI
+import XCTest
+@testable import vane
+
+final class FolderArtworkTests: XCTestCase {
+    func testInteriorInkMaskIgnoresUnpaintedContoursAndBorderButDetectsThinStrokes() {
+        let front = Path(roundedRect: CGRect(x: 2, y: 2, width: 8, height: 8), cornerRadius: 1)
+        let unpainted = Path { path in
+            path.move(to: CGPoint(x: 4, y: 4))
+            path.addLine(to: CGPoint(x: 8, y: 8))
+            path.closeSubpath()
+        }
+        XCTAssertFalse(hasInteriorInk(unpainted, front: front, strokeWidth: 1.5))
+        let stroke = Path { path in
+            path.move(to: CGPoint(x: 4, y: 4))
+            path.addLine(to: CGPoint(x: 4, y: 8))
+        }.strokedPath(StrokeStyle(lineWidth: 0.0625))
+        XCTAssertTrue(hasInteriorInk(stroke, front: front, strokeWidth: 1.5),
+                      "The full occlusion check must detect a real interior stroke")
+        XCTAssertFalse(hasInteriorInk(front.strokedPath(StrokeStyle(lineWidth: 1.5)),
+                                      front: front, strokeWidth: 1.5))
+    }
+
+    private func hasInteriorInk(_ ink: Path, front: Path, strokeWidth: CGFloat) -> Bool {
+        // Paint an independent interior mask. Composing more boolean operations on
+        // the already-composed artwork produces a spurious filled hole on macOS 26.
+        let bounds = front.cgPath.boundingBoxOfPath
+        let scale: CGFloat = 64
+        let width = Int(ceil(bounds.width * scale)) + 2
+        let height = Int(ceil(bounds.height * scale)) + 2
+        func raster(_ path: Path, maskingBorder: Bool = false) -> [UInt8] {
+            var pixels = [UInt8](repeating: 0, count: width * height)
+            pixels.withUnsafeMutableBytes { buffer in
+                guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
+                                              bitsPerComponent: 8, bytesPerRow: width,
+                                              space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else {
+                    XCTFail("Could not create folder ink coverage context")
+                    return
+                }
+                context.translateBy(x: 1, y: 1)
+                context.scaleBy(x: scale, y: scale)
+                context.translateBy(x: -bounds.minX, y: -bounds.minY)
+                context.setFillColor(gray: 1, alpha: 1)
+                context.addPath(path.cgPath)
+                context.fillPath()
+                if maskingBorder {
+                    context.setStrokeColor(gray: 0, alpha: 1)
+                    context.setLineWidth(strokeWidth + 0.02)
+                    context.setLineCap(.round)
+                    context.setLineJoin(.round)
+                    context.addPath(front.cgPath)
+                    context.strokePath()
+                }
+            }
+            return pixels
+        }
+        let pixels = raster(ink)
+        let mask = raster(front, maskingBorder: true)
+        return pixels.indices.contains { mask[$0] == 255 && pixels[$0] != 0 }
+    }
+
+    func testBackSpineReachesLowerCornerThroughoutTransition() {
+        var exposedSamples = 0
+        for frame in 1..<100 {
+            let openness = CGFloat(frame) / 100
+            let bounds = FolderFace.panelBounds(openness)
+            let radius = 2.75 - 0.75 * openness
+            let inset = radius * (1 - 1 / CGFloat(2).squareRoot())
+            let corner = CGPoint(x: bounds.minX + inset, y: bounds.maxY - inset)
+                .applying(FolderFace.projection(openness))
+            let offset = FolderFace.hingeOffset(openness)
+            let top = CGPoint(x: 0.25 - 1.3 * openness + offset.width,
+                              y: 1.25 + 1.35 * openness + offset.height)
+                .applying(FolderFace.rotation(openness))
+            let front = FolderFace.panel(openness)
+            let ink = FolderArtwork(openness: openness)
+                .path(in: CGRect(x: 0, y: 0, width: 16, height: 16))
+            for sample in 1..<20 {
+                let fraction = CGFloat(sample) / 20
+                let point = CGPoint(x: corner.x + (top.x - corner.x) * fraction,
+                                    y: corner.y + (top.y - corner.y) * fraction)
+                if !front.contains(point) {
+                    exposedSamples += 1
+                    XCTAssertTrue(ink.contains(point),
+                                  "Back spine detaches from the lower corner at openness \(openness)")
+                }
+            }
+        }
+        XCTAssertGreaterThan(exposedSamples, 100)
+    }
+
+    func testRearStrokeDoesNotEnterFrontInteriorThroughoutTransition() {
+        for frame in 0...100 {
+            let openness = CGFloat(frame) / 100
+            let style = StrokeStyle(lineWidth: 1.5 - 0.25 * openness,
+                                    lineCap: .round, lineJoin: .round)
+            let ink = FolderArtwork(openness: openness)
+                .path(in: CGRect(x: 0, y: 0, width: 16, height: 16))
+            let front = FolderFace.panel(openness)
+            XCTAssertFalse(hasInteriorInk(ink, front: front, strokeWidth: style.lineWidth),
+                           "Rear stroke enters front interior at openness \(openness)")
+        }
+    }
+
+    func testFrontOpensAroundFixedLowerRightCorner() {
+        let hinge = CGPoint(x: 17.25, y: 16.625)
+        for frame in 0...100 {
+            let openness = CGFloat(frame) / 100
+            let bounds = FolderFace.panelBounds(openness)
+            let corner = CGPoint(x: bounds.maxX, y: bounds.maxY)
+                .applying(FolderFace.projection(openness))
+            XCTAssertEqual(corner.x, hinge.x, accuracy: 0.00001,
+                           "Hinge drifts horizontally at openness \(openness)")
+            XCTAssertEqual(corner.y, hinge.y, accuracy: 0.00001,
+                           "Hinge lifts at openness \(openness)")
+        }
+    }
+
+    func testIntermediateFlapRotationMatchesRecording() {
+        for (openness, expectedDegrees) in [(CGFloat(0), 0.0), (0.5, 1.75), (1, 0)] {
+            let bounds = FolderFace.panelBounds(openness)
+            let transform = FolderFace.projection(openness)
+            let left = CGPoint(x: bounds.midX - 2, y: bounds.minY).applying(transform)
+            let right = CGPoint(x: bounds.midX + 2, y: bounds.minY).applying(transform)
+            let angle = atan2(right.y - left.y, right.x - left.x) * 180 / .pi
+            XCTAssertEqual(angle, expectedDegrees, accuracy: 0.2,
+                           "The flap should rotate during the transition and settle level at each endpoint")
+        }
+    }
+
+    func testOpeningAndClosingTimingTracksRecordedSamples() {
+        // Seconds and pose progress measured from the supplied Arc recording.
+        let opening: [(Double, Double)] = [(0.047, 0.303), (0.089, 0.578), (0.147, 0.892), (0.197, 0.983)]
+        let closing: [(Double, Double)] = [(0.039, 0.261), (0.081, 0.631), (0.123, 0.838), (0.189, 0.990)]
+        for (curve, samples) in [(FolderMotion.opening, opening), (FolderMotion.closing, closing)] {
+            for (time, expected) in samples {
+                XCTAssertEqual(progress(curve, at: time), expected, accuracy: 0.065)
+            }
+        }
+    }
+
+    private func progress(_ curve: FolderMotion.Curve, at time: Double) -> Double {
+        let x = min(1, max(0, time / curve.duration))
+        var lower = 0.0, upper = 1.0
+        for _ in 0..<40 {
+            let t = (lower + upper) / 2
+            let position = 3 * pow(1 - t, 2) * t * curve.x1
+                + 3 * (1 - t) * t * t * curve.x2 + t * t * t
+            if position < x { lower = t } else { upper = t }
+        }
+        let t = (lower + upper) / 2
+        return 3 * pow(1 - t, 2) * t * curve.y1
+            + 3 * (1 - t) * t * t * curve.y2 + t * t * t
+    }
+
+    func testOpenRearStrokeDoesNotProtrudeBelowRoundedCorner() {
+        let ink = FolderArtwork(openness: 1)
+            .path(in: CGRect(x: 0, y: 0, width: 16, height: 16))
+        // These pixels sit beyond the reference's rounded lower-left silhouette.
+        for point in [CGPoint(x: 2.4, y: 15.7), CGPoint(x: 2.5, y: 15.8)] {
+            XCTAssertFalse(ink.contains(point), "Rear cap protrudes at \(point)")
+        }
+    }
+}
