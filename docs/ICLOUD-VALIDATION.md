@@ -339,6 +339,43 @@ onscreen, opaque, full-sized owned WindowServer surface while AppKit's occlusion
 visible bit remained false. The animation candidate is rejected. No verified
 shadow repair is claimed, and this branch dispatches no duplicate shadow jobs.
 
+Run [43243600236](https://github.com/notnaki/vane/actions/runs/43243600236),
+`17215ec7`, built successfully and completed three 559-test native attempts,
+each with two skips and verified cleanup. Assertion counts were two, five and
+two (one unexpected failure in each). Four distinct cases remained: large-folder
+settled cleanup in every attempt, plus closing-row spacing, nested-folder overlap
+and committed release velocity in attempt two. Footer artwork, the profile cases,
+fallback selection timing and retained viewport checks passed all three. The
+large-folder settlement candidate therefore did not repair its timeout; the run
+is not a passing preflight. Astra's static review of the merged fixture changes
+found no actionable issue before this run.
+
+The next focused three-attempt preflight covers the failing disclosure/velocity
+cases and related folder, New Tab, visibility-state and gesture tests. The native
+velocity path now carries NSEvent timestamps into both tracking and release,
+matching the gesture decision's input clock rather than measuring rendering time.
+The original 20 ms flick exercises real monitor events; additional cases separate
+150 ms delayed delivery from a 200 ms stationary event-time hold. The existing
+100 ms stale-input limit and overshoot bounds remain unchanged. Independent
+static review found no actionable issue; runtime qualification remains pending.
+
+The disclosure follow-up keeps its shared coordinate frame and viewport travel
+caps until the authoritative sample is settled, even when a content refresh
+rebuilds rows without individual rollout metadata. An explicit disabled-animation
+transaction can now settle its exact target without waiting for the interrupted
+120-second setup curve; stale revisions cannot rebase a newer reversal. The
+fallback native path starts admitted rows for one folder in one animation
+transaction instead of separately yielded tasks. Detached rows withdraw their
+start requests; unrelated opening refreshes retain their in-flight pose. New
+coverage exercises cancellation, shared admission and opening-refresh spacing.
+These changes retain every original native geometry and cleanup assertion.
+
+A single coordinated incremental local build passed in 88.98 seconds with no
+native test or app launch. It covered the event-clock repair and initial shared
+layout/instant-settlement changes, before the final fallback-start addition;
+it is not a build or native pass for that later addition. Hosted qualification
+remains required for the complete candidate.
+
 ## Verification limits and remaining integration gates
 
 - No second Mac is available. Cross-Mac convergence, offline/restart behavior

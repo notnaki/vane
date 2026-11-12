@@ -153,6 +153,38 @@ final class SidebarDisclosureVisibilityTests: XCTestCase {
 }
 
 @MainActor final class SidebarDisclosureBaselineTests: XCTestCase {
+    func testExplicitImmediateTransactionSettlesAnAlreadyRegisteredCurve() async {
+        let baseline = NativeSidebarDisclosureBaseline()
+        baseline.capture(["folder"], scope: nil)
+        baseline.capture(["folder", "child"], scope: nil)
+        var animated = Transaction(animation: .linear(duration: 120))
+        baseline.registerCompletion(in: &animated)
+        var immediate = Transaction(animation: nil)
+        immediate.disablesAnimations = true
+        baseline.registerCompletion(in: &immediate)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertTrue(baseline.isSettled,
+                      "An explicit immediate endpoint must not wait for the interrupted120-second completion")
+        XCTAssertEqual(baseline.rows, ["folder", "child"])
+    }
+
+    func testSupersededImmediateSettlementCannotRebaseANewerTarget() async {
+        let baseline = NativeSidebarDisclosureBaseline()
+        baseline.capture(["folder"], scope: nil)
+        baseline.capture(["folder", "child"], scope: nil)
+        var immediate = Transaction(animation: nil)
+        immediate.disablesAnimations = true
+        baseline.registerCompletion(in: &immediate)
+        baseline.capture(["folder"], scope: nil)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertFalse(baseline.isSettled)
+        XCTAssertEqual(baseline.rows, ["folder"], "The old endpoint cannot replace the active reversal's basis")
+    }
+
     func testSettledTabChurnDoesNotAccumulateAnimatedRows() {
         let baseline = NativeSidebarDisclosureBaseline()
         var visible = Set(["folder", "original"])

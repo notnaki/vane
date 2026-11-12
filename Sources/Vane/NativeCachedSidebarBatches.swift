@@ -158,10 +158,19 @@ private extension EnvironmentValues {
         visibility = NativeSidebarDisclosureVisibility(rowCount: CGFloat(target.count), changes: changes)
     }
     func registerCompletion(in transaction: inout Transaction) {
-        guard needsCompletion, completionRevision != revision else { return }
-        completionRevision = revision
+        guard needsCompletion else { return }
         let value = visibility
         let revision = revision
+        if transaction.disablesAnimations {
+            // An explicit immediate update cancels this disclosure. Its endpoint
+            // does not own an animation completion, and a removed callback from
+            // the interrupted curve may remain pending for that curve's lifetime.
+            // Rebase outside the update, guarded by this exact target revision.
+            finished(value, revision: revision)
+            return
+        }
+        guard completionRevision != revision else { return }
+        completionRevision = revision
         transaction.addAnimationCompletion(criteria: .removed) { [weak self] in
             self?.finished(value, revision: revision)
         }
@@ -202,7 +211,7 @@ struct NativeSidebarDisclosureLayout {
     private var baselinePrefix: [CGFloat] = [0]
     private var subtreeEnds: [String: Int] = [:]
     private var representatives: [String: String] = [:]
-    private let travelLimits: [String: CGFloat]
+    let travelLimits: [String: CGFloat]
     init(order: [String], baseline: Set<String>, groups: [String: String],
          parents: [String: String] = [:], travelLimits: [String: CGFloat] = [:]) {
         self.order = order
@@ -346,12 +355,71 @@ private struct NativeSidebarDisclosureExtent: AnimatableModifier {
     }
 }
 
+/// Independent native owners must start one folder strip in one transaction.
+/// Waiting for its admitted controls is a mount barrier, not a readiness delay.
+@MainActor final class NativeSidebarRolloutStart {
+    private struct Request {
+        let apply: () -> Void
+        let completed: () -> Void
+    }
+    private let animation: Animation
+    private var expected: Set<UUID>?
+    private var pending: [UUID: Request] = [:]
+    private var withdrawn: Set<UUID> = []
+    private var scheduled = false
+    private var started = false
+    init(animation: Animation) { self.animation = animation }
+    func admit(_ ids: Set<UUID>) {
+        guard !started else { return }
+        expected = ids.subtracting(withdrawn)
+        scheduleIfReady()
+    }
+    func enqueue(_ id: UUID, apply: @escaping () -> Void, completed: @escaping () -> Void) {
+        guard !started else {
+            // An owner attached after the cohort started cannot replay an old
+            // disclosure independently. Detached rows already use this endpoint.
+            Motion.instant(apply)
+            completed()
+            return
+        }
+        withdrawn.remove(id)
+        pending[id] = Request(apply: apply, completed: completed)
+        scheduleIfReady()
+    }
+    func withdraw(_ id: UUID) {
+        withdrawn.insert(id)
+        pending.removeValue(forKey: id)
+        expected?.remove(id)
+        scheduleIfReady()
+    }
+    private func scheduleIfReady() {
+        guard !started, !scheduled, let expected, !expected.isEmpty,
+              expected.isSubset(of: Set(pending.keys)) else { return }
+        scheduled = true
+        Task { @MainActor in
+            await Task.yield()
+            self.scheduled = false
+            guard !self.started, let expected = self.expected, !expected.isEmpty,
+                  expected.isSubset(of: Set(self.pending.keys)) else { return }
+            self.started = true
+            let requests = Array(self.pending.values)
+            self.pending.removeAll()
+            withAnimation(self.animation, completionCriteria: .removed) {
+                requests.forEach { $0.apply() }
+            } completion: {
+                requests.forEach { $0.completed() }
+            }
+        }
+    }
+}
+
 private struct SidebarFolderRolloutGeometry {
     let id = UUID()
     let distance: CGFloat
     let headerID: String
     let animation: Animation
     let clipTop: CGFloat
+    let start: NativeSidebarRolloutStart
     var closing = false
 }
 
@@ -443,12 +511,16 @@ private struct SidebarFolderRolloutRow<Content: View>: View {
             .onDisappear {
                 guard geometry != nil else { return }
                 attached = false
+                if let geometry { geometry.start.withdraw(geometry.id) }
                 // A cancelled yielded start must not leave a cached row folded
                 // forever, or replay that old disclosure when it returns.
                 Motion.instant { suppressed = true; progress = 1 }
                 if let geometry, geometry.closing { finished(geometry.id) }
             }
             .onChange(of: requested?.id) {
+                // A content-only refresh may omit a new rollout request while
+                // this row's existing strip is still moving. Its stored request
+                // continues; disappearance/replacement withdraws queued work.
                 guard requested != nil else { return }
                 attached = true; begin()
             }
@@ -469,34 +541,26 @@ private struct SidebarFolderRolloutRow<Content: View>: View {
             $0.headerID == requested.headerID && $0.distance == requested.distance
                 && $0.clipTop == requested.clipTop
         } == true && requestID != nil && !suppressed
+        if let geometry, requestID != nil, geometry.id != requested.id {
+            geometry.start.withdraw(geometry.id)
+        }
         Motion.instant {
             geometry = requested
             requestID = requested.id
             suppressed = reduced
             if !continuesRollout { progress = reduced || requested.closing ? 1 : 0 }
         }
-        if continuesRollout || requested.closing {
-            // Only a newly mounted opening needs to commit its folded pose.
-            // Deferring an existing strip would put it a frame behind the list.
-            animate(requested)
+        if reduced {
+            Motion.instant { progress = requested.closing ? 0 : 1 }
+            if requested.closing { finished(requested.id) }
             return
         }
-        // A detached root may have retained its old displayed membership. Let
-        // this update install the new folded pose before starting its rollout.
-        Task { @MainActor in
-            await Task.yield()
+        requested.start.enqueue(requested.id, apply: {
             guard attached, requestID == requested.id else { return }
-            animate(requested)
-        }
-    }
-
-    private func animate(_ requested: SidebarFolderRolloutGeometry) {
-        withAnimation(suppressed || reduceMotion || saver.isActive ? nil : requested.animation,
-                      completionCriteria: .removed) {
             progress = requested.closing ? 0 : 1
-        } completion: {
+        }, completed: {
             if requested.closing { finished(requested.id) }
-        }
+        })
     }
 }
 
@@ -1110,7 +1174,7 @@ private final class NativeBatchMouseObservation {
             sizes[owner, default: 0] += 1
         }
         groups.removeAll(keepingCapacity: true)
-        var folderAncestors: [(depth: Int, index: Int, id: String, distance: CGFloat)] = []
+        var folderAncestors: [(depth: Int, index: Int, id: String, distance: CGFloat, start: NativeSidebarRolloutStart)] = []
         let disclosureViewport = clip.map { convert($0.bounds, from: $0) } ?? previousVisible ?? bounds
         let animatesDisclosure = sameScope && transaction.animation != nil && !transaction.disablesAnimations
             && !environment.accessibilityReduceMotion && !Motion.reduced
@@ -1122,7 +1186,7 @@ private final class NativeBatchMouseObservation {
             let rollout = animatesDisclosure && visible && previousRows[row.id] == nil
                 ? ancestor.map { SidebarFolderRolloutGeometry(distance: $0.distance,
                     headerID: $0.id, animation: transaction.animation!,
-                    clipTop: CGFloat($0.index + 1 - index) * pitch) } : nil
+                    clipTop: CGFloat($0.index + 1 - index) * pitch, start: $0.start) } : nil
             if let owner = ownership[row.id] {
                 groups[owner, default: []].append(NativeSidebarOwnedSlot(row: row, index: index, rollout: rollout))
             }
@@ -1137,11 +1201,12 @@ private final class NativeBatchMouseObservation {
                 // empty while the whole document rolls past the reveal edge.
                 let visibleTravel = max(pitch, disclosureViewport.maxY - CGFloat(index + 1) * pitch)
                 folderAncestors.append((row.visible.depth, index, row.id,
-                    min(CGFloat(revealedCount) * pitch, visibleTravel)))
+                    min(CGFloat(revealedCount) * pitch, visibleTravel),
+                    NativeSidebarRolloutStart(animation: transaction.animation ?? Look.quick)))
             }
         }
         if animatesDisclosure {
-            var closingFolders: [(depth: Int, index: Int, id: String, distance: CGFloat)] = []
+            var closingFolders: [(depth: Int, index: Int, id: String, distance: CGFloat, start: NativeSidebarRolloutStart)] = []
             for (index, row) in previousOrder.enumerated() {
                 closingFolders.removeAll { $0.depth >= row.visible.depth }
                 if let ancestor = closingFolders.last, !authorizedRowIDs.contains(row.id), modelIDs.contains(row.id),
@@ -1151,7 +1216,7 @@ private final class NativeBatchMouseObservation {
                                                        width: bounds.width, height: Look.rowHeight)) {
                     let geometry = SidebarFolderRolloutGeometry(distance: ancestor.distance,
                         headerID: ancestor.id, animation: transaction.animation!,
-                        clipTop: CGFloat(ancestor.index + 1 - index) * pitch, closing: true)
+                        clipTop: CGFloat(ancestor.index + 1 - index) * pitch, start: ancestor.start, closing: true)
                     groups[owner, default: []].append(NativeSidebarOwnedSlot(row: row, index: index, rollout: geometry))
                 }
                 if let folder = row.visible.entry.folder, !folder.collapsed,
@@ -1164,7 +1229,8 @@ private final class NativeBatchMouseObservation {
                     let hiddenCount = previousOrder[(index + 1)..<end].filter { !authorizedRowIDs.contains($0.id) }.count
                     let visibleTravel = max(pitch, disclosureViewport.maxY - CGFloat(index + 1) * pitch)
                     closingFolders.append((row.visible.depth, index, row.id,
-                        min(CGFloat(hiddenCount) * pitch, visibleTravel)))
+                        min(CGFloat(hiddenCount) * pitch, visibleTravel),
+                        NativeSidebarRolloutStart(animation: transaction.animation!)))
                 }
             }
         }
@@ -1385,6 +1451,18 @@ private final class NativeBatchMouseObservation {
             }
             previousHost = entry.host
         }
+        if disclosureSample == nil {
+            var cohorts: [ObjectIdentifier: (NativeSidebarRolloutStart, Set<UUID>)] = [:]
+            for (_, slots) in wantedGroups {
+                for slot in slots {
+                    guard let rollout = slot.rollout else { continue }
+                    let key = ObjectIdentifier(rollout.start)
+                    if cohorts[key] == nil { cohorts[key] = (rollout.start, []) }
+                    cohorts[key]?.1.insert(rollout.id)
+                }
+            }
+            for (_, cohort) in cohorts { cohort.0.admit(cohort.1) }
+        }
         needsReconcile = false
         previousWidth = bounds.width
         checkReadiness()
@@ -1424,7 +1502,7 @@ private final class NativeBatchMouseObservation {
     private func updateDisclosureLayout(previousOrder: [String]) {
         guard let sample = disclosureSample else { disclosureLayout = nil; disclosureFrame = nil; return }
         let rolling = groups.values.flatMap { $0 }.filter { $0.rollout != nil }
-        guard !rolling.isEmpty else {
+        guard !sample.isSettled || !rolling.isEmpty else {
             disclosureLayout = nil
             disclosureFrame = nil
             disclosureKnownRows = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -1451,7 +1529,10 @@ private final class NativeBatchMouseObservation {
         let parents = Dictionary(disclosureKnownRows.values.compactMap { row in
             row.visible.entry.parent.map { (row.id, $0.uuidString) }
         }, uniquingKeysWith: { first, _ in first })
-        var limits: [String: CGFloat] = [:]
+        // A content refresh can remove per-row rollout requests without
+        // completing the section's shared curve. Preserve both its coordinate
+        // frame and viewport cap until the authoritative sample is settled.
+        var limits = disclosureLayout?.travelLimits ?? [:]
         for slot in rolling {
             if let geometry = slot.rollout {
                 limits[geometry.headerID] = max(limits[geometry.headerID, default: 0], geometry.distance / pitch)
@@ -1460,6 +1541,15 @@ private final class NativeBatchMouseObservation {
         disclosureLayout = NativeSidebarDisclosureLayout(order: order, baseline: sample.baseline,
             groups: [:], parents: parents, travelLimits: limits)
         disclosureFrame = disclosureLayout?.frame(visibility: sample.visibility)
+    }
+    var disclosureDiagnosticString: String {
+        let slots = groups.values.flatMap { $0 }
+        return "rows=\(rows.count) settled=\(String(describing: disclosureSample?.isSettled))"
+            + " sampledCount=\(String(describing: disclosureSample?.visibility.rowCount))"
+            + " baselineCount=\(String(describing: disclosureSample?.baseline.count))"
+            + " sharedFrame=\(disclosureFrame != nil) opening=\(slots.filter { $0.rollout?.closing == false }.count)"
+            + " closing=\(slots.filter { $0.rollout?.closing == true }.count) bounds=\(bounds) clips=\(clipsToBounds)"
+            + " disabled=\(transaction.disablesAnimations) animated=\(transaction.animation != nil)"
     }
     fileprivate func presentDisclosure(_ sample: NativeSidebarDisclosureSample?) {
         guard !disposed, let sample else { return }

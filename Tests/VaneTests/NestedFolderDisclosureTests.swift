@@ -332,6 +332,9 @@ import XCTest
         // an active SwiftUI animation whose target value has not changed.
         Motion.instant { store.pins.edit(folder: folder.id) { $0.collapsed = false } }
         var requestedRestingCollapse = false
+        defer {
+            print("LARGE_FOLDER_SETTLEMENT requestedCollapse=\(requestedRestingCollapse) \(section.disclosureDiagnosticString)")
+        }
         try await compatibilityWait {
             display()
             if !requestedRestingCollapse {
