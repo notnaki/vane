@@ -122,8 +122,46 @@ receipt; they do not count as passing coverage.
 
 Compact-window fixture geometry now uses the window's fitted sidebar width,
 including parked profile owners, instead of the saved global width. This removed
-the reproducible width/reuse mismatches, but the retained animated Space failures
-remain integration gates. The failed hidden-layout experiment was reverted.
+the reproducible width/reuse mismatches. Animated Space failures remained
+integration gates until the subsequent repair below. The failed hidden-layout
+experiment was reverted.
+
+## Native profile handoff repair, 12 November 2026
+
+The repaired tree integrates main through `e3452e32` (#657). Hosted focused run
+[43169436160](https://github.com/notnaki/vane/actions/runs/43169436160), at
+`b35efe4b`, passed all 20 tests in 37.31 seconds with primary and cleanup statuses
+both 0. All eight owned AppKit loops reported a successful join. This selection
+includes the six originally failing profile/Space cases, destination-monitor
+ownership and compositor timeline regressions, metadata observation and all 11
+profile persistence tests.
+
+The arriving profile now joins the source wash's existing native animation clock
+and retains its own settled colour when the parked source is restored. Removing
+the destination's input monitor cannot abort the source-owned cover. A rendering
+observation bridge avoids repainting every profile root for active-profile
+persistence notifications while retaining metadata and persistence-error updates.
+
+A buffered cold-visit trace recorded a 142 ms profile hop and a 207 ms initial
+visible-host layout after compositor travel had started. The nominal 100 ms
+observation ran 644 ms after the landing call returned, so the animation's early
+frames had elapsed during mounting. Both new and retained profile destinations
+now finish native layout under the captured sidebar before starting the original
+landing animation. This changes preparation order; it does not establish that
+cold initialization itself became faster. The temporary timing hooks were
+removed before the passing focused run.
+
+Fixtures now retire native roots inside their owned application-loop body before
+closing that loop. Measurements at the original 100 ms, subsequent 40 ms and
+1000 ms checkpoints are captured before reporting assertions: earlier evidence
+showed that XCTest failure symbolication could block AppKit and contaminate later
+observations. Repeated-swipe measurements are likewise recorded before reporting
+failures. Pixel thresholds, frame counts, reversal bounds, timing checkpoints and
+cleanup requirements remain unchanged. Every failed attempt and its logs remain
+retained; a passing focused selection does not replace broader or required CI.
+
+Broader serial native validation and the fresh review of this repair are pending.
+Protected required CI on the final PR integration remains a merge gate.
 
 ## Verification limits and remaining integration gates
 
