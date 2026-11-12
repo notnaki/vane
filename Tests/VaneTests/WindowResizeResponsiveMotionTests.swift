@@ -178,6 +178,7 @@ import XCTest
                     throw NSError(domain: "ResizeMotionForegroundReadiness", code: 1)
                 }
                 let baselineWidth = try XCTUnwrap(sampler.samples.values.last).width
+                let profile = try ResizeMotionProfile.begin(environment: environment, web: web, sidebar: sidebar)
                 let began = CACurrentMediaTime()
 #if DEBUG
                 if traceTiming { timing.append("fixture.began", time: began, width: baselineWidth) }
@@ -240,6 +241,7 @@ import XCTest
 #endif
                 window.endPageResize()
                 try await sampler.stop()
+                try await profile?.finish(began: began, ended: ended, web: web)
                 let samples = sampler.samples.values.filter { $0.time >= began && $0.time <= ended }
                 var changes = [ResponsiveMotionSamples.Frame(time: began, width: baselineWidth)]
                 for sample in samples where abs(sample.width - changes.last!.width) > 0.5 { changes.append(sample) }
