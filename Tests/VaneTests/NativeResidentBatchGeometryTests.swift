@@ -123,7 +123,16 @@ import XCTest
         XCTAssertTrue(report.usesThreeBatchBudget)
         XCTAssertEqual(report.requestedMaxGraphBudget, 3)
         XCTAssertFalse(report.stagingEnabled)
-        try await compatibilityWait { abs(document.frame.height - extent) < 1 }
+        try await compatibilityWait {
+            NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
+                && NativeFixtureMountAdmission.scrollReady(scroll, root: host, window: window,
+                    minimumHeight: extent)
+                && owner.window === window && abs(document.frame.height - extent) < 1
+        }
+        // Initial activation can refresh existing roots' SwiftUI environment.
+        // Measure reuse from the admitted owner, before the first scroll action.
+        let admittedRootUpdates = report.batchCounts.rootUpdates
+        print("RESIDENT_BATCH_ADMISSION count=\(count) rootUpdates=\(admittedRootUpdates)")
         var previousControls: [String: WeakButton] = [:]
         for fraction in [CGFloat(0), 0.5, 1, 0.25, 0] {
             let y = max(0, extent - scroll.contentView.bounds.height) * fraction
@@ -225,7 +234,8 @@ import XCTest
         XCTAssertTrue(highlighted.cell?.isHighlighted == true)
         XCTAssertEqual(report.batchCounts.detachedProtectionOwnerTreeScans, 0)
         report.recordsProtectionTreeScans = false
-        XCTAssertEqual(report.batchCounts.rootUpdates, 0,
+        print("RESIDENT_BATCH_SCROLL count=\(count) rootUpdatesDelta=\(report.batchCounts.rootUpdates - admittedRootUpdates)")
+        XCTAssertEqual(report.batchCounts.rootUpdates, admittedRootUpdates,
                        "Scrolling alone must reuse roots rather than resubmit SwiftUI content")
         // Stable owners may interleave after a deliberate transpose. Report the
         // exception truthfully instead of claiming 24 controls / 3 roots, and

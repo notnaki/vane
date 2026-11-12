@@ -175,6 +175,19 @@ extension ExtensionNativeMessagingErrorTests {
         }
     }
 
+    func testNativeModeFixtureAdmitsLaunchablePolicyFromProhibitedProcess() async throws {
+        TestEnvironment.prepare()
+        let application = NSApplication.shared
+        let original = application.activationPolicy()
+        defer { application.setActivationPolicy(original) }
+        application.setActivationPolicy(.prohibited)
+        try await withNativeModeFixture { _ in
+            XCTAssertEqual(application.activationPolicy(), .accessory)
+            XCTAssertTrue(application.isRunning)
+            XCTAssertTrue(NSRunningApplication.current.isFinishedLaunching)
+        }
+    }
+
     func testCancellingNativeReviewCannotChangeTheAcceptedMode() async throws {
         try await withNativeModeFixture { fixture in
             let original = try XCTUnwrap(fixture.host.installed.first)
@@ -609,7 +622,12 @@ extension ExtensionNativeMessagingErrorTests {
         // A preceding fixture's policy restoration can still be pending in AppKit.
         // Admit an explicit target instead of inferring a policy that may change
         // between the async loop's construction and its first main-loop turn.
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: retryPage ? .regular : originalPolicy)
+        // A prohibited test process can remain launch-unready even with a running
+        // AppKit loop. Admit an accessory process for SDK work, then restore the
+        // caller's policy only after the owned loop has joined.
+        let targetPolicy: NSApplication.ActivationPolicy = retryPage ? .regular
+            : (originalPolicy == .prohibited ? .accessory : originalPolicy)
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: targetPolicy)
         lifecycleTrace?.record("after acquire")
         let fixture = NativeModeFixture(hasBackground: hasBackground, retryPage: retryPage,
                                         verifyRunning: { try loop.verifyRunning() })
