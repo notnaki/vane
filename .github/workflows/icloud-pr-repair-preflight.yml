@@ -9,7 +9,7 @@ env:
   VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '600'
   SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
 jobs:
-  focused:
+  build:
     runs-on: macos-26
     timeout-minutes: 25
     steps:
@@ -41,31 +41,79 @@ jobs:
         env:
           VANE_CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}
         run: ./make-app.sh debug --skip-app-build
-      - name: Enable and verify animated motion on the hosted desktop
+      - name: Package verified native runtime
+        run: |
+          set -euo pipefail
+          BIN_PATH=$(swift build -c debug --show-bin-path)
+          python3 scripts/ci-build-artifact.py pack --bin-path "$BIN_PATH" --revision "$GITHUB_SHA" --archive "$RUNNER_TEMP/icloud-runtime.tar.gz"
+      - name: Share runtime
+        uses: actions/upload-artifact@v6
+        with:
+          name: icloud-repair-runtime
+          path: ${{ runner.temp }}/icloud-runtime.tar.gz
+          compression-level: 0
+          retention-days: 1
+
+  native:
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          digest-mismatch: warn
+          name: icloud-repair-runtime
+          path: ${{ runner.temp }}/runtime
+      - name: Restore revision and toolchain verified runtime
+        run: python3 scripts/ci-build-artifact.py restore --revision "$GITHUB_SHA" --archive "$RUNNER_TEMP/runtime/icloud-runtime.tar.gz"
+      - name: Enable and verify animated motion
         run: |
           defaults write com.apple.universalaccess reduceMotion -bool false
           swift -e 'import AppKit; let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion; print("HOST_REDUCE_MOTION=\(reduced)"); exit(reduced ? 1 : 0)'
-      - name: Three focused attempts with retirement
+      - name: Admit owned AppKit loop and verify retirement
+        env:
+          VANE_APPKIT_LOOP_SMOKE: '1'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
         run: |
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests[.]NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops$' 2>&1 | tee "$RUNNER_TEMP/icloud-smoke.log"
           python3 - <<'PYTHON'
+          import os, pathlib
+          text = (pathlib.Path(os.environ['RUNNER_TEMP'])/'icloud-smoke.log').read_text()
+          assert 'Native suite primary status=0; cleanup status=0' in text
+          assert 'AppKit loop smoke: delayedHeartbeat=true, completed=true' in text
+          assert '*** Signal ' not in text
+          PYTHON
+      - name: Focused native attempt with retirement
+        env:
+          ATTEMPT: ${{ matrix.attempt }}
+        run: |
+          python3 -u - <<'PYTHON'
           import os, pathlib, subprocess, sys
-          root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          selection = 'ICloud|PasswordShadowAutofillTests|BoundedSidebarMountingTests|KeyboardAccessibilityTests|WindowResizeLayoutTests|WindowResizePreparationTests|NewTabDisclosureTests|PasswordAutofillTests.testSelectedAccountCannotContinueIntoDifferentHiddenOrReadOnlyIdentity|PasswordAutofillTests.testSubmittedMainUsernameAwaitsProcessedDenialBeforeNavigation|SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testFirstProfileVisitChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testSlowNativeSpaceLandingNeverReversesItsPresentation|SpaceNativeRenderingTests.testNativeSpaceClickBlendsBackgroundDuringSidebarTravel|SpaceNativeRenderingTests.testProfileClickDoesNotRestoreItsDepartureColour|SpaceNativeRenderingTests.testProfileSwipeDoesNotRestoreItsDepartureColour|SpaceNativeRenderingTests.testReverseProfileSwipeTakesOverTheSamePresentedNativeRows|SpaceNativeRenderingTests.testRealSwipePresentedColourFollowsNativeLandingPosition'
-          failed = False
-          for attempt in range(1, 4):
-              log = root / f'icloud-pr-repair-{attempt}.log'
-              with log.open('w') as output:
-                  result = subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection],stdout=output,stderr=subprocess.STDOUT)
-              text = log.read_text()
-              print(text, flush=True)
-              passed = result.returncode == 0 and 'Native suite primary status=0; cleanup status=0' in text and '*** Signal ' not in text
-              print(f'ATTEMPT {attempt}: passed={passed}', flush=True)
-              failed |= not passed
-          sys.exit(failed)
+          selection = 'ICloud|PasswordShadowAutofillTests|PasswordAutofillTests|BoundedSidebarMountingTests|KeyboardAccessibilityTests|WindowResizeLayoutTests|WindowResizePreparationTests|NewTabDisclosureTests|SpaceNativeRenderingTests|SpaceColourTransitionTests|SpaceFooterPresentationTests|ProfileChromeObservationTests|ProfilePersistenceTests|SidebarDisclosure|NestedFolderDisclosureTests|SidebarNativeReadinessTests|NativeSidebar|NativeResidentBatchGeometryTests|NativeCoveredSidebarLayoutTests|FolderRolloutTests|OffscreenNativeSidebarReadinessTests|RetainedRowVirtualizationTests'
+          log = pathlib.Path(os.environ['RUNNER_TEMP']) / ('icloud-pr-repair-' + os.environ['ATTEMPT'] + '.log')
+          with log.open('w') as output:
+              process = subprocess.Popen(['python3','-u','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              for line in process.stdout:
+                  output.write(line); output.flush()
+                  print(line, end='', flush=True)
+              status = process.wait()
+          text = log.read_text()
+          passed = status == 0 and 'Native suite primary status=0; cleanup status=0' in text and '*** Signal ' not in text
+          print('ATTEMPT ' + os.environ['ATTEMPT'] + ': passed=' + str(passed), flush=True)
+          sys.exit(0 if passed else (status or 1))
           PYTHON
       - name: Preserve every attempt
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: icloud-pr-repair-preflight
-          path: ${{ runner.temp }}/icloud-pr-repair-*.log
+          name: icloud-repair-attempt-${{ matrix.attempt }}
+          path: |
+            ${{ runner.temp }}/icloud-pr-repair-*.log
+            ${{ runner.temp }}/icloud-smoke.log
+            /tmp/vane-resize-*.png

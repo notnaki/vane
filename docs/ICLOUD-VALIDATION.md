@@ -157,6 +157,63 @@ Hosted three-attempt native preflight
 all attempted outcomes. Hosted results and required current-head PR CI remain
 integration gates.
 
+## Normal-motion handoff and disclosure repairs, 12 November 2026
+
+Hosted run [43205593084](https://github.com/notnaki/vane/actions/runs/43205593084)
+confirmed that the fitted-width correction removed most geometry failures. Its
+first two attempts completed with verified cleanup but remaining profile/motion
+failures; the job deadline interrupted attempt three, whose cleanup is not
+verified. The earlier `ed210849` run likewise retains two completed failed
+attempts and a partial third attempt. Neither cancelled run counts as a pass.
+
+The narrower three-attempt run
+[43208252187](https://github.com/notnaki/vane/actions/runs/43208252187), at
+`f8bb4aad`, completed every attempt and verified all cleanup. It retained six
+distinct failing UI cases across its attempts: cached and first-visit page
+handoffs, reverse-profile travel, click tint, parked-profile colour restoration,
+and New Tab disclosure. Sync, credentials and shadow-autofill had no failures.
+Its cached-page diagnostics showed a real active tab with no native superview,
+while the window was key and the app active. This establishes a mount-order race
+separately from the shared-desktop foreground failures.
+
+A deterministic notification regression reproduced three failed assertions when
+removing the arriving profile's input monitor aborted the source-owned cover.
+The monitor now drops only its own input lease; explicit abort still cancels.
+Four related tests then passed locally. A second real-compositor regression
+reproduced a late-arriving wash at red 0.2114 while the source was already at
+0.0921, outside the unchanged 0.03 tolerance. Joining the same native clock passed
+all ten selected colour and ownership tests, with verified cleanup. Retained
+wash layers do not gate completion of the two moving row surfaces.
+
+Committed profile navigation now prepares only its destination under hidden
+native roots while the source keeps window, footer, keyboard and page-lease
+authority. Activation remains queued until the input action returns. The displayed
+profile completes native layout before its curve starts; early page, colour and
+footer observations retain their original 100 ms, 40 ms and 1000 ms checkpoints.
+Window chrome observes profile metadata and save failures without repainting all
+retained roots solely because the default active profile was persisted. Dedicated
+coverage verifies hidden preparation cannot acquire the page lease or keyboard.
+
+Independent review found that footer emphasis still discarded the newly shared
+clock. Its explicit-clock regression reproduced a zero start. The repair retains
+nonzero media time, converts it per marker layer, and seeds remaining-duration
+tracking from that same start; legacy zero starts still begin at CA commit. Native
+observations are captured before XCTest failure reporting, whose symbolication
+was observed to block the main actor and consume later animation observations.
+
+Profile fixtures now retire both visible and parked native roots before deleting
+synthetic profile files. Reverse fixtures own their AppKit loop and admit their
+exact visible owner before input. Memory-pressure coverage admits an existing
+warm owner before applying relief and retains the original synchronous removal
+assertion. The slow-swipe fixture retains all 35 samples, their 8 ms spacing and
+its reversal/completion assertions; its explicit 200 ms landing fits the existing
+280 ms minimum observation window, unlike the 300 ms product default. The repaired
+slow-swipe case passed three local attempts with verified cleanup.
+
+Disclosure repair and final integrated hosted/required CI remain pending. The
+next preflight uses one revision/toolchain-verified runtime and three isolated
+native desktops, with every outcome and cleanup receipt retained independently.
+
 ## Verification limits and remaining integration gates
 
 - No second Mac is available. Cross-Mac convergence, offline/restart behavior
