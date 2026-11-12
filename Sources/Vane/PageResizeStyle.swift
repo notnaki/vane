@@ -16,8 +16,9 @@ import WebKit
         return NSSize(width: width, height: height)
     }
 
-    static func prepare(_ web: WKWebView, nextSize: NSSize? = nil, completion: (() -> Void)? = nil) {
-        guard let viewport = viewportSize(nextSize ?? web.bounds.size, insets: web.safeAreaInsets, zoom: web.pageZoom) else { return }
+    @discardableResult static func prepare(_ web: WKWebView, nextSize: NSSize? = nil, completion: (() -> Void)? = nil) -> UUID? {
+        guard let viewport = viewportSize(nextSize ?? web.bounds.size, insets: web.safeAreaInsets, zoom: web.pageZoom) else { return nil }
+        let preparation = UUID()
 #if DEBUG
         ResizeTimingDiagnostics.record("style.javascript.dispatched", width: viewport.width, height: viewport.height)
         let traceID = ResizeTimingDiagnostics.stateSink == nil ? nil : UUID()
@@ -30,7 +31,7 @@ import WebKit
             ])
         }
 #endif
-        web.evaluateJavaScript(source + "(\(Double(viewport.width)), \(Double(viewport.height)))", in: nil, in: world) { result in
+        web.evaluateJavaScript(source + "(\(Double(viewport.width)), \(Double(viewport.height)), '\(preparation.uuidString)')", in: nil, in: world) { result in
 #if DEBUG
             let event: String
             switch result {
@@ -47,6 +48,7 @@ import WebKit
 #endif
             completion?()
         }
+        return preparation
     }
 
     /// Warm a loaded visible page before its first drag, including host-only resizes.
@@ -55,21 +57,27 @@ import WebKit
         prepare(web)
     }
 
-    static func finish(_ web: WKWebView) {
+    static func finish(_ web: WKWebView) { finish(web, matching: nil) }
+
+    static func finish(_ web: WKWebView, matching preparation: UUID?) {
 #if DEBUG
         ResizeTimingDiagnostics.recordState("style.finish.dispatched", fields: [
             "page": String(describing: ObjectIdentifier(web)), "frame": NSStringFromRect(web.frame)
         ])
 #endif
+        let expected = preparation.map { "'\($0.uuidString)'" } ?? "null"
         web.evaluateJavaScript("""
         (() => { const state = globalThis.__vaneResizeStyle;
-          if (state?.active) { state.sheet.disabled = true; state.active = false; }
+          const expected = \(expected);
+          if (state?.active && (expected === null || state.preparation === expected)) {
+            state.sheet.disabled = true; state.active = false;
+          }
         })()
         """, in: nil, in: world) { _ in }
     }
 
     private static let source = """
-    ((width, height) => {
+    ((width, height, preparation) => {
       try {
         if (!document.documentElement || !globalThis.CSSStyleSheet || !document.adoptedStyleSheets) return;
         let state = globalThis.__vaneResizeStyle;
@@ -112,6 +120,7 @@ import WebKit
         state.phase = phase;
         state.width = width;
         state.height = height;
+        state.preparation = preparation;
         if (!state.active) state.sheet.disabled = false;
         state.active = true;
         if (!document.adoptedStyleSheets.includes(state.sheet))

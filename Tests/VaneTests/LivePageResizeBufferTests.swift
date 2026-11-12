@@ -1173,6 +1173,50 @@ import XCTest
         XCTAssertTrue(f.web.autoresizesSubviews)
     }
 
+    func testTimedOutOwnersLatePaintCannotDisableTransferredPagesNewPreparation() async throws {
+        let f = Fixture(); defer { f.close() }
+        let variables = (0..<160).map { "--transfer-fixture-\($0):\($0)px;" }.joined()
+        f.web.loadHTMLString("<html><title>Transfer ready</title><style>:root{\(variables)}</style></html>", baseURL: nil)
+        defer { f.web.stopLoading() }
+        try await compatibilityWait { !f.web.isLoading && f.web.title == "Transfer ready" }
+        f.buffer.start()
+        let oldPaint = nextPaint(&f.paints)
+        f.request(640)
+        try XCTUnwrap(f.deadlines.first)()
+        XCTAssertTrue(f.buffer.bypassForDrag)
+
+        f.host.removePage()
+        let newOwner = WebHost(f.web)
+        newOwner.setFrameSize(NSSize(width: 333, height: 222))
+        let root = NSView(frame: f.window.contentView!.frame)
+        root.addSubview(newOwner)
+        f.window.contentView = root
+        defer { newOwner.removePage() }
+        PageResizeStyle.prepare(f.web)
+        let state = "JSON.stringify([globalThis.__vaneResizeStyle.active,globalThis.__vaneResizeStyle.sheet.disabled,globalThis.__vaneResizeStyle.width])"
+        func readState() async throws -> String {
+            try await withCheckedThrowingContinuation { continuation in
+                f.web.evaluateJavaScript(state, in: nil, in: PageResizeStyle.world) { result in
+                    continuation.resume(with: result.flatMap { value in
+                        guard let value = value as? String else {
+                            return .failure(NSError(domain: "TransferStyleState", code: 1))
+                        }
+                        return .success(value)
+                    })
+                }
+            }
+        }
+        let prepared = try await readState()
+        XCTAssertEqual(prepared, "[true,false,333]")
+        oldPaint()
+        let after = try await readState()
+        XCTAssertEqual(after, "[true,false,333]", "Retiring the timed-out owner must leave the new owner's active hints intact")
+        XCTAssertFalse(f.buffer.bypassForDrag)
+        XCTAssertEqual(f.completions, 1)
+        XCTAssertTrue(f.web.superview === newOwner)
+        XCTAssertEqual(f.web.frame.size, NSSize(width: 333, height: 222))
+    }
+
     func testWatchdogUsesLatestRequestAndLateCallbacksCannotCommitAgain() {
         let f = Fixture(); defer { f.close() }
         f.buffer.start(); f.request(800); f.request(850)

@@ -59,6 +59,7 @@ struct LivePageResizeAnchor {
         var painted: NSSize
         var prepared: NSSize
         var restored = false
+        private var stylePreparation: UUID?
 
         init(web: WKWebView, host: WebHost) {
             self.web = web
@@ -115,7 +116,7 @@ struct LivePageResizeAnchor {
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.prepare.frameAssigned", width: size.width, height: size.height)
 #endif
-            PageResizeStyle.prepare(web, nextSize: size, completion: progress)
+            stylePreparation = PageResizeStyle.prepare(web, nextSize: size, completion: progress)
             web.prepareContent(in: NSRect(origin: .zero, size: size))
         }
 
@@ -124,7 +125,7 @@ struct LivePageResizeAnchor {
             let frame = anchor.frame(for: prepared, in: host.bounds)
             guard frame != expectedFrame else { return }
             assignFrame(size: prepared)
-            PageResizeStyle.prepare(web, nextSize: prepared)
+            stylePreparation = PageResizeStyle.prepare(web, nextSize: prepared)
         }
 
         func acknowledgePaint() { painted = prepared }
@@ -159,8 +160,14 @@ struct LivePageResizeAnchor {
                     host.clipsToBounds = hostClip
                 }
             }
-            PageResizeStyle.finish(web)
+            finishStyle()
             web.prepareContent(in: web.bounds)
+        }
+
+        func finishStyle() {
+            // A timeout can outlive this host. The queued script must not retire
+            // hints prepared later by either a transferred or a renewed owner.
+            if let stylePreparation { PageResizeStyle.finish(web, matching: stylePreparation) }
         }
     }
 
@@ -439,7 +446,7 @@ struct LivePageResizeAnchor {
             bypassForDrag = false
             recoveryToken = nil
             recoveryPaints.removeAll()
-            pages.forEach { PageResizeStyle.finish($0.web) }
+            pages.forEach { $0.finishStyle() }
 #if DEBUG
             trace("buffer.bypass.retired")
 #endif
@@ -855,7 +862,7 @@ struct LivePageResizeAnchor {
         usesNativeSidebarSizing = true
         apply(request.frame, request.sidebar)
         if released || outstanding.isEmpty {
-            pages.forEach { PageResizeStyle.finish($0.web) }
+            pages.forEach { $0.finishStyle() }
             completion()
 #if DEBUG
             trace("buffer.completion.returned")
