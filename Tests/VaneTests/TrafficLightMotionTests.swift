@@ -87,12 +87,20 @@ import XCTest
 
         func sample(_ label: String, expectsIntermediate: Bool = true,
                     afterSample: (Int) -> Void = { _ in }, action: @escaping @MainActor () -> Void) async throws {
-            try await performFixtureApplicationAction(in: window, action)
+            var actionStart = ProcessInfo.processInfo.systemUptime
+            try await performFixtureApplicationAction(in: window) {
+                actionStart = ProcessInfo.processInfo.systemUptime
+                action()
+            }
             var intermediate = false
+            var timing: [String] = []
             for index in 0..<20 {
                 try await Task.sleep(for: .milliseconds(16))
+                let beforeDisplay = ProcessInfo.processInfo.systemUptime
                 display()
+                let afterDisplay = ProcessInfo.processInfo.systemUptime
                 let x = try presentedX(sidebar)
+                timing.append("\((beforeDisplay - actionStart) * 1000)/\((afterDisplay - actionStart) * 1000)ms x=\(x)")
                 let lightX = button.convert(button.bounds, to: host).minX
                 if x > -200 && x < -2 {
                     intermediate = true
@@ -104,6 +112,9 @@ import XCTest
                         "\(label): lights must share the sidebar's intermediate position")
                 }
                 afterSample(index)
+            }
+            if ProcessInfo.processInfo.environment["VANE_CLICK_PHASE_TRACE"] == "1" {
+                print("LIGHTS_SAMPLE \(label) " + timing.joined(separator: " | "))
             }
             XCTAssertEqual(intermediate, expectsIntermediate,
                 "\(label): normal motion must travel; reduced motion must settle immediately")

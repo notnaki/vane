@@ -2066,14 +2066,28 @@ private struct SpaceSwipe: ViewModifier {
                     slide.start(duration: duration, completion: finish)
                 }
             } else {
-                slide.start(duration: duration, completion: finish)
-                // Within one profile, keep the current native host and submit
-                // travel before restoring the page beneath the captured rows.
-                DispatchQueue.main.async { [weak self, weak store] in
-                    guard let self, self.transition == token, let store,
+                // Page activation can spend the entire travel interval mounting
+                // the live root. Keep the captured rows at their current position
+                // until that root is prepared, then commit its wash and travel in
+                // one native transaction so no destination colour flashes first.
+                slide.armLanding(to: destination, completion: finish)
+                DispatchQueue.main.async { [weak self, weak store, weak host, weak slide] in
+                    guard let self, self.transition == token, let store, let host, let slide,
+                          slide.isActive, host.spaceSlide === slide,
                           store.currentSpaceID == self.landingFrom,
                           store.spaceGesture.neighbour?.id == destination.id else { return }
+                    CATransaction.begin()
+                    defer { CATransaction.commit(); CATransaction.flush() }
                     _ = self.activate(destination, in: store)
+                    guard self.transition == token, host.spaceSlide === slide, slide.isActive,
+                          let window = store.window, host.window === window,
+                          store.currentSpaceID == destination.id else {
+                        slide.cancel()
+                        return
+                    }
+                    host.layoutDisplayedProfile()
+                    window.displayIfNeeded()
+                    slide.start(duration: duration, completion: finish)
                 }
             }
         } else {
