@@ -112,17 +112,19 @@ import Foundation
         var installations = try await inventory()
         let incoming = items.filter { $0.category == .extensionSyncData }
         let tombstones = deleted.filter { $0.category == .extensionSyncData }
-        let validated = try await Task.detached(priority: .utility) {
+        let validatedIncoming = try await Task.detached(priority: .utility) {
             var bytes = 0
             for item in incoming + tombstones {
                 bytes += item.fields.values.reduce(0) { $0 + $1.count }
                 guard bytes <= ICloudLimits.cycleBytes else { throw ICloudFailure.limitExceeded }
                 _ = try ICloudExtensionStorageJSON.decode(item)
             }
-            return incoming + tombstones
+            return incoming
         }.value
         try check()
-        for item in validated {
+        // Deletions must not recreate a missing parent on a newly synced Mac.
+        // Validate every row above, but admit new parents only for live values.
+        for item in validatedIncoming {
             let (ns, _, _) = try ICloudExtensionStorageJSON.decode(item)
             if try await cache.retired(ns.profileID) { continue }
             try check()

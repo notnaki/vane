@@ -220,6 +220,31 @@ import XCTest
         }
     }
 
+    func testTombstoneForUnknownProfileDoesNotCreateParentOrPendingNamespace() async throws {
+        try await fixture { root, profile, owner in
+            let missing = namespace(UUID()), adapter = owner.adapter(root)
+            try await adapter.apply([], deleted: [item(missing, "theme", "deleted")], enabled: [.extensionSyncData])
+            XCTAssertEqual(owner.profiles, [profile], "A deletion received on a new Mac must not recreate its deleted parent")
+            XCTAssertTrue(owner.ensureCalls.isEmpty)
+            XCTAssertEqual(adapter.pendingExtensionCount, 0)
+            let retained = try await owner.adapter(root).capture([.extensionSyncData])
+            XCTAssertTrue(retained.isEmpty)
+        }
+    }
+
+    func testLiveIncomingDataStillCreatesOpaqueParentBeforeStaging() async throws {
+        try await fixture { root, profile, owner in
+            let missing = namespace(UUID()), adapter = owner.adapter(root)
+            let incoming = try item(missing, "theme", "remote")
+            try await adapter.apply([incoming], deleted: [], enabled: [.extensionSyncData])
+            XCTAssertEqual(Set(owner.profiles), [profile, missing.profileID])
+            XCTAssertEqual(owner.ensureCalls, [missing.profileID])
+            XCTAssertEqual(adapter.pendingExtensionCount, 1)
+            let retained = try await owner.adapter(root).capture([.extensionSyncData])
+            XCTAssertEqual(retained, [incoming])
+        }
+    }
+
     func testProfileRetirementPersistsAndNeverRecreatesPendingProfile() async throws {
         try await fixture { root, profile, owner in
             let ns = namespace(profile), incoming = try item(ns, "theme", "remote")

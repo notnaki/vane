@@ -1,5 +1,6 @@
 import XCTest
 import Security
+import CloudKit
 @testable import vane
 
 @MainActor final class ICloudSecretsTests: XCTestCase {
@@ -117,7 +118,9 @@ import Security
     func testSuccessfulLocalMutationNotificationUpdatesEnabledMirror() async throws {
         let store = MemorySecretKeychain(), local = MemoryLocalSecrets()
         let bridge = bridge(store, local)
-        try await bridge.sync(enabled: [.aiKeys], generationIsCurrent: { true })
+        let controller = try secretController(bridge, transport: SecretRefreshCloud())
+        await controller.setMasterEnabled(true)
+        XCTAssertNotNil(controller.lastSuccess)
         local.values[key] = Data("later-save".utf8)
         NotificationCenter.default.post(name: .vaneSecretsChanged, object: nil)
         for _ in 0..<100 {
@@ -125,11 +128,68 @@ import Security
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(store.cloudCount, 1)
-        bridge.pause()
+        await controller.setMasterEnabled(false)
         local.values[key] = Data("local-only".utf8)
         NotificationCenter.default.post(name: .vaneSecretsChanged, object: nil)
         await Task.yield()
         XCTAssertEqual(store.cloudCount, 1)
+    }
+
+    func testLocalCredentialChangeRechecksAccountBeforePublishing() async throws {
+        let store = MemorySecretKeychain(), local = MemoryLocalSecrets()
+        let transport = SecretRefreshCloud()
+        let bridge = bridge(store, local)
+        let controller = try secretController(bridge, transport: transport)
+        local.values[key] = Data("approved-account-value".utf8)
+        await controller.setMasterEnabled(true)
+        XCTAssertNotNil(controller.lastSuccess)
+        let count = store.cloudCount
+        XCTAssertEqual(count, 1)
+        transport.identity = "different-account"
+        local.values[key] = Data("unapproved-account-value".utf8)
+        NotificationCenter.default.post(name: .vaneSecretsChanged, object: nil)
+        for _ in 0..<100 {
+            if controller.needsAccountConsent || store.cloudCount > count { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(controller.needsAccountConsent, "A local secret edit must recheck the account before new Keychain submissions")
+        XCTAssertFalse(controller.masterEnabled)
+        XCTAssertEqual(store.cloudCount, count, "The changed account must not receive a newly admitted credential")
+        XCTAssertEqual(local.values[key], Data("unapproved-account-value".utf8))
+        await controller.setMasterEnabled(false)
+    }
+
+    func testAccountNotificationRevokesSecretAdmissionBeforeAnotherEdit() async throws {
+        let store = MemorySecretKeychain(), local = MemoryLocalSecrets()
+        let bridge = bridge(store, local)
+        let controller = try secretController(bridge, transport: SecretRefreshCloud())
+        await controller.setMasterEnabled(true)
+        XCTAssertNotNil(controller.lastSuccess)
+        NotificationCenter.default.post(name: .CKAccountChanged, object: nil)
+        XCTAssertFalse(controller.masterEnabled, "Account notifications must revoke admission on delivery")
+        XCTAssertTrue(controller.needsAccountConsent)
+        local.values[key] = Data("after-account-notification".utf8)
+        NotificationCenter.default.post(name: .vaneSecretsChanged, object: nil)
+        await controller.syncNow()
+        XCTAssertEqual(store.cloudCount, 0)
+        XCTAssertEqual(local.values[key], Data("after-account-notification".utf8))
+        await controller.setMasterEnabled(false)
+    }
+
+    private func secretController(_ secrets: ICloudSecrets, transport: SecretRefreshCloud) throws -> ICloudController {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let suite = "vane-secret-refresh-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        for category in ICloudCategory.allCases {
+            defaults.set(category == .aiKeys, forKey: "icloud.category." + category.rawValue)
+        }
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directory)
+            UserDefaults.standard.removePersistentDomain(forName: suite)
+        }
+        return ICloudController(directory: directory, defaults: defaults, transport: transport,
+                                adapters: [], secrets: secrets, recovery: {})
     }
 
     func testObservedResetPausesOldMacUntilDeliberateMergeAndKeepsLocalSecrets() async throws {
@@ -533,6 +593,16 @@ import Security
         XCTAssertEqual(store.cloudCount, 1)
         XCTAssertEqual(local.values.count, 2)
     }
+}
+
+@MainActor private final class SecretRefreshCloud: ICloudTransport {
+    var identity = "dedicated-account"
+    func account() async throws -> String { identity }
+    func exchange(pending: [ICloudRecord], enabled: Set<ICloudCategory>, state: Data?, epochs: [ICloudCategory: String],
+                  persistState: @escaping @Sendable (Data) async throws -> Void) async throws -> ICloudExchange {
+        ICloudExchange(received: [], acknowledged: pending, state: nil)
+    }
+    func remove(_ categories: Set<ICloudCategory>) async throws {}
 }
 
 private final class MemorySecretKeychain: ICloudSecretsKeychain, @unchecked Sendable {

@@ -167,6 +167,8 @@ extension Notification.Name {
     private var acknowledgedResets: Set<ICloudCategory> = []
     private(set) var lastError: String?
     var onStatusChange: (@MainActor () -> Void)?
+    /// New passes must revalidate the Apple Account through the controller.
+    var onSyncRequested: (@MainActor () async -> Void)?
     var isAvailable: Bool { configuration != nil }
 
     convenience init() {
@@ -648,12 +650,10 @@ extension Notification.Name {
     private func localChanged() {
         guard !enabled.isEmpty, let generation, generation() else { return }
         if running { refreshNeeded = true; return }
-        let categories = enabled
         let permit = admission
         Task { @MainActor [weak self] in
             guard let self, self.admission === permit, permit.valid, generation() else { return }
-            do { try await self.sync(enabled: categories, generationIsCurrent: generation) }
-            catch { /* An actionable, secret-free lastError is exposed above. */ }
+            await self.onSyncRequested?()
         }
     }
     private func scheduleRefresh() {
