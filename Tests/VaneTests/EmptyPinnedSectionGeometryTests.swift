@@ -15,9 +15,10 @@ import XCTest
         XCTAssertTrue(NativeCachedSidebarBatchesExperiment.enabled, "Exercise the shipping native path")
         let app = NSApplication.shared
         let policy = app.activationPolicy()
-        app.setActivationPolicy(.accessory)
         defer { app.setActivationPolicy(policy) }
-        let lease = try await NativeFixtureApplicationLoop.acquire()
+        // Let admission observe the asynchronous policy transition before the
+        // fixture starts, rather than snapshotting a policy request in flight.
+        let lease = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do { try await checkGeometry() } catch { failure = error }
         do { try await lease.close() }
