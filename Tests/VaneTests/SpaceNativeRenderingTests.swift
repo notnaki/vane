@@ -27,6 +27,9 @@ import XCTest
             ? VaneWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)
             : NSWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        // Admit the fixture independently of WindowServer's window-show effect.
+        // Sidebar and profile movement keep their own production animations.
+        window.animationBehavior = .none
         store.window = window
         window.contentView = BrowserWindowHost(shown: ShownStore(store))
         window.contentView?.layoutSubtreeIfNeeded()
@@ -1062,10 +1065,16 @@ import XCTest
                 && store.currentSpaceID == origin.id
                 && store.spaceGesture.sectionsView?.window === window
         }
-        monitor.track(-sign * 60, width: width, in: store)
-        monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
+        let heldDrag = -sign * width * 0.6
+        monitor.track(heldDrag, width: width, in: store)
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
+        // Admit a genuinely presented middle finger position before release.
+        // Starting below the sampled interval made cold layout consume it.
+        try await compatibilityWait {
+            abs(slide.offset - heldDrag) < 0.125 && slide.outgoing.layer?.presentation() != nil
+        }
+        monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
         let middleStart = CACurrentMediaTime()
@@ -1074,6 +1083,8 @@ import XCTest
         try await compatibilityWait {
             middleState = "elapsed=\(CACurrentMediaTime() - middleStart) active=\(slide.isActive) offset=\(slide.offset) width=\(width) source=\(store.currentSpaceID == origin.id) target=\(store.currentSpaceID == target.id) app=\(NSApp.isActive) key=\(window.isKeyWindow) animation=\(String(describing: slide.outgoing.layer?.animation(forKey: "space-position")))"
             return slide.isActive && abs(slide.offset) > width * 0.45 && abs(slide.offset) < width * 0.8
+                && TabStore.all.first { $0.window === window }?.currentSpaceID == target.id
+                && slide.outgoing.layer?.animation(forKey: "space-position") != nil
         }
         XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, target.id)
         let originalRows = slide.outgoing
@@ -3029,10 +3040,14 @@ import XCTest
             try await self.waitForPreparation(monitor, target: spaces[1].id)
             let width = self.fixtureSidebarWidth(in: store)
             monitor.track(-20, width: width, in: store)
-            try await Task.sleep(for: .milliseconds(20))
-            monitor.track(-60, width: width, in: store)
             let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
-            slide.armLanding(to: spaces[1], completion: {})
+            // Control sample time independently of native rendering work. The
+            // integration case above retains real event timing; this case tests
+            // only ownership of that sample across delayed page preparation.
+            let sampleTime = ProcessInfo.processInfo.systemUptime
+            slide.track(drag: -20, at: sampleTime)
+            slide.track(drag: -60, at: sampleTime + 0.02)
+            slide.armLanding(to: spaces[1], at: sampleTime + 0.02, completion: {})
             // Preparation can outlive the event freshness window. It must not
             // turn an already committed moving release into a stationary click.
             try await Task.sleep(for: .milliseconds(150))

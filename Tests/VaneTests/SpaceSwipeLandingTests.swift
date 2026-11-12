@@ -72,6 +72,7 @@ import XCTest
         let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 300, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
         store.window = window
         let width = SidebarWidth.inWindow(store)
         XCTAssertEqual(width, 164, accuracy: 0.001)

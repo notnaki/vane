@@ -1481,11 +1481,10 @@ private struct NativeSpacePreview: View {
     }
 
     /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
-    func track(drag: CGFloat) {
+    func track(drag: CGFloat, at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard isActive else { return }
         ownsSidebarVisibility = true
         lastPublishedDrag = drag
-        let now = ProcessInfo.processInfo.systemUptime
         if let previous = lastTracking {
             let dt = now - previous.time
             if dt > 0.001, dt < 0.1 { trackingVelocity = (drag - previous.offset) / dt }
@@ -1531,19 +1530,20 @@ private struct NativeSpacePreview: View {
     private(set) var hasStartedLanding = false
     private var committedTrackingVelocity: CGFloat?
 
-    private var freshTrackingVelocity: CGFloat {
+    private func freshTrackingVelocity(at now: TimeInterval) -> CGFloat {
         guard let lastTracking,
-              ProcessInfo.processInfo.systemUptime - lastTracking.time < 0.1 else { return 0 }
+              now - lastTracking.time < 0.1 else { return 0 }
         return trackingVelocity
     }
 
     /// Selection stays queued until after its input action returns. A sidebar
     /// hidden before that turn must still finish the committed profile change.
-    func armLanding(to target: Space, completion: @escaping () -> Void) {
+    func armLanding(to target: Space, at now: TimeInterval = ProcessInfo.processInfo.systemUptime,
+                    completion: @escaping () -> Void) {
         guard isActive else { return }
         // A committed release owns this sample even if page preparation takes
         // longer than the finger-event freshness window.
-        committedTrackingVelocity = freshTrackingVelocity
+        committedTrackingVelocity = freshTrackingVelocity(at: now)
         ownsSidebarVisibility = true
         self.completion = completion
         restingSpaceID = target.id
@@ -1555,7 +1555,7 @@ private struct NativeSpacePreview: View {
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
-        let releaseVelocity = committedTrackingVelocity ?? freshTrackingVelocity
+        let releaseVelocity = committedTrackingVelocity ?? freshTrackingVelocity(at: ProcessInfo.processInfo.systemUptime)
         committedTrackingVelocity = nil
         hasStartedLanding = true
         ownsSidebarVisibility = true

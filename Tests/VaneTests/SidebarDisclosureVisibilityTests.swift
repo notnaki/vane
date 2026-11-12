@@ -3,6 +3,56 @@ import XCTest
 @testable import vane
 
 final class SidebarDisclosureVisibilityTests: XCTestCase {
+    func testAnimatedStructuralOpeningStartsAtThePreviousPresentedPose() {
+        let resting = NativeSidebarDisclosureSample(baseline: ["folder"],
+            visibility: .init(rowCount: 1), isSettled: true)
+        let opening = NativeSidebarDisclosureSample(baseline: ["folder"],
+            visibility: .init(rowCount: 2, changes: ["child": 1]), isSettled: false)
+        let first = opening.starting(from: resting, transaction: Transaction(animation: .linear(duration: 1)),
+            sameScope: true, membershipUnchanged: false, reducedMotion: false)
+        XCTAssertEqual(first.visibility, resting.visibility,
+                       "Installing membership must not expose target-position children before the outer extent interpolates")
+        XCTAssertFalse(first.isSettled, "The resting pose must carry the new request's unsettled lifecycle")
+    }
+
+    func testStructuralReversalAndContentRefreshKeepTheLastInterpolatedVisibility() {
+        let presented = NativeSidebarDisclosureSample(baseline: ["folder", "child"],
+            visibility: .init(rowCount: 1.6, changes: ["child": -0.4]), isSettled: false)
+        let closing = NativeSidebarDisclosureSample(baseline: presented.baseline,
+            visibility: .init(rowCount: 1, changes: ["child": -1]), isSettled: false)
+        let reversal = closing.starting(from: presented, transaction: Transaction(animation: .linear(duration: 1)),
+            sameScope: true, membershipUnchanged: false, reducedMotion: false)
+        let refresh = closing.starting(from: presented, transaction: Transaction(),
+            sameScope: true, membershipUnchanged: true, reducedMotion: false)
+        XCTAssertEqual(reversal.visibility, presented.visibility)
+        XCTAssertEqual(refresh.visibility, presented.visibility,
+                       "A content refresh during the curve cannot install the target-valued layout probe")
+    }
+
+    func testImmediateMembershipChangesAndSettledHandoffsUseTheTargetPose() {
+        let presented = NativeSidebarDisclosureSample(baseline: ["folder"],
+            visibility: .init(rowCount: 1.4, changes: ["child": 0.4]), isSettled: false)
+        let target = NativeSidebarDisclosureSample(baseline: presented.baseline,
+            visibility: .init(rowCount: 2, changes: ["child": 1]), isSettled: false)
+        let animated = Transaction(animation: .linear(duration: 1))
+        var disabled = animated
+        disabled.disablesAnimations = true
+        for (transaction, sameScope, unchanged, reduced) in [
+            (Transaction(), true, false, false), (disabled, true, true, false),
+            (animated, true, true, true), (animated, false, true, false)
+        ] {
+            XCTAssertEqual(target.starting(from: presented, transaction: transaction, sameScope: sameScope,
+                membershipUnchanged: unchanged, reducedMotion: reduced), target)
+        }
+        let rebased = NativeSidebarDisclosureSample(baseline: ["folder", "child"],
+            visibility: .init(rowCount: 2), isSettled: true)
+        XCTAssertEqual(rebased.starting(from: presented, transaction: animated,
+            sameScope: true, membershipUnchanged: true, reducedMotion: false), rebased)
+        let otherBasis = NativeSidebarDisclosureSample(baseline: ["other"], visibility: target.visibility, isSettled: false)
+        XCTAssertEqual(otherBasis.starting(from: presented, transaction: animated,
+            sameScope: true, membershipUnchanged: true, reducedMotion: false), otherBasis)
+    }
+
     func testEqualHeightFolderSwapKeepsIndependentVisibilityComponents() {
         let start = NativeSidebarDisclosureVisibility(rowCount: 3, changes: [:])
         let destination = NativeSidebarDisclosureVisibility(rowCount: 3,
@@ -107,12 +157,15 @@ final class SidebarDisclosureVisibilityTests: XCTestCase {
         let baseline = NativeSidebarDisclosureBaseline()
         var visible = Set(["folder", "original"])
         baseline.capture(visible, scope: nil)
+        XCTAssertTrue(baseline.isSettled)
         for index in 0..<200 {
             visible = ["folder", "replacement-\(index)"]
             baseline.capture(visible, scope: nil)
+            XCTAssertFalse(baseline.isSettled)
             XCTAssertLessThanOrEqual(baseline.visibility.changes.count, 2)
             XCTAssertTrue(baseline.commitSettledVisibility(baseline.visibility, revision: baseline.revision))
             XCTAssertTrue(baseline.visibility.changes.isEmpty)
+            XCTAssertTrue(baseline.isSettled)
         }
         visible.insert("opening-child")
         baseline.capture(visible, scope: nil)
@@ -125,8 +178,12 @@ final class SidebarDisclosureVisibilityTests: XCTestCase {
         baseline.capture(["folder", "child"], scope: nil)
         baseline.capture(["folder"], scope: nil)
         XCTAssertTrue(baseline.visibility.changes.isEmpty)
+        XCTAssertFalse(baseline.isSettled,
+                       "An empty target delta can still be reversing from a presented opening pose")
         XCTAssertTrue(baseline.commitSettledVisibility(baseline.visibility, revision: baseline.revision),
                       "Returning to the resting basis must still release retained closing visuals")
+        XCTAssertTrue(baseline.isSettled,
+                      "Only guarded completion authorizes the native bridge to release retained closing rows")
         XCTAssertFalse(baseline.commitSettledVisibility(baseline.visibility, revision: baseline.revision),
                        "A completed target must not repeatedly rebuild resting native roots")
     }
@@ -139,6 +196,7 @@ final class SidebarDisclosureVisibilityTests: XCTestCase {
         let oldDestination = baseline.visibility
         baseline.capture(["folder", "child"], scope: nil)
         XCTAssertFalse(baseline.commitSettledVisibility(oldDestination, revision: oldRevision))
+        XCTAssertFalse(baseline.isSettled, "A superseded completion cannot settle the new reversal")
         XCTAssertEqual(baseline.rows, ["folder", "child"])
         XCTAssertTrue(baseline.visibility.changes.isEmpty)
     }

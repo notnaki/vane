@@ -90,14 +90,26 @@ struct NativeSidebarDisclosureVisibility: VectorArithmetic {
     }
 }
 
-fileprivate struct NativeSidebarDisclosureSample: Equatable {
+struct NativeSidebarDisclosureSample: Equatable {
     let baseline: Set<String>
     let visibility: NativeSidebarDisclosureVisibility
+    let isSettled: Bool
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.visibility == rhs.visibility && lhs.baseline == rhs.baseline
+        lhs.visibility == rhs.visibility && lhs.baseline == rhs.baseline && lhs.isSettled == rhs.isSettled
     }
     func progress(for row: String) -> CGFloat {
         min(1, max(0, (baseline.contains(row) ? 1 : 0) + visibility.change(for: row)))
+    }
+    func starting(from previous: Self?, transaction: Transaction, sameScope: Bool,
+                  membershipUnchanged: Bool, reducedMotion: Bool) -> Self {
+        guard sameScope, !isSettled, !transaction.disablesAnimations, !reducedMotion,
+              transaction.animation != nil || membershipUnchanged,
+              let previous, previous.baseline == baseline else { return self }
+        // Structural layout probes carry the destination before the outer
+        // extent presents its first interpolated frame. Keep the last visible
+        // pose until presentDisclosure delivers that frame, but adopt the new
+        // unsettled lifecycle so closing rows remain retained during motion.
+        return Self(baseline: baseline, visibility: previous.visibility, isSettled: isSettled)
     }
 }
 
@@ -123,6 +135,7 @@ private extension EnvironmentValues {
     private(set) var rows = Set<String>()
     private(set) var revision = UUID()
     private var needsCompletion = false
+    var isSettled: Bool { !needsCompletion }
     private var targetCaptured = false
     private(set) var visibility = NativeSidebarDisclosureVisibility.zero
     func capture(_ ids: Set<String>, scope: SidebarNativeReadinessScope?) {
@@ -319,6 +332,7 @@ struct NativeSidebarDisclosureLayout {
 /// Per-row components also cover equal-height close/open swaps between folders.
 private struct NativeSidebarDisclosureExtent: AnimatableModifier {
     let baseline: Set<String>
+    let isSettled: Bool
     var visibility: NativeSidebarDisclosureVisibility
     nonisolated var animatableData: NativeSidebarDisclosureVisibility {
         get { visibility }
@@ -327,7 +341,7 @@ private struct NativeSidebarDisclosureExtent: AnimatableModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.nativeSidebarDisclosureSample,
-                NativeSidebarDisclosureSample(baseline: baseline, visibility: visibility))
+                NativeSidebarDisclosureSample(baseline: baseline, visibility: visibility, isSettled: isSettled))
             .frame(height: max(0, visibility.rowCount * (Look.rowHeight + Look.rowGap) - Look.rowGap))
     }
 }
@@ -1076,7 +1090,10 @@ private final class NativeBatchMouseObservation {
         self.content = content
         inherited = environment
         self.transaction = transaction
-        disclosureSample = environment.nativeSidebarDisclosureSample
+        disclosureSample = environment.nativeSidebarDisclosureSample?.starting(from: disclosureSample,
+            transaction: transaction, sameScope: sameScope,
+            membershipUnchanged: previousOrder.map(\.id) == rows.map(\.id),
+            reducedMotion: environment.accessibilityReduceMotion || Motion.reduced)
         generation &+= 1
         needsReconcile = true
         ownership = ownership.filter { modelIDs.contains($0.key) }
@@ -1154,8 +1171,11 @@ private final class NativeBatchMouseObservation {
         // A content/environment refresh can arrive during disclosure. Preserve
         // the same closing request while its visible layout and authority agree;
         // a reopen, deletion, lock, scope change or immediate transaction revokes it.
+        // Shared rows finish only through the guarded outer completion/rebase.
+        // A nonnil shared sample persists at rest, so it alone cannot keep old
+        // closing controls alive after that completion.
         if sameScope && !transaction.disablesAnimations && !environment.accessibilityReduceMotion && !Motion.reduced,
-           (disclosureSample != nil || previousOrder.map(\.id) == rows.map(\.id)) {
+           (disclosureSample.map { !$0.isSettled } ?? (previousOrder.map(\.id) == rows.map(\.id))) {
             for (key, slots) in previousGroups where mounted.contains(key) {
                 for slot in slots {
                     if let geometry = slot.rollout, !geometry.closing, (disclosureSample?.progress(for: slot.id) ?? 1) < 1,
@@ -1630,7 +1650,10 @@ private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresenta
     func makeNSView(context: Context) -> NativeCachedSidebarBatchesView<Content> { NativeCachedSidebarBatchesView(frame: .zero) }
     func updateNSView(_ view: NativeCachedSidebarBatchesView<Content>, context: Context) {
         let sample = context.environment.nativeSidebarDisclosureSample
-        if context.coordinator.revision == revision && context.coordinator.sample != sample {
+        // Interpolation only changes placement. Guarded settlement also changes
+        // retained membership, so it must rebuild the native groups in configure.
+        if context.coordinator.revision == revision && context.coordinator.sample != sample,
+           context.coordinator.sample?.isSettled == sample?.isSettled {
             context.coordinator.sample = sample
             view.presentDisclosure(sample)
             return
@@ -1663,7 +1686,7 @@ struct NativeCachedSidebarBatchSectionRows<Content: View>: View {
         return NativeCachedSidebarBatchesBridge(rows: rows, modelIDs: modelIDs, revision: UUID(),
             protectedRows: protectedRows, readinessSection: readinessSection, owner: owner, content: content)
             .modifier(NativeSidebarDisclosureExtent(baseline: baseline,
-                visibility: visibility))
+                isSettled: disclosureBaseline.isSettled, visibility: visibility))
             .transaction { disclosureBaseline.registerCompletion(in: &$0) }
             .vaneMotionPolicy()
     }
