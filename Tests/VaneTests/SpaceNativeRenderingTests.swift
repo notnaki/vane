@@ -4,6 +4,8 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceNativeRenderingTests: XCTestCase {
+    // Temporary hosted-only lifetime trace; remove before final PR push.
+    private var warmRevocations: [String] = []
     private func fixture(floatingWindow: Bool = false, coloured: Bool = false, defaultColours: Bool = false, activateWindow: Bool = true, registerTeardown: Bool = true) throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -152,6 +154,13 @@ import XCTest
             try XCTSkipIf(ProcessInfo.processInfo.environment["VANE_RETAIN_INACTIVE_SPACE_ROW_OWNERS"] == "0")
             let (store, spaces, window, monitor) = try self.fixture(registerTeardown: false)
             defer { self.retireFixture(store, window: window, monitor: monitor) }
+            warmRevocations.removeAll()
+            let traceBegan = ProcessInfo.processInfo.systemUptime
+            let revocation = store.sidebarRowsProtectionRevoked.sink { [weak self, weak store] in
+                guard ProcessInfo.processInfo.environment["VANE_PROFILE_LIFETIME_TRACE"] == "1" else { return }
+                self?.warmRevocations.append("tMS=\((ProcessInfo.processInfo.systemUptime - traceBegan) * 1000) space=\(String(describing: store?.currentSpaceID)) active=\(NSApp.isActive) pressure=\(SidebarWarmOwnerBudget.underPressure)")
+            }
+            defer { revocation.cancel() }
             window.setContentSize(NSSize(width: 1100, height: 800))
             for space in spaces {
                 store.switchTo(space: space)
@@ -167,6 +176,9 @@ import XCTest
             store.switchTo(space: spaces[0]); store.palette = nil
             let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
             try await compatibilityWait { self.warmOwnerReports(in: host).contains { $0.attachedLogicalRows >= 24 } }
+            if ProcessInfo.processInfo.environment["VANE_PROFILE_LIFETIME_TRACE"] == "1" {
+                print("WARM_ADMISSION test=\(name) active=\(NSApp.isActive) key=\(window.isKeyWindow) liveReady=\(SidebarNativeReadinessCoordinator.shared.isReady(SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID))) pressure=\(SidebarWarmOwnerBudget.underPressure) revocations=\(warmRevocations)")
+            }
             try await body(store, spaces, window, monitor, host)
         }
     }
@@ -176,6 +188,9 @@ import XCTest
         let direction = try XCTUnwrap(store.beginSpaceSelection(target))
         monitor.land(direction, to: target, width: fixtureSidebarWidth(in: store), store: store, duration: 0.05)
         try await compatibilityWait { store.currentSpaceID == target.id && !store.spaceSwiping && host.spaceSlide == nil }
+        if ProcessInfo.processInfo.environment["VANE_PROFILE_LIFETIME_TRACE"] == "1" {
+            print("WARM_VISIT test=\(name) active=\(NSApp.isActive) key=\(store.window?.isKeyWindow == true) liveReady=\(SidebarNativeReadinessCoordinator.shared.isReady(SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID))) pressure=\(SidebarWarmOwnerBudget.underPressure) inactive=\(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }) revocations=\(warmRevocations)")
+        }
     }
 
     func testInactiveWarmOwnerBudgetAppliesAcrossPinnedAndTodaySections() async throws {
@@ -3149,6 +3164,12 @@ import XCTest
             // delayed first wake after cold mounting must still yield to AppKit
             // completion delivery rather than skip this phase as already late.
             try await Task.sleep(for: .milliseconds(100))
+            if ProcessInfo.processInfo.environment["VANE_PROFILE_LIFETIME_TRACE"] == "1" {
+                let slide = (window.contentView as? BrowserWindowHost)?.spaceSlide
+                let elapsed = selectedAt.duration(to: .now)
+                let clock = slide?.outgoing.layer?.animation(forKey: "space-position")
+                print("RETIRE_CHECK elapsed=\(elapsed) active=\(slide?.isActive == true) positionClock=\(clock?.beginTime ?? 0) now=\(CACurrentMediaTime()) swiping=\(destination.spaceSwiping) sliding=\(destination.spaceGesture.profileSliding) liveReady=\(SidebarNativeReadinessCoordinator.shared.isReady(SidebarNativeReadinessScope(store: destination, spaceID: destination.currentSpaceID)))")
+            }
             XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide,
                          "Retire the overlay once the arriving profile has drawn")
         }

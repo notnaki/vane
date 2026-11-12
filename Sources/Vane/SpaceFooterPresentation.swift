@@ -125,7 +125,9 @@ extension EnvironmentValues {
             view.marker = marker
             view.layer?.addSublayer(marker.layer)
         }
-        let scale = view.window?.backingScaleFactor ?? 2
+        // Retain glyph detail when a 1x host is composited or animated at a
+        // larger scale; the layer still uses the window's logical geometry.
+        let scale = max(2, view.window?.backingScaleFactor ?? 2)
         let artwork = "\(icon):\(layout.iconSize):\(scheme):\(scale)"
         CATransaction.begin()
         CATransaction.setDisableActions(true)
