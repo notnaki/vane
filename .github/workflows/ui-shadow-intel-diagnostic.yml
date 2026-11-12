@@ -1,7 +1,7 @@
-name: UI shadow admission preflight
+name: UI shadow Intel macOS26 characterization
 on:
   push:
-    branches: [codex/ui-shadow-preflight-20261112]
+    branches: [codex/ui-shadow-intel-diagnostic-20261112]
 permissions:
   contents: read
   actions: read
@@ -10,7 +10,7 @@ env:
   SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -49,7 +49,7 @@ jobs:
       - name: Share runtime
         uses: actions/upload-artifact@v6
         with:
-          name: ui-shadow-runtime
+          name: ui-shadow-intel-runtime
           path: ${{ runner.temp }}/icloud-runtime.tar.gz
           compression-level: 0
           retention-days: 1
@@ -57,19 +57,19 @@ jobs:
   native:
     name: ${{ matrix.suite }} (${{ matrix.attempt }})
     needs: build
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1, 2, 3]
+        attempt: [1]
         suite: [shadow]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           digest-mismatch: warn
-          name: ui-shadow-runtime
+          name: ui-shadow-intel-runtime
           path: ${{ runner.temp }}/runtime
       - name: Restore revision and toolchain verified runtime
         run: python3 scripts/ci-build-artifact.py restore --revision "$GITHUB_SHA" --archive "$RUNNER_TEMP/runtime/icloud-runtime.tar.gz"
@@ -119,7 +119,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: ui-shadow-attempt-${{ matrix.attempt }}
+          name: ui-shadow-intel-attempt-${{ matrix.attempt }}
           path: |
             ${{ runner.temp }}/icloud-pr-repair-*.log
             ${{ runner.temp }}/icloud-smoke.log
