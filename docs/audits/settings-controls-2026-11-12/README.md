@@ -60,3 +60,21 @@ Original hosted validation used macOS 26.7.2; full hosted CI must validate the
 repair before merging. Every local attempt, including failed diagnostic and
 intermediate preflights, remains in `/tmp/vane-665-*.log`; the final three logs are
 `/tmp/vane-665-final-preflight-{1,2,3}.log`.
+
+## Activation-policy follow-up
+
+The [next hosted run](https://github.com/notnaki/vane/actions/runs/43203073710)
+failed shard 3 in `EmptyPinnedSectionGeometryTests` before its geometry body,
+with `policyChanged` during loop acquisition. The fixture requested accessory
+policy outside the helper and then acquired a default-policy lease, allowing an
+asynchronous transition to invalidate the policy snapshot. It now passes
+`activationPolicy: .accessory` to the existing bounded admission path. Policy
+restoration, geometry assertions, readiness deadlines, and cleanup are unchanged.
+
+One unchanged local baseline passed and was retained without treating it as a
+resolution. After the repair, three sequential preflights each passed eight tests:
+`EmptyPinnedSectionGeometryTests`, `NativeFixtureActivationPolicyAdmissionTests`,
+and the transient-return case in `NativeFixturePolicySettlementTests`. All three
+cleanup runs passed, and independent review found no actionable issues. Logs are
+`/tmp/vane-665-policy-baseline.log` and `/tmp/vane-665-policy-preflight-{1,2,3}.log`;
+the hosted failure is retained in `/tmp/vane-665-shard3-failure.log`.
