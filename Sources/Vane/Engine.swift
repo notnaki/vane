@@ -1875,7 +1875,7 @@ struct TitleReveal: Equatable, Sendable {
         hoveredLink = nil
         (w as? LinkContextWebView)?.navigationStarted()
         CertificateTrust.navigationStarted(in: self)
-        Previews.shared.cancel()      // the link that raised it is gone
+        Previews.shared.cancel(from: self)      // this page's hovered link is gone
         // Whatever was focused belongs to the page being left, frames and all; the incoming
         // one says so itself as soon as its script runs in each of them.
         editableFrames = []
@@ -2338,9 +2338,10 @@ struct TitleReveal: Equatable, Sendable {
         }
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
-            if body["gone"] as? Bool == true { Previews.shared.cancel(); return }
+            if body["gone"] as? Bool == true { Previews.shared.cancel(from: self); return }
             guard let raw = body["url"] as? String, let url = URL(string: raw) else { return }
-            Previews.shared.request(url, from: self)
+            let rect = Previews.rect(from: body, pageZoom: m.webView?.pageZoom ?? 1) ?? .zero
+            Previews.shared.request(url, from: self, rect: rect)
             return
         }
         if m.name == PictureInPicture.messageName {
@@ -2887,6 +2888,7 @@ struct Stash {
     /// being renamed or being suspended. Everything done to them is in SplitView.swift.
     @Published var splits: [Split] = [] { didSet { SharedTabs.schedule(from: self) } }
     var folderAuthentication = FolderAuthentication.shared
+    let folderAccessIndex = FolderAccessIndex()
     @Published var lockedFolderBackdrop: NSImage?
     @Published var folderUnlockRequest: FolderUnlockRequest?
     @Published var current: Tab.ID? {

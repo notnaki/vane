@@ -60,6 +60,18 @@ import WebKit
     }
 
     @Published private(set) var current: Preview?
+    /// Native points within the source WebView, not window or screen coordinates.
+    @Published private(set) var linkRect = CGRect.zero
+
+    func preview(for tab: Tab) -> Preview? { source === tab ? current : nil }
+
+    static func rect(from body: [String: Any], pageZoom: CGFloat) -> CGRect? {
+        let values = ["x", "y", "w", "h"].compactMap { body[$0] as? Double }
+        guard values.count == 4, values.allSatisfy({ $0.isFinite && abs($0) <= 1_000_000 }),
+              values[2] >= 0, values[3] >= 0, pageZoom.isFinite, pageZoom > 0, pageZoom <= 10 else { return nil }
+        return CGRect(x: values[0] * pageZoom, y: values[1] * pageZoom,
+                      width: values[2] * pageZoom, height: values[3] * pageZoom)
+    }
 
     /// Off is a real preference; on is the default because a preview is the feature.
     static var enabled: Bool {
@@ -137,6 +149,7 @@ import WebKit
     // MARK: - Requesting
 
     private var cache = Cache()
+    private var aiSettingsRevision = UserDefaults.vane.integer(forKey: "aiSettingsRevision")
     private var cacheScope: (profile: UUID, privateTab: UUID?)?
     private var sessionObserver: Feel04PreviewSessionObserver?
     private struct SessionCookie: Hashable {
@@ -235,9 +248,15 @@ import WebKit
 
     /// Start (or instantly re-show) a preview of `url`. Safe to call on every hover event —
     /// the same link twice in a row costs nothing.
-    func request(_ url: URL, from tab: Tab) {
+    func request(_ url: URL, from tab: Tab, rect: CGRect = .zero) {
         guard Previews.enabled, !BatterySaver.shared.isActive else { cancel(); return }
         guard Previews.eligible(url, onPage: tab.currentURL) else { cancel(); return }
+        let revision = UserDefaults.vane.integer(forKey: "aiSettingsRevision")
+        if revision != aiSettingsRevision {
+            aiSettingsRevision = revision
+            cache = Cache()
+            stop()
+        }
         let scope = (profile: tab.profileID, privateTab: tab.isPrivate ? tab.id : nil)
         if let previous = cacheScope, previous != scope {
             cache = Cache(); sessionCookies = nil
@@ -249,10 +268,11 @@ import WebKit
             sessionObserver = sessionObserverFactory(tab.profileID) { [weak self] in self?.retireSession() }
         }
         let key = Previews.key(for: url)
-        if showing == key { source = tab; return }
+        if showing == key, source === tab { linkRect = rect; return }
 
         stop()
         source = tab
+        linkRect = rect
         let id = begin()
         showing = key
 
@@ -269,8 +289,9 @@ import WebKit
             debounceTask = Task(priority: .background) { [weak self, weak tab] in
                 guard let self, let tab, let unchanged = await self.sessionUnchanged(id) else { return }
                 if !unchanged {
+                    let rect = self.linkRect
                     self.retireSession()
-                    self.request(url, from: tab)
+                    self.request(url, from: tab, rect: rect)
                     return
                 }
                 self.publish(p, for: id)
@@ -342,6 +363,11 @@ import WebKit
     /// A page release must not dismiss a preview requested by another tab.
     func cancel(from tab: Tab) {
         guard source === tab else { return }
+        cancel()
+    }
+
+    func cancel(from tabID: Tab.ID) {
+        guard source?.id == tabID else { return }
         cancel()
     }
 

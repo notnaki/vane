@@ -187,9 +187,20 @@ has no bundled icon catalogue; build `Vane.app` to use these finishes.
 
 Icon asset maintenance is documented in [AppIcons](../AppIcons/README.md).
 
+## Settings
+
+General starts with everyday preferences and links to Previews and Profile settings.
+Expand **Updates** for automatic checks and release channels. Colored icon tiles
+help identify related controls without changing their behavior.
+
+Advanced starts with a compact list of categories. Expand a category to see its
+controls and explanations, including **Windows and Tabs**, **Developer**, and
+**Backup and Restore**. Categories open with brief motion and respect Reduce Motion
+and Battery Saver.
+
 ## Battery Saver and motion
 
-**Settings → Advanced → UI Animations** adjusts the speed of sidebar reveals,
+**Settings → Advanced → Interface → UI Animations** adjusts the speed of sidebar reveals,
 tab and folder movement, tab closing, floating panels, hover feedback, and link-status
 fades. Search by animation name or description. Speeds below **1×** slow animations
 down; speeds above **1×** make them faster. Each row has **Reset**, and **Reset All**

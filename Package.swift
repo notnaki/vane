@@ -9,7 +9,7 @@ let package = Package(
             name: "vane",
             dependencies: ["ExtensionResourceBridge"],
             path: "Sources/Vane",
-            resources: [.copy("EaselFonts"), .copy("WelcomeAssets"), .copy("SpaceEmoji")],
+            resources: [.copy("EaselFonts"), .copy("WelcomeAssets"), .copy("SpaceEmoji"), .copy("MaxAssets")],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("WebKit"),
