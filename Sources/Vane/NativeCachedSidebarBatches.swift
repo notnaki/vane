@@ -94,6 +94,14 @@ struct NativeSidebarDisclosureSample: Equatable {
     let baseline: Set<String>
     let visibility: NativeSidebarDisclosureVisibility
     let isSettled: Bool
+    init(baseline: Set<String>, visibility: NativeSidebarDisclosureVisibility, isSettled: Bool) {
+        self.baseline = baseline
+        self.isSettled = isSettled
+        // SwiftUI can still supply the interrupted modifier's interpolated data
+        // after an explicit immediate settlement rebased its nonanimated state.
+        // A settled basis is authoritative; that old curve cannot expand it again.
+        self.visibility = isSettled ? .init(rowCount: CGFloat(baseline.count)) : visibility
+    }
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.visibility == rhs.visibility && lhs.baseline == rhs.baseline && lhs.isSettled == rhs.isSettled
     }
@@ -348,10 +356,10 @@ private struct NativeSidebarDisclosureExtent: AnimatableModifier {
         set { visibility = newValue }
     }
     func body(content: Content) -> some View {
-        content
-            .environment(\.nativeSidebarDisclosureSample,
-                NativeSidebarDisclosureSample(baseline: baseline, visibility: visibility, isSettled: isSettled))
-            .frame(height: max(0, visibility.rowCount * (Look.rowHeight + Look.rowGap) - Look.rowGap))
+        let sample = NativeSidebarDisclosureSample(baseline: baseline, visibility: visibility, isSettled: isSettled)
+        return content
+            .environment(\.nativeSidebarDisclosureSample, sample)
+            .frame(height: max(0, sample.visibility.rowCount * (Look.rowHeight + Look.rowGap) - Look.rowGap))
     }
 }
 
@@ -700,6 +708,10 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
                     .environment(\.nativeSidebarNavigationRow, NativeSidebarNavigationRow(row: slot.id, navigation: navigation))
                     .environment(\.nativeSidebarInteraction, NativeSidebarInteraction(row: slot.id, owner: interactionOwner))
                     .offset(y: position(of: slot) * (Look.rowHeight + Look.rowGap))
+                    // This sample already owns the interpolation. Suppress the
+                    // inherited transaction around placement itself, not merely
+                    // around the row content inside the offset modifier.
+                    .animation(nil, value: disclosureFrame == nil ? nil : disclosureSample?.visibility)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

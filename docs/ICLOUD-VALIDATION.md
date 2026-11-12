@@ -376,6 +376,35 @@ layout/instant-settlement changes, before the final fallback-start addition;
 it is not a build or native pass for that later addition. Hosted qualification
 remains required for the complete candidate.
 
+Run [43252553019](https://github.com/notnaki/vane/actions/runs/43252553019),
+`59112fa3`, compiled and completed three 38-test focused attempts. Each retained
+verified cleanup. Attempts one and two had two assertions (one unexpected);
+attempt three had three assertions (one unexpected). All four native velocity
+cases, eleven fallback rollout cases and the nested-folder reversal passed on
+every host. Large-folder cleanup still timed out on all three; the original
+New Tab disclosure case also failed on host three.
+
+The new cleanup trace confirms the second resting collapse was requested, native
+rows were reduced to one, clipping was released and settlement metadata was true,
+while the interpolated sample still contained roughly 58–60 rows and the section
+remained 2,360–2,475 points high. The explicit settlement callback therefore
+worked but did not cancel the outer modifier's residual interpolation. This is
+not a passing repair. The New Tab failure retained two late fractional child
+positions exceeding the footer bound; those samples require investigation rather
+than a tolerance change. Native tests remain hosted while resize owns the local
+desktop/build reservation.
+
+The follow-up normalizes a settled sample to its authoritative baseline count
+and zero per-row deltas, then uses that same sample for the outer frame and
+native environment. A regression supplies the recorded residual vector to a
+settled basis while confirming active samples remain unchanged. Native sampled
+row offsets also suppress inherited animation outside the offset modifier;
+previous suppression wrapped only the row content inside it. This addresses a
+source-supported second-animation hypothesis for the fractional New Tab pairs.
+Overlap-only diagnostics now retain model/presentation positions and ancestor
+animation keys if it recurs. All original samples, hits, tolerances and deadlines
+remain unchanged; this candidate still needs hosted runtime qualification.
+
 ## Verification limits and remaining integration gates
 
 - No second Mac is available. Cross-Mac convergence, offline/restart behavior

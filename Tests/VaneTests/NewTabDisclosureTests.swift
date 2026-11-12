@@ -84,6 +84,7 @@ import XCTest
                        "Admit the resting presentation before starting disclosure")
         let start = rect(newTab).minY
         var samples: [(CGFloat, CGFloat)] = []
+        var overlapDiagnostics: [String] = []
         var checkedMovingHit = false
         var movingHits: [(presentedY: CGFloat, nativeY: CGFloat, selected: UUID?, palette: PaletteMode?)] = []
         for frame in 0..<48 {
@@ -91,7 +92,18 @@ import XCTest
             try await Task.sleep(for: .milliseconds(8))
             display()
             if let current = anchors(host).first(where: { $0.title == "Child 5" }) {
-                samples.append((try presentedRect(current).maxY, try presentedRect(newTab).minY))
+                let childBottom = try presentedRect(current).maxY
+                let footerTop = try presentedRect(newTab).minY
+                samples.append((childBottom, footerTop))
+                if childBottom > footerTop + 1 {
+                    var owners: [String] = []
+                    var owner: NSView? = current
+                    while let view = owner, view !== host {
+                        owners.append("\(type(of: view)) frame=\(view.frame) bounds=\(view.bounds) clips=\(view.clipsToBounds) animations=\(view.layer?.animationKeys() ?? [])")
+                        owner = view.superview
+                    }
+                    overlapDiagnostics.append("frame=\(frame) childPresented=\(childBottom) childModel=\(rect(current).maxY) footerPresented=\(footerTop) footerModel=\(rect(newTab).minY) owners=\(owners)")
+                }
                 if [9, 21].contains(frame), current.enabled {
                     let presentedY = try presentedRect(current).midY
                     let nativeY = rect(current).midY
@@ -108,6 +120,7 @@ import XCTest
             }
         }
         print("NEW_TAB_DISCLOSURE start=\(start) samples=\(samples)")
+        if !overlapDiagnostics.isEmpty { print("NEW_TAB_DISCLOSURE_OVERLAP \(overlapDiagnostics)") }
         // Capture every scheduled frame and event before reporting failures:
         // XCTest's main-actor symbolication must not delay later reversals.
         for hit in movingHits {

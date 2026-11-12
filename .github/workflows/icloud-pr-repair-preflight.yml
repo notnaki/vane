@@ -24,7 +24,7 @@ jobs:
           path: .build
           key: native-diag-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Sources/**', 'Tests/**') }}
           restore-keys: |
-            native-diag-${{ steps.toolchain.outputs.key }}-c51a3d2246f8eb6864cbf9a0fac37e220164215404f7ca632821feaba45b511b
+            native-diag-${{ steps.toolchain.outputs.key }}-a0d7c96b7e999c71a1ed8be602c27d3ab11986dcabd829f353eb38067d417997
             native-diag-${{ steps.toolchain.outputs.key }}-
             swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
       - name: Restore unchanged source timestamps

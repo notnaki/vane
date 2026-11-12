@@ -3,6 +3,18 @@ import XCTest
 @testable import vane
 
 final class SidebarDisclosureVisibilityTests: XCTestCase {
+    func testSettledBasisDiscardsResidualPresentationFromInterruptedAnimation() {
+        let residual = NativeSidebarDisclosureVisibility(rowCount: 59.8, changes: ["child": 0.196])
+        let settled = NativeSidebarDisclosureSample(baseline: ["folder"], visibility: residual, isSettled: true)
+        XCTAssertEqual(settled.visibility.rowCount, 1,
+                       "A cancelled120-second curve cannot continue expanding the settled outer extent")
+        XCTAssertTrue(settled.visibility.changes.isEmpty)
+        XCTAssertEqual(settled.progress(for: "folder"), 1)
+        XCTAssertEqual(settled.progress(for: "child"), 0)
+        let active = NativeSidebarDisclosureSample(baseline: ["folder"], visibility: residual, isSettled: false)
+        XCTAssertEqual(active.visibility, residual, "Active disclosure must retain its actual sampled pose")
+    }
+
     func testAnimatedStructuralOpeningStartsAtThePreviousPresentedPose() {
         let resting = NativeSidebarDisclosureSample(baseline: ["folder"],
             visibility: .init(rowCount: 1), isSettled: true)
