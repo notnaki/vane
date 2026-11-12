@@ -61,9 +61,19 @@ private struct FolderOutline: Shape {
         func point(_ cx: CGFloat, _ cy: CGFloat, _ ox: CGFloat, _ oy: CGFloat) -> CGPoint {
             between(CGPoint(x: cx, y: cy), CGPoint(x: ox, y: oy))
         }
+        // Stop the closed rear verticals on the front corner curves. Extending
+        // either line farther leaves a rounded cap visible inside the front face.
+        let closedTopRadius: CGFloat = 2.25
+        let closedCornerY: CGFloat = 3.375 + closedTopRadius
+        func closedJoinY(x: CGFloat, cornerX: CGFloat) -> CGFloat {
+            let dx = x - cornerX
+            return closedCornerY - (closedTopRadius * closedTopRadius - dx * dx).squareRoot()
+        }
+        let leftJoinY = closedJoinY(x: 0.25, cornerX: -0.25 + closedTopRadius)
+        let rightJoinY = closedJoinY(x: 17, cornerX: 17.25 - closedTopRadius)
         var path = Path()
         // The back tab's curves are independent of the front's rounded corners.
-        path.move(to: point(0.25, 5, 2.75, 15.35))
+        path.move(to: point(0.25, leftJoinY, 2.75, 15.35))
         path.addLine(to: point(0.25, 1.25, -1.05, 2.6))
         path.addCurve(to: point(1.75, -0.25, -0.55, 1.15),
                       control1: point(0.25, 0.25, -1.85, 1.65),
@@ -77,8 +87,7 @@ private struct FolderOutline: Shape {
         path.addCurve(to: point(17, 3.75, 12.65, 3.75),
                       control1: point(16.5, 1.75, 11.5, 2.7),
                       control2: point(17, 2.25, 12.5, 3.3))
-        // End behind the front's top edge, rather than drawing through the panel.
-        path.addLine(to: point(17, 5, 12.7, 3.75))
+        path.addLine(to: point(17, rightJoinY, 12.7, 3.75))
         let frontBounds = CGRect(x: -0.25 - 0.25 * openness, y: 3.375 + 0.125 * openness,
                                  width: 17.5 + 0.25 * openness, height: 13.25 + 0.25 * openness)
         let topRadius = 2.25 - 0.5 * openness
