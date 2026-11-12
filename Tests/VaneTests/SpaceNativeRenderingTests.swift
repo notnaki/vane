@@ -398,6 +398,8 @@ import XCTest
         // This case isolates tint interpolation. Admit the target's existing
         // page before parking it, so first WebKit construction is not measured
         // as an absence of compositor colour frames.
+        // Empty/legacy sections have no native population declaration. The
+        // coordinator still requires every declared native population to finish.
         try await compatibilityWait {
             window.contentView?.layoutSubtreeIfNeeded()
             return tab.existingWeb?.window === window && tab.existingWeb?.isLoading == false
@@ -1297,6 +1299,7 @@ import XCTest
                     && source.window === window && source.profileVisible
             }
             let activeBeforePreparation = manager.active.id
+            XCTAssertTrue(window.makeFirstResponder(window), "Admit a stable source responder before preparing a hidden root")
             let responderBeforePreparation = window.firstResponder
             let arriving = try XCTUnwrap(Windows.prepareHop(source, to: second))
             XCTAssertTrue(source.window === window && source.profileVisible)
