@@ -222,7 +222,14 @@ import XCTest
         try await Task.sleep(for: .milliseconds(180))
     }
 
-    private func exerciseRealEditor(folder: Bool, collapse: Bool) async throws {
+    private func exerciseRealEditor(folder: Bool, collapse: Bool, withdrawPresentation: Bool = false) async throws {
+        try await withOwnedApplicationLoop {
+            try await exerciseRealEditorInOwnedLoop(folder: folder, collapse: collapse,
+                                                    withdrawPresentation: withdrawPresentation)
+        }
+    }
+
+    private func exerciseRealEditorInOwnedLoop(folder: Bool, collapse: Bool, withdrawPresentation: Bool) async throws {
         let store = fixture(count: 28)
         let parent = Folder(name: "Parent")
         let childFolder = Folder(name: "Editable folder")
@@ -232,16 +239,53 @@ import XCTest
             .init(row: .tab(tab.id.uuidString), parent: parent.id)]
             + store.tabs.dropFirst().map { .init(row: .tab($0.id.uuidString)) })
         let (window, host) = mountRealSidebar(store)
-        try await Task.sleep(for: .milliseconds(120))
+        store.window = window
+        // Close the native owner before relinquishing the loop, including failures.
+        defer { store.window = nil; window.orderOut(nil); window.contentView = nil; window.close() }
+        func wait(_ phase: String, _ condition: () -> Bool) async throws {
+            do { try await compatibilityWait { condition() } }
+            catch {
+                let fields = descendants(host, NSTextField.self).filter { $0.isEditable && $0.isEnabled }
+                print("RETAINED_RENAME phase=\(phase) folder=\(folder) collapse=\(collapse) " +
+                      "running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow) " +
+                      "exactKey=\(NSApp.keyWindow === window) visible=\(window.isVisible) " +
+                      "mounted=\(host.window === window && window.contentView === host) " +
+                      "fields=\(fields.map { $0.placeholderString ?? "nil" }) " +
+                      "editorOwnsResponder=\(fields.contains { $0.currentEditor().map { window.firstResponder === $0 } == true })")
+                throw error
+            }
+        }
+        if withdrawPresentation {
+            window.orderOut(nil)
+            XCTAssertFalse(window.isVisible)
+        }
+        // Admit presentation before the one product focus request. Never focus an
+        // editor manually or replay rename after its onAppear has already fired.
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        try await wait("presentation") {
+            guard NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow,
+                  NativeFixtureMountAdmission.surfaceReady(host, in: window),
+                  let scroll = SidebarSectionsViewport.scrollView(in: host),
+                  NativeFixtureMountAdmission.scrollReady(scroll, root: host, window: window,
+                      minimumHeight: CGFloat(store.tabs.count) * Look.rowHeight),
+                  let row = descendants(host, TabTooltipAnchorView.self).first(where: {
+                      $0.title == (folder ? childFolder.name : TidyTitles.title(for: tab))
+                  }) else { return false }
+            return NativeFixtureMountAdmission.hitPoint(row, root: host, window: window) != nil
+        }
+        XCTAssertTrue(NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+            && window.isKeyWindow && NativeFixtureMountAdmission.surfaceReady(host, in: window),
+            "Native rename actions require their exact mounted foreground owner and AppKit loop")
         if folder { store.renamingFolder = childFolder.id }
         else { store.renamingTab = tab.id }
         func editorField() -> NSTextField? {
             descendants(host, NSTextField.self).first { $0.isEditable && $0.isEnabled }
         }
-        try await compatibilityWait { editorField() != nil }
+        try await wait("editor mounted") { editorField() != nil }
         let field = try XCTUnwrap(editorField())
         let initialTitle = folder ? childFolder.name : TidyTitles.title(for: tab)
-        try await compatibilityWait {
+        try await wait("product autofocus") {
             guard let editor = field.currentEditor() else { return false }
             return window.firstResponder === editor && field.stringValue == initialTitle
         }
@@ -261,7 +305,7 @@ import XCTest
             Motion.instant { store.todayShape.edit(folder: parent.id) { $0.collapsed = true } }
             // Semantic disappearance can precede AppKit's field-editor teardown.
             // Wait for both acknowledgements before reopening the parent.
-            try await compatibilityWait {
+            try await wait("collapse releases editor") {
                 (folder ? store.renamingFolder == nil : store.renamingTab == nil)
                     && window.firstResponder !== editor
             }
@@ -278,7 +322,7 @@ import XCTest
             XCTAssertEqual(returned.currentEditor()?.string ?? returned.stringValue, draft)
             window.makeFirstResponder(nil)
         }
-        try await compatibilityWait { folder ? store.renamingFolder == nil : store.renamingTab == nil }
+        try await wait("rename committed") { folder ? store.renamingFolder == nil : store.renamingTab == nil }
         if folder {
             XCTAssertEqual(store.todayShape.entries.first { $0.folder?.id == childFolder.id }?.folder?.name, draft)
         } else {
@@ -298,6 +342,11 @@ import XCTest
     func testCollapsingOffscreenEditedDescendantsCommitsDraftAndClearsFocus() async throws {
         try await exerciseRealEditor(folder: false, collapse: true)
         try await exerciseRealEditor(folder: true, collapse: true)
+    }
+
+    func testOffscreenRenameReadmitsWithdrawnPresentationBeforeRequestingFocus() async throws {
+        try await exerciseRealEditor(folder: false, collapse: true, withdrawPresentation: true)
+        try await exerciseRealEditor(folder: true, collapse: true, withdrawPresentation: true)
     }
 
     func testOffscreenCollapsedFolderHasNoPhantomHeightAndEndRemainsReachable() async throws {
@@ -458,7 +507,9 @@ import XCTest
             return abs(outgoing.documentVisibleRect.minY - 180) < 1
         }
         let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
-        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        // This narrow window fits the saved sidebar width down. Claim using the
+        // same effective travel width that production captured during preparation.
+        monitor.track(-30, width: SidebarWidth.inWindow(store), in: store)
         XCTAssertTrue(host.spaceSlide === prepared)
         let outgoing = try XCTUnwrap(descendants(prepared.outgoing, NSScrollView.self).first)
         XCTAssertEqual(outgoing.documentVisibleRect.minY, live.documentVisibleRect.minY, accuracy: 1)
