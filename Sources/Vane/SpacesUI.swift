@@ -2031,6 +2031,10 @@ private struct SpaceSwipe: ViewModifier {
                 // captured rows before their animation clock starts; both routes
                 // can otherwise spend the visible landing's early frames mounting.
                 slide.armLanding(to: destination, completion: finish)
+                // Build only this committed target while source still owns the
+                // window. The queued handoff can then meet its landing deadline
+                // without selecting the destination inside the input action.
+                Windows.prepareHop(store, to: destination)
                 DispatchQueue.main.async { [weak self, weak store, weak host, weak slide] in
                     guard let self, self.transition == token, let store, let host, let slide,
                           slide.isActive, host.spaceSlide === slide,

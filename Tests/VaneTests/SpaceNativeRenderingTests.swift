@@ -175,7 +175,15 @@ import XCTest
             }
             store.switchTo(space: spaces[0]); store.palette = nil
             let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
-            try await compatibilityWait { self.warmOwnerReports(in: host).contains { $0.attachedLogicalRows >= 24 } }
+            try await compatibilityWait {
+                if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
+                    && store.window === window && store.profileVisible
+                    && SidebarNativeReadinessCoordinator.shared.isReady(
+                        SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID))
+                    && self.warmOwnerReports(in: host).contains { $0.attachedLogicalRows >= 24 }
+            }
             if ProcessInfo.processInfo.environment["VANE_PROFILE_LIFETIME_TRACE"] == "1" {
                 print("WARM_ADMISSION test=\(name) active=\(NSApp.isActive) key=\(window.isKeyWindow) liveReady=\(SidebarNativeReadinessCoordinator.shared.isReady(SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID))) pressure=\(SidebarWarmOwnerBudget.underPressure) revocations=\(warmRevocations)")
             }
@@ -387,6 +395,15 @@ import XCTest
         let tab = store.newBlankTab(focus: false)
         tab.park(url: URL(string: "https://example.test/tint")!, Parked(title: "Tint fixture"))
         store.current = tab.id
+        // This case isolates tint interpolation. Admit the target's existing
+        // page before parking it, so first WebKit construction is not measured
+        // as an absence of compositor colour frames.
+        try await compatibilityWait {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return tab.existingWeb?.window === window && tab.existingWeb?.isLoading == false
+                && SidebarNativeReadinessCoordinator.shared.isReady(
+                    SidebarNativeReadinessScope(store: store, spaceID: spaces[1].id))
+        }
         store.switchTo(space: spaces[0])
         store.palette = nil
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
@@ -890,13 +907,16 @@ import XCTest
     }
 
     func testReverseSwipeTakesOverThePresentedLandingWithoutFinishingIt() async throws {
-        for direction in [1, -1] {
-            let (store, spaces, window, monitor) = try fixture()
-            let origin = spaces[direction > 0 ? 0 : 1]
-            let target = spaces[direction > 0 ? 1 : 0]
-            store.switchTo(space: origin)
-            try await checkReverseLanding(store: store, origin: origin, target: target,
-                                          window: window, monitor: monitor, direction: direction)
+        try await withFixtureApplicationLoop {
+            for direction in [1, -1] {
+                let (store, spaces, window, monitor) = try fixture(registerTeardown: false)
+                defer { retireFixture(store, window: window, monitor: monitor) }
+                let origin = spaces[direction > 0 ? 0 : 1]
+                let target = spaces[direction > 0 ? 1 : 0]
+                store.switchTo(space: origin)
+                try await checkReverseLanding(store: store, origin: origin, target: target,
+                                              window: window, monitor: monitor, direction: direction)
+            }
         }
     }
 
@@ -1036,6 +1056,15 @@ import XCTest
         let width = fixtureSidebarWidth(in: store)
         let sign = CGFloat(direction)
         try await Task.sleep(for: .milliseconds(150))
+        try await compatibilityWait {
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+                && window.isKeyWindow && store.window === window && store.profileVisible
+                && SidebarNativeReadinessCoordinator.shared.isReady(
+                    SidebarNativeReadinessScope(store: store, spaceID: origin.id),
+                    allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled)
+        }
         monitor.track(-sign * 60, width: width, in: store)
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
@@ -1237,6 +1266,55 @@ import XCTest
             arriving.spaceGesture.monitor.install(arriving)
             arriving.spaceGesture.monitor.abort()
             XCTAssertFalse(slide.isActive, "An explicit abort must still cancel an attached landing")
+        }
+    }
+
+    func testPreparedProfileKeepsWindowAuthorityWithSourceUntilHop() async throws {
+        try await withFixtureApplicationLoop {
+            let manager = ProfileManager.shared
+            let previous = manager.active
+            let profiles = [manager.create(name: "Prepared source"), manager.create(name: "Prepared arrival")]
+            let first = manager.createSpace(name: "Source", in: profiles[0].id)
+            var second = manager.createSpace(name: "Arrival", in: profiles[1].id)
+            second.tabURLs = [URL(string: "about:blank")!]
+            XCTAssertTrue(manager.updateSpace(second))
+            let source = Windows.open(profile: profiles[0], space: first, focus: false)
+            let window = try XCTUnwrap(source.window)
+            defer {
+                self.retireProfileWindow(window)
+                profiles.forEach { _ = manager.delete($0.id) }
+                manager.active = previous
+            }
+            source.palette = nil
+            try await compatibilityWait {
+                if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+                    && source.window === window && source.profileVisible
+            }
+            let activeBeforePreparation = manager.active.id
+            let responderBeforePreparation = window.firstResponder
+            let arriving = try XCTUnwrap(Windows.prepareHop(source, to: second))
+            XCTAssertTrue(source.window === window && source.profileVisible)
+            XCTAssertEqual(manager.active.id, activeBeforePreparation)
+            XCTAssertTrue(window.firstResponder === responderBeforePreparation,
+                          "A hidden prepared profile must not take keyboard authority")
+            XCTAssertNil(arriving.window)
+            XCTAssertTrue(arriving.parkedIn === window)
+            XCTAssertFalse(arriving.profileVisible)
+            let surface = try XCTUnwrap(arriving.spaceGesture.groundSurface)
+            XCTAssertTrue(surface.window === window && surface.isHiddenOrHasHiddenAncestor,
+                          "Preparing the committed chrome must not expose another profile")
+            let tab = try XCTUnwrap(arriving.active)
+            XCTAssertFalse(arriving.ownsPage(tab),
+                           "Preparing chrome must not bypass SharedTabs page ownership")
+            let page = try XCTUnwrap(tab.existingWeb)
+            XCTAssertNil(page.window)
+            source.switchTo(space: second)
+            XCTAssertTrue(arriving.ownsPage(tab))
+            XCTAssertTrue(TabStore.all.first { $0.window === window } === arriving,
+                          "Activation must reuse the prepared profile's backend and native host")
+            XCTAssertTrue(source.parkedIn === window && !source.profileVisible)
         }
     }
 
