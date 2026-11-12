@@ -51,10 +51,10 @@ Native profiling and the optimized capture show a separate UI graph bottleneck a
 - [ ] Write meaningful RED/GREEN models for multiple proposals per frame, release flush, cancellation/owner replacement, latest uncovered versus queued covered width and in-flight reversal. Keep all native bounds unchanged.
 - [ ] Run covering resize/integration checks and independent source review; measure actual window/sidebar/coverage again. Debug and optimized RED evidence remains retained; no unchanged retry may count as a repair.
 
-### Task 3: Honor covered native window display requests
+### Task 3: Resolve native window startup and presentation latency
 
 The narrowed width build passes actual sidebar motion and all painted coverage. Window steady cadence passes but its first native move at~73ms reaches captured pixels at115ms. The existing commit path always passes displayfalse to AppKit and only marks views dirty.
 
 - [ ] Use the existing actual WindowServer first-frame regression as RED evidence; preserve its maximum80ms and p95≤25ms assertions. Avoid a spy-only test that merely repeats the display call.
-- [ ] Honor the display request synchronously after the admitted native frame change, preserving coverage and avoiding an additional root layout per input.
+- [ ] Evaluate native presentation changes against the actual capture. Reject per-input synchronous drawing when it adds cost without meeting the original limits; measure the optimized narrowed graph before another scheduling change.
 - [ ] Validate covering models/product/pure and independent review, then measure the unchanged first-visible and steady-motion bounds.

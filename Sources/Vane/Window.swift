@@ -140,10 +140,7 @@ final class VaneWindow: NSWindow {
         committingResize = true
         defer { committingResize = false }
         super.setFrame(frame, display: false)
-        if display {
-            viewsNeedDisplay = true
-            displayIfNeeded()
-        }
+        if display { viewsNeedDisplay = true }
     }
 
     func beginPageResize(at point: NSPoint = NSEvent.mouseLocation) {
