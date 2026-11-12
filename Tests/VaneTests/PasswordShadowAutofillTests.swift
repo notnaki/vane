@@ -13,16 +13,19 @@ import XCTest
     }
 
     private func discoveryWindowServerDiagnostics() -> String {
+        let process = ProcessInfo.processInfo.processIdentifier
         let windows = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        let native = NSApp.windows.map {
-            "number=\($0.windowNumber),visible=\($0.isVisible),key=\($0.isKeyWindow),occlusion=\($0.occlusionState.rawValue),frame=\($0.frame)"
+        let owned = windows.filter { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == process }
+        let rows = owned.map { window in
+            let bounds = (window[kCGWindowBounds as String] as? [String: Any]).flatMap {
+                CGRect(dictionaryRepresentation: $0 as CFDictionary)
+            }
+            return "id=\(String(describing: window[kCGWindowNumber as String])) " +
+                "onscreen=\(String(describing: window[kCGWindowIsOnscreen as String])) " +
+                "alpha=\(String(describing: window[kCGWindowAlpha as String])) bounds=\(String(describing: bounds))"
         }
-        let server = windows.prefix(24).map { window in
-            [kCGWindowNumber, kCGWindowOwnerPID, kCGWindowLayer, kCGWindowIsOnscreen, kCGWindowAlpha, kCGWindowBounds].map { key in
-                "\(key)=\(String(describing: window[key as String]))"
-            }.joined(separator: ",")
-        }
-        return "process=\(ProcessInfo.processInfo.processIdentifier) native=[\(native.joined(separator: ";"))] server=[\(server.joined(separator: ";"))]"
+        return "process=\(process) frontmostPID=\(String(describing: NSWorkspace.shared.frontmostApplication?.processIdentifier)) " +
+            "ownedServerRows=[\(rows.joined(separator: ";"))]"
     }
 
     private final class Capture: NSObject, WKScriptMessageHandler {
@@ -175,6 +178,7 @@ import XCTest
         let app = NSApplication.shared, running = NSRunningApplication.current
         return "visible=\(window?.isVisible ?? false) key=\(window?.isKeyWindow ?? false) " +
             "occlusion=\(window?.occlusionState.rawValue ?? 0) appActive=\(app.isActive) " +
+            "appPolicy=\(app.activationPolicy().rawValue) processPolicy=\(running.activationPolicy.rawValue) " +
             "finished=\(running.isFinishedLaunching) appHidden=\(app.isHidden) processHidden=\(running.isHidden) " +
             "keyOwner=\(window != nil && app.keyWindow === window) miniaturized=\(window?.isMiniaturized ?? false) " +
             "activeSpace=\(window?.isOnActiveSpace ?? false) alpha=\(window?.alphaValue ?? 0) " +
@@ -271,6 +275,10 @@ import XCTest
                     __shadowFixtureVisibility.push({state:document.visibilityState, at:Date.now()});
                 });
                 """, present: { window, web in
+                // Discovery starts in a stable host, not AppKit's automatic
+                // show/hide animation. The explicit orderOut/DOM-hidden control
+                // below still observes real presentation withdrawal.
+                window.animationBehavior = .none
                 try self.positionDiscoveryWindow(window)
                 loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory,
                     beforeHeartbeat: {
@@ -285,7 +293,7 @@ import XCTest
                         let state = self.discoveryNativeDiagnostics(web) + " running=\(app.isRunning)"
                         if state != launch.previousState {
                             launch.previousState = state
-                            launch.observations.append("elapsed=\(ProcessInfo.processInfo.systemUptime - launch.started) \(state) \(self.discoveryWindowServerDiagnostics())")
+                            launch.observations.append("elapsed=\(ProcessInfo.processInfo.systemUptime - launch.started) \(state)")
                         }
                         let ready = nativeReady && compositorReady
                         if ready { print("SHADOW_LAUNCH_PRESENTATION " + self.discoveryNativeDiagnostics(web)) }
