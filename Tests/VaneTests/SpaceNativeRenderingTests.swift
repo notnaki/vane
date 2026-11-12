@@ -146,25 +146,29 @@ import XCTest
         return own + view.subviews.flatMap { warmOwnerReports(in: $0) }
     }
 
-    private func warmOwnerFixture(pinnedRows: Int = 0) async throws -> (TabStore, [Space], NSWindow, SwipeMonitor, BrowserWindowHost) {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["VANE_RETAIN_INACTIVE_SPACE_ROW_OWNERS"] == "0")
-        let (store, spaces, window, monitor) = try fixture()
-        window.setContentSize(NSSize(width: 1100, height: 800))
-        for space in spaces {
-            store.switchTo(space: space)
-            store.tabs = (0..<(32 + pinnedRows)).map { index in
-                let tab = Tab(profileID: store.profileID)
-                if index < pinnedRows { tab.kind = .pinned }
-                tab.park(url: URL(string: "about:blank#warm-authority-\(space.id)-\(index)")!,
-                         Parked(title: "Warm owner \(index)"))
-                return tab
+    private func withWarmOwnerFixture(pinnedRows: Int = 0,
+        _ body: @MainActor (TabStore, [Space], NSWindow, SwipeMonitor, BrowserWindowHost) async throws -> Void) async throws {
+        try await withFixtureApplicationLoop {
+            try XCTSkipIf(ProcessInfo.processInfo.environment["VANE_RETAIN_INACTIVE_SPACE_ROW_OWNERS"] == "0")
+            let (store, spaces, window, monitor) = try self.fixture(registerTeardown: false)
+            defer { self.retireFixture(store, window: window, monitor: monitor) }
+            window.setContentSize(NSSize(width: 1100, height: 800))
+            for space in spaces {
+                store.switchTo(space: space)
+                store.tabs = (0..<(32 + pinnedRows)).map { index in
+                    let tab = Tab(profileID: store.profileID)
+                    if index < pinnedRows { tab.kind = .pinned }
+                    tab.park(url: URL(string: "about:blank#warm-authority-\(space.id)-\(index)")!,
+                             Parked(title: "Warm owner \(index)"))
+                    return tab
+                }
+                store.syncShapes()
             }
-            store.syncShapes()
+            store.switchTo(space: spaces[0]); store.palette = nil
+            let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+            try await compatibilityWait { self.warmOwnerReports(in: host).contains { $0.attachedLogicalRows >= 24 } }
+            try await body(store, spaces, window, monitor, host)
         }
-        store.switchTo(space: spaces[0]); store.palette = nil
-        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
-        try await compatibilityWait { self.warmOwnerReports(in: host).contains { $0.attachedLogicalRows >= 24 } }
-        return (store, spaces, window, monitor, host)
     }
 
     private func visitWarmSpace(_ target: Space, store: TabStore, monitor: SwipeMonitor,
@@ -175,118 +179,125 @@ import XCTest
     }
 
     func testInactiveWarmOwnerBudgetAppliesAcrossPinnedAndTodaySections() async throws {
-        let (store, spaces, _, monitor, host) = try await warmOwnerFixture(pinnedRows: 32)
-        for target in spaces.dropFirst() {
-            try await visitWarmSpace(target, store: store, monitor: monitor, host: host)
-            let reports = warmOwnerReports(in: host)
-            XCTAssertGreaterThanOrEqual(reports.filter { $0.cachedLogicalRows > 0 }.count, 2,
-                                        "Both real sections must participate in this budget")
-            XCTAssertLessThanOrEqual(reports.reduce(0) { $0 + $1.inactiveGraphCount }, 16,
-                                     "One store must share its inactive graph budget across both sections")
-            XCTAssertGreaterThan(reports.reduce(0) { $0 + $1.inactiveGraphCount }, 0,
-                                 "The budget must retain owners, not pass by disabling reuse")
+        try await withWarmOwnerFixture(pinnedRows: 32) { store, spaces, _, monitor, host in
+            for target in spaces.dropFirst() {
+                try await visitWarmSpace(target, store: store, monitor: monitor, host: host)
+                let reports = warmOwnerReports(in: host)
+                XCTAssertGreaterThanOrEqual(reports.filter { $0.cachedLogicalRows > 0 }.count, 2,
+                                            "Both real sections must participate in this budget")
+                XCTAssertLessThanOrEqual(reports.reduce(0) { $0 + $1.inactiveGraphCount }, 16,
+                                         "One store must share its inactive graph budget across both sections")
+                XCTAssertGreaterThan(reports.reduce(0) { $0 + $1.inactiveGraphCount }, 0,
+                                     "The budget must retain owners, not pass by disabling reuse")
+            }
         }
     }
 
     func testWarmReturnAtStoreBudgetReusesSurvivingSectionOwners() async throws {
-        let (store, spaces, _, monitor, host) = try await warmOwnerFixture(pinnedRows: 24)
-        for target in spaces.dropFirst() {
-            try await visitWarmSpace(target, store: store, monitor: monitor, host: host)
-        }
-        let reports = warmOwnerReports(in: host)
-        // This fixed fixture retains the same number of native owners on every
-        // visit. Three full inactive visits means its oldest (First) survived.
-        let expected = Dictionary(uniqueKeysWithValues: reports.filter {
-            $0.attachedGraphCount > 0 && $0.inactiveGraphCount == 3 * $0.attachedGraphCount
-        }.map { (ObjectIdentifier($0), $0.batchCounts.inactiveScopeHits) })
-        XCTAssertEqual(expected.count, 2, "Both sections' three inactive visits must fit before the return reservation")
-        try await visitWarmSpace(spaces[0], store: store, monitor: monitor, host: host)
-        for report in warmOwnerReports(in: host) {
-            if let before = expected[ObjectIdentifier(report)] {
-                XCTAssertEqual(report.batchCounts.inactiveScopeHits, before + 1,
-                               "Every surviving arriving section must be reused before outgoing budget reservations")
+        try await withWarmOwnerFixture(pinnedRows: 24) { store, spaces, _, monitor, host in
+            for target in spaces.dropFirst() {
+                try await visitWarmSpace(target, store: store, monitor: monitor, host: host)
             }
+            let reports = warmOwnerReports(in: host)
+            // This fixed fixture retains the same number of native owners on every
+            // visit. Three full inactive visits means its oldest (First) survived.
+            let expected = Dictionary(uniqueKeysWithValues: reports.filter {
+                $0.attachedGraphCount > 0 && $0.inactiveGraphCount == 3 * $0.attachedGraphCount
+            }.map { (ObjectIdentifier($0), $0.batchCounts.inactiveScopeHits) })
+            XCTAssertEqual(expected.count, 2, "Both sections' three inactive visits must fit before the return reservation")
+            try await visitWarmSpace(spaces[0], store: store, monitor: monitor, host: host)
+            for report in warmOwnerReports(in: host) {
+                if let before = expected[ObjectIdentifier(report)] {
+                    XCTAssertEqual(report.batchCounts.inactiveScopeHits, before + 1,
+                                   "Every surviving arriving section must be reused before outgoing budget reservations")
+                }
+            }
+            XCTAssertLessThanOrEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 16)
         }
-        XCTAssertLessThanOrEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 16)
     }
 
 
     func testProtectionRevocationSynchronouslyDropsInactiveWarmOwners() async throws {
-        let (store, spaces, _, monitor, host) = try await warmOwnerFixture()
-        try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
-        XCTAssertGreaterThan(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0)
-        store.folderAuthentication.lock(UUID(), profile: store.profileID)
-        XCTAssertEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0,
-                       "Protection revocation must withdraw inactive owners before returning to its caller")
+        try await withWarmOwnerFixture() { store, spaces, _, monitor, host in
+            try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
+            XCTAssertGreaterThan(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0)
+            store.folderAuthentication.lock(UUID(), profile: store.profileID)
+            XCTAssertEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0,
+                           "Protection revocation must withdraw inactive owners before returning to its caller")
+        }
     }
 
     func testRelockingAWarmSpacePurgesItsGraphAndNeverRemountsItsPrivateRows() async throws {
-        let (store, spaces, _, monitor, host) = try await warmOwnerFixture()
-        var folder = Folder(name: "Warm private folder")
-        folder.requiresAuthentication = true
-        folder.collapsed = false
-        let secret = try XCTUnwrap(store.tabs.dropFirst(3).first)
-        store.todayShape = Pins(entries: [.init(row: .folder(folder), parent: nil)] + store.tabs.map {
-            .init(row: .tab($0.id.uuidString), parent: folder.id)
-        })
-        store.folderAuthentication.unlock(folder.id, profile: store.profileID, reason: "Native fixture",
-            using: { _, reply in reply(true); return nil }) { XCTAssertTrue($0) }
-        func attachedRows(_ view: NSView) -> Set<String> {
-            let own = (view as? NativeSidebarRowLayoutView).map { Set([$0.rowID]) } ?? []
-            return view.subviews.reduce(own) { $0.union(attachedRows($1)) }
+        try await withWarmOwnerFixture() { store, spaces, _, monitor, host in
+            var folder = Folder(name: "Warm private folder")
+            folder.requiresAuthentication = true
+            folder.collapsed = false
+            let secret = try XCTUnwrap(store.tabs.dropFirst(3).first)
+            store.todayShape = Pins(entries: [.init(row: .folder(folder), parent: nil)] + store.tabs.map {
+                .init(row: .tab($0.id.uuidString), parent: folder.id)
+            })
+            store.folderAuthentication.unlock(folder.id, profile: store.profileID, reason: "Native fixture",
+                using: { _, reply in reply(true); return nil }) { XCTAssertTrue($0) }
+            @MainActor func attachedRows(_ view: NSView) -> Set<String> {
+                let own = (view as? NativeSidebarRowLayoutView).map { Set([$0.rowID]) } ?? []
+                return view.subviews.reduce(own) { $0.union(attachedRows($1)) }
+            }
+            @MainActor func liveRows() -> Set<String> {
+                warmOwnerReports(in: host).compactMap { $0 as? NSView }.reduce([]) { $0.union(attachedRows($1)) }
+            }
+            try await compatibilityWait { liveRows().contains(secret.id.uuidString) }
+            try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
+            // The grant change revoked the original visit. A fresh visit is allowed
+            // to become warm; ordinary same-scope updates cannot reauthorize it.
+            try await visitWarmSpace(spaces[0], store: store, monitor: monitor, host: host)
+            XCTAssertTrue(liveRows().contains(secret.id.uuidString))
+            try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
+            XCTAssertGreaterThan(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0)
+            store.folderAuthentication.lock(folder.id, profile: store.profileID)
+            XCTAssertEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0)
+            try await visitWarmSpace(spaces[0], store: store, monitor: monitor, host: host)
+            XCTAssertTrue(store.isTabLocked(secret.id))
+            XCTAssertFalse(liveRows().contains(secret.id.uuidString), "A revoked private control must never return to the live hierarchy")
         }
-        func liveRows() -> Set<String> {
-            warmOwnerReports(in: host).compactMap { $0 as? NSView }.reduce([]) { $0.union(attachedRows($1)) }
-        }
-        try await compatibilityWait { liveRows().contains(secret.id.uuidString) }
-        try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
-        // The grant change revoked the original visit. A fresh visit is allowed
-        // to become warm; ordinary same-scope updates cannot reauthorize it.
-        try await visitWarmSpace(spaces[0], store: store, monitor: monitor, host: host)
-        XCTAssertTrue(liveRows().contains(secret.id.uuidString))
-        try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
-        XCTAssertGreaterThan(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0)
-        store.folderAuthentication.lock(folder.id, profile: store.profileID)
-        XCTAssertEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0)
-        try await visitWarmSpace(spaces[0], store: store, monitor: monitor, host: host)
-        XCTAssertTrue(store.isTabLocked(secret.id))
-        XCTAssertFalse(liveRows().contains(secret.id.uuidString), "A revoked private control must never return to the live hierarchy")
     }
 
     func testRevokedCurrentVisitCannotBeArchivedByLaterSameScopeUpdates() async throws {
-        let (store, spaces, _, monitor, host) = try await warmOwnerFixture()
-        let updates = warmOwnerReports(in: host).reduce(0) { $0 + $1.batchCounts.rootUpdates }
-        store.folderAuthentication.lock(UUID(), profile: store.profileID)
-        try await compatibilityWait {
-            self.warmOwnerReports(in: host).reduce(0) { $0 + $1.batchCounts.rootUpdates } > updates
+        try await withWarmOwnerFixture() { store, spaces, _, monitor, host in
+            let updates = warmOwnerReports(in: host).reduce(0) { $0 + $1.batchCounts.rootUpdates }
+            store.folderAuthentication.lock(UUID(), profile: store.profileID)
+            try await compatibilityWait {
+                self.warmOwnerReports(in: host).reduce(0) { $0 + $1.batchCounts.rootUpdates } > updates
+            }
+            try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
+            XCTAssertEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0,
+                           "An ordinary configure must not reauthorize a critically revoked visit for archiving")
         }
-        try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
-        XCTAssertEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0,
-                       "An ordinary configure must not reauthorize a critically revoked visit for archiving")
     }
 
     func testMemoryPressureDropsWarmOwnersWithTabSuspensionDisabled() async throws {
-        let (store, spaces, _, monitor, host) = try await warmOwnerFixture()
-        try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
-        XCTAssertGreaterThan(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0)
-        let previous = Prefs.suspendTabs
-        Prefs.suspendTabs = false
-        defer { Prefs.suspendTabs = previous }
-        Suspension.relieve(critical: false)
-        XCTAssertEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0,
-                       "UI graph pressure relief must work independently of the tab suspension preference")
+        try await withWarmOwnerFixture() { store, spaces, _, monitor, host in
+            try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
+            XCTAssertGreaterThan(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0)
+            let previous = Prefs.suspendTabs
+            Prefs.suspendTabs = false
+            defer { Prefs.suspendTabs = previous }
+            Suspension.relieve(critical: false)
+            XCTAssertEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0,
+                           "UI graph pressure relief must work independently of the tab suspension preference")
+        }
     }
 
     func testHiddenProfileSynchronouslyDropsWarmOwnersDuringLanding() async throws {
-        let (store, spaces, _, monitor, host) = try await warmOwnerFixture()
-        try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
-        monitor.track(-80, width: fixtureSidebarWidth(in: store), in: store)
-        monitor.land(1, to: spaces[2], width: fixtureSidebarWidth(in: store), store: store, duration: 2)
-        try await compatibilityWait { store.currentSpaceID == spaces[2].id && host.spaceSlide?.isActive == true }
-        XCTAssertGreaterThan(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0)
-        store.profileVisible = false
-        XCTAssertEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0,
-                       "The emitted hide value must revoke archives synchronously")
+        try await withWarmOwnerFixture() { store, spaces, _, monitor, host in
+            try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
+            monitor.track(-80, width: fixtureSidebarWidth(in: store), in: store)
+            monitor.land(1, to: spaces[2], width: fixtureSidebarWidth(in: store), store: store, duration: 2)
+            try await compatibilityWait { store.currentSpaceID == spaces[2].id && host.spaceSlide?.isActive == true }
+            XCTAssertGreaterThan(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0)
+            store.profileVisible = false
+            XCTAssertEqual(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0,
+                           "The emitted hide value must revoke archives synchronously")
+        }
     }
 
     func testBatterySaverFooterFollowsFractionalNativeSpaceTravel() async throws {
@@ -430,6 +441,10 @@ import XCTest
     }
 
     private func checkProfileColourReturn(swipe: Bool) async throws {
+        try await withFixtureApplicationLoop { try await checkProfileColourReturnInOwnedLoop(swipe: swipe) }
+    }
+
+    private func checkProfileColourReturnInOwnedLoop(swipe: Bool) async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
         let manager = ProfileManager.shared
@@ -871,6 +886,10 @@ import XCTest
     }
 
     func testReverseProfileSwipeTakesOverTheSamePresentedNativeRows() async throws {
+        try await withFixtureApplicationLoop { try await checkReverseProfileSwipeInOwnedLoop() }
+    }
+
+    private func checkReverseProfileSwipeInOwnedLoop() async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
         let manager = ProfileManager.shared
@@ -1203,6 +1222,45 @@ import XCTest
             arriving.spaceGesture.monitor.install(arriving)
             arriving.spaceGesture.monitor.abort()
             XCTAssertFalse(slide.isActive, "An explicit abort must still cancel an attached landing")
+        }
+    }
+
+    func testArrivingWashJoinsTheExistingCompositorTimeline() async throws {
+        try await withFixtureApplicationLoop {
+            let (store, spaces, window, monitor) = try self.fixture(coloured: true, registerTeardown: false)
+            defer { self.retireFixture(store, window: window, monitor: monitor) }
+            let root = try XCTUnwrap(window.contentView)
+            let source = ThemeWashSurface()
+            let arriving = ThemeWashSurface()
+            source.frame = NSRect(x: 0, y: 0, width: 100, height: 100)
+            arriving.frame = NSRect(x: 100, y: 0, width: 100, height: 100)
+            root.addSubview(source); root.addSubview(arriving)
+            let red = ThemeWash.space(spaces[0], fallback: store.profile,
+                profiles: ProfileManager.shared.profiles, systemDark: true)
+            let blue = ThemeWash.space(spaces[1], fallback: store.profile,
+                profiles: ProfileManager.shared.profiles, systemDark: true)
+            source.apply(red, duration: 0); arriving.apply(blue, duration: 0)
+            try await compatibilityWait { source.base.presentation() != nil && arriving.base.presentation() != nil }
+            let timing = CABasicAnimation(keyPath: "position")
+            timing.duration = 0.8
+            timing.timingFunction = CAMediaTimingFunction(name: .linear)
+            let sourceToken = source.animateNative(from: red, to: blue, animation: timing)
+            try await Task.sleep(for: .milliseconds(200))
+            let arrivalToken = try XCTUnwrap(arriving.joinNativeAnimation(from: source))
+            try await Task.sleep(for: .milliseconds(80))
+            // No point-progress callback has painted the arriving surface.
+            let sourceRed = try self.firstColour(of: source, presented: true).redComponent
+            let arrivalRed = try self.firstColour(of: arriving, presented: true).redComponent
+            XCTAssertEqual(arrivalRed, sourceRed, accuracy: 0.03,
+                           "A late arrival must join the original timeline rather than restart its duration")
+            XCTAssertTrue(arriving.nativeAnimating)
+            arriving.finishNative(token: arrivalToken, wash: blue)
+            source.finishNative(token: sourceToken, wash: red)
+            XCTAssertEqual(try self.firstColour(of: arriving).redComponent,
+                           try XCTUnwrap(blue.colors[0].nsColor.usingColorSpace(.deviceRGB)).redComponent, accuracy: 0.001)
+            XCTAssertEqual(try self.firstColour(of: source).redComponent,
+                           try XCTUnwrap(red.colors[0].nsColor.usingColorSpace(.deviceRGB)).redComponent, accuracy: 0.001)
+            XCTAssertFalse(arriving.nativeAnimating)
         }
     }
 
@@ -1553,11 +1611,6 @@ import XCTest
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
-        if let path = ProcessInfo.processInfo.environment["VANE_DIAG_GESTURE_MARKER"] {
-            let event: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier,
-                                       "time": ProcessInfo.processInfo.systemUptime]
-            try JSONSerialization.data(withJSONObject: event).write(to: URL(fileURLWithPath: path), options: .atomic)
-        }
         monitor.land(1, to: second, width: fixtureSidebarWidth(in: source), store: source, duration: 0.8)
         try await Task.sleep(for: .milliseconds(100))
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })

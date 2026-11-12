@@ -6,7 +6,7 @@ permissions:
   contents: read
   actions: read
 env:
-  VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'
+  VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '180'
   SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
 jobs:
   focused:
@@ -53,49 +53,10 @@ jobs:
           import errno, os, pathlib, pty, subprocess, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           attempt = os.environ['ATTEMPT']
-          selection = 'SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding'
-          os.environ['VANE_DIAG_GESTURE_MARKER'] = str(root / 'icloud-gesture-start.json')
-          source = pathlib.Path('scripts/run-native-tests.py').read_text().replace('import ctypes\n', 'import ctypes\nimport threading\n')
-          collector = """    diagnostic_stop = threading.Event()
-              def collect_gesture():
-                  try:
-                      marker = Path(os.environ['VANE_DIAG_GESTURE_MARKER'])
-                      deadline = time.monotonic() + 80
-                      while not diagnostic_stop.wait(0.01) and time.monotonic() < deadline:
-                          if not marker.exists(): continue
-                          event = json.loads(marker.read_text())
-                          for record in load_records(directory, token):
-                              host = record['host']
-                              if host['pid'] != event['pid']: continue
-                              if process_identity(host['pid']) != {'pid': host['pid'], 'start': host['start'], 'path': os.path.realpath(host['path'])}: continue
-                              root = Path(os.environ['RUNNER_TEMP'])
-                              print('GESTURE_STACK host=' + str(host['pid']) + ' delayMS=' + str((time.monotonic() - event['time']) * 1000), flush=True)
-                              with (root / 'icloud-sampler.log').open('w') as output:
-                                  sampler = subprocess.Popen(['sample', str(host['pid']), '1', '1', '-file', str(root / 'icloud-gesture-stack.txt')], stdout=output, stderr=subprocess.STDOUT)
-                                  try: sampler.wait(timeout=60)
-                                  except subprocess.TimeoutExpired:
-                                      sampler.terminate()
-                                      try: sampler.wait(timeout=5)
-                                      except subprocess.TimeoutExpired:
-                                          sampler.kill(); sampler.wait()
-                                      print('GESTURE_STACK sampler timeout; native driver remains independent', flush=True)
-                              return
-                  except Exception as error: print('GESTURE_STACK failed: ' + str(error), flush=True)
-              diagnostic_collector = threading.Thread(target=collect_gesture)
-              diagnostic_collector.start()
-          """
-          needle = '    try:\n        status = run_commands(primary, cleanup, invoke, check_hosts)'
-          assert source.count(needle) == 1
-          source = source.replace(needle, collector + needle)
-          needle = '    finally:\n        for signum, handler in previous.items():'
-          assert source.count(needle) == 1
-          source = source.replace(needle, '    finally:\n        diagnostic_stop.set()\n        diagnostic_collector.join(timeout=70)\n        for signum, handler in previous.items():')
-          driver = root / 'icloud-diagnostic-driver.py'
-          driver.write_text(source)
-          compile(source, str(driver), 'exec')
+          selection = 'SpaceNativeRenderingTests.testArrivingWashJoinsTheExistingCompositorTimeline|ProfileChromeObservationTests|ProfilePersistenceTests|SpaceNativeRenderingTests.testDestinationVisibilityNotificationCannotAbortTheSourceLanding|SpaceNativeRenderingTests.testCachedProfileChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testFirstProfileVisitChangesPageAtStartOfNativeLanding|SpaceNativeRenderingTests.testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|SpaceNativeRenderingTests.testHiddenProfileSynchronouslyDropsWarmOwnersDuringLanding|SpaceNativeRenderingTests.testProfileSwipeDoesNotRestoreItsDepartureColour|SpaceNativeRenderingTests.testReverseProfileSwipeTakesOverTheSamePresentedNativeRows'
           log = root / f'icloud-native-preflight-{attempt}.log'
           master, slave = pty.openpty()
-          process = subprocess.Popen(['python3', '-u', str(driver), '--skip-build', '--jobs', '1', '--filter', selection], stdout=slave, stderr=slave)
+          process = subprocess.Popen(['python3', '-u', 'scripts/run-native-tests.py', '--skip-build', '--jobs', '1', '--filter', selection], stdout=slave, stderr=slave)
           os.close(slave)
           with log.open('wb') as output:
               while True:
@@ -121,7 +82,4 @@ jobs:
           name: icloud-native-preflight-1
           path: |
             ${{ runner.temp }}/icloud-native-preflight-*.log
-            ${{ runner.temp }}/icloud-gesture-stack.txt
-            ${{ runner.temp }}/icloud-sampler.log
-            ${{ runner.temp }}/icloud-gesture-start.json
             /tmp/vane-resize-*.png

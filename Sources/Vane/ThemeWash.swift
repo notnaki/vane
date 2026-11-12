@@ -141,6 +141,18 @@ struct NativeThemeWash: NSViewRepresentable {
                 view.finishNative(token: token, wash: final)
             }
         }
+        let restingWash = wash
+        gesture.joinNativeGround = { [weak view] source in
+            guard let view, let token = view.joinNativeAnimation(from: source) else { return nil }
+            return { [weak view] current in
+                guard let view else { return }
+                let final = current.map { ThemeWash.space($0, fallback: fallback, profiles: profiles, systemDark: systemDark) } ?? restingWash
+                view.finishNative(token: token, wash: final)
+            }
+        }
+        // A cold host can mount after attachment. Join only after both native
+        // callbacks refer to this representable's actual surface.
+        gesture.nativeGroundDidUpdate?()
         if reduced { view.finishAnimations() }
         view.apply(wash, duration: !reduced && context.transaction.animation != nil
             && !context.transaction.disablesAnimations ? gesture.colourDuration : 0)
@@ -197,15 +209,33 @@ struct NativeThemeWashCopy: NSViewRepresentable {
         copy.copySource = self
         copies.add(copy)
         if let target { copy.apply(target, duration: 0) }
+        copyInstalledAnimations(to: copy)
+        copy.needsLayout = true
+    }
+
+    private func copyInstalledAnimations(to copy: ThemeWashSurface) {
         // A newly mounted copy can join a transition already on the compositor.
         for (source, destination) in zip([base, overlay, tint, grain.layer],
                                          [copy.base, copy.overlay, copy.tint, copy.grain.layer]) {
             guard let source, let destination else { continue }
             for key in source.animationKeys() ?? [] {
-                if let animation = source.animation(forKey: key) { destination.add(animation, forKey: key) }
+                if let installed = source.animation(forKey: key), let animation = installed.copy() as? CAAnimation {
+                    animation.beginTime = destination.convertTime(source.convertTime(installed.beginTime, to: nil), from: nil)
+                    destination.add(animation, forKey: key)
+                }
             }
         }
-        copy.needsLayout = true
+        for nested in copy.copies.allObjects { copy.copyInstalledAnimations(to: nested) }
+    }
+
+    /// Copy the animation already installed on the compositor, preserving its
+    /// original begin time instead of starting a new blend at profile reveal.
+    func joinNativeAnimation(from source: ThemeWashSurface) -> UUID? {
+        guard source !== self, source.nativeAnimating else { return nil }
+        source.addCopy(self)
+        let token = UUID()
+        nativeToken = token
+        return token
     }
 
     override func layout() {
@@ -225,6 +255,10 @@ struct NativeThemeWashCopy: NSViewRepresentable {
     }
 
     func finishAnimations() {
+        if nativeToken != nil, let source = copySource {
+            source.copies.remove(self)
+            copySource = nil
+        }
         nativeToken = nil
         for layer in [base, overlay, tint, grain.layer].compactMap({ $0 }) { layer.removeAllAnimations() }
         for copy in copies.allObjects { copy.finishAnimations() }
@@ -246,7 +280,11 @@ struct NativeThemeWashCopy: NSViewRepresentable {
                                          presentedStart: ThemeWashPresentation? = nil) -> UUID {
         nativeToken = nil
         if presentedStart == nil { apply(from, duration: 0) }
-        apply(to, duration: animation.duration, native: animation, start: from, presentedStart: presentedStart)
+        let timing = animation.copy() as! CABasicAnimation
+        // Zero asks CA to choose a start at commit time. Resolve it once so a
+        // surface mounted later can copy the same timeline rather than restart.
+        if timing.beginTime == 0 { timing.beginTime = CACurrentMediaTime() }
+        apply(to, duration: timing.duration, native: timing, start: from, presentedStart: presentedStart)
         let token = UUID()
         nativeToken = token
         return token

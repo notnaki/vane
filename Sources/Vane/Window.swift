@@ -1268,18 +1268,42 @@ private struct NativeSpacePreview: View {
         guard (!finished || completingSelection), destination !== store else { return }
         destination = store
         ownsSidebarVisibility = true
-        store.spaceSwiping = true
-        store.spaceGesture.outgoing = originPreview
-        store.spaceGesture.neighbour = preparedTarget
-        store.spaceGesture.previewDirection = direction
-        store.spaceGesture.nativeDrag = lastPublishedDrag
-        store.spaceGesture.profileSlidesFavorites = includesFavorites
-        store.spaceGesture.profileSliding = true
+        store.spaceGesture.withPresentationUpdate {
+            store.spaceSwiping = true
+            store.spaceGesture.outgoing = originPreview
+            store.spaceGesture.neighbour = preparedTarget
+            store.spaceGesture.previewDirection = direction
+            store.spaceGesture.nativeDrag = lastPublishedDrag
+            store.spaceGesture.profileSlidesFavorites = includesFavorites
+            store.spaceGesture.profileSliding = true
+        }
         // Paint before BrowserWindowHost exposes a cached root. Its old settled
         // wash must not appear for a frame before the progress display link runs.
         // Until CA commits a new animation, offset can still report its old/model
         // endpoint; retain the progress actually published for this landing.
         store.spaceGesture.trackGround?(Double(min(1, abs(lastPublishedDrag / travelWidth))))
+        store.spaceGesture.nativeGroundDidUpdate = { [weak self] in self?.joinDestinationGround() }
+        joinDestinationGround()
+    }
+
+    private weak var joinedDestinationSurface: ThemeWashSurface?
+    private var finishDestinationGround: ((Space?) -> Void)?
+
+    private func joinDestinationGround() {
+        guard isActive, let source, let destination, source !== destination,
+              let origin = source.spaceGesture.groundSurface,
+              let arriving = destination.spaceGesture.groundSurface,
+              arriving !== joinedDestinationSurface else { return }
+        finishDestinationGround?(destination.swipeSpace)
+        finishDestinationGround = destination.spaceGesture.joinNativeGround?(origin)
+        if finishDestinationGround != nil { joinedDestinationSurface = arriving }
+    }
+
+    private func releaseDestinationGround() {
+        destination?.spaceGesture.nativeGroundDidUpdate = nil
+        finishDestinationGround?(destination?.swipeSpace)
+        finishDestinationGround = nil
+        joinedDestinationSurface = nil
     }
 
     func follows(_ target: Space, direction: Int) -> Bool {
@@ -1304,6 +1328,7 @@ private struct NativeSpacePreview: View {
         progressLink = nil
         source?.spaceGesture.monitor.interruptLanding()
         destination?.spaceGesture.monitor.interruptLanding()
+        releaseDestinationGround()
         finishGround?(source?.swipeSpace)
         finishGround = nil
         if let previous = source, previous !== store {
@@ -1475,10 +1500,15 @@ private struct NativeSpacePreview: View {
             animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
             layer.add(animation, forKey: "space-position")
             if layer === outgoingLayer {
+                releaseDestinationGround()
                 finishGround?(source?.swipeSpace)
                 let start = Double(min(1, abs((from.x - outgoingLayer.bounds.width * outgoingLayer.anchorPoint.x - contentInset) / travelWidth)))
                 finishGround = source?.spaceGesture.animateGround?(preparedOrigin, preparedTarget,
                     start, returning ? 0 : 1, animation, presentedGround)
+                if let destination {
+                    destination.spaceGesture.nativeGroundDidUpdate = { [weak self] in self?.joinDestinationGround() }
+                    joinDestinationGround()
+                }
                 (superview as? BrowserWindowHost)?.footerPresentation.animate(
                     origin: preparedOrigin.id, target: preparedTarget.id,
                     from: start, to: returning ? 0 : 1, timing: animation)
@@ -1534,6 +1564,7 @@ private struct NativeSpacePreview: View {
     /// An unused idle surface has never owned the gesture's visibility state.
     func discardPreparation() {
         finished = true
+        releaseDestinationGround()
         finishGround?(source?.swipeSpace)
         finishGround = nil
         progressLink?.invalidate()
@@ -1559,6 +1590,7 @@ private struct NativeSpacePreview: View {
         // The wash belongs to the source host. A profile hop parks that host for
         // reuse, so restore its own Space rather than caching the arriving profile's
         // colour. Within one profile, source already selects the destination Space.
+        releaseDestinationGround()
         finishGround?(source?.swipeSpace)
         finishGround = nil
         Motion.spaceHandoff {

@@ -91,6 +91,8 @@ import UniformTypeIdentifiers
     }
     var captureGround: (() -> ThemeWashPresentation?)?
     var animateGround: ((Space, Space, Double, Double, CABasicAnimation, ThemeWashPresentation?) -> ((Space?) -> Void))?
+    var joinNativeGround: ((ThemeWashSurface) -> ((Space?) -> Void)?)?
+    var nativeGroundDidUpdate: (() -> Void)?
     var colourDuration = Look.spaceSlideDuration
     weak var paletteScrimView: NSView?
     /// Read the scrim's actual compositor opacity, including its enclosing fade.
