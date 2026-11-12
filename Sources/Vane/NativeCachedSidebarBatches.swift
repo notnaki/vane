@@ -1350,9 +1350,7 @@ private final class NativeBatchMouseObservation {
             // Every permanent owner uses the same document origin. Structural
             // movement is wholly inside SwiftUI; an immediate native-parent jump
             // must never cancel or double a child's animated absolute offset.
-            let closingHeight = slots.filter { $0.rollout?.closing == true }
-                .map { CGFloat($0.index + 1) * pitch }.max() ?? 0
-            let target = NSRect(x: 0, y: 0, width: bounds.width, height: max(sectionHeight, closingHeight))
+            let target = batchFrame(for: slots)
             entry.host.occupy(slots, width: bounds.width)
             entry.host.revealEdge = { [weak self] header in
                 guard let self else { return nil }
@@ -1371,6 +1369,18 @@ private final class NativeBatchMouseObservation {
         previousWidth = bounds.width
         checkReadiness()
         SidebarScrollTrace.recordRowWindow(range, count: rows.count, clip: clip)
+    }
+    private func batchFrame(for slots: [NativeSidebarOwnedSlot]) -> NSRect {
+        let closingHeight = slots.filter { $0.rollout?.closing == true }
+            .map { CGFloat($0.index + 1) * pitch }.max() ?? 0
+        // A nested close can put still-authorized rows below the final section
+        // height. NSHostingView rejects hits outside its own bounds even while
+        // its unclipped descendants paint inside the larger animated section.
+        // Use the same shared sample for the native owner's hit bounds too.
+        let presentedHeight = disclosureFrame == nil ? 0
+            : max(0, (disclosureSample?.visibility.rowCount ?? 0) * pitch - Look.rowGap)
+        return NSRect(x: 0, y: 0, width: bounds.width,
+                      height: max(sectionHeight, closingHeight, presentedHeight))
     }
     private func makeRoot(slots: [NativeSidebarOwnedSlot], animate: Bool = true) -> Root {
         var placementTransaction = transaction
@@ -1439,6 +1449,8 @@ private final class NativeBatchMouseObservation {
         for key in mounted {
             guard let slots = groups[key], let entry = cache[key],
                   disclosureLayout != nil || slots.contains(where: { $0.rollout != nil }) else { continue }
+            let target = batchFrame(for: slots)
+            if entry.host.frame != target { entry.host.frame = target }
             entry.host.rootView = makeRoot(slots: slots, animate: false)
             batchCounts.rootUpdates += 1
         }

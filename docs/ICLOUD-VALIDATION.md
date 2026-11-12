@@ -242,6 +242,27 @@ deadline. Disclosure and retained-viewport diagnostics preserve every original
 outcome assertion and sample. These candidates remain unverified until their
 hosted outcomes are retained; protected current-head PR CI remains pending.
 
+Diagnostic run [43229519467](https://github.com/notnaki/vane/actions/runs/43229519467)
+at `1ad3116c` completed three 67-case attempts, with five, six and six assertions
+failing and verified cleanup throughout. Release velocity, early profile mount,
+profile reversal and explicit footer-clock cases passed every attempt. The
+shadow withdrawn-presentation case passed attempts one and two (1.527/1.595 s)
+but failed attempt three; a same-turn ordering transition is insufficient and is
+not a verified repair. The artwork density correction left two small-triangle
+alpha comparisons failing at 1x. Large-folder diagnostics showed the footer
+already offscreen at the scheduled clicks, and nested hit diagnostics showed a
+visible child outside its native hosting owner's final bounds.
+
+The next diagnostic changes native owner bounds to cover the shared sampled
+extent and separates the fixture's slow setup motion from its unchanged sampled
+outcome assertions. It also records artwork raster-density candidates. The
+shadow candidate now observes native withdrawal and hidden WebKit visibility on
+a later predicate before reappearing, retaining the exact document and original
+five-second admission deadline. Its three 31-case attempts run in shadow-only
+jobs, with separate desktops, logs and cleanup from the other native diagnostics.
+Independent static review found no actionable issues; hosted outcomes remain
+pending.
+
 ## Verification limits and remaining integration gates
 
 - No second Mac is available. Cross-Mac convergence, offline/restart behavior

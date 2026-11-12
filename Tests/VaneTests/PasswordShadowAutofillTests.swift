@@ -165,7 +165,7 @@ import XCTest
 
     private func discoveryDiagnostics(_ web: WKWebView, capture: Capture? = nil) async -> String {
         let native = discoveryNativeDiagnostics(web)
-        let state = try? await js(web, "JSON.stringify({visibility:document.visibilityState, state:document.readyState, anchorFunction:typeof __vaneAnchor, host:!!document.getElementById('host'), shadow:!!document.getElementById('host')?.shadowRoot, anchor:typeof __vaneAnchor==='function'?JSON.parse(__vaneAnchor()):null})", isolated: true)
+        let state = try? await js(web, "JSON.stringify({visibility:document.visibilityState, state:document.readyState, anchorFunction:typeof __vaneAnchor, host:!!document.getElementById('host'), shadow:!!document.getElementById('host')?.shadowRoot, visibilityHistory:globalThis.__shadowFixtureVisibility||[], anchor:typeof __vaneAnchor==='function'?JSON.parse(__vaneAnchor()):null})", isolated: true)
         return native + " " +
             "readyMessages=\(capture?.messages.filter { $0["ready"] as? Bool == true }.count ?? 0) document=\(String(describing: state))"
     }
@@ -182,6 +182,10 @@ import XCTest
     private func admitDiscoveryDocument(_ web: WKWebView, loop: NativeFixtureApplicationLoop) async throws {
         var readmissionRequested = false
         var documentReadmissionRequested = false
+        var awaitingWithdrawnDocument = false
+        let admissionStart = ProcessInfo.processInfo.systemUptime
+        var probeTrace: [String] = []
+        defer { print("SHADOW_ADMISSION_TRACE " + probeTrace.joined(separator: " | ")) }
         var lastUnready = ""
         var lastDocumentProbe = "not sampled"
         try await wait("visible shadow discovery document", diagnostics: {
@@ -191,6 +195,22 @@ import XCTest
             // is withdrawn; do not short-circuit before we can restore that owner.
             _ = try loop.isReadyForInteraction()
             guard let window = web.window, window.contentView === web else { return false }
+            if awaitingWithdrawnDocument {
+                guard !window.isVisible else { return false }
+                let probeStart = ProcessInfo.processInfo.systemUptime - admissionStart
+                let visibility = try await self.js(web, "document.visibilityState", isolated: true) as? String
+                _ = try loop.isReadyForInteraction()
+                let elapsed = ProcessInfo.processInfo.systemUptime - admissionStart
+                probeTrace.append("withdrawn start=\(probeStart) end=\(elapsed) visibility=\(visibility ?? "unavailable")")
+                guard web.window === window, window.contentView === web, !window.isVisible,
+                      visibility == "hidden" else { return false }
+                // Submit reappearance only after a separate native/WebProcess
+                // observation of the withdrawal. Same-turn out/front can coalesce.
+                awaitingWithdrawnDocument = false
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                return false
+            }
             if !self.discoveryPresentationReady(window, document: web) {
                 lastUnready = self.discoveryNativeDiagnostics(web)
                 if !readmissionRequested {
@@ -206,10 +226,13 @@ import XCTest
                 return false
             }
             readmissionRequested = false
+            let probeStart = ProcessInfo.processInfo.systemUptime - admissionStart
             let visibility = try await self.js(web, "document.visibilityState", isolated: true) as? String
+            let elapsed = ProcessInfo.processInfo.systemUptime - admissionStart
             let loopReady = try loop.isReadyForInteraction()
             let nativeReady = self.discoveryPresentationReady(window, document: web)
-            lastDocumentProbe = "visibility=\(visibility ?? "unavailable") loopReady=\(loopReady) nativeReady=\(nativeReady)"
+            lastDocumentProbe = "start=\(probeStart) end=\(elapsed) visibility=\(visibility ?? "unavailable") loopReady=\(loopReady) nativeReady=\(nativeReady)"
+            probeTrace.append(lastDocumentProbe)
             if !nativeReady { lastUnready = self.discoveryNativeDiagnostics(web) }
             if visibility == "hidden", loopReady, nativeReady, !documentReadmissionRequested {
                 // WebKit can retain an initial hidden document after AppKit has
@@ -218,9 +241,8 @@ import XCTest
                 // changing the document whose discovery behavior we exercise.
                 documentReadmissionRequested = true
                 print("SHADOW_DOCUMENT_READMISSION \(lastDocumentProbe) \(self.discoveryNativeDiagnostics(web))")
+                awaitingWithdrawnDocument = true
                 window.orderOut(nil)
-                window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
                 return false
             }
             return visibility == "visible" && loopReady && nativeReady
@@ -251,7 +273,12 @@ import XCTest
         do {
             // WebKit may defer timers in an unordered document even with an
             // AppKit loop. Admit the exact visible owner before loading it.
-            let (web, capture) = try await fixture("<div id=host></div>", present: { window, web in
+            let (web, capture) = try await fixture("<div id=host></div>", tracking: """
+                globalThis.__shadowFixtureVisibility = [{state:document.visibilityState, at:Date.now()}];
+                document.addEventListener('visibilitychange', () => {
+                    __shadowFixtureVisibility.push({state:document.visibilityState, at:Date.now()});
+                });
+                """, present: { window, web in
                 try self.positionDiscoveryWindow(window)
                 loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory,
                     beforeHeartbeat: {

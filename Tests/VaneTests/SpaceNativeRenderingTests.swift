@@ -924,8 +924,17 @@ import XCTest
     private func checkTargetClickInterruptsTheSameProfileReturnSpring() async throws {
         let (store, spaces, window, monitor) = try fixture(registerTeardown: false)
         defer { retireFixture(store, window: window, monitor: monitor) }
+        // This fixture interrupts native row travel. Admit a populated endpoint
+        // so search's first mount does not consume the middle-frame setup leg;
+        // empty-Space/search handoff is exercised in SpaceSwipeLandingTests.
+        store.switchTo(space: spaces[1])
+        let tab = store.newBlankTab(focus: false)
+        tab.park(url: URL(string: "https://example.test/return-spring")!, Parked(title: "Return spring endpoint"))
+        store.current = tab.id
+        store.switchTo(space: spaces[0])
         store.palette = nil
         try await admitFixtureSidebar(store, window: window)
+        try await waitForPreparation(monitor, target: spaces[1].id)
         XCTAssertNotNil(store.beginSpaceSelection(spaces[1]))
         monitor.land(1, to: spaces[1], width: fixtureSidebarWidth(in: store), store: store, duration: 0.8)
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
@@ -3001,6 +3010,28 @@ import XCTest
         XCTAssertLessThanOrEqual(animation.initialVelocity, sqrt(animation.stiffness / animation.mass),
                                  "A fast flick must not overshoot the destination")
         try await Task.sleep(for: .milliseconds(400))
+    }
+
+    func testArmedNativeLandingKeepsReleaseVelocityAcrossPagePreparation() async throws {
+        try await withFixtureApplicationLoop {
+            let (store, spaces, window, monitor) = try self.fixture(registerTeardown: false)
+            defer { self.retireFixture(store, window: window, monitor: monitor) }
+            try await self.admitFixtureSidebar(store, window: window)
+            try await self.waitForPreparation(monitor, target: spaces[1].id)
+            let width = self.fixtureSidebarWidth(in: store)
+            monitor.track(-20, width: width, in: store)
+            try await Task.sleep(for: .milliseconds(20))
+            monitor.track(-60, width: width, in: store)
+            let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
+            slide.armLanding(to: spaces[1], completion: {})
+            // Preparation can outlive the event freshness window. It must not
+            // turn an already committed moving release into a stationary click.
+            try await Task.sleep(for: .milliseconds(150))
+            slide.start(duration: Look.spaceLandingDuration, completion: {})
+            let animation = try XCTUnwrap(slide.outgoing.layer?.animation(forKey: "space-position") as? CASpringAnimation)
+            XCTAssertGreaterThan(animation.initialVelocity, 0)
+            XCTAssertLessThanOrEqual(animation.initialVelocity, sqrt(animation.stiffness / animation.mass))
+        }
     }
 
     func testCanceledNativeDragUsesTheReturnSpring() async throws {

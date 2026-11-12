@@ -55,6 +55,7 @@ jobs:
           retention-days: 1
 
   native:
+    name: ${{ matrix.suite }} (${{ matrix.attempt }})
     needs: build
     runs-on: macos-26
     timeout-minutes: 20
@@ -62,6 +63,7 @@ jobs:
       fail-fast: false
       matrix:
         attempt: [1, 2, 3]
+        suite: [shadow, native]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -92,10 +94,11 @@ jobs:
       - name: Focused native attempt with retirement
         env:
           ATTEMPT: ${{ matrix.attempt }}
+          SUITE: ${{ matrix.suite }}
         run: |
           python3 -u - <<'PYTHON'
           import os, pathlib, subprocess, sys
-          selection = 'LargeFolderDisclosureTests|NestedFolderDisclosureTests|SpaceFooterPresentationTests|PasswordShadowAutofillTests|RetainedRowVirtualizationTests/testOffscreenCollapsedFolderHasNoPhantomHeightAndEndRemainsReachable|SpaceNativeRenderingTests/test(CommittedNativeLandingRetainsFingerVelocity|ProfileOriginClickReversesBeforeTheCurrentLandingFinishes|TargetClickInterruptsTheSameProfileReturnSpring|ReverseSwipeTakesOverThePresentedLandingWithoutFinishingIt|FirstProfileVisitChangesPageAtStartOfNativeLanding|CachedProfileChangesPageAtStartOfNativeLanding|ReverseProfileSwipeTakesOverTheSamePresentedNativeRows|NativeSpaceClickBlendsBackgroundDuringSidebarTravel|ProfileSwipeDoesNotRestoreItsDepartureColour)|SpaceSwipeLandingTests|SpaceColourTransitionTests'
+          selection = 'PasswordShadowAutofillTests' if os.environ['SUITE'] == 'shadow' else 'LargeFolderDisclosureTests|NestedFolderDisclosureTests|SpaceFooterPresentationTests|RetainedRowVirtualizationTests/testOffscreenCollapsedFolderHasNoPhantomHeightAndEndRemainsReachable|SpaceNativeRenderingTests/test(ArmedNativeLandingKeepsReleaseVelocityAcrossPagePreparation|CommittedNativeLandingRetainsFingerVelocity|ProfileOriginClickReversesBeforeTheCurrentLandingFinishes|TargetClickInterruptsTheSameProfileReturnSpring|ReverseSwipeTakesOverThePresentedLandingWithoutFinishingIt|FirstProfileVisitChangesPageAtStartOfNativeLanding|CachedProfileChangesPageAtStartOfNativeLanding|ReverseProfileSwipeTakesOverTheSamePresentedNativeRows|NativeSpaceClickBlendsBackgroundDuringSidebarTravel|ProfileSwipeDoesNotRestoreItsDepartureColour)|SpaceSwipeLandingTests|SpaceColourTransitionTests'
           log = pathlib.Path(os.environ['RUNNER_TEMP']) / ('icloud-pr-repair-' + os.environ['ATTEMPT'] + '.log')
           with log.open('w') as output:
               process = subprocess.Popen(['python3','-u','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -112,7 +115,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: icloud-repair-attempt-${{ matrix.attempt }}
+          name: icloud-repair-${{ matrix.suite }}-attempt-${{ matrix.attempt }}
           path: |
             ${{ runner.temp }}/icloud-pr-repair-*.log
             ${{ runner.temp }}/icloud-smoke.log

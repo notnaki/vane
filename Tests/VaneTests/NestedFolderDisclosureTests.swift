@@ -93,12 +93,15 @@ import XCTest
         var samples: [(CGFloat, CGFloat)] = []
         var checkedMovingHit = false
         var ancestorAtInnerMutation: CGFloat?
-        var movingHits: [(presentedY: CGFloat, nativeY: CGFloat, selected: UUID?, palette: PaletteMode?)] = []
+        var movingHits: [(presentedY: CGFloat, nativeY: CGFloat, ownerContainsHit: Bool, selected: UUID?, palette: PaletteMode?)] = []
         var hitDiagnostics: [String] = []
         let samplingStarted = ProcessInfo.processInfo.systemUptime
         for frame in 0..<48 {
             if frame == 0 {
-                Motion.animate(.linear(duration: 0.8)) { store.pins.toggle(folder: folder.id) }
+                // Hosted native layout can take more than 0.8s before frame 6.
+                // Keep the setup ancestor moving until the first inner reversal;
+                // the inner reversals below retain their original timing.
+                Motion.animate(.linear(duration: 4)) { store.pins.toggle(folder: folder.id) }
             } else if [6, 12, 18].contains(frame) {
                 if frame == 6 { ancestorAtInnerMutation = try presentedRect(newTab).minY }
                 Motion.animate(.linear(duration: 0.8)) { store.pins.toggle(folder: inner.id) }
@@ -115,8 +118,12 @@ import XCTest
                     // second hitTest that could mutate the batch hit cache.
                     var owners: [String] = []
                     var owner: NSView? = current
+                    var ownerContainsHit = false
                     while let view = owner {
                         owners.append("\(type(of: view)) frame=\(view.frame) bounds=\(view.bounds) visible=\(view.visibleRect) clips=\(view.clipsToBounds)")
+                        if view.superview is any NativeCachedSidebarBatchesReporting {
+                            ownerContainsHit = view.bounds.contains(view.convert(point, from: nil))
+                        }
                         owner = view.superview
                     }
                     let elapsed = ProcessInfo.processInfo.systemUptime - samplingStarted
@@ -126,7 +133,7 @@ import XCTest
                             windowNumber: window.windowNumber, context: nil, eventNumber: 0,
                             clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)))
                     }
-                    movingHits.append((presentedY, nativeY, store.current, store.palette))
+                    movingHits.append((presentedY, nativeY, ownerContainsHit, store.current, store.palette))
                     hitDiagnostics.append("frame=\(frame) elapsed=\(elapsed) point=\(point) selected=\(String(describing: store.current)) owners=\(owners)")
                     checkedMovingHit = true
                 }
@@ -139,6 +146,7 @@ import XCTest
         for hit in movingHits {
             XCTAssertEqual(hit.presentedY, hit.nativeY, accuracy: 1,
                            "The native hit target must track the presented row during motion")
+            XCTAssertTrue(hit.ownerContainsHit, "The native hosting owner must contain the moving child's hit point")
             XCTAssertEqual(hit.selected, tabs[5].id, "A moving child must receive clicks at its visible position")
             XCTAssertNil(hit.palette, "The child hit must not open New Tab")
         }
@@ -230,14 +238,18 @@ import XCTest
         let section = try XCTUnwrap(descendants(host, NativeCachedSidebarBatchesView<LargeDisclosurePaintRow>.self).first)
         let start = try presentedRect(newTab).minY
         XCTAssertFalse(section.clipsToBounds, "Resting sections must retain focus/selection overhang")
-        func greenPixels(in region: CGRect) throws -> Int {
-            let region = region.intersection(host.bounds)
+        func greenPixels(in region: CGRect, bitmap: NSBitmapImageRep, capture: CGRect) -> Int {
+            let region = region.intersection(capture)
             guard region.width > 0, region.height > 0 else { return 0 }
-            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: region))
-            host.cacheDisplay(in: region, to: bitmap)
+            let scaleX = CGFloat(bitmap.pixelsWide) / capture.width
+            let scaleY = CGFloat(bitmap.pixelsHigh) / capture.height
+            let x0 = max(0, Int(floor((region.minX - capture.minX) * scaleX)))
+            let x1 = min(bitmap.pixelsWide, Int(ceil((region.maxX - capture.minX) * scaleX)))
+            let y0 = max(0, Int(floor((region.minY - capture.minY) * scaleY)))
+            let y1 = min(bitmap.pixelsHigh, Int(ceil((region.maxY - capture.minY) * scaleY)))
             var count = 0
-            for y in 0..<bitmap.pixelsHigh {
-                for x in 0..<bitmap.pixelsWide {
+            for y in y0..<y1 {
+                for x in x0..<x1 {
                     if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
                        color.greenComponent > 0.8 && color.redComponent < 0.2 && color.blueComponent < 0.2 { count += 1 }
                 }
@@ -254,9 +266,11 @@ import XCTest
         let samplingStarted = ProcessInfo.processInfo.systemUptime
         for frame in 0..<48 {
             if [0, 6, 12, 18].contains(frame) {
-                // A slow explicit animation exposes the short-extent/large-travel
-                // phase; the test still samples48 frames with8ms spacing.
-                Motion.animate(.linear(duration: 4)) { store.pins.toggle(folder: folder.id) }
+                // A 300-row section travels 12,300pt. Hosted display/probes take
+                // ~0.6s before frame 3, so 4s already moved the footer offscreen.
+                // Slow only this fixture's animation to expose the clipped,
+                // short-extent phase at the scheduled native footer clicks.
+                Motion.animate(.linear(duration: 120)) { store.pins.toggle(folder: folder.id) }
             }
             try await Task.sleep(for: .milliseconds(8))
             display()
@@ -274,13 +288,21 @@ import XCTest
                 }
             }
             if footer.maxY + 28 < host.bounds.maxY {
-                let belowFooter = try greenPixels(in: CGRect(x: 100, y: footer.maxY + 4, width: 2, height: 24))
+                // One narrow bitmap serves all three probes. Separate cacheDisplay
+                // calls redrew the entire native outline repeatedly per sample.
+                let capture = CGRect(x: 100, y: host.bounds.minY, width: 2, height: host.bounds.height)
+                    .intersection(host.bounds)
+                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: capture))
+                host.cacheDisplay(in: capture, to: bitmap)
+                let belowFooter = greenPixels(in: CGRect(x: 100, y: footer.maxY + 4, width: 2, height: 24),
+                    bitmap: bitmap, capture: capture)
                 let gapHeight = max(0, footer.minY - extent.maxY - 2)
-                let inGap = try greenPixels(in: CGRect(x: 100, y: extent.maxY + 1, width: 2, height: gapHeight))
+                let inGap = greenPixels(in: CGRect(x: 100, y: extent.maxY + 1, width: 2, height: gapHeight),
+                    bitmap: bitmap, capture: capture)
                 if gapHeight > 0 { gapProbes += 1 }
                 bottomPaint.append(belowFooter + inGap)
-                let insidePaint = try greenPixels(in: CGRect(x: 100, y: extent.minY + Look.rowHeight,
-                    width: 2, height: max(0, extent.height - Look.rowHeight)))
+                let insidePaint = greenPixels(in: CGRect(x: 100, y: extent.minY + Look.rowHeight,
+                    width: 2, height: max(0, extent.height - Look.rowHeight)), bitmap: bitmap, capture: capture)
                 witnessedVisibleChildPaint = witnessedVisibleChildPaint || insidePaint > 0
                 if [3, 9, 21].contains(frame) {
                     controls.selected = nil
@@ -305,6 +327,11 @@ import XCTest
         XCTAssertTrue(clipping.allSatisfy { $0 }, "Shared native clipping must cover every active-disclosure sample")
         XCTAssertFalse(newTabHits.isEmpty, "Scheduled footer clicks must be visible: \(clickDiagnostics)")
         for hit in newTabHits { XCTAssertEqual(hit, "new-tab", "Overflowing rows must not take New Tab's native hit") }
+        // Submit a distinct instant endpoint before returning to the resting
+        // collapse. Assigning the already-collapsed target alone need not cancel
+        // an active SwiftUI animation whose target value has not changed.
+        Motion.instant { store.pins.edit(folder: folder.id) { $0.collapsed = false } }
+        display()
         Motion.instant { store.pins.edit(folder: folder.id) { $0.collapsed = true } }
         try await compatibilityWait {
             display()

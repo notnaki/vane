@@ -398,6 +398,49 @@ import XCTest
                             }
                         }
                         let label = "\(scheme) scale=\(scale) count=\(count) icons=\(showIcons) \(icon) emphasis=\(emphasis)"
+                        if abs(alphaActual - alphaExpected) > max(1, alphaExpected * 0.04),
+                           let symbol = view.marker?.symbol {
+                            // Keep the failed comparison intact while distinguishing
+                            // low-resolution cached-ink resampling from geometry or
+                            // colour drift. These candidates change raster density
+                            // only; their bounds, transform and opacity stay native.
+                            for rasterScale in [1.0, 2.0, 3.0, 4.0] {
+                                let glyphRenderer = ImageRenderer(content:
+                                    SpaceIcon(icon, filledCloud: true)
+                                        .font(.system(size: layout.iconSize)).foregroundStyle(Look.inkPrimary)
+                                        .frame(width: layout.iconSize * 2, height: layout.iconSize * 2)
+                                        .environment(\.colorScheme, scheme))
+                                glyphRenderer.scale = rasterScale
+                                let candidate = CALayer()
+                                candidate.bounds = symbol.bounds
+                                candidate.position = symbol.position
+                                candidate.transform = symbol.transform
+                                candidate.opacity = symbol.opacity
+                                candidate.contentsScale = rasterScale
+                                NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
+                                    candidate.contents = glyphRenderer.cgImage
+                                }
+                                let container = CALayer()
+                                container.bounds = layer.bounds
+                                container.addSublayer(candidate)
+                                let candidateContext = try XCTUnwrap(CGContext(data: nil, width: pixelSize, height: pixelSize,
+                                    bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                                candidateContext.scaleBy(x: scale, y: scale)
+                                container.render(in: candidateContext)
+                                let candidateImage = NSBitmapImageRep(cgImage: try XCTUnwrap(candidateContext.makeImage()))
+                                var candidateAlpha = 0.0, candidateDifference = 0.0
+                                for y in 0..<pixelSize {
+                                    for x in 0..<pixelSize {
+                                        let a = Double(try XCTUnwrap(candidateImage.colorAt(x: x, y: y)).alphaComponent)
+                                        let b = Double(try XCTUnwrap(reference.colorAt(x: x, y: y)).alphaComponent)
+                                        candidateAlpha += a
+                                        candidateDifference += abs(a - b)
+                                    }
+                                }
+                                print("FOOTER_RASTER \(label) cachedScale=\(symbol.contentsScale) symbolBounds=\(symbol.bounds) symbolPosition=\(symbol.position) symbolScale=\(symbol.transform.m11) actualAlpha=\(alphaActual) expectedAlpha=\(alphaExpected) candidateScale=\(rasterScale) candidateAlpha=\(candidateAlpha) candidateDifference=\(candidateDifference)")
+                            }
+                        }
                         XCTAssertEqual(alphaActual, alphaExpected, accuracy: max(1, alphaExpected * 0.04), label)
                         XCTAssertLessThan(difference, max(2, alphaExpected * 0.15), label)
                         XCTAssertLessThan(colorDifference, max(6, alphaExpected * 0.45), label)
