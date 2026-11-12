@@ -79,7 +79,7 @@ extension EnvironmentValues {
 /// Native floating panels need the same window-local context as the main SwiftUI tree.
 private struct SpaceChromeModifier: ViewModifier {
     @ObservedObject var store: TabStore
-    @ObservedObject private var profiles = ProfileManager.shared
+    @ProfileChromeObserved private var profiles = ProfileManager.shared
 
     func body(content: Content) -> some View {
         let theme = SpaceChromeTheme(space: store.chromeSpace, fallback: store.profile.colorHex)

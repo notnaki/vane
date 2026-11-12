@@ -13,10 +13,11 @@ extension EnvironmentValues {
     }
 }
 
-/// CA resolves a zero beginTime at commit. Its start callback provides a remaining-
-/// duration estimate for hover retargets without counting pre-commit layout time.
+/// Explicit media-clock starts stay shared with native travel. A zero start uses
+/// CA's commit callback without counting layout time before that commit.
 @MainActor private final class SpaceFooterAnimationClock: NSObject, @preconcurrency CAAnimationDelegate {
     private(set) var beganAt: CFTimeInterval?
+    init(beganAt: CFTimeInterval? = nil) { self.beganAt = beganAt; super.init() }
     func animationDidStart(_ anim: CAAnimation) {
         if beganAt == nil { beganAt = CACurrentMediaTime() }
     }
@@ -243,11 +244,11 @@ extension EnvironmentValues {
         progress = (origin, target, to)
         progressStart = from
         let clock = timing.copy() as! CABasicAnimation
-        // Like the sidebar position animation, start when CA commits the tree.
-        // An absolute wall-clock start can expire during expensive host layout.
-        clock.beginTime = 0
+        // Nonzero starts use the caller's shared media clock. Zero retains CA's
+        // commit-time behavior for independent selection/legacy callers.
         progressTiming = reduced || Motion.spaceReduced ? nil : clock
-        progressClock = progressTiming == nil ? nil : SpaceFooterAnimationClock()
+        progressClock = progressTiming == nil ? nil : SpaceFooterAnimationClock(
+            beganAt: clock.beginTime == 0 ? nil : clock.beginTime)
         for (id, marker) in markers {
             animateProgress(marker, id: id, from: weight(id, fraction: from), timing: clock)
         }
@@ -299,7 +300,7 @@ extension EnvironmentValues {
             animation.keyPath = path
             animation.fromValue = from
             animation.toValue = to
-            animation.beginTime = 0
+            animation.beginTime = timing.beginTime == 0 ? 0 : layer.convertTime(timing.beginTime, from: nil)
             if timing === progressTiming { animation.delegate = progressClock }
             setFrameRate(animation, for: marker)
             layer.add(animation, forKey: key)

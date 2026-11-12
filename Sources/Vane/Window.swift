@@ -832,6 +832,35 @@ extension VaneWindow {
         return arriving
     }
 
+    /// Prepare only a committed navigation target. Its profile remains parked
+    /// and hidden: window, footer, traffic lights and input still belong to source.
+    @discardableResult
+    static func prepareHop(_ source: TabStore, to space: Space) -> TabStore? {
+        guard !source.isPrivate, !source.isLittle, !source.isParked,
+              space.profileID != source.profileID, let window = source.window,
+              window.delegate is WindowDelegate,
+              let profile = ProfileManager.shared.profiles.first(where: { $0.id == space.profileID }),
+              let host = window.contentView as? BrowserWindowHost else { return nil }
+        let arriving = parked(profile.id, in: window) ?? TabStore(profileID: profile.id, space: space)
+        guard arriving !== source, arriving.window == nil else { return nil }
+        arriving.parkedIn = window
+        arriving.profileVisible = false
+        arriving.sidebarShown = source.sidebarShown
+        arriving.sidebarPeeking = source.sidebarPeeking
+        arriving.resolveStaleSpace()
+        arriving.switchTo(space: space)
+        // Construct only the pages this explicit navigation is committing to.
+        // Do not claim their SharedTabs presentation lease or move an existing
+        // page out of another window, and preserve recovery/authentication gates.
+        for tab in arriving.onScreenTabs where !tab.tornDown && !tab.needsRecovery
+            && tab.easelSession == nil && !arriving.isTabLocked(tab.id) {
+            tab.resume()
+            if !tab.suspended { _ = tab.web }
+        }
+        host.prepare(arriving)
+        return arriving
+    }
+
     /// The store this window is holding for `profileID` behind the one it is showing, if it
     /// has been in that profile before.
     private static func parked(_ profileID: UUID, in window: NSWindow) -> TabStore? {
@@ -1101,6 +1130,60 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    private func profileHosts(for store: TabStore) -> ProfileHosts {
+        let id = ObjectIdentifier(store)
+        if let existing = hosts[id] { return existing }
+        let content = BrowserHostingView(rootView: BrowserWindow(presentsPalette: false)
+            .environmentObject(store)
+            .environmentObject(ProfileManager.shared)
+            .environment(\.spaceFooterPresentation, footerPresentation)
+            .font(Look.text))
+        // The outer native container supplies the frame; do not separately
+        // measure minimum, ideal and maximum sizes on each resize.
+        content.sizingOptions = []
+        let palette = BrowserPaletteHost(rootView: AnyView(BrowserPaletteOverlay()
+            .environmentObject(store)
+            .environmentObject(ProfileManager.shared)
+            .spaceChrome(store)
+            .vaneMotionPolicy()
+            .font(Look.text)
+            .ignoresSafeArea()))
+        palette.store = store
+        palette.sizingOptions = []
+        let host = ProfileHosts(content: content, palette: palette)
+        hosts[id] = host
+        return host
+    }
+
+    func prepare(_ store: TabStore) {
+        guard let window, store.window == nil, store.parkedIn === window,
+              !store.profileVisible else { return }
+        let host = profileHosts(for: store)
+        let visible = current.flatMap { hosts[$0]?.content }
+        for view in host.views {
+            view.isHidden = true
+            view.frame = bounds
+            view.autoresizingMask = [.width, .height]
+        }
+        if host.content.superview !== self {
+            addSubview(host.content, positioned: .below, relativeTo: visible ?? paletteLayer)
+        }
+        if host.palette.superview !== paletteLayer { paletteLayer.addSubview(host.palette) }
+        host.content.needsLayout = true
+        host.palette.needsLayout = true
+        host.content.layoutSubtreeIfNeeded()
+        host.palette.layoutSubtreeIfNeeded()
+        CATransaction.flush()
+    }
+
+    /// A committed profile already has its captured native rows. Prepare the
+    /// displayed roots without walking the parked profiles' pending layouts.
+    func layoutDisplayedProfile() {
+        guard let current, let host = hosts[current] else { return }
+        host.content.layoutSubtreeIfNeeded()
+        host.palette.layoutSubtreeIfNeeded()
+    }
+
     private func show(_ store: TabStore) {
         let id = ObjectIdentifier(store)
         footerPresentation.activate(store)
@@ -1110,29 +1193,7 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         for stale in Array(hosts.keys) where !kept.contains(stale) {
             hosts.removeValue(forKey: stale)?.views.forEach { $0.removeFromSuperview() }
         }
-        let host: ProfileHosts
-        if let existing = hosts[id] { host = existing }
-        else {
-            let content = BrowserHostingView(rootView: BrowserWindow(presentsPalette: false)
-                .environmentObject(store)
-                .environmentObject(ProfileManager.shared)
-                .environment(\.spaceFooterPresentation, footerPresentation)
-                .font(Look.text))
-            // The outer native container supplies the frame; do not separately
-            // measure minimum, ideal and maximum sizes on each resize.
-            content.sizingOptions = []
-            let palette = BrowserPaletteHost(rootView: AnyView(BrowserPaletteOverlay()
-                .environmentObject(store)
-                .environmentObject(ProfileManager.shared)
-                .spaceChrome(store)
-                .vaneMotionPolicy()
-                .font(Look.text)
-                .ignoresSafeArea()))
-            palette.store = store
-            palette.sizingOptions = []
-            host = ProfileHosts(content: content, palette: palette)
-            hosts[id] = host
-        }
+        let host = profileHosts(for: store)
         let departing = current.flatMap { hosts[$0] }
         for view in host.views {
             view.frame = bounds
@@ -1443,6 +1504,19 @@ private struct NativeSpacePreview: View {
     private var finishGround: ((Space?) -> Void)?
     private var animationID: UUID?
 
+    /// Selection stays queued until after its input action returns. A sidebar
+    /// hidden before that turn must still finish the committed profile change.
+    func armLanding(to target: Space, completion: @escaping () -> Void) {
+        guard isActive else { return }
+        ownsSidebarVisibility = true
+        self.completion = completion
+        restingSpaceID = target.id
+        source?.spaceGesture.withPresentationUpdate {
+            source?.spaceGesture.profileSlidesFavorites = includesFavorites
+            source?.spaceGesture.profileSliding = true
+        }
+    }
+
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
         ownsSidebarVisibility = true
@@ -1539,9 +1613,13 @@ private struct NativeSpacePreview: View {
                 destination.spaceGesture.nativeGroundDidUpdate = { [weak self] in self?.joinDestinationGround() }
                 joinDestinationGround()
             }
+            let footerTiming = groundTiming.copy() as! CABasicAnimation
+            // Footer markers own different layers; pass the shared media time
+            // explicitly so each marker can convert it to its own local clock.
+            footerTiming.beginTime = animationStart
             (superview as? BrowserWindowHost)?.footerPresentation.animate(
                 origin: preparedOrigin.id, target: preparedTarget.id,
-                from: groundFraction, to: returning ? 0 : 1, timing: groundTiming)
+                from: groundFraction, to: returning ? 0 : 1, timing: footerTiming)
         }
         if let screen = window?.screen ?? NSScreen.main {
             progressLink?.invalidate()

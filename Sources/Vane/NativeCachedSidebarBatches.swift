@@ -59,6 +59,228 @@ private struct NativeSidebarOwnedSlot: Identifiable {
     var id: String { row.id }
 }
 
+/// Only rows whose visibility differs from the section's resting baseline enter
+/// the animation vector. A large unchanged outline adds no per-frame arithmetic.
+struct NativeSidebarDisclosureVisibility: VectorArithmetic {
+    var rowCount: CGFloat = 0
+    var changes: [String: CGFloat] = [:]
+    static let zero = Self()
+    func change(for row: String) -> CGFloat { changes[row, default: 0] }
+    static func + (lhs: Self, rhs: Self) -> Self {
+        var result = lhs
+        result.rowCount += rhs.rowCount
+        for (row, value) in rhs.changes {
+            let value = result.change(for: row) + value
+            if value == 0 { result.changes.removeValue(forKey: row) }
+            else { result.changes[row] = value }
+        }
+        return result
+    }
+    static func - (lhs: Self, rhs: Self) -> Self {
+        var negative = rhs
+        negative.scale(by: -1)
+        return lhs + negative
+    }
+    mutating func scale(by rhs: Double) {
+        rowCount *= CGFloat(rhs)
+        changes = changes.mapValues { $0 * CGFloat(rhs) }
+    }
+    var magnitudeSquared: Double {
+        Double(rowCount * rowCount + changes.values.reduce(0) { $0 + $1 * $1 })
+    }
+}
+
+fileprivate struct NativeSidebarDisclosureSample: Equatable {
+    let baseline: Set<String>
+    let visibility: NativeSidebarDisclosureVisibility
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.visibility == rhs.visibility && lhs.baseline == rhs.baseline
+    }
+    func progress(for row: String) -> CGFloat {
+        min(1, max(0, (baseline.contains(row) ? 1 : 0) + visibility.change(for: row)))
+    }
+}
+
+private struct NativeSidebarDisclosureSampleKey: EnvironmentKey {
+    static let defaultValue: NativeSidebarDisclosureSample? = nil
+}
+private extension EnvironmentValues {
+    var nativeSidebarDisclosureSample: NativeSidebarDisclosureSample? {
+        get { self[NativeSidebarDisclosureSampleKey.self] }
+        set { self[NativeSidebarDisclosureSampleKey.self] = newValue }
+    }
+}
+
+/// Keep the baseline stable across ordinary renders and interruptible disclosure.
+/// Scope changes already cross the native bridge as immediate handoffs.
+@MainActor final class NativeSidebarDisclosureBaseline: @MainActor ObservableObject {
+    let objectWillChange = ObservableObjectPublisher()
+    private var scope: SidebarNativeReadinessScope?
+    private var captured = false
+    private var target = Set<String>()
+    private var scheduledRevision: UUID?
+    private var completionRevision: UUID?
+    private(set) var rows = Set<String>()
+    private(set) var revision = UUID()
+    private var needsRebase = false
+    private(set) var visibility = NativeSidebarDisclosureVisibility.zero
+    func capture(_ ids: Set<String>, scope: SidebarNativeReadinessScope?) {
+        if !captured || self.scope != scope {
+            captured = true
+            self.scope = scope
+            rows = ids
+        }
+        if target != ids { revision = UUID(); target = ids; scheduledRevision = nil; completionRevision = nil }
+        let changes = Dictionary(uniqueKeysWithValues: rows.symmetricDifference(target).map {
+            ($0, target.contains($0) ? CGFloat(1) : CGFloat(-1))
+        })
+        visibility = NativeSidebarDisclosureVisibility(rowCount: CGFloat(target.count), changes: changes)
+        needsRebase = !changes.isEmpty
+    }
+    func registerCompletion(in transaction: inout Transaction) {
+        guard needsRebase, completionRevision != revision else { return }
+        completionRevision = revision
+        let value = visibility
+        let revision = revision
+        transaction.addAnimationCompletion(criteria: .removed) { [weak self] in
+            self?.finished(value, revision: revision)
+        }
+    }
+    private func finished(_ value: NativeSidebarDisclosureVisibility, revision: UUID) {
+        guard self.revision == revision, needsRebase, value == visibility,
+              scheduledRevision != revision else { return }
+        scheduledRevision = revision
+        // Updating the basis during native/SwiftUI update is unsafe. At rest,
+        // replace it outside that callback, with no animation and identical pose.
+        DispatchQueue.main.async { [weak self] in
+            _ = self?.commitSettledVisibility(value, revision: revision)
+        }
+    }
+    @discardableResult func commitSettledVisibility(_ value: NativeSidebarDisclosureVisibility, revision: UUID) -> Bool {
+        guard self.revision == revision, value == visibility, needsRebase else { return false }
+        Motion.instant {
+            objectWillChange.send()
+            rows = target
+            visibility = NativeSidebarDisclosureVisibility(rowCount: CGFloat(target.count), changes: [:])
+            needsRebase = false
+            scheduledRevision = nil
+        }
+        return true
+    }
+}
+
+/// Prefixes are captured once per structural update. Per-frame placement touches
+/// only the sparse visibility changes and the bounded set of mounted owners.
+struct NativeSidebarDisclosureLayout {
+    private struct Position {
+        let index: Int
+        let parent: String?
+        let shownInBaseline: Bool
+    }
+    let order: [String]
+    private var positions: [String: Position] = [:]
+    private var baselinePrefix: [CGFloat] = [0]
+    private var subtreeEnds: [String: Int] = [:]
+    private var representatives: [String: String] = [:]
+    private let travelLimits: [String: CGFloat]
+    init(order: [String], baseline: Set<String>, groups: [String: String],
+         parents: [String: String] = [:], travelLimits: [String: CGFloat] = [:]) {
+        self.order = order
+        self.travelLimits = travelLimits
+        let parents = parents.merging(groups) { actual, _ in actual }
+        let ids = Set(order)
+        for (index, row) in order.enumerated() {
+            let parent = parents[row].flatMap { ids.contains($0) ? $0 : nil }
+            positions[row] = Position(index: index, parent: parent, shownInBaseline: baseline.contains(row))
+            baselinePrefix.append(baselinePrefix.last! + (baseline.contains(row) ? 1 : 0))
+            if let parent {
+                if representatives[parent] == nil ||
+                    (baseline.contains(row) && !baseline.contains(representatives[parent]!)) {
+                    representatives[parent] = row
+                }
+            }
+            var ancestor = parent
+            var visited = Set<String>()
+            while let folder = ancestor, visited.insert(folder).inserted {
+                subtreeEnds[folder] = index + 1
+                ancestor = parents[folder]
+            }
+        }
+    }
+    private func sum(_ range: Range<Int>, visibility: NativeSidebarDisclosureVisibility) -> CGFloat {
+        var value = baselinePrefix[range.upperBound] - baselinePrefix[range.lowerBound]
+        for (row, delta) in visibility.changes {
+            if let index = positions[row]?.index, range.contains(index) { value += delta }
+        }
+        return value
+    }
+    private func progress(_ row: String, visibility: NativeSidebarDisclosureVisibility) -> CGFloat {
+        min(1, max(0, (positions[row]?.shownInBaseline == true ? 1 : 0) + visibility.change(for: row)))
+    }
+    func position(for row: String, visibility: NativeSidebarDisclosureVisibility) -> CGFloat? {
+        origin(for: row, visibility: visibility, depth: 0)
+    }
+    private func origin(for row: String, visibility: NativeSidebarDisclosureVisibility, depth: Int) -> CGFloat? {
+        guard let position = positions[row], depth < 64 else { return nil }
+        guard let parent = position.parent, let header = positions[parent],
+              header.index < position.index,
+              let headerY = origin(for: parent, visibility: visibility, depth: depth + 1),
+              let representative = representatives[parent] else {
+            return sum(0..<position.index, visibility: visibility)
+        }
+        let end = subtreeEnds[parent, default: header.index + 1]
+        let revealed = min(progress(parent, visibility: visibility), progress(representative, visibility: visibility))
+        let headerVisibility = progress(parent, visibility: visibility)
+        let fraction = headerVisibility > 0 ? revealed / headerVisibility : 0
+        let prefix: CGFloat
+        let extent: CGFloat
+        if revealed > 0 {
+            prefix = sum((header.index + 1)..<position.index, visibility: visibility) / revealed
+            extent = max(0, sum((header.index + 1)..<end, visibility: visibility) / revealed)
+        } else {
+            // A completely folded group is masked. Its full-spacing hidden pose
+            // remains defined even when both visibility factors are zero.
+            prefix = CGFloat(position.index - header.index - 1)
+            extent = CGFloat(end - header.index - 1)
+        }
+        return headerY + 1 + prefix - min(extent, travelLimits[parent] ?? extent) * (1 - fraction)
+    }
+    func revealEdge(for header: String, visibility: NativeSidebarDisclosureVisibility) -> CGFloat? {
+        guard let y = position(for: header, visibility: visibility) else { return nil }
+        var edge = y + 1
+        var ancestor = positions[header]?.parent
+        var visited = Set<String>()
+        while let parent = ancestor, visited.insert(parent).inserted {
+            if let y = position(for: parent, visibility: visibility) { edge = max(edge, y + 1) }
+            ancestor = positions[parent]?.parent
+        }
+        return edge
+    }
+    func clipTop(for row: String, visibility: NativeSidebarDisclosureVisibility) -> CGFloat? {
+        guard let parent = positions[row]?.parent,
+              let edge = revealEdge(for: parent, visibility: visibility),
+              let y = position(for: row, visibility: visibility) else { return nil }
+        return edge - y
+    }
+}
+
+/// This is the sole interpolation for both the outer extent and native strips.
+/// Per-row components also cover equal-height close/open swaps between folders.
+private struct NativeSidebarDisclosureExtent: AnimatableModifier {
+    let baseline: Set<String>
+    var visibility: NativeSidebarDisclosureVisibility
+    nonisolated var animatableData: NativeSidebarDisclosureVisibility {
+        get { visibility }
+        set { visibility = newValue }
+    }
+    func body(content: Content) -> some View {
+        content
+            .environment(\.nativeSidebarDisclosureSample,
+                NativeSidebarDisclosureSample(baseline: baseline, visibility: visibility))
+            .frame(height: max(0, visibility.rowCount * (Look.rowHeight + Look.rowGap) - Look.rowGap))
+    }
+}
+
 private struct SidebarFolderRolloutGeometry {
     let id = UUID()
     let distance: CGFloat
@@ -87,6 +309,23 @@ private struct SidebarFolderRollout: AnimatableModifier {
     }
 }
 
+private struct SidebarSharedFolderRollout: ViewModifier {
+    let clipTop: CGFloat?
+    func body(content: Content) -> some View {
+        content.clipShape(SidebarSharedFolderRolloutClip(top: clipTop))
+    }
+}
+private struct SidebarSharedFolderRolloutClip: Shape {
+    let top: CGFloat?
+    func path(in rect: CGRect) -> Path {
+        guard let top else {
+            // With no rollout, leave normal row adornments outside its bounds.
+            return Path(rect.insetBy(dx: -Look.rowHeight, dy: -Look.rowHeight))
+        }
+        return Path(CGRect(x: rect.minX, y: top, width: rect.width, height: max(0, rect.maxY - top)))
+    }
+}
+
 private struct SidebarFolderRolloutClip: Shape {
     let top: CGFloat
     func path(in rect: CGRect) -> Path {
@@ -103,16 +342,33 @@ private struct SidebarFolderRolloutRow<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var saver = BatterySaver.shared
     let requested: SidebarFolderRolloutGeometry?
+    let sharedProgress: CGFloat?
+    let sharedClipTop: CGFloat?
     let content: Content
     let finished: (UUID) -> Void
-    init(geometry: SidebarFolderRolloutGeometry?, finished: @escaping (UUID) -> Void,
+    init(geometry: SidebarFolderRolloutGeometry?, sharedProgress: CGFloat?, sharedClipTop: CGFloat?, finished: @escaping (UUID) -> Void,
          @ViewBuilder content: () -> Content) {
         _geometry = State(initialValue: geometry)
         requested = geometry
+        self.sharedProgress = sharedProgress
+        self.sharedClipTop = sharedClipTop
         self.finished = finished
         self.content = content()
     }
     var body: some View {
+        if let sharedProgress {
+            content.modifier(SidebarSharedFolderRollout(clipTop: sharedClipTop))
+                // Each sample is already interpolated by the outer section.
+                // A second native-root animation would separate drawing and hits.
+                .animation(nil, value: sharedProgress)
+                .onChange(of: reduceMotion || saver.isActive) { _, reduced in
+                    if reduced, let requested, requested.closing { finished(requested.id) }
+                }
+        } else {
+            independentRollout
+        }
+    }
+    private var independentRollout: some View {
         content.modifier(SidebarFolderRollout(progress: progress,
             geometry: geometry, reduced: suppressed || reduceMotion || saver.isActive))
             .onAppear {
@@ -289,6 +545,8 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
     let generation: UInt64
     let inherited: EnvironmentValues
     let transaction: Transaction
+    let disclosureSample: NativeSidebarDisclosureSample?
+    let disclosureLayout: NativeSidebarDisclosureLayout?
     let viewport: SidebarRowsViewport
     let navigation: NativeSidebarNavigation
     weak var interactionOwner: (any NativeSidebarInteractionRetaining)?
@@ -298,7 +556,9 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             ForEach(slots) { slot in
-                SidebarFolderRolloutRow(geometry: slot.rollout, finished: { finishedClosing(slot.id, $0) }) {
+                SidebarFolderRolloutRow(geometry: slot.rollout,
+                    sharedProgress: disclosureSample.map { $0.progress(for: slot.id) },
+                    sharedClipTop: clipTop(of: slot), finished: { finishedClosing(slot.id, $0) }) {
                     content(slot.row, slot.index, total)
                         .frame(maxWidth: .infinity)
                         .frame(height: Look.rowHeight)
@@ -310,7 +570,7 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
                     .environment(\.bufferedSidebarFocus, BufferedSidebarFocus(row: slot.id, viewport: viewport))
                     .environment(\.nativeSidebarNavigationRow, NativeSidebarNavigationRow(row: slot.id, navigation: navigation))
                     .environment(\.nativeSidebarInteraction, NativeSidebarInteraction(row: slot.id, owner: interactionOwner))
-                    .offset(y: CGFloat(slot.index) * (Look.rowHeight + Look.rowGap))
+                    .offset(y: position(of: slot) * (Look.rowHeight + Look.rowGap))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -321,8 +581,19 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
         .animation(placementAnimation, value: slots.map(\.id))
         .animation(placementAnimation, value: slots.map(\.index))
     }
+    private func position(of slot: NativeSidebarOwnedSlot) -> CGFloat {
+        if let disclosureSample, let disclosureLayout,
+           let position = disclosureLayout.position(for: slot.id, visibility: disclosureSample.visibility) { return position }
+        return CGFloat(slot.index)
+    }
+    private func clipTop(of slot: NativeSidebarOwnedSlot) -> CGFloat? {
+        guard let disclosureSample, let disclosureLayout else { return nil }
+        return disclosureLayout.clipTop(for: slot.id, visibility: disclosureSample.visibility)
+            .map { $0 * (Look.rowHeight + Look.rowGap) }
+    }
     private var placementAnimation: Animation? {
-        NativeSidebarPlacementMotion.animation(transaction: transaction,
+        if disclosureLayout != nil { return nil }
+        return NativeSidebarPlacementMotion.animation(transaction: transaction,
             reduceMotion: inherited.accessibilityReduceMotion, reducedByPolicy: Motion.reduced)
     }
 }
@@ -479,6 +750,9 @@ private final class NativeBatchMouseObservation {
     private var content: ((SidebarRows.Row, Int, Int) -> Content)?
     private var inherited = EnvironmentValues()
     private var transaction = Transaction()
+    private var disclosureSample: NativeSidebarDisclosureSample?
+    private var disclosureLayout: NativeSidebarDisclosureLayout?
+    private var disclosureKnownRows: [String: SidebarRows.Row] = [:]
     private var rowWindow = NativeSidebarResidentWindow()
     private var generation: UInt64 = 0
     private var geometryRevision: UInt64 = 0
@@ -702,6 +976,8 @@ private final class NativeBatchMouseObservation {
             }
         }
         cache.removeAll(); mounted.removeAll(); groups.removeAll(); ownership.removeAll(); anchors.removeAll()
+        disclosureLayout = nil
+        disclosureKnownRows.removeAll()
         interactions.removeAll(); pressedRows.removeAll(); menuRows.removeAll(); requestedProtection.removeAll()
         visit = UUID()
         interactionLease = InteractionLease(owner: self, visit: visit)
@@ -737,6 +1013,9 @@ private final class NativeBatchMouseObservation {
         let previousRows = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         if retainsInactiveOwners { observeOwner(owner) }
         changeScope(environment.sidebarNativeReadinessScope)
+        if !sameScope { disclosureKnownRows.removeAll() }
+        disclosureKnownRows = disclosureKnownRows.filter { modelIDs.contains($0.key) }
+        for row in previousOrder + supplied where modelIDs.contains(row.id) { disclosureKnownRows[row.id] = row }
         rows = supplied.filter { modelIDs.contains($0.id) }
         authorizedRowIDs = Set(rows.map(\.id))
         rowIndexByID = Dictionary(rows.enumerated().map { ($0.element.id, $0.offset) },
@@ -747,6 +1026,7 @@ private final class NativeBatchMouseObservation {
         self.content = content
         inherited = environment
         self.transaction = transaction
+        disclosureSample = environment.nativeSidebarDisclosureSample
         generation &+= 1
         needsReconcile = true
         ownership = ownership.filter { modelIDs.contains($0.key) }
@@ -825,18 +1105,26 @@ private final class NativeBatchMouseObservation {
         // the same closing request while its visible layout and authority agree;
         // a reopen, deletion, lock, scope change or immediate transaction revokes it.
         if sameScope && !transaction.disablesAnimations && !environment.accessibilityReduceMotion && !Motion.reduced,
-           previousOrder.map(\.id) == rows.map(\.id) {
+           (disclosureSample != nil || previousOrder.map(\.id) == rows.map(\.id)) {
             for (key, slots) in previousGroups where mounted.contains(key) {
                 for slot in slots {
+                    if let geometry = slot.rollout, !geometry.closing, (disclosureSample?.progress(for: slot.id) ?? 1) < 1,
+                       authorizedRowIDs.contains(slot.id),
+                       let index = groups[key]?.firstIndex(where: { $0.id == slot.id }) {
+                        groups[key]?[index].rollout = geometry
+                        continue
+                    }
                     guard let geometry = slot.rollout, geometry.closing, modelIDs.contains(slot.id),
                           let headerIndex = rowIndexByID[geometry.headerID],
                           let folder = rows[headerIndex].visible.entry.folder,
-                          folder.collapsed, folder.requiresAuthentication != true else { continue }
+                          folder.collapsed, folder.requiresAuthentication != true,
+                          groups[key]?.contains(where: { $0.id == slot.id }) != true else { continue }
                     groups[key, default: []].append(slot)
                 }
             }
         }
         for key in Array(groups.keys) { groups[key]?.sort { $0.index < $1.index } }
+        updateDisclosureLayout(previousOrder: disclosureLayout?.order ?? previousOrder.map(\.id))
         let currentOwners = Set(ownership.values)
         for key in Array(cache.keys) where !currentOwners.contains(key) {
             cache.removeValue(forKey: key)?.host.removeFromSuperview()
@@ -990,7 +1278,15 @@ private final class NativeBatchMouseObservation {
             if let existing = cache[key] {
                 entry = existing
                 if entry.generation != generation { update(entry, slots: slots) }
-                if !oldMounted.contains(key) { batchCounts.warmGraphReattachments += 1 }
+                if !oldMounted.contains(key) {
+                    // Detached roots do not receive frame samples. Rejoin the
+                    // section's current pose instead of replaying a stale one.
+                    if disclosureSample != nil && (disclosureLayout != nil || slots.contains(where: { $0.rollout != nil })) {
+                        entry.host.rootView = makeRoot(slots: slots, animate: false)
+                        batchCounts.rootUpdates += 1
+                    }
+                    batchCounts.warmGraphReattachments += 1
+                }
             } else {
                 let host = NativeSidebarBatchHostingView(rootView: makeRoot(slots: slots))
                 host.sizingOptions = []
@@ -1006,7 +1302,10 @@ private final class NativeBatchMouseObservation {
             let target = NSRect(x: 0, y: 0, width: bounds.width, height: max(sectionHeight, closingHeight))
             entry.host.occupy(slots, width: bounds.width)
             entry.host.revealEdge = { [weak self] header in
-                guard let self, self.authorizedRowIDs.contains(header),
+                guard let self else { return nil }
+                if let layout = self.disclosureLayout, let sample = self.disclosureSample,
+                   let edge = layout.revealEdge(for: header, visibility: sample.visibility) { return edge * self.pitch }
+                guard self.authorizedRowIDs.contains(header),
                       let anchor = self.anchors[header]?.value, anchor.window === self.window else { return nil }
                 return self.convert(anchor.bounds, from: anchor).maxY + Look.rowGap
             }
@@ -1031,13 +1330,65 @@ private final class NativeBatchMouseObservation {
             placementTransaction.disablesAnimations = true
         }
         return Root(slots: slots, total: rows.count, generation: generation,
-             inherited: inherited, transaction: placementTransaction, viewport: viewport, navigation: navigation,
+             inherited: inherited, transaction: placementTransaction, disclosureSample: disclosureSample,
+             disclosureLayout: disclosureLayout, viewport: viewport, navigation: navigation,
              interactionOwner: (interactionLease as (any NativeSidebarInteractionRetaining)?) ?? self,
              committed: { [weak self] anchor in self?.rowDidLayout(anchor) },
              finishedClosing: { [weak self] row, request in
                  // Finish outside SwiftUI's update/disappearance callbacks.
                  DispatchQueue.main.async { [weak self] in self?.finishClosing(row: row, request: request) }
              }, content: content!)
+    }
+    private func updateDisclosureLayout(previousOrder: [String]) {
+        guard let sample = disclosureSample else { disclosureLayout = nil; return }
+        let rolling = groups.values.flatMap { $0 }.filter { $0.rollout != nil }
+        guard !rolling.isEmpty else {
+            disclosureLayout = nil
+            disclosureKnownRows = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return
+        }
+        var before: [String: [String]] = [:]
+        var tail: [String] = []
+        var successor: String?
+        // Include offscreen closing rows in extent arithmetic without mounting
+        // them. Bucket by surviving successor to keep this merge linear.
+        for row in previousOrder.reversed() {
+            if authorizedRowIDs.contains(row) { successor = row }
+            else if disclosureKnownRows[row] != nil {
+                if let successor { before[successor, default: []].append(row) }
+                else { tail.append(row) }
+            }
+        }
+        var order: [String] = []
+        for row in rows {
+            order.append(contentsOf: before[row.id, default: []].reversed())
+            order.append(row.id)
+        }
+        order.append(contentsOf: tail.reversed())
+        let parents = Dictionary(disclosureKnownRows.values.compactMap { row in
+            row.visible.entry.parent.map { (row.id, $0.uuidString) }
+        }, uniquingKeysWith: { first, _ in first })
+        var limits: [String: CGFloat] = [:]
+        for slot in rolling {
+            if let geometry = slot.rollout {
+                limits[geometry.headerID] = max(limits[geometry.headerID, default: 0], geometry.distance / pitch)
+            }
+        }
+        disclosureLayout = NativeSidebarDisclosureLayout(order: order, baseline: sample.baseline,
+            groups: [:], parents: parents, travelLimits: limits)
+    }
+    fileprivate func presentDisclosure(_ sample: NativeSidebarDisclosureSample?) {
+        guard !disposed, let sample else { return }
+        disclosureSample = sample
+        for key in mounted {
+            guard let slots = groups[key], let entry = cache[key],
+                  disclosureLayout != nil || slots.contains(where: { $0.rollout != nil }) else { continue }
+            entry.host.rootView = makeRoot(slots: slots, animate: false)
+            batchCounts.rootUpdates += 1
+        }
+        // Closing visuals are disabled from the first structural update. Release
+        // them with the guarded outer transaction completion/rebase, rather than
+        // treating a target-valued layout probe as an animation completion.
     }
     private func update(_ entry: Entry, slots: [NativeSidebarOwnedSlot], animate: Bool = true) {
         guard entry.generation != generation else { return }
@@ -1190,6 +1541,7 @@ private final class NativeBatchMouseObservation {
         visit = UUID(); interactionLease = nil
         interactions.removeAll(); pressedRows.removeAll(); requestedProtection.removeAll()
         readinessRowIDs.removeAll(); authorizedRowIDs.removeAll(); rowIndexByID.removeAll()
+        disclosureSample = nil; disclosureLayout = nil; disclosureKnownRows.removeAll()
         content = nil; inherited = EnvironmentValues()
     }
 }
@@ -1197,21 +1549,38 @@ private final class NativeBatchMouseObservation {
 private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresentable {
     let rows: [SidebarRows.Row]
     let modelIDs: Set<String>
+    let revision: UUID
     var protectedRows: Set<String> = []
     var readinessSection: String? = nil
     var owner: TabStore? = nil
     let content: (SidebarRows.Row, Int, Int) -> Content
+    final class Coordinator {
+        var revision: UUID?
+        var sample: NativeSidebarDisclosureSample?
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NativeCachedSidebarBatchesView<Content> { NativeCachedSidebarBatchesView(frame: .zero) }
     func updateNSView(_ view: NativeCachedSidebarBatchesView<Content>, context: Context) {
+        let sample = context.environment.nativeSidebarDisclosureSample
+        if context.coordinator.revision == revision && context.coordinator.sample != sample {
+            context.coordinator.sample = sample
+            view.presentDisclosure(sample)
+            return
+        }
+        context.coordinator.revision = revision
+        context.coordinator.sample = sample
         view.configure(rows: rows, modelIDs: modelIDs, environment: context.environment, protectedRows: protectedRows, readinessSection: readinessSection,
                        transaction: context.transaction, owner: owner, content: content)
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeCachedSidebarBatchesView<Content>, context: Context) -> CGSize? {
-        CGSize(width: proposal.width ?? 0, height: max(0, CGFloat(rows.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap))
+        CGSize(width: proposal.width ?? 0,
+               height: proposal.height ?? max(0, CGFloat(rows.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap))
     }
-    static func dismantleNSView(_ view: NativeCachedSidebarBatchesView<Content>, coordinator: ()) { view.detach() }
+    static func dismantleNSView(_ view: NativeCachedSidebarBatchesView<Content>, coordinator: Coordinator) { view.detach() }
 }
 struct NativeCachedSidebarBatchSectionRows<Content: View>: View {
+    @StateObject private var disclosureBaseline = NativeSidebarDisclosureBaseline()
+    @Environment(\.sidebarNativeReadinessScope) private var scope
     let rows: [SidebarRows.Row]
     let modelIDs: Set<String>
     var protectedRows: Set<String> = []
@@ -1219,8 +1588,15 @@ struct NativeCachedSidebarBatchSectionRows<Content: View>: View {
     var owner: TabStore? = nil
     let content: (SidebarRows.Row, Int, Int) -> Content
     var body: some View {
-        NativeCachedSidebarBatchesBridge(rows: rows, modelIDs: modelIDs, protectedRows: protectedRows,
-                                        readinessSection: readinessSection, owner: owner, content: content)
-            .frame(height: max(0, CGFloat(rows.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap))
+        let visible = Set(rows.map(\.id))
+        disclosureBaseline.capture(visible, scope: scope)
+        let baseline = disclosureBaseline.rows
+        let visibility = disclosureBaseline.visibility
+        return NativeCachedSidebarBatchesBridge(rows: rows, modelIDs: modelIDs, revision: UUID(),
+            protectedRows: protectedRows, readinessSection: readinessSection, owner: owner, content: content)
+            .modifier(NativeSidebarDisclosureExtent(baseline: baseline,
+                visibility: visibility))
+            .transaction { disclosureBaseline.registerCompletion(in: &$0) }
+            .vaneMotionPolicy()
     }
 }

@@ -85,6 +85,7 @@ import XCTest
         let start = rect(newTab).minY
         var samples: [(CGFloat, CGFloat)] = []
         var checkedMovingHit = false
+        var movingHits: [(presentedY: CGFloat, nativeY: CGFloat, selected: UUID?, palette: PaletteMode?)] = []
         for frame in 0..<48 {
             if [0, 6, 12, 18].contains(frame) { Motion.list { store.pins.toggle(folder: folder.id) } }
             try await Task.sleep(for: .milliseconds(8))
@@ -92,8 +93,8 @@ import XCTest
             if let current = anchors(host).first(where: { $0.title == "Child 5" }) {
                 samples.append((try presentedRect(current).maxY, try presentedRect(newTab).minY))
                 if [9, 21].contains(frame), current.enabled {
-                    XCTAssertEqual(try presentedRect(current).midY, rect(current).midY, accuracy: 1,
-                                   "The native hit target must track the presented row during motion")
+                    let presentedY = try presentedRect(current).midY
+                    let nativeY = rect(current).midY
                     let point = current.convert(NSPoint(x: current.bounds.midX, y: current.bounds.midY), to: nil)
                     for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                         window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point,
@@ -101,13 +102,20 @@ import XCTest
                             windowNumber: window.windowNumber, context: nil, eventNumber: 0,
                             clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)))
                     }
-                    XCTAssertEqual(store.current, tabs[5].id, "A moving child must receive clicks at its visible position")
-                    XCTAssertNil(store.palette, "The child hit must not open New Tab")
+                    movingHits.append((presentedY, nativeY, store.current, store.palette))
                     checkedMovingHit = true
                 }
             }
         }
         print("NEW_TAB_DISCLOSURE start=\(start) samples=\(samples)")
+        // Capture every scheduled frame and event before reporting failures:
+        // XCTest's main-actor symbolication must not delay later reversals.
+        for hit in movingHits {
+            XCTAssertEqual(hit.presentedY, hit.nativeY, accuracy: 1,
+                           "The native hit target must track the presented row during motion")
+            XCTAssertEqual(hit.selected, tabs[5].id, "A moving child must receive clicks at its visible position")
+            XCTAssertNil(hit.palette, "The child hit must not open New Tab")
+        }
         XCTAssertFalse(samples.isEmpty, "Closing children must remain visible while folding")
         XCTAssertTrue(checkedMovingHit, "The regression must exercise an opening row's hit target")
         XCTAssertTrue(samples.allSatisfy { $0.0 <= $0.1 + 1 },

@@ -215,6 +215,33 @@ import XCTest
         XCTAssertEqual(scale.beginTime, 0)
     }
 
+    func testExplicitSidebarClockIsPreservedAndBoundsHoverRetargets() throws {
+        let (presentation, stores, ids, _, views) = try fixture()
+        let layout = SpaceStripLayout(count: 2, availableWidth: 64)
+        presentation.mount(views[0], owner: stores[0], id: ids[0], icon: "square.fill",
+            layout: layout, hovered: true, scheme: .dark, reduced: false)
+        let timing = CABasicAnimation(keyPath: "position")
+        timing.duration = 0.8
+        timing.beginTime = CACurrentMediaTime() - 0.2
+        timing.timingFunction = CAMediaTimingFunction(name: .linear)
+        presentation.animate(origin: ids[0], target: ids[1], from: 0, to: 1, timing: timing)
+        let incoming = try XCTUnwrap(views[1].marker?.symbol)
+        let installed = try XCTUnwrap(incoming.animation(forKey: "space-progress-scale"))
+        let installedStart = installed.beginTime
+        let expectedStart = incoming.convertTime(timing.beginTime, from: nil)
+        presentation.mount(views[0], owner: stores[0], id: ids[0], icon: "square.fill",
+            layout: layout, hovered: false, scheme: .dark, reduced: false)
+        let outgoing = try XCTUnwrap(views[0].marker?.symbol)
+        let hover = try XCTUnwrap(outgoing.animation(forKey: "space-emphasis"))
+        // Capture every native observation before XCTest reports a failure:
+        // symbolication can otherwise consume the rest of the animation.
+        let remaining = hover.duration
+        XCTAssertEqual(installedStart, expectedStart, accuracy: 0.0001,
+                       "Footer ink must retain the explicit clock already driving native rows")
+        XCTAssertEqual(remaining, 0.6, accuracy: 0.03,
+                       "Hover retargets must use time remaining on the original clock before its commit callback")
+    }
+
     func testBatterySaverCancelsAnUncoveredSelectionPulse() throws {
         let (presentation, stores, ids, _, views) = try fixture()
         presentation.activate(stores[1])

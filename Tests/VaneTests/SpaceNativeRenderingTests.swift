@@ -58,6 +58,26 @@ import XCTest
         try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: store.profileID, in: Store.directory))
     }
 
+    /// A closed, retained NSWindow still owns its content tree. Retire native
+    /// travel and both visible and parked roots before deleting fixture profiles.
+    private func retireProfileWindow(_ window: NSWindow) {
+        let held = TabStore.all.filter { $0.window === window || $0.parkedIn === window }
+        for store in held {
+            store.spaceGesture.monitor.interruptLanding()
+            store.spaceGesture.monitor.remove()
+            store.librarySwipeMonitor.remove()
+        }
+        (window.contentView as? BrowserWindowHost)?.cancelSpaceSlide()
+        window.close()
+        window.contentView = nil
+        for store in held {
+            store.window = nil
+            store.parkedIn = nil
+            store.profileVisible = false
+            store.dropStashes()
+        }
+    }
+
     private func withFixtureApplicationLoop(_ body: () async throws -> Void) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
@@ -116,9 +136,9 @@ import XCTest
         return own + view.subviews.flatMap { warmOwnerReports(in: $0) }
     }
 
-    private func warmOwnerFixture(pinnedRows: Int = 0) async throws -> (TabStore, [Space], NSWindow, SwipeMonitor, BrowserWindowHost) {
+    private func warmOwnerFixture(pinnedRows: Int = 0, registerTeardown: Bool = true) async throws -> (TabStore, [Space], NSWindow, SwipeMonitor, BrowserWindowHost) {
         try XCTSkipIf(ProcessInfo.processInfo.environment["VANE_RETAIN_INACTIVE_SPACE_ROW_OWNERS"] == "0")
-        let (store, spaces, window, monitor) = try fixture()
+        let (store, spaces, window, monitor) = try fixture(registerTeardown: registerTeardown)
         window.setContentSize(NSSize(width: 1100, height: 800))
         for space in spaces {
             store.switchTo(space: space)
@@ -236,8 +256,18 @@ import XCTest
     }
 
     func testMemoryPressureDropsWarmOwnersWithTabSuspensionDisabled() async throws {
-        let (store, spaces, _, monitor, host) = try await warmOwnerFixture()
+        try await withFixtureApplicationLoop { try await checkMemoryPressureDropsWarmOwners() }
+    }
+
+    private func checkMemoryPressureDropsWarmOwners() async throws {
+        let (store, spaces, window, monitor, host) = try await warmOwnerFixture(registerTeardown: false)
+        defer { retireFixture(store, window: window, monitor: monitor) }
         try await visitWarmSpace(spaces[1], store: store, monitor: monitor, host: host)
+        // Pressure relief is the action under test. Admit an actual warm owner
+        // before applying it, rather than treating an unfinished warm-up as zero.
+        try await compatibilityWait {
+            self.warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount } > 0
+        }
         XCTAssertGreaterThan(warmOwnerReports(in: host).reduce(0) { $0 + $1.inactiveGraphCount }, 0)
         let previous = Prefs.suspendTabs
         Prefs.suspendTabs = false
@@ -415,7 +445,7 @@ import XCTest
         let source = Windows.open(profile: blackProfile, space: black, focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(blackProfile.id)
             _ = manager.delete(blueProfile.id)
             manager.active = previous
@@ -830,8 +860,13 @@ import XCTest
     }
 
     func testReverseSwipeTakesOverThePresentedLandingWithoutFinishingIt() async throws {
+        try await withFixtureApplicationLoop { try await checkReverseSwipeTakesOverLanding() }
+    }
+
+    private func checkReverseSwipeTakesOverLanding() async throws {
         for direction in [1, -1] {
-            let (store, spaces, window, monitor) = try fixture()
+            let (store, spaces, window, monitor) = try fixture(registerTeardown: false)
+            defer { retireFixture(store, window: window, monitor: monitor) }
             let origin = spaces[direction > 0 ? 0 : 1]
             let target = spaces[direction > 0 ? 1 : 0]
             store.switchTo(space: origin)
@@ -841,6 +876,10 @@ import XCTest
     }
 
     func testReverseProfileSwipeTakesOverTheSamePresentedNativeRows() async throws {
+        try await withFixtureApplicationLoop { try await checkReverseProfileSwipeTakesOverRows() }
+    }
+
+    private func checkReverseProfileSwipeTakesOverRows() async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
         let manager = ProfileManager.shared
@@ -852,7 +891,7 @@ import XCTest
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         defer {
-            window.close()
+            retireProfileWindow(window)
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
@@ -910,7 +949,7 @@ import XCTest
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         defer {
-            window.close()
+            retireProfileWindow(window)
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
@@ -971,7 +1010,20 @@ import XCTest
         store.palette = nil
         let width = fixtureSidebarWidth(in: store)
         let sign = CGFloat(direction)
-        try await Task.sleep(for: .milliseconds(150))
+        try await compatibilityWait {
+            if !NSApp.isActive || NSApp.keyWindow !== window {
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                return false
+            }
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            CATransaction.flush()
+            return NSApp.isRunning && window.isKeyWindow && window.isVisible
+                && window.occlusionState.contains(.visible) && store.window === window
+                && store.currentSpaceID == origin.id
+                && store.spaceGesture.sectionsView?.window === window
+        }
         monitor.track(-sign * 60, width: width, in: store)
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
@@ -1177,6 +1229,57 @@ import XCTest
     }
 
 
+    func testPreparedProfileKeepsWindowAuthorityWithSourceUntilHop() async throws {
+        try await withFixtureApplicationLoop {
+            let manager = ProfileManager.shared
+            let previous = manager.active
+            let profiles = [manager.create(name: "Prepared source"), manager.create(name: "Prepared arrival")]
+            let first = manager.createSpace(name: "Source", in: profiles[0].id)
+            var second = manager.createSpace(name: "Arrival", in: profiles[1].id)
+            second.tabURLs = [URL(string: "about:blank")!]
+            XCTAssertTrue(manager.updateSpace(second))
+            let source = Windows.open(profile: profiles[0], space: first, focus: false)
+            let window = try XCTUnwrap(source.window)
+            defer {
+                self.retireProfileWindow(window)
+                profiles.forEach { _ = manager.delete($0.id) }
+                manager.active = previous
+            }
+            source.palette = nil
+            try await compatibilityWait {
+                if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+                    && source.window === window && source.profileVisible
+            }
+            let activeBeforePreparation = manager.active.id
+            XCTAssertTrue(window.makeFirstResponder(window), "Admit a stable source responder before preparing a hidden root")
+            let responderBeforePreparation = window.firstResponder
+            let arriving = try XCTUnwrap(Windows.prepareHop(source, to: second))
+            XCTAssertTrue(source.window === window && source.profileVisible)
+            XCTAssertEqual(manager.active.id, activeBeforePreparation)
+            XCTAssertTrue(window.firstResponder === responderBeforePreparation,
+                          "A hidden prepared profile must not take keyboard authority")
+            XCTAssertNil(arriving.window)
+            XCTAssertTrue(arriving.parkedIn === window)
+            XCTAssertFalse(arriving.profileVisible)
+            let surface = try XCTUnwrap(arriving.spaceGesture.groundSurface)
+            XCTAssertTrue(surface.window === window && surface.isHiddenOrHasHiddenAncestor,
+                          "Preparing the committed chrome must not expose another profile")
+            let tab = try XCTUnwrap(arriving.active)
+            XCTAssertFalse(arriving.ownsPage(tab),
+                           "Preparing chrome must not bypass SharedTabs page ownership")
+            let page = try XCTUnwrap(tab.existingWeb)
+            XCTAssertNil(page.window)
+            source.switchTo(space: second)
+            XCTAssertTrue(arriving.ownsPage(tab))
+            XCTAssertTrue(TabStore.all.first { $0.window === window } === arriving,
+                          "Activation must reuse the prepared profile's backend and native host")
+            XCTAssertTrue(source.parkedIn === window && !source.profileVisible)
+        }
+    }
+
+
     func testAttachedArrivalSharesTheSourceWashClockWithoutPointUpdates() async throws {
         try await withFixtureApplicationLoop {
             let (source, spaces, window, monitor) = try self.fixture(coloured: true, registerTeardown: false)
@@ -1300,7 +1403,7 @@ import XCTest
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         defer {
-            window.close()
+            retireProfileWindow(window)
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
@@ -1393,7 +1496,7 @@ import XCTest
         let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
@@ -1436,7 +1539,7 @@ import XCTest
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         defer {
-            window.close()
+            retireProfileWindow(window)
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
@@ -1487,7 +1590,7 @@ import XCTest
         let window = try XCTUnwrap(source.window)
         window.orderFrontRegardless()
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
             _ = manager.delete(secondProfile.id)
             manager.active = previous
@@ -1621,7 +1724,7 @@ import XCTest
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
             _ = manager.delete(secondProfile.id)
             manager.active = previous
@@ -3020,7 +3123,7 @@ import XCTest
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
             _ = manager.delete(secondProfile.id)
             manager.active = previous
@@ -3093,7 +3196,7 @@ import XCTest
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
             _ = manager.delete(secondProfile.id)
             manager.active = previous
@@ -3131,7 +3234,7 @@ import XCTest
         let source = Windows.open(profile: firstProfile, space: first, focus: false)
         let window = try XCTUnwrap(source.window)
         defer {
-            window.close()
+            retireProfileWindow(window)
             _ = manager.delete(firstProfile.id)
             _ = manager.delete(secondProfile.id)
             manager.active = previous

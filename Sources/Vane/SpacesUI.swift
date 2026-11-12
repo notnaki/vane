@@ -2025,14 +2025,52 @@ private struct SpaceSwipe: ViewModifier {
             // Keep native presentation as the footer/tint source across release. Updating
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
             Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }
-            slide.start(duration: duration, completion: finish)
-            // Submit compositor travel first, then restore the page under its covering
-            // sidebar. Selection must not wait for the animation's endpoint.
-            DispatchQueue.main.async { [weak self, weak store] in
-                guard let self, self.transition == token, let store,
-                      store.currentSpaceID == self.landingFrom,
-                      store.spaceGesture.neighbour?.id == destination.id else { return }
+            if includesFavorites, let host {
+                // A profile hop can build a new host or restore a different Space
+                // inside a retained one. Resolve its native layout beneath the
+                // captured rows before their animation clock starts; both routes
+                // can otherwise spend the visible landing's early frames mounting.
+                slide.armLanding(to: destination, completion: finish)
+                // Build only this committed target while source still owns the
+                // window. The queued handoff can then meet its landing deadline
+                // without selecting the destination inside the input action.
+                Windows.prepareHop(store, to: destination)
+                DispatchQueue.main.async { [weak self, weak store, weak host, weak slide] in
+                    guard let self, self.transition == token, let store, let host, let slide,
+                          slide.isActive, host.spaceSlide === slide,
+                          store.currentSpaceID == self.landingFrom,
+                          store.spaceGesture.neighbour?.id == destination.id else { return }
+                    let window = store.window
+                    _ = self.activate(destination, in: store)
+                    guard let window, host.window === window, host.spaceSlide === slide,
+                          slide.isActive,
+                          TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
+                        slide.cancel()
+                        return
+                    }
+                    host.layoutDisplayedProfile()
+                    window.displayIfNeeded()
+                    CATransaction.flush()
+                    slide.start(duration: duration, completion: finish)
+                }
+            } else {
+                // Within a profile, prepare under the captured rows before starting
+                // travel, while retaining the immediate native-animation contract
+                // of select/land. Commit the new wash and curve together.
+                guard let host else { slide.cancel(); return }
+                slide.armLanding(to: destination, completion: finish)
+                CATransaction.begin()
+                defer { CATransaction.commit(); CATransaction.flush() }
                 _ = self.activate(destination, in: store)
+                guard self.transition == token, host.spaceSlide === slide, slide.isActive,
+                      let window = store.window, host.window === window,
+                      store.currentSpaceID == destination.id else {
+                    slide.cancel()
+                    return
+                }
+                host.layoutDisplayedProfile()
+                window.displayIfNeeded()
+                slide.start(duration: duration, completion: finish)
             }
         } else {
             if let host = store.window?.contentView as? BrowserWindowHost,
