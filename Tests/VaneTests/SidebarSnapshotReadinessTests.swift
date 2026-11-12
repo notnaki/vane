@@ -26,6 +26,45 @@ import XCTest
         XCTAssertNil(SidebarSnapshot.frame(avoiding: .zero, size: NSSize(width: 251, height: 400), within: screen))
     }
 
+    func testSnapshotRecoversItsKeyWindowBeforeContinuingAdmission() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do {
+            let competing = NSWindow(contentRect: NSRect(x: 500, y: 100, width: 200, height: 150),
+                styleMask: .titled, backing: .buffered, defer: false)
+            competing.isReleasedWhenClosed = false
+            defer { competing.orderOut(nil); competing.close() }
+            var displaced = false
+            var recovered = false
+            _ = try await SidebarSnapshot.imageWhenReady(Color.gray) { host in
+                guard let window = host.window else { return false }
+                if !displaced {
+                    competing.makeKeyAndOrderFront(nil)
+                    XCTAssertTrue(competing.isKeyWindow, "The fixture must actually displace the snapshot owner")
+                    XCTAssertFalse(window.isKeyWindow)
+                    displaced = true
+                    return false
+                }
+                recovered = true
+                XCTAssertTrue(window.isKeyWindow)
+                XCTAssertTrue(NSApp.keyWindow === window)
+                return true
+            }
+            XCTAssertTrue(displaced)
+            XCTAssertTrue(recovered, "Snapshot admission must recover its exact visible owner after focus changes")
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Snapshot focus loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
     func testPointerIntrusionDiscardsThePreviousInteractivePresentation() async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
@@ -38,6 +77,7 @@ import XCTest
             var pointer = NSEvent.mouseLocation
             var previousHost: NSView?
             var phase = 0
+            defer { print("Snapshot pointer-intrusion phase=\(phase)") }
             _ = try await SidebarSnapshot.imageWhenReady(SnapshotInteractiveSurface(state: state),
                                                          pointerLocation: { pointer }) { host in
                 guard let probe = state.probe, probe.window === host.window, let setHovered = state.setHovered else { return false }
@@ -66,6 +106,61 @@ import XCTest
         catch {
             if failure == nil { failure = error }
             else { XCTFail("Snapshot intrusion loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    func testSnapshotRecoversAnOccludedWindowThatStillOwnsKeyboardFocus() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do {
+            let covering = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+            covering.isReleasedWhenClosed = false
+            covering.backgroundColor = .black
+            covering.isOpaque = true
+            var covered = false
+            let occlusion = SnapshotOcclusion()
+            var recovered = false
+            var observation: NSObjectProtocol?
+            defer {
+                if let observation { NotificationCenter.default.removeObserver(observation) }
+                covering.orderOut(nil); covering.close()
+            }
+            _ = try await SidebarSnapshot.imageWhenReady(Color.gray) { host in
+                guard let window = host.window else { return false }
+                if !covered {
+                    observation = NotificationCenter.default.addObserver(
+                        forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+                    ) { [weak window] _ in
+                        MainActor.assumeIsolated {
+                            if let window, window.isKeyWindow, NSApp.keyWindow === window,
+                               !window.occlusionState.contains(.visible) { occlusion.observed = true }
+                        }
+                    }
+                    // Cover the shadow too; equal frames can leave an edge exposed
+                    // and never establish full native occlusion.
+                    covering.setFrame(window.frame.insetBy(dx: -40, dy: -40), display: true)
+                    covering.orderFrontRegardless()
+                    window.order(.below, relativeTo: covering.windowNumber)
+                    XCTAssertTrue(window.isKeyWindow, "Occlusion must leave keyboard ownership unchanged")
+                    covered = true
+                    return false
+                }
+                guard occlusion.observed else { return false }
+                recovered = true
+                XCTAssertTrue(window.isKeyWindow)
+                XCTAssertTrue(window.occlusionState.contains(.visible))
+                return true
+            }
+            XCTAssertTrue(occlusion.observed, "The fixture must actually obscure its exact snapshot owner")
+            XCTAssertTrue(recovered, "Admission must restore the obscured owner before sampling")
+        } catch { failure = error }
+        do { try await loop.close() } catch {
+            if failure == nil { failure = error } else { XCTFail("Occluded snapshot loop cleanup: \(error)") }
         }
         if let failure { throw failure }
     }
@@ -119,6 +214,10 @@ import XCTest
 @MainActor private final class SnapshotInteractiveState {
     weak var probe: SnapshotInteractiveProbe.Native?
     var setHovered: ((Bool) -> Void)?
+}
+
+@MainActor private final class SnapshotOcclusion {
+    var observed = false
 }
 
 private struct SnapshotInteractiveSurface: View {

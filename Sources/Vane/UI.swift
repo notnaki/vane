@@ -593,21 +593,11 @@ struct BrowserWindow: View {
         .animation(reduceMotion || batterySaver.isActive ? nil
                    : Look.floatingSidebarAnimation, value: peeking)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.libraryOpen)
-        // Arc hides the traffic lights along with the sidebar: a collapsed window is the
-        // page and nothing else. They come back the moment either sidebar does.
-        .onChange(of: chrome, initial: true) { showTrafficLights(chrome) }
-        // ⌘S while the peek is up keeps `chrome` true, so the line above never fires and the
-        // lights would stay on the peeked panel's inset line. Docking or hiding the sidebar
-        // always ends the peek, and the lights follow the row that is actually there.
-        // The store ends the peek synchronously when visibility changes. A cached profile
-        // host may observe that change only on return, after a new peek was handed to it.
-        .onChange(of: store.sidebarShown) { peekTask?.cancel(); showTrafficLights(chrome) }
-        .onChange(of: peeking) { showTrafficLights(chrome) }
+        .onChange(of: store.sidebarShown) { peekTask?.cancel() }
         // Opening the Library ends any peek in flight, for the same reason: the lights
         // belong to the rail's row now, not to a panel sliding in behind it.
         .onChange(of: store.libraryOpen) {
             if store.libraryOpen { peekTask?.cancel(); peeking = false }
-            showTrafficLights(chrome)
         }
         .librarySwipe(store)
         .onAppear { store.applySpaceAppearance() }
@@ -669,9 +659,11 @@ struct BrowserWindow: View {
                     .opacity(floating ? 1 : 0)
                     .allowsHitTesting(false)
             }
-            .padding(floating ? Look.floatingSidebarGap : 0)
-            .offset(x: visible ? 0 : -(sidebarWidth + 2 * Look.floatingSidebarGap))
-            .opacity(visible ? 1 : 0)
+            .modifier(SidebarTrafficLightMotion(store: store,
+                slide: visible ? 0 : -(sidebarWidth + 2 * Look.floatingSidebarGap),
+                inset: floating ? Look.floatingSidebarGap : 0,
+                visibility: visible ? 1 : 0,
+                libraryOpen: store.libraryOpen, peeking: !store.sidebarShown && peeking))
             .allowsHitTesting(visible && !store.libraryOpen)
             // Above the page during edge reveal and dismissal; below the resize handle.
             .zIndex(1)
@@ -690,19 +682,6 @@ struct BrowserWindow: View {
             guard !Task.isCancelled else { return }
             peeking = false
         }
-    }
-
-    private func showTrafficLights(_ visible: Bool) {
-        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            store.window?.standardWindowButton(kind)?.isHidden = !visible
-        }
-        // Which row the lights belong to depends on which sidebar is showing: the docked one
-        // starts at the window's edge, the peeked panel is inset by `Look.floatingSidebarGap` all round.
-        let window = store.window as? VaneWindow
-        window?.peekingSidebar = !store.sidebarShown && peeking
-        // Unhiding re-lays the group, so put it back on the row's centre line before the
-        // frame it comes back in — otherwise ⌘S twice leaves the lights off the row.
-        window?.centreTrafficLights()
     }
 
 }
