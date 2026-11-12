@@ -3743,12 +3743,15 @@ struct FolderGlyph: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
-        // A live folder wears its source in the corner of its own glyph, so a folded folder
-        // still says it fills itself.
+        // The default folder carries its source inside the front panel. Keep the
+        // corner badge when arrival dots or custom artwork already occupy that space.
         .overlay(alignment: .bottomTrailing) {
             if folder.live != nil, let live {
                 LiveBadge(live: live, folder: folder.id)
-                    .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
+                    .offset(x: folder.icon == Folder.defaultIcon && !arrivalMark ? 0 : Look.sourceBadgeOffset,
+                            y: folder.icon == Folder.defaultIcon && !arrivalMark ? -1 : Look.sourceBadgeOffset)
+                    .animation(reduced ? nil : Look.quick, value: arrivalMark)
+                    .transaction { if reduced { $0.disablesAnimations = true } }
             }
         }
     }
