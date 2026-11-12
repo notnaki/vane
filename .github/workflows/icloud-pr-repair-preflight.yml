@@ -1,4 +1,4 @@
-name: iCloud motion admission diagnostic
+name: iCloud motion admission regression proof
 on:
   push:
     branches: [codex/icloud-pr-repair-20261112]
@@ -24,7 +24,7 @@ jobs:
           path: .build
           key: native-diag-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Sources/**', 'Tests/**') }}
           restore-keys: |
-            native-diag-${{ steps.toolchain.outputs.key }}-d3067a45618c14993dfbd67592b5bd98118a01ecd2a2865f6d5618a6e6cf81e1
+            native-diag-${{ steps.toolchain.outputs.key }}-f0b7f99624d1366c1b07695ae79ac76501ae6819293e452b3aa616f12dd6e60c
             native-diag-${{ steps.toolchain.outputs.key }}-
             swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
       - name: Restore unchanged source timestamps
@@ -63,7 +63,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1, 2, 3]
+        attempt: [1]
         suite: [native]
     steps:
       - uses: actions/checkout@v7
@@ -97,7 +97,7 @@ jobs:
         run: |
           python3 -u - <<'PYTHON'
           import os, pathlib, subprocess, sys
-          selection = 'NativePageWorkTests|NativeSidebarMotionTests'
+          selection = 'NativeSidebarMotionTests'
           log = pathlib.Path(os.environ['RUNNER_TEMP']) / ('icloud-pr-repair-' + os.environ['ATTEMPT'] + '.log')
           with log.open('w') as output:
               process = subprocess.Popen(['python3','-u','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',selection], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

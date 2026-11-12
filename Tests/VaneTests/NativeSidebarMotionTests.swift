@@ -8,6 +8,16 @@ import XCTest
 /// animation continuity, and an unavailable presentation baseline is a failure.
 @MainActor final class NativeSidebarMotionTests: XCTestCase {
     private enum AdmissionError: Error { case noIntermediatePresentation }
+    private enum ProbeMode { case animated, frozen, stationary }
+    private struct PresentationProbe {
+        let initial: CGFloat
+        let samples: [CGFloat]
+        let elapsed: [CFTimeInterval]
+        var hasInteriorPosition: Bool {
+            samples.contains { $0 > initial + 2 && $0 < initial + 78 }
+        }
+        var observedMotion: Bool { hasInteriorPosition }
+    }
     private final class WeakField {
         weak var value: NSTextField?
         init(_ value: NSTextField) { self.value = value }
@@ -66,7 +76,19 @@ import XCTest
         CATransaction.flush()
     }
     private func admitPresentationSampling(sentinel: NSView, root: NSView, window: NSWindow,
-                                          field: NSView, host: NSView, container: NSView) async throws {
+                                          field: NSView, host: NSView, container: NSView,
+                                          firstSampleDelay: Duration = .milliseconds(20)) async throws {
+        let probe = try await observePresentationSampling(sentinel: sentinel, root: root, window: window,
+            field: field, host: host, container: container, firstSampleDelay: firstSampleDelay)
+        guard probe.observedMotion else {
+            XCTFail("Native presentation sampling must observe real intermediate motion; samples=\(probe.samples) elapsed=\(probe.elapsed) running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow)")
+            throw AdmissionError.noIntermediatePresentation
+        }
+    }
+    private func observePresentationSampling(sentinel: NSView, root: NSView, window: NSWindow,
+                                            field: NSView, host: NSView, container: NSView,
+                                            firstSampleDelay: Duration = .milliseconds(20),
+                                            mode: ProbeMode = .animated) async throws -> PresentationProbe {
         XCTAssertTrue(NSApp.isRunning, "Native compositor sampling requires an owned AppKit loop")
         try await compatibilityWait {
             if NSApp.isHidden { NSApp.unhide(nil) }
@@ -108,17 +130,22 @@ import XCTest
         animation.toValue = NSValue(point: end)
         animation.duration = 0.24
         animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        if mode == .frozen {
+            animation.speed = 0
+            animation.timeOffset = 0.12
+        }
         let began = CACurrentMediaTime()
-        layer.add(animation, forKey: "native-motion-admission")
+        if mode != .stationary { layer.add(animation, forKey: "native-motion-admission") }
+        defer { layer.removeAnimation(forKey: "native-motion-admission") }
         let addedAt = CACurrentMediaTime() - began
         CATransaction.flush()
         let committedAt = CACurrentMediaTime() - began
         var samples: [CGFloat] = []
         var elapsed: [CFTimeInterval] = []
         var phases: [[CFTimeInterval]] = []
-        for _ in 0..<8 {
+        for index in 0..<8 {
             let requestedAt = CACurrentMediaTime() - began
-            try await Task.sleep(for: .milliseconds(20))
+            try await Task.sleep(for: index == 0 ? firstSampleDelay : .milliseconds(20))
             let resumedAt = CACurrentMediaTime() - began
             window.contentView?.layoutSubtreeIfNeeded()
             let laidOutAt = CACurrentMediaTime() - began
@@ -131,11 +158,7 @@ import XCTest
             phases.append([requestedAt, resumedAt, laidOutAt, displayedAt, flushedAt])
         }
         print("NATIVE_MOTION_ADMISSION case=\(name) added=\(addedAt) committed=\(committedAt) phases=requested,resumed,layout,display,flush values=\(phases) samples=\(samples) elapsed=\(elapsed)")
-        layer.removeAnimation(forKey: "native-motion-admission")
-        guard samples.contains(where: { $0 > initial + 2 && $0 < initial + 78 }) else {
-            XCTFail("Native presentation sampling must observe real intermediate motion; samples=\(samples) elapsed=\(elapsed) running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow)")
-            throw AdmissionError.noIntermediatePresentation
-        }
+        return PresentationProbe(initial: initial, samples: samples, elapsed: elapsed)
     }
 
     /// Moving original40 to16 changes its permanent owner's lower bound from40
@@ -286,7 +309,43 @@ import XCTest
         }
     }
 
-    private func assertImmediateReorder(disablesAnimations: Bool, batterySaver: Bool) async throws {
+    /// Admission must establish current sampling capability even when the first
+    /// observation is delivered after a complete 240 ms readiness pulse.
+    func testPresentationAdmissionSurvivesDelayedFirstObservation() async throws {
+        try await withApplicationLoop {
+            try await assertImmediateReorder(disablesAnimations: true, batterySaver: false,
+                                             firstAdmissionSampleDelay: .milliseconds(750))
+        }
+    }
+
+    func testPresentationAdmissionRejectsFrozenInterior() async throws {
+        try await withApplicationLoop {
+            let probe = try await observeControl(mode: .frozen)
+            XCTAssertTrue(probe.hasInteriorPosition, "Control must expose a real interior presentation position")
+            XCTAssertFalse(probe.observedMotion, "A frozen interior position is not evidence of compositor motion")
+        }
+    }
+
+    func testPresentationAdmissionRejectsNonmovingProbe() async throws {
+        try await withApplicationLoop {
+            let probe = try await observeControl(mode: .stationary)
+            XCTAssertFalse(probe.hasInteriorPosition)
+            XCTAssertFalse(probe.observedMotion, "A nonmoving presentation must never admit an animation test")
+        }
+    }
+
+    private func observeControl(mode: ProbeMode) async throws -> PresentationProbe {
+        let fixture = Fixture(rows: rows(100))
+        defer { fixture.close() }
+        try await fixture.admit(row: 40)
+        let field = try XCTUnwrap(fixture.controls.fields[fixture.rows[40].id]?.value)
+        let originalOwner = try XCTUnwrap(owner(of: field, in: fixture.owner))
+        return try await observePresentationSampling(sentinel: fixture.sentinel, root: fixture.root,
+            window: fixture.window, field: field, host: originalOwner, container: fixture.owner, mode: mode)
+    }
+
+    private func assertImmediateReorder(disablesAnimations: Bool, batterySaver: Bool,
+                                        firstAdmissionSampleDelay: Duration = .milliseconds(20)) async throws {
         let oldMode = BatterySaver.shared.mode
         BatterySaver.shared.setMode(batterySaver ? .alwaysOn : .off)
         defer { BatterySaver.shared.setMode(oldMode) }
@@ -298,7 +357,8 @@ import XCTest
         let field = try XCTUnwrap(fixture.controls.fields[movingID]?.value)
         let originalOwner = try XCTUnwrap(owner(of: field, in: fixture.owner))
         try await admitPresentationSampling(sentinel: fixture.sentinel, root: fixture.root, window: fixture.window,
-                                           field: field, host: originalOwner, container: fixture.owner)
+                                           field: field, host: originalOwner, container: fixture.owner,
+                                           firstSampleDelay: firstAdmissionSampleDelay)
         let start = try presentedRect(field, in: fixture.root).minY
         let target = start + fixture.documentDisplacement(from: 40, to: 16)
         let moved = fixture.rows.remove(at: 40)
