@@ -7,9 +7,8 @@ struct FolderIcon: View {
 
     var body: some View {
         let openness: CGFloat = open ? 1 : previewing ? 0.22 : 0
-        FolderOutline(openness: openness)
-            .stroke(style: StrokeStyle(lineWidth: 1.5 - 0.25 * openness,
-                                       lineCap: .round, lineJoin: .round))
+        FolderArtwork(openness: openness)
+            .fill()
             .animation(Motion.reduced ? nil : Look.quick, value: open)
             .animation(Motion.reduced ? nil : Look.feedback, value: previewing)
             .transaction { if Motion.reduced { $0.disablesAnimations = true } }
@@ -22,6 +21,10 @@ struct FolderIcon: View {
 enum FolderFace {
     static let bounds = CGRect(x: -0.5, y: 3.5, width: 17.75, height: 13.5)
     static let badgeOffset = CGSize(width: 0.375, height: 2.25)
+
+    static func panel(_ openness: CGFloat) -> Path {
+        FolderPanel(openness: openness).path
+    }
 
     static func projection(_ openness: CGFloat) -> CGAffineTransform {
         let scaleX: CGFloat = 14 / bounds.width
@@ -46,7 +49,57 @@ struct FolderFaceProjection: GeometryEffect {
     }
 }
 
-private struct FolderOutline: Shape {
+/// The front silhouette and the rear joins are evaluated at the same animation time.
+private struct FolderPanel {
+    let openness: CGFloat
+    var bounds: CGRect {
+        CGRect(x: -0.25 - 0.25 * openness, y: 3.375 + 0.125 * openness,
+               width: 17.5 + 0.25 * openness, height: 13.25 + 0.25 * openness)
+    }
+    var topRadius: CGFloat { 2.25 - 0.5 * openness }
+    var bottomRadius: CGFloat { 2.75 - 0.75 * openness }
+    var path: Path {
+        UnevenRoundedRectangle(topLeadingRadius: topRadius,
+                               bottomLeadingRadius: bottomRadius,
+                               bottomTrailingRadius: bottomRadius,
+                               topTrailingRadius: topRadius,
+                               style: .circular)
+            .path(in: bounds)
+            .applying(FolderFace.projection(openness))
+    }
+
+    var leftRearJoin: CGPoint {
+        // Travel along the actual left boundary, ending on the rounded lower
+        // corner rather than its imaginary sharp vertex.
+        let closedY = bounds.minY + topRadius * (1 - (1 - pow(7.0 / 9, 2)).squareRoot())
+        let openY = bounds.maxY - bottomRadius + bottomRadius / CGFloat(2).squareRoot()
+        let y = closedY + (openY - closedY) * openness
+        let radius: CGFloat
+        let centerY: CGFloat
+        if y < bounds.minY + topRadius {
+            radius = topRadius
+            centerY = bounds.minY + radius
+        } else if y > bounds.maxY - bottomRadius {
+            radius = bottomRadius
+            centerY = bounds.maxY - radius
+        } else {
+            return CGPoint(x: bounds.minX, y: y).applying(FolderFace.projection(openness))
+        }
+        let dy = y - centerY
+        let x = bounds.minX + radius - max(0, radius * radius - dy * dy).squareRoot()
+        return CGPoint(x: x, y: y).applying(FolderFace.projection(openness))
+    }
+
+    var rightRearJoin: CGPoint {
+        let x = 17 - 9 * openness
+        let dx = max(0, x - (bounds.maxX - topRadius))
+        let y = bounds.minY + topRadius - max(0, topRadius * topRadius - dx * dx).squareRoot()
+        return CGPoint(x: x, y: y).applying(FolderFace.projection(openness))
+    }
+}
+
+/// Filled stroke geometry lets the front face occlude the rear at every frame.
+struct FolderArtwork: Shape {
     var openness: CGFloat
     var animatableData: CGFloat {
         get { openness }
@@ -54,55 +107,36 @@ private struct FolderOutline: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
-        func between(_ closed: CGPoint, _ open: CGPoint) -> CGPoint {
-            CGPoint(x: closed.x + (open.x - closed.x) * openness,
-                    y: closed.y + (open.y - closed.y) * openness)
-        }
         func point(_ cx: CGFloat, _ cy: CGFloat, _ ox: CGFloat, _ oy: CGFloat) -> CGPoint {
-            between(CGPoint(x: cx, y: cy), CGPoint(x: ox, y: oy))
+            CGPoint(x: cx + (ox - cx) * openness, y: cy + (oy - cy) * openness)
         }
-        // Stop the closed rear verticals on the front corner curves. Extending
-        // either line farther leaves a rounded cap visible inside the front face.
-        let closedTopRadius: CGFloat = 2.25
-        let closedCornerY: CGFloat = 3.375 + closedTopRadius
-        func closedJoinY(x: CGFloat, cornerX: CGFloat) -> CGFloat {
-            let dx = x - cornerX
-            return closedCornerY - (closedTopRadius * closedTopRadius - dx * dx).squareRoot()
-        }
-        let leftJoinY = closedJoinY(x: 0.25, cornerX: -0.25 + closedTopRadius)
-        let rightJoinY = closedJoinY(x: 17, cornerX: 17.25 - closedTopRadius)
-        var path = Path()
-        // The back tab's curves are independent of the front's rounded corners.
-        path.move(to: point(0.25, leftJoinY, 2.75, 15.35))
-        path.addLine(to: point(0.25, 1.25, -1.05, 2.6))
-        path.addCurve(to: point(1.75, -0.25, -0.55, 1.15),
+        let panel = FolderPanel(openness: openness)
+        let front = FolderFace.panel(openness)
+        var rear = Path()
+        rear.move(to: panel.leftRearJoin)
+        rear.addLine(to: point(0.25, 1.25, -1.05, 2.6))
+        rear.addCurve(to: point(1.75, -0.25, -0.55, 1.15),
                       control1: point(0.25, 0.25, -1.85, 1.65),
                       control2: point(0.75, -0.25, -1.6, 1.15))
-        path.addLine(to: point(7, -0.25, 4, 1.15))
-        path.addCurve(to: point(8.5, 0.5, 5.55, 1.9),
+        rear.addLine(to: point(7, -0.25, 4, 1.15))
+        rear.addCurve(to: point(8.5, 0.5, 5.55, 1.9),
                       control1: point(7.75, -0.25, 4.6, 1.15),
                       control2: point(8, 0, 5, 1.5))
-        path.addLine(to: point(10, 1.75, 6.5, 2.7))
-        path.addLine(to: point(15, 1.75, 10.1, 2.7))
-        path.addCurve(to: point(17, 3.75, 12.65, 3.75),
+        rear.addLine(to: point(10, 1.75, 6.5, 2.7))
+        rear.addLine(to: point(15, 1.75, 10.1, 2.7))
+        rear.addCurve(to: point(17, 3.75, 12.65, 3.75),
                       control1: point(16.5, 1.75, 11.5, 2.7),
                       control2: point(17, 2.25, 12.5, 3.3))
-        path.addLine(to: point(17, rightJoinY, 12.7, 3.75))
-        let frontBounds = CGRect(x: -0.25 - 0.25 * openness, y: 3.375 + 0.125 * openness,
-                                 width: 17.5 + 0.25 * openness, height: 13.25 + 0.25 * openness)
-        let topRadius = 2.25 - 0.5 * openness
-        let bottomRadius = 2.75 - 0.75 * openness
-        let front = UnevenRoundedRectangle(topLeadingRadius: topRadius,
-                                           bottomLeadingRadius: bottomRadius,
-                                           bottomTrailingRadius: bottomRadius,
-                                           topTrailingRadius: topRadius,
-                                           style: .circular)
-            .path(in: frontBounds)
-            .applying(FolderFace.projection(openness))
-        path.addPath(front)
-        return path.applying(CGAffineTransform(a: rect.width / 16, b: 0,
-                                              c: 0, d: rect.height / 16,
-                                              tx: rect.minX, ty: rect.minY))
+        rear.addLine(to: panel.rightRearJoin)
+        let style = StrokeStyle(lineWidth: 1.5 - 0.25 * openness,
+                                lineCap: .round, lineJoin: .round)
+        // Treat the front as an opaque stencil without painting a background color.
+        // Union the strokes so their intersections keep one consistent thickness.
+        let ink = rear.strokedPath(style).subtracting(front)
+            .union(front.strokedPath(style))
+        return ink.applying(CGAffineTransform(a: rect.width / 16, b: 0,
+                                             c: 0, d: rect.height / 16,
+                                             tx: rect.minX, ty: rect.minY))
     }
 }
 
