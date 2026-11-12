@@ -301,12 +301,20 @@ struct GitHubMark: Shape {
 struct LiveBadge: View {
     @ObservedObject var live: LiveFolders
     let folder: UUID
+    var showsArrivals = false
 
     var body: some View {
-        GitHubMark()
-            .fill(live.failing.contains(folder) ? Look.warning : Look.inkSecondary)
-            .frame(width: Look.sourceBadge, height: Look.sourceBadge)
-            .accessibilityHidden(true)       // the folder's value already says it is live
+        Group {
+            if showsArrivals {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 9, weight: .bold))
+            } else {
+                GitHubMark().fill(.foreground)
+            }
+        }
+        .foregroundStyle(live.failing.contains(folder) ? Look.warning : Look.inkSecondary)
+        .frame(width: Look.sourceBadge, height: Look.sourceBadge)
+        .accessibilityHidden(true)       // the folder's value already says it is live
     }
 }
 

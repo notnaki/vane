@@ -3719,11 +3719,13 @@ struct FolderGlyph: View {
     var showsArrivals = false
     private var arrivalMark: Bool { showsArrivals && folder.collapsed && !dropOpen }
     private var reduced: Bool { reduceMotion || batterySaver.isActive }
+    private var expanded: Bool { !folder.collapsed || dropOpen }
+    private var previewing: Bool { allowsHoverPreview && hovering && !reduced }
+    private var openness: CGFloat { expanded ? 1 : previewing ? 0.22 : 0 }
     var body: some View {
         Group {
             if folder.icon == Folder.defaultIcon {
-                FolderIcon(open: !folder.collapsed || dropOpen,
-                           previewing: allowsHoverPreview && hovering && !reduceMotion && !batterySaver.isActive)
+                FolderIcon(open: expanded, previewing: previewing)
                     .frame(width: Look.tileIcon, height: Look.tileIcon)
                     .id(reduceMotion || batterySaver.isActive)
             } else if folder.iconIsEmoji {
@@ -3737,23 +3739,33 @@ struct FolderGlyph: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 9, weight: .bold))
                 .offset(y: 1.5)
-                .opacity(arrivalMark ? 1 : 0)
+                .opacity(arrivalMark && (folder.icon != Folder.defaultIcon || live == nil) ? 1 : 0)
                 .animation(reduced ? nil : Look.quick, value: arrivalMark)
                 .transaction { if reduced { $0.disablesAnimations = true } }
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
-        // The default folder carries its source inside the front panel. Keep the
-        // corner badge when arrival dots or custom artwork already occupy that space.
+        // Source artwork belongs to the front panel and follows its exact shear.
+        // Arrival dots replace it on collapsed default folders; custom icons keep
+        // their corner badge because their artwork has no folder face to project.
         .overlay(alignment: .bottomTrailing) {
             if folder.live != nil, let live {
-                LiveBadge(live: live, folder: folder.id)
-                    .offset(x: folder.icon == Folder.defaultIcon && !arrivalMark ? 0 : Look.sourceBadgeOffset,
-                            y: folder.icon == Folder.defaultIcon && !arrivalMark ? -1 : Look.sourceBadgeOffset)
-                    .animation(reduced ? nil : Look.quick, value: arrivalMark)
-                    .transaction { if reduced { $0.disablesAnimations = true } }
+                if folder.icon == Folder.defaultIcon {
+                    LiveBadge(live: live, folder: folder.id, showsArrivals: arrivalMark)
+                        .offset(FolderFace.badgeOffset)
+                        .frame(width: Look.tileIcon, height: Look.tileIcon)
+                        .modifier(FolderFaceProjection(openness: openness))
+                        .id(reduced)
+                        .animation(reduced ? nil : Look.quick, value: expanded)
+                        .animation(reduced ? nil : Look.feedback, value: previewing)
+                } else {
+                    LiveBadge(live: live, folder: folder.id)
+                        .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
+                }
             }
         }
+        .animation(reduced ? nil : Look.quick, value: arrivalMark)
+        .transaction { if reduced { $0.disablesAnimations = true } }
     }
 }
 
