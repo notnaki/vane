@@ -6,6 +6,13 @@ import XCTest
 /// Real WebKit without native input, screenshots, or Keychain access. DOM-only
 /// cases stay unordered; timer-driven discovery admits its exact visible owner.
 @MainActor final class PasswordShadowAutofillTests: XCTestCase {
+    @MainActor private final class DiscoveryLaunch {
+        let started = ProcessInfo.processInfo.systemUptime
+        var requestedDisplay = false
+        var previousState = ""
+        var observations: [String] = []
+    }
+
     private final class Capture: NSObject, WKScriptMessageHandler {
         var messages: [[String: Any]] = []
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -241,6 +248,8 @@ import XCTest
         var loop: NativeFixtureApplicationLoop?
         var retire: (@MainActor @Sendable () -> Void)?
         var failure: (any Error)?
+        let launch = DiscoveryLaunch()
+        defer { print("SHADOW_LAUNCH_TRACE " + launch.observations.joined(separator: " | ")) }
         do {
             // WebKit may defer timers in an unordered document even with an
             // AppKit loop. Admit the exact visible owner before loading it.
@@ -259,8 +268,25 @@ import XCTest
                         // Submit the initial navigation only after WindowServer
                         // acknowledges this owner as visible. Native key/ordering
                         // alone can precede WebKit's visibility by several seconds.
-                        let ready = self.discoveryPresentationReady(window, document: web)
-                            && window.occlusionState.contains(.visible)
+                        let nativeReady = self.discoveryPresentationReady(window, document: web)
+                        let compositorReady = window.occlusionState.contains(.visible)
+                        let state = self.discoveryNativeDiagnostics(web) + " running=\(app.isRunning)"
+                        if state != launch.previousState {
+                            launch.previousState = state
+                            launch.observations.append("elapsed=\(ProcessInfo.processInfo.systemUptime - launch.started) \(state)")
+                        }
+                        if nativeReady, !compositorReady, !launch.requestedDisplay {
+                            // Ordering can be acknowledged before the first display
+                            // transaction reaches WindowServer. Submit that display
+                            // for this exact owner rather than waiting on stale flags.
+                            launch.requestedDisplay = true
+                            window.orderFrontRegardless()
+                            web.layoutSubtreeIfNeeded()
+                            window.displayIfNeeded()
+                            CATransaction.flush()
+                            return false
+                        }
+                        let ready = nativeReady && compositorReady
                         if ready { print("SHADOW_LAUNCH_PRESENTATION " + self.discoveryNativeDiagnostics(web)) }
                         return ready
                     })
