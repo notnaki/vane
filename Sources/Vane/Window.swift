@@ -70,6 +70,14 @@ final class VaneWindow: NSWindow {
 
     var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true || livePageResizeBuffer?.isPreparing == true }
 
+    /// A covered native commit already runs AppKit's window layout lifecycle.
+    /// Its prepared WebKit viewport does not need another eager hosting render
+    /// from inside setFrameSize. All other sizing retains immediate propagation.
+    var isCommittingBufferedPageResize: Bool {
+        committingResize && resizeAnchor != nil && !sidebarDrag
+            && livePageResizeBuffer?.usesNativeSidebarSizing == false
+    }
+
     func beginSidebarResize(_ store: TabStore, frameDriver: SidebarResizePublication.FrameDriver? = nil) {
         _ = cancelSidebarResize()
         livePageResizeBuffer?.cancel()
@@ -154,6 +162,7 @@ final class VaneWindow: NSWindow {
         liveResizeOwner = owner
         livePageResizeBuffer = LivePageResizeBuffer(window: self,
             axes: NSSize(width: nearHorizontal ? 1 : 0, height: nearVertical ? 1 : 0),
+            frameDriver: SidebarResizePublication.displayFrames(for: self),
             apply: { [weak self] frame, _ in self?.commitPreparedResize(frame, display: true) },
             completion: { [weak self] in
                 guard let self, self.liveResizeOwner == owner else { return }
@@ -1088,6 +1097,7 @@ extension VaneWindow {
         super.setFrameSize(newSize)
         guard previous != newSize, window != nil, !isHiddenOrHasHiddenAncestor,
               !applyingFrame else { return }
+        guard (window as? VaneWindow)?.isCommittingBufferedPageResize != true else { return }
         applyingFrame = true
         defer { applyingFrame = false }
         super.layout()

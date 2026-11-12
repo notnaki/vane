@@ -45,6 +45,14 @@ class ProfileOwnershipTests(unittest.TestCase):
             with self.subTest(observed=observed), self.assertRaises(ValueError):
                 profile.require_identity(captured, lambda pid: observed)
 
+    def test_window_profile_requires_the_explicit_selected_motion(self):
+        window = dict(self.record, sidebar=False)
+        self.assertEqual(profile.validate_record(window, self.token, self.bundle, sidebar=False), window)
+        with self.assertRaises(ValueError):
+            profile.validate_record(window, self.token, self.bundle)
+        with self.assertRaises(ValueError):
+            profile.validate_record(self.record, self.token, self.bundle, sidebar=False)
+
     def test_refuses_bad_process_fields_and_same_ui_content(self):
         for key, value in (("pid", 0), ("pid", True), ("start", 0), ("start", "456"),
                            ("path", "relative"), ("path", "/tmp/../user/Vane")):
@@ -93,9 +101,9 @@ class ProfileOwnershipTests(unittest.TestCase):
         owners = {entry["pid"]: entry for entry in (self.record["ui"], self.record["content"])}
         with tempfile.TemporaryDirectory() as temp:
             result = profile.collect(self.record, Path(temp), launch, owners.get)
-            self.assertEqual([command[:6] for command in commands], [
-                ["/usr/bin/sample", "123", "2", "1", "-mayDie", "-file"],
-                ["/usr/bin/sample", "789", "2", "1", "-mayDie", "-file"]])
+            self.assertEqual([command[:5] for command in commands], [
+                ["/usr/bin/sample", "123", "2", "1", "-file"],
+                ["/usr/bin/sample", "789", "2", "1", "-file"]])
             self.assertEqual([entry["status"] for entry in result["samplers"]], [0, 0])
             self.assertEqual(json.loads((Path(temp) / "collection.json").read_text()), result)
         commands.clear()

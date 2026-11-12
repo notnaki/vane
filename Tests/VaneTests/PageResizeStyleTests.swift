@@ -5,6 +5,29 @@ import XCTest
 
 /// Unshown private documents only: no focus, native loop, input, or capture.
 @MainActor final class PageResizeStyleTests: XCTestCase {
+    func testMotionAdmissionWaitsForEagerRootsAndActualStylesheetLoads() async throws {
+        let web = try await page(variables: 160)
+        defer { web.stopLoading() }
+        _ = try await read(web, """
+        document.body.innerHTML='<react-app app-name="repo" class="loaded"></react-app><react-partial partial-name="header"></react-partial><react-partial data-lazy="true"></react-partial><link rel="stylesheet">'; 'ready'
+        """)
+        let ready = "JSON.stringify(\(ResizeMotionDocumentAdmission.script).loaded)"
+        let pendingRoot = try await read(web, ready)
+        XCTAssertEqual(pendingRoot, "false", "Repository readiness cannot admit a still-rendering page header")
+        _ = try await read(web, "document.querySelector('[partial-name=header]').classList.add('loaded'); 'ready'")
+        let complete = try await read(web, ready)
+        XCTAssertEqual(complete, "true", "Lazy roots and inert stylesheet placeholders are not active render dependencies")
+        _ = try await read(web, "const link=document.createElement('link');link.rel='stylesheet';link.href='vane-fixture-pending://style.css';link.disabled=true;link.id='pending-style';document.head.append(link);'ready'")
+        let disabled = try await read(web, ready)
+        XCTAssertEqual(disabled, "true")
+        _ = try await read(web, "document.getElementById('pending-style').disabled=false;'ready'")
+        let pendingSheet = try await read(web, ready)
+        XCTAssertEqual(pendingSheet, "false", "An enabled pending stylesheet still changes the first layout")
+        _ = try await read(web, "document.getElementById('pending-style').remove();'ready'")
+        let loaded = try await read(web, ready)
+        XCTAssertEqual(loaded, "true")
+    }
+
     func testHintTargetsSubtractPublicSafeAreaInsetsBeforePageZoom() async throws {
         let web = try await page(variables: 160, insets: NSEdgeInsets(top: 21, left: 3, bottom: 5, right: 7))
         defer { web.stopLoading() }

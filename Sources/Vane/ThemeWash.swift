@@ -205,6 +205,8 @@ struct NativeThemeWashCopy: NSViewRepresentable {
                 if let animation = source.animation(forKey: key) { destination.add(animation, forKey: key) }
             }
         }
+        // A copy joining a fade to zero still has visible presentation grain.
+        copy.grain.isHidden = grain.isHidden
         copy.needsLayout = true
     }
 
@@ -227,6 +229,7 @@ struct NativeThemeWashCopy: NSViewRepresentable {
     func finishAnimations() {
         nativeToken = nil
         for layer in [base, overlay, tint, grain.layer].compactMap({ $0 }) { layer.removeAllAnimations() }
+        grain.isHidden = (target?.grain ?? 0) <= 0
         for copy in copies.allObjects { copy.finishAnimations() }
     }
 
@@ -287,7 +290,16 @@ struct NativeThemeWashCopy: NSViewRepresentable {
             start.map { [NSColor.clear.cgColor, $0.colors[2].nsColor.cgColor] })
         set(overlay, "opacity", "overlay", Float(wash.overlay), start.map { Float($0.overlay) })
         set(tint, "opacity", "tint", Float(wash.opacity), start.map { Float($0.opacity) })
-        if let layer = grain.layer { set(layer, "opacity", "grain", Float(wash.grain * Look.grainMax), start.map { Float($0.grain * Look.grainMax) }) }
+        if let layer = grain.layer {
+            let initial = start.map { Float($0.grain * Look.grainMax) }
+            let presented = presentedStart?.values["grain.opacity"] as? Float
+                ?? initial ?? layer.presentation()?.opacity ?? layer.opacity
+            // Opacity zero alone still lets AppKit rasterize this full-window
+            // pattern into a new backing store on resize. Withdraw invisible
+            // grain, but keep it painted throughout a visible fade to zero.
+            grain.isHidden = wash.grain <= 0 && (!animate || presented <= 0)
+            set(layer, "opacity", "grain", Float(wash.grain * Look.grainMax), initial)
+        }
         for copy in copies.allObjects {
             copy.apply(wash, duration: duration, native: native, start: start, presentedStart: presentedStart)
         }

@@ -44,11 +44,11 @@ import WebKit
 
     static func begin(environment: [String: String], web: WKWebView, sidebar: Bool) throws -> ResizeMotionProfile? {
         guard environment["VANE_RESIZE_PROFILE_DIR"] != nil || environment["VANE_RESIZE_PROFILE_TOKEN"] != nil else { return nil }
-        guard sidebar, let path = environment["VANE_RESIZE_PROFILE_DIR"],
+        guard let path = environment["VANE_RESIZE_PROFILE_DIR"],
               let token = environment["VANE_RESIZE_PROFILE_TOKEN"],
               token.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil,
               path.hasPrefix("/"), NativeFixtureRetirement.canonical(path) == path else {
-            throw Failure("Invalid sidebar profile contract")
+            throw Failure("Invalid resize profile contract")
         }
         var info = stat()
         guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,

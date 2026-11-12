@@ -42,6 +42,8 @@ struct LivePageResizeAnchor {
 /// A drag suspends parent-driven page sizing behind a native host clip. Painted lookahead lets pointer geometry
 /// move independently of WebKit's presentation clock; only uncovered growth waits.
 @MainActor final class LivePageResizeBuffer {
+    typealias FrameDriver = (@escaping @MainActor () -> Void) -> (@MainActor () -> Void)
+
     @MainActor private final class Page {
         let web: WKWebView
         weak var host: WebHost?
@@ -180,6 +182,10 @@ struct LivePageResizeAnchor {
     private let presenter: WindowResizePreparation.Presenter?
     private let deadline: WindowResizePreparation.Deadline?
     private let now: @MainActor () -> TimeInterval
+    private let frameDriver: FrameDriver?
+    private var stopFrames: (@MainActor () -> Void)?
+    private var inPublicationFrame = false
+    private var publicationAllowed = false
     private var latest: Request
     private var lastSize: NSSize
     private var lastTime: TimeInterval
@@ -272,6 +278,7 @@ struct LivePageResizeAnchor {
           presenter: WindowResizePreparation.Presenter? = nil,
           deadline: WindowResizePreparation.Deadline? = nil,
           now: @escaping @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+          frameDriver: FrameDriver? = nil,
           isCurrent: @escaping @MainActor () -> Bool = { true },
           apply: @escaping @MainActor (NSRect, CGFloat?) -> Void,
           completion: @escaping @MainActor () -> Void = {}) {
@@ -303,16 +310,37 @@ struct LivePageResizeAnchor {
         baselineSize = root.bounds.size
         expectedFrame = window.frame
         latest = Request(frame: window.frame, sidebar: nil)
+        // The admitted baseline is already installed. Publishing its first
+        // unchanged proposal would dirty the native window while WebKit is
+        // preparing the initial buffer, without moving any visible geometry.
+        published = latest
         lastSize = root.bounds.size
         self.pages = pages
         self.axes = axes
         self.presenter = presenter
         self.deadline = deadline
         self.now = now
+        self.frameDriver = frameDriver
         lastTime = now()
         self.isCurrent = isCurrent
         self.apply = apply
         self.completion = completion
+    }
+
+    isolated deinit { stopFrames?() }
+
+    private func stopPublicationFrames() {
+        let stop = stopFrames
+        stopFrames = nil
+        stop?()
+    }
+
+    private func advancePublicationFrame() {
+        guard active, !ending, !inPublicationFrame else { return }
+        inPublicationFrame = true
+        publicationAllowed = true
+        defer { publicationAllowed = false; inPublicationFrame = false }
+        drive()
     }
 
     func start() {
@@ -340,6 +368,7 @@ struct LivePageResizeAnchor {
                 })
             }
         }
+        if !ending { stopFrames = frameDriver? { [weak self] in self?.advancePublicationFrame() } }
         prepare(exact: ending)
     }
 
@@ -396,6 +425,7 @@ struct LivePageResizeAnchor {
         guard active, !ending else { return }
         endpointCompletion = completion
         ending = true
+        stopPublicationFrames()
         if !started { start() }
         drive()
     }
@@ -542,6 +572,11 @@ struct LivePageResizeAnchor {
     private func publish() {
         guard !applying else { return }
         if let published, published.frame == latest.frame, published.sidebar == latest.sidebar { return }
+        // Native frame proposals can outpace the compositor. Keep every input
+        // for coverage/velocity, but install only the latest covered geometry at
+        // a display boundary. Release drains synchronously without another tick.
+        guard frameDriver == nil || ending || publicationAllowed else { return }
+        publicationAllowed = false
         published = latest
 #if DEBUG
         ResizeTimingDiagnostics.record("buffer.publish.begin", width: latest.frame.width, height: latest.sidebar)
@@ -845,6 +880,7 @@ struct LivePageResizeAnchor {
         trace(exact ? "buffer.complete.exact" : "buffer.complete.restore")
 #endif
         active = false
+        stopPublicationFrames()
         awaitingFinalLayout = false
         generation = UUID()
         timer?.invalidate(); timer = nil

@@ -90,7 +90,10 @@ import AppKit
             // link/target/owner cycle keeping an abandoned drag ticking.
             let target = SidebarResizeDisplayTarget(callback)
             let link = screen.displayLink(target: target, selector: #selector(SidebarResizeDisplayTarget.frame(_:)))
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 60, preferred: 60)
+            // Publish on the actual display clock. A fixed 60Hz cap on a
+            // 120Hz screen adds another scanout when layout crosses its phase.
+            let rate = Float(screen.maximumFramesPerSecond)
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
             link.add(to: .main, forMode: .common)
             return { link.invalidate() }
         }

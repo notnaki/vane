@@ -16,6 +16,19 @@ import XCTest
         try await responsiveMotion(sidebar: true)
     }
 
+    private func observe(_ script: String, in web: WKWebView) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            web.evaluateJavaScript(script, in: nil, in: PageResizeStyle.world) { result in
+                continuation.resume(with: result.flatMap { value in
+                    guard let value = value as? String else {
+                        return .failure(NSError(domain: "ResizeMotionObservation", code: 1))
+                    }
+                    return .success(value)
+                })
+            }
+        }
+    }
+
     private func baselineSnapshot(_ web: WKWebView) async throws -> (ResizeMotionBaselineSnapshot, String) {
         let width = web.bounds.width, height = web.bounds.height, zoom = web.pageZoom
         let insets = web.safeAreaInsets
@@ -23,7 +36,12 @@ import XCTest
             web.evaluateJavaScript("""
             (()=>{const s=globalThis.__vaneResizeStyle,root=document.documentElement;
               const computed=root?getComputedStyle(root):[];
-              return JSON.stringify({active:Boolean(s?.active),
+              const application=\(ResizeMotionDocumentAdmission.script);
+              return JSON.stringify({visibilityState:document.visibilityState,readyState:document.readyState,
+                visibilityEvents:globalThis.__vaneMotionVisibility??[],observedAt:performance.now(),
+                appReady:application.loaded,pendingRoots:application.pendingRoots,pendingSheets:application.pendingSheets,
+                appCommits:performance.getEntriesByName('react-root:commit:repo').map(e=>e.startTime),
+                active:Boolean(s?.active),
                 sheetAdopted:Boolean(s && document.adoptedStyleSheets.includes(s.sheet)),
                 sheetDisabled:!s || s.sheet.disabled,
                 targetWidth:s?.width??null,targetHeight:s?.height??null,
@@ -44,6 +62,9 @@ import XCTest
 
     private func admitResizeBaseline(_ web: WKWebView, window: NSWindow, sidebar: Bool) async throws {
         // Baseline admission precedes capture timing. No drag or prime starts here.
+        // Each eager GitHub application/partial adds .loaded after its initial
+        // React commit, visible rAF, and idle callback. The surrounding chrome
+        // and its stylesheets can still initialize after the repo root is ready.
         let readyBy = ContinuousClock.now + .seconds(5)
         PageResizeStyle.warm(web)
         var (snapshot, json) = try await baselineSnapshot(web)
@@ -98,6 +119,24 @@ import XCTest
             guard ContinuousClock.now < loadedBy else { throw NSError(domain: "ResizeMotionPageReadiness", code: 1) }
             try await Task.sleep(for: .milliseconds(25))
         }
+        _ = try await observe("""
+        (()=>{globalThis.__vaneMotionVisibility=[{state:document.visibilityState,time:performance.now()}];
+          document.addEventListener('visibilitychange',()=>{
+            if(globalThis.__vaneMotionVisibility.length<16)
+              globalThis.__vaneMotionVisibility.push({state:document.visibilityState,time:performance.now()});
+          });return 'ready';})()
+        """, in: web)
+        if environment["VANE_RESIZE_PROPERTY_PROBE"] == "1" {
+            _ = try await observe("""
+            (()=>{const samples=globalThis.__vaneMotionProperties=[];
+              addEventListener('resize',()=>{if(samples.length>=4)return;
+                const began=performance.now(),style=getComputedStyle(document.documentElement);
+                const names=Array.from(style).filter(k=>k.startsWith('--'));
+                samples.push({width:innerWidth,height:innerHeight,began,ended:performance.now(),
+                  count:names.length,hints:names.filter(k=>k.startsWith('--vane-resize-')).length,
+                  visibility:document.visibilityState});});return 'ready';})()
+            """, in: web)
+        }
         if sidebar {
             // A fixture-only marker lets WindowServer pixels measure the page seam.
             _ = try await web.evaluateJavaScript("""
@@ -124,6 +163,9 @@ import XCTest
             let window = VaneWindow(contentRect: NSRect(x: 80, y: 80, width: 900, height: 600),
                 styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
+            // Admit an existing resize-ready surface, independent of AppKit's
+            // initial show animation. The first buffer still begins in timing.
+            window.animationBehavior = .none
             store.window = window
             window.contentView = host
             window.makeKeyAndOrderFront(nil)
@@ -136,18 +178,20 @@ import XCTest
                 window.close()
                 retireStore()
             }
-            try await compatibilityWait {
-                host.layoutSubtreeIfNeeded()
-                return app.isRunning && app.isActive && window.isKeyWindow
-                    && window.occlusionState.contains(.visible) && web.window === window && web.bounds.width > 100
-            }
+            try await ResizeNativeWindowAdmission.wait(window, web: web, layout: true)
             let owner = ResponsiveMotionOwner()
             let observations = [
                 NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { _ in
-                    MainActor.assumeIsolated { owner.interrupted = true }
+                    MainActor.assumeIsolated {
+                        owner.interrupted = true
+                        print("RESPONSIVE_FOREGROUND time=\(CACurrentMediaTime()) active=\(app.isActive) hidden=\(app.isHidden) key=\(window.isKeyWindow) frontmost=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0)")
+                    }
                 },
                 NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: app, queue: .main) { _ in
-                    MainActor.assumeIsolated { owner.interrupted = true }
+                    MainActor.assumeIsolated {
+                        owner.interrupted = true
+                        print("RESPONSIVE_FOREGROUND time=\(CACurrentMediaTime()) active=\(app.isActive) hidden=\(app.isHidden) key=\(window.isKeyWindow) frontmost=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0)")
+                    }
                 }
             ]
             defer { observations.forEach(NotificationCenter.default.removeObserver) }
@@ -170,6 +214,7 @@ import XCTest
             }
             let sampler = ResponsiveMotionSampler(sidebar: sidebar, traceTiming: traceTiming)
             defer { if traceTiming { sampler.samples.dumpTiming(sidebar: sidebar) } }
+            let profile = try ResizeMotionProfile.begin(environment: environment, web: web, sidebar: sidebar)
             try await sampler.start(window)
             do {
                 guard !owner.interrupted, app.isActive, window.isKeyWindow,
@@ -177,8 +222,19 @@ import XCTest
                       window.occlusionState.contains(.visible) else {
                     throw NSError(domain: "ResizeMotionForegroundReadiness", code: 1)
                 }
+                // Recheck only scalar document state here; do not force a layout
+                // or warm another viewport immediately before timing the drag.
+                let appJSON = try await observe("JSON.stringify(\(ResizeMotionDocumentAdmission.script))", in: web)
+                print("RESPONSIVE_APP sidebar=\(sidebar) stage=predrag state=\(appJSON)")
+                let documentJSON = try await observe("JSON.stringify([document.visibilityState,document.readyState])", in: web)
+                print("RESPONSIVE_DOCUMENT sidebar=\(sidebar) stage=predrag state=\(documentJSON)")
+                guard try JSONDecoder().decode([String].self, from: Data(documentJSON.utf8)) == ["visible", "complete"],
+                      (try JSONSerialization.jsonObject(with: Data(appJSON.utf8)) as? [String: Any])?["loaded"] as? Bool == true,
+                      !owner.interrupted, app.isActive, window.isKeyWindow, app.keyWindow === window,
+                      web.window === window, window.occlusionState.contains(.visible) else {
+                    throw NSError(domain: "ResizeMotionDocumentReadiness", code: 1)
+                }
                 let baselineWidth = try XCTUnwrap(sampler.samples.values.last).width
-                let profile = try ResizeMotionProfile.begin(environment: environment, web: web, sidebar: sidebar)
                 let began = CACurrentMediaTime()
 #if DEBUG
                 if traceTiming { timing.append("fixture.began", time: began, width: baselineWidth) }
@@ -242,6 +298,12 @@ import XCTest
                 window.endPageResize()
                 try await sampler.stop()
                 try await profile?.finish(began: began, ended: ended, web: web)
+                if environment["VANE_RESIZE_PROPERTY_PROBE"] == "1" {
+                    let counts = try await observe("JSON.stringify(globalThis.__vaneMotionProperties)", in: web)
+                    print("RESPONSIVE_PROPERTIES sidebar=\(sidebar) samples=\(counts)")
+                }
+                let finalAppJSON = try await observe("JSON.stringify(\(ResizeMotionDocumentAdmission.script))", in: web)
+                print("RESPONSIVE_APP sidebar=\(sidebar) stage=afterdrag state=\(finalAppJSON)")
                 let samples = sampler.samples.values.filter { $0.time >= began && $0.time <= ended }
                 var changes = [ResponsiveMotionSamples.Frame(time: began, width: baselineWidth)]
                 for sample in samples where abs(sample.width - changes.last!.width) > 0.5 { changes.append(sample) }
@@ -416,9 +478,32 @@ private final class ResponsiveMotionSamples: @unchecked Sendable {
     }
 }
 
+/// Public page initialization, separate from the resized outcome under test.
+enum ResizeMotionDocumentAdmission {
+    static let script = """
+    (()=>{
+      const roots=Array.from(document.querySelectorAll('react-app,react-partial'))
+        .filter(e=>e.getAttribute('data-lazy')!=='true');
+      const pendingRoots=roots.filter(e=>!e.classList.contains('loaded'))
+        .map(e=>e.getAttribute('app-name')??e.getAttribute('partial-name'));
+      const pendingSheets=Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
+        .filter(e=>e.href && !e.disabled && e.sheet===null).map(e=>e.href);
+      return {loaded:Boolean(document.querySelector('react-app[app-name="repo"].loaded')) &&
+        pendingRoots.length===0 && pendingSheets.length===0,
+        pendingRoots:pendingRoots.slice(0,16),pendingSheets:pendingSheets.slice(0,16),
+        sheets:document.styleSheets.length,
+        commits:performance.getEntriesByName('react-root:commit:repo').slice(-16).map(e=>e.startTime),
+        now:performance.now()};
+    })()
+    """
+}
+
 /// Observable baseline readiness, including native-to-CSS pixel rounding. A failed
 /// sample is diagnostic evidence, never permission to measure an unadmitted drag.
 struct ResizeMotionBaselineSnapshot: Decodable {
+    let visibilityState: String
+    let readyState: String
+    let appReady: Bool
     let active: Bool
     let sheetAdopted: Bool
     let sheetDisabled: Bool
@@ -447,7 +532,8 @@ struct ResizeMotionBaselineSnapshot: Decodable {
 
     var isReady: Bool {
         guard let targetWidth, let targetHeight else { return false }
-        return active && sheetAdopted && !sheetDisabled && targetMatchesNative
+        return visibilityState == "visible" && readyState == "complete" && appReady
+            && active && sheetAdopted && !sheetDisabled && targetMatchesNative
             // innerWidth/innerHeight expose integer CSS pixels even when AppKit's
             // viewport divided by page zoom has a fractional native pixel.
             && abs(innerWidth - targetWidth) <= 1 && abs(innerHeight - targetHeight) <= 1

@@ -18,17 +18,19 @@ import XCTest
         var commits: [NSSize] = []
         var completions = 0
         var time: TimeInterval = 0
+        let frameDriver: LivePageResizeBuffer.FrameDriver?
         lazy var buffer = LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0),
             presenter: { [unowned self] _, callback in paints.append(callback) },
             deadline: { [unowned self] interval, callback in
                 XCTAssertEqual(interval, 0.25)
                 deadlines.append(callback)
-            }, now: { [unowned self] in time }, apply: { [unowned self] frame, _ in
+            }, now: { [unowned self] in time }, frameDriver: frameDriver, apply: { [unowned self] frame, _ in
                 commits.append(frame.size)
                 window.setFrame(frame, display: false)
             }, completion: { [unowned self] in completions += 1 })!
 
-        init() {
+        init(frameDriver: LivePageResizeBuffer.FrameDriver? = nil) {
+            self.frameDriver = frameDriver
             TestEnvironment.prepare()
             web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
             host = WebHost(web)
@@ -52,6 +54,104 @@ import XCTest
     private func nextPaint(_ paints: inout [@MainActor @Sendable () -> Void]) -> @MainActor @Sendable () -> Void {
         guard !paints.isEmpty else { XCTFail("Expected a pending presentation"); return {} }
         return paints.removeFirst()
+    }
+
+    func testWindowPublicationsCoalesceAtDisplayFramesAndStillRequirePaint() {
+        var frame: (@MainActor () -> Void)?
+        let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }
+        f.buffer.start()
+        f.request(610)
+        frame?()
+        XCTAssertTrue(f.commits.isEmpty, "A display tick must not bypass the paint barrier")
+        nextPaint(&f.paints)()
+        XCTAssertTrue(f.commits.isEmpty, "Paint admits coverage, not a second publication clock")
+        f.request(614)
+        f.request(618)
+        XCTAssertTrue(f.commits.isEmpty)
+        frame?()
+        XCTAssertEqual(f.commits, [NSSize(width: 618, height: 400)])
+        f.request(620)
+        f.request(622)
+        XCTAssertEqual(f.commits.count, 1)
+        frame?()
+        XCTAssertEqual(f.commits.map(\.width), [618, 622])
+        frame?()
+        XCTAssertEqual(f.commits.count, 2, "An idle frame must not dirty the unchanged window")
+    }
+
+    func testWindowPublicationReleaseDrainsWithoutAnotherDisplayTick() {
+        var frame: (@MainActor () -> Void)?
+        var stops = 0
+        let f = Fixture(frameDriver: { frame = $0; return { stops += 1 } }); defer { f.close() }
+        f.buffer.start()
+        nextPaint(&f.paints)()
+        f.request(620)
+        XCTAssertTrue(f.commits.isEmpty)
+        f.buffer.finish()
+        XCTAssertEqual(f.commits.map(\.width), [620])
+        XCTAssertEqual(stops, 1)
+        // A velocity-driven refill may already be in flight at release; its
+        // callback must be followed by exact endpoint paint before retirement.
+        for _ in 0..<3 where f.completions == 0 { nextPaint(&f.paints)() }
+        XCTAssertEqual(f.completions, 1)
+        frame?()
+        XCTAssertEqual(f.commits.count, 1)
+        XCTAssertEqual(stops, 1)
+    }
+
+    func testCancelledWindowPublicationCannotPublishFromALateFrame() {
+        var frame: (@MainActor () -> Void)?
+        var stops = 0
+        let f = Fixture(frameDriver: { frame = $0; return { stops += 1 } }); defer { f.close() }
+        f.buffer.start()
+        nextPaint(&f.paints)()
+        f.request(620)
+        f.buffer.cancel()
+        frame?()
+        XCTAssertTrue(f.commits.isEmpty)
+        XCTAssertEqual(stops, 1)
+        XCTAssertEqual(f.window.frame.width, 600)
+    }
+
+    func testWindowFrameRevalidatesOwnershipBeforePublishing() {
+        var frame: (@MainActor () -> Void)?
+        var stops = 0
+        let f = Fixture(frameDriver: { frame = $0; return { stops += 1 } }); defer { f.close() }
+        f.buffer.start()
+        nextPaint(&f.paints)()
+        f.request(620)
+        f.window.contentView = NSView(frame: f.host.frame)
+        frame?()
+        XCTAssertTrue(f.commits.isEmpty)
+        XCTAssertEqual(stops, 1)
+    }
+
+    func testWindowWatchdogStopsFrameClockAndRetainsImmediateNativeFallback() {
+        var frame: (@MainActor () -> Void)?
+        var stops = 0
+        let f = Fixture(frameDriver: { frame = $0; return { stops += 1 } }); defer { f.close() }
+        f.buffer.start()
+        f.request(620)
+        f.deadlines.removeFirst()()
+        XCTAssertEqual(f.commits.map(\.width), [620])
+        XCTAssertEqual(stops, 1)
+        f.request(624)
+        XCTAssertEqual(f.commits.map(\.width), [620, 624])
+        frame?()
+        XCTAssertEqual(f.commits.count, 2)
+        nextPaint(&f.paints)()
+        XCTAssertEqual(stops, 1)
+    }
+
+    func testUnchangedInitialProposalDoesNotRepublishTheAlreadyVisibleWindow() {
+        let f = Fixture(); defer { f.close() }
+        f.buffer.start()
+        f.request(600)
+        XCTAssertTrue(f.commits.isEmpty, "The baseline is already installed; do not schedule a redundant display during initial paint")
+        f.request(620)
+        XCTAssertTrue(f.commits.isEmpty, "Growth still requires newly painted coverage")
+        nextPaint(&f.paints)()
+        XCTAssertEqual(f.commits, [NSSize(width: 620, height: 400)])
     }
 
     func testStyleReplyProtectsPendingPaintFromTheSupersededDeadline() async throws {
@@ -131,13 +231,26 @@ import XCTest
 #endif
 
     private func baselineSnapshot(_ changes: [String: Any] = [:]) throws -> ResizeMotionBaselineSnapshot {
-        var values: [String: Any] = ["active": true, "sheetAdopted": true, "sheetDisabled": false,
+        var values: [String: Any] = ["visibilityState": "visible", "readyState": "complete", "appReady": true, "active": true, "sheetAdopted": true, "sheetDisabled": false,
             "targetWidth": 661.5, "targetHeight": 578.5, "innerWidth": 662, "innerHeight": 579,
             "documentWidth": 662, "customProperties": 300, "nativeWidth": 661.5,
             "nativeHeight": 578.5, "pageZoom": 1,
             "safeAreaTop": 0, "safeAreaLeft": 0, "safeAreaBottom": 0, "safeAreaRight": 0]
         values.merge(changes) { _, next in next }
         return try JSONDecoder().decode(ResizeMotionBaselineSnapshot.self, from: JSONSerialization.data(withJSONObject: values))
+    }
+
+    func testBaselineAdmissionRejectsThePagesUncommittedInitialRender() throws {
+        XCTAssertFalse(try baselineSnapshot(["appReady": false]).isReady,
+                       "A complete document can still be waiting for its application render")
+        XCTAssertTrue(try baselineSnapshot().isReady)
+    }
+
+    func testBaselineAdmissionRejectsHiddenOrLoadingDocument() throws {
+        XCTAssertFalse(try baselineSnapshot(["visibilityState": "hidden"]).isReady)
+        XCTAssertFalse(try baselineSnapshot(["readyState": "loading"]).isReady)
+        XCTAssertFalse(try baselineSnapshot(["readyState": "interactive"]).isReady)
+        XCTAssertTrue(try baselineSnapshot().isReady)
     }
 
     func testBaselineAdmissionMapsActualTwentyOnePointInsetAndZoom() throws {

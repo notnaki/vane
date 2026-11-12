@@ -22,10 +22,10 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
 
-def validate_record(record, token, bundle):
+def validate_record(record, token, bundle, sidebar=True):
     if (not isinstance(record, dict) or record.get("schema") != 1 or record.get("token") != token
-            or record.get("sidebar") is not True or record.get("testBundlePath") != bundle):
-        raise ValueError("profile stage does not belong to the selected sidebar fixture")
+            or record.get("sidebar") is not sidebar or record.get("testBundlePath") != bundle):
+        raise ValueError("profile stage does not belong to the selected resize fixture")
     ready = record.get("readyAt")
     if type(ready) not in (int, float) or not math.isfinite(ready) or ready <= 0:
         raise ValueError("profile stage has no monotonic start")
@@ -97,7 +97,10 @@ def collect(record, directory, launch=subprocess.Popen, identify=runner.process_
             report = directory / (role + ".sample.txt")
             log = (directory / (role + ".sampler.log")).open("xb")
             logs.append(log)
-            child = launch(["/usr/bin/sample", str(captured["pid"]), "2", "1", "-mayDie", "-file", str(report)],
+            # The fixture keeps these exact processes alive until collection ends.
+            # -mayDie loads symbols BEFORE sampling and can miss the whole cold
+            # first viewport; symbolize after collecting its stacks instead.
+            child = launch(["/usr/bin/sample", str(captured["pid"]), "2", "1", "-file", str(report)],
                            stdout=log, stderr=subprocess.STDOUT)
             children.append(child)
             metadata["samplers"].append({"role": role, "target": captured, "samplerPID": child.pid,
@@ -121,6 +124,7 @@ def collect(record, directory, launch=subprocess.Popen, identify=runner.process_
 def main(arguments):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True, help="new directory for retained private evidence")
+    parser.add_argument("--motion", choices=("sidebar", "window"), default="sidebar")
     options = parser.parse_args(arguments)
     if sys.platform != "darwin": raise SystemExit("native profiling requires macOS")
     root = Path(__file__).resolve().parent.parent
@@ -135,7 +139,8 @@ def main(arguments):
     environment = dict(os.environ, VANE_RESIZE_PROFILE_DIR=str(directory), VANE_RESIZE_PROFILE_TOKEN=token,
                        VANE_RESIZE_RESPONSIVE_MOTION="1", VANE_RESIZE_TIMING="1",
                        VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT="120")
-    selector = "WindowResizeResponsiveMotionTests.testResponsivePageKeepsVisibleSidebarMovementWithinTheFrameBudget"
+    kind = "Sidebar" if options.motion == "sidebar" else "Window"
+    selector = f"WindowResizeResponsiveMotionTests.testResponsivePageKeepsVisible{kind}MovementWithinTheFrameBudget"
     command = [sys.executable, str(root / "scripts/run-native-tests.py"), "--skip-build", "--filter", selector]
     print("RESIZE_PROFILE diagnosticOnly=true evidence=" + str(directory), flush=True)
     driver = subprocess.Popen(command, cwd=root, env=environment)
@@ -148,7 +153,8 @@ def main(arguments):
             if driver.poll() is not None: raise ValueError("fixture exited before profiling admission")
             if time.monotonic() >= deadline: raise ValueError("profile admission timed out")
             time.sleep(0.01)
-        ready = validate_record(runner.read_private_json(directory / "ready.json"), token, str(bundles[0]))
+        ready = validate_record(runner.read_private_json(directory / "ready.json"), token, str(bundles[0]),
+                                sidebar=options.motion == "sidebar")
         collection = collect(ready, directory)
         status = 0
     except KeyboardInterrupt:

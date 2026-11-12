@@ -7,6 +7,17 @@ import XCTest
 @testable import vane
 
 @MainActor final class WindowResizeLayoutTests: XCTestCase {
+    func testHiddenApplicationIsUnhiddenBeforeResizeAdmission() async throws {
+        try await resizeFixture(capture: false, hideBeforeAdmission: true)
+    }
+
+    func testMissingPaintMarkerCannotBeAnAdmittedBaseline() {
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 10_000, markerGap: 10_000).isPaintedBaseline)
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 64, markerGap: 0).isPaintedBaseline)
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 0, markerGap: 10_000).isPaintedBaseline)
+        XCTAssertTrue(ResizePixelFrames.Frame(time: 0, gap: 1.714, markerGap: 1.714).isPaintedBaseline)
+    }
+
     func testPageViewportFollowsTheNativeFrameBeforeItsNextPresentation() async throws {
         try await resizeFixture(capture: false)
     }
@@ -53,7 +64,7 @@ import XCTest
 
     private func resizeFixture(capture: Bool, slowResize: Bool = false, sidebarToggle: Bool = false,
                                mixedAxes: Bool = false, sidebarDrag: Bool = false,
-                               queuedGeometry: Bool = false) async throws {
+                               queuedGeometry: Bool = false, hideBeforeAdmission: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -89,12 +100,14 @@ import XCTest
                 SharedTabs.release(store.tabs, excluding: store)
                 TabStore.all.removeAll { $0 === store }
             }
-            try await compatibilityWait {
-                host.layoutSubtreeIfNeeded()
-                return app.isRunning && window.isVisible
-                    && window.occlusionState.contains(.visible) && tab.web.window === window
-                    && tab.web.bounds.width > 100
+            let admittedFrame = window.frame
+            if hideBeforeAdmission {
+                app.hide(nil)
+                try await compatibilityWait { app.isHidden }
             }
+            try await ResizeNativeWindowAdmission.wait(window, web: tab.web, layout: true)
+            XCTAssertFalse(app.isHidden)
+            XCTAssertEqual(window.frame, admittedFrame, "Admission must not prime a different viewport")
             let delay = slowResize ? "<script>addEventListener('resize',()=>{let end=performance.now()+120;while(performance.now()<end){}})</script>" : ""
             let variables = (0..<160).map { "--resize-fixture-\($0):\($0)px;" }.joined()
             let html = "<html><title>Resize ready</title><style>:root{\(variables)}body{margin:0;background:#17324d}aside{position:fixed;right:0;top:0;width:100px;height:100vh;background:#f04020}</style><body><aside></aside>\(delay)</body></html>"
@@ -158,11 +171,7 @@ import XCTest
     }
 
     private func captureSidebarPixels(_ window: VaneWindow, store: TabStore, web: WKWebView) async throws {
-        try await compatibilityWait {
-            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
-            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-            return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
-        }
+        try await ResizeNativeWindowAdmission.wait(window, web: web)
         let originalFrame = window.frame
         let originalWidth = web.bounds.width
         let owner = ResizeCaptureOwner(window: window, stage: "sidebar stream start")
@@ -177,6 +186,7 @@ import XCTest
         try await sampler.start(window)
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
+            guard baseline.isPaintedBaseline else { throw NSError(domain: "ResizePaintBaselineReadiness", code: 1) }
             let reducedMotion = Motion.reduced
             let began = CACurrentMediaTime()
             owner.stage = "sidebar transition"
@@ -219,11 +229,7 @@ import XCTest
                                      queuedGeometry: Bool = false) async throws {
         // Diagnostic reference: the original geometry-only path must remain RED.
         let baselineControl = ProcessInfo.processInfo.environment["VANE_RESIZE_BASELINE"] == "1"
-        try await compatibilityWait {
-            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
-            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-            return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
-        }
+        try await ResizeNativeWindowAdmission.wait(window, web: web)
         let owner = ResizeCaptureOwner(window: window, stage: "resize stream start direct=\(direct) mixed=\(mixedAxes)")
         owner.maxWidth = window.frame.width
         let observers = [
@@ -256,6 +262,7 @@ import XCTest
         try await sampler.start(window)
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
+            guard baseline.isPaintedBaseline else { throw NSError(domain: "ResizePaintBaselineReadiness", code: 1) }
             let began = CACurrentMediaTime()
             owner.stage = "resize proposals direct=\(direct) mixed=\(mixedAxes)"
             let frameHeight = window.frame.height
@@ -436,7 +443,9 @@ import XCTest
         stream = capture
         do {
             try await capture.startCapture()
-            try await compatibilityWait { self.frames.last != nil }
+            // A missing marker uses a sentinel gap, not a settled baseline.
+            // Admit only the initial fixture paint, before any resize begins.
+            try await compatibilityWait { self.frames.last?.isPaintedBaseline == true }
         } catch {
             try? await capture.stopCapture()
             stream = nil
@@ -576,7 +585,13 @@ import XCTest
 }
 
 private final class ResizePixelFrames: @unchecked Sendable {
-    struct Frame { let time: Double; let gap: Double; let markerGap: Double }
+    struct Frame {
+        let time: Double
+        let gap: Double
+        let markerGap: Double
+        // These documents paint to the edge apart from the native <=2pt gutter.
+        var isPaintedBaseline: Bool { gap >= 0 && gap <= 2 && markerGap >= 0 && markerGap <= 2 }
+    }
     struct Image { let data: Data; let width: Int; let height: Int; let stride: Int }
     let queue = DispatchQueue(label: "vane.resize.pixel-capture")
     private let lock = NSLock()
@@ -591,9 +606,10 @@ private final class ResizePixelFrames: @unchecked Sendable {
     func needsImage(for gap: Double) -> Bool { lock.withLock { baselineImage == nil || gap > worstGap } }
     func append(time: Double, gap: Double, markerGap: Double, image: Image?) {
         lock.withLock {
-            recorded.append(Frame(time: time, gap: gap, markerGap: markerGap))
-            if baselineImage == nil { baselineImage = image }
-            if gap > worstGap { worstGap = gap; worstImage = image }
+            let frame = Frame(time: time, gap: gap, markerGap: markerGap)
+            recorded.append(frame)
+            if baselineImage == nil, frame.isPaintedBaseline { baselineImage = image }
+            if baselineImage != nil, gap > worstGap { worstGap = gap; worstImage = image }
         }
     }
     func repeatFrame(_ time: Double) {

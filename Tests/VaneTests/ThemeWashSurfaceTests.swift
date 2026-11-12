@@ -8,6 +8,43 @@ import XCTest
         ThemeWash(colors: [ThemeColor(hex: hex)!], strength: 1, opacity: 1, grain: 0)
     }
 
+    func testInvisibleGrainDoesNotRasterizeDuringResizeAndFadesRemainVisible() throws {
+        let source = ThemeWashSurface(), copy = ThemeWashSurface()
+        let clear = wash("#000000")
+        let textured = ThemeWash(colors: [ThemeColor(hex: "#000000")!], strength: 1,
+                                 opacity: 1, grain: 1)
+        source.apply(clear, duration: 0)
+        source.addCopy(copy)
+        let sourceGrain = try XCTUnwrap(source.subviews.first)
+        let copyGrain = try XCTUnwrap(copy.subviews.first)
+        XCTAssertTrue(sourceGrain.isHidden, "An invisible full-window texture must not allocate a resize backing store")
+        XCTAssertTrue(copyGrain.isHidden)
+        source.frame.size = NSSize(width: 940, height: 620)
+        source.layoutSubtreeIfNeeded()
+        XCTAssertTrue(sourceGrain.isHidden)
+
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.duration = 0.4
+        let fadeIn = source.animateNative(from: clear, to: textured, animation: animation)
+        XCTAssertFalse(sourceGrain.isHidden, "Grain must paint before its zero-to-visible fade")
+        XCTAssertFalse(copyGrain.isHidden)
+        XCTAssertNotNil(sourceGrain.layer?.animation(forKey: "opacity"))
+        source.finishNative(token: fadeIn, wash: textured)
+        XCTAssertFalse(sourceGrain.isHidden)
+
+        let fadeOut = source.animateNative(from: textured, to: clear, animation: animation)
+        XCTAssertFalse(sourceGrain.isHidden, "A zero model endpoint must not cut off visible presentation grain")
+        XCTAssertFalse(copyGrain.isHidden)
+        let joining = ThemeWashSurface()
+        source.addCopy(joining)
+        XCTAssertFalse(try XCTUnwrap(joining.subviews.first).isHidden,
+                       "A copy joining the fade must retain the source's visible presentation")
+        source.finishNative(token: fadeOut, wash: clear)
+        for surface in [source, copy, joining] {
+            XCTAssertTrue(try XCTUnwrap(surface.subviews.first).isHidden)
+        }
+    }
+
     func testFloatingCopyKeepsTheWindowWashAndNativeTransitions() throws {
         let source = ThemeWashSurface(), floating = ThemeWashSurface()
         source.apply(wash("#FF0000"), duration: 0)
