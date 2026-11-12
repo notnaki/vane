@@ -57,13 +57,14 @@ import XCTest
         let second = Space(name: "Second", profileID: profile)
         XCTAssertTrue(ProfileManager.shared.saveSpaces([first, second], for: profile))
         let store = TabStore(profileID: profile, space: first, session: [])
-        // Observe the already-assigned target before hosting work can delay the
-        // polling task. That scheduling delay is not a second animation tail.
+        // Timestamp the target's own publication. objectWillChange runs before
+        // assignment, so inspecting currentSpaceID there misses this change and
+        // timestamps a later notification after restoration/hosting work instead.
         var measuringSelection = false
         var committedStateObservedAt: TimeInterval?
-        let committedState = store.objectWillChange.sink {
+        let committedState = store.$currentSpaceID.sink { selected in
             if measuringSelection, committedStateObservedAt == nil,
-               store.currentSpaceID == second.id {
+               selected == second.id {
                 committedStateObservedAt = ProcessInfo.processInfo.systemUptime
             }
         }
