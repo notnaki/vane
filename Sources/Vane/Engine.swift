@@ -4712,6 +4712,15 @@ struct Stash {
     /// even a rebuild lands on the same page, scroll offset and back/forward list, and only
     /// the tab that becomes current actually loads.
     func switchTo(space requested: Space) {
+        // A Space replaces tabs, shapes and selection together. Native hosting
+        // roots must not archive the intermediate emptied departing outline.
+        // Model/snapshot/protection publishers still revoke synchronously.
+        sidebarObservation.withCompletedChanges {
+            switchToCompletedSpace(requested)
+        }
+    }
+
+    private func switchToCompletedSpace(_ requested: Space) {
         // Gestures and menus may hold an older Space value while another window edits it.
         guard let space = ProfileManager.shared.spaces(for: requested.profileID)
             .first(where: { $0.id == requested.id }) else { return }
