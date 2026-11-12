@@ -248,8 +248,9 @@ import WebKit
 
     /// Start (or instantly re-show) a preview of `url`. Safe to call on every hover event —
     /// the same link twice in a row costs nothing.
-    func request(_ url: URL, from tab: Tab, rect: CGRect = .zero) {
+    func request(_ url: URL, from tab: Tab, rect: CGRect = .zero, requiresHover: Bool = false) {
         guard Previews.enabled, !BatterySaver.shared.isActive else { cancel(); return }
+        guard !requiresHover || Self.hasNativeHover(from: tab, rect: rect) else { cancel(from: tab); return }
         guard Previews.eligible(url, onPage: tab.currentURL) else { cancel(); return }
         let revision = UserDefaults.vane.integer(forKey: "aiSettingsRevision")
         if revision != aiSettingsRevision {
@@ -291,7 +292,7 @@ import WebKit
                 if !unchanged {
                     let rect = self.linkRect
                     self.retireSession()
-                    self.request(url, from: tab, rect: rect)
+                    self.request(url, from: tab, rect: rect, requiresHover: requiresHover)
                     return
                 }
                 self.publish(p, for: id)
@@ -313,6 +314,9 @@ import WebKit
             try? await sleep(Previews.loadDebounce)
             guard !Task.isCancelled, let self, let tab, self.latest == id,
                   Previews.enabled, !BatterySaver.shared.isActive else { return }
+            guard !requiresHover || Self.hasNativeHover(from: tab, rect: self.linkRect) else {
+                self.cancel(from: tab); return
+            }
             // Give the page being browsed priority over this optional destination.
             guard tab.existingWeb?.isLoading != true else {
                 self.unload()
@@ -340,6 +344,9 @@ import WebKit
             }
             guard !Task.isCancelled, self.latest == id, Previews.enabled,
                   !BatterySaver.shared.isActive else { return }
+            guard !requiresHover || Self.hasNativeHover(from: tab, rect: self.linkRect) else {
+                self.cancel(from: tab); return
+            }
             self.navigation = web.load(URLRequest(url: url))
             if !tab.isPrivate { self.monitorSession(id) }
             self.paintTask = Task(priority: .background) { [weak self] in await self?.paint(id: id, web: web) }
@@ -715,6 +722,19 @@ import WebKit
     // Injected into every tab; `messageName` is the channel it posts on.
 
     static let messageName = "vanepreview"
+    static let world = WKContentWorld.world(name: "vane-link-previews")
+
+    /// A document's trusted hover is useful only while its native view is actually under
+    /// the pointer. Recheck after debounce/cookie reads so a hidden tab cannot keep loading.
+    static func hasNativeHover(from tab: Tab, rect: CGRect) -> Bool {
+        guard let web = tab.existingWeb, let window = web.window,
+              NSApp.isActive, window.isKeyWindow, window.isVisible, !window.isMiniaturized,
+              !web.isHiddenOrHasHiddenAncestor, !rect.isEmpty else { return false }
+        let pointer = web.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard web.visibleRect.contains(pointer) else { return false }
+        let cssPointer = CGPoint(x: pointer.x, y: web.isFlipped ? pointer.y : web.bounds.height - pointer.y)
+        return rect.contains(cssPointer)
+    }
 
     /// A hover, reported after a short dwell, or immediately with Shift held.
     ///
@@ -776,6 +796,7 @@ import WebKit
       var shifted = false, blocked = false;
 
       document.addEventListener('mouseover', function (e) {
+        if (!e.isTrusted) return;
         shifted = !!e.shiftKey;
         blocked = !!(e.metaKey || e.altKey || e.ctrlKey);
         if (blocked) { gone(); return; }
@@ -786,6 +807,7 @@ import WebKit
       }, true);
 
       document.addEventListener('mouseout', function (e) {
+        if (!e.isTrusted) return;
         var a = link(e.target);
         if (!a || a !== at) { return; }
         // Moving between two children of the same <a> is not leaving it.
@@ -797,6 +819,7 @@ import WebKit
       // Modifiers can arrive before the hover or change with the pointer stationary.
       // Command/Option belong to opening hints; they must not also raise a preview.
       function modifiers(e) {
+        if (!e.isTrusted) return;
         var shift = !!e.shiftKey, block = !!(e.metaKey || e.altKey || e.ctrlKey);
         if (shift === shifted && block === blocked) { return; }
         shifted = shift; blocked = block;

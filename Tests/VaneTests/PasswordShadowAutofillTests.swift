@@ -73,7 +73,7 @@ import XCTest
         XCTAssertEqual(value, expected, message, file: file, line: line)
     }
     private func fill(_ web: WKWebView, account: String = "ada", target: String? = nil) async throws -> Bool {
-        try await js(web, Autofill.fillJS(account: account, password: "fixture-secret", target: target), isolated: true) as? Bool == true
+        try await js(web, Autofill.fillJS(account: account, password: "fixture-secret", target: target, expectedOrigin: PasswordOrigin(url: web.url!)!), isolated: true) as? Bool == true
     }
     private func anchor(_ web: WKWebView) async throws -> [String: Any]? {
         guard let raw = try await js(web, "__vaneAnchor()", isolated: true) as? String,
@@ -118,7 +118,7 @@ import XCTest
         XCTAssertTrue(filled)
         expectEqual(try await js(web, "password.value") as? String, "fixture-secret")
         XCTAssertFalse(capture.messages.contains { $0["password"] != nil })
-        _ = try await js(web, "login.dispatchEvent(new Event('submit',{bubbles:true}))")
+        _ = try await js(web, "(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(login)")
         try await wait { capture.messages.contains { $0["password"] as? String == "fixture-secret" } }
     }
 
@@ -130,7 +130,7 @@ import XCTest
         try await wait { capture.messages.contains { $0["focus"] as? Bool == true } }
         expectEqual(try await js(web, "[user.value,password.value,inputs,changes].join('|')") as? String, "ada|fixture-secret|2|2")
         XCTAssertFalse(capture.messages.contains { $0["password"] != nil })
-        _ = try await js(web, "login.dispatchEvent(new Event('submit',{bubbles:true}))")
+        _ = try await js(web, "(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(login)")
         try await wait { capture.messages.contains { $0["password"] as? String == "fixture-secret" } }
         XCTAssertEqual(capture.messages.last { $0["password"] != nil }?["account"] as? String, "ada")
     }
@@ -192,7 +192,7 @@ import XCTest
         let (web, capture) = try await fixture("<div id=host></div><script>var root=host.attachShadow({mode:'closed'}); root.innerHTML='<form><input type=password value=closed-secret></form>';</script>")
         let filled = try await fill(web)
         XCTAssertFalse(filled)
-        _ = try await js(web, "root.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true}))")
+        _ = try await js(web, "(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(root.querySelector('form'))")
         XCTAssertFalse(capture.messages.contains { $0["password"] != nil })
     }
 
@@ -206,7 +206,7 @@ import XCTest
         XCTAssertFalse(wrong, "The explicit previous-step identity must constrain this password")
         let right = try await fill(web)
         XCTAssertTrue(right)
-        _ = try await js(web, "login.dispatchEvent(new Event('submit',{bubbles:true}))")
+        _ = try await js(web, "(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(login)")
         try await wait { capture.messages.contains { $0["password"] as? String == "fixture-secret" } }
         XCTAssertEqual(capture.messages.last { $0["password"] != nil }?["account"] as? String, "ada")
     }
@@ -229,7 +229,7 @@ import XCTest
         try await wait { capture.messages.contains { $0["generate"] as? Bool == true } }
         let target = try XCTUnwrap(capture.messages.last { $0["generate"] as? Bool == true }?["target"] as? String)
         _ = try await js(web, "host.addEventListener('input',()=>host.inert=true,{once:true})")
-        let generated = try await js(web, Autofill.generateJS(password: "generated-fixture", target: target), isolated: true) as? Bool
+        let generated = try await js(web, Autofill.generateJS(password: "generated-fixture", target: target, expectedOrigin: PasswordOrigin(url: web.url!)!), isolated: true) as? Bool
         XCTAssertEqual(generated, false)
         expectEqual(try await js(web, "root.getElementById('confirmation').value") as? String, "")
     }
@@ -257,7 +257,7 @@ import XCTest
         let (web, capture) = try await fixture(shadow(login))
         let filled = try await fill(web)
         XCTAssertTrue(filled)
-        _ = try await js(web, "login.dispatchEvent(new Event('submit',{bubbles:true}))")
+        _ = try await js(web, "(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(login)")
         try await wait { capture.messages.contains { $0["attempt"] != nil } }
         let attempt = capture.messages.last { $0["attempt"] != nil }?["attempt"] as? String
         _ = try await js(web, "password.setAttribute('aria-invalid','true')")
@@ -308,7 +308,7 @@ import XCTest
         let focused = try await fill(web)
         XCTAssertTrue(focused)
         expectEqual(try await js(web, "frame.contentDocument.getElementById('password').value") as? String, "fixture-secret")
-        _ = try await js(web, "frame.contentDocument.getElementById('login').dispatchEvent(new Event('submit',{bubbles:true}))")
+        _ = try await js(web, "(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(frame.contentDocument.getElementById('login'))")
         try await wait { capture.messages.contains { $0["password"] as? String == "fixture-secret" } }
     }
 
@@ -429,7 +429,7 @@ import XCTest
 
     func testLateRootFocusAdmitsImmediateNonComposedSubmission() async throws {
         let (web, capture) = try await fixture("<div id=host></div>")
-        _ = try await js(web, "var root=host.attachShadow({mode:'open'}); root.innerHTML='<form id=login><input autocomplete=username value=ada><input id=password type=password value=late-secret></form>'; root.getElementById('password').focus(); root.getElementById('login').dispatchEvent(new Event('submit',{bubbles:true}))")
+        _ = try await js(web, "var root=host.attachShadow({mode:'open'}); root.innerHTML='<form id=login><input autocomplete=username value=ada><input id=password type=password value=late-secret></form>'; root.getElementById('password').focus(); (function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(root.getElementById('login'))")
         try await wait { capture.messages.contains { $0["password"] as? String == "late-secret" } }
         XCTAssertEqual(capture.messages.filter { $0["password"] != nil }.count, 1)
     }
@@ -453,7 +453,7 @@ import XCTest
             let filled = try await fill(web)
             XCTAssertFalse(filled, "External native form associations must retain composed action checks")
             expectEqual(try await js(web, "password.value") as? String, "")
-            _ = try await js(web, "inner.action='https://other.example.test'; user.value='ada'; password.value='blocked-fixture'; login.dispatchEvent(new Event('submit',{bubbles:true}));")
+            _ = try await js(web, "inner.action='https://other.example.test'; user.value='ada'; password.value='blocked-fixture'; (function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(login);")
             // Observe the bridge's normal delivery window without native input.
             try await Task.sleep(for: .milliseconds(150))
             XCTAssertFalse(capture.messages.contains { $0["password"] as? String == "blocked-fixture" })
@@ -466,7 +466,7 @@ import XCTest
         try await wait { capture.messages.contains { $0["generate"] as? Bool == true } }
         let target = try XCTUnwrap(capture.messages.last { $0["generate"] as? Bool == true }?["target"] as? String)
         _ = try await js(web, "host.addEventListener('input',()=>inner.action='https://other.example.test',{once:true})")
-        let generated = try await js(web, Autofill.generateJS(password: "generated-fixture", target: target), isolated: true) as? Bool
+        let generated = try await js(web, Autofill.generateJS(password: "generated-fixture", target: target, expectedOrigin: PasswordOrigin(url: web.url!)!), isolated: true) as? Bool
         XCTAssertEqual(generated, false)
         expectEqual(try await js(web, "confirmation.value") as? String, "")
     }

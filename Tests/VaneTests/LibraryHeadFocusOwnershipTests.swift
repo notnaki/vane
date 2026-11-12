@@ -94,7 +94,12 @@ import XCTest
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         try await wait("empty window foreground", in: window) {
-            NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
+            // AppKit may finish a preceding policy transition after the first
+            // activation request. Reassert only the native presentation owner;
+            // the product's search-field focus request is still exercised once.
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            return NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
         }
     }
 
@@ -113,6 +118,8 @@ import XCTest
         }
         let editor = window.firstResponder as? NSTextView
         let field = editor?.delegate as? NSTextField
+        let running = NSRunningApplication.current
+        let frontmost = NSWorkspace.shared.frontmostApplication
         print("LIBRARY_FOCUS_ADMISSION phase=\(phase) policy=\(NSApp.activationPolicy().rawValue) " +
               "running=\(NSApp.isRunning) active=\(NSApp.isActive) hidden=\(NSApp.isHidden) " +
               "key=\(window.isKeyWindow) exactKey=\(NSApp.keyWindow === window) visible=\(window.isVisible) " +
@@ -120,5 +127,13 @@ import XCTest
               "delegate=\(String(describing: editor?.delegate.map { type(of: $0) })) prompt=\(field?.placeholderString ?? "nil") " +
               "section=\(Library.shared.section) focusToken=\(Library.shared.focusToken)")
         print("LIBRARY_FOCUS_FIELDS phase=\(phase) mounted=\(window.contentView.map(fields) ?? [])")
+        print("LIBRARY_FOCUS_OWNER phase=\(phase) finishedLaunching=\(running.isFinishedLaunching) " +
+              "canBecomeKey=\(window.canBecomeKey) windowNumber=\(window.windowNumber) " +
+              "contentOwner=\(window.contentView?.window === window) miniaturized=\(window.isMiniaturized) " +
+              "modal=\(NSApp.modalWindow?.windowNumber ?? -1) sheet=\(window.attachedSheet?.windowNumber ?? -1) " +
+              "actualKey=\(NSApp.keyWindow?.windowNumber ?? -1) " +
+              "frontmostPID=\(frontmost?.processIdentifier ?? -1) frontmostBundle=\(frontmost?.bundleIdentifier ?? "nil") " +
+              "ownPID=\(running.processIdentifier) " +
+              "visibleWindows=\(NSApp.windows.filter(\.isVisible).map { "\($0.windowNumber):\(type(of: $0)):key=\($0.isKeyWindow)" })")
     }
 }

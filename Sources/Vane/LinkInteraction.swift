@@ -45,12 +45,19 @@ enum LinkInteraction {
         }
     }
 
+    /// A web document must never turn a link into a native file load. Use the actual
+    /// source frame URL; inherited/unknown origins do not confer local-file authority.
+    nonisolated static func admits(url: URL, source: URL?) -> Bool {
+        !url.isFileURL || source?.isFileURL == true
+    }
+
     nonisolated static func route(to url: URL, context: Context,
                                   modifiers: NSEvent.ModifierFlags, button: Int = 1,
                                   preferences: Preferences = .init()) -> Action {
         // Control-left-click belongs to the context menu. Custom and script schemes are
         // handled before this table by the navigation delegate, never in a browser tab.
-        guard (!modifiers.contains(.control) || button == TabActions.middleButton),
+        guard admits(url: url, source: context.source),
+              (!modifiers.contains(.control) || button == TabActions.middleButton),
               let scheme = url.scheme?.lowercased(),
               ["http", "https", "file"].contains(scheme) else { return .navigate }
         let web = scheme == "http" || scheme == "https"

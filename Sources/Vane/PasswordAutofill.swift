@@ -369,14 +369,15 @@ import WebKit
         function generationToken(g) {
           return g && documentID + ':new:' + g.fields.map(fieldID).join(':');
         }
-        function generate(password, target) {
+        function generate(password, target, expectedOrigin) {
+          if (!authorizedOrigin(expectedOrigin)) return false;
           var g = generationFor(deepActive(document)) || (lastGeneration && generationFor(lastGeneration.field));
           if (!g || !target || generationToken(g) !== target || !liveDocument() ||
               g.fields.some(function (f) { return f.maxLength >= 0 && password.length > f.maxLength; })) return false;
           if (!focusedFrame()) return false;
           for (var i = 0; i < g.fields.length; i++) {
             var current = generationFor(g.field), field = g.fields[i];
-            if (!liveDocument() || !focusedFrame() || !current || generationToken(current) !== target ||
+            if (!authorizedOrigin(expectedOrigin) || !liveDocument() || !focusedFrame() || !current || generationToken(current) !== target ||
                 !usableInput(field) || !safeRoot(g.root) || rootFor(field) !== g.root || !current.fields.includes(field)) return false;
             setValue(field, password);
           }
@@ -542,6 +543,7 @@ import WebKit
             mainDocument: window === topWindow });
         }
         credentialListener('submit', function (e) {
+          if (!e.isTrusted) return;
           var form = eventField(e);
           if (!form || form.tagName !== 'FORM' || !safeRoot(form)) return;
           submittedAttempt = {
@@ -591,7 +593,8 @@ import WebKit
           if (retired || !attachedDocument()) return;
           discoverFrames(observe()); ready();
         });
-        function fill(account, password, automatic, target, continuation) {
+        function fill(account, password, automatic, target, continuation, expectedOrigin) {
+          if (!authorizedOrigin(expectedOrigin)) return false;
           var p = targetPair();
           if (!visible(p) || (target && token(p) !== target)) { return false; }
           if (!focusedFrame()) return false;
@@ -618,7 +621,7 @@ import WebKit
           // Site input handlers can replace, hide, or reclassify fields synchronously.
           // Revalidate after the username events before handing over the secret.
           if (p.pass) {
-            if (!liveDocument() || !focusedFrame() || !safeRoot(root) || !usableInput(p.pass) || passwordPurpose(p.pass) === 'new' ||
+            if (!authorizedOrigin(expectedOrigin) || !liveDocument() || !focusedFrame() || !safeRoot(root) || !usableInput(p.pass) || passwordPurpose(p.pass) === 'new' ||
                 rootFor(p.pass) !== root || token(targetPair()) !== expectedTarget ||
                 (p.user && p.user.value !== account)) return false;
             var current = pairFor(p.pass), currentIdentity = pair(root, true);
@@ -723,6 +726,14 @@ import WebKit
         }
         discoverFrames(observe()); ready();
       }
+      // A provisional native URL can name the next page while this DOM is still alive.
+      // Bind every secret write to the origin the native credential read authorized.
+      function authorizedOrigin(expectedOrigin) {
+        try {
+          return typeof expectedOrigin === 'string' && expectedOrigin.length > 0 && topOrigin !== 'null' &&
+            new URL(expectedOrigin).origin === topOrigin && topWindow.origin === topOrigin;
+        } catch (_) { return false; }
+      }
       function currentContext(target) {
         if (target) {
           return Array.from(contexts.values()).find(function (ctx) {
@@ -746,13 +757,15 @@ import WebKit
         var ctx = currentContext(target);
         return JSON.stringify(ctx && ctx.live() ? ctx.anchor() : null);
       };
-      topWindow.__vaneFill = function (account, password, automatic, target, continuation) {
+      topWindow.__vaneFill = function (account, password, automatic, target, continuation, expectedOrigin) {
+        if (!authorizedOrigin(expectedOrigin)) return false;
         var ctx = currentContext(target);
-        return !!ctx && ctx.fill(account, password, automatic, target, continuation);
+        return !!ctx && ctx.fill(account, password, automatic, target, continuation, expectedOrigin);
       };
-      topWindow.__vaneGenerate = function (password, target) {
+      topWindow.__vaneGenerate = function (password, target, expectedOrigin) {
+        if (!authorizedOrigin(expectedOrigin)) return false;
         var ctx = currentContext(target);
-        return !!ctx && ctx.generate(password, target);
+        return !!ctx && ctx.generate(password, target, expectedOrigin);
       };
       install(topWindow);
     })();
@@ -763,14 +776,14 @@ import WebKit
         return "window.__vaneAnchor && window.__vaneAnchor.apply(null, \(String(decoding: args, as: UTF8.self)))"
     }
 
-    static func generateJS(password: String, target: String) -> String {
-        let args = try! JSONSerialization.data(withJSONObject: [password, target])
+    static func generateJS(password: String, target: String, expectedOrigin: PasswordOrigin) -> String {
+        let args = try! JSONSerialization.data(withJSONObject: [password, target, expectedOrigin.url.absoluteString])
         return "window.__vaneGenerate && window.__vaneGenerate.apply(null, \(String(decoding: args, as: UTF8.self)))"
     }
 
     static func fillJS(account: String, password: String, automatic: Bool = false,
-                       target: String? = nil, continuation: Bool = false) -> String {
-        let args = try! JSONSerialization.data(withJSONObject: [account, password, automatic, target as Any? ?? NSNull(), continuation])
+                       target: String? = nil, continuation: Bool = false, expectedOrigin: PasswordOrigin) -> String {
+        let args = try! JSONSerialization.data(withJSONObject: [account, password, automatic, target as Any? ?? NSNull(), continuation, expectedOrigin.url.absoluteString])
         return "window.__vaneFill && window.__vaneFill.apply(null, \(String(decoding: args, as: UTF8.self)))"
     }
 }

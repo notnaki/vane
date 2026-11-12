@@ -77,9 +77,11 @@ import SwiftUI
         tab.onPopup = { [weak self] configuration, placement, features in
             guard let self else { return nil }
             if case .tab = placement, let origin = self.origin {
-                return origin.popup(configuration, placement: placement, opener: self.opener, features: features)
+                return origin.popup(configuration, placement: placement, opener: self.opener, features: features,
+                                    extensionAccessRestricted: self.tab.extensionAccessRestricted)
             }
-            let child = Tab(popup: configuration, isPrivate: self.tab.isPrivate, profileID: self.tab.profileID)
+            let child = Tab(popup: configuration, isPrivate: self.tab.isPrivate, profileID: self.tab.profileID,
+                            extensionAccessRestricted: self.tab.extensionAccessRestricted)
             Self.open(child, origin: self.origin, opener: self.opener,
                       features: features, focus: Popup.takesFocus(placement))
             return child.web

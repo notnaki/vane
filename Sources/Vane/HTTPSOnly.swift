@@ -201,14 +201,7 @@ import WebKit
         return r
     }
 
-    /// The second loop, and the one that is easy to miss. `loadSimulatedRequest` — how the
-    /// interstitial (and `ErrorPage`) gets rendered at the failing url — is a real navigation
-    /// and comes straight back through `decidePolicyFor`. Without this latch, `.block` renders
-    /// a page whose own load is blocked, which renders a page whose own load is blocked.
-    /// Measured, not theorised: the harness caught it by never finding the link on the page.
-    private static var showing: String?
-
-    static func forgetLoopState() { attempts = [:]; showing = nil }
+    static func forgetLoopState() { attempts = [:] }
 
     private static func recentlyUpgraded(_ host: String, now: Date) -> Bool {
         guard let at = attempts[canonical(host)] else { return false }
@@ -245,7 +238,6 @@ import WebKit
         guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
         c.scheme = "http"
         guard let http = c.url else { return nil }
-        showing = http.absoluteString      // the interstitial's own load must get through
         return http
     }
 
@@ -258,7 +250,9 @@ import WebKit
         case upgrade(URL)
         /// Cancel and show `interstitial(for:)` at this url. https is not available here.
         case block(URL)
-        /// The interstitial's own "continue" link. Ask, and only then load this http url.
+        /// Internal navigation without authority from this tab's current interstitial.
+        case deny
+        /// A nonce-authorized continuation from the current interstitial.
         case confirm(URL)
     }
 
@@ -268,19 +262,14 @@ import WebKit
                        profileID: UUID = ProfileManager.activeProfileID,
                        now: Date = .now) -> Decision {
         guard let url else { return .allow }
-        // Answered before `enabled`: the sentinel only ever comes from a page we rendered
-        // ourselves, and a user who has already clicked through it is owed the alert even if
-        // they flipped the switch off in another window in the meantime.
-        if let target = insecureTarget(url) { return .confirm(target) }
-        // One shot, spent immediately: the interstitial we just asked for is allowed to load
-        // at the url it is about, and nothing else is.
-        if showing == url.absoluteString { showing = nil; return .allow }
+        // Internal schemes are never ordinary web navigations, even when HTTPS-only
+        // was disabled after an interstitial was rendered.
+        if url.scheme?.lowercased() == insecureScheme { return .deny }
         guard enabled, isMainFrame else { return .allow }
         guard let up = upgrade(url, profileID: profileID) else { return .allow }
         guard let host = url.host else { return .allow }
         // We already sent this host to https and here it is back on http. Stop.
         if recentlyUpgraded(host, now: now) {
-            showing = url.absoluteString
             return .block(url)
         }
         noteUpgrade(host, now: now)
@@ -290,12 +279,90 @@ import WebKit
     /// ponytail: main frame only. Cancelling a subresource or an iframe would break the page
     /// with nowhere to put the explanation, and WebKit already blocks mixed content on an
     /// https page — which, once this is on, is every page.
-    static func decide(_ action: WKNavigationAction,
+    static func decide(_ action: WKNavigationAction, continuation: Continuation,
+                       documentURL: URL?,
                        profileID: UUID = ProfileManager.activeProfileID,
                        now: Date = .now) -> Decision {
-        decide(url: action.request.url,
-               isMainFrame: action.targetFrame?.isMainFrame ?? false,
-               profileID: profileID, now: now)
+        let main = action.targetFrame?.isMainFrame ?? false
+        if let url = action.request.url, url.scheme?.lowercased() == insecureScheme {
+            guard let target = continuation.authorize(url: url, isMainFrame: main,
+                sourceIsMainFrame: action.sourceFrame.isMainFrame,
+                sourceURL: action.sourceFrame.request.url, documentURL: documentURL) else { return .deny }
+            return .confirm(target)
+        }
+        if continuation.consumePresentationLoad(request: action.request, isMainFrame: main) { return .allow }
+        return decide(url: action.request.url, isMainFrame: main, profileID: profileID, now: now)
+    }
+
+    /// Authority belongs to one simulated document in one tab. Neither an HTTP URL
+    /// nor a link to our internal scheme is enough to mint an exception prompt.
+    @MainActor final class Continuation {
+        struct Presentation {
+            let request: URLRequest
+            let html: String
+        }
+        private static let header = "X-Vane-HTTPS-Interstitial"
+        private var target: URL?
+        private var nonce: UUID?
+        private var navigation: AnyObject?
+        private var committed = false
+        private var presentationPending = false
+
+        func prepare(for url: URL) -> Presentation {
+            invalidate()
+            let token = UUID()
+            target = url
+            nonce = token
+            presentationPending = true
+            var request = URLRequest(url: url)
+            request.setValue(token.uuidString, forHTTPHeaderField: Self.header)
+            return Presentation(request: request, html: interstitial(for: url, nonce: token))
+        }
+
+        func expectNavigation(_ navigation: AnyObject?) {
+            guard let navigation, target != nil else { invalidate(); return }
+            self.navigation = navigation
+        }
+
+        func navigationStarted(_ navigation: AnyObject?) {
+            guard let navigation, let expected = self.navigation, navigation === expected else {
+                invalidate(); return
+            }
+        }
+
+        func navigationCommitted(_ navigation: AnyObject?, documentURL: URL?) {
+            guard let navigation, let expected = self.navigation, navigation === expected,
+                  target == documentURL else { invalidate(); return }
+            committed = true
+            presentationPending = false
+        }
+
+        func invalidate() {
+            target = nil
+            nonce = nil
+            navigation = nil
+            committed = false
+            presentationPending = false
+        }
+
+        /// The token is only attached to the native simulated request. It also permits
+        /// a policy callback delivered inside loadSimulatedRequest, before it returns
+        /// its navigation identity. Commit still requires the recorded identity.
+        func consumePresentationLoad(request: URLRequest, isMainFrame: Bool) -> Bool {
+            guard presentationPending, isMainFrame, request.url == target,
+                  let nonce, request.value(forHTTPHeaderField: Self.header) == nonce.uuidString else { return false }
+            presentationPending = false
+            return true
+        }
+
+        func authorize(url: URL, isMainFrame: Bool, sourceIsMainFrame: Bool,
+                       sourceURL: URL?, documentURL: URL?) -> URL? {
+            guard committed, isMainFrame, sourceIsMainFrame,
+                  let target, sourceURL == target, documentURL == target,
+                  let nonce, url == sentinel(for: target, nonce: nonce) else { return nil }
+            invalidate()
+            return target
+        }
     }
 
     // MARK: - The way back out
@@ -304,22 +371,19 @@ import WebKit
     /// an ordinary web view. So "continue" is a navigation to a scheme nothing else claims,
     /// which comes straight back through `decide`.
     ///
-    /// ponytail: a page could navigate itself here to raise the alert. It cannot get past it —
-    /// the alert defaults to Go Back and the button that proceeds has no key equivalent, same
-    /// as `CertificateTrust` — so the worst a hostile page buys is one modal it cannot answer.
     nonisolated static let insecureScheme = "x-vane-insecure"
 
     /// Percent-encoded down to alphanumerics, so whatever the url contains is inert in every
     /// context the interstitial puts it in.
-    static func sentinel(for url: URL) -> URL? {
+    static func sentinel(for url: URL, nonce: UUID? = nil) -> URL? {
         guard let body = url.absoluteString
             .addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { return nil }
-        return URL(string: insecureScheme + ":" + body)
+        return URL(string: insecureScheme + ":" + body + (nonce.map { "?nonce=" + $0.uuidString } ?? ""))
     }
 
     static func insecureTarget(_ url: URL) -> URL? {
         guard url.scheme?.lowercased() == insecureScheme else { return nil }
-        let body = url.absoluteString.dropFirst(insecureScheme.count + 1)
+        let body = url.absoluteString.dropFirst(insecureScheme.count + 1).prefix { $0 != "?" }
         guard let decoded = body.removingPercentEncoding,
               let target = URL(string: decoded),
               target.scheme?.lowercased() == "http" else { return nil }
@@ -331,11 +395,10 @@ import WebKit
     /// Go Back is the default, the button that proceeds is destructive and has no key
     /// equivalent, so neither Return nor Escape can reach it.
     ///
-    /// Returns whether to load, and is the *only* thing in this file that writes an exception.
-    @discardableResult
-    static func confirmAndRemember(_ url: URL,
-                                   profileID: UUID = ProfileManager.activeProfileID) -> Bool {
-        guard let host = url.host else { return false }
+    /// The caller presents this as a sheet and remembers the exception only after a
+    /// positive response whose tab and document are still current.
+    static func confirmationAlert(for url: URL) -> NSAlert? {
+        guard url.scheme?.lowercased() == "http", let host = url.host else { return nil }
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Load “\(host)” without encryption?"
@@ -351,9 +414,7 @@ import WebKit
         let proceed = alert.addButton(withTitle: "Load Insecurely")
         proceed.keyEquivalent = ""
         proceed.hasDestructiveAction = true
-        guard alert.runModal() == .alertSecondButtonReturn else { return false }
-        allow(host: host, profileID: profileID)
-        return true
+        return alert
     }
 
     // MARK: - The interstitial
@@ -362,10 +423,10 @@ import WebKit
     /// they are the same kind of moment and should not look like two different browsers.
     /// The order of the actions is the message: Go Back is the button, continuing is a line
     /// of muted text underneath it.
-    static func interstitial(for url: URL) -> String {
+    static func interstitial(for url: URL, nonce: UUID? = nil) -> String {
         let host = url.host ?? url.absoluteString
         let shown = url.absoluteString
-        let go = sentinel(for: url)?.absoluteString ?? ""
+        let go = sentinel(for: url, nonce: nonce)?.absoluteString ?? ""
         return """
         <!doctype html>
         <html><head>
@@ -595,10 +656,12 @@ import WebKit
         _ = decide(url: u("http://loop.example/"), isMainFrame: true, profileID: p, now: t0)
         let stop = decide(url: u("http://loop.example/"), isMainFrame: true, profileID: p,
                           now: t0.addingTimeInterval(0.2))
-        out.append(("blocking arms the interstitial's own load", stop == .block(u("http://loop.example/"))))
-        out.append(("the interstitial's simulated request is let through, not blocked again",
-                    decide(url: u("http://loop.example/"), isMainFrame: true, profileID: p,
-                           now: t0.addingTimeInterval(0.21)) == .allow))
+        out.append(("blocking requests an interstitial", stop == .block(u("http://loop.example/"))))
+        let continuation = Continuation()
+        let presentation = continuation.prepare(for: u("http://loop.example/"))
+        out.append(("only the tab's token-bearing simulated request is let through",
+                    !continuation.consumePresentationLoad(request: URLRequest(url: u("http://loop.example/")), isMainFrame: true)
+                    && continuation.consumePresentationLoad(request: presentation.request, isMainFrame: true)))
         out.append(("the pass is one shot — the next real navigation blocks again",
                     decide(url: u("http://loop.example/"), isMainFrame: true, profileID: p,
                            now: t0.addingTimeInterval(0.22)) == .block(u("http://loop.example/"))))
@@ -649,9 +712,9 @@ import WebKit
                     offered == u("http://dead.example/x")))
         out.append(("the offer outlives the loop window — it cannot land before the timeout does",
                     upgradeTimeout > loopWindow && attemptHorizon > upgradeTimeout))
-        out.append(("the offer arms the interstitial's own load",
+        out.append(("a downgrade offer does not authorize an ordinary HTTP load",
                     decide(url: u("http://dead.example/x"), isMainFrame: true, profileID: p,
-                           now: t0.addingTimeInterval(upgradeTimeout)) == .allow))
+                           now: t0.addingTimeInterval(upgradeTimeout)) != .allow))
         out.append(("a refused connection also offers it",
                     downgradeOffer(after: fail(NSURLErrorCannotConnectToHost),
                                    url: u("https://dead.example/x"), profileID: p,
@@ -677,7 +740,9 @@ import WebKit
                                    profileID: p, now: t0.addingTimeInterval(1)) == nil))
         out.append(("the offer expires with the attempt",
                     downgradeOffer(after: fail(NSURLErrorTimedOut), url: u("https://dead.example/x"),
-                                   profileID: p, now: t0.addingTimeInterval(attemptHorizon + 1)) == nil))
+                                   // The ordinary HTTP probe above starts a new attempt
+                                   // at upgradeTimeout; expiry is relative to that retry.
+                                   profileID: p, now: t0.addingTimeInterval(upgradeTimeout + attemptHorizon + 1)) == nil))
         allow(host: "dead.example", profileID: p)
         out.append(("an excepted host is never offered a downgrade it already has",
                     downgradeOffer(after: fail(NSURLErrorTimedOut), url: u("https://dead.example/x"),
@@ -693,8 +758,8 @@ import WebKit
         out.append(("the sentinel is inert — nothing but alphanumerics after the colon",
                     s.absoluteString.dropFirst(insecureScheme.count + 1)
                         .allSatisfy { $0.isLetter || $0.isNumber || $0 == "%" }))
-        out.append(("a sentinel navigation asks rather than loading",
-                    decide(url: s, isMainFrame: true, profileID: p, now: t0) == .confirm(target)))
+        out.append(("an unauthorised sentinel cannot ask for an exception",
+                    decide(url: s, isMainFrame: true, profileID: p, now: t0) == .deny))
         out.append(("a sentinel wrapping a non-http url is refused",
                     insecureTarget(u(insecureScheme + ":" + "https%3A%2F%2Fx.example")) == nil))
         out.append(("a sentinel with junk in it is refused",

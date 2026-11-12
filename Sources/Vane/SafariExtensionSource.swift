@@ -55,6 +55,7 @@ struct SafariExtensionSource: Codable, Equatable, Sendable {
         let identifier: String
         let team: String
         let hash: String
+        let certificateIdentity: String
     }
 
     static func verify(_ url: URL) throws -> Signature {
@@ -73,23 +74,28 @@ struct SafariExtensionSource: Codable, Equatable, Sendable {
               let identifier = values[kSecCodeInfoIdentifier as String] as? String,
               let team = values[kSecCodeInfoTeamIdentifier as String] as? String,
               let hash = values[kSecCodeInfoUnique as String] as? Data,
+              let certificates = values[kSecCodeInfoCertificates as String] as? [SecCertificate],
+              let leaf = certificates.first,
+              let certificateIdentity = SecCertificateCopySubjectSummary(leaf) as String?, !certificateIdentity.isEmpty,
               let bundleID = try info(url)["CFBundleIdentifier"] as? String,
               identifier == bundleID, validBundleID(identifier),
               team.range(of: #"^[A-Z0-9]{10}$"#, options: .regularExpression) != nil else {
             throw ExtensionCodeStore.Problem("The bundle identifier and verified signing identity do not match, or the signing Team ID is missing.")
         }
-        // Developer certificates bind the Team ID through their leaf OU. Mac App
-        // Store apps are re-signed by Apple's own store certificate instead; its
-        // authenticated CodeDirectory supplies the original developer's Team ID.
-        // TN3127 documents this store-only OID under the Apple trust anchor.
+        // Accept distributed Developer ID Application code or Apple's Mac App Store
+        // re-signing certificate, following TN3127. Apple Development certificates
+        // share the generic Apple anchor but are not distribution identities.
+        // Store signatures authenticate the original developer's CodeDirectory Team ID;
+        // Developer ID signatures must bind that team through the leaf certificate OU.
         var teamRequirement: SecRequirement?
-        let expression = "anchor apple generic and (certificate leaf[subject.OU] = \"\(team)\" or certificate leaf[field.1.2.840.113635.100.6.1.9] exists)"
+        let expression = "anchor apple generic and (certificate leaf[field.1.2.840.113635.100.6.1.9] exists or (certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"\(team)\"))"
         guard SecRequirementCreateWithString(expression as CFString, [], &teamRequirement) == errSecSuccess,
               let teamRequirement,
               SecStaticCodeCheckValidity(code, flags, teamRequirement) == errSecSuccess else {
-            throw ExtensionCodeStore.Problem("The signing Team ID does not match the bundle’s Apple-issued signing certificate.")
+            throw ExtensionCodeStore.Problem("The bundle must have a verified Developer ID Application signature matching its Team ID, or an Apple Mac App Store distribution signature.")
         }
-        return Signature(identifier: identifier, team: team, hash: hash.map { String(format: "%02x", $0) }.joined())
+        return Signature(identifier: identifier, team: team, hash: hash.map { String(format: "%02x", $0) }.joined(),
+                         certificateIdentity: certificateIdentity)
     }
 
     /// Enumerate only immediate embedded Safari web extensions; never discover arbitrary

@@ -6,6 +6,7 @@ import WebKit
 /// holding an opening modifier shows the destination and action immediately.
 enum StatusBar {
     static let messageName = "vanehover"
+    @MainActor static let world = WKContentWorld.world(name: "vane-status")
 
     /// Posts the hovered link's absolute href, or "" when the pointer leaves a link, leaves
     /// the page, or presses a button (a click is a navigation, and the bar has nothing more

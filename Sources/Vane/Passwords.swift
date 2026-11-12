@@ -1466,7 +1466,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
             // In the script's own world, like the app does it — the page world has no
             // `__vaneFill` at all any more, which is the point of the world.
             w.evaluateJavaScript("document.getElementById('u').focus()") { _, _ in
-                w.evaluateJavaScript(Autofill.fillJS(account: user, password: pass),
+                w.evaluateJavaScript(Autofill.fillJS(account: user, password: pass, expectedOrigin: PasswordOrigin(host: host)),
                                      in: nil, in: Autofill.world) { result in
                     let filled = try? result.get()
                     check("fill reports a form was found", (filled as? Bool) == true)
@@ -1488,7 +1488,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                             document.getElementById('signupUser').value = 'signup@example.com';
                             document.getElementById('signupPass').value = 'signup-secret';
                             document.getElementById('signupUser').focus();
-                            document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}));
+                            document.getElementById('f').addEventListener('submit', e => e.preventDefault(), {once:true}); document.getElementById('f').requestSubmit();
                             window.dispatchEvent(new Event('pagehide'));
                             """) { _, _ in
                             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -1498,7 +1498,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                 w.evaluateJavaScript("""
                                     document.getElementById('p').value = '';
                                     document.getElementById('signupUser').focus();
-                                    document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}));
+                                    document.getElementById('f').addEventListener('submit', e => e.preventDefault(), {once:true}); document.getElementById('f').requestSubmit();
                                     window.dispatchEvent(new Event('pagehide'));
                                     """) { _, _ in
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -1515,7 +1515,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                             oldUser.replaceWith(newUser);
                                             """) { _, _ in
                                             w.evaluateJavaScript(
-                                                Autofill.fillJS(account: "new@example.com", password: "new-secret"),
+                                                Autofill.fillJS(account: "new@example.com", password: "new-secret", expectedOrigin: PasswordOrigin(host: host)),
                                                 in: nil, in: Autofill.world) { _ in
                                                 w.evaluateJavaScript("""
                                                     JSON.stringify([document.getElementById('u').value,
@@ -1528,7 +1528,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                                         document.getElementById('u').value = 'login@example.com';
                                                         document.getElementById('p').value = 'login-secret';
                                                         document.getElementById('p').dispatchEvent(new Event('input', {bubbles:true}));
-                                                        document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}));
+                                                        document.getElementById('f').addEventListener('submit', e => e.preventDefault(), {once:true}); document.getElementById('f').requestSubmit();
                                                         document.getElementById('signupUser').value = 'signup@example.com';
                                                         document.getElementById('signupPass').value = 'signup-secret';
                                                         document.getElementById('signupUser').dispatchEvent(new Event('input', {bubbles:true}));

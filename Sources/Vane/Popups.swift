@@ -198,8 +198,11 @@ extension TabStore {
     /// should go, though — `Popup.takesFocus` — so a ⌘-click or a gesture-less popup inside
     /// a Little Vane opens *behind* it rather than jumping in front of the page being read.
     func popup(_ cfg: WKWebViewConfiguration, placement: Popup.Placement,
-               opener: Tab.ID?, features: WKWindowFeatures? = nil) -> WKWebView {
-        let tab = Tab(popup: cfg, isPrivate: isPrivate, profileID: profileID)
+               opener: Tab.ID?, features: WKWindowFeatures? = nil,
+               extensionAccessRestricted: Bool = false) -> WKWebView {
+        let tab = Tab(popup: cfg, isPrivate: isPrivate, profileID: profileID,
+                      extensionAccessRestricted: extensionAccessRestricted
+                        || everyTab.first { $0.id == opener }?.extensionAccessRestricted == true)
         tab.extensionParent = tabs.first { $0.id == opener }
         switch placement {
         case .tab(let focus) where !isLittle:

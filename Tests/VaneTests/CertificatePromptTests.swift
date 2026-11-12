@@ -35,4 +35,26 @@ import XCTest
         XCTAssertTrue(CertificateTrust.shouldPrompt(host: "example.com", port: 0,
             navigationURL: URL(string: "https://example.com:443")))
     }
+    func testHTTPLoginScopeUsesSchemeHostAndEffectivePort() {
+        let destination = URL(string: "http://EXAMPLE.com/article")!
+        for (scheme, host, port, expected) in [
+            ("http", "example.com", 80, true),
+            ("http", "EXAMPLE.COM", 0, true),
+            ("https", "example.com", 80, false),
+            ("http", "example.com", 8080, false),
+            ("http", "cdn.example.com", 80, false),
+            ("http", "example.com.evil.test", 80, false)
+        ] {
+            let space = URLProtectionSpace(host: host, port: port, protocol: scheme,
+                realm: nil, authenticationMethod: NSURLAuthenticationMethodHTTPBasic)
+            XCTAssertEqual(CertificateTrust.shouldPromptForLogin(space: space, navigationURL: destination), expected)
+        }
+        let proxy = URLProtectionSpace(proxyHost: "example.com", port: 80, type: NSURLProtectionSpaceHTTPProxy,
+            realm: nil, authenticationMethod: NSURLAuthenticationMethodHTTPBasic)
+        XCTAssertFalse(CertificateTrust.shouldPromptForLogin(space: proxy, navigationURL: destination))
+        let space = URLProtectionSpace(host: "example.com", port: 443, protocol: "https",
+            realm: nil, authenticationMethod: NSURLAuthenticationMethodHTTPDigest)
+        XCTAssertFalse(CertificateTrust.shouldPromptForLogin(space: space, navigationURL: nil))
+    }
+
 }

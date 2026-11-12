@@ -73,6 +73,11 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         makeNativeMessagingErrorPrompt(review).runModal() == .alertFirstButtonReturn
     }
 
+    struct VerifiedSigner {
+        let teamID: String
+        let certificateIdentity: String
+    }
+
     struct Review {
         let name: String
         let requested: ExtensionAccess
@@ -83,6 +88,7 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         var updating = false
         var currentVersion: String? = nil
         var candidateVersion: String? = nil
+        var verifiedSigner: VerifiedSigner? = nil
 
         var needsApproval: Bool {
             installing || updating || !newlySupportedCapabilities.isEmpty || previous.map { !requested.additions(over: $0).isEmpty } ?? true
@@ -143,6 +149,10 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
             text.string = "Newly available capabilities\n\nVane previously marked these capabilities unavailable. Approving lets this version use them:\n"
                 + review.newlySupportedCapabilities.sorted().map { "• " + ExtensionAccess.phrase($0) + " (" + $0 + ")" }.joined(separator: "\n")
                 + "\n\n" + text.string
+        }
+        if let signer = review.verifiedSigner {
+            text.string = "Verified signing identity\n\nTeam ID: " + signer.teamID
+                + "\nSigning certificate: " + signer.certificateIdentity + "\n\n" + text.string
         }
         if !review.limitations.isEmpty {
             text.string += "\n\nCompatibility limitations\n\n" + review.limitations.joined(separator: "\n")

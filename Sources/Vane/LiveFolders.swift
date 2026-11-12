@@ -1,5 +1,6 @@
 import AppKit
 import Security
+import CryptoKit
 import SwiftUI
 
 /// Arc's Live Folders: a folder in the Pinned section that fills itself. Today one source —
@@ -540,12 +541,15 @@ enum GitHubOAuth {
 
     /// The page the user is sent to. `state` is the one-shot value the reply must carry
     /// back; anything else arriving at the redirect is not this sign-in.
-    nonisolated static func authorize(state: String) -> URL? {
+    nonisolated static func authorize(state: String, verifier: String) -> URL? {
+        guard let challenge = challenge(for: verifier) else { return nil }
         var c = URLComponents(string: authorizeURL)
         c?.queryItems = [URLQueryItem(name: "client_id", value: clientID),
                          URLQueryItem(name: "redirect_uri", value: redirect),
                          URLQueryItem(name: "scope", value: scope),
-                         URLQueryItem(name: "state", value: state)]
+                         URLQueryItem(name: "state", value: state),
+                         URLQueryItem(name: "code_challenge", value: challenge),
+                         URLQueryItem(name: "code_challenge_method", value: "S256")]
         return c?.url
     }
 
@@ -553,6 +557,24 @@ enum GitHubOAuth {
     /// `state` is for, and `SecRandomCopyBytes` for 122 bits Foundation already generates
     /// from the same place is ceremony.
     nonisolated static func newState() -> String { UUID().uuidString }
+
+    /// RFC 7636: a fresh 256-bit verifier stays in memory; only its S256 challenge
+    /// goes to the authorization page. Fail closed if secure randomness is unavailable.
+    nonisolated static func newVerifier() -> String? {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
+        return base64URL(Data(bytes))
+    }
+
+    nonisolated static func challenge(for verifier: String) -> String? {
+        guard verifier.range(of: #"\A[A-Za-z0-9._~-]{43,128}\z"#, options: .regularExpression) != nil else { return nil }
+        return base64URL(Data(SHA256.hash(data: Data(verifier.utf8))))
+    }
+
+    nonisolated private static func base64URL(_ data: Data) -> String {
+        data.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
 
     /// What came back at the redirect.
     enum Redirect: Equatable, Sendable {
@@ -597,25 +619,31 @@ enum GitHubOAuth {
 
     /// The exchange: code in, token out. A form post, because that is what GitHub's endpoint
     /// takes; `Accept: application/json` is what stops it answering in form encoding.
-    nonisolated static func body(code: String, secret: String) -> String {
+    nonisolated private static func body(code: String, secret: String, verifier: String) -> String {
         var c = URLComponents()
         c.queryItems = [URLQueryItem(name: "client_id", value: clientID),
                         URLQueryItem(name: "client_secret", value: secret),
                         URLQueryItem(name: "code", value: code),
-                        URLQueryItem(name: "redirect_uri", value: redirect)]
+                        URLQueryItem(name: "redirect_uri", value: redirect),
+                        URLQueryItem(name: "code_verifier", value: verifier)]
         return c.percentEncodedQuery ?? ""
     }
 
-    nonisolated static func exchange(code: String, secret: String) -> URLRequest? {
+    nonisolated static func exchange(code: String, secret: String, verifier: String) -> URLRequest? {
+        guard challenge(for: verifier) != nil, var request = tokenRequest() else { return nil }
+        request.httpBody = Data(body(code: code, secret: secret, verifier: verifier).utf8)
+        return request
+    }
+
+    nonisolated private static func tokenRequest() -> URLRequest? {
         guard let url = URL(string: tokenURL) else { return nil }
-        var r = URLRequest(url: url)
-        r.httpMethod = "POST"
-        r.setValue("application/json", forHTTPHeaderField: "Accept")
-        r.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        r.setValue("Vane", forHTTPHeaderField: "User-Agent")
-        r.httpBody = Data(body(code: code, secret: secret).utf8)
-        r.timeoutInterval = 15
-        return r
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("Vane", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+        return request
     }
 
     private struct Grant: Decodable {
@@ -652,7 +680,7 @@ enum GitHubOAuth {
     nonisolated static func token(_ data: Data) -> String? { grant(data)?.accessToken }
 
     nonisolated static func refresh(refreshToken: String, secret: String) -> URLRequest? {
-        guard var request = exchange(code: "", secret: secret) else { return nil }
+        guard var request = tokenRequest() else { return nil }
         var components = URLComponents()
         components.queryItems = [URLQueryItem(name: "client_id", value: clientID),
                                  URLQueryItem(name: "client_secret", value: secret),
@@ -1018,7 +1046,7 @@ enum GitHubOAuth {
     /// made when it comes back, and the tab GitHub's consent page was opened in. One at a
     /// time — a second "New Live Folder…" while the consent page is still up shows the user
     /// that page again rather than starting another sign-in behind it.
-    private var pending: (state: String, thenCreate: Bool, tab: Tab.ID)?
+    private var pending: (state: String, verifier: String, thenCreate: Bool, tab: Tab.ID)?
 
     /// The tab the consent page is on.
     private var authTab: Tab.ID? { pending?.tab }
@@ -1061,12 +1089,13 @@ enum GitHubOAuth {
             return
         }
         let state = GitHubOAuth.newState()
-        guard let url = GitHubOAuth.authorize(state: state) else { return }
+        guard let verifier = GitHubOAuth.newVerifier(),
+              let url = GitHubOAuth.authorize(state: state, verifier: verifier) else { return }
         // `newBlankTab` rather than `newTab`, for the tab itself: the redirect is only
         // honoured when it arrives in this one, so the flow has to know which it is.
-        let tab = store.newBlankTab()
+        let tab = store.newBlankTab(extensionAccessRestricted: true)
+        pending = (state: state, verifier: verifier, thenCreate: thenCreate, tab: tab.id)
         tab.go(url)
-        pending = (state: state, thenCreate: thenCreate, tab: tab.id)
     }
 
     /// The consent tab, closed by hand: there is no sign-in in flight any more, so the next
@@ -1083,17 +1112,17 @@ enum GitHubOAuth {
     /// waiting for: the main frame of the tab `connect` opened. See `accepts` — an ad frame
     /// three tabs away redirecting to `vane://oauth/github?error=x` does nothing at all.
     func finish(redirect url: URL, in tab: Tab, isMainFrame: Bool) {
-        guard LiveFolders.accepts(tabID: tab.id, pending: authTab,
+        guard let pending, LiveFolders.accepts(tabID: tab.id, pending: pending.tab,
                                   isMainFrame: isMainFrame) else { return }
-        let answer = GitHubOAuth.read(url, expecting: pending?.state)
+        let answer = GitHubOAuth.read(url, expecting: pending.state)
         guard answer != .notOurs else { return }
         let store = TabStore.all.first { $0.tabs.contains { $0 === tab } }
-        let thenCreate = pending?.thenCreate ?? false
-        pending = nil
+        let thenCreate = pending.thenCreate
+        self.pending = nil
         store?.close(tab.id)
         switch answer {
         case .code(let code):
-            Task { await exchange(code, in: store, thenCreate: thenCreate) }
+            Task { await exchange(code, verifier: pending.verifier, in: store, thenCreate: thenCreate) }
         case .denied:
             say("Vane was not allowed to connect to GitHub.")
         // One toast, and deliberately the same shape as the denial: from here a state that
@@ -1106,9 +1135,9 @@ enum GitHubOAuth {
     }
 
     /// Code → token → login → keychain, and then the folder the click asked for.
-    private func exchange(_ code: String, in store: TabStore?, thenCreate: Bool) async {
+    private func exchange(_ code: String, verifier: String, in store: TabStore?, thenCreate: Bool) async {
         guard let secret = OAuthSecret.github,
-              let request = GitHubOAuth.exchange(code: code, secret: secret) else { return }
+              let request = GitHubOAuth.exchange(code: code, secret: secret, verifier: verifier) else { return }
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
         // GitHub answers 200 with `{"error": …}` for a code that has been used or has
@@ -2219,7 +2248,8 @@ extension GitHub {
 
         // The consent page.
         let state = GitHubOAuth.newState()
-        let authorize = GitHubOAuth.authorize(state: state)
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        let authorize = GitHubOAuth.authorize(state: state, verifier: verifier)
         let sentItems = URLComponents(url: authorize ?? URL(fileURLWithPath: "/"),
                                       resolvingAgainstBaseURL: false)?.queryItems ?? []
         func asked(_ name: String) -> String? { sentItems.first { $0.name == name }?.value }
@@ -2297,7 +2327,7 @@ extension GitHub {
 
         // The exchange. A fake secret: the real one is never in this repository and is not
         // in this process either, on any build a developer runs.
-        let post = GitHubOAuth.exchange(code: "abc123", secret: "s3cr3t")
+        let post = GitHubOAuth.exchange(code: "abc123", secret: "s3cr3t", verifier: verifier)
         let sent = post.flatMap { $0.httpBody }.flatMap { String(data: $0, encoding: .utf8) }
         assert("the code is traded at GitHub's token endpoint",
                post?.url?.absoluteString == "https://github.com/login/oauth/access_token")
@@ -2307,9 +2337,9 @@ extension GitHub {
         assert("…as a form body, which is what that endpoint takes",
                post?.value(forHTTPHeaderField: "Content-Type")
                    == "application/x-www-form-urlencoded")
-        assert("…carrying the four things GitHub asks for, in order",
+        assert("…carrying the client, code, redirect and original proof key",
                sent == "client_id=Ov23liQ1Plm1UJ9nIlWd&client_secret=s3cr3t&code=abc123"
-                   + "&redirect_uri=vane://oauth/github")
+                   + "&redirect_uri=vane://oauth/github&code_verifier=" + verifier)
         assert("a token comes back out of the answer",
                GitHubOAuth.token(Data(#"{"access_token": "gho_x", "scope": "repo"}"#.utf8))
                    == "gho_x")

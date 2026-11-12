@@ -303,7 +303,7 @@ import XCTest
         _ = try await js(web, "__vaneBoost.zap(false); return true;", world: SiteBoostScripts.world)
     }
 
-    func testBriefHoversDoNotCancelUnrequestedPreviews() async throws {
+    func testSyntheticHoverStormDoesNotRequestOrCancelPreviews() async throws {
         let (web, capture) = try await fixture(script: Previews.script, name: Previews.messageName,
                                                html: "<body><a id='link' href='https://other.test/'><span id='leaf'>Link</span></a></body>")
         _ = try await js(web, """
@@ -326,13 +326,7 @@ import XCTest
         window.dispatchEvent(new Event('scroll'));
         return true;
         """)
-        let deadline = Date.now.addingTimeInterval(3)
-        while capture.messages.count < 2 && Date.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        XCTAssertEqual(capture.messages.count, 2, "An announced preview must still be canceled once when scrolling")
-        XCTAssertEqual(capture.messages.first?["url"] as? String, "https://other.test/")
-        XCTAssertEqual(capture.messages.last?["gone"] as? Bool, true)
+        XCTAssertTrue(capture.messages.isEmpty, "Synthetic Shift hovers and scrolls cannot announce or cancel unrequested previews")
     }
 
     func testEditingFocusSurvivesPageLifecycleWithoutAnUnloadListener() async throws {
@@ -416,7 +410,7 @@ import XCTest
         let matches = try await js(web, "return __matches;", world: Autofill.world) as? Int
         XCTAssertLessThan(try XCTUnwrap(matches), 1_000,
                           "Credential discovery must use native selector queries rather than matching every decorative node")
-        let filled = try await js(web, "return __vaneFill('ada', 'fixture-secret', false);", world: Autofill.world) as? Bool
+        let filled = try await js(web, "return __vaneFill('ada', 'fixture-secret', false, null, false, location.origin);", world: Autofill.world) as? Bool
         XCTAssertEqual(filled, true)
         let values = try await js(web, "return [user.value, password.value].join('|');") as? String
         XCTAssertEqual(values, "ada|fixture-secret")
@@ -454,7 +448,7 @@ import XCTest
                     return nativeQuery.call(this, selector);
                 };
                 """)
-            let filled = try await js(web, "return __vaneFill('ada', 'fixture-secret', false);", world: Autofill.world) as? Bool
+            let filled = try await js(web, "return __vaneFill('ada', 'fixture-secret', false, null, false, location.origin);", world: Autofill.world) as? Bool
             XCTAssertEqual(filled, false, "An exhausted tree must not supply partial credential targets")
             let queries = try await js(web, "return __oversizedQueries;", world: Autofill.world) as? Int
             XCTAssertEqual(queries, 0, "Oversized \(shadow ? "shadow" : "document") trees must fail before native queries allocate matches")

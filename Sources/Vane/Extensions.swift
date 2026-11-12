@@ -922,13 +922,14 @@ import WebKit
         if Self.dataPurges[key]?.token == token { Self.dataPurges[key] = nil }
     }
 
-    private static func verifySnapshot(_ url: URL, source: SafariExtensionSource) async throws {
+    private static func verifySnapshot(_ url: URL, source: SafariExtensionSource) async throws -> SafariExtensionSource.Signature {
         try await Task.detached(priority: .utility) {
             let signature = try SafariExtensionSource.verify(url)
             guard signature.identifier == source.extensionBundleID, signature.team == source.teamID,
                   signature.hash == source.signatureHash else {
                 throw Failure("The accepted Safari extension’s verified signing identity or resources changed. Choose Update from App to review a fresh copy.")
             }
+            return signature
         }.value
     }
 
@@ -975,7 +976,7 @@ import WebKit
             stage = frozen
             try checkLifetime()
             let bundleURL = frozen.url.appendingPathComponent("extension.appex", isDirectory: true)
-            try await Self.verifySnapshot(bundleURL, source: candidate.source)
+            let verifiedSignature = try await Self.verifySnapshot(bundleURL, source: candidate.source)
             let resources = bundleURL.appendingPathComponent("Contents/Resources", isDirectory: true)
             let manifest = try Self.validate(resources)
             try ExtensionDiagnostics.validateResources(manifest, in: resources)
@@ -989,7 +990,8 @@ import WebKit
             let request = ExtensionConsent.Review(name: ext.displayName ?? candidate.source.extensionBundleID,
                 requested: requested, previous: previous, installing: installing, limitations: issues,
                 newlySupportedCapabilities: installing ? [] : requested.permissions.intersection(Self.integratedCapabilities).subtracting(oldRecord?.integratedCapabilities ?? []),
-                updating: !installing, currentVersion: oldRecord?.version, candidateVersion: ext.version)
+                updating: !installing, currentVersion: oldRecord?.version, candidateVersion: ext.version,
+                verifiedSigner: .init(teamID: verifiedSignature.team, certificateIdentity: verifiedSignature.certificateIdentity))
             if request.needsApproval, !review(request) {
                 try checkLifetime()
                 if folders[path] != nil { failures[path] = "The app update was not approved. Your accepted code, access, identity, and settings are retained. Choose Update from App when ready to review it." }
@@ -1228,7 +1230,7 @@ import WebKit
             let current = try await safari.resolve()
             guard recoveringSafariUpdate || current.source.signatureHash == safari.signatureHash else { throw Failure("The app was updated. Choose Update from App to review its extension before enabling it.") }
             let bundleURL = codeStore.code(for: record).appendingPathComponent("extension.appex", isDirectory: true)
-            try await Self.verifySnapshot(bundleURL, source: safari)
+            _ = try await Self.verifySnapshot(bundleURL, source: safari)
             folder = bundleURL.appendingPathComponent("Contents/Resources")
             guard let bundle = Bundle(url: bundleURL) else { throw Failure("The accepted Safari extension bundle is unavailable.") }
             appBundle = bundle
@@ -1435,7 +1437,7 @@ import WebKit
     }
 
     func visible(in tab: Tab?) -> [WKWebExtensionContext] {
-        guard let tab else { return [] }
+        guard let tab, !tab.extensionAccessRestricted else { return [] }
         return visible(private: tab.isPrivate)
     }
 
@@ -1443,7 +1445,8 @@ import WebKit
     /// wrong one to draw — the badge a page's content script just set lives on the tab's.
     /// With no tab, the default action is exactly right: it is what an empty pill shows.
     func action(_ context: WKWebExtensionContext, for tab: Tab?) -> WKWebExtension.Action? {
-        context.action(for: shim(tab))
+        guard tab?.extensionAccessRestricted != true else { return nil }
+        return context.action(for: shim(tab))
     }
 
     /// The action's icon in a `Look.rowIcon` box, cached. `icon(for:)` re-decodes the
@@ -1465,7 +1468,8 @@ import WebKit
     /// popup hanging off `view`. `performAction` also marks the tab as having had a user
     /// gesture, which is what `activeTab` extensions actually wait for.
     func run(_ context: WKWebExtensionContext, for tab: Tab?, from view: NSView?) {
-        guard installed.contains(where: { $0 === context }) else { return }
+        guard tab?.extensionAccessRestricted != true,
+              installed.contains(where: { $0 === context }) else { return }
         let key = ActionKey(context, tab)
         if let existing = actionWindows[key], !existing.isClosed {
             context.performAction(for: shim(tab))
@@ -1526,7 +1530,7 @@ import WebKit
     private var icons: [ActionKey: NSImage] = [:]
 
     private func shim(_ tab: Tab?) -> (any WKWebExtensionTab)? {
-        guard let tab, let store = store(holding: tab) else { return nil }
+        guard let tab, !tab.extensionAccessRestricted, let store = store(holding: tab) else { return nil }
         return adapter(for: tab, in: store)
     }
 
@@ -1732,8 +1736,8 @@ import WebKit
         a.messageText = "“\(context.webExtension.displayName ?? "An extension")” wants more access."
         a.informativeText = what.sorted().joined(separator: "\n")
             + "\n\nAllowed access lasts until the extension is reloaded, disabled, or Vane quits. Manage Extensions can revoke additional access."
-        a.addButton(withTitle: "Allow")
-        a.addButton(withTitle: "Deny").keyEquivalent = "\u{1b}"
+        a.addButton(withTitle: "Allow").keyEquivalent = ""
+        a.addButton(withTitle: "Deny").keyEquivalent = "\r"
         let allowed = a.runModal() == .alertFirstButtonReturn
         return allowed && !invalidated && installed.contains(where: { $0 === context })
     }
@@ -1769,7 +1773,8 @@ import WebKit
     /// screen has no rows to report. Finding nothing for a stashed page is what keeps the
     /// query, the events and this in agreement.
     private func store(holding tab: Tab) -> TabStore? {
-        myStores.first { $0.windowID == tab.presentationOwner && $0.tabs.contains { $0 === tab } }
+        guard !tab.extensionAccessRestricted else { return nil }
+        return myStores.first { $0.windowID == tab.presentationOwner && $0.tabs.contains { $0 === tab } }
             ?? myStores.first { $0.tabs.contains { $0 === tab } }
     }
 
@@ -1823,7 +1828,7 @@ import WebKit
         let closingWindows = announcedWindows.subtracting(liveWindows)
         // Announce tabs before their window disappears from WebKit's registry. Keep the
         // old adapters until movement/closure has finished so events retain old IDs.
-        let liveTabs = Set(stores.flatMap { $0.accessibleTabs.map(\.id) })
+        let liveTabs = Set(stores.flatMap { $0.extensionAccessibleTabs.map(\.id) })
         for id in announcedTabs.subtracting(liveTabs) {
             if let shim = tabShims[id] {
                 controller.didCloseTab(shim, windowIsClosing: tabPositions[id].map { closingWindows.contains($0.window) } ?? false)
@@ -1843,7 +1848,7 @@ import WebKit
         // presentation owner once, rather than oscillating between mirrored strips.
         var visited: Set<Tab.ID> = []
         for store in stores {
-            for (index, tab) in store.accessibleTabs.enumerated() {
+            for (index, tab) in store.extensionAccessibleTabs.enumerated() {
                 guard self.store(holding: tab) === store, visited.insert(tab.id).inserted else { continue }
                 let shim = adapter(for: tab, in: store)
                 let position = (window: ObjectIdentifier(store), index: index)
@@ -1862,7 +1867,7 @@ import WebKit
             }
             let key = ObjectIdentifier(store)
             let current = store.active.flatMap { tab in
-                store.accessibleTabs.contains(where: { $0 === tab }) && self.store(holding: tab) === store ? tab : nil
+                store.extensionAccessibleTabs.contains(where: { $0 === tab }) && self.store(holding: tab) === store ? tab : nil
             }
             if activeTabs[key] != current?.id {
                 let previous = activeTabs[key].flatMap { tabShims[$0] }
@@ -1871,7 +1876,7 @@ import WebKit
             }
             var selected = store.selection.ids
             if selected.isEmpty, let current { selected.insert(current.id) }
-            selected = selected.intersection(Set(store.accessibleTabs.filter { self.store(holding: $0) === store }.map(\.id)))
+            selected = selected.intersection(Set(store.extensionAccessibleTabs.filter { self.store(holding: $0) === store }.map(\.id)))
             let previous = selectedTabs[key] ?? []
             if previous != selected {
                 let deselected = previous.subtracting(selected).compactMap { tabShims[$0] }
@@ -1902,6 +1907,24 @@ import WebKit
         }
     }
 
+    /// Extension APIs must not invoke Vane's OAuth callback or native-app handlers.
+    /// Check before allocating a tab/window so a rejected request has no side effects.
+    static func permitsNavigation(to url: URL, for context: WKWebExtensionContext) -> Bool {
+        switch url.scheme?.lowercased() {
+        case "http", "https", "about", "blob": return true
+        case context.baseURL.scheme?.lowercased():
+            return url.host == context.baseURL.host && url.port == context.baseURL.port
+                && url.user == nil && url.password == nil
+        default: return false
+        }
+    }
+
+    static func requireNavigation(to url: URL, for context: WKWebExtensionContext) throws {
+        guard permitsNavigation(to: url, for: context) else {
+            throw Failure("Extensions cannot navigate to this URL scheme or another extension’s pages.")
+        }
+    }
+
     // MARK: WKWebExtensionControllerDelegate
 
     func webExtensionController(_ controller: WKWebExtensionController,
@@ -1924,14 +1947,19 @@ import WebKit
                                 openNewTabUsing configuration: WKWebExtension.TabConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
         try requireActive(context)
+        if let url = configuration.url { try Self.requireNavigation(to: url, for: context) }
         if let requested = configuration.window {
             guard let store = (requested as? ExtWindow)?.store,
-                  myStores.contains(where: { $0 === store }) else {
+                  myStores.contains(where: { $0 === store }),
+                  context.hasAccessToPrivateData || !store.isPrivate else {
                 throw Failure("The requested extension window is no longer open.")
             }
         }
         let store = (configuration.window as? ExtWindow)?.store ?? myFocusedStore ?? myStores.last
             ?? Windows.open(profile: ProfileManager.shared.profiles.first { $0.id == profileID })
+        guard context.hasAccessToPrivateData || !store.isPrivate else {
+            throw Failure("This extension cannot access private windows.")
+        }
         let tab = store.newBlankTab()
         if let url = configuration.url { tab.navigate(to: url) }
         if !configuration.shouldBeActive, let first = store.tabs.first { store.current = first.id }
@@ -1943,6 +1971,10 @@ import WebKit
                                 openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionWindow)? {
         try requireActive(context)
+        guard !configuration.shouldBePrivate || context.hasAccessToPrivateData else {
+            throw Failure("This extension cannot create private windows.")
+        }
+        for url in configuration.tabURLs { try Self.requireNavigation(to: url, for: context) }
         if configuration.windowType == .popup {
             guard !configuration.shouldBePrivate, configuration.windowState == .normal,
                   configuration.tabs.isEmpty, configuration.tabURLs.count == 1,
@@ -1966,7 +1998,9 @@ import WebKit
                     }
                 }
             presentation.openExternal = { [weak self, weak parent] url in
-                guard let self, let store = parent ?? self.myFocusedStore ?? self.myStores.first else { return }
+                guard let self, Self.permitsNavigation(to: url, for: context),
+                      let store = parent ?? self.myFocusedStore ?? self.myStores.first,
+                      context.hasAccessToPrivateData || !store.isPrivate else { return }
                 store.newBlankTab().navigate(to: url)
             }
             configurePageUI(web, context: context, window: presentation.window)
@@ -2074,7 +2108,7 @@ import WebKit
     /// default action (no tab) is what a pill with no tab draws, so that one counts too.
     private func drawn(_ tab: Tab?) -> Bool {
         guard let tab else { return true }
-        return myStores.contains { $0.current == tab.id }
+        return !tab.extensionAccessRestricted && myStores.contains { $0.current == tab.id }
     }
 
     // Both methods are permanent: absence lets WebKit forward signed Safari
@@ -2570,7 +2604,7 @@ extension View {
     }
 
     private var accessible: Bool {
-        guard let tab, let store, store.profileID == tab.profileID,
+        guard let tab, !tab.extensionAccessRestricted, let store, store.profileID == tab.profileID,
               store.window != nil, !store.isParked, TabStore.all.contains(where: { $0 === store }),
               store.tabs.contains(where: { $0 === tab }) else { return false }
         return !store.isTabLocked(tab.id)
@@ -2582,12 +2616,12 @@ extension View {
     }
 
     func indexInWindow(for context: WKWebExtensionContext) -> Int {
-        guard accessible, let tab, let i = store?.accessibleTabs.firstIndex(where: { $0 === tab }) else { return NSNotFound }
+        guard accessible, let tab, let i = store?.extensionAccessibleTabs.firstIndex(where: { $0 === tab }) else { return NSNotFound }
         return i
     }
 
     func parentTab(for context: WKWebExtensionContext) -> (any WKWebExtensionTab)? {
-        guard accessible, let tab, let parent = tab.extensionParent,
+        guard accessible, let tab, let parent = tab.extensionParent, !parent.extensionAccessRestricted,
               parent.profileID == tab.profileID, parent.isPrivate == tab.isPrivate,
               let owner = TabStore.all.first(where: {
                   $0.profileID == tab.profileID && $0.window != nil && !$0.isParked
@@ -2609,6 +2643,8 @@ extension View {
             completionHandler(ExtensionHost.Failure("This tab is locked or closed."))
             return
         }
+        do { try ExtensionHost.requireNavigation(to: url, for: context) }
+        catch { completionHandler(error); return }
         tab.navigate(to: url)
         completionHandler(nil)
     }
@@ -2670,6 +2706,7 @@ extension View {
                    for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
         guard accessible else { throw ExtensionHost.Failure("This tab is locked or closed.") }
         guard let store, let url = tab?.currentURL else { return nil }
+        try ExtensionHost.requireNavigation(to: url, for: context)
         let copy = store.newBlankTab()
         copy.navigate(to: url)
         let host = ExtensionHost.host(for: store.profileID)
@@ -2687,11 +2724,11 @@ extension View {
     func tabs(for context: WKWebExtensionContext) -> [any WKWebExtensionTab] {
         guard let store else { return [] }
         let host = ExtensionHost.host(for: store.profileID)
-        return store.accessibleTabs.map { host.adapter(for: $0, in: store) }
+        return store.extensionAccessibleTabs.map { host.adapter(for: $0, in: store) }
     }
 
     func activeTab(for context: WKWebExtensionContext) -> (any WKWebExtensionTab)? {
-        guard let store, let tab = store.active else { return nil }
+        guard let store, let tab = store.active, !tab.extensionAccessRestricted else { return nil }
         return ExtensionHost.host(for: store.profileID).adapter(for: tab, in: store)
     }
 
@@ -2742,4 +2779,9 @@ extension View {
         store?.window?.performClose(nil)
         store.map { ExtensionHost.host(for: $0.profileID).sync() }
     }
+}
+
+/// Browser-owned authentication documents never enter WebKit's extension registry.
+@MainActor private extension TabStore {
+    var extensionAccessibleTabs: [Tab] { accessibleTabs.filter { !$0.extensionAccessRestricted } }
 }

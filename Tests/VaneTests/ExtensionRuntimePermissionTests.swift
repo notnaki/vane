@@ -55,6 +55,125 @@ import XCTest
         try await operation()
     }
 
+    func testRuntimePermissionReturnDefaultsToDeny() async throws {
+        let (host, context) = try await load()
+        var observedDefault: String?
+        let timer = Timer(timeInterval: 0.01, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                guard let window = NSApp.modalWindow else { return }
+                observedDefault = window.defaultButtonCell?.title
+                NSApp.stopModal(withCode: .alertSecondButtonReturn)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .modalPanel)
+        defer { timer.invalidate() }
+        let (permissions, _) = await host.webExtensionController(host.controller,
+            promptForPermissions: [WKWebExtension.Permission(rawValue: "cookies")], in: nil, for: context)
+        XCTAssertEqual(observedDefault, "Deny", "Return must never approve access while the user is typing")
+        XCTAssertTrue(permissions.isEmpty)
+    }
+
+    func testTabNavigationRejectsInternalOAuthAndExecutableSchemesBeforeCreatingAWebView() async throws {
+        let (_, context) = try await load()
+        let store = TabStore(profileID: profile, session: [])
+        let tab = store.newBlankTab()
+        let window = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.isExcludedFromWindowsMenu = true
+        store.window = window
+        defer {
+            window.orderOut(nil); window.contentView = nil; window.close(); store.window = nil
+            store.everyTab.forEach { $0.tearDown() }
+            TabStore.all.removeAll { $0 === store }
+        }
+        let adapter = ExtTab(tab, in: store)
+        for raw in ["vane://oauth/github?code=fixture&state=fixture", "javascript:void(0)", "file:///nonexistent-vane-security-fixture"] {
+            var result: Error?
+            adapter.loadURL(try XCTUnwrap(URL(string: raw)), for: context) { result = $0 }
+            XCTAssertNotNil(result, raw)
+            XCTAssertNil(tab.existingWeb, "Rejected URLs must have no navigation side effects")
+            XCTAssertNil(tab.currentURL)
+        }
+    }
+
+    func testRetainedAdapterCannotReadOrNavigateExtensionRestrictedAuthorizationTab() async throws {
+        let (host, context) = try await load()
+        let store = TabStore(profileID: profile, session: [])
+        let tab = store.newBlankTab()
+        let window = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.isExcludedFromWindowsMenu = true
+        store.window = window
+        defer {
+            window.orderOut(nil); window.contentView = nil; window.close(); store.window = nil
+            store.everyTab.forEach { $0.tearDown() }
+            TabStore.all.removeAll { $0 === store }
+        }
+        let adapter = host.adapter(for: tab, in: store)
+        let authorization = URL(string: "https://github.com/login/oauth/authorize?state=private-fixture")!
+        tab.park(url: authorization, Parked(title: "GitHub sign-in"))
+        tab.extensionAccessRestricted = true
+        host.sync()
+        XCTAssertNil(adapter.url(for: context))
+        XCTAssertNil(adapter.title(for: context))
+        XCTAssertNil(adapter.webView(for: context))
+        XCTAssertFalse(adapter.shouldGrantPermissionsOnUserGesture(for: context))
+        XCTAssertTrue(host.visible(in: tab).isEmpty)
+        XCTAssertFalse(ExtWindow(store).tabs(for: context).contains { ($0 as AnyObject) === adapter })
+        XCTAssertNil(ExtWindow(store).activeTab(for: context))
+        var result: Error?
+        adapter.loadURL(URL(string: "https://attacker.example/redirect-to-callback")!, for: context) { result = $0 }
+        XCTAssertNotNil(result, "HTTPS navigation can redirect to the internal callback and must also be refused")
+        XCTAssertEqual(tab.currentURL, authorization)
+        XCTAssertNil(tab.existingWeb)
+    }
+
+    func testNavigationPolicyPreservesWebURLsAndOnlyTheOwningExtension() async throws {
+        let (_, context) = try await load()
+        for raw in ["http://example.test/", "https://example.test/", "about:blank", "about:srcdoc", "blob:https://example.test/fixture"] {
+            XCTAssertTrue(ExtensionHost.permitsNavigation(to: try XCTUnwrap(URL(string: raw)), for: context), raw)
+        }
+        XCTAssertTrue(ExtensionHost.permitsNavigation(to: context.baseURL.appendingPathComponent("options.html"), for: context))
+        for raw in ["webkit-extension://another-extension/options.html", "vane://oauth/github", "javascript:void(0)", "file:///fixture", "custom-app://fixture"] {
+            XCTAssertFalse(ExtensionHost.permitsNavigation(to: try XCTUnwrap(URL(string: raw)), for: context), raw)
+        }
+    }
+
+    func testAuthorizationTabAndItsPopupUseNoExtensionControllerOrAdapters() async throws {
+        let (host, context) = try await load()
+        let store = TabStore(profileID: profile, session: [])
+        let ordinary = store.newBlankTab()
+        let authorization = store.newBlankTab(extensionAccessRestricted: true)
+        let window = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.isExcludedFromWindowsMenu = true
+        store.window = window
+        defer {
+            window.orderOut(nil); window.contentView = nil; window.close(); store.window = nil
+            store.everyTab.forEach { $0.tearDown() }
+            TabStore.all.removeAll { $0 === store }
+        }
+        XCTAssertNil(authorization.existingWeb)
+        let configuration = authorization.web.configuration
+        XCTAssertNil(configuration.webExtensionController, "The first web view must exclude extensions before any document loads")
+        XCTAssertTrue(ordinary.web.configuration.webExtensionController === host.controller)
+        XCTAssertEqual(configuration.websiteDataStore.identifier, ordinary.web.configuration.websiteDataStore.identifier,
+                       "Sign-in keeps the profile cookie store for SSO")
+        let popupWeb = store.popup(configuration, placement: .tab(focus: false), opener: authorization.id)
+        let popup = try XCTUnwrap(store.tabs.first { $0.existingWeb === popupWeb })
+        XCTAssertTrue(popup.extensionAccessRestricted, "Authentication popups inherit the protected opener's extension boundary")
+        XCTAssertNil(popupWeb.configuration.webExtensionController)
+        XCTAssertEqual(popupWeb.configuration.websiteDataStore.identifier, configuration.websiteDataStore.identifier)
+        let popupAdapter = host.adapter(for: popup, in: store)
+        popup.park(url: URL(string: "https://github.com/login/oauth/authorize?state=popup-private-fixture")!, Parked(title: "Private authorization"))
+        XCTAssertNil(popupAdapter.url(for: context))
+        XCTAssertNil(popupAdapter.title(for: context))
+        XCTAssertNil(popupAdapter.webView(for: context))
+        let visible = ExtWindow(store).tabs(for: context)
+        XCTAssertEqual(visible.count, 1)
+        XCTAssertTrue((visible.first as? ExtTab)?.tab === ordinary)
+    }
+
     func testAllThreeRuntimeHooksGrantOrRejectOnlyTheRequest() async throws {
         let (host, context) = try await load()
         let cookie = WKWebExtension.Permission(rawValue: "cookies")

@@ -166,9 +166,12 @@ import XCTest
         web.loadHTMLString("<body style='background:white'>Current article</body>", baseURL: nil)
         do {
             try await compatibilityWait {
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
                 host.layoutSubtreeIfNeeded()
                 return NativeFixtureMountAdmission.surfaceReady(host, in: window)
-                    && window.isKeyWindow && tab.existingWeb?.window === window && !tab.web.isLoading
+                    && NSApp.isActive && window.isKeyWindow
+                    && tab.existingWeb?.window === window && !tab.web.isLoading
             }
         } catch {
             FileHandle.standardError.write(Data("LINK_PREVIEW_ADMISSION running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) mounted=\(tab.existingWeb?.window === window) loading=\(tab.existingWeb?.isLoading ?? false) surface=\(NativeFixtureMountAdmission.surfaceReady(host, in: window))\n".utf8))

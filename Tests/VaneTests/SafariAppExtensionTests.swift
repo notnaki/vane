@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import Security
 import XCTest
 @testable import vane
 
@@ -249,6 +250,30 @@ import XCTest
         XCTAssertTrue(restored.installed.isEmpty)
         XCTAssertEqual(restored.entries.first?.path, path)
         XCTAssertNotNil(restored.entries.first?.failure)
+    }
+
+    func testInstallAndUpdateConsentShowsVerifiedTeamAndCertificateIdentity() async throws {
+        var code: SecStaticCode?
+        XCTAssertEqual(SecStaticCodeCreateWithPath(appex as CFURL, [], &code), errSecSuccess)
+        var information: CFDictionary?
+        XCTAssertEqual(SecCodeCopySigningInformation(try XCTUnwrap(code), SecCSFlags(rawValue: kSecCSSigningInformation), &information), errSecSuccess)
+        let values = try XCTUnwrap(information as? [String: Any])
+        let certificates = try XCTUnwrap(values[kSecCodeInfoCertificates as String] as? [SecCertificate])
+        let certificate = try XCTUnwrap(SecCertificateCopySubjectSummary(try XCTUnwrap(certificates.first)) as String?)
+        let host = ExtensionHost.host(for: profile)
+        func check(_ review: ExtensionConsent.Review) -> Bool {
+            let alert = ExtensionConsent.makePrompt(review)
+            let scroll = alert.accessoryView as? NSScrollView
+            let content = alert.informativeText + ((scroll?.documentView as? NSTextView)?.string ?? "")
+            XCTAssertTrue(content.contains(team), "The verified Team ID must be visible before approval")
+            XCTAssertTrue(content.contains(certificate), "Manifest branding must be accompanied by the verified certificate identity")
+            return false
+        }
+        _ = try await host.load(app, installing: true, review: check)
+        XCTAssertTrue(host.installed.isEmpty)
+        _ = try await host.load(app, installing: true) { _ in true }
+        try write(version: "2.0")
+        _ = try await host.load(app, installing: false, review: check)
     }
 
     func testAdHocAppCannotClaimAnotherSigningTeam() async throws {

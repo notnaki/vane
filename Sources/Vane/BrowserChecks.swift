@@ -875,7 +875,7 @@ import WebKit
                 document.getElementById('stepUser').focus();
                 """)
             let usernameFilled = try await js(tab,
-                Autofill.fillJS(account: "ada@example.test", password: "fixture-secret"), world: Autofill.world)
+                Autofill.fillJS(account: "ada@example.test", password: "fixture-secret", expectedOrigin: PasswordOrigin(host: "password-fixture.invalid")), world: Autofill.world)
             try require(usernameFilled as? Bool == true,
                         "autofill supports the username step of a two-step sign-in")
             let username = try await js(tab, "document.getElementById('stepUser').value")
@@ -886,7 +886,7 @@ import WebKit
                 document.getElementById('newUser').focus();
                 """)
             _ = try await js(tab,
-                Autofill.fillJS(account: "ada@example.test", password: "fixture-secret"), world: Autofill.world)
+                Autofill.fillJS(account: "ada@example.test", password: "fixture-secret", expectedOrigin: PasswordOrigin(host: "password-fixture.invalid")), world: Autofill.world)
             let untouched = try await js(tab, "document.getElementById('newPass').value === ''")
             try require(untouched as? Bool == true, "autofill never overwrites a new-password field")
             _ = try await js(tab, """
@@ -896,14 +896,14 @@ import WebKit
                   '<input type="password" autocomplete="current-password" id="loginPass"></form>';
                 """)
             _ = try await js(tab,
-                Autofill.fillJS(account: "ada@example.test", password: "fixture-secret"), world: Autofill.world)
+                Autofill.fillJS(account: "ada@example.test", password: "fixture-secret", expectedOrigin: PasswordOrigin(host: "password-fixture.invalid")), world: Autofill.world)
             let scoped = try await js(tab, "document.getElementById('registerUser').value === '' && " +
                 "document.getElementById('loginUser').value === 'ada@example.test' && " +
                 "document.getElementById('loginPass').value === 'fixture-secret'")
             try require(scoped as? Bool == true, "autofill keeps username and password in the same login form")
             _ = try await js(tab, "document.getElementById('loginUser').value = 'already-typing'")
             _ = try await js(tab,
-                Autofill.fillJS(account: "different-account", password: "different-password", automatic: true),
+                Autofill.fillJS(account: "different-account", password: "different-password", automatic: true, expectedOrigin: PasswordOrigin(host: "password-fixture.invalid")),
                 world: Autofill.world)
             let preserved = try await js(tab, "document.getElementById('loginUser').value === 'already-typing' && " +
                 "document.getElementById('loginPass').value === 'fixture-secret'")
@@ -912,13 +912,13 @@ import WebKit
                 document.body.innerHTML = '<form><input autocomplete=username readonly value=ada@example.test>' +
                   '<input id=captcha><input type=password id=readonlyPassword></form>';
                 """)
-            let rejected = try await js(tab, Autofill.fillJS(account: "bob@example.test", password: "secret", automatic: true), world: Autofill.world)
+            let rejected = try await js(tab, Autofill.fillJS(account: "bob@example.test", password: "secret", automatic: true, expectedOrigin: PasswordOrigin(host: "password-fixture.invalid")), world: Autofill.world)
             try require(rejected as? Bool == false, "automatic fill rejects a different read-only account")
-            _ = try await js(tab, Autofill.fillJS(account: "ada@example.test", password: "secret", automatic: true), world: Autofill.world)
+            _ = try await js(tab, Autofill.fillJS(account: "ada@example.test", password: "secret", automatic: true, expectedOrigin: PasswordOrigin(host: "password-fixture.invalid")), world: Autofill.world)
             let matched = try await js(tab, "document.getElementById('captcha').value === '' && document.getElementById('readonlyPassword').value === 'secret'")
             try require(matched as? Bool == true, "a matching read-only account fills only the password")
             _ = try await js(tab, "document.body.innerHTML = '<form><input type=email id=newsletter></form>'")
-            let newsletter = try await js(tab, Autofill.fillJS(account: "ada@example.test", password: "secret", automatic: true), world: Autofill.world)
+            let newsletter = try await js(tab, Autofill.fillJS(account: "ada@example.test", password: "secret", automatic: true, expectedOrigin: PasswordOrigin(host: "password-fixture.invalid")), world: Autofill.world)
             try require(newsletter as? Bool == false, "automatic username fill ignores newsletter forms")
         }
 
@@ -947,7 +947,7 @@ import WebKit
             for (name, html, account, password) in cases {
                 let encoded = String(decoding: try JSONSerialization.data(withJSONObject: [html]), as: UTF8.self)
                 let before = capture.offers.count
-                _ = try await js(tab, "document.body.innerHTML = (" + encoded + ")[0]; document.forms[0].dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));")
+                _ = try await js(tab, "document.body.innerHTML = (" + encoded + ")[0]; document.forms[0].addEventListener('submit', e => e.preventDefault(), {once:true}); document.forms[0].requestSubmit();")
                 try await wait(name) { capture.offers.count > before }
                 try require(capture.offers.last?.0 == account && capture.offers.last?.1 == password, name)
             }
@@ -968,7 +968,7 @@ import WebKit
                 document.getElementById('unrelated').dispatchEvent(new Event('input', {bubbles:true}));
                 """)
             var before = capture.offers.count
-            _ = try await js(tab, "document.getElementById('secretForm').dispatchEvent(new Event('submit', {bubbles:true}));")
+            _ = try await js(tab, "document.getElementById('secretForm').addEventListener('submit', e => e.preventDefault(), {once:true}); document.getElementById('secretForm').requestSubmit();")
             try await wait("independent form capture") { capture.offers.count > before }
             try require(capture.offers.last?.0 == "", "a password-only form cannot inherit another form's account")
             _ = try await js(tab, """
@@ -977,7 +977,7 @@ import WebKit
                 document.getElementById('step').innerHTML = '<input type=password value=step-secret>';
                 """)
             before = capture.offers.count
-            _ = try await js(tab, "document.getElementById('step').dispatchEvent(new Event('submit', {bubbles:true}));")
+            _ = try await js(tab, "document.getElementById('step').addEventListener('submit', e => e.preventDefault(), {once:true}); document.getElementById('step').requestSubmit();")
             try await wait("username-step capture") { capture.offers.count > before }
             try require(capture.offers.last?.0 == "step@example.test", "a password step retains its own removed username")
             let submittedCount = capture.offers.count
@@ -994,7 +994,7 @@ import WebKit
                   '<input autocomplete=username id=actual><input type=password autocomplete=current-password id=password>';
                 document.getElementById('actual').focus();
                 """)
-            _ = try await js(tab, Autofill.fillJS(account: "actual@example.test", password: "secret"), world: world)
+            _ = try await js(tab, Autofill.fillJS(account: "actual@example.test", password: "secret", expectedOrigin: PasswordOrigin(host: "password-fixture.invalid")), world: world)
             let scoped = try await js(tab, "document.getElementById('decoy').value === '' && document.getElementById('actual').value === 'actual@example.test'")
             try require(scoped as? Bool == true, "formless login uses its nearest semantic username")
         }

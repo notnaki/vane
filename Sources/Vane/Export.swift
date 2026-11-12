@@ -499,10 +499,15 @@ enum Export {
         return field.stringValue.trimmingCharacters(in: .whitespaces).uppercased() == "EXPORT"
     }
 
-    @MainActor static func chooseAndExport(_ kind: Kind,
-                                profileID: UUID = ProfileManager.activeProfileID) {
-        if kind == .passwords, !confirmPlaintext() { return }
+    @MainActor struct Interaction {
+        var confirmPlaintext: @MainActor () -> Bool = Export.confirmPlaintext
+        var authenticate: @MainActor (@escaping @MainActor (Bool) -> Void) -> Void = { done in
+            Passwords.authenticate("export your saved passwords", done)
+        }
+        var chooseDestination: @MainActor (Kind, UUID) -> URL? = Export.chooseDestination
+    }
 
+    @MainActor private static func chooseDestination(_ kind: Kind, profileID: UUID) -> URL? {
         let panel = NSSavePanel()
         panel.title = "Export"
         panel.nameFieldStringValue = defaultName(kind)
@@ -512,7 +517,30 @@ enum Export {
         panel.message = kind == .passwords
             ? "This file will contain your passwords in plain text. Delete it when you are done."
             : "Exporting from the profile “\(profileName)”."
-        guard panel.runModal() == .OK, let file = panel.url else { return }
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    @MainActor static func chooseAndExport(_ kind: Kind,
+                                profileID: UUID = ProfileManager.activeProfileID,
+                                interaction: Interaction = Interaction()) {
+        guard kind == .passwords else {
+            chooseAndWrite(kind, profileID: profileID, interaction: interaction)
+            return
+        }
+        guard interaction.confirmPlaintext() else { return }
+        var completed = false
+        interaction.authenticate { authenticated in
+            guard !completed else { return }
+            completed = true
+            guard authenticated else { return }
+            chooseAndWrite(kind, profileID: profileID, interaction: interaction)
+        }
+    }
+
+    @MainActor private static func chooseAndWrite(_ kind: Kind, profileID: UUID,
+                                                  interaction: Interaction) {
+        guard let file = interaction.chooseDestination(kind, profileID) else { return }
 
         Task {
             let alert = NSAlert()

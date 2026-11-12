@@ -469,7 +469,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 receipt?.observe(event)
                 held?.receive(event, delivery: delivery)
             }
-            web.evaluateJavaScript("document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))",
+            web.evaluateJavaScript("(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(document.forms[0])",
                                    in: nil, in: .page) { [weak receipt] result in
                 receipt?.evaluation = result.map { _ in () }
             }
@@ -540,8 +540,41 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     }
 
     private func fill(_ web: WKWebView, account: String = "ada", automatic: Bool = false) async throws -> Bool {
-        try await js(web, Autofill.fillJS(account: account, password: "fixture-secret", automatic: automatic),
+        try await js(web, Autofill.fillJS(account: account, password: "fixture-secret", automatic: automatic, expectedOrigin: PasswordOrigin(url: web.url!)!),
                      world: Autofill.world) as? Bool == true
+    }
+
+    func testFillRejectsMissingOrDifferentExpectedOriginBeforeWritingFields() async throws {
+        try await withDocumentFixture("<form><input id=user autocomplete=username><input id=password type=password></form>") { web, _ in
+            for expected in ["null", "'https://other.example.test'", "'http://login.example.test'", "'https://login.example.test:8443'"] {
+                let result = try await js(web,
+                    "window.__vaneFill('ada','fixture-secret',false,null,false,\(expected))", world: Autofill.world)
+                expectFalse(result as? Bool == true, "A credential must remain bound to its authorized origin")
+                expectEqual(try await js(web, "[user.value,password.value].join('|')") as? String, "|")
+                _ = try await js(web, "user.value=''; password.value=''")
+            }
+        }
+    }
+
+    func testGeneratedPasswordRejectsDifferentExpectedOrigin() async throws {
+        try await withDocumentFixture("<form><input id=password type=password autocomplete=new-password></form>") { web, capture in
+            _ = try await js(web, "password.focus()")
+            try await wait { capture.messages.contains { $0["generate"] as? Bool == true } }
+            let target = try XCTUnwrap(capture.messages.last { $0["generate"] as? Bool == true }?["target"] as? String)
+            let args = String(decoding: try JSONSerialization.data(withJSONObject: ["generated-fixture", target, "https://other.example.test"]), as: UTF8.self)
+            expectFalse(try await js(web, "window.__vaneGenerate.apply(null, \(args))", world: Autofill.world) as? Bool == true)
+            expectEqual(try await js(web, "password.value") as? String, "")
+        }
+    }
+
+    func testSyntheticSubmitCannotCreatePasswordOffer() async throws {
+        let (web, capture) = try await fixture("<form><input autocomplete=username value=ada><input type=password value=fixture-secret></form>")
+        _ = try await js(web, "document.forms[0].addEventListener('submit',e=>e.preventDefault()); document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})); true")
+        _ = try await js(web, "webkit.messageHandlers.vanepw.postMessage({testBarrier:true}); true", world: Autofill.world)
+        try await wait { capture.messages.contains { $0["testBarrier"] as? Bool == true } }
+        expectFalse(capture.messages.contains { $0["password"] != nil || $0["usernameStep"] != nil })
+        _ = try await js(web, "document.forms[0].requestSubmit(); true")
+        try await wait { capture.messages.contains { $0["password"] as? String == "fixture-secret" } }
     }
 
     func testDocumentNotificationFixtureOwnsAnActiveAppKitContext() async throws {
@@ -611,7 +644,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         expectTrue(try await fill(web))
         expectEqual(try await js(web, "embedded.contentDocument.getElementById('password').value") as? String, "fixture-secret")
         expectEqual(try await js(web, "decoy.value") as? String, "")
-        _ = try await js(web, "embedded.contentDocument.forms[0].dispatchEvent(new Event('submit',{bubbles:true}))")
+        _ = try await js(web, "(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(embedded.contentDocument.forms[0])")
         try await Task.sleep(for: .milliseconds(100))
         expectEqual(capture.messages.last { $0["password"] != nil }?["account"] as? String, "ada")
     }
@@ -639,7 +672,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let target = try XCTUnwrap(body["target"] as? String)
         _ = try await js(web, "document.body.innerHTML='<form><input autocomplete=username><input id=replacement type=password></form>'")
-        expectFalse(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", target: target), world: Autofill.world) as? Bool == true)
+        expectFalse(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", target: target, expectedOrigin: PasswordOrigin(url: web.url!)!), world: Autofill.world) as? Bool == true)
         expectEqual(try await js(web, "replacement.value") as? String, "")
     }
 
@@ -663,7 +696,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 try await wait { !tab.web.isLoading }
                 try await Task.sleep(for: .milliseconds(250))
                 expectEqual(try await js(tab.web, "password.value") as? String, "bob-secret")
-                _ = try await js(tab.web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
+                _ = try await js(tab.web, "(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(document.forms[0])")
                 try await Task.sleep(for: .milliseconds(100))
                 expectTrue(tab.pendingSave == nil, "An unchanged saved password must not create a save prompt")
             }
@@ -995,7 +1028,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     #endif
 
     private func submitUsername(_ tab: Tab, origin: PasswordOrigin,
-                                script: String = "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))") async throws -> @MainActor () throws -> Void {
+                                script: String = "(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(document.forms[0])") async throws -> @MainActor () throws -> Void {
         #if DEBUG
         return try await awaitSubmittedUsernameProcessing(tab, origin: origin, script: script)
         #else
@@ -1528,7 +1561,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                          "A fresh profile must have no receipt before its only explicit fill")
             let hold = control == .none ? nil : try PasswordFillCompletionHold(web: web,
                 script: Autofill.fillJS(account: "bob", password: "bob-secret", automatic: false,
-                                       target: target, continuation: false))
+                                       target: target, continuation: false, expectedOrigin: origin))
             defer {
                 do { try hold?.close(); try hold?.dispose() }
                 catch { XCTFail("Explicit-fill callback cleanup failed: \(error)") }
@@ -1708,7 +1741,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 let target = try XCTUnwrap(anchor?["target"] as? String)
                 let hold = try PasswordFillCompletionHold(web: tab.web,
                     script: Autofill.fillJS(account: "bob", password: "bob-secret", automatic: true,
-                                           target: target, continuation: true), expectedReply: firstReplyValue)
+                                           target: target, continuation: true, expectedOrigin: origin), expectedReply: firstReplyValue)
                 heldReply = hold
                 secretRelease.signal()
                 try await wait(for: "real continuation reply to be held") {
@@ -1915,7 +1948,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                     // without a choice while its earlier continuation read is pending.
                     let admitRelease = try await submitUsername(tab, origin: origin, script: """
                         document.body.insertAdjacentHTML('beforeend','<form id=other><input autocomplete=username value=bob></form>');
-                        other.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+                        (function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(other);
                         """)
                     guard !readHold.completed else {
                         throw FixtureTimeout(stage: "password-service read no longer held at actual release")
@@ -1966,7 +1999,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         web.loadSimulatedRequest(URLRequest(url: URL(string: "https://login.example.test/next")!),
                                  responseHTML: "<form><input id=password type=password></form>")
         try await wait { !web.isLoading }
-        expectFalse(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", target: target), world: Autofill.world) as? Bool == true)
+        expectFalse(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", target: target, expectedOrigin: PasswordOrigin(url: web.url!)!), world: Autofill.world) as? Bool == true)
         expectEqual(try await js(web, "password.value") as? String, "")
     }
 
@@ -2004,7 +2037,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             if expected.isEmpty { try await Task.sleep(for: .milliseconds(200)) }
             else { try await wait { try await js(tab.web, "password.value") as? String == expected } }
             expectEqual(try await js(tab.web, "password.value") as? String, expected)
-            _ = try await js(tab.web, "user.value='typed'; password.value='typed-secret'; document.forms[0].dispatchEvent(new Event('submit',{bubbles:true}))")
+            _ = try await js(tab.web, "user.value='typed'; password.value='typed-secret'; (function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(document.forms[0])")
             try await Task.sleep(for: .milliseconds(100))
             if privateMode || address.hasPrefix("http:") { expectTrue(tab.pendingSave == nil) }
             else {
@@ -2151,7 +2184,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
 
     func testMismatchedNewPasswordConfirmationDoesNotOffer() async throws {
         let (web, capture) = try await fixture("<form><input autocomplete=username value=ada><input type=password autocomplete=new-password value=first><input type=password autocomplete=new-password value=second></form>")
-        _ = try await js(web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true}))")
+        _ = try await js(web, "(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(document.forms[0])")
         try await Task.sleep(for: .milliseconds(100))
         expectFalse(capture.messages.contains { $0["password"] != nil })
     }
@@ -2162,7 +2195,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(raw?.data(using: .utf8))) as? [String: Any])
         let target = try XCTUnwrap(body["target"] as? String)
         _ = try await js(web, "user.outerHTML='<input id=user autocomplete=username>'")
-        expectFalse(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", target: target), world: Autofill.world) as? Bool == true)
+        expectFalse(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", target: target, expectedOrigin: PasswordOrigin(url: web.url!)!), world: Autofill.world) as? Bool == true)
         expectEqual(try await js(web, "password.value") as? String, "")
     }
 
@@ -2171,7 +2204,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         _ = try await js(web, "newPassword.focus()")
         try await Task.sleep(for: .milliseconds(100))
         let target = capture.messages.last { $0["generate"] as? Bool == true }?["target"] as? String ?? "missing"
-        let args = String(decoding: try JSONSerialization.data(withJSONObject: ["generated-fixture", target]), as: UTF8.self)
+        let args = String(decoding: try JSONSerialization.data(withJSONObject: ["generated-fixture", target, "https://login.example.test"]), as: UTF8.self)
         expectTrue(try await js(web, "!!window.__vaneGenerate && window.__vaneGenerate.apply(null," + args + ")", world: Autofill.world) as? Bool == true)
         expectEqual(try await js(web, "[old.value,newPassword.value,confirmation.value].join('|')") as? String, "keep|generated-fixture|generated-fixture")
     }
@@ -2181,7 +2214,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         _ = try await js(web, "newPassword.focus()")
         try await Task.sleep(for: .milliseconds(100))
         let target = capture.messages.last { $0["generate"] as? Bool == true }?["target"] as? String ?? "missing"
-        let args = String(decoding: try JSONSerialization.data(withJSONObject: ["generated-fixture", target]), as: UTF8.self)
+        let args = String(decoding: try JSONSerialization.data(withJSONObject: ["generated-fixture", target, "https://login.example.test"]), as: UTF8.self)
         expectFalse(try await js(web, "!!window.__vaneGenerate && window.__vaneGenerate.apply(null," + args + ")", world: Autofill.world) as? Bool == true)
         expectEqual(try await js(web, "confirmation.value") as? String, "")
     }
@@ -2209,14 +2242,14 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
 
     func testRepeatedSubmissionOffersOnlyOneAttempt() async throws {
         let (web, capture) = try await fixture("<form><input autocomplete=username value=ada><input type=password value=fixture></form>")
-        _ = try await js(web, "for(let i=0;i<3;i++) document.forms[0].dispatchEvent(new Event('submit',{bubbles:true}))")
+        _ = try await js(web, "for(let i=0;i<3;i++) (function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(document.forms[0])")
         try await Task.sleep(for: .milliseconds(150))
         expectEqual(capture.messages.filter { $0["password"] != nil }.count, 1)
     }
 
     func testVisibleLoginErrorRetractsItsUnverifiedAttempt() async throws {
         let (web, capture) = try await fixture("<form><input autocomplete=username value=ada><input id=password type=password value=fixture></form>")
-        _ = try await js(web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true}))")
+        _ = try await js(web, "(function(f){f.addEventListener('submit',function(e){e.preventDefault()});f.requestSubmit()})(document.forms[0])")
         try await wait { capture.messages.contains { $0["attempt"] != nil } }
         let attempt = capture.messages.last { $0["attempt"] != nil }?["attempt"] as? String
         _ = try await js(web, "password.setAttribute('aria-invalid','true')")
@@ -2245,7 +2278,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         _ = try await js(web, "embedded.contentDocument.getElementById('newPassword').addEventListener('input',()=>outside.focus()); embedded.contentDocument.getElementById('newPassword').focus()")
         try await wait { capture.messages.contains { $0["generate"] as? Bool == true } }
         let target = try XCTUnwrap(capture.messages.last { $0["generate"] as? Bool == true }?["target"] as? String)
-        expectFalse(try await js(web, Autofill.generateJS(password: "generated-fixture", target: target), world: Autofill.world) as? Bool == true)
+        expectFalse(try await js(web, Autofill.generateJS(password: "generated-fixture", target: target, expectedOrigin: PasswordOrigin(url: web.url!)!), world: Autofill.world) as? Bool == true)
         expectEqual(try await js(web, "embedded.contentDocument.getElementById('confirmation').value") as? String, "")
     }
 

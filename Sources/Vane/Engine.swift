@@ -128,6 +128,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     var canOpenSplit: (() -> Bool)?
     var saveLink: ((URL, String?) -> Void)?
     private var contextFilename: String?
+    private var contextSourceURL: URL?
     private var originalItems: [(item: NSMenuItem, title: String)] = []
     private var pageContextMenu: PageContextMenu?
     var contextLink: URL? {
@@ -181,11 +182,13 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         contextLink = nil
     }
 
-    func receiveContextLink(_ body: Any) {
+    func receiveContextLink(_ body: Any, sourceURL: URL? = nil) {
         guard Self.isCurrentEvent(body, armedAt: contextArmedAt,
                                   now: Date().timeIntervalSince1970) else { return }
         contextFilename = (body as? [String: Any])?["filename"] as? String
-        contextLink = Self.link(from: (body as? [String: Any])?["url"] as Any)
+        contextSourceURL = sourceURL
+        let candidate = Self.link(from: (body as? [String: Any])?["url"] as Any)
+        contextLink = candidate.flatMap { LinkInteraction.admits(url: $0, source: sourceURL) ? $0 : nil }
     }
 
     /// Rebuild from the original WebKit items when an asynchronous context reply arrives.
@@ -263,6 +266,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     @objc func openLink(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL,
+              LinkInteraction.admits(url: url, source: contextSourceURL),
               let id = sender.identifier?.rawValue, let destination = Destination(rawValue: id) else { return }
         if destination == .tab { openBackground?(url) }
         else if destination != .split || canOpenSplit?() == true { openDestination?(url, destination) }
@@ -488,14 +492,15 @@ struct TitleReveal: Equatable, Sendable {
     var web: WKWebView {
         if let existingWeb { return existingWeb }
         let fresh: WKWebView
-        if !isPrivate, let prepared = Self.preparedFirstPage, prepared.profileID == profileID {
+        if !isPrivate, !extensionAccessRestricted, let prepared = Self.preparedFirstPage, prepared.profileID == profileID {
             Self.preparedFirstPage = nil
             fresh = prepared.web
             // The blocker may have finished compiling since this unloaded view was made.
             fresh.configuration.userContentController.removeAllContentRuleLists()
             Blocker.apply(to: fresh.configuration.userContentController, profileID: profileID)
         } else {
-            fresh = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
+            fresh = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID,
+                                     extensionAccessRestricted: extensionAccessRestricted)
         }
         existingWeb = fresh // attach() reads `web`, so publish the view first.
         attach()
@@ -523,8 +528,27 @@ struct TitleReveal: Equatable, Sendable {
     var certificateNavigationURL: URL? {
         certificateNavigation == nil ? nil : certificateDestinationURL
     }
+    var certificateDocumentURL: URL? { committedURL }
+    private let httpsContinuation = HTTPSOnly.Continuation()
+    private var httpsPrompt: NSAlert?
+    private weak var httpsPromptWindow: NSWindow?
+    private var httpsPromptCloseObserver: NSObjectProtocol?
     private var certificateDestinationURL: URL?
     private var certificateNavigation: WKNavigation?
+    private var certificatePendingException: (navigation: WKNavigation, scope: CertificateTrust.Scope, usedCookie: Bool)?
+    private var certificateDocumentException: CertificateTrust.Scope?
+    private var certificateDocumentUsedException = false
+    /// Policy of the document still on screen, independent of a provisional TLS
+    /// destination. Cancellation restores this value without judging that destination.
+    private var certificateCommittedTrusted = true
+    private var certificateDocumentNavigation: WKNavigation?
+    private var certificateValidatedNavigation: WKNavigation?
+    private var certificateTrustedNavigation: WKNavigation?
+    /// Object identity records mutation provenance, never an evaluation result or
+    /// a leaf-based success cache. Weak entries cannot retain WebKit trust contexts.
+    private let certificateExceptionTrusts = NSHashTable<AnyObject>(options: [.weakMemory, .objectPointerPersonality])
+    /// Native authorization pages keep their state and proof key outside extension access.
+    var extensionAccessRestricted = false
     @Published var canGoBack = false
     @Published var canGoForward = false
     /// A password the page just submitted, waiting on the user to approve saving it.
@@ -766,10 +790,12 @@ struct TitleReveal: Equatable, Sendable {
     ///
     /// Everything else a tab has, this tab gets: `attach()` puts the delegates, the user
     /// agent, the developer settings and the KVO on it exactly as for any other page.
-    init(popup configuration: WKWebViewConfiguration, isPrivate: Bool, profileID: UUID) {
+    init(popup configuration: WKWebViewConfiguration, isPrivate: Bool, profileID: UUID,
+         extensionAccessRestricted: Bool = false) {
         self.id = UUID()
         self.isPrivate = isPrivate
         self.profileID = isPrivate ? Profile.incognito.id : profileID
+        self.extensionAccessRestricted = extensionAccessRestricted
         let cfg = configuration.copy() as! WKWebViewConfiguration
         // Popup preferences can be shared with the opener. Apply the current motion
         // policy to a copy, preserving WebKit's related-page configuration.
@@ -782,6 +808,7 @@ struct TitleReveal: Equatable, Sendable {
         // would tear the other's password bridge, media tray and status bar out from under
         // it. The scripts and the blocker's rules go onto one of this tab's own instead.
         cfg.userContentController = Tab.contentController(profileID: self.profileID)
+        if extensionAccessRestricted { cfg.webExtensionController = nil }
         existingWeb = LinkContextWebView(frame: .zero, configuration: cfg)
         super.init()
         attach()
@@ -791,11 +818,13 @@ struct TitleReveal: Equatable, Sendable {
 
     /// A WKWebView with nothing in it. WebKit does not spawn a WebContent process until
     /// something is actually loaded, which is what makes a suspended tab free.
-    private static func freshWebView(isPrivate: Bool, profileID: UUID) -> WKWebView {
+    private static func freshWebView(isPrivate: Bool, profileID: UUID,
+                                     extensionAccessRestricted: Bool = false) -> WKWebView {
         // `blocking: false`: the controller `configuration` would attach the rules to is
         // replaced on the very next line, and `contentController` blocks the one that lives.
         let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID, blocking: false)
         cfg.userContentController = contentController(profileID: profileID)
+        if extensionAccessRestricted { cfg.webExtensionController = nil }
         return LinkContextWebView(frame: .zero, configuration: cfg)
     }
 
@@ -816,7 +845,8 @@ struct TitleReveal: Equatable, Sendable {
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: true, in: Autofill.world))
         c.addUserScript(
-            WKUserScript(source: Previews.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+            WKUserScript(source: Previews.script, injectionTime: .atDocumentEnd,
+                         forMainFrameOnly: true, in: Previews.world))
         // All frames, unlike the password script: an embedded player lives in an iframe.
         // Its own content world: `__vanePiP` is then not on the page's `window` at all.
         c.addUserScript(
@@ -826,7 +856,7 @@ struct TitleReveal: Equatable, Sendable {
                                     forMainFrameOnly: true, in: MeetCall.world))
         c.addUserScript(
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
-                         forMainFrameOnly: false))
+                         forMainFrameOnly: false, in: TabAudio.world))
         // Media controls must run in the frame that owns the player. Empty frames post
         // no retained state; capture listeners do no work until a media event arrives.
         c.addUserScript(
@@ -836,7 +866,7 @@ struct TitleReveal: Equatable, Sendable {
         // status capsule, which is not worth two mouse listeners in every advert on the page.
         c.addUserScript(
             WKUserScript(source: StatusBar.script, injectionTime: .atDocumentEnd,
-                         forMainFrameOnly: true))
+                         forMainFrameOnly: true, in: StatusBar.world))
         // Document *start* and every frame: the listeners have to be in place before a page
         // can autofocus its search box, and a comment box is as often in an iframe as not.
         c.addUserScript(
@@ -890,10 +920,11 @@ struct TitleReveal: Equatable, Sendable {
                                                     name: PictureInPicture.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: MeetCall.world,
                                                     name: MeetCall.messageName)
-        web.configuration.userContentController.add(WeakHandler(self), name: Previews.messageName)
-        web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: Previews.world,
+                                                    name: Previews.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: TabAudio.world, name: TabAudio.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: MediaTray.messageName)
-        web.configuration.userContentController.add(WeakHandler(self), name: StatusBar.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: StatusBar.world, name: StatusBar.messageName)
         web.configuration.userContentController.add(WeakHandler(self),
                                                     contentWorld: PageFocus.world,
                                                     name: PageFocus.messageName)
@@ -903,6 +934,7 @@ struct TitleReveal: Equatable, Sendable {
         // A fresh web view has no page to be insecure about.
         secureContent = true
         certificateTrusted = true
+        certificateCommittedTrusted = true
         hoveredLink = nil
         editableFrames = []
         web.customUserAgent = Settings.userAgent
@@ -968,18 +1000,9 @@ struct TitleReveal: Equatable, Sendable {
             web.observe(\.serverTrust, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
                     guard let self, self.existingWeb === w, !self.suspended, !self.tornDown else { return }
-                    guard let trust = w.serverTrust else { self.certificateTrusted = true; return }
-                    // Off the main actor, and usually straight out of the session's memory
-                    // — see `CertificateTrust.evaluate`. `serverTrust` still being this one
-                    // on the way back is the ordering guard: if it has moved on, a later
-                    // evaluation is in flight for the page the pill is actually showing.
-                    let document = self.readingDocumentGeneration
-                    let host = w.url?.host ?? "", port = w.url?.port ?? 443
                     Task { [weak self, weak w] in
-                        let ok = await CertificateTrust.evaluate(trust, host: host, port: port).ok
-                        guard let self, let w, self.existingWeb === w, !self.suspended,
-                              self.readingDocumentGeneration == document, w.serverTrust === trust else { return }
-                        self.certificateTrusted = ok
+                        guard let self, let w else { return }
+                        await self.evaluateCertificateTrust(in: w)
                     }
                 }
             },
@@ -987,6 +1010,104 @@ struct TitleReveal: Equatable, Sendable {
         // attach() re-runs on resume, so this covers a waking tab too.
         TabAudio.watch(self) { [weak self] in self?.audible = $0 }
         TabAudio.reapply(self)
+    }
+
+    /// Shared observer path; a newer document or native trust object invalidates
+    /// an outstanding evaluation before its result can update browser policy.
+    func evaluateCertificateTrust(in w: WKWebView) async {
+        guard existingWeb === w, !suspended, !tornDown else { return }
+        guard let trust = w.serverTrust else { applyCertificateTrustEvaluation(true); return }
+        let document = readingDocumentGeneration
+        let navigation = certificateNavigation ?? certificateDocumentNavigation
+        let url = certificateNavigationURL ?? committedURL ?? w.url
+        let host = url?.host ?? "", port = url?.port ?? 443
+        let outcome = await CertificateTrust.evaluate(trust, host: host, port: port)
+        guard existingWeb === w, !suspended, !tornDown,
+              readingDocumentGeneration == document, w.serverTrust === trust,
+              navigation === (certificateNavigation ?? certificateDocumentNavigation) else { return }
+        if outcome.ok, outcome.result == .proceed, let fingerprint = outcome.fingerprint,
+           CertificateTrust.hasExceptionProvenance(in: self, host: host, port: port, fingerprint: fingerprint) {
+            noteCertificateException(host: host, port: port, trust: trust, in: w, usedCookie: false)
+        }
+        applyCertificateTrustEvaluation(outcome.ok, result: outcome.result, trust: trust)
+    }
+
+    private var certificateHasExceptionProvenance: Bool {
+        certificateDocumentException != nil
+            || certificatePendingException.map { $0.navigation === certificateNavigation } == true
+    }
+
+    /// Keep effective native trust separate from Vane's exception provenance. A
+    /// legitimate user/admin `.proceed` with no browser provenance remains valid.
+    func applyCertificateTrustEvaluation(_ trusted: Bool, result: SecTrustResultType = .invalid,
+                                        trust: SecTrust? = nil) {
+        let knownException = trust.map { certificateExceptionTrusts.contains($0) } ?? false
+        if let navigation = certificateNavigation {
+            certificateTrustedNavigation = trusted && !knownException && (result == .unspecified || result == .proceed) ? navigation : nil
+            certificateValidatedNavigation = trusted && !knownException && result == .unspecified ? navigation : nil
+        }
+        if trusted, result == .unspecified, !knownException {
+            if certificateNavigation == nil, !certificateDocumentUsedException {
+                // Only a successor document may recover an inherited bad origin.
+                // The document that consumed a cookie stays untrusted until replaced.
+                certificateDocumentException = nil
+            }
+        }
+        certificateTrusted = trusted && !knownException && !certificateHasExceptionProvenance
+        if certificateNavigation == nil, !provisional, existingWeb?.url == committedURL {
+            certificateCommittedTrusted = certificateTrusted
+        }
+    }
+
+    private func restoreCommittedCertificateTrust() {
+        certificateTrusted = certificateCommittedTrusted && certificateDocumentException == nil
+    }
+
+    /// Called before cookie validation/grant. Scope matches actual main-frame
+    /// navigation or the committed origin; an unrelated subresource cannot taint it.
+    func noteCertificateException(host: String, port: Int, trust: SecTrust, in w: WKWebView, usedCookie: Bool = true) {
+        guard existingWeb === w, !suspended, !tornDown,
+              let scope = CertificateTrust.Scope(profileID: profileID, host: host, port: port) else { return }
+        if let certificate = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first {
+            CertificateTrust.recordExceptionProvenance(in: self, host: host, port: port,
+                fingerprint: CertificateTrust.fingerprint(certificate))
+        }
+        if usedCookie { certificateExceptionTrusts.add(trust) }
+        if let navigation = certificateNavigation,
+           CertificateTrust.shouldPrompt(host: host, port: port, navigationURL: certificateNavigationURL) {
+            let used = usedCookie || (certificatePendingException?.navigation === navigation && certificatePendingException?.usedCookie == true)
+            certificatePendingException = (navigation, scope, used)
+            certificateValidatedNavigation = nil
+            certificateTrustedNavigation = nil
+            certificateTrusted = false
+        } else if CertificateTrust.shouldPrompt(host: host, port: port, navigationURL: committedURL) {
+            certificateDocumentException = scope
+            certificateDocumentUsedException = certificateDocumentUsedException || usedCookie
+            certificateTrusted = false
+            certificateCommittedTrusted = false
+        }
+    }
+
+    private func commitCertificateProvenance(_ navigation: WKNavigation?, in w: WKWebView) {
+        guard let navigation else { return }
+        certificateDocumentNavigation = navigation
+        if let pending = certificatePendingException, pending.navigation === navigation,
+           CertificateTrust.shouldPrompt(host: pending.scope.host, port: pending.scope.port, navigationURL: w.url) {
+            certificateDocumentException = pending.scope
+            certificateDocumentUsedException = pending.usedCookie
+        } else {
+            let inherited = certificateDocumentException.flatMap { scope in
+                CertificateTrust.shouldPrompt(host: scope.host, port: scope.port, navigationURL: w.url) ? scope : nil
+            }
+            certificateDocumentException = certificateValidatedNavigation === navigation ? nil : inherited
+            certificateDocumentUsedException = false
+        }
+        if certificatePendingException?.navigation === navigation { certificatePendingException = nil }
+        if certificateValidatedNavigation === navigation { certificateValidatedNavigation = nil }
+        if certificateHasExceptionProvenance { certificateTrusted = false }
+        else if certificateTrustedNavigation === navigation { certificateTrusted = true }
+        if certificateTrustedNavigation === navigation { certificateTrustedNavigation = nil }
+        certificateCommittedTrusted = certificateTrusted
     }
 
     private func updatePageTitle(from observedWeb: WKWebView, settled: Bool = false) {
@@ -1099,6 +1220,7 @@ struct TitleReveal: Equatable, Sendable {
 
     fileprivate func prepareNavigation(to url: URL?, reload: Bool = false) {
         guard !tornDown, !suspended, let url else { return }
+        cancelHTTPSPrompt()
         if committedURL == nil {
             initialRequestedURL = url
             if !editing { address = url.absoluteString }
@@ -1211,6 +1333,16 @@ struct TitleReveal: Equatable, Sendable {
     /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
     /// "nothing was parked" must never mean "nothing was released".
     private func release() {
+        certificatePendingException = nil
+        certificateDocumentException = nil
+        certificateDocumentUsedException = false
+        certificateCommittedTrusted = true
+        certificateDocumentNavigation = nil
+        certificateValidatedNavigation = nil
+        certificateTrustedNavigation = nil
+        certificateExceptionTrusts.removeAllObjects()
+        cancelHTTPSPrompt()
+        httpsContinuation.invalidate()
         MeetCall.reset(self)
         Previews.shared.cancel(from: self)
         navigationState.invalidate()
@@ -1262,13 +1394,14 @@ struct TitleReveal: Equatable, Sendable {
         old.navigationDelegate = nil
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: "vanepw", contentWorld: Autofill.world)
-        old.configuration.userContentController.removeScriptMessageHandler(forName: Previews.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: Previews.messageName,
+                                                                           contentWorld: Previews.world)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PictureInPicture.messageName, contentWorld: PictureInPicture.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: MeetCall.messageName, contentWorld: MeetCall.world)
-        old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName, contentWorld: TabAudio.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: MediaTray.messageName)
-        old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName, contentWorld: StatusBar.world)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PageFocus.messageName, contentWorld: PageFocus.world)
         if let host = old.superview as? WebHost { host.remove(old) }
@@ -1494,17 +1627,32 @@ struct TitleReveal: Equatable, Sendable {
     /// Only ever over https — filling a saved password into a plaintext page hands it to
     /// anyone on the path, and saving one from there means it was already exposed.
     private var secureOrigin: PasswordOrigin? {
-        guard certificateTrusted, let page = existingWeb, let url = page.url, url.scheme == "https" else { return nil }
+        guard certificateTrusted, !certificateHasExceptionProvenance, let page = existingWeb,
+              let url = committedURL, url.scheme == "https" else { return nil }
         if let trust = page.serverTrust {
+            guard !certificateExceptionTrusts.contains(trust) else { return nil }
             var result = SecTrustResultType.invalid
             // Inspect the result already evaluated by WebKit/the challenge handler. Never
             // wait for a network trust evaluation on the UI actor or allow an exception.
             guard SecTrustGetTrustResult(trust, &result) == errSecSuccess,
                   result == .unspecified || result == .proceed else { return nil }
+            // A copied/native-connection `.proceed` can precede its asynchronous
+            // KVO evaluation. Consent metadata closes that publication window.
+            if result == .proceed, let host = url.host,
+               let certificate = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first,
+               CertificateTrust.hasExceptionProvenance(in: self, host: host, port: url.port ?? 443,
+                   fingerprint: CertificateTrust.fingerprint(certificate)) { return nil }
         }
         return PasswordOrigin(url: url)
     }
     private var secureHost: String? { secureOrigin?.host }
+
+    /// Reading a secret for delivery needs a settled document. A save submission has
+    /// separate, already captured authority and may finish during same-origin navigation.
+    private var passwordDeliveryOrigin: PasswordOrigin? {
+        guard !provisional, existingWeb?.url == committedURL else { return nil }
+        return secureOrigin
+    }
 
     struct PasswordContinuation {
         let id: UUID
@@ -1529,7 +1677,7 @@ struct TitleReveal: Equatable, Sendable {
     /// Names only until something is chosen: deciding *whether* to ask decrypts nothing.
     func fillPassword(announcing: Bool = false, automatic: Bool = false,
                       target: String? = nil, accountHint: String? = nil, continuation: PasswordContinuation? = nil) {
-        guard !isPrivate, let origin = secureOrigin else {
+        guard !isPrivate, let origin = passwordDeliveryOrigin else {
             if announcing { axAnnounce("No saved password for this page.") }
             return
         }
@@ -1611,7 +1759,7 @@ struct TitleReveal: Equatable, Sendable {
     /// The password is read here and nowhere else, and lives exactly as long as the call.
     func fill(_ login: Passwords.Login, automatic: Bool = false, target: String? = nil,
               continuation: PasswordContinuation? = nil) {
-        guard !isPrivate, secureOrigin == login.origin else { return }
+        guard !isPrivate, passwordDeliveryOrigin == login.origin else { return }
         if let continuation, !permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) { return }
         guard let target else {
             let page = web, pageURL = page.url, document = readingDocumentGeneration
@@ -1644,13 +1792,14 @@ struct TitleReveal: Equatable, Sendable {
                 guard let self, let page, !Task.isCancelled, !self.tornDown, !self.suspended,
                       !self.isPrivate, self.profileID == profile, self.existingWeb === page,
                       page.url == pageURL, self.readingDocumentGeneration == document,
-                      self.secureOrigin == login.origin, self.passwordReadRequest == request else { return }
+                      self.passwordDeliveryOrigin == login.origin, self.passwordReadRequest == request else { return }
                 if let continuation, !self.permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) { return }
                 if let continuation {
                     self.passwordContinuationFill = (continuation.id, request, document, nil)
                 }
                 page.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password,
-                                                     automatic: automatic, target: target, continuation: continuation != nil),
+                                                     automatic: automatic, target: target, continuation: continuation != nil,
+                                                     expectedOrigin: login.origin),
                                        in: nil, in: Autofill.world) { [weak self, weak page] result in
                     guard let self else { return }
                     var retryRejectedTarget = false
@@ -1743,9 +1892,10 @@ struct TitleReveal: Equatable, Sendable {
 
     func useGeneratedPassword(_ options: PasswordGenerator.Options) {
         guard !isPrivate, options.hasCharacters, let generation = passwordGeneration,
-              secureOrigin == generation.origin else { return }
+              passwordDeliveryOrigin == generation.origin else { return }
         let page = web, pageURL = page.url, document = readingDocumentGeneration
-        page.evaluateJavaScript(Autofill.generateJS(password: PasswordGenerator.generate(options: options), target: generation.target),
+        page.evaluateJavaScript(Autofill.generateJS(password: PasswordGenerator.generate(options: options),
+                                                  target: generation.target, expectedOrigin: generation.origin),
                                 in: nil, in: Autofill.world) { [weak self, weak page] result in
             guard let self, let page, self.existingWeb === page, page.url == pageURL,
                   self.readingDocumentGeneration == document,
@@ -1816,6 +1966,9 @@ struct TitleReveal: Equatable, Sendable {
 
     private func finishCertificateNavigation(_ navigation: WKNavigation?, in w: WKWebView) {
         guard w === existingWeb, let navigation, certificateNavigation === navigation else { return }
+        if certificatePendingException?.navigation === navigation { certificatePendingException = nil }
+        if certificateValidatedNavigation === navigation { certificateValidatedNavigation = nil }
+        if certificateTrustedNavigation === navigation { certificateTrustedNavigation = nil }
         certificateDestinationURL = nil
         certificateNavigation = nil
     }
@@ -1852,6 +2005,11 @@ struct TitleReveal: Equatable, Sendable {
         #endif
         guard w === existingWeb, !tornDown, !suspended else { return }
         guard navigationState.begin(navigation) else { return }
+        if certificatePendingException?.navigation !== navigation { certificatePendingException = nil }
+        certificateValidatedNavigation = nil
+        certificateTrustedNavigation = nil
+        cancelHTTPSPrompt()
+        httpsContinuation.navigationStarted(navigation)
         DiagnosticLog.shared.record(.navigationStarted, isPrivate: isPrivate)
         #if DEBUG
         recordNavigationStage("provisional-accepted", navigation: navigation)
@@ -1918,6 +2076,7 @@ struct TitleReveal: Equatable, Sendable {
         if !editing { address = committedURL?.absoluteString ?? "" }
         navigationState.finished = true
         finishCertificateNavigation(navigation, in: w)
+        restoreCommittedCertificateTrust()
         loading = false
         show(error, in: w)
     }
@@ -1947,9 +2106,7 @@ struct TitleReveal: Equatable, Sendable {
         // https-only interstitial, which offers a way through; "the secure connection
         // failed" offers none.
         if let http = HTTPSOnly.downgradeOffer(after: error, url: failed, profileID: profileID) {
-            navigationState.simulated = w.loadSimulatedRequest(URLRequest(url: http),
-                                   responseHTML: HTTPSOnly.interstitial(for: http))
-            expectNavigation(navigationState.simulated)
+            showHTTPSInterstitial(for: http, in: w)
             return
         }
         // Exclude this exact simulated navigation, even if another load replaces it.
@@ -2008,7 +2165,9 @@ struct TitleReveal: Equatable, Sendable {
         recordNavigationStage("commit-accepted", navigation: navigation)
         #endif
         navigationState.commitDocumentResponse(navigation, at: w.url)
+        httpsContinuation.navigationCommitted(navigation, documentURL: w.url)
         provisional = false; showCommitted(w)
+        commitCertificateProvenance(navigation, in: w)
         if let item = w.backForwardList.currentItem {
             if navigationState.simulated === navigation {
                 navigationState.simulatedItems.add(item)
@@ -2027,6 +2186,10 @@ struct TitleReveal: Equatable, Sendable {
             endPermissionDocument()
         }
         finishCertificateNavigation(navigation, in: w)
+        Task { [weak self, weak w] in
+            guard let self, let w else { return }
+            await self.evaluateCertificateTrust(in: w)
+        }
         Trace.note("committed")
         Zoom.apply(to: self)
         DeveloperMode.apply(to: self)   // localhost → deployed site, and back
@@ -2046,6 +2209,7 @@ struct TitleReveal: Equatable, Sendable {
         if provisional {
             navigationState.commitDocumentResponse(navigation, at: w.url)
             provisional = false; showCommitted(w)
+            commitCertificateProvenance(navigation, in: w)
         }
         navigationState.finished = true
         finishCertificateNavigation(navigation, in: w)
@@ -2136,6 +2300,20 @@ struct TitleReveal: Equatable, Sendable {
 
     private func decideNavigationPolicy(_ w: WKWebView, action navigationAction: WKNavigationAction,
                                        decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        if let url = navigationAction.request.url {
+            guard navigationAction.navigationType != .linkActivated
+                    || LinkInteraction.admits(url: url, source: navigationAction.sourceFrame.request.url) else {
+                decisionHandler(.cancel); return
+            }
+            if url.scheme?.lowercased() == HTTPSOnly.insecureScheme {
+                decisionHandler(.cancel)
+                if case .confirm(let target) = HTTPSOnly.decide(navigationAction,
+                    continuation: httpsContinuation, documentURL: committedURL, profileID: profileID) {
+                    confirmHTTPSException(for: target, in: w)
+                }
+                return
+            }
+        }
         // Vane's own scheme, before anything else: `vane://oauth/github` is where GitHub
         // sends the answer to a live folder's sign-in, and this is the only place in the
         // system that ever reads one. Cancelled unconditionally, whatever the rest of the
@@ -2208,7 +2386,8 @@ struct TitleReveal: Equatable, Sendable {
                 break
             }
         }
-        switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
+        switch HTTPSOnly.decide(navigationAction, continuation: httpsContinuation,
+                                documentURL: committedURL, profileID: profileID) {
         case .allow:
             if navigationAction.targetFrame?.isMainFrame == true {
                 #if compiler(>=6.4)
@@ -2223,14 +2402,65 @@ struct TitleReveal: Equatable, Sendable {
             expectNavigation(w.load(HTTPSOnly.request(to)))          // a shorter leash than the 60s default
         case .block(let at):
             decisionHandler(.cancel)
-            navigationState.simulated = w.loadSimulatedRequest(URLRequest(url: at),
-                                   responseHTML: HTTPSOnly.interstitial(for: at))
-            expectNavigation(navigationState.simulated)
+            showHTTPSInterstitial(for: at, in: w)
         case .confirm(let at):
             decisionHandler(.cancel)
-            if HTTPSOnly.confirmAndRemember(at, profileID: profileID) {
-                expectNavigation(w.load(URLRequest(url: at)))
+            confirmHTTPSException(for: at, in: w)
+        case .deny:
+            decisionHandler(.cancel)
+        }
+    }
+
+    private func showHTTPSInterstitial(for url: URL, in web: WKWebView) {
+        let presentation = httpsContinuation.prepare(for: url)
+        let navigation = web.loadSimulatedRequest(presentation.request, responseHTML: presentation.html)
+        navigationState.simulated = navigation
+        httpsContinuation.expectNavigation(navigation)
+        expectNavigation(navigation)
+    }
+
+    private func confirmHTTPSException(for url: URL, in web: WKWebView) {
+        guard let window = web.window, window.isVisible, !web.isHiddenOrHasHiddenAncestor,
+              httpsPrompt == nil, window.attachedSheet == nil,
+              let alert = HTTPSOnly.confirmationAlert(for: url) else { return }
+        let generation = navigationState.policyGeneration
+        httpsPrompt = alert
+        httpsPromptWindow = window
+        httpsPromptCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.cancelHTTPSPrompt() }
             }
+        alert.beginSheetModal(for: window) { [weak self, weak web, weak window, weak alert] response in
+            guard let self, let alert, self.httpsPrompt === alert else { return }
+            self.httpsPrompt = nil; self.httpsPromptWindow = nil
+            if let observer = self.httpsPromptCloseObserver { NotificationCenter.default.removeObserver(observer) }
+            self.httpsPromptCloseObserver = nil
+            guard let web, let window, !self.tornDown, !self.suspended,
+                  self.existingWeb === web, web.window === window,
+                  window.isVisible, !web.isHiddenOrHasHiddenAncestor,
+                  self.navigationState.policyGeneration == generation,
+                  self.committedURL == url, web.url == url, !self.provisional,
+                  let host = url.host else { return }
+            guard response == .alertSecondButtonReturn else {
+                if response == .alertFirstButtonReturn {
+                    if web.canGoBack { self.expectNavigation(web.goBack()) }
+                    else { self.showHTTPSInterstitial(for: url, in: web) }
+                }
+                return
+            }
+            HTTPSOnly.allow(host: host, profileID: self.profileID)
+            self.expectNavigation(web.load(URLRequest(url: url)))
+        }
+    }
+
+    private func cancelHTTPSPrompt() {
+        let alert = httpsPrompt, window = httpsPromptWindow
+        httpsPrompt = nil; httpsPromptWindow = nil
+        if let observer = httpsPromptCloseObserver { NotificationCenter.default.removeObserver(observer) }
+        httpsPromptCloseObserver = nil
+        if let alert {
+            window?.endSheet(alert.window, returnCode: .abort)
+            alert.window.orderOut(nil)
         }
     }
 
@@ -2318,7 +2548,7 @@ struct TitleReveal: Equatable, Sendable {
         if m.name == SiteBoostScripts.messageName { SiteBoosts.receive(m, tab: self); return }
         if m.name == LinkContextWebView.messageName {
             guard let linkView = existingWeb as? LinkContextWebView else { return }
-            linkView.receiveContextLink(m.body)
+            linkView.receiveContextLink(m.body, sourceURL: m.frameInfo.request.url)
             return
         }
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
@@ -2327,8 +2557,7 @@ struct TitleReveal: Equatable, Sendable {
             MediaState.shared.handle(m.body, for: self, from: m.frameInfo)
             return
         }
-        // Both scripts are main-frame only, and these handlers live in the page world, so
-        // a message from any other frame is an embedded page speaking for the tab.
+        // Both channels speak only for the main-frame document.
         if m.name == StatusBar.messageName || m.name == Previews.messageName,
            !m.frameInfo.isMainFrame { return }
         if m.name == StatusBar.messageName { hoveredLink = StatusBar.hover(from: m.body); return }
@@ -2339,9 +2568,10 @@ struct TitleReveal: Equatable, Sendable {
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
             if body["gone"] as? Bool == true { Previews.shared.cancel(from: self); return }
+            guard !provisional, m.frameInfo.request.url == committedURL else { return }
             guard let raw = body["url"] as? String, let url = URL(string: raw) else { return }
             let rect = Previews.rect(from: body, pageZoom: m.webView?.pageZoom ?? 1) ?? .zero
-            Previews.shared.request(url, from: self, rect: rect)
+            Previews.shared.request(url, from: self, rect: rect, requiresHover: true)
             return
         }
         if m.name == PictureInPicture.messageName {
@@ -2638,11 +2868,15 @@ struct TitleReveal: Equatable, Sendable {
     }
     func hardReload() { if easelSession == nil { expectNavigation(existingWeb?.reloadFromOrigin()) } }
     func stop() {
+        certificatePendingException = nil
+        certificateValidatedNavigation = nil
+        certificateTrustedNavigation = nil
         navigationState.invalidate(preservingDocument: true)
         readingDocumentGeneration = UUID()
         passwordContinuationFill = nil
         certificateDestinationURL = nil
         certificateNavigation = nil
+        restoreCommittedCertificateTrust()
         CertificateTrust.navigationStarted(in: self)
         existingWeb?.stopLoading()
         loading = false
@@ -2703,6 +2937,8 @@ struct TitleReveal: Equatable, Sendable {
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard w === existingWeb, !tornDown, !suspended,
               !AppLifecycle.shared.persistenceExitInProgress else { return nil }
+        if let url = action.request.url,
+           !LinkInteraction.admits(url: url, source: action.sourceFrame.request.url) { return nil }
         // `window.open('zoommtg:…')`. Belt and braces around the same test in
         // `decidePolicyFor` — a popup opened with no url and navigated afterwards arrives
         // here first — and a new tab for a scheme no tab can load is worse than no tab.
@@ -3361,7 +3597,7 @@ struct Stash {
         // this window for a tab gets another Little Arc instead of a second page hidden
         // behind the first. With no url it comes up empty with the search bar over it,
         // which is what a new window does.
-        if isLittle { LittleArc.open(url, isPrivate: isPrivate); return }
+        if isLittle { LittleArc.open(url, isPrivate: isPrivate, profileID: profileID); return }
         if let url {
             newBlankTab(loading: url)
         } else {
@@ -3408,9 +3644,11 @@ struct Stash {
     /// Deliberately after `kind`: its didSet reads `currentURL` to decide a row's home, and
     /// a load in flight is exactly the thing that would change the answer.
     func newBlankTab(focus: Bool = true, as kind: TabKind = .today,
-                     id: UUID = UUID(), loading url: URL? = nil, parent: Tab? = nil) -> Tab {
+                     id: UUID = UUID(), loading url: URL? = nil, parent: Tab? = nil,
+                     extensionAccessRestricted: Bool = false) -> Tab {
         if sharingReady { SharedTabs.flush() }
         let t = makeBlankTab(as: kind, id: id)
+        t.extensionAccessRestricted = extensionAccessRestricted
         if parent?.profileID == profileID, parent?.isPrivate == isPrivate { t.extensionParent = parent }
         if let url { t.go(url) }
         // Into its own section, not onto the end of the strip: the sections are contiguous
@@ -3505,7 +3743,7 @@ struct Stash {
         // be beside, and a page that escaped into the sidebar is not what was clicked.
         t.onOpenBeside = { [weak self] u, focus in
             guard let self else { return }
-            if isLittle { LittleArc.open(u, isPrivate: isPrivate) } else { openBeside(u, focus: focus) }
+            if isLittle { LittleArc.open(u, isPrivate: isPrivate, profileID: profileID) } else { openBeside(u, focus: focus) }
         }
         t.onOpenLinkInBackground = { [weak self] url in
             guard let self else { return }
@@ -3568,7 +3806,8 @@ struct Stash {
         // Vane's choosing. See Popups.swift.
         t.onPopup = { [weak self, weak t] cfg, placement, features in
             guard let self else { return nil }
-            return popup(cfg, placement: placement, opener: t?.id, features: features)
+            return popup(cfg, placement: placement, opener: t?.id, features: features,
+                         extensionAccessRestricted: t?.extensionAccessRestricted == true)
         }
         // Safari's "Block and Notify". Open loads the url beside the page, as a link would;
         // a popup with no url has nothing to open, so it offers the site's Allow instead —

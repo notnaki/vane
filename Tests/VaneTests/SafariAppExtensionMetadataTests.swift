@@ -25,6 +25,33 @@ final class SafariAppExtensionMetadataTests: XCTestCase {
 
 /// Signature verification exercises Security.framework without AppKit/WebKit objects.
 final class SafariAppSignatureTests: XCTestCase {
+    func testDevelopmentSignatureCannotBeImportedAsDistributedSafariCode() throws {
+        guard let identity = ProcessInfo.processInfo.environment["VANE_TEST_DEVELOPMENT_SIGNING_IDENTITY"] else {
+            throw XCTSkip("Set an Apple Development identity for the distribution-signature rejection fixture")
+        }
+        let bundle = FileManager.default.temporaryDirectory.appendingPathComponent("vane-development-signature-\(UUID()).app")
+        defer { try? FileManager.default.removeItem(at: bundle) }
+        let contents = bundle.appendingPathComponent("Contents")
+        try FileManager.default.createDirectory(at: contents.appendingPathComponent("MacOS"), withIntermediateDirectories: true)
+        let executable = contents.appendingPathComponent("MacOS/fixture")
+        try Data(contentsOf: URL(fileURLWithPath: "/usr/bin/true")).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let info = ["CFBundleIdentifier": "test.vane.development-fixture", "CFBundleExecutable": "fixture", "CFBundlePackageType": "APPL"]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: contents.appendingPathComponent("Info.plist"))
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        process.arguments = ["--force", "--sign", identity, "--timestamp=none", bundle.path]
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        var code: SecStaticCode?
+        var requirement: SecRequirement?
+        XCTAssertEqual(SecStaticCodeCreateWithPath(bundle as CFURL, [], &code), errSecSuccess)
+        XCTAssertEqual(SecRequirementCreateWithString("anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.1] exists" as CFString, [], &requirement), errSecSuccess)
+        XCTAssertEqual(SecStaticCodeCheckValidity(try XCTUnwrap(code), [], try XCTUnwrap(requirement)), errSecSuccess,
+                       "The fixture must carry a valid Apple-issued development signature")
+        XCTAssertThrowsError(try SafariExtensionSource.verify(bundle), "Development signatures are insufficient for an app imported as distributed Safari code")
+    }
+
     @MainActor func testAppleSignedIdentityIgnoresClaimedTeamAndRejectsModifiedResources() throws {
         guard let identity = ProcessInfo.processInfo.environment["VANE_TEST_SIGNING_IDENTITY"],
               let team = ProcessInfo.processInfo.environment["VANE_TEST_SIGNING_TEAM"] else {

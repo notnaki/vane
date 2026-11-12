@@ -4,6 +4,13 @@ import WebKit
 @testable import vane
 
 @MainActor final class PasswordSavePreferenceTests: XCTestCase {
+    @MainActor private final class HeldNavigation: NSObject, WKNavigationDelegate {
+        var decision: (@MainActor (WKNavigationActionPolicy) -> Void)?
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+            decision = decisionHandler
+        }
+    }
     private func disabledProfile() -> UUID {
         TestEnvironment.prepare()
         let id = UUID()
@@ -11,6 +18,29 @@ import WebKit
         UserDefaults.vane.set(false, forKey: key)
         addTeardownBlock { UserDefaults.vane.removeObject(forKey: key) }
         return id
+    }
+
+    func testDeletingProfileRemovesOnlyItsPasswordMetadata() async {
+        TestEnvironment.prepare()
+        let manager = ProfileManager.shared
+        let retained = manager.create(name: "Retained credential metadata")
+        defer { manager.delete(retained.id) }
+        for asynchronous in [false, true] {
+            let deleted = manager.create(name: "Deleted credential metadata")
+            defer { manager.delete(deleted.id) }
+            for profile in [deleted.id, retained.id] {
+                Passwords.recordUse(host: "fixture.invalid", account: "ada", profileID: profile)
+                Passwords.neverSave(host: "fixture.invalid", profileID: profile)
+            }
+            if asynchronous { let removed = await manager.deleteAsync(deleted.id); XCTAssertTrue(removed) }
+            else { XCTAssertTrue(manager.delete(deleted.id)) }
+            for base in ["passwordsLastUsed", "passwordsNeverSaved"] {
+                XCTAssertNil(UserDefaults.vane.object(forKey: ProfileManager.defaultsKey(base, deleted.id)))
+                XCTAssertNotNil(UserDefaults.vane.object(forKey: ProfileManager.defaultsKey(base, retained.id)))
+                UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(base, deleted.id))
+                UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(base, retained.id))
+            }
+        }
     }
 
     func testPreferenceDefaultsOnAndIsIsolatedPerProfile() {
@@ -134,6 +164,37 @@ import WebKit
             try await Passwords.flushPendingOperations()
             await Task.yield()
             XCTAssertNil(tab.pendingSave)
+        }
+    }
+
+    func testSameOriginProvisionalNavigationPreservesAuthorizedSubmissionOffer() async throws {
+        try await withSubmissionDocument { tab, origin in
+            let entered = self.expectation(description: "Submission lookup admitted")
+            let release = DispatchSemaphore(value: 0)
+            defer { release.signal() }
+            var reader = Passwords.Reader()
+            reader.password = { _, _, _ in
+                entered.fulfill()
+                _ = release.wait(timeout: .now() + 5)
+                return nil
+            }
+            reader.revision = { _, _, _ in nil }
+            tab.passwordReader = reader
+            tab.offerSubmittedPassword(origin: origin, account: "ada", password: "fixture", attempt: "navigation")
+            await self.fulfillment(of: [entered], timeout: 2)
+            let held = HeldNavigation()
+            tab.web.navigationDelegate = held
+            defer {
+                held.decision?(.cancel)
+                held.decision = nil
+                tab.web.navigationDelegate = tab
+            }
+            tab.navigate(to: origin.url.appendingPathComponent("pending-result"))
+            try await compatibilityWait { held.decision != nil }
+            release.signal()
+            try await compatibilityWait { tab.pendingSave != nil }
+            XCTAssertEqual(tab.pendingSave?.account, "ada")
+            XCTAssertEqual(tab.pendingSave?.origin, origin)
         }
     }
 

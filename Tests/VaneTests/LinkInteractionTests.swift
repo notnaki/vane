@@ -93,6 +93,33 @@ final class LinkInteractionTests: XCTestCase {
         }
     }
 
+    func testWebPageCannotPromoteFileLinksIntoNativeTabLoads() {
+        let destination = URL(fileURLWithPath: "/tmp/private.html")
+        let context = LinkInteraction.Context(kind: .today, source: page)
+        for modifiers: NSEvent.ModifierFlags in [.command, [.command, .shift], [.command, .option]] {
+            XCTAssertEqual(LinkInteraction.route(to: destination, context: context,
+                                                modifiers: modifiers), .navigate)
+        }
+        XCTAssertEqual(LinkInteraction.route(to: destination, context: context,
+            modifiers: [], button: TabActions.middleButton), .navigate)
+        XCTAssertNil(LinkInteraction.hint(to: destination, context: context, modifiers: .command))
+    }
+
+    func testOnlyExplicitLocalFileSourceAdmitsFileDestination() {
+        let destination = URL(fileURLWithPath: "/tmp/private.html")
+        for source in [nil, page, URL(string: "about:blank"), URL(string: "data:text/html,local")] {
+            XCTAssertFalse(LinkInteraction.admits(url: destination, source: source))
+        }
+        XCTAssertTrue(LinkInteraction.admits(url: destination, source: URL(fileURLWithPath: "/tmp/index.html")))
+        XCTAssertTrue(LinkInteraction.admits(url: other, source: nil))
+    }
+
+    func testLocalFileCanStillOpenAnotherLocalFileInATab() {
+        XCTAssertEqual(LinkInteraction.route(to: URL(fileURLWithPath: "/tmp/next.html"),
+            context: .init(kind: .today, source: URL(fileURLWithPath: "/tmp/index.html")),
+            modifiers: .command), .tab(focus: false))
+    }
+
     func testHintUsesActualRouteAndOrdinaryHoverHasNoActionSentence() {
         let context = LinkInteraction.Context(kind: .today, source: page)
         XCTAssertNil(LinkInteraction.hint(to: other, context: context, modifiers: []))

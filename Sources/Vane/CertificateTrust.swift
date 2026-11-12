@@ -19,13 +19,29 @@ import WebKit
             && (navigationURL.port ?? 443) == (port > 0 ? port : 443)
     }
 
+    /// Basic/Digest challenges omit frame provenance. Admit native UI only for the
+    /// actual pending main-frame destination, or the last committed document.
+    static func shouldPromptForLogin(space: URLProtectionSpace, navigationURL: URL?) -> Bool {
+        guard !space.isProxy(), let navigationURL,
+              let scheme = space.protocol?.lowercased(), ["http", "https"].contains(scheme),
+              navigationURL.scheme?.lowercased() == scheme,
+              let host = navigationURL.host else { return false }
+        let defaultPort = scheme == "http" ? 80 : 443
+        func canonical(_ value: String) -> String {
+            value.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        }
+        return canonical(host) == canonical(space.host)
+            && (navigationURL.port ?? defaultPort) == (space.port > 0 ? space.port : defaultPort)
+    }
+
     /// Swapped out under `check()` so assertions never touch the user's real preferences.
     private static var defaults: UserDefaults = .vane
 
-    /// v1 keys contained only a hostname and fingerprint. They are deliberately never read:
-    /// treating one as a v2 decision would silently spread it to every profile and port.
+    /// Only v3 opaque system exception cookies can authorize reuse. Old boolean pins
+    /// cannot tell which errors were approved, so they deliberately fail closed.
     private static let legacyPrefix = "certException."
-    private static let prefix = "certException.v2."
+    private static let legacyScopedPrefix = "certException.v2."
+    private static let prefix = "certException.v3."
 
     struct Scope: Hashable, Codable, Sendable {
         let profileID: UUID
@@ -44,7 +60,8 @@ import WebKit
     }
 
     @MainActor private final class Memory: NSObject {
-        var exceptions: Set<String> = []
+        var exceptions: [String: Data] = [:]
+        var exceptionProvenance: Set<String> = []
         var generation = UUID()
         var clientChallenge: UUID?
         var prompt: NSAlert?
@@ -52,6 +69,11 @@ import WebKit
     }
     private static let memories = NSMapTable<Tab, Memory>.weakToStrongObjects()
     private static let clientSession = ClientCertificates.Session()
+    /// Disqualifying consent history is separate from reusable exception cookies.
+    /// WebKit may retain copied `.proceed` state after Forget, across profile views.
+    /// Keep only this in-memory evidence until process retirement; it never grants
+    /// a credential and is neither saved nor exported. Private evidence stays per tab.
+    private static var sessionExceptionProvenance: Set<String> = []
 
     private static func memory(for tab: Tab) -> Memory {
         if let memory = memories.object(forKey: tab) { return memory }
@@ -68,10 +90,10 @@ import WebKit
     }
 
     private static func scope(from key: String) -> Scope? {
-        guard key.hasPrefix(prefix),
+        guard let version = [prefix, legacyScopedPrefix].first(where: { key.hasPrefix($0) }),
               let bar = key.lastIndex(of: "|"),
               let data = Data(base64Encoded: String(key[key.index(key.startIndex,
-                                                                  offsetBy: prefix.count)..<bar])),
+                                                                  offsetBy: version.count)..<bar])),
               let scope = try? JSONDecoder().decode(Scope.self, from: data)
         else { return nil }
         return Scope(profileID: scope.profileID, host: scope.host, port: scope.port)
@@ -79,20 +101,44 @@ import WebKit
 
     // MARK: - Remembered exceptions
 
-    /// Keyed on the certificate too, not just the host: an exception for one certificate
-    /// must not silently cover whatever certificate shows up tomorrow. Swapping the cert is
-    /// exactly what an interception looks like, so it has to ask again.
-    static func trusted(scope: Scope, fingerprint: String, privateMemory: Set<String>? = nil) -> Bool {
+    /// A stored cookie is evidence of earlier consent, not a trust decision. Its
+    /// approved errors must still resolve this challenge's fresh system evaluation.
+    private static func storedException(scope: Scope, fingerprint: String,
+                                        privateMemory: [String: Data]? = nil) -> Data? {
         let key = key(scope: scope, fingerprint: fingerprint)
-        if let privateMemory { return privateMemory.contains(key) }
-        return defaults.bool(forKey: key)
+        if let privateMemory { return privateMemory[key] }
+        return defaults.data(forKey: key)
     }
 
-    /// Only ever called from the branch where the user clicked through both alerts.
-    private static func remember(scope: Scope, fingerprint: String, memory: Memory?) {
+    /// Disqualifies an ambiguous copied `.proceed`; this never authorizes a load.
+    /// Forgetting a cookie revokes reuse but cannot revoke native copies already
+    /// resident in a WebKit process, so provenance outlives reusable authorization.
+    static func hasExceptionProvenance(in tab: Tab, host: String, port: Int, fingerprint: String) -> Bool {
+        guard let scope = Scope(profileID: tab.profileID, host: host, port: port) else { return false }
+        let record = key(scope: scope, fingerprint: fingerprint)
+        let remembered = tab.isPrivate ? memory(for: tab).exceptionProvenance.contains(record)
+            : sessionExceptionProvenance.contains(record)
+        return remembered || storedException(scope: scope, fingerprint: fingerprint,
+            privateMemory: tab.isPrivate ? memory(for: tab).exceptions : nil) != nil
+    }
+
+    static func recordExceptionProvenance(in tab: Tab, host: String, port: Int, fingerprint: String) {
+        guard let scope = Scope(profileID: tab.profileID, host: host, port: port) else { return }
+        let record = key(scope: scope, fingerprint: fingerprint)
+        if tab.isPrivate { memory(for: tab).exceptionProvenance.insert(record) }
+        else { sessionExceptionProvenance.insert(record) }
+    }
+
+    /// Only ever called after both alerts and successful native exception evaluation.
+    private static func remember(scope: Scope, fingerprint: String, exception: Data, memory: Memory?) {
         let key = key(scope: scope, fingerprint: fingerprint)
-        if let memory { memory.exceptions.insert(key) }
-        else { defaults.set(true, forKey: key) }
+        if let memory {
+            memory.exceptions[key] = exception
+            memory.exceptionProvenance.insert(key)
+        } else {
+            defaults.set(exception, forKey: key)
+            sessionExceptionProvenance.insert(key)
+        }
     }
 
     static func forget(host: String, profileID: UUID) {
@@ -104,10 +150,10 @@ import WebKit
             defaults.removeObject(forKey: key)
         }
         for memory in memories.objectEnumerator()?.allObjects as? [Memory] ?? [] {
-            memory.exceptions = Set(memory.exceptions.filter {
-                guard let parsed = scope(from: $0) else { return false }
+            memory.exceptions = memory.exceptions.filter { key, _ in
+                guard let parsed = scope(from: key) else { return false }
                 return parsed.profileID != profileID || parsed.host != host
-            })
+            }
         }
     }
 
@@ -116,7 +162,7 @@ import WebKit
         for key in defaults.dictionaryRepresentation().keys
             where scope(from: key)?.profileID == profileID { defaults.removeObject(forKey: key) }
         for memory in memories.objectEnumerator()?.allObjects as? [Memory] ?? [] {
-            memory.exceptions = Set(memory.exceptions.filter { scope(from: $0)?.profileID != profileID })
+            memory.exceptions = memory.exceptions.filter { scope(from: $0.key)?.profileID != profileID }
         }
     }
 
@@ -203,6 +249,7 @@ import WebKit
         var fingerprint: String?
         var ok = false
         var status: OSStatus = errSecSuccess
+        var result: SecTrustResultType = .invalid
     }
 
     /// `SecTrust` is WebKit's, alive for the length of the challenge and touched by nothing
@@ -221,8 +268,35 @@ import WebKit
         var error: CFError?
         let ok = SecTrustEvaluateWithError(chain.trust, &error)
         let leaf = (SecTrustCopyCertificateChain(chain.trust) as? [SecCertificate])?.first
+        var result = SecTrustResultType.invalid
+        _ = SecTrustGetTrustResult(chain.trust, &result)
         return Outcome(fingerprint: leaf.map(fingerprint), ok: ok,
-                       status: OSStatus(error.map { CFErrorGetCode($0) } ?? Int(errSecNotTrusted)))
+                       status: OSStatus(error.map { CFErrorGetCode($0) } ?? Int(errSecNotTrusted)), result: result)
+    }
+
+    /// A cookie describes the failures the person actually approved. Applying it is
+    /// never enough by itself: new expiry, hostname, chain or revocation failures must
+    /// still fail a fresh system evaluation. Restore raw trust after a failed attempt
+    /// so a subsequent warning/cookie describes the full current failure context.
+    private static func accepts(_ exception: Data, for trust: SecTrust) async -> Bool {
+        let chain = Chain(trust: trust)
+        return await Task.detached(priority: .userInitiated) {
+            if SecTrustSetExceptions(chain.trust, exception as CFData), judge(chain).ok { return true }
+            _ = SecTrustSetExceptions(chain.trust, nil)
+            _ = judge(chain)
+            return false
+        }.value
+    }
+
+    /// Copy only after explicit consent, from the evaluated trust itself. Confirm the
+    /// resulting exception can resolve this trust before persisting or using it.
+    private static func approvedException(for trust: SecTrust) async -> Data? {
+        let chain = Chain(trust: trust)
+        return await Task.detached(priority: .userInitiated) { () -> Data? in
+            guard let exception = SecTrustCopyExceptions(chain.trust),
+                  SecTrustSetExceptions(chain.trust, exception), judge(chain).ok else { return nil }
+            return exception as Data
+        }.value
     }
 
     /// ponytail: only the leaf is inspected. The chain is where an unknown *intermediate*
@@ -331,7 +405,13 @@ import WebKit
         let outcome = await evaluate(trust, host: host, port: port)
         // The overwhelmingly common case: the certificate is fine. Hand it back to the
         // system rather than minting a credential of our own.
-        if outcome.ok { return (.performDefaultHandling, nil) }
+        if outcome.ok {
+            if outcome.result == .proceed, let fingerprint = outcome.fingerprint,
+               hasExceptionProvenance(in: tab, host: host, port: port, fingerprint: fingerprint) {
+                tab.noteCertificateException(host: host, port: port, trust: trust, in: web, usedCookie: false)
+            }
+            return (.performDefaultHandling, nil)
+        }
         // The evaluation suspended, so the tab may have been navigated away or suspended
         // out from under this challenge. Answered either way — a challenge left unanswered
         // hangs the load until WebKit's own timeout.
@@ -347,10 +427,19 @@ import WebKit
             // No certificate to pin an exception to, so there is no safe way to offer one.
             return (.cancelAuthenticationChallenge, nil)
         }
-        if trusted(scope: scope, fingerprint: fp,
-                   privateMemory: tab.isPrivate ? memory.exceptions : nil) {
-            return (.useCredential, URLCredential(trust: trust))
+        if let exception = storedException(scope: scope, fingerprint: fp,
+                                            privateMemory: tab.isPrivate ? memory.exceptions : nil) {
+            // Publish failure provenance before native mutation can trigger an
+            // observer that sees effective `.proceed` on this same trust object.
+            tab.noteCertificateException(host: host, port: port, trust: trust, in: web)
+            if await accepts(exception, for: trust) {
+                guard !Task.isCancelled, tab.existingWeb === web, memory.generation == generation,
+                      tab.profileID == scope.profileID else { return (.cancelAuthenticationChallenge, nil) }
+                return (.useCredential, URLCredential(trust: trust))
+            }
         }
+        guard !Task.isCancelled, tab.existingWeb === web, memory.generation == generation,
+              tab.profileID == scope.profileID else { return (.cancelAuthenticationChallenge, nil) }
 
         guard shouldPrompt(host: host, port: port, navigationURL: tab.certificateNavigationURL) else {
             return (.cancelAuthenticationChallenge, nil)
@@ -362,7 +451,13 @@ import WebKit
                         fingerprint: fp, tab: tab, web: web, memory: memory) else {
             return (.cancelAuthenticationChallenge, nil)
         }
-        remember(scope: scope, fingerprint: fp, memory: tab.isPrivate ? memory : nil)
+        tab.noteCertificateException(host: host, port: port, trust: trust, in: web)
+        guard let exception = await approvedException(for: trust), !Task.isCancelled,
+              tab.existingWeb === web, memory.generation == generation, tab.profileID == scope.profileID,
+              shouldPrompt(host: host, port: port, navigationURL: tab.certificateNavigationURL) else {
+            return (.cancelAuthenticationChallenge, nil)
+        }
+        remember(scope: scope, fingerprint: fp, exception: exception, memory: tab.isPrivate ? memory : nil)
         return (.useCredential, URLCredential(trust: trust))
     }
 
@@ -422,6 +517,10 @@ import WebKit
     private static func login(_ challenge: URLAuthenticationChallenge, tab: Tab, web: WKWebView) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
         let space = challenge.protectionSpace
+        guard shouldPromptForLogin(space: space,
+            navigationURL: tab.certificateNavigationURL ?? tab.certificateDocumentURL) else {
+            return (.cancelAuthenticationChallenge, nil)
+        }
         let alert = NSAlert()
         let defaultPort = space.protocol?.lowercased() == "http" ? 80 : 443
         let site = space.port > 0 && space.port != defaultPort
@@ -448,7 +547,9 @@ import WebKit
         alert.addButton(withTitle: "Cancel")
         guard await present(alert, tab: tab, web: web, memory: memory(for: tab))
                 == .alertFirstButtonReturn,
-              !user.stringValue.isEmpty else {
+              !user.stringValue.isEmpty,
+              shouldPromptForLogin(space: space,
+                  navigationURL: tab.certificateNavigationURL ?? tab.certificateDocumentURL) else {
             return (.cancelAuthenticationChallenge, nil)
         }
         return (.useCredential, loginCredential(user: user.stringValue,
@@ -507,9 +608,11 @@ import WebKit
             return [("scratch defaults suite is available", false)]
         }
         let real = defaults
+        let realProvenance = sessionExceptionProvenance
         defaults = scratch
         defer {
             defaults = real
+            sessionExceptionProvenance = realProvenance
             UserDefaults.dropScratchSuite(suite)
         }
 
@@ -523,27 +626,33 @@ import WebKit
         let a = String(repeating: "a1", count: 32)   // stand-in fingerprints, 64 hex chars
         let b = String(repeating: "b2", count: 32)
         var out: [(String, Bool)] = []
+        @MainActor func stored(scope: Scope, fingerprint: String, privateMemory: [String: Data]? = nil) -> Bool {
+            storedException(scope: scope, fingerprint: fingerprint, privateMemory: privateMemory) != nil
+        }
+        @MainActor func remember(scope: Scope, fingerprint: String, memory: Memory?) {
+            CertificateTrust.remember(scope: scope, fingerprint: fingerprint, exception: Data([1]), memory: memory)
+        }
 
-        out.append(("an unvisited host is not trusted", !trusted(scope: example, fingerprint: a)))
+        out.append(("an unvisited host has no stored exception", !stored(scope: example, fingerprint: a)))
         remember(scope: example, fingerprint: a, memory: nil)
-        out.append(("a remembered exception reads back", trusted(scope: example, fingerprint: a)))
+        out.append(("a remembered exception reads back", stored(scope: example, fingerprint: a)))
         out.append(("host matching is case-insensitive",
                     Scope(profileID: profile, host: "EXAMPLE.com", port: 443) == example))
         // The whole point of pinning the fingerprint: a swapped certificate re-prompts.
-        out.append(("a different certificate for the same host is NOT trusted",
-                    !trusted(scope: example, fingerprint: b)))
-        out.append(("an exception does not cross ports", !trusted(scope: otherPort, fingerprint: a)))
-        out.append(("an exception does not cross profiles", !trusted(scope: otherProfileScope, fingerprint: a)))
+        out.append(("a different certificate for the same host has no stored exception",
+                    !stored(scope: example, fingerprint: b)))
+        out.append(("an exception does not cross ports", !stored(scope: otherPort, fingerprint: a)))
+        out.append(("an exception does not cross profiles", !stored(scope: otherProfileScope, fingerprint: a)))
         scratch.set(true, forKey: legacyPrefix + "example.com|" + a)
-        out.append(("a legacy global exception fails closed", !trusted(scope: otherProfileScope, fingerprint: a)))
+        out.append(("a legacy global exception fails closed", !stored(scope: otherProfileScope, fingerprint: a)))
 
         let privateMemory = Memory()
         remember(scope: example, fingerprint: b, memory: privateMemory)
         out.append(("a private exception stays out of persistent preferences",
-                    trusted(scope: example, fingerprint: b, privateMemory: privateMemory.exceptions)
-                    && !trusted(scope: example, fingerprint: b)))
+                    stored(scope: example, fingerprint: b, privateMemory: privateMemory.exceptions)
+                    && !stored(scope: example, fingerprint: b)))
         out.append(("a private exception does not cross tabs",
-                    !trusted(scope: example, fingerprint: b, privateMemory: [])))
+                    !stored(scope: example, fingerprint: b, privateMemory: [:])))
 
         remember(scope: other, fingerprint: b, memory: nil)
         remember(scope: Scope(profileID: otherProfile, host: "other.example", port: 443)!,
@@ -551,24 +660,24 @@ import WebKit
         remember(scope: neighbour, fingerprint: a, memory: nil)
         remember(scope: subdomain, fingerprint: a, memory: nil)
         forget(host: "other.example", profileID: profile)
-        out.append(("forget(host:) drops that profile's host exception", !trusted(scope: other, fingerprint: b)))
+        out.append(("forget(host:) drops that profile's host exception", !stored(scope: other, fingerprint: b)))
         out.append(("forget(host:) leaves another profile's decision alone",
-                    trusted(scope: Scope(profileID: otherProfile, host: "other.example", port: 443)!,
+                    stored(scope: Scope(profileID: otherProfile, host: "other.example", port: 443)!,
                             fingerprint: b)))
         out.append(("forget(host:) does not eat a host that merely starts the same way",
-                    trusted(scope: neighbour, fingerprint: a)))
+                    stored(scope: neighbour, fingerprint: a)))
         out.append(("forget(host:) does not eat a subdomain",
-                    trusted(scope: subdomain, fingerprint: a)))
-        out.append(("forget(host:) leaves unrelated hosts alone", trusted(scope: example, fingerprint: a)))
+                    stored(scope: subdomain, fingerprint: a)))
+        out.append(("forget(host:) leaves unrelated hosts alone", stored(scope: example, fingerprint: a)))
         forget(profile: otherProfile)
         out.append(("deleting a profile drops only that profile's certificate decisions",
-                    !trusted(scope: Scope(profileID: otherProfile, host: "other.example", port: 443)!,
+                    !stored(scope: Scope(profileID: otherProfile, host: "other.example", port: 443)!,
                              fingerprint: b)
-                    && trusted(scope: example, fingerprint: a)))
+                    && stored(scope: example, fingerprint: a)))
         forgetAll()
         out.append(("forgetAll drops everything",
-                    !trusted(scope: example, fingerprint: a)
-                    && !trusted(scope: subdomain, fingerprint: a)))
+                    !stored(scope: example, fingerprint: a)
+                    && !stored(scope: subdomain, fingerprint: a)))
 
         let generation = UUID()
         out.append(("a newer navigation rejects a stale prompt answer",

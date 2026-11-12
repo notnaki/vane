@@ -109,8 +109,9 @@ import XCTest
             try await NativeFixtureProfileCleanup.release([profile])
             return
         }
-        let loop = try await NativeFixtureApplicationLoop.acquire()
         let oldPolicy = NSApp.activationPolicy()
+        defer { NSApp.setActivationPolicy(oldPolicy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .regular)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("native-error-sdk-" + UUID().uuidString)
         var context: WKWebExtensionContext?
         var window: NSWindow?
@@ -137,7 +138,6 @@ import XCTest
             owner.isReleasedWhenClosed = false
             owner.contentView = web
             window = owner
-            NSApp.setActivationPolicy(.regular)
             owner.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             try await until("native error fixture foreground") { NSApp.isActive && owner.isKeyWindow && web.window === owner }
@@ -167,7 +167,6 @@ import XCTest
         ExtensionHost.forget(profile)
         try? FileManager.default.removeItem(at: folder)
         do { try await NativeFixtureProfileCleanup.release([profile]) } catch { if failure == nil { failure = error } else { XCTFail("Native error fixture cleanup failed: \(error)") } }
-        NSApp.setActivationPolicy(oldPolicy)
         do { try await loop.close() } catch { if failure == nil { failure = error } else { XCTFail("Native error loop cleanup failed: \(error)") } }
         if let failure { throw failure }
     }

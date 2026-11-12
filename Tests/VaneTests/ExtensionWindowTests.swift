@@ -561,6 +561,35 @@ import XCTest
             """, arguments: [:], in: nil, contentWorld: .page) as? [Bool]
         XCTAssertEqual(rejected, [true, true, true, true, true], "Unsupported popup combinations must fail explicitly")
     }
+    func testExtensionCannotCreatePrivateWindowsOrNavigateTabsToOAuthCallback() async throws {
+        try await withNativeWindowLoop {
+            let (store, tab, _) = try await browser()
+            let (host, context) = try await installed()
+            XCTAssertFalse(context.hasAccessToPrivateData)
+            host.sync()
+            let options = WKWebView(frame: .zero, configuration: try XCTUnwrap(context.webViewConfiguration))
+            defer { options.stopLoading() }
+            options.load(URLRequest(url: try XCTUnwrap(context.optionsPageURL)))
+            try await wait("security options document") { !options.isLoading && options.title == "Compact options" }
+            let before = TabStore.all.count
+            let rejected = try await options.callAsyncJavaScript("""
+                const reject = async operation => { try { await operation(); return false; } catch (_) { return true; } };
+                const tab = (await browser.tabs.query({}))[0];
+                return [
+                    await reject(() => browser.windows.create({incognito:true,url:'about:blank'})),
+                    await reject(() => browser.windows.create({url:'vane://oauth/github?code=fixture&state=fixture'})),
+                    await reject(() => browser.tabs.create({url:'vane://oauth/github?code=fixture&state=fixture'})),
+                    await reject(() => browser.tabs.update(tab.id,{url:'vane://oauth/github?code=fixture&state=fixture'}))
+                ];
+                """, arguments: [:], in: nil, contentWorld: .page) as? [Bool]
+            XCTAssertEqual(rejected, [true, true, true, true])
+            XCTAssertEqual(TabStore.all.count, before, "Rejected requests cannot create a browser window")
+            XCTAssertEqual(store.tabs.count, 1, "Rejected requests cannot create a tab")
+            XCTAssertTrue(store.tabs.first === tab)
+            XCTAssertNil(tab.currentURL)
+        }
+    }
+
     private final class EmptyPolicyDelegate: NSObject, WKNavigationDelegate {}
 
     func testCompactDelegateWithoutOriginalPolicyAllowsItsOwnedDocument() async throws {
