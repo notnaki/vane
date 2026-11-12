@@ -166,9 +166,12 @@ and [release procedures](docs/RELEASING.md) for testing and distribution.
 Vane uses the system WebKit engine. Support depends on the installed macOS and
 WebKit version, the website, and sometimes signing or Apple-managed capabilities.
 
-- **Compatibility is incomplete.** Scoped macOS 27 public-demo and local-fixture
-  passes do not establish provider sign-ins, subscription streaming, cross-network
-  calls, all hardware permissions, or minimum-macOS/notarized-candidate coverage.
+- **Compatibility is incomplete.** Scoped macOS 27 public-demo, local-fixture, and
+  [live streaming checks](docs/STREAMING-COMPATIBILITY.md) cover only their listed
+  environments and flows. Netflix 4K SDR/Dolby Vision, Spotify music, and Disney+
+  protected video at 720p were
+  observed on one signed, notarized nightly; this does not establish every service,
+  provider sign-in, cross-network call, hardware permission, or minimum-macOS setup.
   See the [compatibility matrix](docs/REAL-SITE-COMPATIBILITY.md).
 - **Passkeys are pending** Apple managed browser entitlement approval, matching
   provisioning, and registration/sign-in validation. Developer ID alone is insufficient.
