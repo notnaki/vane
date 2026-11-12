@@ -3,6 +3,36 @@ import XCTest
 @testable import vane
 
 final class FolderArtworkTests: XCTestCase {
+    func testBackSpineReachesLowerCornerThroughoutTransition() {
+        var exposedSamples = 0
+        for frame in 1..<100 {
+            let openness = CGFloat(frame) / 100
+            let bounds = FolderFace.panelBounds(openness)
+            let radius = 2.75 - 0.75 * openness
+            let inset = radius * (1 - 1 / CGFloat(2).squareRoot())
+            let corner = CGPoint(x: bounds.minX + inset, y: bounds.maxY - inset)
+                .applying(FolderFace.projection(openness))
+            let offset = FolderFace.hingeOffset(openness)
+            let top = CGPoint(x: 0.25 - 1.3 * openness + offset.width,
+                              y: 1.25 + 1.35 * openness + offset.height)
+                .applying(FolderFace.rotation(openness))
+            let front = FolderFace.panel(openness)
+            let ink = FolderArtwork(openness: openness)
+                .path(in: CGRect(x: 0, y: 0, width: 16, height: 16))
+            for sample in 1..<20 {
+                let fraction = CGFloat(sample) / 20
+                let point = CGPoint(x: corner.x + (top.x - corner.x) * fraction,
+                                    y: corner.y + (top.y - corner.y) * fraction)
+                if !front.contains(point) {
+                    exposedSamples += 1
+                    XCTAssertTrue(ink.contains(point),
+                                  "Back spine detaches from the lower corner at openness \(openness)")
+                }
+            }
+        }
+        XCTAssertGreaterThan(exposedSamples, 100)
+    }
+
     func testRearStrokeDoesNotEnterFrontInteriorThroughoutTransition() {
         for frame in 0...100 {
             let openness = CGFloat(frame) / 100

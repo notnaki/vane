@@ -50,7 +50,7 @@ enum FolderFace {
         FolderPanel(openness: openness).path
     }
 
-    // The recording keeps this lower-right spine corner and the bottom edge planted.
+    // The front's lower-right extent stays planted while the back joins its lower-left corner.
     static let hinge = CGPoint(x: 17.25, y: 16.625)
 
     static func projection(_ openness: CGFloat) -> CGAffineTransform {
@@ -120,25 +120,11 @@ private struct FolderPanel {
     }
 
     var leftRearJoin: CGPoint {
-        // Travel along the actual left boundary, ending on the rounded lower
-        // corner rather than its imaginary sharp vertex.
-        let closedY = bounds.minY + topRadius * (1 - (1 - pow(7.0 / 9, 2)).squareRoot())
-        let openY = bounds.maxY - bottomRadius + bottomRadius / CGFloat(2).squareRoot()
-        let y = closedY + (openY - closedY) * openness
-        let radius: CGFloat
-        let centerY: CGFloat
-        if y < bounds.minY + topRadius {
-            radius = topRadius
-            centerY = bounds.minY + radius
-        } else if y > bounds.maxY - bottomRadius {
-            radius = bottomRadius
-            centerY = bounds.maxY - radius
-        } else {
-            return CGPoint(x: bounds.minX, y: y).applying(FolderFace.projection(openness))
-        }
-        let dy = y - centerY
-        let x = bounds.minX + radius - max(0, radius * radius - dy * dy).squareRoot()
-        return CGPoint(x: x, y: y).applying(FolderFace.projection(openness))
+        // The spine always meets this material point on the rounded lower corner.
+        // The closed front hides it; revealing it must not slide the join down the side.
+        let inset = bottomRadius * (1 - 1 / CGFloat(2).squareRoot())
+        return CGPoint(x: bounds.minX + inset, y: bounds.maxY - inset)
+            .applying(FolderFace.projection(openness))
     }
 
     var rightRearJoin: CGPoint {
