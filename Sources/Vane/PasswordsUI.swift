@@ -16,7 +16,6 @@ import SwiftUI
 /// The pure parts (grouping, search, what a keystroke means, what VoiceOver is allowed to
 /// hear) are static functions with a `check()`, so they can be proved headless.
 @MainActor struct PasswordsPane: View {
-    @Environment(\.spaceChromeTheme) private var chromeTheme
     @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var folderUnlockMethod = FolderUnlockMethod.touchID
     var settingsProfileID: UUID? = nil
     @ObservedObject private var manager = ProfileManager.shared
@@ -188,21 +187,8 @@ import SwiftUI
     }
 
     private var search: some View {
-        HStack(spacing: Look.inset) {
-            Image(systemName: "magnifyingglass").font(Look.fieldIcon)
-                .foregroundStyle(Look.inkTertiary)
-            TextField("", text: $query, prompt: Text("Search passwords by site or username"))
-                .textFieldStyle(.plain).font(Look.text).focused($searchFocused)
-            if !query.isEmpty {
-                Button { query = ""; searchFocused = true } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(Look.inkSecondary)
-                }.buttonStyle(.plain).accessibilityLabel("Clear search")
-            }
-        }
-        .padding(.horizontal, Look.inset)
-        .frame(height: Look.control + Look.inset)
-        .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
-        .accessibilityLabel("Search saved logins")
+        SettingsSearchField("Search passwords by site or username", text: $query,
+                            label: "Search saved logins", focus: $searchFocused)
     }
 
     private var list: some View {

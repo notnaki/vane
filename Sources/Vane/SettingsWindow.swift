@@ -294,7 +294,7 @@ private struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(.windowBackground)
         .toggleStyle(SettingsToggleStyle())
-        .controlSize(.small)
+        .controlSize(.regular)
         .onAppear { SettingsWindow.retitle(current.title) }
         .onChange(of: selection.id) { SettingsWindow.retitle(current.title) }
         .vaneMotionPolicy()
@@ -328,7 +328,7 @@ private struct SettingsView: View {
 
 private struct SettingsToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
-        Toggle(configuration).toggleStyle(.switch).controlSize(.mini)
+        Toggle(configuration).toggleStyle(.switch).controlSize(.small)
     }
 }
 
@@ -418,7 +418,7 @@ struct SettingsRow<Trailing: View>: View {
         }
         .padding(.horizontal, Look.cardInset)
         .padding(.vertical, 9)
-        .frame(minHeight: Look.settingsRow)
+        .frame(maxWidth: .infinity, minHeight: Look.settingsRow)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
     }
@@ -516,8 +516,54 @@ private struct FieldStyle: ViewModifier {
     func body(content: Content) -> some View {
         content.textFieldStyle(.plain).font(Look.text)
             .padding(.horizontal, Look.inset)
-            .frame(height: Look.control)
+            .frame(height: Look.settingsControl)
             .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+    }
+}
+
+/// One search treatment throughout Settings, including focus and clear behavior.
+struct SettingsSearchField: View {
+    let placeholder: String
+    @Binding var text: String
+    var label: String
+    var hint: String
+    var focus: FocusState<Bool>.Binding?
+    @FocusState private var focused: Bool
+    @Environment(\.spaceChromeTheme) private var chromeTheme
+
+    init(_ placeholder: String, text: Binding<String>, label: String? = nil,
+         hint: String = "", focus: FocusState<Bool>.Binding? = nil) {
+        self.placeholder = placeholder
+        _text = text
+        self.label = label ?? placeholder
+        self.hint = hint
+        self.focus = focus
+    }
+
+    var body: some View {
+        let fieldFocus = focus ?? $focused
+        HStack(spacing: Look.inset) {
+            Image(systemName: "magnifyingglass").font(Look.fieldIcon)
+                .foregroundStyle(.secondary).accessibilityHidden(true)
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain).font(Look.text)
+                .focused(fieldFocus)
+                .accessibilityLabel(label).accessibilityHint(hint)
+            if !text.isEmpty {
+                Button { text = ""; fieldFocus.wrappedValue = true } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain).accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, Look.cardInset)
+        .frame(height: Look.settingsSearch)
+        .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+        .overlay {
+            RoundedRectangle(cornerRadius: Look.chipRadius)
+                .strokeBorder(fieldFocus.wrappedValue ? Color.accentColor : .clear, lineWidth: 2)
+        }
     }
 }
 
@@ -601,7 +647,7 @@ struct UpdateChannelSettings: View {
                     ForEach(UpdateChannel.allCases, id: \.rawValue) { channel in
                         Text(channel.title).tag(channel.rawValue)
                     }
-                }.labelsHidden().frame(width: 120)
+                }.labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
             }
             Footnote(UpdateChannel.stored(selection).explanation)
                 .contentTransition(.opacity)
@@ -636,7 +682,7 @@ private struct PreviewsPane: View {
                         ForEach(LibraryHoverCategory.allCases) { category in
                             Text(category.title).tag(category.rawValue)
                         }
-                    }.labelsHidden().frame(width: 160)
+                    }.labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                 }
                 Footnote("Hover the sidebar bucket to see up to four items from this section, with the newest at the bottom. Downloads is the default. Off hides the preview. Private windows show only their own downloads, media, and archived tabs.")
             }
@@ -908,7 +954,7 @@ private struct ProfilesPane: View {
                 Picker("Search engine", selection: $engineID) {
                     ForEach(Search.all) { Text($0.name).tag($0.id) }
                 }
-                .labelsHidden().frame(width: 145)
+                .labelsHidden().frame(width: 145, alignment: .trailing)
             }
             SettingsRow("Manage search", icon: "slider.horizontal.3", tint: .blue) {
                 Button("Search Settings…") { selection.id = "search" }
@@ -1044,11 +1090,11 @@ private struct LinksPane: View {
         Pane {
             SettingsCard {
                 SettingsRow("Open links from other apps in", icon: "macwindow.on.rectangle", tint: .green) {
-                    Picker("", selection: $externalLinks) {
+                    Picker("Open links from other apps in", selection: $externalLinks) {
                         Text("Little Vane").tag(LinkTarget.littleArc)
                         Text("Current Space").tag(LinkTarget.currentSpace)
                     }
-                    .labelsHidden().fixedSize()
+                    .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                 }
                 Footnote("A Little Vane is a small window with one page and no sidebar: read "
                          + "it, then close it with \u{2318}W — or press \u{2318}O to keep it as a "
@@ -1107,10 +1153,10 @@ private struct SearchPane: View {
         Pane {
             SettingsCard {
                 SettingsRow("AI assistant", icon: "sparkles", tint: .purple) {
-                    Picker("", selection: $assistantID) {
+                    Picker("AI assistant", selection: $assistantID) {
                         ForEach(AIChat.all) { Text($0.name).tag($0.id) }
                     }
-                    .labelsHidden().fixedSize()
+                    .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                 }
                 Footnote("Press Tab in the address bar to ask this assistant instead of "
                          + "searching. Starting with an assistant's name — \u{201C}claude …\u{201D}, "
@@ -1121,10 +1167,10 @@ private struct SearchPane: View {
 
             SettingsCard {
                 SettingsRow("Search engine", icon: "magnifyingglass", tint: .blue) {
-                    Picker("", selection: $engineID) {
+                    Picker("Search engine", selection: $engineID) {
                         ForEach(engines) { Text($0.name).tag($0.id) }
                     }
-                    .labelsHidden().fixedSize()
+                    .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                 }
                 SettingsRow("Search suggestions", icon: "text.bubble.fill", tint: .blue) {
                     Toggle("", isOn: $suggestions).labelsHidden()
@@ -1306,20 +1352,9 @@ struct UIAnimationsPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 1.5) {
             HStack(spacing: Look.inset) {
-                HStack(spacing: Look.inset) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search animations", text: $query).textFieldStyle(.plain)
-                        .accessibilityLabel("Search animations")
-                    if !query.isEmpty {
-                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
-                            .buttonStyle(.plain).foregroundStyle(.secondary)
-                            .accessibilityLabel("Clear animation search")
-                    }
-                }
-                .padding(.horizontal, Look.inset)
-                .frame(height: Look.control)
-                .background(.quaternary, in: .rect(cornerRadius: Look.chipRadius))
+                SettingsSearchField("Search animations", text: $query)
                 Button("Reset All") { UIAnimation.resetAll() }
+                    .controlSize(.large)
                     .help("Restore every animation speed, including hidden search results")
             }
             Text("Below 1× is slower; above 1× is faster. Changes apply to the next animation.")
@@ -1361,24 +1396,36 @@ private struct UIAnimationSpeedRow: View {
     private var speed: Double { UIAnimation.normalized(storedSpeed) }
 
     var body: some View {
-        HStack(spacing: Look.inset) {
+        HStack(spacing: Look.inset * 2) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(animation.title).font(Look.text).foregroundStyle(Look.inkPrimary)
                 Text(animation.detail).font(Look.footnote).foregroundStyle(Look.inkQuiet)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Picker("\(animation.title) speed", selection: Binding(
-                get: { speed }, set: { storedSpeed = $0 }
-            )) {
-                ForEach(UIAnimation.speeds, id: \.self) { value in
-                    Text(UIAnimation.speedLabel(value)).tag(value)
+            VStack(spacing: Look.inset) {
+                HStack {
+                    Text(UIAnimation.speedLabel(speed))
+                        .font(Look.footnote).monospacedDigit()
+                    Spacer(minLength: Look.inset)
+                    Button("Reset") { animation.reset() }
+                        .controlSize(.small)
+                        .disabled(speed == 1)
+                        .accessibilityLabel("Reset \(animation.title) speed")
                 }
+                // Equal slider stops map to the existing, deliberately non-linear choices.
+                Slider(value: Binding(
+                    get: { UIAnimation.step(for: speed) },
+                    set: { storedSpeed = UIAnimation.speed(atStep: $0) }
+                ), in: 0...Double(UIAnimation.speeds.count - 1), step: 1,
+                       neutralValue: UIAnimation.step(for: 1)) {
+                    Text("\(animation.title) speed")
+                } tick: { SliderTick($0) }
+                .labelsHidden()
+                .accessibilityValue(UIAnimation.speedLabel(speed))
+                .help("Drag or use the arrow keys to choose an animation speed")
             }
-            .labelsHidden().frame(width: 126)
-            Button("Reset") { animation.reset() }
-                .disabled(speed == 1)
-                .accessibilityLabel("Reset \(animation.title) speed")
+            .frame(width: 220)
         }
         .padding(.horizontal, Look.cardInset)
         .padding(.vertical, 12)
@@ -1422,7 +1469,7 @@ private struct AdvancedPane: View {
                                 Text($0.title).tag($0)
                             }
                         }
-                        .labelsHidden().fixedSize()
+                        .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                     }
                     SettingsRow("Status") {
                         Label(batterySaver.isActive ? "Active" : "Inactive",
@@ -1448,7 +1495,7 @@ private struct AdvancedPane: View {
                         Picker("After an unclean exit", selection: $afterCrash) {
                             ForEach(Prefs.afterCrashChoices, id: \.key) { Text($0.name).tag($0.key) }
                         }
-                        .labelsHidden().fixedSize()
+                        .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                         .onChange(of: afterCrash) { Prefs.afterCrash = afterCrash }
                     }
                     SettingsRow("Homepage", icon: "house.fill", tint: .green) {
@@ -1463,7 +1510,7 @@ private struct AdvancedPane: View {
                             Text("Side by side").tag(false)
                             Text("Stacked").tag(true)
                         }
-                        .labelsHidden().fixedSize()
+                        .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                         .onChange(of: stackSplits) { Prefs.stackSplits = stackSplits }
                     }
                 }
@@ -1480,7 +1527,7 @@ private struct AdvancedPane: View {
                         Picker("Show notifications for", selection: $toastSeconds) {
                             ForEach(Prefs.toastChoices, id: \.seconds) { Text($0.name).tag($0.seconds) }
                         }
-                        .labelsHidden().fixedSize()
+                        .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                         .onChange(of: toastSeconds) { Prefs.toastSeconds = toastSeconds }
                     }
                 }
@@ -1490,12 +1537,12 @@ private struct AdvancedPane: View {
                                icon: "chevron.left.forwardslash.chevron.right", tint: .blue) {
                 SettingsCard {
                     SettingsRow("User agent", icon: "globe", tint: .blue) {
-                        Picker("", selection: Binding(
+                        Picker("User agent", selection: Binding(
                             get: { BrowserIdentity.resolve(userAgent) },
                             set: { userAgent = $0 == safariUA ? "" : $0 })) {
                             ForEach(Settings.userAgents, id: \.value) { Text($0.name).tag($0.value) }
                         }
-                        .labelsHidden().fixedSize()
+                        .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
                         .onChange(of: userAgent) { Settings.apply(); rebuild() }
                     }
                     SettingsRow("Allow Web Inspector", icon: "chevron.left.forwardslash.chevron.right", tint: .blue) {
