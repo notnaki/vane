@@ -3,6 +3,51 @@ import XCTest
 @testable import vane
 
 final class FolderArtworkTests: XCTestCase {
+    func testPaintedInkCheckIgnoresUnpaintedPathElementsButDetectsThinStrokes() {
+        let unpainted = Path { path in
+            path.move(to: CGPoint(x: 4, y: 4))
+            path.addLine(to: CGPoint(x: 8, y: 8))
+            path.closeSubpath()
+        }
+        XCTAssertFalse(hasPaintedInk(unpainted))
+        let stroke = Path { path in
+            path.move(to: CGPoint(x: 4, y: 4))
+            path.addLine(to: CGPoint(x: 4, y: 8))
+        }.strokedPath(StrokeStyle(lineWidth: 0.0625))
+        XCTAssertTrue(hasPaintedInk(stroke))
+        let front = Path(roundedRect: CGRect(x: 2, y: 2, width: 8, height: 8), cornerRadius: 1)
+        let intrusion = stroke.intersection(front)
+            .subtracting(front.strokedPath(StrokeStyle(lineWidth: 1.52)))
+        XCTAssertTrue(hasPaintedInk(intrusion), "The full occlusion check must detect a real interior stroke")
+    }
+
+    private func hasPaintedInk(_ path: Path) -> Bool {
+        // A resolved boolean path can retain zero-area contours on macOS 26.
+        // isEmpty describes its elements, not whether filling it paints anything.
+        let resolved = path.cgPath
+        let bounds = resolved.boundingBoxOfPath
+        guard !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return false }
+        let scale: CGFloat = 64
+        let width = Int(ceil(bounds.width * scale)) + 2
+        let height = Int(ceil(bounds.height * scale)) + 2
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        pixels.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width,
+                                          space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else {
+                XCTFail("Could not create folder ink coverage context")
+                return
+            }
+            context.translateBy(x: 1, y: 1)
+            context.scaleBy(x: scale, y: scale)
+            context.translateBy(x: -bounds.minX, y: -bounds.minY)
+            context.setFillColor(gray: 1, alpha: 1)
+            context.addPath(resolved)
+            context.fillPath()
+        }
+        return pixels.contains { $0 != 0 }
+    }
+
     func testBackSpineReachesLowerCornerThroughoutTransition() {
         var exposedSamples = 0
         for frame in 1..<100 {
@@ -45,8 +90,7 @@ final class FolderArtworkTests: XCTestCase {
             let border = front.strokedPath(StrokeStyle(lineWidth: style.lineWidth + 0.02,
                                                        lineCap: .round, lineJoin: .round))
             let intrusion = ink.intersection(front).subtracting(border)
-            // Boolean Path expressions are lazy; inspect the resolved geometry.
-            XCTAssertTrue(intrusion.cgPath.isEmpty, "Rear stroke enters front interior at openness \(openness)")
+            XCTAssertFalse(hasPaintedInk(intrusion), "Rear stroke enters front interior at openness \(openness)")
         }
     }
 
