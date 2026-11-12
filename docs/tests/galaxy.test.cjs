@@ -1,5 +1,6 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 require('./scroll-stories.test.cjs');
+require('./responsive-headings.test.cjs');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../space.js'),'utf8');
 for(const viewport of [{width:1280,height:800},{width:1280,height:720},{width:1024,height:641},{width:601,height:521},{width:240,height:718},{width:480,height:600},{width:480,height:390},{width:844,height:390}]) for(const gpu of [false,true]) for(const lateLayout of [false,"observer","load"]) for(const testShape of ["spiral","fine","soft"]) {
  const {width,height}=viewport; const compact=width<=600; const shortWide=!compact && height<=520; const openingZoom=compact && height<=520 ? 55/Math.min(width*.44,height*.42) : shortWide ? .65 : .92;

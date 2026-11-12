@@ -137,7 +137,7 @@
 }
 @media(prefers-reduced-motion:reduce) { .website .nav-download,.website a.primary { transform:none!important; } }
 @media(max-width:520px) {
- .sidebar-topic-list { gap:4px; }
+ .sidebar-topic-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; }
  .sidebar-topic { padding:8px 10px; }
  .mac-question { font-size:16px; }
  .feature-filters button { padding-inline:12px; }
