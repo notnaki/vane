@@ -41,3 +41,12 @@
 - [ ] Coordinate final foreground paint/cadence captures with the controller; require original assertions and tighter p95 target. Do not call the work complete while actual cadence fails.
 
 After the task: validate integration with current main, pass required CI/review, squash-merge PR658, verify and clean only this task's worktree and owned test processes.
+
+### Task 2: Bound native sidebar publication work per display frame
+
+Native profiling and the optimized capture show a separate UI graph bottleneck after page reflow is buffered: optimized sidebarp9525.34ms still exceeds25ms, while WebContent is96.7% idle. Window cadence and all painted coverage pass. Finish this remaining gate through frame-aligned width publication.
+
+- [ ] Add a small owned sidebar width coalescer using a native per-window/screen CADisplayLink at60Hz, with an injectable frame driver for deterministic tests. Accept every input; each callback applies only the latest covered width without animation.
+- [ ] Integrate only continuous admitted sidebar buffer publication. Flush latest covered width before release reconciliation; cancel pending values and invalidate the link on ownership loss or newer commands. Preserve exact buffer barriers, fallback behavior, resize detent/clamp/collapse/persistence/AX and discrete interactions.
+- [ ] Write meaningful RED/GREEN models for multiple proposals per frame, release flush, cancellation/owner replacement, latest uncovered versus queued covered width and in-flight reversal. Keep all native bounds unchanged.
+- [ ] Run covering resize/integration checks and independent source review; measure actual window/sidebar/coverage again. Debug and optimized RED evidence remains retained; no unchanged retry may count as a repair.
