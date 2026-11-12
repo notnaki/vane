@@ -194,6 +194,7 @@ struct LivePageResizeAnchor {
     private var driveAgain = false
     private var windowObservers: [NSObjectProtocol] = []
     private var exactPresented = false
+    private var hasPresentedViewport = false
     private var releaseLayoutFlushed = false
     private var awaitingFinalLayout = false
     private var endpointCompletion: (@MainActor () -> Void)?
@@ -508,10 +509,6 @@ struct LivePageResizeAnchor {
 
     private func prepare(exact: Bool) {
         guard active, pendingPaints.isEmpty else { return }
-        exactPresented = false
-        awaitingFinalLayout = false
-        generation = UUID()
-        let token = generation
         let desired = sizes(latest)
         let targets = zip(pages, desired).enumerated().map { index, pair in
             let (page, size) = pair
@@ -527,6 +524,15 @@ struct LivePageResizeAnchor {
                           height: max(submitted.height, page.currentVisibleSize.height,
                                      size.height + (exact || !page.mask.contains(.height) ? 0 : axes.height * lead.height * page.fraction.height)))
         }
+        // Deferred native submissions can hold a larger floor through several
+        // drag inputs. Repainting the same effective target cannot reduce it.
+        // Keep the initial presentation even when a native axis is fixed.
+        if !exact, hasPresentedViewport,
+           zip(pages, targets).allSatisfy({ $0.prepared == $1 && $0.painted == $1 }) { return }
+        exactPresented = false
+        awaitingFinalLayout = false
+        generation = UUID()
+        let token = generation
         exactPaint = exact && targets == desired
         guard targets.allSatisfy({ $0.width > 0 && $0.height > 0 && $0.width.isFinite && $0.height.isFinite }) else { cancel(); return }
         pendingPaints = Set(pages.map { ObjectIdentifier($0.web) })
@@ -574,6 +580,7 @@ struct LivePageResizeAnchor {
             ResizeTimingDiagnostics.record("buffer.install.begin")
 #endif
             pages.forEach { $0.install() }
+            hasPresentedViewport = true
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.install.end")
 #endif

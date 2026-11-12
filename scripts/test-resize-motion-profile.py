@@ -64,6 +64,22 @@ class ProfileOwnershipTests(unittest.TestCase):
                         dict(finished, content=dict(finished["content"], start=999))):
             with self.assertRaises(ValueError): profile.validate_finished(self.record, changed)
 
+    def test_sampler_lifetimes_must_overlap_the_actual_drag(self):
+        finished = dict(self.record, began=100.1, ended=104.0, ownershipHeld=True)
+        samplers = [{"role": role, "status": 0, "launchedAt": 100.2, "returnedAt": 102.4}
+                    for role in ("ui", "content")]
+        collection = {"samplers": samplers}
+        profile.validate_overlap(collection, finished)
+        for changes in ({"launchedAt": 104.1, "returnedAt": 106.4},
+                        {"launchedAt": 98.0, "returnedAt": 100.0},
+                        {"launchedAt": float("nan")}, {"returnedAt": 99.0}, {"status": 1}):
+            changed = copy.deepcopy(collection)
+            changed["samplers"][1].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                profile.validate_overlap(changed, finished)
+        for changed in (None, {}, {"samplers": samplers[:1]}, {"samplers": [samplers[0], samplers[0]]}):
+            with self.assertRaises(ValueError): profile.validate_overlap(changed, finished)
+
     def test_collection_launches_only_exact_revalidated_targets_and_keeps_the_reports(self):
         commands = []
         class Sampler:

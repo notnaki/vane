@@ -207,6 +207,35 @@ import XCTest
         XCTAssertGreaterThanOrEqual(f.web.frame.width, 664)
     }
 
+    func testUnacknowledgedSubmittedFloorDoesNotRepeatTheSamePaintDuringDrag() {
+        let f = Fixture(); defer { f.close() }
+        f.paint()
+        f.request(164); f.paint(); f.frames.tick()
+        XCTAssertEqual(f.widths, [164])
+        f.request(500)
+        XCTAssertEqual(f.web.frame.width, 664)
+        f.paint()
+        // Complete bounded callbacks before any frame tick, parent ack or end.
+        // A retained floor must not manufacture another identical preparation.
+        for _ in 0..<3 where !f.paints.isEmpty { f.paint() }
+        XCTAssertTrue(f.paints.isEmpty, "An unchanged submitted-parent floor cannot repeatedly repaint")
+        XCTAssertEqual(f.web.frame.width, 664)
+        f.frames.tick()
+        XCTAssertEqual(f.widths, [164, 500])
+        f.acknowledge(500)
+        XCTAssertEqual(f.web.frame.width, 476, "The real trim resumes when the latest parent acknowledges")
+        XCTAssertEqual(f.paints.count, 1)
+        f.paint()
+        XCTAssertTrue(f.paints.isEmpty)
+        f.publication.finish()
+        var releases = 0
+        f.buffer.finish { releases += 1 }
+        f.paint()
+        XCTAssertEqual(releases, 1)
+        XCTAssertEqual(f.web.frame.width, 428)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+    }
+
     func testSubmittedWiderParentRemainsCoveredThroughShrinkAndReleaseUntilLatestAcknowledgment() {
         let f = Fixture(); defer { f.close() }
         f.paint()

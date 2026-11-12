@@ -59,6 +59,24 @@ def validate_finished(ready, finished):
         raise ValueError("profile did not cover a completed motion interval")
 
 
+def validate_overlap(collection, finished):
+    # Process lifetimes must overlap the drag. Attachment and symbolication can
+    # extend them, so reports still determine the exact sampled work.
+    samplers = collection.get("samplers") if isinstance(collection, dict) else None
+    if (not isinstance(samplers, list) or len(samplers) != 2
+            or any(not isinstance(entry, dict) for entry in samplers)
+            or {entry.get("role") for entry in samplers} != {"ui", "content"}):
+        raise ValueError("profile has no completed UI/content collection")
+    for entry in samplers:
+        launched, returned = entry.get("launchedAt"), entry.get("returnedAt")
+        if (type(entry.get("status")) is not int or entry["status"] != 0
+                or any(type(value) not in (int, float) or not math.isfinite(value)
+                       for value in (launched, returned))
+                or launched >= returned
+                or max(launched, finished["began"]) >= min(returned, finished["ended"])):
+            raise ValueError("owned " + entry["role"] + " collection did not overlap the drag")
+
+
 def write_private(path, value):
     temporary = path.with_name(path.name + ".tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -123,6 +141,7 @@ def main(arguments):
     driver = subprocess.Popen(command, cwd=root, env=environment)
     status = 1
     ready = None
+    collection = None
     try:
         deadline = time.monotonic() + 90
         while not (directory / "ready.json").exists():
@@ -130,7 +149,7 @@ def main(arguments):
             if time.monotonic() >= deadline: raise ValueError("profile admission timed out")
             time.sleep(0.01)
         ready = validate_record(runner.read_private_json(directory / "ready.json"), token, str(bundles[0]))
-        collect(ready, directory)
+        collection = collect(ready, directory)
         status = 0
     except KeyboardInterrupt:
         driver.send_signal(signal.SIGINT)
@@ -142,10 +161,12 @@ def main(arguments):
     primary = driver.wait()  # The native wrapper owns bounded retirement and cleanup.
     try:
         if ready is None: raise ValueError("no admitted fixture metadata")
-        validate_finished(ready, runner.read_private_json(directory / "finished.json"))
+        finished = runner.read_private_json(directory / "finished.json")
+        validate_finished(ready, finished)
+        validate_overlap(collection, finished)
     except Exception as error:
         status = 1
-        print("RESIZE_PROFILE final ownership failed: " + str(error), file=sys.stderr, flush=True)
+        print("RESIZE_PROFILE final validation failed: " + str(error), file=sys.stderr, flush=True)
     print(f"RESIZE_PROFILE diagnosticOnly=true collectionStatus={status} nativeStatus={primary}", flush=True)
     return primary if primary else status
 
