@@ -6,8 +6,9 @@ import XCTest
 /// Unshown private documents only: no focus, native loop, input, or capture.
 @MainActor final class PageResizeStyleTests: XCTestCase {
     func testMotionAdmissionWaitsForEagerRootsAndActualStylesheetLoads() async throws {
-        let web = try await page(variables: 160)
-        defer { web.stopLoading() }
+        let response = ResizeStylesheetResponse()
+        let web = try await page(variables: 160, stylesheet: response)
+        defer { web.stopLoading(); response.clear() }
         _ = try await read(web, """
         document.body.innerHTML='<react-app app-name="repo" class="loaded"></react-app><react-partial partial-name="header"></react-partial><react-partial data-lazy="true"></react-partial><link rel="stylesheet">'; 'ready'
         """)
@@ -17,12 +18,21 @@ import XCTest
         _ = try await read(web, "document.querySelector('[partial-name=header]').classList.add('loaded'); 'ready'")
         let complete = try await read(web, ready)
         XCTAssertEqual(complete, "true", "Lazy roots and inert stylesheet placeholders are not active render dependencies")
-        _ = try await read(web, "const link=document.createElement('link');link.rel='stylesheet';link.href='vane-fixture-pending://style.css';link.disabled=true;link.id='pending-style';document.head.append(link);'ready'")
+        _ = try await read(web, "const link=document.createElement('link');link.rel='stylesheet';link.href='vane-fixture-style://fixture/style.css';link.disabled=true;link.id='pending-style';document.head.append(link);'ready'")
         let disabled = try await read(web, ready)
         XCTAssertEqual(disabled, "true")
         _ = try await read(web, "document.getElementById('pending-style').disabled=false;'ready'")
+        try await compatibilityWait { response.pendingCount == 1 }
+        let hasNoSheet = try await read(web, "String(document.getElementById('pending-style').sheet===null)")
+        XCTAssertEqual(hasNoSheet, "true", "Admit an actual withheld stylesheet request, not an already failed unsupported URL")
         let pendingSheet = try await read(web, ready)
         XCTAssertEqual(pendingSheet, "false", "An enabled pending stylesheet still changes the first layout")
+        response.finish()
+        try await compatibilityWait {
+            try await self.read(web, "String(Boolean(document.getElementById('pending-style').sheet) && getComputedStyle(document.documentElement).getPropertyValue('--fixture-stylesheet-loaded').trim()==='1')") == "true"
+        }
+        let completedSheet = try await read(web, ready)
+        XCTAssertEqual(completedSheet, "true", "The actual stylesheet response must release document admission")
         _ = try await read(web, "document.getElementById('pending-style').remove();'ready'")
         let loaded = try await read(web, ready)
         XCTAssertEqual(loaded, "true")
@@ -280,11 +290,12 @@ import XCTest
         XCTAssertEqual(remaining, "[]")
     }
 
-    private func page(variables: Int, insets: NSEdgeInsets? = nil) async throws -> WKWebView {
+    private func page(variables: Int, insets: NSEdgeInsets? = nil, stylesheet: ResizeStylesheetResponse? = nil) async throws -> WKWebView {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        if let stylesheet { configuration.setURLSchemeHandler(stylesheet, forURLScheme: "vane-fixture-style") }
         let web: WKWebView
         if let insets {
             let insetWeb = ResizeInsetStyleWebView(frame: NSRect(x: 0, y: 0, width: 900, height: 600), configuration: configuration)
@@ -328,6 +339,36 @@ import XCTest
             }
         }
     }
+}
+
+/// Keep a real CSS resource pending until the fixture explicitly completes it.
+/// Unsupported schemes can fail before the admission assertion reaches WebKit.
+@MainActor private final class ResizeStylesheetResponse: NSObject, WKURLSchemeHandler {
+    private var pending: [ObjectIdentifier: any WKURLSchemeTask] = [:]
+    var pendingCount: Int { pending.count }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
+        pending[ObjectIdentifier(urlSchemeTask)] = urlSchemeTask
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
+        pending.removeValue(forKey: ObjectIdentifier(urlSchemeTask))
+    }
+
+    func finish() {
+        let tasks = Array(pending.values)
+        pending.removeAll()
+        let data = Data(":root{--fixture-stylesheet-loaded:1}".utf8)
+        for task in tasks {
+            guard let url = task.request.url else { XCTFail("Missing fixture stylesheet URL"); continue }
+            task.didReceive(URLResponse(url: url, mimeType: "text/css", expectedContentLength: data.count,
+                                        textEncodingName: "utf-8"))
+            task.didReceive(data)
+            task.didFinish()
+        }
+    }
+
+    func clear() { pending.removeAll() }
 }
 
 private final class ResizeStyleModelWindow: NSWindow {
