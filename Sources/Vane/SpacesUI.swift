@@ -2025,14 +2025,32 @@ private struct SpaceSwipe: ViewModifier {
             // Keep native presentation as the footer/tint source across release. Updating
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
             Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }
-            slide.start(duration: duration, completion: finish)
-            // Submit compositor travel first, then restore the page under its covering
-            // sidebar. Selection must not wait for the animation's endpoint.
-            DispatchQueue.main.async { [weak self, weak store] in
-                guard let self, self.transition == token, let store,
-                      store.currentSpaceID == self.landingFrom,
-                      store.spaceGesture.neighbour?.id == destination.id else { return }
-                _ = self.activate(destination, in: store)
+            if includesFavorites, let host, !host.hasMountedProfile(destination.profileID) {
+                // A first visit builds a complete hosting tree and WebKit viewport.
+                // Do that beneath the captured rows before starting their clock:
+                // otherwise the cold mount consumes the visible landing's early frames.
+                let window = store.window
+                _ = activate(destination, in: store)
+                guard let window, host.window === window, host.spaceSlide === slide,
+                      slide.isActive,
+                      TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
+                    slide.cancel()
+                    return
+                }
+                host.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                slide.start(duration: duration, completion: finish)
+            } else {
+                slide.start(duration: duration, completion: finish)
+                // Cached hosts already have backing frames. Submit travel before
+                // restoring the page; selection still precedes the endpoint.
+                DispatchQueue.main.async { [weak self, weak store] in
+                    guard let self, self.transition == token, let store,
+                          store.currentSpaceID == self.landingFrom,
+                          store.spaceGesture.neighbour?.id == destination.id else { return }
+                    _ = self.activate(destination, in: store)
+                }
             }
         } else {
             if let host = store.window?.contentView as? BrowserWindowHost,
