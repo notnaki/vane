@@ -1011,14 +1011,6 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     private var queuedSpaceSelection: (slide: ProfileSpaceSlide, target: Space)?
     private var queueRevision = UUID()
 
-    func hasMountedProfile(_ profileID: UUID) -> Bool {
-        guard let window else { return false }
-        return TabStore.all.contains {
-            $0.profileID == profileID && ($0.window === window || $0.parkedIn === window)
-                && hosts[ObjectIdentifier($0)] != nil
-        }
-    }
-
     func clearQueuedSpaceSelection() {
         queuedSpaceSelection = nil
         queueRevision = UUID()

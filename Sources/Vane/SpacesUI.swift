@@ -2025,10 +2025,11 @@ private struct SpaceSwipe: ViewModifier {
             // Keep native presentation as the footer/tint source across release. Updating
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
             Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }
-            if includesFavorites, let host, !host.hasMountedProfile(destination.profileID) {
-                // A first visit builds a complete hosting tree and WebKit viewport.
-                // Do that beneath the captured rows before starting their clock:
-                // otherwise the cold mount consumes the visible landing's early frames.
+            if includesFavorites, let host {
+                // A profile hop can build a new host or restore a different Space
+                // inside a retained one. Resolve its native layout beneath the
+                // captured rows before their animation clock starts; both routes
+                // can otherwise spend the visible landing's early frames mounting.
                 let window = store.window
                 _ = activate(destination, in: store)
                 guard let window, host.window === window, host.spaceSlide === slide,
@@ -2043,8 +2044,8 @@ private struct SpaceSwipe: ViewModifier {
                 slide.start(duration: duration, completion: finish)
             } else {
                 slide.start(duration: duration, completion: finish)
-                // Cached hosts already have backing frames. Submit travel before
-                // restoring the page; selection still precedes the endpoint.
+                // Within one profile, keep the current native host and submit
+                // travel before restoring the page beneath the captured rows.
                 DispatchQueue.main.async { [weak self, weak store] in
                     guard let self, self.transition == token, let store,
                           store.currentSpaceID == self.landingFrom,
