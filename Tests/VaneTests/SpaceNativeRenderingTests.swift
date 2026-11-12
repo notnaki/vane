@@ -440,13 +440,18 @@ import XCTest
             throw error
         }
         let start = try firstColour(of: surface, presented: true).redComponent
-        let selectionStart = ContinuousClock.now
-        monitor.select(spaces[1], in: store)
-        let selectionTime = selectionStart.duration(to: .now)
+        var selectionStart = ContinuousClock.now
+        var selectionTime = Duration.zero
+        var deadline = ProcessInfo.processInfo.systemUptime
+        try await performFixtureApplicationAction(in: window) {
+            selectionStart = .now
+            monitor.select(spaces[1], in: store)
+            selectionTime = selectionStart.duration(to: .now)
+            deadline = ProcessInfo.processInfo.systemUptime + 2
+        }
         var samples = [start]
         var positions: [CGFloat] = [0]
         var sampleTimes = [selectionStart.duration(to: .now)]
-        let deadline = ProcessInfo.processInfo.systemUptime + 2
         repeat {
             try await Task.sleep(for: .milliseconds(16))
             samples.append(try firstColour(of: surface, presented: true).redComponent)
@@ -717,8 +722,13 @@ import XCTest
     }
 
     func testRetargetedLandingPreservesPresentedWashForReversalAndNewDestination() async throws {
+        try await withFixtureApplicationLoop { try await checkRetargetedLanding() }
+    }
+
+    private func checkRetargetedLanding() async throws {
         for targetIndex in [0, 2] {
-            let (store, spaces, window, monitor) = try fixture(defaultColours: true)
+            let (store, spaces, window, monitor) = try fixture(defaultColours: true, registerTeardown: false)
+            defer { retireFixture(store, window: window, monitor: monitor) }
             store.palette = nil
             try await Task.sleep(for: .milliseconds(250))
             let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)

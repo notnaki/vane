@@ -86,8 +86,8 @@ import XCTest
         let separation = dockedX - (try presentedX(sidebar))
 
         func sample(_ label: String, expectsIntermediate: Bool = true,
-                    afterSample: (Int) -> Void = { _ in }, action: () -> Void) async throws {
-            action()
+                    afterSample: (Int) -> Void = { _ in }, action: @escaping @MainActor () -> Void) async throws {
+            try await performFixtureApplicationAction(in: window, action)
             var intermediate = false
             for index in 0..<20 {
                 try await Task.sleep(for: .milliseconds(16))

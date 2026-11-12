@@ -85,3 +85,34 @@ import XCTest
         try await Task.sleep(for: .milliseconds(20))
     }
 }
+
+/// Deliver native fixture actions from the admitted AppKit event loop. Waiting
+/// here establishes delivery, never an animation's desired outcome.
+@MainActor func performFixtureApplicationAction(in window: NSWindow,
+    _ action: @escaping @MainActor () -> Void) async throws {
+    let token = Int.random(in: 1...Int.max)
+    var delivered = false
+    var admitted = false
+    let monitor = try XCTUnwrap(NSEvent.addLocalMonitorForEvents(matching: .applicationDefined) { event in
+        guard event.type == .applicationDefined, event.data1 == token else { return event }
+        MainActor.assumeIsolated {
+            defer { delivered = true }
+            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
+                  window.isKeyWindow, window.isVisible, window.occlusionState.contains(.visible),
+                  NSApp.modalWindow == nil, window.attachedSheet == nil else { return }
+            admitted = true
+            action()
+        }
+        return nil
+    })
+    defer { NSEvent.removeMonitor(monitor) }
+    let event = try XCTUnwrap(NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+        modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: window.windowNumber, context: nil, subtype: 0, data1: token, data2: 0))
+    NSApp.postEvent(event, atStart: false)
+    try await compatibilityWait { delivered }
+    guard admitted else {
+        XCTFail("Posted native action must still own the foreground document when delivered")
+        throw NSError(domain: "NativeFixtureActionAdmission", code: 1)
+    }
+}

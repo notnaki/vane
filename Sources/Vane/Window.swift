@@ -1176,6 +1176,14 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         CATransaction.flush()
     }
 
+    /// A committed profile already has its captured native rows. Prepare the
+    /// displayed roots without walking the parked profiles' pending layouts.
+    func layoutDisplayedProfile() {
+        guard let current, let host = hosts[current] else { return }
+        host.content.layoutSubtreeIfNeeded()
+        host.palette.layoutSubtreeIfNeeded()
+    }
+
     private func show(_ store: TabStore) {
         let id = ObjectIdentifier(store)
         footerPresentation.activate(store)
