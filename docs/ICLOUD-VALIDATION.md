@@ -405,6 +405,38 @@ Overlap-only diagnostics now retain model/presentation positions and ancestor
 animation keys if it recurs. All original samples, hits, tolerances and deadlines
 remain unchanged; this candidate still needs hosted runtime qualification.
 
+## Qualified focused repairs and final integration, 12 November 2026
+
+Run [43257391641](https://github.com/notnaki/vane/actions/runs/43257391641),
+`bb6ee95a`, built successfully and passed all 39 selected tests on each of three
+macOS 26 ARM hosts, with zero failures, no skips and primary/cleanup status zero
+throughout. Durations were 44.504, 43.092 and 45.330 seconds. The large-folder
+trace now records the same settled endpoint on every host: one row, sampled
+count one, height36, no retained rollout and no clipping. The original New Tab
+pixel/hit assertions, nested reversal, fallback row spacing and all four velocity
+cases passed unchanged. Independent Astra review found no actionable findings
+in the final settlement/placement patch.
+
+Separately owned shadow run
+[43255828482](https://github.com/notnaki/vane/actions/runs/43255828482),
+`7da25136`, passed a fresh withdrawn-window control and the complete 31-case
+serial suite on each of three macOS 26 ARM hosts. All cleanup receipts were zero.
+Suite durations were 41.879, 51.144 and 38.387 seconds. The exact public fixture
+blob `5084d8f6d9a09fc8576aedb44a3070f15298da6c` is integrated here. It acquires
+its AppKit lease before creating WebKit/window objects and uses WebKit's own
+test-view occlusion policy for the three timer fixtures, checking the policy
+getter. Exact native foreground/key/geometry admission and the real native
+orderOut → hidden DOM → visible DOM boundary remain required, with the original
+startup/document/outcome deadlines. No product setting changes. The logs confirm
+both hidden transitions and successful discovery despite stale native occlusion
+metadata. Earlier animation, deactivation and positive-occlusion-only candidates
+remain rejected; the cancelled Intel characterization supplies no qualification.
+
+The temporary auxiliary workflow is removed before updating PR #647. Focused
+qualification supports proceeding to full protected CI for the combined tree;
+it does not replace that final integration gate. Current main3882 is included,
+and its separate checks/pages runs completed successfully before this update.
+
 ## Verification limits and remaining integration gates
 
 - No second Mac is available. Cross-Mac convergence, offline/restart behavior
