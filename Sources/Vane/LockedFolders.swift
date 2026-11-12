@@ -181,20 +181,24 @@ extension TabStore {
         return []
     }
 
-    func isFolderLocked(_ id: UUID) -> Bool { !lockedFolders(for: id.uuidString).isEmpty }
-    func isTabLocked(_ id: UUID) -> Bool { !lockedFolders(for: id.uuidString).isEmpty }
-    var accessibleTabs: [Tab] {
-        let unlocked = unlockedFolders
+    private var folderAccess: FolderAccessIndex.Snapshot {
         let shapes = [pins, todayShape] + stashes.values.flatMap { [$0.pins, $0.todayShape] }
-        var owned = Set<String>(), blocked = Set<String>()
-        for shape in shapes {
-            let locked = Pins.TraversalIndex(shape.entries).lockedRows(in: shape.entries, unlocked: unlocked)
-            // Keep the first owning shape's protection, as lockedFolders(for:) does.
-            let ids = Set(shape.entries.map(\.id))
-            blocked.formUnion(locked.subtracting(owned))
-            owned.formUnion(ids)
-        }
-        return tabs.filter { !blocked.contains($0.id.uuidString) }
+        return folderAccessIndex.resolve(in: shapes, unlocked: unlockedFolders)
+    }
+
+    func isFolderLocked(_ id: UUID) -> Bool { isTabLocked(id) }
+    func isTabLocked(_ id: UUID) -> Bool {
+        let access = folderAccess
+        if access.canRejectUnblockedRows, !access.blockedIDs.contains(id) { return false }
+        // Keep the existing ancestor/reason semantics for malformed duplicate folder
+        // identities. The bulk index may conservatively protect extra occurrences.
+        return !lockedFolders(for: id.uuidString).isEmpty
+    }
+
+    var accessibleTabs: [Tab] {
+        let blocked = folderAccess.blockedIDs
+        guard !blocked.isEmpty else { return tabs }
+        return tabs.filter { !blocked.contains($0.id) }
     }
 
     var lockedPageFolder: Folder? {

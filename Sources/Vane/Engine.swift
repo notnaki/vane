@@ -2888,6 +2888,7 @@ struct Stash {
     /// being renamed or being suspended. Everything done to them is in SplitView.swift.
     @Published var splits: [Split] = [] { didSet { SharedTabs.schedule(from: self) } }
     var folderAuthentication = FolderAuthentication.shared
+    let folderAccessIndex = FolderAccessIndex()
     @Published var lockedFolderBackdrop: NSImage?
     @Published var folderUnlockRequest: FolderUnlockRequest?
     @Published var current: Tab.ID? {
