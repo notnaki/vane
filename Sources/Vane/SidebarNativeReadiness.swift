@@ -172,16 +172,6 @@ extension EnvironmentValues {
         return ticket
     }
 
-    // Temporary diagnostic: snapshot actual requirements, never change admission.
-    func diagnosticSnapshot(_ scope: SidebarNativeReadinessScope) -> String {
-        let entries = (declarations[scope] ?? [:]).map { key, declared in
-            let ticket = currentSections[scope]?[key]
-            let ready = ticket.flatMap { requirements[scope]?[$0.section]?.ready } ?? false
-            return "\(key):rows=\(declared.rowIDs.count),ticket=\(ticket != nil),epoch=\(ticket?.expectedEpoch == declared.epoch),ready=\(ready)"
-        }.sorted()
-        return "expected=\(expected.contains(scope)) requirements=\(requirements[scope]?.count ?? 0) declared=[\(entries.joined(separator: ";"))]"
-    }
-
     func isReady(_ scope: SidebarNativeReadinessScope, allowingUnregistered: Bool = false) -> Bool {
         let sections = requirements[scope] ?? [:]
         if let declared = declarations[scope] {

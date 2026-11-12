@@ -84,17 +84,13 @@ import XCTest
 
         func sample(_ label: String, expectsIntermediate: Bool = true,
                     afterSample: (Int) -> Void = { _ in }, action: () -> Void) async throws {
-            var trace: [String] = []
-            let began = CACurrentMediaTime()
             action()
-            trace.append("actionMS=\((CACurrentMediaTime() - began) * 1000)")
             var intermediate = false
             for index in 0..<20 {
                 try await Task.sleep(for: .milliseconds(16))
                 display()
                 let x = try presentedX(sidebar)
                 let lightX = button.convert(button.bounds, to: host).minX
-                trace.append("ms=\((CACurrentMediaTime() - began) * 1000),x=\(x),light=\(lightX)")
                 if x > -200 && x < -2 {
                     intermediate = true
                     // At least one of the three lights is still on-screen here.
@@ -106,8 +102,6 @@ import XCTest
                 }
                 afterSample(index)
             }
-            print("LIGHTS_TIMELINE \(label) active=\(NSApp.isActive) key=\(window.isKeyWindow) reduced=\(Motion.reduced) \(trace)")
-            SpaceLandingDiagnostic.drain(label)
             XCTAssertEqual(intermediate, expectsIntermediate,
                 "\(label): normal motion must travel; reduced motion must settle immediately")
         }
