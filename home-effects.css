@@ -43,3 +43,9 @@
 .session-playback .session-pause-icon { display:none; }
 .session-playback.is-playing .session-pause-icon { display:block; }
 .session-playback.is-playing .session-play-icon { display:none; }
+
+/* A quiet reminder to explore after the opening has been idle. */
+.scroll-cue { position:fixed; z-index:10; left:calc(50% - 22px); bottom:max(24px,env(safe-area-inset-bottom)); display:grid; place-items:center; width:44px; height:44px; padding:11px; border:0; border-radius:50%; background:#fff; color:#19151f; box-shadow:0 4px 20px #0003; opacity:0; transition:opacity 200ms; }
+.scroll-cue.is-visible { opacity:1; animation:scroll-cue-bounce 2600ms ease-in-out infinite; }
+.scroll-cue svg { width:22px; height:22px; fill:none; stroke-width:1.7; }
+@keyframes scroll-cue-bounce { 0%,60%,100% { transform:translateY(0); } 72% { transform:translateY(-6px); } 82% { transform:translateY(0); } 90% { transform:translateY(-2px); } }
