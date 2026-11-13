@@ -29,12 +29,12 @@
   cue.setAttribute('aria-label','Scroll to explore Vane');
   cue.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14m-6-6 6 6 6-6"/></svg>';
   opening.append(cue);
-  let idleTimer=0,fadeTimer=0,cueFrame=0,used=false;
+  let idleTimer=0,fadeTimer=0,cueFrame=0,movementTimer=0,used=false;
   function eligible(){
     return !used&&!document.hidden&&document.documentElement.scrollHeight>scrollY+innerHeight+8&&opening.getBoundingClientRect().bottom>innerHeight*.75&&!document.querySelector('dialog[open]')&&!header.querySelector('.is-menu-open');
   }
   function hideCue(){
-    clearTimeout(idleTimer);clearTimeout(fadeTimer);cancelAnimationFrame(cueFrame);
+    clearTimeout(idleTimer);clearTimeout(fadeTimer);clearTimeout(movementTimer);cancelAnimationFrame(cueFrame);
     cue.classList.remove('is-visible');
     fadeTimer=setTimeout(()=>{cue.hidden=true;},reduced.matches?0:200);
   }
@@ -44,6 +44,8 @@
     if(!used&&!document.hidden)idleTimer=setTimeout(()=>{
       if(!eligible())return;
       clearTimeout(fadeTimer);cue.hidden=false;
+      // Establish opacity:0 before the visible class starts its transition.
+      cue.getBoundingClientRect();
       cueFrame=requestAnimationFrame(()=>cue.classList.add('is-visible'));
     },4000);
   }
@@ -53,7 +55,21 @@
     heading.setAttribute('tabindex','-1');heading.focus({preventScroll:true});
     nextSection.scrollIntoView({behavior:reduced.matches?'instant':'smooth',block:'start'});
   });
-  for(const name of ['scroll','pointermove','pointerdown','resize'])addEventListener(name,cueActivity,{passive:true});
+  function cuePointerMove(event){
+    clearTimeout(movementTimer);
+    if((event.target instanceof Node&&cue.contains(event.target))||document.activeElement===cue){
+      clearTimeout(fadeTimer);
+      if(!cue.hidden)cue.classList.add('is-visible');
+      return;
+    }
+    if(cue.hidden){cueActivity(event);return;}
+    clearTimeout(idleTimer);
+    // Let the pointer reach the button before activity fades it away.
+    movementTimer=setTimeout(cueActivity,250);
+  }
+  addEventListener('pointermove',cuePointerMove,{passive:true});
+  cue.addEventListener('focus',()=>{clearTimeout(movementTimer);clearTimeout(fadeTimer);cue.classList.add('is-visible');});
+  for(const name of ['scroll','pointerdown','resize'])addEventListener(name,cueActivity,{passive:true});
   addEventListener('keydown',cueActivity);
   document.addEventListener('visibilitychange',cueActivity);
   cueActivity();
