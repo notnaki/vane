@@ -112,11 +112,12 @@ private struct NavigationRevealFixture: View {
             try await compatibilityWait {
                 if NSApp.isHidden { NSApp.unhide(nil) }
                 if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-                if NSApp.keyWindow !== window || !window.isVisible { window.makeKeyAndOrderFront(nil) }
+                if NSApp.keyWindow === window, !window.isKeyWindow { window.orderOut(nil) }
+                if NSApp.keyWindow !== window || !window.isKeyWindow || !window.isVisible { window.makeKeyAndOrderFront(nil) }
                 host.layoutSubtreeIfNeeded()
                 window.displayIfNeeded()
                 CATransaction.flush()
-                guard NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window
+                guard NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
                     && window.occlusionState.contains(.visible) && host.window === window else { return false }
                 admissionGlyphs = try await self.glyphCenters(host)
                 return admissionGlyphs.count == 3
