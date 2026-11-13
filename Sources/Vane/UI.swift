@@ -944,13 +944,11 @@ struct WebCard: View {
     /// Freeze only the document during a Library swipe. The surrounding card and its
     /// overlays still fill the remaining window width, keeping the right rim in place.
     private func documentViewport<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        let document = content()
         let inset = edgeToEdge ? 0 : Look.cardGap + (libraryPageLeadingInset ?? 0)
-        return GeometryReader { geometry in
-            document.frame(width: libraryPageWidth.map { max(0, $0 - inset) } ?? geometry.size.width,
-                           height: geometry.size.height, alignment: .topLeading)
-        }
-        .background(Color(nsColor: Look.pageGround))
+        return content()
+            .frame(width: libraryPageWidth.map { max(0, $0 - inset) }, alignment: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color(nsColor: Look.pageGround))
     }
 }
 
