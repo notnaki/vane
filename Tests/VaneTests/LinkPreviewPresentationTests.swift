@@ -4,7 +4,126 @@ import Vision
 import XCTest
 @testable import vane
 
+@MainActor private final class LinkPreviewStreamFixture: ObservableObject {
+    @Published var preview = Previews.Preview(url: URL(string: "https://example.com/article")!, title: "A growing preview")
+}
+
+private struct LinkPreviewStreamSurface: View {
+    @ObservedObject var fixture: LinkPreviewStreamFixture
+    var body: some View {
+        LinkPreviewAnimatedCard(preview: fixture.preview, size: .init(width: 320, height: 350))
+    }
+}
+
 @MainActor final class LinkPreviewPresentationTests: XCTestCase {
+    func testLoadingCardDoesNotReserveABlankScreenshotOrDescription() {
+        let preview = Previews.Preview(url: URL(string: "https://example.com/article")!, title: "example.com")
+        let host = NSHostingView(rootView: LinkPreviewCard(preview: preview, size: .init(width: 320, height: 350)))
+        host.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(host.fittingSize.height, 90, "Loading should be a compact status row, not a blank page-sized card")
+    }
+
+    func testCardPhasesStayCompactAndRenderInBothAppearances() throws {
+        let url = URL(string: "https://example.com/article")!
+        var loading = Previews.Preview(url: url, title: "example.com")
+        loading.loading = true
+        var metadata = Previews.Preview(url: url, title: "A useful article to read next")
+        metadata.description = "A short description of the destination, available while its image finishes loading."
+        var ready = metadata
+        ready.loading = false
+        let art = NSImage(size: NSSize(width: 1000, height: 700))
+        art.lockFocus()
+        NSColor.windowBackgroundColor.setFill(); NSRect(x: 0, y: 0, width: 1000, height: 700).fill()
+        NSColor.systemBlue.setFill(); NSRect(x: 32, y: 150, width: 936, height: 518).fill()
+        art.unlockFocus()
+        ready.image = art
+        var unavailable = loading
+        unavailable.loading = false
+        for (name, preview) in [("loading", loading), ("metadata", metadata), ("ready", ready), ("unavailable", unavailable)] {
+            for (theme, scheme) in [("light", ColorScheme.light), ("dark", ColorScheme.dark)] {
+                let host = NSHostingView(rootView: LinkPreviewCard(preview: preview, size: .init(width: 320, height: 350))
+                    .preferredColorScheme(scheme))
+                host.setFrameSize(host.fittingSize)
+                host.layoutSubtreeIfNeeded()
+                XCTAssertEqual(host.bounds.width, 320)
+                XCTAssertLessThanOrEqual(host.bounds.height, preview.image == nil ? 160 : 280)
+                if let directory = ProcessInfo.processInfo.environment["VANE_LINK_CARD_CAPTURES"] {
+                    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                    host.cacheDisplay(in: host.bounds, to: bitmap)
+                    try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                        .write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name)-\(theme).png"))
+                }
+            }
+        }
+    }
+
+    func testShortTextDoesNotReserveSpaceForMissingLines() {
+        var preview = Previews.Preview(url: URL(string: "https://example.com/article")!, title: "A short article")
+        preview.description = "A short note."
+        preview.loading = false
+        let host = NSHostingView(rootView: LinkPreviewCard(preview: preview, size: .init(width: 320, height: 350)))
+        host.layoutSubtreeIfNeeded()
+        XCTAssertLessThan(host.fittingSize.height, 100, "The card should end after its actual text and padding")
+    }
+
+    func testMountedTypingExpandsThroughIntermediateTextHeights() async throws {
+        TestEnvironment.prepare()
+        guard !Motion.reduced else { throw XCTSkip("The active system motion policy requires immediate text") }
+        let policy = NSApplication.shared.activationPolicy()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .regular)
+        var failure: (any Error)?
+        do { try await checkMountedTyping() } catch { failure = error }
+        do { try await loop.close() } catch { if failure == nil { failure = error } }
+        NSApp.setActivationPolicy(policy)
+        do { try await compatibilityWait { NSApp.activationPolicy() == policy } }
+        catch { if failure == nil { failure = error } }
+        if let failure { throw failure }
+    }
+
+    private func checkMountedTyping() async throws {
+        let fixture = LinkPreviewStreamFixture()
+        let host = NSHostingView(rootView: LinkPreviewStreamSurface(fixture: fixture))
+        let window = NSWindow(contentRect: .init(x: 120, y: 120, width: 320, height: 350),
+                              styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            return NativeFixtureMountAdmission.surfaceReady(host, in: window) && window.isVisible && NSApp.isRunning
+        }
+        let initial = host.fittingSize.height
+        var complete = fixture.preview
+        complete.summary = "The card follows the words as they arrive. Each new line makes room for more of the answer, keeping the preview close to the link without reserving a large empty block below the text."
+        complete.loading = false
+        let completedHost = NSHostingView(rootView: LinkPreviewCard(preview: complete, size: .init(width: 320, height: 350)))
+        completedHost.layoutSubtreeIfNeeded()
+        let finalHeight = completedHost.fittingSize.height
+        // Admission above concerns the surface, never the typing outcome. Observe from
+        // the first update so this cannot pass by sampling only the completed answer.
+        fixture.preview = complete
+        let deadline = ContinuousClock.now + .seconds(3)
+        var intermediate = Set<Int>()
+        repeat {
+            host.layoutSubtreeIfNeeded()
+            let height = host.fittingSize.height
+            if height > initial + 1, height < finalHeight - 1 {
+                intermediate.insert(Int(height.rounded()))
+                if let directory = ProcessInfo.processInfo.environment["VANE_LINK_CARD_CAPTURES"] {
+                    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                    host.cacheDisplay(in: host.bounds, to: bitmap)
+                    try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                        .write(to: URL(fileURLWithPath: directory).appendingPathComponent("typing-\(Int(height)).png"))
+                }
+            }
+            if height >= finalHeight - 1 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        } while ContinuousClock.now < deadline
+        XCTAssertGreaterThanOrEqual(intermediate.count, 2, "A mounted streaming card must grow as visible lines are typed")
+        XCTAssertEqual(host.fittingSize.height, finalHeight, accuracy: 1, "The final card should fit its completed text")
+    }
+
     func testChangedAISettingsRejectCachedSummaryOnRehover() {
         TestEnvironment.prepare()
         let previews = Previews(), tab = vane.Tab(isPrivate: true)
@@ -108,9 +227,9 @@ import XCTest
 
     func testCardStaysInsideThePaneAndFlipsAboveBottomLinks() {
         XCTAssertEqual(LinkPreviewLayout.frame(link: .init(x: 50, y: 60, width: 140, height: 20),
-            viewport: .init(width: 800, height: 600)), .init(x: 50, y: 88, width: 320, height: 350))
+            viewport: .init(width: 800, height: 600)), .init(x: 50, y: 88, width: 320, height: 280))
         XCTAssertEqual(LinkPreviewLayout.frame(link: .init(x: 760, y: 570, width: 30, height: 20),
-            viewport: .init(width: 800, height: 600)), .init(x: 472, y: 212, width: 320, height: 350))
+            viewport: .init(width: 800, height: 600)), .init(x: 472, y: 282, width: 320, height: 280))
         XCTAssertEqual(LinkPreviewLayout.frame(link: .init(x: 190, y: 200, width: 20, height: 20),
             viewport: .init(width: 200, height: 240)), .init(x: 8, y: 8, width: 184, height: 224))
     }

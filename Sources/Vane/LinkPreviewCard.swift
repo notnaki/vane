@@ -16,18 +16,20 @@ struct LinkPreviewOverlay: View {
 
     var body: some View {
         GeometryReader { geometry in
-            if enabled, visiblePage, geometry.size.width >= 160, geometry.size.height >= 160,
-               let preview = previews.preview(for: tab) {
-                let frame = LinkPreviewLayout.frame(link: previews.linkRect, viewport: geometry.size)
-                LinkPreviewCard(preview: preview, size: frame.size)
-                    .position(x: frame.midX, y: frame.midY)
-                    .id(preview.url)
-                    .transition(.asymmetric(insertion: .opacity, removal: .identity))
+            LinkPreviewPlacement(link: previews.linkRect, viewport: geometry.size) {
+                if enabled, visiblePage, geometry.size.width >= 160, geometry.size.height >= 160,
+                   let preview = previews.preview(for: tab) {
+                    LinkPreviewAnimatedCard(preview: preview, size: CGSize(
+                        width: min(320, geometry.size.width - 16), height: geometry.size.height - 16))
+                        .id(preview.url)
+                        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topLeading))
+                            .combined(with: .offset(y: 4)))
+                }
             }
         }
         .allowsHitTesting(false)
         .clipped()
-        .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: previews.current?.url)
+        .animation(reduceMotion || Motion.reduced ? nil : Look.appear, value: previews.preview(for: tab)?.url)
         .onChange(of: enabled) { _, value in if !value { previews.cancel(from: tab) } }
         .onChange(of: aiRevision) { _, _ in previews.cancel(from: tab) }
         .onChange(of: visiblePage) { _, value in if !value { previews.cancel(from: tab) } }
@@ -38,10 +40,14 @@ struct LinkPreviewOverlay: View {
 }
 
 enum LinkPreviewLayout {
-    static func frame(link: CGRect, viewport: CGSize) -> CGRect {
+    static func hasTitle(_ preview: Previews.Preview) -> Bool {
+        !preview.title.isEmpty && preview.title != preview.url.host
+    }
+
+    static func frame(link: CGRect, viewport: CGSize, height: CGFloat = 280) -> CGRect {
         let inset: CGFloat = 8
         let size = CGSize(width: max(0, min(320, viewport.width - 2 * inset)),
-                          height: max(0, min(350, viewport.height - 2 * inset)))
+                          height: max(0, min(height, viewport.height - 2 * inset)))
         let x = min(max(inset, link.minX), max(inset, viewport.width - size.width - inset))
         let below = link.maxY + inset
         let desiredY = below + size.height <= viewport.height - inset ? below : link.minY - size.height - inset
@@ -50,58 +56,85 @@ enum LinkPreviewLayout {
     }
 }
 
+/// Measure the visible text, then anchor that actual height inside the source pane.
+/// No reserved lines, phase heights, or measurement feedback loop.
+struct LinkPreviewPlacement: Layout {
+    var link: CGRect
+    var viewport: CGSize
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize { viewport }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let width = max(0, min(320, viewport.width - 16))
+        for card in subviews {
+            let measured = card.sizeThatFits(ProposedViewSize(width: width, height: nil))
+            let frame = LinkPreviewLayout.frame(link: link, viewport: viewport, height: measured.height)
+            card.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                       anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
+    }
+}
+
 struct LinkPreviewCard: View {
     let preview: Previews.Preview
     let size: CGSize
+    var revealedText: String? = nil
+
+    private var fullText: String { preview.summary.isEmpty ? preview.description : preview.summary }
+    private var text: String { revealedText ?? fullText }
+    private var hasText: Bool { !text.isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ZStack {
-                Color(nsColor: .controlBackgroundColor)
-                if let image = preview.image {
-                    Image(nsImage: image).resizable().scaledToFill()
-                } else if preview.loading {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: "globe").font(.title2).foregroundStyle(.secondary)
-                }
+            if let image = preview.image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size.width, height: min(144, size.height * 0.52), alignment: .top)
+                    .clipped()
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
             }
-            .frame(width: size.width, height: min(156, size.height * 0.45))
-            .clipped()
-            .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 6) {
                     if let favicon = preview.favicon {
                         Image(nsImage: favicon).resizable().frame(width: 14, height: 14).accessibilityHidden(true)
+                    } else {
+                        Image(systemName: "globe").font(Look.caption).accessibilityHidden(true)
                     }
-                    Text(preview.url.host ?? "").font(Look.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Text(preview.title).font(Look.Typography.heading.font).lineLimit(2)
-                if !preview.summary.isEmpty {
-                    Text(preview.summary).font(Look.text).lineLimit(5)
-                } else if !preview.description.isEmpty {
-                    Text(preview.description).font(Look.text).foregroundStyle(.secondary).lineLimit(4)
-                }
-                Spacer(minLength: 0)
-                if preview.summarizing {
-                    HStack(spacing: 6) {
+                    Text(preview.url.host ?? "").font(Look.caption).lineLimit(1)
+                    Spacer(minLength: 0)
+                    if preview.loading || preview.summarizing {
                         ProgressView().controlSize(.mini)
-                        Text("Summarizing…")
-                    }.font(Look.caption).foregroundStyle(.secondary)
-                } else if preview.loading {
-                    Text("Loading preview…").font(Look.caption).foregroundStyle(.secondary)
-                } else if preview.image == nil && preview.summary.isEmpty && preview.description.isEmpty {
-                    Text("Preview unavailable").font(Look.caption).foregroundStyle(.secondary)
+                            .accessibilityLabel(preview.loading ? "Loading preview" : "Summarizing")
+                    }
+                }
+                .foregroundStyle(.secondary)
+
+                if hasText || preview.image != nil || LinkPreviewLayout.hasTitle(preview) {
+                    Text(preview.title).font(Look.heading).lineLimit(2)
+                    if hasText {
+                        Text(text)
+                            .font(Look.text)
+                            .foregroundStyle(preview.summary.isEmpty ? .secondary : .primary)
+                            .lineLimit(6)
+                            .accessibilityLabel(fullText)
+                    } else if preview.image == nil {
+                        Text(!fullText.isEmpty ? " " : preview.loading ? "Loading preview…" : "Preview unavailable")
+                            .font(Look.text).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(!fullText.isEmpty ? " " : preview.loading ? "Loading preview…" : "Preview unavailable")
+                        .font(Look.text).foregroundStyle(.secondary)
                 }
             }
             .padding(12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(width: size.width, height: size.height)
+        .frame(width: size.width, alignment: .topLeading)
         .background(Look.panelFill)
-        .clipShape(RoundedRectangle(cornerRadius: Look.pillRadius))
-        .shadow(color: Look.pageShadow, radius: 8, y: 3)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: Look.pageShadow, radius: 12, y: 4)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Link preview")
     }

@@ -54,7 +54,7 @@ struct MaxPane: View {
                     }
                     MaxFeatureRow(title: "Instant Links", detail: "Press Shift + Return on a search to open DuckDuckGo’s first result and skip the results page.",
                                   image: "InstantLinks", isOn: $instant)
-                    MaxFeatureRow(title: "Link Previews", detail: "Hover over a link to take a look before opening it. Max adds a summary when an AI connection is available.",
+                    MaxFeatureRow(title: "Link Previews", detail: "Hold Shift while hovering over a link to preview it. Search results and shared links on supported sites preview automatically. Max adds a summary when an AI connection is available.",
                                   image: "LinkPreviews", isOn: $previews)
                     MaxFeatureRow(title: "Tidy Downloads", detail: "Give new downloads clearer, more useful filenames, so they’re easier to find later.",
                                   image: "TidyDownloads", isOn: $downloads, disabled: unavailable(.downloads))
