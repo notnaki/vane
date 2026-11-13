@@ -1,4 +1,4 @@
-name: Public launch-owned parent stack diagnosis
+name: Public idle feedback product repair preflight
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -7,11 +7,25 @@ permissions:
 env:
   VANE_EXPERIMENT_SIDEBAR_HOST: '1'
   VANE_PROFILE_BOUNDARY_COSTS: '1'
-  VANE_PROFILE_PARENT_STACK: '1'
   VANE_EXPECTED_TESTS: |
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
+    VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
+    VaneTests.SidebarMaterializationTests/testAnOldCompletionCannotReleaseTheReplacementCover
+    VaneTests.SidebarMaterializationTests/testRetargetingTheSameCoverInvalidatesTheOldRenderedGeneration
+    VaneTests.SidebarMaterializationTests/testRepeatedTrackingKeepsItsLeaseAndCachedDocumentExtent
+    VaneTests.SidebarMaterializationTests/testUnregisteredPlaceholderCannotBecomeReadyUntilItsExactScopeRenders
+    VaneTests.DownloadFeedbackTests/testBrowserOnlyMeasuresDownloadAnchorsWhileFeedbackIsVisible
+    VaneTests.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithBatterySaver
+    VaneTests.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithAnimation
+    VaneTests.DownloadFeedbackTests/testHiddenSidebarGetsVisibleDownloadTargetInsidePage
+    VaneTests.DownloadFeedbackTests/testVisibleSidebarUsesActualLibraryTarget
+    VaneTests.DownloadFeedbackTests/testFeedbackStaysInOriginWindowAndPrivateDownloadsStayPrivate
+    VaneTests.DownloadFeedbackTests/testFastConsecutiveStartsCannotBeLandedOrDismissedByOlderAnimation
+    VaneTests.DownloadFeedbackTests/testReducedMotionShowsFileIconImmediatelyAndDetachedOriginCannotMatch
   VANE_CANDIDATE_SHA: ${{ github.sha }}
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows$'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows)|SidebarMaterializationTests/.*|DownloadFeedbackTests/.*)$'
 jobs:
   diagnostic:
     name: Build and diagnose native fixtures
@@ -145,82 +159,7 @@ jobs:
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/launch-owned-parent-stack.py" <<'OWNEDSAMPLE'
-          #!/usr/bin/env python3
-          """Diagnostic-only wrapper: preserve native status; sample one exact owned XCTest.
-          Usage: python3 owned-sample-diagnostic.py EVIDENCE_DIR -- ORIGINAL_NATIVE_COMMAND...
-          Run only the original reverse fixture; setup provides cold-sampler lead-in.
-          No source hooks, no artificial sampling delay, no upfront symbolication (-mayDie).
-          """
-          import datetime,json,os,pathlib,re,subprocess,sys,time
-          out=pathlib.Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
-          assert sys.argv[2]=='--' and len(sys.argv)>3
-          cwd=pathlib.Path.cwd().resolve();build=str(cwd/'.build')+'/'
-          record={'diagnostic_only':True,'duration_seconds':20,'sampling_interval_ms':5,'no_app_handshake':True,'command':sys.argv[3:],'started':datetime.datetime.now(datetime.timezone.utc).isoformat()}
-          sampler=None;sampling_log=None;sample_started=None;sample_status=None
-          with (out/'native.log').open('w') as native:
-           primary=subprocess.Popen(sys.argv[3:],stdout=native,stderr=subprocess.STDOUT)
-           while primary.poll() is None:
-            if sampler is None and not record.get('watch_disabled'):
-             try:
-              rows=[]
-              for line in subprocess.check_output(['ps','-axo','pid=,ppid=,lstart=,command='],text=True).splitlines():
-               match=re.match(r'\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)',line)
-               if match:rows.append((int(match[1]),int(match[2]),match[3],match[4]))
-              owned={primary.pid}
-              for _ in range(8):
-               for pid,ppid,start,command in rows:
-                if ppid in owned:owned.add(pid)
-              candidates=[(pid,start,command) for pid,ppid,start,command in rows if pid in owned and command.startswith('/Applications/Xcode') and '/xctest ' in command and build in command and 'testReverseProfileSwipeTakesOverTheSamePresentedNativeRows' in command]
-              if candidates:
-               assert len(candidates)==1
-               pid,start,command=candidates[0]
-               verified=subprocess.check_output(['ps','-p',str(pid),'-o','lstart=,command='],text=True).strip()
-               assert verified.startswith(start) and verified.endswith(command)
-               record['sample_host']={'pid':pid,'start':start,'command':command}
-               sampling_log=(out/'sample.log').open('w')
-               sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'20','5','-file',str(out/'main-thread.sample')],stdout=sampling_log,stderr=subprocess.STDOUT)
-               record['sample_pid']=sampler.pid;sample_started=time.monotonic();record['sample_started_epoch']=time.time()
-             except Exception as error:
-              record.setdefault('watch_errors',[]).append(type(error).__name__+': '+str(error))
-              # Keep the original native wrapper running through its owned cleanup even
-              # if process discovery fails. A diagnostic error must never orphan it.
-              record['watch_disabled']=True
-            elif sampler is not None and sampler.poll() is None and time.monotonic()-sample_started>60:
-             # Popen retains the unreaped child identity; only this exact owned sampler is stopped.
-             sampler.terminate()
-             try:sampler.wait(timeout=5)
-             except subprocess.TimeoutExpired:sampler.kill();sampler.wait()
-             record['sample_timeout']=True
-            time.sleep(.05)
-           primary_status=primary.wait()
-          if sampler is not None:
-           try:sample_status=sampler.wait(timeout=max(1,60-(time.monotonic()-sample_started)))
-           except subprocess.TimeoutExpired:
-            sampler.terminate()
-            try:sample_status=sampler.wait(timeout=5)
-            except subprocess.TimeoutExpired:sampler.kill();sample_status=sampler.wait()
-            record['sample_timeout']=True
-           sampling_log.close()
-          if (out/'main-thread.sample').exists():
-           lines=(out/'main-thread.sample').read_text(errors='replace').splitlines();main=[];inside=False
-           for line in lines:
-            if re.search(r'^\s+\d+ Thread_\d+.*(?:Main Thread|com[.]apple[.]main-thread)',line):inside=True
-            elif inside and re.search(r'^\s+\d+ Thread_\d+',line):break
-            if inside:main.append(line)
-           (out/'main-thread-only.txt').write_text('\n'.join(main)+'\n');record['main_thread_lines']=len(main)
-          record.update(primary_status=primary_status,sample_status=sample_status,sample_exists=(out/'main-thread.sample').exists(),finished=datetime.datetime.now(datetime.timezone.utc).isoformat())
-          (out/'diagnostic-status.json').write_text(json.dumps(record,indent=2)+'\n')
-          print(json.dumps(record))
-          sys.exit(primary_status or (0 if sample_status==0 and record['sample_exists'] and not record.get('sample_timeout') and not record.get('watch_errors') else 1))
-          OWNEDSAMPLE
-          set +e
-          python3 "$RUNNER_TEMP/launch-owned-parent-stack.py" "$RUNNER_TEMP/profile-parent-stack" -- python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER"
-          native_diagnostic_status=$?
-          set -e
-          cp "$RUNNER_TEMP/profile-parent-stack/native.log" "$RUNNER_TEMP/vane-diag-tests.log"
-          cat "$RUNNER_TEMP/vane-diag-tests.log"
-          exit "$native_diagnostic_status"
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER" 2>&1 | tee "$RUNNER_TEMP/vane-diag-tests.log"
       - name: Verify completed selection when successful
         run: |
           set -euo pipefail
@@ -248,7 +187,6 @@ jobs:
           path: |
             ${{ runner.temp }}/vane-diag-tests.log
             ${{ runner.temp }}/profile-boundary-costs
-            ${{ runner.temp }}/profile-parent-stack
             ${{ runner.temp }}/vane-diag-manifest.json
             ${{ runner.temp }}/vane-diag-inventory.txt
             ${{ runner.temp }}/vane-motion-admission.log
