@@ -179,7 +179,7 @@ jobs:
                assert verified.startswith(start) and verified.endswith(command)
                record['sample_host']={'pid':pid,'start':start,'command':command}
                sampling_log=(out/'sample.log').open('w')
-               sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'20','5','-mayDie','-file',str(out/'main-thread.sample')],stdout=sampling_log,stderr=subprocess.STDOUT)
+               sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'20','5','-file',str(out/'main-thread.sample')],stdout=sampling_log,stderr=subprocess.STDOUT)
                record['sample_pid']=sampler.pid;sample_started=time.monotonic();record['sample_started_epoch']=time.time()
              except Exception as error:
               record.setdefault('watch_errors',[]).append(type(error).__name__+': '+str(error))
