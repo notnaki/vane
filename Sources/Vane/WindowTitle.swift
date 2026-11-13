@@ -15,9 +15,29 @@ import SwiftUI
         guard !store.isPrivate else { return app + " — Incognito" }
         let page = includePage && tab?.currentURL != nil
             ? tab?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" : ""
-        if store.isLittle { return page.isEmpty ? app : page }
-        let named = profile.isDefault ? "" : " — " + profile.name
-        return (page.isEmpty ? app : page + " — " + app) + named
+        if store.isLittle { return compact(page.isEmpty ? app : page) }
+        let named = profile.isDefault ? "" : " — " + compact(profile.name, maximumWidth: 160)
+        guard !page.isEmpty else { return app + named }
+        let suffix = " — " + app + named
+        return compact(page, maximumWidth: 480 - width(suffix)) + suffix
+    }
+
+    /// The Dock sizes its system-owned window list from NSWindow.title. SwiftUI's
+    /// line limits cannot constrain it, so bound the title before publishing it.
+    /// Keep both ends to retain the page identity and app/profile suffix, without
+    /// changing the full title in the tab model or splitting composed characters.
+    private static func width(_ title: String) -> CGFloat {
+        (title as NSString).size(withAttributes: [.font: NSFont.menuFont(ofSize: 0)]).width
+    }
+
+    private static func compact(_ title: String, maximumWidth: CGFloat = 480) -> String {
+        if width(title) <= maximumWidth { return title }
+        // Bound the measured candidates even for an unusually large document title.
+        for count in stride(from: min(title.count - 1, 128), through: 0, by: -1) {
+            let candidate = String(title.prefix((count + 1) / 2)) + "…" + String(title.suffix(count / 2))
+            if width(candidate) <= maximumWidth { return candidate }
+        }
+        return "…"
     }
 }
 
