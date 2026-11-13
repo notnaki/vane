@@ -297,13 +297,17 @@ import XCTest
                       "Refreshing the production parent must not cancel Library's active viewport")
         XCTAssertEqual(web.autoresizingMask, [])
         XCTAssertNotNil(host.pageResizeOwnershipWillChange)
-        navigation.cancel()
-        Motion.instant { store.spaceGesture.swiping = true; store.findOpen = true }
         let spaceRevision = host.resizeLayoutRevision
+        Motion.instant { store.spaceGesture.swiping = true; store.findOpen = true }
         try await compatibilityWait {
             window.contentView?.layoutSubtreeIfNeeded()
             return host.resizeLayoutRevision > spaceRevision
         }
+        XCTAssertFalse(navigation.request(frame: window.frame, sidebarWidth: 0),
+                       "A Space handoff must revoke the existing Library paint owner too")
+        XCTAssertFalse(navigation.isPreparing)
+        XCTAssertEqual(web.autoresizingMask, [.width, .height])
+        XCTAssertNil(host.pageResizeOwnershipWillChange)
         let spaceNavigation = LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0),
             navigation: .init(owner: owner, leading: 0), apply: { _, _ in })
         XCTAssertNil(spaceNavigation, "A Space handoff must still exclude Library viewport ownership")
