@@ -947,7 +947,10 @@ struct WebCard: View {
         let inset = edgeToEdge ? 0 : Look.cardGap + (libraryPageLeadingInset ?? 0)
         return content()
             .frame(width: libraryPageWidth.map { max(0, $0 - inset) }, alignment: .topLeading)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // Accept the actual clip width even when the captured document is wider.
+            // An implicit minimum otherwise expands and centers the entire card.
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                   alignment: .topLeading)
             .background(Color(nsColor: Look.pageGround))
     }
 }

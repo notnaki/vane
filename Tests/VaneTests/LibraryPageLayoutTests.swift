@@ -10,6 +10,85 @@ import XCTest
         func updateNSView(_ view: NSView, context: Context) {}
     }
 
+    private struct CardProbe: View {
+        let view: NSView
+        var body: some View {
+            WebCard().overlayPreferenceValue(PeekContentBounds.self) { anchor in
+                GeometryReader { geometry in
+                    if let anchor {
+                        let bounds = geometry[anchor]
+                        PageProbe(view: view)
+                            .frame(width: bounds.width, height: bounds.height)
+                            .offset(x: bounds.minX, y: bounds.minY)
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    func testFrozenDocumentCannotPushTheRealCardOverLibraryOrBeyondWindow() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        do { try await checkFrozenDocumentCardBounds() }
+        catch { try await loop.close(); throw error }
+        try await loop.close()
+    }
+
+    private func checkFrozenDocumentCardBounds() async throws {
+        let store = TabStore(isPrivate: true, session: [])
+        let tab = store.newBlankTab(loading: URL(string: "about:blank"))
+        store.sidebarShown = true
+        store.libraryOpen = true
+        store.palette = nil
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 640, height: 600),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        store.window = window
+        let gesture = LibraryGesture()
+        // A gesture captures the larger document before the window becomes narrow.
+        gesture.pageWidth = 672
+        gesture.pageLeadingInset = 0
+        gesture.progress = 0
+        let card = NSView()
+        let host = NSHostingView(rootView: LibraryNavigationLayout(gesture: gesture,
+            libraryOpen: true, sidebarShown: true, floating: false, panelWidth: 392,
+            palettePresented: false, monitor: LibrarySwipeMonitor(),
+            page: CardProbe(view: card), sidebar: Color.clear, panel: Color.clear)
+            .environmentObject(store).environmentObject(ProfileManager.shared))
+        host.sizingOptions = []
+        let attachment = NativeFixtureMountAdmission.attach(host, to: window)
+        defer {
+            attachment?.cancel()
+            store.librarySwipeMonitor.remove(); store.spaceGesture.monitor.remove()
+            window.orderOut(nil); window.contentView = nil; store.window = nil; window.close()
+            store.dropStashes(); SharedTabs.release(store.tabs, excluding: store)
+            TabStore.all.removeAll { $0 === store }
+        }
+        appActivate(window)
+        try await compatibilityWait {
+            NativeFixtureMountAdmission.surfaceReady(host, in: window)
+                && card.window === window && card.bounds.width > 100 && tab.web.window === window
+        }
+        for progress: CGFloat in [0, 0.25, 0.5, 0.75, 1, 0.5, 0] {
+            Motion.instant { gesture.progress = progress }
+            host.layoutSubtreeIfNeeded()
+            // Admit the update without awaiting the bounds under assertion.
+            await Task.yield()
+            host.layoutSubtreeIfNeeded()
+            let bounds = card.convert(card.bounds, to: host)
+            XCTAssertEqual(bounds.minX, 228 + 164 * progress, accuracy: 1,
+                "The real card must start after navigation, even when its document is wider")
+            XCTAssertEqual(bounds.maxX, 629, accuracy: 1,
+                "The real card's rim must stay eleven points inside the narrow window")
+            XCTAssertEqual(tab.web.bounds.width, 661, accuracy: 1,
+                "Only the visible card changes width; the captured document remains stable")
+        }
+    }
+
     func testClosingLibraryKeepsPageRightEdgeAtWindowInset() async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
