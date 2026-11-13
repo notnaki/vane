@@ -149,21 +149,21 @@ jobs:
           """Diagnostic only: pre-arm one owned XCTest sample before the original landing.
           Never interrupt the native wrapper or its cleanup. No assertion/status masking.
           """
-          import datetime,json,os,pathlib,re,subprocess,sys,time,threading
+          import datetime,json,os,pathlib,re,subprocess,sys,time,threading,pty,errno
           out=pathlib.Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
           assert not any((out/name).exists() for name in ['request.json','armed.json','native.log','main-thread.sample','diagnostic-status.json']), 'Requires a fresh owned diagnostic directory'
           assert sys.argv[2]=='--' and len(sys.argv)>3
           cwd=pathlib.Path.cwd().resolve();build=str(cwd/'.build')+'/'
-          record={'diagnostic_only':True,'command':sys.argv[3:],'started':datetime.datetime.now(datetime.timezone.utc).isoformat(),'duration_seconds':1,'sampling_interval_ms':1,'analysis_scope':'Main Thread only; sample tool collects full process'}
+          record={'diagnostic_only':True,'command':sys.argv[3:],'started':datetime.datetime.now(datetime.timezone.utc).isoformat(),'prearm_transport':'PTY linebuffered; held mainactor waits BEFOREland only','duration_seconds':1,'sampling_interval_ms':1,'analysis_scope':'Main Thread only; sample tool collects full process'}
           sampler=None;reader=None;sample_started=None;sample_status=None
           
           def atomic_json(path,value):
            tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(value,indent=2)+'\n');tmp.replace(path)
           
-          def read_sample_output(process,target):
+          def read_sample_output(process,target,output):
            try:
             with (out/'sample.log').open('w') as stream:
-             for line in process.stdout:
+             for line in output:
               stream.write(line);stream.flush()
               if line.startswith('Sampling process ') and not record.get('armed'):
                # Revalidate exact start+command and our still-live sampler before lifting the prerequisite.
@@ -172,7 +172,10 @@ jobs:
                assert process.poll() is None
                record['armed']={'pid':target['pid'],'armed':True,'epoch':time.time(),'monotonic':time.monotonic(),'sampler_pid':process.pid}
                atomic_json(out/'armed.json',record['armed'])
+           except OSError as error:
+            if error.errno != errno.EIO:record['sample_reader_error']=type(error).__name__+': '+str(error)
            except Exception as error:record['sample_reader_error']=type(error).__name__+': '+str(error)
+           finally:output.close()
           
           with (out/'native.log').open('w') as native:
            primary=subprocess.Popen(sys.argv[3:],stdout=native,stderr=subprocess.STDOUT)
@@ -195,9 +198,11 @@ jobs:
               actual=subprocess.check_output(['ps','-p',str(pid),'-o','lstart=,command='],text=True).strip()
               assert actual.startswith(start) and actual.endswith(command)
               target={'pid':pid,'start':start,'command':command};record['sample_host']=target;record['request']=request
-              sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'1','1','-file',str(out/'main-thread.sample')],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1)
+              master,slave=pty.openpty()
+              sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'1','1','-file',str(out/'main-thread.sample')],stdout=slave,stderr=slave)
+              os.close(slave);sample_output=os.fdopen(master,'r',encoding='utf-8',errors='replace')
               sample_started=time.monotonic();record['sample_pid']=sampler.pid
-              reader=threading.Thread(target=read_sample_output,args=(sampler,target));reader.start()
+              reader=threading.Thread(target=read_sample_output,args=(sampler,target,sample_output));reader.start()
              except Exception as error:record['watch_error']=type(error).__name__+': '+str(error)
             if sampler is not None and sampler.poll() is None and time.monotonic()-sample_started>30:
              sampler.terminate()
@@ -218,8 +223,8 @@ jobs:
           if record['sample_exists']:
            text=(out/'main-thread.sample').read_text(errors='replace');lines=text.splitlines();main=[];inside=False
            for line in lines:
-            if re.search(r'^\s+\d+ Thread_\d+: Main Thread',line):inside=True
-            elif inside and re.search(r'^\s+\d+ Thread_\d+:',line):break
+            if re.search(r'^\s+\d+ Thread_\d+.*(?:Main Thread|com[.]apple[.]main-thread)',line):inside=True
+            elif inside and re.search(r'^\s+\d+ Thread_\d+',line):break
             if inside:main.append(line)
            (out/'main-thread-only.txt').write_text('\n'.join(main)+'\n');record['main_thread_lines']=len(main)
           atomic_json(out/'diagnostic-status.json',record);print(json.dumps(record))

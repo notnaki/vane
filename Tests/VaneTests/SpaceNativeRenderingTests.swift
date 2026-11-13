@@ -161,7 +161,7 @@ import XCTest
 
     /// Temporary diagnostic prerequisite, before the original landing/clock starts.
     /// The external owner validates this exact XCTest process and arms one short sample.
-    private func prearmProfileParentSample() async throws {
+    private func prearmProfileParentSample() throws {
         #if DEBUG
         guard ProcessInfo.processInfo.environment["VANE_PROFILE_PARENT_SAMPLE"] == "1",
               let temporary = ProcessInfo.processInfo.environment["RUNNER_TEMP"] else { return }
@@ -172,14 +172,23 @@ import XCTest
                                       "uptime": ProcessInfo.processInfo.systemUptime]
         try JSONSerialization.data(withJSONObject: request).write(
             to: directory.appendingPathComponent("request.json"), options: .atomic)
-        try await compatibilityWait {
-            guard let data = try? Data(contentsOf: directory.appendingPathComponent("armed.json")),
-                  let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  reply["pid"] as? Int == pid, reply["armed"] as? Bool == true,
-                  let epoch = reply["epoch"] as? Double else { return false }
-            ResizeTimingDiagnostics.recordState("profile.stack.armed", fields: ["epoch": String(epoch)])
-            return true
+        // Do not yield another AppKit display turn between the admitted held
+        // position and the sampling prerequisite. No wait occurs after land().
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if let data = try? Data(contentsOf: directory.appendingPathComponent("armed.json")),
+               let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               reply["pid"] as? Int == pid, reply["armed"] as? Bool == true,
+               let epoch = reply["epoch"] as? Double,
+               Date().timeIntervalSince1970 - epoch < 0.2 {
+                ResizeTimingDiagnostics.recordState("profile.stack.armed",
+                    fields: ["epoch": String(Date().timeIntervalSince1970), "externalEpoch": String(epoch)])
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.002)
         }
+        throw NSError(domain: "ProfileParentStackPrearm", code: 1,
+                      userInfo: [NSLocalizedDescriptionKey: "External sampler did not arm before landing"])
         #endif
     }
 
@@ -1225,7 +1234,7 @@ import XCTest
         }
         let finishCosts = profileBoundaryCosts("reverse", host: host)
         defer { finishCosts() }
-        try await prearmProfileParentSample()
+        try prearmProfileParentSample()
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
