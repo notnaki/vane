@@ -65,6 +65,38 @@ import XCTest
         if let failure { throw failure }
     }
 
+    func testInteractiveProbeSelectionRequiresTheExactAttachedHost() throws {
+        _ = NSApplication.shared
+        let bounds = NSRect(x: 0, y: 0, width: 250, height: 400)
+        let window = NSWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        let otherWindow = NSWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; otherWindow.isReleasedWhenClosed = false
+        let host = NSView(frame: bounds), otherHost = NSView(frame: bounds)
+        window.contentView = host; otherWindow.contentView = otherHost
+        defer {
+            window.contentView = nil; window.close()
+            otherWindow.contentView = nil; otherWindow.close()
+        }
+        let state = SnapshotInteractiveState()
+        let current = SnapshotInteractiveProbe.Native(frame: bounds)
+        let detached = SnapshotInteractiveProbe.Native(frame: bounds)
+        let foreign = SnapshotInteractiveProbe.Native(frame: bounds)
+        host.addSubview(current); otherHost.addSubview(foreign)
+        state.register(current)
+        // SwiftUI may update another bridge while sizing/replacing its graph.
+        // Last-updated identity must not replace the probe in the current host.
+        state.register(detached); state.register(foreign)
+        XCTAssertTrue(state.probe(in: host) === current)
+        XCTAssertTrue(state.probe(in: otherHost) === foreign)
+        current.removeFromSuperview()
+        XCTAssertNil(state.probe(in: host), "A detached native view cannot admit a visible snapshot")
+        let replacement = SnapshotInteractiveProbe.Native(frame: bounds)
+        host.addSubview(replacement); state.register(replacement)
+        state.unregister(current)
+        XCTAssertTrue(state.probe(in: host) === replacement,
+                      "Retiring an old graph must not clear the current presentation owner")
+    }
+
     func testPointerIntrusionDiscardsThePreviousInteractivePresentation() async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
@@ -78,11 +110,12 @@ import XCTest
             var previousHost: NSView?
             var phase = 0
             defer {
-                print("Snapshot pointer-intrusion phase=\(phase) probe=\(state.probe != nil) attached=\(state.probe?.window != nil) control=\(state.setHovered != nil)")
+                print("Snapshot pointer-intrusion phase=\(phase) registered=\(state.probes.count) attached=\(state.probes.allObjects.filter { $0.window != nil }.count)")
             }
             _ = try await SidebarSnapshot.imageWhenReady(SnapshotInteractiveSurface(state: state),
                                                          pointerLocation: { pointer }) { host in
-                guard let probe = state.probe, probe.window === host.window, let setHovered = state.setHovered else { return false }
+                guard let probe = state.probe(in: host), probe.window === host.window,
+                      let setHovered = probe.setHovered else { return false }
                 if phase == 0 {
                     // Enter a real SwiftUI interaction state before introducing the
                     // pointer. The fixture never changes the user's system cursor.
@@ -199,8 +232,15 @@ import XCTest
 }
 
 @MainActor private final class SnapshotInteractiveState {
-    weak var probe: SnapshotInteractiveProbe.Native?
-    var setHovered: ((Bool) -> Void)?
+    let probes = NSHashTable<SnapshotInteractiveProbe.Native>.weakObjects()
+    func register(_ probe: SnapshotInteractiveProbe.Native) { probes.add(probe) }
+    func unregister(_ probe: SnapshotInteractiveProbe.Native) { probes.remove(probe) }
+    func probe(in host: NSView) -> SnapshotInteractiveProbe.Native? {
+        guard let window = host.window else { return nil }
+        return probes.allObjects.first {
+            $0.window === window && $0.isDescendant(of: host) && $0.bounds.width > 0 && $0.bounds.height > 0
+        }
+    }
 }
 
 @MainActor private final class SnapshotOcclusion {
@@ -211,9 +251,10 @@ private struct SnapshotInteractiveSurface: View {
     let state: SnapshotInteractiveState
     @State private var hovered = false
     var body: some View {
-        Color(white: hovered ? 0.8 : 0.2)
+        SnapshotInteractiveProbe(state: state, hovered: $hovered)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(white: hovered ? 0.8 : 0.2))
             .animation(.easeOut(duration: 0.15), value: hovered)
-            .background(SnapshotInteractiveProbe(state: state, hovered: $hovered))
     }
 }
 
@@ -221,24 +262,23 @@ private struct SnapshotInteractiveProbe: NSViewRepresentable {
     final class Native: NSView {
         var hovered = false
         weak var state: SnapshotInteractiveState?
+        var setHovered: ((Bool) -> Void)?
     }
     let state: SnapshotInteractiveState
     @Binding var hovered: Bool
     func makeNSView(context: Context) -> Native { Native() }
     func updateNSView(_ view: Native, context: Context) {
-        // Install the actuator with the exact native probe. A separate onAppear
-        // callback can remain pending even after this visible owner is mounted.
+        // Each bridge owns its actuator. Admission resolves the attached bridge
+        // under the exact current host, never whichever sizing update ran last.
         view.state = state
-        state.probe = view
+        state.register(view)
         let binding = $hovered
-        state.setHovered = { binding.wrappedValue = $0 }
+        view.setHovered = { binding.wrappedValue = $0 }
         view.hovered = hovered
     }
     static func dismantleNSView(_ view: Native, coordinator: ()) {
-        if let state = view.state, state.probe === view {
-            state.probe = nil
-            state.setHovered = nil
-        }
+        view.state?.unregister(view)
+        view.setHovered = nil
         view.state = nil
     }
 }
