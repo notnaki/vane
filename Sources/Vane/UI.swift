@@ -3426,10 +3426,12 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
                 reportOffset(offset)
             }
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, height in
+                reportExtent(height)
+            }
             .onScrollGeometryChange(for: SidebarScrollCutoffs.self) {
                 SidebarScrollCutoffs(visibleRect: $0.visibleRect, contentHeight: $0.contentSize.height)
             } action: { _, value in
-                reportExtent(value.contentHeight)
                 // A newly mounted swipe ghost must already match the settled viewport.
                 var transaction = Transaction()
                 transaction.disablesAnimations = !measuredCutoffs
