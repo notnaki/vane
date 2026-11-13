@@ -2,19 +2,21 @@
 
 Start with the [project README](../README.md) for installation, a local build,
 and a compact overview. These Markdown guides describe current controls and
-limitations. The [website field guide](https://notnaki.github.io/vane/docs.html)
-remains a separate visual introduction.
+limitations. The [website field guide](https://vane.so/docs.html)
+remains a separate visual introduction. Both describe current `main`; published
+releases can lag behind. Start with [current development and the upcoming
+release](CURRENT-DEVELOPMENT.md) for the feature overview and retained limits.
 
 ## User guides
 
 Read the [privacy policy](../PRIVACY.md) for data handling and network disclosures,
-or its [website version](https://notnaki.github.io/vane/privacy.html).
+or its [website version](https://vane.so/privacy.html).
 
 | Guide | Find answers about |
 | --- | --- |
 | [Everyday browsing](BROWSING.md) | Tabs, folders, Spaces, shared windows, search, keyboard navigation, Library, downloads, and Picture in Picture. |
 | [Reading and customization](FEATURES.md) | Reader, saved articles, Easels, capture, Boosts, Space templates, themes/icons, and Battery Saver. |
-| [Profiles, data, and privacy](DATA-AND-PRIVACY.md) | Passwords, browser imports, exports, website data, backup/restore, save failures, private browsing, and folder locks. |
+| [Profiles, data, and privacy](DATA-AND-PRIVACY.md) | Passwords, opt-in iCloud choices, browser imports, exports, website data, backup/restore, save failures, private browsing, and folder locks. |
 | [Extensions and integrations](INTEGRATIONS.md) | Profile extension manager, managed updates, access/diagnostics, filter subscriptions, permissions, AI providers/keys, and GitHub Live Folders. |
 
 For a paused page after an interruption, read [crash recovery](CRASH-RECOVERY.md).
@@ -34,6 +36,8 @@ For blurry Google Docs canvases, read the [rendering investigation](GOOGLE-DOCS-
   remaining engineering or environment-dependent validation.
 - [App icon maintenance](../AppIcons/README.md) and
   [screenshot provenance](media/README.md).
+- [Website, search, and shared links](WEBSITE.md): canonical URLs, Google
+  discovery, Messages previews, the share banner, and deployment checks.
 
 ## Reliability and validation
 
@@ -54,7 +58,9 @@ Historical test counts are not a fresh validation of the current checkout.
 | [Browser data fidelity](audits/browser-data-fidelity.md) | Import/export fields, normalization, duplicates, partial failures, and credential protections. |
 | [Site permissions](SITE-PERMISSIONS.md) | Document lifetimes, origin/profile scope, revocation, synthetic devices, and platform limits. |
 | [Extension validation](EXTENSION-VALIDATION.md) | Managed-code/identity regressions, exact third-party package provenance, runtime observations, ZIP and native-host boundaries. |
-| [Real-site compatibility](REAL-SITE-COMPATIBILITY.md) | Public demos, local fixtures, known directory-upload failure, and pending accounts/devices/provisioning. |
+| [Real-site compatibility](REAL-SITE-COMPATIBILITY.md) | Public demos, local fixtures, dated real-service observations, known directory-upload failure, and remaining account/device/provisioning coverage. |
+| [Subscription streaming](STREAMING-COMPATIBILITY.md) | Dated Netflix 4K SDR/Dolby Vision, Spotify local music, and Disney+ 720p observations, with exact environment and format limits. |
+| [iCloud validation](ICLOUD-VALIDATION.md) | One-Mac signed service checks, local fixtures, and unverified cross-Mac propagation. |
 | [Updater recovery](UPDATER-RECOVERY-AUDIT.md) | Transaction interruption, signed recovery, notarized release acceptance, and distribution gaps. |
 | [Lifecycle efficiency](LIFECYCLE-EFFICIENCY.md) | Ownership fixes, local cycle/RSS/CPU evidence, and remaining profiling work. |
 | [UI responsiveness](UI-RESPONSIVENESS.md) | History and Space measurements, interaction checks, and unproven frame/latency targets. |

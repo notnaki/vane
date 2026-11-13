@@ -149,6 +149,26 @@ class ChangeScopeTests(unittest.TestCase):
                 self.commit()
                 self.scope(False, base)
 
+    def test_named_search_indexing_files_skip_app_work(self):
+        for name in ("docs/robots.txt", "docs/sitemap.xml"):
+            with self.subTest(name=name):
+                p = self.root / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("website indexing\n")
+                base = self.git("rev-parse", "HEAD")
+                self.commit()
+                self.scope(False, base)
+
+    def test_unknown_text_and_xml_still_require_app_work(self):
+        for name in ("docs/unknown.txt", "docs/unknown.xml", "Resources/sitemap.xml"):
+            with self.subTest(name=name):
+                p = self.root / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("fixture\n")
+                base = self.git("rev-parse", "HEAD")
+                self.commit()
+                self.scope(True, base)
+
     def test_website_media_does_not_exempt_unknown_files_or_source(self):
         for name in ("docs/fonts/instructions.txt", "docs/fonts/setup.py",
                      "Sources/session.mp4", "Resources/wordmark.ttf"):

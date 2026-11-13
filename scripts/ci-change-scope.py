@@ -41,7 +41,7 @@ def routing_only_workflow_change(base, head):
 
 def cheap_checks_only(path):
     parts = PurePosixPath(path).parts
-    if path in ROUTING_FILES or path == "docs/.nojekyll":
+    if path in ROUTING_FILES or path in {"docs/.nojekyll", "docs/robots.txt", "docs/sitemap.xml"}:
         return True
     if parts and parts[0] == "docs" and PurePosixPath(path).suffix in WEBSITE_SUFFIXES:
         return True

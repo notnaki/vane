@@ -147,7 +147,7 @@
  .feature-directory { --bento-inset:24px; }
  .feature-directory .mosaic-card { grid-column:span 6; }
  .feature-directory .bento-shortcuts,.feature-directory .bento-import { grid-column:span 6; }
- .feature-directory .bento-native { grid-column:span 12; }
+ .feature-directory .bento-native,.feature-directory .bento-previews { grid-column:span 12; }
  .feature-directory .bento-folders { padding-right:var(--bento-inset); }
  .feature-directory .bento-folder-art { position:static; width:64px; height:56px; translate:none; margin-bottom:20px; }
 }

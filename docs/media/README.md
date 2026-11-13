@@ -134,3 +134,18 @@ The homepage magnifier uses the 1536-pixel source for legibility.
 files are proportional derivatives of `../app-icon.png`, whose original bytes
 remain unchanged. Cormorant and Pinyon are delivered as WOFF2 using the same
 font data and existing SIL Open Font Licenses; original TTFs are preserved.
+
+## Shared-link banner — 13 November 2026
+
+`vane-share-20261113.png` is a 1200 × 630 PNG rendered from the editable
+`share-card.html` source. It combines the website's Pinyon lettering and approved
+dark material with the original Normal app icon and
+`vane-varied-spaces-v1-1536.webp`, whose native capture is documented above.
+The screenshot is displayed proportionally with its original window shape;
+no native UI or website content is redrawn. Chromium rendered the HTML with
+device scale 1 and the self-hosted fonts loaded. It is a share illustration,
+not a new product capture or validation of an upcoming binary.
+
+The 96px favicon and 180px Apple touch icon are proportional PNG derivatives
+of `../app-icon.png`. Preview tags refer to the banner through an absolute
+HTTPS URL and declare its PNG type, dimensions, and description.
