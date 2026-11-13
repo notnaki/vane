@@ -154,7 +154,7 @@ jobs:
           assert not any((out/name).exists() for name in ['request.json','armed.json','native.log','main-thread.sample','diagnostic-status.json','profile.cost.content.layout.begin.json','profile.cost.content.layout.end.json']), 'Requires a fresh owned diagnostic directory'
           assert sys.argv[2]=='--' and len(sys.argv)>3
           cwd=pathlib.Path.cwd().resolve();build=str(cwd/'.build')+'/'
-          record={'diagnostic_only':True,'command':sys.argv[3:],'started':datetime.datetime.now(datetime.timezone.utc).isoformat(),'prearm_transport':'PTY; sampler held beforeland, nonblocking content-layout-begin marker resumes only sampler','duration_seconds':1,'sampling_interval_ms':1,'analysis_scope':'Main Thread only; sample tool collects full process'}
+          record={'diagnostic_only':True,'command':sys.argv[3:],'started':datetime.datetime.now(datetime.timezone.utc).isoformat(),'prearm_transport':'PTY; bounded3s acquisition warmed1.25s BEFOREland; no sampler pause or app waits afterland','duration_seconds':3,'pre_landing_warmup_seconds':1.25,'sampling_interval_ms':1,'analysis_scope':'Main Thread only; sample tool collects full process'}
           sampler=None;reader=None;sample_started=None;sample_status=None
           
           def atomic_json(path,value):
@@ -170,13 +170,12 @@ jobs:
                actual=subprocess.check_output(['ps','-p',str(target['pid']),'-o','lstart=,command='],text=True).strip()
                assert actual.startswith(target['start']) and actual.endswith(target['command'])
                assert process.poll() is None
-               process.send_signal(signal.SIGSTOP)
-               stopped=False
-               stop_deadline=time.monotonic()+1
-               while time.monotonic()<stop_deadline and process.poll()is None:
-                if 'T'in subprocess.check_output(['ps','-p',str(process.pid),'-o','stat='],text=True):stopped=True;break
-                time.sleep(.002)
-               assert stopped, 'Owned sampler did not stop before arming'
+               # Warm symbol/stack collection while the admitted held position is unchanged.
+               # Native landing has not started and no app wait occurs after it starts.
+               time.sleep(1.25)
+               assert process.poll() is None, 'Sampler ended during pre-landing warmup'
+               actual=subprocess.check_output(['ps','-p',str(target['pid']),'-o','lstart=,command='],text=True).strip()
+               assert actual.startswith(target['start']) and actual.endswith(target['command'])
                record['armed']={'pid':target['pid'],'armed':True,'epoch':time.time(),'monotonic':time.monotonic(),'sampler_pid':process.pid}
                atomic_json(out/'armed.json',record['armed'])
            except OSError as error:
@@ -206,21 +205,20 @@ jobs:
               assert actual.startswith(start) and actual.endswith(command)
               target={'pid':pid,'start':start,'command':command};record['sample_host']=target;record['request']=request
               master,slave=pty.openpty()
-              sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'1','1','-file',str(out/'main-thread.sample')],stdout=slave,stderr=slave)
+              sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'3','1','-file',str(out/'main-thread.sample')],stdout=slave,stderr=slave)
               os.close(slave);sample_output=os.fdopen(master,'r',encoding='utf-8',errors='replace')
               sample_started=time.monotonic();record['sample_pid']=sampler.pid
               reader=threading.Thread(target=read_sample_output,args=(sampler,target,sample_output));reader.start()
              except Exception as error:record['watch_error']=type(error).__name__+': '+str(error)
             phase=out/'profile.cost.content.layout.begin.json'
-            if sampler is not None and record.get('armed') and not record.get('resumed') and phase.exists():
+            if sampler is not None and record.get('armed') and not record.get('phase_observed') and phase.exists():
              try:
               assert sampler.poll()is None, 'Sampler exited before measured phase'
               record['phase_begin']=json.loads(phase.read_text())
-              record['resumed']={'epoch':time.time(),'monotonic':time.monotonic()}
-              sampler.send_signal(signal.SIGCONT)
+              record['phase_observed']={'epoch':time.time(),'monotonic':time.monotonic()}
              except Exception as error:record['watch_error']=type(error).__name__+': '+str(error)
             if sampler is not None and sampler.poll() is None and time.monotonic()-sample_started>30:
-             sampler.send_signal(signal.SIGCONT);sampler.terminate()
+             sampler.terminate()
              try:sampler.wait(timeout=5)
              except subprocess.TimeoutExpired:sampler.kill();sampler.wait()
              record['sample_timeout']=True
@@ -229,7 +227,7 @@ jobs:
           if sampler is not None:
            try:sample_status=sampler.wait(timeout=5)
            except subprocess.TimeoutExpired:
-            sampler.send_signal(signal.SIGCONT);sampler.terminate()
+            sampler.terminate()
             try:sample_status=sampler.wait(timeout=5)
             except subprocess.TimeoutExpired:sampler.kill();sample_status=sampler.wait()
             record['sample_timeout']=True
@@ -243,7 +241,7 @@ jobs:
             if inside:main.append(line)
            (out/'main-thread-only.txt').write_text('\n'.join(main)+'\n');record['main_thread_lines']=len(main)
           atomic_json(out/'diagnostic-status.json',record);print(json.dumps(record))
-          diagnostic_ok=sample_status==0 and record['sample_exists'] and bool(record.get('armed')) and bool(record.get('resumed')) and not any(record.get(k)for k in ['watch_error','sample_reader_error','sample_timeout']) and record.get('main_thread_lines',0)>0
+          diagnostic_ok=sample_status==0 and record['sample_exists'] and bool(record.get('armed')) and bool(record.get('phase_observed')) and not any(record.get(k)for k in ['watch_error','sample_reader_error','sample_timeout']) and record.get('main_thread_lines',0)>0
           sys.exit(primary_status or (0 if diagnostic_ok else 1))
           OWNEDSAMPLE
           set +e
