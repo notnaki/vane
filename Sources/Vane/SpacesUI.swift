@@ -2036,7 +2036,6 @@ private struct SpaceSwipe: ViewModifier {
             nativeSlide = nil
         }
         if let slide = nativeSlide {
-            let continuingTravel = slide.hasStartedLanding
             // Scroll events retain their input clock through synchronous native work.
             // Click callers use invocation time and still expire stale finger input.
             slide.armLanding(to: destination, at: eventTime, completion: finish)
@@ -2044,23 +2043,19 @@ private struct SpaceSwipe: ViewModifier {
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
             Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }
             if includesFavorites, let host {
-                // A profile hop can build a new host or restore a different Space
-                // inside a retained one. Resolve its native layout beneath the
-                // captured rows before their animation clock starts; both routes
-                // can otherwise spend the visible landing's early frames mounting.
-                // Build only this committed target while source still owns the
-                // window. The queued handoff can then meet its landing deadline
-                // without selecting the destination inside the input action.
-                Windows.prepareHop(store, to: destination)
-                // Reversing an existing landing already owns both endpoint
-                // surfaces. Retarget that curve before returning from the input
-                // action; its page selection still belongs to the queued handoff.
-                if continuingTravel { slide.start(duration: duration, completion: finish) }
+                // The captured rows already contain both endpoints. Commit their
+                // travel before restoring/layouting the destination browser: hidden
+                // profile preparation blocks the input action and delays the first
+                // moving frame, then repeats layout when the profile is exposed.
+                slide.start(duration: duration, completion: finish)
                 DispatchQueue.main.async { [weak self, weak store, weak host, weak slide] in
                     guard let self, self.transition == token, let store, let host, let slide,
                           slide.isActive, host.spaceSlide === slide,
                           store.currentSpaceID == self.landingFrom,
                           store.spaceGesture.neighbour?.id == destination.id else { return }
+                    // The input's batched visibility publication has now completed.
+                    // Send its captured curve to the compositor before live layout.
+                    CATransaction.flush()
                     let window = store.window
                     _ = self.activate(destination, in: store)
                     guard let window, host.window === window, host.spaceSlide === slide,
@@ -2072,7 +2067,6 @@ private struct SpaceSwipe: ViewModifier {
                     host.layoutDisplayedProfile()
                     window.displayIfNeeded()
                     CATransaction.flush()
-                    if !continuingTravel { slide.start(duration: duration, completion: finish) }
                 }
             } else {
                 // Within a profile, prepare under the captured rows before starting
