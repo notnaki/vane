@@ -1499,33 +1499,6 @@ private struct NativeSpacePreview: View {
         joinDestinationGround()
     }
 
-    /// Let the newly selected profile service input before forcing its complete
-    /// live layout. The captured rows already own the moving presentation.
-    func scheduleDestinationLayout() {
-        guard let animationID, let destination, let target = restingSpaceID,
-              let host = superview as? BrowserWindowHost, let window else { return }
-        DispatchQueue.main.async { [weak self, weak destination, weak host, weak window] in
-            guard let self, let destination, let host, let window,
-                  self.animationID == animationID, self.isActive,
-                  self.destination === destination, self.restingSpaceID == target,
-                  self.superview === host, host.window === window, host.spaceSlide === self,
-                  TabStore.all.contains(where: { $0 === destination }),
-                  destination.window === window, destination.profileVisible,
-                  destination.currentSpaceID == target else { return }
-            host.layoutDisplayedProfile()
-            // Layout can synchronously acknowledge or replace the cover. Do not
-            // flush work belonging to a superseded landing afterward.
-            guard self.animationID == animationID, self.isActive,
-                  self.destination === destination, self.restingSpaceID == target,
-                  self.superview === host, host.window === window, host.spaceSlide === self,
-                  TabStore.all.contains(where: { $0 === destination }),
-                  destination.window === window, destination.profileVisible,
-                  destination.currentSpaceID == target else { return }
-            window.displayIfNeeded()
-            CATransaction.flush()
-        }
-    }
-
     private weak var joinedDestinationSurface: ThemeWashSurface?
     private var finishDestinationGround: ((Space?) -> Void)?
 

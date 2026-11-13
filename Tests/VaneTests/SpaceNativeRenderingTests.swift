@@ -1490,6 +1490,14 @@ import XCTest
         }
     }
 
+    func testProfileWashTravelGateRejectsStationaryAndSnappedFrames() {
+        XCTAssertTrue(ProfileWashSampler.travelValues(in: [0.8, 0.8, 0.8, 0.8], held: 0.8).isEmpty)
+        XCTAssertTrue(ProfileWashSampler.travelValues(in: [0.8, 0.2, 0.2, 0.2, 0.2], held: 0.8).isEmpty)
+        XCTAssertTrue(ProfileWashSampler.travelValues(in: [0.2, 0.8, 0.8, 0.8, 0.8], held: 0.2).isEmpty)
+        XCTAssertEqual(ProfileWashSampler.travelValues(in: [0.8, 0.5, 0.5, 0.5, 0.2], held: 0.8), [0.5])
+        XCTAssertEqual(ProfileWashSampler.travelValues(in: [0.8, 0.65, 0.5, 0.35, 0.25, 0.2], held: 0.8).count, 4)
+    }
+
     func testCachedProfileColourStaysContinuousAcrossRepeatedSwipes() async throws {
         try await withFixtureApplicationLoop {
             for mixedThemes in [false, true] {
@@ -1549,6 +1557,20 @@ import XCTest
                        "The installed callback must resolve the new gesture endpoints before SwiftUI renders again")
     }
 
+    private func withProfileWashSampler(host: BrowserWindowHost, screen: NSScreen,
+                                        _ body: (ProfileWashSampler) async throws -> Void) async throws {
+        let sampler = ProfileWashSampler(host: host)
+        sampler.start(on: screen)
+        do { try await body(sampler) }
+        catch {
+            let primary = error
+            do { try await sampler.close() }
+            catch { XCTFail("Profile sampler cleanup also failed: \(error)") }
+            throw primary
+        }
+        try await sampler.close()
+    }
+
     private func checkRepeatedProfileSwipes(mixedThemes: Bool) async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
@@ -1593,59 +1615,62 @@ import XCTest
             let showing = try XCTUnwrap(TabStore.all.first { $0.window === window })
             let direction = index == 1 ? 1 : -1
             let monitor = showing.spaceGesture.monitor
-            let sampler = ProfileWashSampler(host: host)
-            sampler.start(on: try XCTUnwrap(window.screen))
-            defer { sampler.stop() }
-            // A new display link and a freshly restored hosting tree may not have
-            // presented yet. Establish actual source-color samples before asking
-            // this sampler to verify the subsequent transition's continuity.
-            try await compatibilityWait {
-                if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
-                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-                return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
-                    && host.window === window && showing.window === window && showing.profileVisible
-                    && sampler.reds.count >= 3
-            }
-            sampler.beginTransitionSampling()
-            let observers = [
-                NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { _ in
-                    MainActor.assumeIsolated { sampler.foregroundInterrupted = true }
-                },
-                NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main) { _ in
-                    MainActor.assumeIsolated { sampler.foregroundInterrupted = true }
+            try await withProfileWashSampler(host: host, screen: XCTUnwrap(window.screen)) { sampler in
+                // A new display link and a freshly restored hosting tree may not have
+                // presented yet. Establish actual source-color samples before asking
+                // this sampler to verify the subsequent transition's continuity.
+                try await compatibilityWait {
+                    if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+                    if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                    return NSApp.isRunning && NSApp.isActive && window.isKeyWindow && NSApp.keyWindow === window
+                        && host.window === window && showing.window === window && showing.profileVisible
+                        && sampler.reds.count >= 3
                 }
-            ]
-            defer { observers.forEach(NotificationCenter.default.removeObserver) }
-            let actionBegan = CACurrentMediaTime()
-            XCTAssertNotNil(showing.beginSpaceSelection(spaces[index]))
-            monitor.track(-CGFloat(direction) * 70, width: fixtureSidebarWidth(in: source), in: showing)
-            monitor.land(direction, to: spaces[index], width: fixtureSidebarWidth(in: source),
-                         store: showing, duration: 0.3)
-            print("PROFILE_ACTION mixed=\(mixedThemes) leg=\(leg) actionMS=\((CACurrentMediaTime() - actionBegan) * 1000) active=\(NSApp.isActive) key=\(window.isKeyWindow)")
-            // Hosting/layout can defer CA's first commit beyond the nominal
-            // duration. Sample the entire handoff, including its actual endpoint,
-            // rather than stopping at an assumed 450 ms wall-clock deadline.
-            let retirementDeadline = ContinuousClock.now + .seconds(2)
-            while host.spaceSlide != nil, ContinuousClock.now < retirementDeadline {
-                try await Task.sleep(for: .milliseconds(10))
+                sampler.beginTransitionSampling()
+                let observers = [
+                    NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { _ in
+                        MainActor.assumeIsolated { sampler.foregroundInterrupted = true }
+                    },
+                    NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main) { _ in
+                        MainActor.assumeIsolated { sampler.foregroundInterrupted = true }
+                    }
+                ]
+                defer { observers.forEach(NotificationCenter.default.removeObserver) }
+                let actionBegan = CACurrentMediaTime()
+                XCTAssertNotNil(showing.beginSpaceSelection(spaces[index]))
+                monitor.track(-CGFloat(direction) * 70, width: fixtureSidebarWidth(in: source), in: showing)
+                try await sampler.admitTransitionLayers()
+                monitor.land(direction, to: spaces[index], width: fixtureSidebarWidth(in: source),
+                             store: showing, duration: 0.3)
+                print("PROFILE_ACTION mixed=\(mixedThemes) leg=\(leg) actionMS=\((CACurrentMediaTime() - actionBegan) * 1000) active=\(NSApp.isActive) key=\(window.isKeyWindow)")
+                // Hosting/layout can defer CA's first commit beyond the nominal
+                // duration. Sample the entire handoff, including its actual endpoint,
+                // rather than stopping at an assumed 450 ms wall-clock deadline.
+                let retirementDeadline = ContinuousClock.now + .seconds(2)
+                while host.spaceSlide != nil, ContinuousClock.now < retirementDeadline {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                try await sampler.close()
+                try sampler.validateTransitionLayers()
+                XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, spaces[index].id)
+                XCTAssertFalse(sampler.foregroundInterrupted, "Profile sampling must retain actual foreground ownership")
+                XCTAssertGreaterThan(sampler.reds.count, 3)
+                XCTAssertGreaterThan(sampler.travelReds.count, 3,
+                                     "Observe distinct travel frames, excluding the held position and settled endpoint")
+                XCTAssertEqual(sampler.unadmittedTransitionCallbacks, 0,
+                               "Every transition callback must identify exactly one presented wash; missing samples cannot pass continuity")
+                let reversals = zip(sampler.reds, sampler.reds.dropFirst()).map { previous, next in
+                    (direction == 1) != mixedThemes ? next - previous : previous - next
+                }
+                print("PROFILE_WASH_SAMPLE mixed=\(mixedThemes) leg=\(leg) direction=\(direction) frames=\(sampler.reds.count) max_reverse=\(reversals.max() ?? 0) max_gap_ms=\(sampler.maxGap * 1000) first_callback_ms=\((sampler.firstCallbackLatency ?? 0) * 1000)")
+                if (reversals.max() ?? 0) >= 0.08 || sampler.unadmittedTransitionCallbacks > 0 {
+                    sampler.dumpDiagnostics(label: "mixed=\(mixedThemes) leg=\(leg) direction=\(direction)")
+                }
+                XCTAssertLessThan(reversals.max() ?? 0, 0.08,
+                                  "The displayed background must not flash back toward its source after profile activation")
+                XCTAssertNil(host.spaceSlide)
+                XCTAssertEqual(showing.spaceDrag, 0, "Parked profile progress must be released at every landing")
             }
-            sampler.stop()
-            XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, spaces[index].id)
-            XCTAssertFalse(sampler.foregroundInterrupted, "Profile sampling must retain actual foreground ownership")
-            XCTAssertGreaterThan(sampler.reds.count, 3)
-            XCTAssertEqual(sampler.unadmittedTransitionCallbacks, 0,
-                           "Every transition callback must identify exactly one presented wash; missing samples cannot pass continuity")
-            let reversals = zip(sampler.reds, sampler.reds.dropFirst()).map { previous, next in
-                (direction == 1) != mixedThemes ? next - previous : previous - next
-            }
-            print("PROFILE_WASH_SAMPLE mixed=\(mixedThemes) leg=\(leg) direction=\(direction) frames=\(sampler.reds.count) max_reverse=\(reversals.max() ?? 0) max_gap_ms=\(sampler.maxGap * 1000) first_callback_ms=\((sampler.firstCallbackLatency ?? 0) * 1000)")
-            if (reversals.max() ?? 0) >= 0.08 || sampler.unadmittedTransitionCallbacks > 0 {
-                sampler.dumpDiagnostics(label: "mixed=\(mixedThemes) leg=\(leg) direction=\(direction)")
-            }
-            XCTAssertLessThan(reversals.max() ?? 0, 0.08,
-                              "The displayed background must not flash back toward its source after profile activation")
-            XCTAssertNil(host.spaceSlide)
-            XCTAssertEqual(showing.spaceDrag, 0, "Parked profile progress must be released at every landing")
         }
     }
 
@@ -3529,11 +3554,32 @@ import XCTest
 
 @MainActor private final class ProfileWashSampler: NSObject {
     weak var host: BrowserWindowHost?
-    var reds: [Double] = []
-    private(set) var unadmittedTransitionCallbacks = 0
+    private var baselineReds: [Double] = []
+    private var transitionSampler: ProfileWashLayerSampler?
+    private var transitionSnapshot: ProfileWashLayerSnapshot?
+    private var heldRed: Double?
+    private weak var screen: NSScreen?
+    var reds: [Double] { transitionSampler?.snapshot.reds ?? baselineReds }
+    var travelReds: [Double] { heldRed.map { Self.travelValues(in: reds, held: $0) } ?? [] }
+
+    static func travelValues(in reds: [Double], held: Double) -> [Double] {
+        guard let endpoint = reds.last else { return [] }
+        let epsilon = 0.000001
+        let lower = min(held, endpoint) + epsilon
+        let upper = max(held, endpoint) - epsilon
+        var travel: [Double] = []
+        for red in reds where red > lower && red < upper {
+            if let previous = travel.last, abs(red - previous) <= epsilon { continue }
+            travel.append(red)
+        }
+        return travel
+    }
+
+    var unadmittedTransitionCallbacks: Int { transitionSampler?.snapshot.unadmitted ?? 0 }
     var foregroundInterrupted = false
     private var samplingTransition = false
-    var maxGap: TimeInterval = 0
+    private var baselineMaxGap: TimeInterval = 0
+    var maxGap: TimeInterval { transitionSampler?.snapshot.maxGap ?? baselineMaxGap }
     private(set) var firstCallbackLatency: TimeInterval?
     private var started: TimeInterval?
     private var last: TimeInterval?
@@ -3557,34 +3603,76 @@ import XCTest
         return candidates.count == 1 ? candidates[0] : nil
     }
     func start(on screen: NSScreen) {
+        self.screen = screen
         started = ProcessInfo.processInfo.systemUptime
         let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
         self.link = link
     }
     func beginTransitionSampling() {
-        reds.removeAll(keepingCapacity: true)
+        baselineReds.removeAll(keepingCapacity: true)
         diagnosticFrames.removeAll(keepingCapacity: true)
-        unadmittedTransitionCallbacks = 0
         samplingTransition = true
-        maxGap = 0
+        baselineMaxGap = 0
         // Include delay before the first transition callback in the gap diagnostic.
         last = ProcessInfo.processInfo.systemUptime
     }
-    func stop() { samplingTransition = false; link?.invalidate(); link = nil }
+    func admitTransitionLayers() async throws {
+        let host = try XCTUnwrap(host)
+        let window = try XCTUnwrap(host.window)
+        let owners = TabStore.all.filter { $0.window === window || $0.parkedIn === window }
+        let surfaces = owners.compactMap { $0.spaceGesture.groundSurface }
+        XCTAssertEqual(owners.count, 2, "Both cached profile owners must be known before sampling")
+        XCTAssertEqual(surfaces.count, 2, "Both cached profile washes must be mounted before sampling")
+        let snapshot = try ProfileWashLayerSnapshot(host: host, expectedSurfaces: surfaces)
+        transitionSnapshot = snapshot
+        let sampler = ProfileWashLayerSampler(layers: snapshot)
+        transitionSampler = sampler
+        sampler.start(on: try XCTUnwrap(screen))
+        // Admit this independent run loop while the finger is held, before any
+        // landing outcome exists. Do not count its admission frames as travel.
+        try await compatibilityWait {
+            let held = sampler.snapshot.reds.suffix(3)
+            return held.count == 3 && (held.max()! - held.min()!) <= 0.000001
+        }
+        heldRed = sampler.snapshot.reds.last
+        sampler.resetSamples()
+    }
+    func validateTransitionLayers() throws {
+        guard let transitionSnapshot, let host else { return }
+        let current = try ProfileWashLayerSnapshot(host: host, expectedSurfaces: [])
+        XCTAssertEqual(current.surfaceSignature, transitionSnapshot.surfaceSignature,
+                       "Cached profile wash owners and their ancestry must remain captured for the entire transition")
+    }
+    func close() async throws {
+        samplingTransition = false
+        link?.invalidate()
+        link = nil
+        guard let transitionSampler else { return }
+        transitionSampler.stop()
+        let deadline = ContinuousClock.now + .seconds(1)
+        while !transitionSampler.isStopped, ContinuousClock.now < deadline {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.005) { continuation.resume() }
+            }
+        }
+        guard transitionSampler.isStopped else {
+            XCTFail("The profile layer sampler must join before fixture cleanup")
+            throw NSError(domain: "ProfileWashSamplerShutdown", code: 1)
+        }
+    }
     @objc private func tick(_ link: CADisplayLink) {
         let now = ProcessInfo.processInfo.systemUptime
         if firstCallbackLatency == nil, let started { firstCallbackLatency = now - started }
-        if let last { maxGap = max(maxGap, now - last) }
+        if let last { baselineMaxGap = max(baselineMaxGap, now - last) }
         last = now
         if diagnosticsEnabled, let host { recordDiagnostics(at: now, in: host) }
         guard let host, let surface = visibleSurface(in: host),
               let cg = (surface.base.presentation()?.colors as? [CGColor])?.first,
               let colour = NSColor(cgColor: cg)?.usingColorSpace(.deviceRGB) else {
-            if samplingTransition { unadmittedTransitionCallbacks += 1 }
             return
         }
-        reds.append(colour.redComponent)
+        if !samplingTransition { baselineReds.append(colour.redComponent) }
     }
     func dumpDiagnostics(label: String) {
         guard diagnosticsEnabled else { return }
@@ -3641,6 +3729,147 @@ import XCTest
         diagnosticFrames.append("PROFILE_WASH_FRAME t=\(now) sampleIndex=\(reds.count) activeProfile=\(profile) activeSpace=\(space) offset=\(offset) slideActive=\(slide?.isActive ?? false) appActive=\(appActive) key=\(key) windowVisible=\(visible) occlusionVisible=\(compositorVisible) roots={\(details.joined(separator: " | "))}")
     }
 
+}
+
+/// Only immutable Core Animation references cross into the sampling worker.
+/// Capture the complete mounted wash set, including parked roots, on the main actor.
+private final class ProfileWashLayerSnapshot: @unchecked Sendable {
+    struct Surface {
+        let base: CAGradientLayer
+        let ancestry: [CALayer]
+    }
+    let host: CALayer
+    let roots: Set<ObjectIdentifier>
+    let surfaces: [Surface]
+    let surfaceSignature: [ObjectIdentifier: [ObjectIdentifier]]
+
+    @MainActor init(host view: BrowserWindowHost, expectedSurfaces: [ThemeWashSurface]) throws {
+        func washes(in view: NSView) -> [ThemeWashSurface] {
+            if let surface = view as? ThemeWashSurface { return [surface] }
+            return view.subviews.flatMap { washes(in: $0) }
+        }
+        let mounted = washes(in: view)
+        for surface in expectedSurfaces {
+            XCTAssertTrue(mounted.contains { $0 === surface }, "Every cached owner must be in the captured wash set")
+        }
+        let hostLayer = try XCTUnwrap(view.layer)
+        CATransaction.lock()
+        defer { CATransaction.unlock() }
+        roots = Set((hostLayer.sublayers ?? []).map(ObjectIdentifier.init))
+        var captured: [Surface] = []
+        for surface in mounted {
+            var ancestry: [CALayer] = []
+            var node: CALayer? = surface.base
+            while let layer = node {
+                ancestry.append(layer)
+                if layer === hostLayer { break }
+                node = layer.superlayer
+            }
+            XCTAssertTrue(ancestry.last === hostLayer, "A sampled wash must belong to the admitted host layer")
+            captured.append(Surface(base: surface.base, ancestry: ancestry))
+        }
+        host = hostLayer
+        surfaces = captured
+        surfaceSignature = Dictionary(uniqueKeysWithValues: captured.map {
+            (ObjectIdentifier($0.base), $0.ancestry.map(ObjectIdentifier.init))
+        })
+    }
+}
+
+/// AppKit restoration can occupy the main actor for longer than the 300 ms
+/// animation. A separate display-link run loop observes its original layer-color
+/// metric while the compositor moves, without touching AppKit from that thread.
+private final class ProfileWashLayerSampler: NSObject, @unchecked Sendable {
+    struct Samples {
+        var reds: [Double] = []
+        var unadmitted = 0
+        var maxGap: TimeInterval = 0
+        var last: TimeInterval?
+    }
+    private let layers: ProfileWashLayerSnapshot
+    private let queue = DispatchQueue(label: "vane.profile.wash.layer-sampler")
+    private let lock = NSLock()
+    private var samples = Samples()
+    private var stopping = false
+    private var stopped = false
+    private var link: CADisplayLink?
+    var snapshot: Samples { lock.withLock { samples } }
+    var isStopped: Bool { lock.withLock { stopped } }
+
+    init(layers: ProfileWashLayerSnapshot) { self.layers = layers }
+
+    @MainActor func start(on screen: NSScreen) {
+        let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
+        let rate = Float(screen.maximumFramesPerSecond)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+        lock.withLock { self.link = link; samples.last = ProcessInfo.processInfo.systemUptime }
+        queue.async { [self] in
+            guard let link = lock.withLock({ self.link }) else {
+                lock.withLock { stopped = true }
+                return
+            }
+            let runLoop = RunLoop.current
+            link.add(to: runLoop, forMode: .default)
+            while !lock.withLock({ stopping }) {
+                // Each iteration is bounded even after invalidation removes the
+                // display link's last run-loop source.
+                autoreleasepool { _ = runLoop.run(mode: .default, before: Date(timeIntervalSinceNow: 0.02)) }
+            }
+            link.invalidate()
+            lock.withLock { self.link = nil; stopped = true }
+        }
+    }
+
+    func resetSamples() {
+        lock.withLock { samples = Samples(last: ProcessInfo.processInfo.systemUptime) }
+    }
+
+    func stop() {
+        let link = lock.withLock { stopping = true; return self.link }
+        // CADisplayLink explicitly permits invalidation from another thread.
+        link?.invalidate()
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        let now = ProcessInfo.processInfo.systemUptime
+        CATransaction.lock()
+        let red = presentedRed()
+        CATransaction.unlock()
+        lock.withLock {
+            if let last = samples.last { samples.maxGap = max(samples.maxGap, now - last) }
+            samples.last = now
+            guard let red, samples.reds.count < 4096 else {
+                samples.unadmitted += 1
+                return
+            }
+            samples.reds.append(red)
+        }
+    }
+
+    /// Called only under CATransaction's recursive lock. Reject unknown roots,
+    /// detached ancestry and ambiguous/missing visibility rather than silently
+    /// dropping a frame that could hide a color reversal.
+    private func presentedRed() -> Double? {
+        let currentRoots = Set((layers.host.sublayers ?? []).map(ObjectIdentifier.init))
+        guard currentRoots.isSubset(of: layers.roots) else { return nil }
+        var visible: [CAGradientLayer] = []
+        for surface in layers.surfaces {
+            for (child, parent) in zip(surface.ancestry, surface.ancestry.dropFirst()) {
+                guard child.superlayer === parent else { return nil }
+            }
+            var hidden = false
+            for ancestor in surface.ancestry.reversed() {
+                guard let presentation = ancestor.presentation() else { return nil }
+                if presentation.isHidden || presentation.opacity <= 0 { hidden = true; break }
+            }
+            if !hidden { visible.append(surface.base) }
+        }
+        guard visible.count == 1,
+              let color = (visible[0].presentation()?.colors as? [CGColor])?.first,
+              let rgb = color.converted(to: CGColorSpaceCreateDeviceRGB(), intent: .defaultIntent, options: nil),
+              let components = rgb.components, components.count >= 3 else { return nil }
+        return Double(components[0])
+    }
 }
 
 @MainActor private final class SwipeColourSampler: NSObject {

@@ -2064,9 +2064,9 @@ private struct SpaceSwipe: ViewModifier {
                         slide.cancel()
                         return
                     }
-                    // Keep restoration and its forced live layout on separate
-                    // turns so the arriving profile can accept input in between.
-                    slide.scheduleDestinationLayout()
+                    host.layoutDisplayedProfile()
+                    window.displayIfNeeded()
+                    CATransaction.flush()
                 }
             } else {
                 // Within a profile, prepare under the captured rows before starting
