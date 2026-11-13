@@ -176,7 +176,7 @@ jobs:
                assert process.poll() is None, 'Sampler ended during pre-landing warmup'
                actual=subprocess.check_output(['ps','-p',str(target['pid']),'-o','lstart=,command='],text=True).strip()
                assert actual.startswith(target['start']) and actual.endswith(target['command'])
-               record['armed']={'pid':target['pid'],'armed':True,'epoch':time.time(),'monotonic':time.monotonic(),'sampler_pid':process.pid}
+               record['armed']={'pid':target['pid'],'armed':True,'deadlineUptime':sample_started+3,'epoch':time.time(),'monotonic':time.monotonic(),'sampler_pid':process.pid}
                atomic_json(out/'armed.json',record['armed'])
            except OSError as error:
             if error.errno != errno.EIO:record['sample_reader_error']=type(error).__name__+': '+str(error)

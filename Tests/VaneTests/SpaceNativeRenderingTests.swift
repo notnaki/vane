@@ -186,20 +186,30 @@ import XCTest
         // Do not yield another AppKit display turn between the admitted held
         // position and the sampling prerequisite. No wait occurs after land().
         let deadline = ProcessInfo.processInfo.systemUptime + 10
+        struct Arming: Decodable {
+            let pid: Int
+            let armed: Bool
+            let deadlineUptime: Double
+        }
+        var lastObservation = "ready file not readable"
         while ProcessInfo.processInfo.systemUptime < deadline {
-            if let data = try? Data(contentsOf: directory.appendingPathComponent("armed.json")),
-               let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               reply["pid"] as? Int == pid, reply["armed"] as? Bool == true,
-               let epoch = reply["epoch"] as? Double,
-               Date().timeIntervalSince1970 - epoch < 0.2 {
-                ResizeTimingDiagnostics.recordState("profile.stack.armed",
-                    fields: ["epoch": String(Date().timeIntervalSince1970), "externalEpoch": String(epoch)])
-                return
+            do {
+                let data = try Data(contentsOf: directory.appendingPathComponent("armed.json"))
+                let reply = try JSONDecoder().decode(Arming.self, from: data)
+                let remaining = reply.deadlineUptime - ProcessInfo.processInfo.systemUptime
+                lastObservation = "pid=\(reply.pid), armed=\(reply.armed), remaining=\(remaining)"
+                if reply.pid == pid, reply.armed, remaining > 0.4 {
+                    ResizeTimingDiagnostics.recordState("profile.stack.armed",
+                        fields: ["epoch": String(Date().timeIntervalSince1970), "remaining": String(remaining)])
+                    return
+                }
+            } catch {
+                lastObservation = String(describing: error)
             }
             Thread.sleep(forTimeInterval: 0.002)
         }
         throw NSError(domain: "ProfileParentStackPrearm", code: 1,
-                      userInfo: [NSLocalizedDescriptionKey: "External sampler did not arm before landing"])
+                      userInfo: [NSLocalizedDescriptionKey: "External sampler did not arm before landing: " + lastObservation])
         #endif
     }
 
