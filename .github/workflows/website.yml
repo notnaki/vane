@@ -1,0 +1,37 @@
+name: website
+
+on:
+  push:
+    branches: [website]
+  pull_request:
+    branches: [website]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Check JavaScript syntax
+        run: |
+          for file in *.js; do node --check "$file"; done
+      - name: Website regressions
+        run: node tests/galaxy.test.cjs
+      - name: Check local links and sitemap
+        run: python3 tests/site-links.py
+      - name: Validate diff whitespace
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          git fetch origin "$BASE_SHA" --depth=1
+          git diff --check "$BASE_SHA" HEAD --
