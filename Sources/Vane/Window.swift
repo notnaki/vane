@@ -895,10 +895,6 @@ extension VaneWindow {
         // straight into the Space being walked to — there is no intermediate Space to show.
         let arriving = parked(profile.id, in: window)
             ?? TabStore(profileID: profile.id, space: space)
-        if let slide = (window.contentView as? BrowserWindowHost)?.spaceSlide,
-           slide.isActive, slide.isSource(store) {
-            slide.deferMaterialization(of: arriving, for: space.id)
-        }
         // Visibility belongs to the window, across every Space and profile. Apply it
         // before mounting the arriving host, including when reusing a parked profile.
         arriving.sidebarShown = store.sidebarShown
@@ -1299,24 +1295,8 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     /// display still services dirty descendants, as it does after native resizing.
     func layoutDisplayedProfile() {
         guard let current, let host = hosts[current] else { return }
-        #if DEBUG
-        ResizeTimingDiagnostics.recordState("profile.cost.content.layout.begin",
-            fields: ["owner": String(ObjectIdentifier(host.content).hashValue)])
-        #endif
         host.content.layout()
-        #if DEBUG
-        ResizeTimingDiagnostics.recordState("profile.cost.content.layout.end",
-            fields: ["owner": String(ObjectIdentifier(host.content).hashValue)])
-        #endif
-        #if DEBUG
-        ResizeTimingDiagnostics.recordState("profile.cost.palette.layout.begin",
-            fields: ["owner": String(ObjectIdentifier(host.palette).hashValue)])
-        #endif
         host.palette.layout()
-        #if DEBUG
-        ResizeTimingDiagnostics.recordState("profile.cost.palette.layout.end",
-            fields: ["owner": String(ObjectIdentifier(host.palette).hashValue)])
-        #endif
     }
 
     /// The captured sidebar is already mounted and owns the landing. Display the
@@ -1326,24 +1306,8 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         guard let current, let host = hosts[current] else { return }
         // These roots can be transparent. Ordinary displayIfNeeded backs up to
         // an opaque ancestor and would walk the window's other hosts again.
-        #if DEBUG
-        ResizeTimingDiagnostics.recordState("profile.cost.content.display.begin",
-            fields: ["owner": String(ObjectIdentifier(host.content).hashValue)])
-        #endif
         host.content.displayIfNeededIgnoringOpacity()
-        #if DEBUG
-        ResizeTimingDiagnostics.recordState("profile.cost.content.display.end",
-            fields: ["owner": String(ObjectIdentifier(host.content).hashValue)])
-        #endif
-        #if DEBUG
-        ResizeTimingDiagnostics.recordState("profile.cost.palette.display.begin",
-            fields: ["owner": String(ObjectIdentifier(host.palette).hashValue)])
-        #endif
         host.palette.displayIfNeededIgnoringOpacity()
-        #if DEBUG
-        ResizeTimingDiagnostics.recordState("profile.cost.palette.display.end",
-            fields: ["owner": String(ObjectIdentifier(host.palette).hashValue)])
-        #endif
     }
 
     private func show(_ store: TabStore) {
@@ -1355,47 +1319,23 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         for stale in Array(hosts.keys) where !kept.contains(stale) {
             hosts.removeValue(forKey: stale)?.views.forEach { $0.removeFromSuperview() }
         }
-        #if DEBUG
-        ResizeTimingDiagnostics.record("profile.cost.show.hosts.begin")
-        #endif
         let host = profileHosts(for: store)
-        #if DEBUG
-        ResizeTimingDiagnostics.record("profile.cost.show.hosts.end")
-        #endif
         let departing = current.flatMap { hosts[$0] }
         for view in host.views {
             view.frame = bounds
             view.autoresizingMask = [.width, .height]
         }
-        #if DEBUG
-        ResizeTimingDiagnostics.record("profile.cost.show.attach.begin")
-        #endif
         if host.content.superview !== self {
             addSubview(host.content, positioned: .below, relativeTo: (spaceSlide as NSView?) ?? paletteLayer)
         }
         if host.palette.superview !== paletteLayer { paletteLayer.addSubview(host.palette) }
-        #if DEBUG
-        ResizeTimingDiagnostics.record("profile.cost.show.attach.end")
-        #endif
         // Keep both trees mounted when parking a profile, including a typed query.
         if let departing, let holder = window?.firstResponder as? NSView,
            departing.views.contains(where: { holder.isDescendant(of: $0) }) {
             window?.makeFirstResponder(nil)
         }
-        #if DEBUG
-        ResizeTimingDiagnostics.record("profile.cost.show.hide.begin")
-        #endif
         departing?.views.forEach { $0.isHidden = true }
-        #if DEBUG
-        ResizeTimingDiagnostics.record("profile.cost.show.hide.end")
-        #endif
-        #if DEBUG
-        ResizeTimingDiagnostics.record("profile.cost.show.reveal.begin")
-        #endif
         host.views.forEach { $0.isHidden = false }
-        #if DEBUG
-        ResizeTimingDiagnostics.record("profile.cost.show.reveal.end")
-        #endif
         current = id
     }
 }
@@ -1409,10 +1349,7 @@ private struct NativeSpacePreview: View {
     let windowWidth: CGFloat
 
     var body: some View {
-        #if DEBUG
-        ResizeTimingDiagnostics.record("profile.cost.capture.body")
-        #endif
-        return preview.equatable()
+        preview.equatable()
             .environment(\.sidebarWindowWidth, windowWidth)
             .environment(\.sidebarNativeReadinessScope, scope)
             .environment(\.spaceChromeTheme, theme)
@@ -1457,72 +1394,6 @@ private struct NativeSpacePreview: View {
     private let outgoingReadinessScope: SidebarNativeReadinessScope
     private let incomingReadinessScope: SidebarNativeReadinessScope
     private var sidebarAcknowledgements: [ObjectIdentifier: (spaceID: UUID?, atRest: Bool)] = [:]
-    private let materializationToken = UUID()
-    private final class MaterializationParticipant {
-        weak var store: TabStore?
-        let storeID: ObjectIdentifier
-        let spaceID: UUID?
-        let generationID: UUID
-        init(store: TabStore, spaceID: UUID?, generationID: UUID) {
-            self.store = store
-            storeID = ObjectIdentifier(store)
-            self.spaceID = spaceID
-            self.generationID = generationID
-        }
-        var scope: SidebarNativeReadinessScope {
-            SidebarNativeReadinessScope(storeID: storeID, spaceID: spaceID, materializationID: generationID)
-        }
-    }
-    private var materializationParticipants: [ObjectIdentifier: MaterializationParticipant] = [:]
-
-    /// The mounted cover owns these pixels; only the covered live controls wait.
-    func deferMaterialization(of store: TabStore, for spaceID: UUID?) {
-        guard includesFavorites, ownsSidebarVisibility, (!finished || completingSelection),
-              let host = superview as? BrowserWindowHost, host.spaceSlide === self,
-              !isHidden, window != nil else { return }
-        let key = ObjectIdentifier(store)
-        let state = store.spaceGesture.materialization
-        if let previous = materializationParticipants[key], previous.spaceID == spaceID,
-           state.owner == materializationToken { return }
-        if let previous = materializationParticipants[key] {
-            SidebarNativeReadinessCoordinator.shared.endMaterialization(previous.scope)
-        }
-        let count = store.tabs.filter { $0.kind == .favourite }.count
-        let columns = max(1, SidebarWidth.favouriteColumns(count, width: travelWidth))
-        let rows = (count + columns - 1) / columns
-        let estimatedFavorites = rows == 0 ? 0 : CGFloat(rows) * Look.tileHeight
-            + CGFloat(max(0, rows - 1)) * Look.inset + Look.inset - Look.rowGap
-        let geometry = store.spaceGesture
-        let favoritesHeight: CGFloat
-        if let strip = geometry.stripView, let sections = geometry.sectionsView,
-           strip.window === window, sections.window === window {
-            favoritesHeight = max(0, strip.bounds.height - sections.bounds.height - Look.rowGap)
-        } else { favoritesHeight = estimatedFavorites }
-        let minimumExtent = max(0, geometry.sidebarOffset) + max(0, geometry.sectionsView?.bounds.height ?? 0)
-        let identity = state.acquire(owner: materializationToken, spaceID: spaceID,
-                                     favoritesHeight: favoritesHeight, minimumRowsExtent: minimumExtent)
-        let participant = MaterializationParticipant(store: store, spaceID: spaceID, generationID: identity)
-        materializationParticipants[key] = participant
-        SidebarNativeReadinessCoordinator.shared.beginMaterialization(participant.scope)
-        #if DEBUG
-        ResizeTimingDiagnostics.recordState("profile.materialization.acquire",
-            fields: ["generation": String(state.generation), "store": String(key.hashValue)])
-        #endif
-    }
-
-    private func releaseMaterializations(keepingReadinessFor arriving: TabStore? = nil) {
-        for participant in materializationParticipants.values {
-            let store = participant.store
-            let stillOwned = store?.spaceGesture.materialization.belongs(to: materializationToken,
-                                                                        generation: participant.generationID) == true
-            if stillOwned { store?.spaceGesture.materialization.release(owner: materializationToken) }
-            // Its nonce is immutable even if a participant deallocated or a replacement owns it now.
-            if store !== arriving || !stillOwned {
-                SidebarNativeReadinessCoordinator.shared.endMaterialization(participant.scope)
-            }
-        }
-    }
-
     var offset: CGFloat { (outgoing.layer?.presentation()?.frame.minX ?? outgoing.frame.minX) - contentInset }
     private var motionObserver: NSObjectProtocol?
 
@@ -1758,7 +1629,6 @@ private struct NativeSpacePreview: View {
         (superview as? BrowserWindowHost)?.footerPresentation.track(
             origin: preparedOrigin.id, target: preparedTarget.id,
             fraction: Double(min(1, abs(drag / travelWidth))))
-        if let source { deferMaterialization(of: source, for: source.currentSpaceID) }
     }
 
     func prepare() {
@@ -1923,7 +1793,6 @@ private struct NativeSpacePreview: View {
             progressLink = link
             link.add(to: .main, forMode: .common)
         }
-        if let source { deferMaterialization(of: source, for: source.currentSpaceID) }
     }
 
     @objc private func advanceProgress(_ link: CADisplayLink) {
@@ -1965,7 +1834,6 @@ private struct NativeSpacePreview: View {
     /// An unused idle surface has never owned the gesture's visibility state.
     func discardPreparation() {
         finished = true
-        releaseMaterializations()
         releaseDestinationGround()
         finishGround?(source?.swipeSpace)
         finishGround = nil
@@ -1978,9 +1846,6 @@ private struct NativeSpacePreview: View {
 
     func finish() {
         guard !finished else { return }
-        #if DEBUG
-        ResizeTimingDiagnostics.record("profile.materialization.finish")
-        #endif
         finished = true
         animationID = nil
         progressLink?.invalidate()
@@ -1992,18 +1857,6 @@ private struct NativeSpacePreview: View {
         completingSelection = true
         complete?()
         completingSelection = false
-        let materializingArrival = destination ?? source
-        if complete != nil, let arriving = materializingArrival,
-           materializationParticipants[ObjectIdentifier(arriving)] != nil {
-            retirementStore = arriving
-            retirementSpaceID = arriving.currentSpaceID
-            sidebarAcknowledgements.removeValue(forKey: ObjectIdentifier(arriving))
-            let scope = SidebarNativeReadinessScope(store: arriving, spaceID: arriving.currentSpaceID)
-            retirementReadinessObservation = SidebarNativeReadinessCoordinator.shared.observe(scope) { [weak self] in
-                self?.retireIfAcknowledged()
-            }
-        }
-        releaseMaterializations(keepingReadinessFor: complete != nil ? materializingArrival : nil)
         // The wash belongs to the source host. A profile hop parks that host for
         // reuse, so restore its own Space rather than caching the arriving profile's
         // colour. Within one profile, source already selects the destination Space.
@@ -2032,10 +1885,8 @@ private struct NativeSpacePreview: View {
                 retirementStore = arriving
                 retirementSpaceID = arriving.currentSpaceID
                 let readinessScope = SidebarNativeReadinessScope(store: arriving, spaceID: arriving.currentSpaceID)
-                if retirementReadinessObservation == nil {
-                    retirementReadinessObservation = SidebarNativeReadinessCoordinator.shared.observe(readinessScope) { [weak self] in
-                        self?.retireIfAcknowledged()
-                    }
+                retirementReadinessObservation = SidebarNativeReadinessCoordinator.shared.observe(readinessScope) { [weak self] in
+                    self?.retireIfAcknowledged()
                 }
                 // A disconnected window may never update its anchor. Bound that
                 // exceptional wait; visible sidebar retirement is acknowledged.
@@ -2043,9 +1894,8 @@ private struct NativeSpacePreview: View {
                     guard let self else { return }
                     // A timer cannot prove delayed native population is ready. Detached
                     // windows cancel unconditionally in viewDidMoveToWindow instead.
-                    if self.requiresNativePopulation || !self.materializationParticipants.isEmpty {
-                        self.retireIfAcknowledged()
-                    } else { self.retire() }
+                    if self.requiresNativePopulation { self.retireIfAcknowledged() }
+                    else { self.retire() }
                 }
                 retirementTimeout = timeout
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: timeout)
@@ -2058,18 +1908,11 @@ private struct NativeSpacePreview: View {
 
     /// Called by the live sections' representable after SwiftUI updates their identity
     /// and removes the gesture offset. A display tick alone cannot establish that.
-    func sidebarDidUpdate(_ store: TabStore, renderedSpaceID: UUID?, atRest: Bool,
-                          materializationID: UUID? = nil) {
+    func sidebarDidUpdate(_ store: TabStore, renderedSpaceID: UUID?, atRest: Bool) {
         // NSHostingView may acknowledge synchronously during completion's final state
         // publication, before finish() knows the arriving store. Retain that rendered
         // identity/rest pair instead of waiting for a second update that may never come.
         guard finished else { return }
-        if let participant = materializationParticipants[ObjectIdentifier(store)] {
-            let state = store.spaceGesture.materialization
-            guard state.belongs(to: materializationToken, generation: participant.generationID),
-                  !state.isDeferred, state.renderedID == participant.generationID,
-                  materializationID == participant.generationID else { return }
-        }
         sidebarAcknowledgements[ObjectIdentifier(store)] = (renderedSpaceID, atRest)
         retireIfAcknowledged()
     }
@@ -2080,11 +1923,6 @@ private struct NativeSpacePreview: View {
               SidebarNativeReadinessCoordinator.shared.isReady(
                 SidebarNativeReadinessScope(store: store, spaceID: retirementSpaceID),
                 allowingUnregistered: !requiresNativePopulation) else { return }
-        if let participant = materializationParticipants[ObjectIdentifier(store)] {
-            let state = store.spaceGesture.materialization
-            guard state.belongs(to: materializationToken, generation: participant.generationID),
-                  !state.isDeferred, state.renderedID == participant.generationID else { return }
-        }
         // Completing the animation does not make the replacement native rows
         // ready. Keep the covered live tree hidden until population can take
         // over, then wait for SwiftUI's actual visibility/rest acknowledgement.
@@ -2111,7 +1949,6 @@ private struct NativeSpacePreview: View {
     private func retire() {
         guard !retired else { return }
         retired = true
-        releaseMaterializations()
         releaseSidebarVisibility()
         SidebarNativeReadinessCoordinator.shared.removeObservation(retirementReadinessObservation)
         retirementReadinessObservation = nil
@@ -2130,12 +1967,8 @@ private struct NativeSpacePreview: View {
         guard ownsSidebarVisibility else { return }
         ownsSidebarVisibility = false
         Motion.spaceHandoff {
-            for store in [source, destination].compactMap({ $0 }) {
-                if let participant = materializationParticipants[ObjectIdentifier(store)],
-                   !store.spaceGesture.materialization.belongs(to: materializationToken,
-                                                              generation: participant.generationID) { continue }
-                store.spaceGesture.profileSliding = false
-            }
+            source?.spaceGesture.profileSliding = false
+            destination?.spaceGesture.profileSliding = false
         }
     }
 }

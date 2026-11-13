@@ -7,17 +7,14 @@ struct SidebarNativeReadinessScope: Hashable, Sendable {
     let storeID: ObjectIdentifier
     let spaceID: UUID?
     var surfaceID: UUID? = nil
-    var materializationID: UUID? = nil
 
-    init(storeID: ObjectIdentifier, spaceID: UUID?, surfaceID: UUID? = nil, materializationID: UUID? = nil) {
+    init(storeID: ObjectIdentifier, spaceID: UUID?, surfaceID: UUID? = nil) {
         self.storeID = storeID
         self.spaceID = spaceID
         self.surfaceID = surfaceID
-        self.materializationID = materializationID
     }
     @MainActor init(store: TabStore, spaceID: UUID?, surfaceID: UUID? = nil) {
-        self.init(storeID: ObjectIdentifier(store), spaceID: spaceID, surfaceID: surfaceID,
-                  materializationID: surfaceID == nil ? store.spaceGesture.materialization.generationID : nil)
+        self.init(storeID: ObjectIdentifier(store), spaceID: spaceID, surfaceID: surfaceID)
     }
 }
 
@@ -76,18 +73,6 @@ extension EnvironmentValues {
     private var declarations: [SidebarNativeReadinessScope: [String: ExpectedSection]] = [:]
     private var currentSections: [SidebarNativeReadinessScope: [String: Ticket]] = [:]
     private var declarationEpoch: UInt64 = 0
-    private var materializing = Set<SidebarNativeReadinessScope>()
-
-    func beginMaterialization(_ scope: SidebarNativeReadinessScope) {
-        materializing.insert(scope)
-    }
-
-    func endMaterialization(_ scope: SidebarNativeReadinessScope) {
-        let wasReady = isReady(scope)
-        materializing.remove(scope)
-        signalIfReady(scope, wasReady: wasReady)
-    }
-
 
     /// Called while constructing the grouped live subtree, before SwiftUI can
     /// acknowledge its shell or update any section representable. Empty Spaces
@@ -188,7 +173,6 @@ extension EnvironmentValues {
     }
 
     func isReady(_ scope: SidebarNativeReadinessScope, allowingUnregistered: Bool = false) -> Bool {
-        guard !materializing.contains(scope) else { return false }
         let sections = requirements[scope] ?? [:]
         if let declared = declarations[scope] {
             return declared.allSatisfy { key, expected in

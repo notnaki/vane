@@ -12,7 +12,6 @@ import UniformTypeIdentifiers
 /// Publishing them on TabStore would invalidate the entire browser on every scroll event.
 @MainActor final class SpaceGesture: ObservableObject {
     let monitor = SwipeMonitor()
-    let materialization = SidebarMaterialization()
     struct Presentation: Equatable {
         var drag: CGFloat = 0
         var pull: CGFloat = 0
@@ -406,7 +405,6 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
     let sections: Sections
     private let favoriteCount: Int
     @ObservedObject private var gesture: SpaceGesture
-    @ObservedObject private var materialization: SidebarMaterialization
     @Environment(\.nativeCachedSidebarBatches) private var nativeCachedBatches
     @State private var readinessPinnedRows = Feel02SidebarRowsCache()
     @State private var readinessTodayRows = Feel02SidebarRowsCache()
@@ -418,7 +416,6 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
         self.sections = sections
         favoriteCount = store.tabs.filter { $0.kind == .favourite }.count
         gesture = store.spaceGesture
-        materialization = store.spaceGesture.materialization
     }
 
     // A pull past the last Space keeps the current list. Mounting an outgoing ghost
@@ -449,19 +446,12 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
         let _ = ResizeTimingDiagnostics.record("sidebar.body.strip")
         #endif
         let readinessScope = SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID)
-        let readinessSections = materialization.isDeferred ? nil : declareNativePopulation(readinessScope)
+        let readinessSections = declareNativePopulation(readinessScope)
 
         // Keep both sections in one tree when a gesture starts, reverses or springs back.
         // Only profile boundaries move the grid; ordinary Space switches leave it fixed.
         VStack(spacing: Look.rowGap) {
-            if materialization.isDeferred {
-                if materialization.favoritesHeight > 0 {
-                    Color.clear.frame(height: materialization.favoritesHeight)
-                        .accessibilityHidden(true).allowsHitTesting(false)
-                }
-            } else {
-                favorites.offset(x: gesture.travelsFavorites ? gesture.liveContentDrag : 0)
-            }
+            favorites.offset(x: gesture.travelsFavorites ? gesture.liveContentDrag : 0)
             ZStack(alignment: .topLeading) {
                 sections.spaceSlide(store)
                     .environment(\.sidebarNativeReadinessScope, readinessScope)
@@ -487,9 +477,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
             .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false, sectionsOnly: true,
                                          renderedSpaceID: store.currentSpaceID,
                                          renderedAtRest: !gesture.swiping && !gesture.profileSliding && gesture.drag == 0,
-                                         readinessSections: readinessSections, readinessOwnerID: readinessOwnerID,
-                                         populationDeferred: materialization.isDeferred,
-                                         materializationID: materialization.generationID))
+                                         readinessSections: readinessSections, readinessOwnerID: readinessOwnerID))
             .opacity(gesture.profileSliding ? 0 : 1)
         }
         .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false))
@@ -575,8 +563,6 @@ private struct SpaceStripAnchor: NSViewRepresentable {
     var renderedAtRest = false
     var readinessSections: [String: [String]]? = nil
     var readinessOwnerID: UUID? = nil
-    var populationDeferred = false
-    var materializationID: UUID? = nil
     func makeNSView(context: Context) -> Anchor {
         let view = Anchor()
         view.wantsLayer = true
@@ -587,17 +573,12 @@ private struct SpaceStripAnchor: NSViewRepresentable {
     }
     func updateNSView(_ view: Anchor, context: Context) {
         if sectionsOnly {
-            let scope = SidebarNativeReadinessScope(storeID: ObjectIdentifier(store), spaceID: renderedSpaceID,
-                                                    materializationID: materializationID)
-            view.setReadinessScope(!populationDeferred && (nativeCachedBatches || NativeCachedSidebarBatchesExperiment.enabled)
-                ? scope : nil, sections: readinessSections, populationOwnerID: readinessOwnerID)
-            if !populationDeferred, gesture.materialization.didRender(materializationID) {
-                SidebarNativeReadinessCoordinator.shared.endMaterialization(scope)
-            }
+            view.setReadinessScope(nativeCachedBatches || NativeCachedSidebarBatchesExperiment.enabled
+                ? SidebarNativeReadinessScope(store: store, spaceID: renderedSpaceID) : nil,
+                sections: readinessSections, populationOwnerID: readinessOwnerID)
             gesture.monitor.schedulePreparation(in: store)
             (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidUpdate(
-                store, renderedSpaceID: renderedSpaceID, atRest: renderedAtRest,
-                materializationID: materializationID)
+                store, renderedSpaceID: renderedSpaceID, atRest: renderedAtRest)
         }
     }
     static func dismantleNSView(_ view: Anchor, coordinator: ()) {
@@ -2066,69 +2047,26 @@ private struct SpaceSwipe: ViewModifier {
                 // travel before restoring/layouting the destination browser: hidden
                 // profile preparation blocks the input action and delays the first
                 // moving frame, then repeats layout when the profile is exposed.
-                #if DEBUG
-                ResizeTimingDiagnostics.record("profile.cost.curve.start.begin")
-                #endif
                 slide.start(duration: duration, completion: finish)
-                #if DEBUG
-                ResizeTimingDiagnostics.record("profile.cost.curve.start.end")
-                #endif
                 DispatchQueue.main.async { [weak self, weak store, weak host, weak slide] in
                     guard let self, self.transition == token, let store, let host, let slide,
                           slide.isActive, host.spaceSlide === slide,
                           store.currentSpaceID == self.landingFrom,
                           store.spaceGesture.neighbour?.id == destination.id else { return }
-                    #if DEBUG
-                    ResizeTimingDiagnostics.record("profile.cost.queue.enter")
-                    #endif
                     // The input's batched visibility publication has now completed.
                     // Send its captured curve to the compositor before live layout.
-                    #if DEBUG
-                    ResizeTimingDiagnostics.record("profile.cost.preflush.begin")
-                    #endif
                     CATransaction.flush()
-                    #if DEBUG
-                    ResizeTimingDiagnostics.record("profile.cost.preflush.end")
-                    #endif
                     let window = store.window
-                    #if DEBUG
-                    ResizeTimingDiagnostics.record("profile.cost.activate.begin")
-                    #endif
                     _ = self.activate(destination, in: store)
-                    #if DEBUG
-                    ResizeTimingDiagnostics.record("profile.cost.activate.end")
-                    #endif
                     guard let window, host.window === window, host.spaceSlide === slide,
                           slide.isActive,
                           TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
                         slide.cancel()
                         return
                     }
-                    #if DEBUG
-                    // The original ownership guard above has just succeeded.
-                    ResizeTimingDiagnostics.record("profile.cost.ownership.admitted")
-                    #endif
-                    #if DEBUG
-                    ResizeTimingDiagnostics.record("profile.cost.layout.begin")
-                    #endif
                     host.layoutDisplayedProfile()
-                    #if DEBUG
-                    ResizeTimingDiagnostics.record("profile.cost.layout.end")
-                    #endif
-                    #if DEBUG
-                    ResizeTimingDiagnostics.record("profile.cost.display.begin")
-                    #endif
                     host.displayDisplayedProfile()
-                    #if DEBUG
-                    ResizeTimingDiagnostics.record("profile.cost.display.end")
-                    #endif
-                    #if DEBUG
-                    ResizeTimingDiagnostics.record("profile.cost.finalflush.begin")
-                    #endif
                     CATransaction.flush()
-                    #if DEBUG
-                    ResizeTimingDiagnostics.record("profile.cost.finalflush.end")
-                    #endif
                 }
             } else {
                 // Within a profile, prepare under the captured rows before starting
