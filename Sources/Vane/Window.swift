@@ -1415,12 +1415,14 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         CATransaction.flush()
     }
 
-    /// A committed profile already has its captured native rows. Prepare the
-    /// displayed roots without walking the parked profiles' pending layouts.
+    /// The captured sidebar already owns travel. Lay out the two SwiftUI roots
+    /// to mount the arriving page without recursively reflowing every retained
+    /// native sidebar descendant in the same handoff transaction. Normal AppKit
+    /// display still services dirty descendants, as it does after native resizing.
     func layoutDisplayedProfile() {
         guard let current, let host = hosts[current] else { return }
-        host.content.layoutSubtreeIfNeeded()
-        host.palette.layoutSubtreeIfNeeded()
+        host.content.layout()
+        host.palette.layout()
     }
 
     private func show(_ store: TabStore) {
