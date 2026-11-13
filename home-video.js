@@ -15,7 +15,7 @@
   function update() {
     const playing = !video.paused;
     toggle.classList.toggle('is-playing', playing);
-    toggle.querySelector('span').textContent = playing ? 'Pause video' : 'Play video';
+    toggle.setAttribute('aria-label', playing ? 'Pause video' : 'Play video');
   }
   function sync() {
     if (failed) return;
