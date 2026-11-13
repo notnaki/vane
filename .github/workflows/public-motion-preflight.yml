@@ -1,11 +1,10 @@
-name: Public four-failure stage diagnostic
+name: Public Library takeover candidate
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
 permissions:
   contents: read
 env:
-  VANE_SHIPPING_STAGE_TRACE: '1'
   VANE_EXPECTED_TESTS: |
     VaneTests.LibrarySwipeTests/testReverseSwipeDuringOpeningLandingUsesReleasedIntent
     VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding

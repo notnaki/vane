@@ -143,9 +143,7 @@ private struct LibrarySwipe: ViewModifier {
     private var presentedProgress: CGFloat? {
         guard let view = presentationView, let layer = view.layer?.presentation(),
               let root = view.window?.contentView?.layer?.presentation() else { return nil }
-        let x = layer.convert(.zero, to: root).x
-        ShippingMotionStageTrace.mark("library.sample_origin", x, panelWidth, store?.librarySwipeProgress ?? .nan)
-        return min(1, max(0, 1 + x / max(1, panelWidth)))
+        return min(1, max(0, 1 + layer.convert(.zero, to: root).x / max(1, panelWidth)))
     }
     private var watchers: [any NSObjectProtocol] = []
     private enum Claim { case idle, undecided, mine, theirs }
@@ -442,7 +440,6 @@ private struct LibrarySwipe: ViewModifier {
         if event.phase.contains(.began) {
             // A new scroll is not necessarily navigation. Let an existing landing
             // continue until this gesture actually earns ownership.
-            ShippingMotionStageTrace.mark("library.began", store.librarySwipeProgress ?? .nan)
             reset(clearPresentation: false)
             if startsInNavigationArea(event, window: window, store: store) {
                 let bounds = window.contentView?.bounds ?? NSRect(origin: .zero, size: window.frame.size)
@@ -504,8 +501,19 @@ private struct LibrarySwipe: ViewModifier {
                 let endpoint: CGFloat = switch action { case .close: 1; case .open: 0 }
                 dragOrigin = store.librarySwipeProgress == nil ? endpoint
                     : (presentedProgress ?? store.librarySwipeProgress ?? endpoint)
-                ShippingMotionStageTrace.mark("library.claim_origin", dragOrigin ?? .nan, travel.x, panelWidth)
                 settlement = UUID()
+                // Interrupt the released curve at its visible origin before the
+                // first finger delta. Publishing only the delta leaves SwiftUI's
+                // old presentation animation alive on macOS 26.
+                if store.librarySwipeProgress != nil, let origin = dragOrigin {
+                    Motion.instant { store.librarySwipeProgress = origin }
+                    if let root = presentationView?.window?.contentView as? BrowserWindowHost {
+                        root.layoutDisplayedProfile()
+                    } else {
+                        presentationView?.window?.contentView?.layout()
+                    }
+                    CATransaction.flush()
+                }
                 if store.libraryGesture.pageWidth == nil, let window = store.window {
                     store.libraryGesture.pageLeadingInset = store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap
                     let origin = dragOrigin ?? endpoint
@@ -515,12 +523,10 @@ private struct LibrarySwipe: ViewModifier {
                     if width > 0 { store.libraryGesture.pageWidth = width }
                 }
             }
-            ShippingMotionStageTrace.mark("library.instant.begin", dragOrigin ?? .nan, travel.x, store.librarySwipeProgress ?? .nan)
             Motion.instant {
                 store.librarySwipeProgress = min(1, max(0, (dragOrigin ?? 0)
                     + travel.x / max(1, panelWidth)))
             }
-            ShippingMotionStageTrace.mark("library.instant.end", store.librarySwipeProgress ?? .nan)
         }
         return claim == .mine ? nil : event
     }
