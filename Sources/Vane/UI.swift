@@ -3469,7 +3469,7 @@ struct SidebarSpaceContent: View {
 }
 
 private struct SidebarSpacePresentation: View {
-    @SidebarObserved var store: TabStore
+    @SidebarRowObserved var store: TabStore
     /// The complete-strip boundary preserves this namespace. Grouped native row
     /// roots must also pass cross-root row/tile morph parity before production.
     @Namespace private var strip
@@ -3488,7 +3488,7 @@ struct SidebarSpaceSections: View {
 }
 
 private struct SidebarSpaceSectionContent: View {
-    @SidebarObserved var store: TabStore
+    @SidebarRowObserved var store: TabStore
     @State private var pinnedRowsCache = Feel02SidebarRowsCache()
     @Environment(\.nativeCachedSidebarBatches) private var groupedNativeRows
 
@@ -3530,7 +3530,7 @@ private struct SidebarSpaceSectionContent: View {
 /// which. What differs is behaviour: a pinned tab never auto-archives, and ⌘W leaves it
 /// exactly where it is.
 private struct PinnedTabs: View {
-    @SidebarObserved var store: TabStore
+    @SidebarRowObserved var store: TabStore
     let snapshot: Feel02SidebarRowsCache.Snapshot
 
     /// One observer of `LiveFolders` for the whole section, rather than one per row: the
@@ -3598,7 +3598,7 @@ private struct PinnedSection: View {
 /// which is exactly how Arc says it. Pinned draws these and so does Today; `shape` is which
 /// of the two, and the only thing that differs between them.
 private struct ShapeRow: View {
-    @SidebarObserved var store: TabStore
+    @SidebarRowObserved var store: TabStore
     let row: Pins.Visible
     let tab: Tab?
     /// Its place among the section's rows, and how many there are — see `TabDrop.row`.
@@ -4342,7 +4342,7 @@ private struct TodayEndDropArea: View {
 }
 
 private struct OpenTabs: View {
-    @SidebarObserved var store: TabStore
+    @SidebarRowObserved var store: TabStore
     @State private var rowsCache = Feel02SidebarRowsCache()
 
     var body: some View {
@@ -4371,7 +4371,7 @@ private struct StripRow: View {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
-    @SidebarObserved var store: TabStore
+    @SidebarRowObserved var store: TabStore
     let tab: Tab
     /// Its place in the section it is drawn in, and how many rows that section draws — see
     /// `TabDrop.row`.
@@ -4459,7 +4459,7 @@ private struct StripRow: View {
 /// last-but-one pane hands the row back to the tab it was. Upgrade path: give `Split` a title
 /// and a `TabKind` of its own and it becomes a fourth kind of strip item.
 private struct SplitRow: View {
-    @SidebarObserved var store: TabStore
+    @SidebarRowObserved var store: TabStore
     let split: Split
     /// The pane whose place in the strip this row stands in — what a drag of the row moves
     /// and what a drop beside it lands next to.
@@ -4586,7 +4586,7 @@ struct LivePRTitle: View {
 }
 
 struct SidebarTabSurface: View {
-    @SidebarObserved var store: TabStore
+    @SidebarRowObserved var store: TabStore
     let tab: Tab
     var held = false
     @Binding var returnHovering: Bool
@@ -4696,7 +4696,7 @@ struct SidebarTabPresentation: View {
 }
 
 private struct TabRow: View {
-    @SidebarObserved var store: TabStore
+    @SidebarRowObserved var store: TabStore
     @ObservedObject var tab: Tab
     /// Its place in the strip, so a drag can say where it started — see `Landing`.
     var spot: Landing.Spot?

@@ -13,7 +13,7 @@ struct SidebarSectionRows<Content: View>: View {
     @Environment(\.sidebarSnapshotReceipt) private var snapshotReceipt
 #endif
     @ObservedObject private var dragging = Dragging.shared
-    @SidebarObserved var store: TabStore
+    @SidebarRowObserved var store: TabStore
     let snapshot: Feel02SidebarRowsCache.Snapshot
     var readinessSection: String? = nil
     var collapsed = false

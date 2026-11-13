@@ -17,6 +17,16 @@ private struct ObservedSidebarProbe: View {
     }
 }
 
+private struct ObservedSidebarRowProbe: View {
+    @SidebarRowObserved var store: TabStore
+    let draws: SidebarDrawCount
+
+    var body: some View {
+        draws.value += 1
+        return Text(store.renamingTab?.uuidString ?? "No rename")
+    }
+}
+
 @MainActor final class SidebarObservationTests: XCTestCase {
     private func fixture() -> TabStore {
         TestEnvironment.prepare()
@@ -132,4 +142,60 @@ private struct ObservedSidebarProbe: View {
         host.layoutSubtreeIfNeeded()
         try await compatibilityWait { draws.value > before }
     }
+    func testRowContentSkipsVisibilityWhileOwnerAndCapturePublishSynchronously() {
+        let store = fixture()
+        var rows = 0, owners = 0, captures = 0
+        let row = store.sidebarObservation.rows.objectWillChange.sink { rows += 1 }
+        let owner = store.sidebarObservation.objectWillChange.sink { owners += 1 }
+        let capture = store.sidebarSnapshotChanges.sink { captures += 1 }
+        defer { row.cancel(); owner.cancel(); capture.cancel() }
+        store.profileVisible = false
+        XCTAssertEqual(owners, 1, "Owner and form visibility must publish on the changing turn")
+        XCTAssertEqual(captures, 1, "Native capture revocation remains synchronous")
+        XCTAssertEqual(rows, 0, "Parking changes ownership, not unchanged row content")
+        store.sidebarObservation.withCompletedChanges { store.profileVisible = true }
+        XCTAssertEqual(owners, 2)
+        XCTAssertEqual(captures, 2)
+        XCTAssertEqual(rows, 0, "A visibility-only batch must not invalidate row graphs")
+        store.sidebarPreviewInvalidated.send()
+        XCTAssertEqual(rows, 1, "Protection invalidation must still reach rows synchronously")
+    }
+
+    func testRowContentSharesCompletedChangeBatching() {
+        let store = fixture()
+        var states: [UUID?] = []
+        let observation = store.sidebarObservation.rows.objectWillChange.sink {
+            states.append(store.renamingTab)
+        }
+        defer { observation.cancel() }
+        let final = UUID()
+        store.sidebarObservation.withCompletedChanges {
+            store.renamingTab = UUID()
+            store.sidebarObservation.withCompletedChanges {
+                store.renamingTab = final
+                store.sidebarPreviewInvalidated.send()
+            }
+            XCTAssertTrue(states.isEmpty, "Do not expose an intermediate row rendering state")
+        }
+        XCTAssertEqual(states, [final], "Rows share the completed-state publication boundary")
+    }
+
+    func testMountedRowSkipsVisibilityButStillRendersContentChanges() async throws {
+        let store = fixture()
+        let draws = SidebarDrawCount()
+        let host = NSHostingView(rootView: ObservedSidebarRowProbe(store: store, draws: draws))
+        host.frame = NSRect(x: 0, y: 0, width: 250, height: 40)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        let before = draws.value
+        XCTAssertGreaterThan(before, 0)
+        store.profileVisible = false
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(draws.value, before, "Ownership changes must not redraw unchanged row content")
+        store.renamingTab = UUID()
+        host.layoutSubtreeIfNeeded()
+        try await compatibilityWait { draws.value > before }
+    }
+
 }

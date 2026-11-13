@@ -37,7 +37,7 @@ import XCTest
         TestEnvironment.prepare()
         let directory = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        for id in ["previews", "profiles", "search", "links", "shortcuts"] {
+        for id in ["previews", "profiles", "search", "links", "shortcuts", "icloud"] {
             let tab = try XCTUnwrap(SettingsTab.all.first { $0.id == id })
             for dark in [false, true] {
                 let host = NSHostingView(rootView: tab.pane(SettingsSelection())
@@ -51,6 +51,40 @@ import XCTest
                 host.cacheDisplay(in: host.bounds, to: bitmap)
                 try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
                     .write(to: directory.appendingPathComponent("\(id)-\(dark ? "dark" : "light").png"))
+            }
+        }
+    }
+
+    func testSettingsWindowSnapshotsWhenRequested() async throws {
+        guard let path = ProcessInfo.processInfo.environment["VANE_SETTINGS_WINDOW_SNAPSHOTS"] else { return }
+        TestEnvironment.prepare()
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        do {
+            try await captureSettingsWindows(at: URL(fileURLWithPath: path))
+        } catch {
+            try await loop.close()
+            throw error
+        }
+        try await loop.close()
+    }
+
+    private func captureSettingsWindows(at directory: URL) async throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for id in ["general", "icloud"] {
+            SettingsWindow.show(tab: id)
+            let window = try XCTUnwrap(NSApp.windows.first { SettingsWindow.holds($0) })
+            defer { window.close() }
+            window.setContentSize(NSSize(width: 760, height: 650))
+            for dark in [false, true] {
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                try await compatibilityWait { window.isVisible && window.contentView?.window === window }
+                let frame = try XCTUnwrap(window.contentView?.superview)
+                frame.layoutSubtreeIfNeeded()
+                frame.displayIfNeeded()
+                let bitmap = try XCTUnwrap(frame.bitmapImageRepForCachingDisplay(in: frame.bounds))
+                frame.cacheDisplay(in: frame.bounds, to: bitmap)
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                    .write(to: directory.appendingPathComponent("\(id)-window-\(dark ? "dark" : "light").png"))
             }
         }
     }

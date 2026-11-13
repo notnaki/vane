@@ -1,16 +1,316 @@
-name: Public owned-process stack diagnostic
+name: Public row-render related qualification
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
 permissions:
   contents: read
-  actions: read
 env:
+  VANE_UI_PERFORMANCE: '1'
   VANE_EXPECTED_TESTS: |
+    VaneTests.BoundedSidebarMountingTests/testBufferedSidebarBoundsControlsWithoutChangingExtentOrRowIdentity
+    VaneTests.BoundedSidebarMountingTests/testBufferedSidebarKeepsActualRenameEditorAcrossViewportEviction
+    VaneTests.BoundedSidebarMountingTests/testBufferedSidebarKeepsDraggedSourceWithoutMountingInterveningRows
+    VaneTests.BoundedSidebarMountingTests/testBufferedSidebarKeepsNonLeadPaneRenameAcrossViewportEviction
+    VaneTests.BoundedSidebarMountingTests/testBufferedSidebarKeepsRequestedNonLeadEditorBeforeFocusArrives
+    VaneTests.BoundedSidebarMountingTests/testBufferedWindowChangesInBatchesRatherThanPerPixel
+    VaneTests.BoundedSidebarMountingTests/testCapturedPolicyCountsAllFavoritesAndProtectedCollapsedMembership
+    VaneTests.BoundedSidebarMountingTests/testColdSavedEmptyTodayFolderMatchesRestored128RowBoundary
+    VaneTests.BoundedSidebarMountingTests/testCollapsedAndLockedLargeOutlineKeepsItsLazyFolderIdentity
+    VaneTests.BoundedSidebarMountingTests/testMalformedSmallShapeKeepsLegacyLazyFallback
+    VaneTests.BoundedSidebarMountingTests/testMediumDisclosureRemovesExactChildExtentWithoutChangingSurvivingIDs
+    VaneTests.BoundedSidebarMountingTests/testMediumRealRenameDraftSurvivesNativeScrollAndCommits
+    VaneTests.BoundedSidebarMountingTests/testMediumSidebarMountsVisibleControlsAndPreservesNativeOffset
+    VaneTests.BoundedSidebarMountingTests/testNativeOwnershipMembershipSurvivesProtectedCollapseButForgetsDeletion
+    VaneTests.BoundedSidebarMountingTests/testNewRenameFinishesPriorDraftBeforeLateDisappearance
+    VaneTests.BoundedSidebarMountingTests/testSameHost127To129To127PreservesActiveRenameDraft
+    VaneTests.BoundedSidebarMountingTests/testShrinkAdmissionWaitsForCurrentRenderedStructureInSameHost
+    VaneTests.BoundedSidebarMountingTests/testStructuralBoundaryMounts127AndKeeps129Virtualized
+    VaneTests.EdgeSidebarScrollContinuityTests/testClickingCurrentSpaceAtCreateEdgeAnimatesTheLiveViewportHome
+    VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCancellationAnimatesTheLiveViewportHome
+    VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCommitKeepsScrolledViewportUntilFormTakesOver
+    VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeNeverShowsAnOutgoingViewportAtTheTop
+    VaneTests.EdgeSidebarScrollContinuityTests/testLibraryDiagonalStartupAndMomentumKeepTheClaimedViewportSteady
+    VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgeCommitAndCloseRestoreTheScrolledViewport
+    VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgePreservesScrolledLiveViewportThroughClaimReversalAndCancel
+    VaneTests.EdgeSidebarScrollContinuityTests/testLibraryWithAnActivePageKeepsTheScrolledViewportAndPageWidthSteady
+    VaneTests.LibrarySwipeTests/testBatterySaverUsesImmediateDestinationWithoutInteractivePreview
+    VaneTests.LibrarySwipeTests/testCancelledReverseDuringOpeningStillReachesReleasedDestination
+    VaneTests.LibrarySwipeTests/testClickOpeningPresentsIntermediatePanelPositions
+    VaneTests.LibrarySwipeTests/testCloseCommandDuringOpeningLandingDoesNotArchiveThePage
+    VaneTests.LibrarySwipeTests/testClosedLibraryMouseWheelAndOtherWindowKeepTheirEvents
+    VaneTests.LibrarySwipeTests/testClosingMountedLibrarySearchReturnsKeyboardToPage
+    VaneTests.LibrarySwipeTests/testEscapeDuringOpeningLandingClosesLibrary
+    VaneTests.LibrarySwipeTests/testExplicitCloseInBrowserWindowHostSupersedesOpeningLanding
+    VaneTests.LibrarySwipeTests/testExplicitCloseSupersedesOpeningLanding
+    VaneTests.LibrarySwipeTests/testFindDuringOpeningLandingTargetsLibrarySearch
+    VaneTests.LibrarySwipeTests/testFindFocusAcquiredDuringClosingSurvivesLanding
+    VaneTests.LibrarySwipeTests/testFingerUpdatesDoNotInvalidateBrowserState
+    VaneTests.LibrarySwipeTests/testFirstSpaceOpeningWinsRegardlessOfMonitorInstallationOrder
+    VaneTests.LibrarySwipeTests/testFloatingSidebarLibraryLandingKeepsInnerWebWidthFixed
+    VaneTests.LibrarySwipeTests/testFloatingSidebarOpensLibraryButPageAndOuterGapsKeepTheirSwipes
+    VaneTests.LibrarySwipeTests/testFullyDraggedLibraryActivatesBeforeClearingPreview
+    VaneTests.LibrarySwipeTests/testHiddenSidebarDoesNotClaimLibraryOpeningSwipes
+    VaneTests.LibrarySwipeTests/testImmediateLibraryReleaseStillShowsIntermediatePositions
+    VaneTests.LibrarySwipeTests/testInterruptedGestureAndRemovedMonitorDoNotDismissLibrary
+    VaneTests.LibrarySwipeTests/testInterruptedSwipeClearsPresentationWithoutChangingDestination
+    VaneTests.LibrarySwipeTests/testLeftSwipeClosesLibraryWithinPanelWithSidebarHidden
+    VaneTests.LibrarySwipeTests/testLibraryClosingUsesEachSectionsPanelBoundary
+    VaneTests.LibrarySwipeTests/testLibraryDragMovesThePageWithoutResizingWebKitForEachSample
+    VaneTests.LibrarySwipeTests/testLibraryIsLaidOutBeforeFirstDragSample
+    VaneTests.LibrarySwipeTests/testLibraryReturnObservationRejectsAnEndpointJump
+    VaneTests.LibrarySwipeTests/testLibraryReturnObservationRejectsSubpixelRounding
+    VaneTests.LibrarySwipeTests/testMomentumCannotDismissReopenedLibraryOrReachThePage
+    VaneTests.LibrarySwipeTests/testNextSpaceSwipeClosesWithEitherNaturalScrollingPreference
+    VaneTests.LibrarySwipeTests/testOpeningAndClosingTrackFingersBeforeCommitting
+    VaneTests.LibrarySwipeTests/testOpeningCommandBarSupersedesPendingLibraryOpening
+    VaneTests.LibrarySwipeTests/testOpeningEaselReleasesDepartingLibrarySearchFocus
+    VaneTests.LibrarySwipeTests/testOpeningGestureMomentumCannotCloseLibraryAgain
+    VaneTests.LibrarySwipeTests/testOpeningLibraryReplacesAnOpenCommandPalette
+    VaneTests.LibrarySwipeTests/testOriginalLibraryAxisLockAcceptsHorizontalTravelAfterStartupNoise
+    VaneTests.LibrarySwipeTests/testOriginalShortLibraryDragsReturnAtAnySpeed
+    VaneTests.LibrarySwipeTests/testPageSwipesPassThroughWithLibraryOpenOrClosedRegardlessOfMonitorOrder
+    VaneTests.LibrarySwipeTests/testPopulatedArchiveSwipeTiming
+    VaneTests.LibrarySwipeTests/testPreviousSpaceSwipeOpensWithEitherNaturalScrollingPreference
+    VaneTests.LibrarySwipeTests/testProfileDepartureSupersedesPendingLibraryOpening
+    VaneTests.LibrarySwipeTests/testQuickOpeningReleaseContinuesFromTheLastFingerPosition
+    VaneTests.LibrarySwipeTests/testReducedMotionFinishesReleasedLibraryDestination
+    VaneTests.LibrarySwipeTests/testReducingMotionDuringDragClearsPreviewButKeepsGestureOwnership
+    VaneTests.LibrarySwipeTests/testRejectedOpeningGesturesKeepFirstSpaceAndLibraryClosed
+    VaneTests.LibrarySwipeTests/testRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose
+    VaneTests.LibrarySwipeTests/testReopeningMountedDownloadAndMediaPanesRefreshesMissingFiles
+    VaneTests.LibrarySwipeTests/testReverseShortCancelledAndReturnedSwipesKeepLibraryOpen
+    VaneTests.LibrarySwipeTests/testReverseSwipeDuringOpeningLandingUsesReleasedIntent
+    VaneTests.LibrarySwipeTests/testRightSwipeOnLaterSpaceDoesNotOpenLibraryOrConsumePageScrolls
+    VaneTests.LibrarySwipeTests/testRightSwipeOnLaterSpaceStillSelectsPreviousSpaceInSidebar
+    VaneTests.LibrarySwipeTests/testRightSwipeOpensLastLibrarySectionFromFirstSpaceSidebar
+    VaneTests.LibrarySwipeTests/testScrollingSpaceFooterKeepsWholeGestureAwayFromSidebarNavigation
+    VaneTests.LibrarySwipeTests/testSmallOpeningSamplesAreNotCountedTwiceByBothMonitors
+    VaneTests.LibrarySwipeTests/testSpaceChangeOrCreationDuringOpeningGestureCancelsIt
+    VaneTests.LibrarySwipeTests/testSpaceChangeSupersedesPendingLibraryOpening
+    VaneTests.LibrarySwipeTests/testSubpixelHorizontalWobbleReleasesLibraryToVerticalScrolling
+    VaneTests.LibrarySwipeTests/testToggleDuringOpeningLandingClosesTheReleasedDestination
+    VaneTests.LibrarySwipeTests/testVerticalScrollLocksOutLaterHorizontalDrift
+    VaneTests.LiveSidebarResponsivenessTests/testLoadedPageSurvivesDisclosureSearchAndTabSelection
+    VaneTests.NativeContentBoundaryTests/testAccessibilityBridgeForwardsRealMountedControlAndHidesWithAnchor
+    VaneTests.NativeContentBoundaryTests/testAnchorReparentResizeVisibilityAndDismantleFollowNativeLifetime
+    VaneTests.NativeContentBoundaryTests/testChildAnchorPreferenceAndConsumerResolveInsideTheSameGraph
+    VaneTests.NativeContentBoundaryTests/testDismantleReleasesContentRatherThanRetainingAHiddenHostingTree
+    VaneTests.NativeContentBoundaryTests/testEnvironmentObjectThemeEnabledMotionNamespaceAndUpdatesReachChild
+    VaneTests.NativeContentBoundaryTests/testParentResponderQueryDoesNotWalkSiblingHostingRoot
+    VaneTests.NativeSidebarStableOwnershipTests/testActualEditorAndHostSurviveEarlierDeletionInsertionAndCrossChunkReorder
+    VaneTests.NativeSidebarStableOwnershipTests/testActualEditorOwnerStaysAttachedFarAwayButDeletedControlsLeaveImmediately
+    VaneTests.NativeSidebarStableOwnershipTests/testCollapsePreservesOriginalOwnerShellAndDoesNotRetainHiddenControls
+    VaneTests.NativeSidebarStableOwnershipTests/testFolderDefinitionRevokesAllProfileWindowsBeforeItPublishes
+    VaneTests.NativeSidebarStableOwnershipTests/testHiddenOwnerCannotRefillCacheThroughLaterNativeConfigurations
+    VaneTests.NativeSidebarStableOwnershipTests/testInterleavedOwnerPassesGapHitsToAuthoritativeNativeRow
+    VaneTests.NativeSidebarStableOwnershipTests/testMemoryPressurePreventsRefillUntilNormalAndAFreshVisit
+    VaneTests.NativeSidebarStableOwnershipTests/testOldVisitCannotAcquireOrReleaseCurrentRowInteraction
+    VaneTests.NativeSidebarStableOwnershipTests/testOrdinaryPreviewInvalidationPreservesWarmControlReuse
+    VaneTests.NativeSidebarStableOwnershipTests/testReplacingSupplyingStoreCannotRestoreItsPredecessorsGraphs
+    VaneTests.NativeSidebarStableOwnershipTests/testWarmSpaceReturnReusesNativeControlsAndAppliesCurrentMembership
+    VaneTests.OffscreenNativeSidebarReadinessTests/testShortNonemptySectionAboveViewportCompletesWithoutVisibleRowLayouts
+    VaneTests.PageResizeStyleTests/testAttachingALoadedPageWarmsWithoutChangingTheDocument
+    VaneTests.PageResizeStyleTests/testAuthorReplacingAdoptedSheetsKeepsItsNewSheetAndOneBrowserSheet
+    VaneTests.PageResizeStyleTests/testCancellationCleansTheHintAndLatePaintCannotRestoreIt
+    VaneTests.PageResizeStyleTests/testCoalescedPreparationsKeepBrowserStorageBounded
+    VaneTests.PageResizeStyleTests/testFinishRemovesOnlyTheBrowserPropertiesAndReusesOneStylesheet
+    VaneTests.PageResizeStyleTests/testHiddenOrPreparedHostResizeKeepsHintsRetired
+    VaneTests.PageResizeStyleTests/testHintPreservesAuthorStylesAttributesAndEveryElementsGeometry
+    VaneTests.PageResizeStyleTests/testHintTargetsSubtractPublicSafeAreaInsetsBeforePageZoom
+    VaneTests.PageResizeStyleTests/testHostResizeReactivatesHintsAfterWindowDragFinishes
+    VaneTests.PageResizeStyleTests/testLightweightPagesDoNotGetAnExtraStylesheet
+    VaneTests.PageResizeStyleTests/testMotionAdmissionWaitsForEagerRootsAndActualStylesheetLoads
+    VaneTests.PageResizeStyleTests/testReleaseDuringQueuedPaintCleansTheFinalPagesHint
+    VaneTests.PageResizeStyleTests/testViewportHintsFollowSidebarDragWithoutRebuildingTheStylesheet
+    VaneTests.PageResizeStyleTests/testViewportRulesFollowWidthHeightAndUserZoomWithoutChangingLayout
+    VaneTests.SidebarHousekeepingTests/testArchiveSelectionKeepsPinnedCloseRulesAndBatchesToday
+    VaneTests.SidebarHousekeepingTests/testAutoArchiveBatchesSharedPagesBeforeChoosingPeerSplitSurvivor
+    VaneTests.SidebarHousekeepingTests/testAutoArchiveBatchesVisibleAndStashedPagesWithoutLosingOwnershipOrProtection
+    VaneTests.SidebarHousekeepingTests/testBulkArchiveKeepsTheSurvivingPinnedSplitPane
+    VaneTests.SidebarHousekeepingTests/testBulkArchivePreservesCallerOrderInsteadOfTemporaryStripOrder
+    VaneTests.SidebarHousekeepingTests/testBulkArchivePreservesReopenOrderAndLastDuplicateURL
+    VaneTests.SidebarHousekeepingTests/testBulkArchiveSelectsOnlyTheFinalSurvivingNeighbour
+    VaneTests.SidebarHousekeepingTests/testClearFinishesSynchronouslyWithOneCompletedSidebarAndArchiveUpdate
+    VaneTests.SidebarHousekeepingTests/testClearKeepsPinsFavouritesAndLockedTodayTabs
+    VaneTests.SidebarHousekeepingTests/testClearPrivateTabsLeavesNoArchiveOrReopenEntry
+    VaneTests.SidebarHousekeepingTests/testClearRemovesSharedReferencesWithoutWakingDoomedNeighbours
+    VaneTests.SidebarHousekeepingTests/testDeletedSpaceArchivesRestorableTodayAndPinnedURLsInOnePublication
+    VaneTests.SidebarHousekeepingTests/testSynchronizingUnchangedShapesDoesNotInvalidateSidebar
+    VaneTests.SidebarHousekeepingTests/testTidyAndUndoPublishOnlyFinishedShapeAndSidebar
+    VaneTests.SidebarNativeReadinessTests/testActualNativePopulationSchedulerHoldsCoverUntilVisibleRowLayoutsCommit
+    VaneTests.SidebarNativeReadinessTests/testAttachedPredecessorCannotAcknowledgeReactivatedScopeBeforeReplacementConfigure
+    VaneTests.SidebarNativeReadinessTests/testCancelledReadinessSubscriptionCannotRetireReplacementCover
+    VaneTests.SidebarNativeReadinessTests/testChangedShellOwnerRotatesIdenticalMembershipAndRejectsOldAuthority
+    VaneTests.SidebarNativeReadinessTests/testConfiguredBeforeAttachmentEmptyReplacementClaimsSectionWithoutPassiveStealing
+    VaneTests.SidebarNativeReadinessTests/testDelayedSectionsRequireEveryCurrentVisiblePopulation
+    VaneTests.SidebarNativeReadinessTests/testDetachAndRapidReverseRejectLateCallbacksEvenForReusedGeneration
+    VaneTests.SidebarNativeReadinessTests/testDetachedEmptyNativeSectionCannotAcknowledgeReactivatedScope
+    VaneTests.SidebarNativeReadinessTests/testEmptyAndCreateSpaceStillRequireExplicitCompletion
+    VaneTests.SidebarNativeReadinessTests/testExpectedSectionEpochRejectsOldMembershipWithoutInvalidatingUnchangedPeer
+    VaneTests.SidebarNativeReadinessTests/testExplicitExpectedSectionsBlockPartialRegistrationAndReplacementGaps
+    VaneTests.SidebarNativeReadinessTests/testIdentityRestAcknowledgementCannotRetireCoverBeforeNativeRowsCommit
+    VaneTests.SidebarNativeReadinessTests/testLastShellOwnerWithdrawalRejectsLateCompletionAndDetach
+    VaneTests.SidebarNativeReadinessTests/testLazyActualCommittedFramesCoverViewportDespiteTrailingGapEstimate
+    VaneTests.SidebarNativeReadinessTests/testLazyPreparedPreviewRechecksPopulationAfterFarScrollAtClaim
+    VaneTests.SidebarNativeReadinessTests/testLazyViewportRejectsMissingFirstMiddleAndLastActualRow
+    VaneTests.SidebarNativeReadinessTests/testLazyViewportRejectsStaleWindowOrBoundsCommitAndIncorrectFrame
+    VaneTests.SidebarNativeReadinessTests/testNativeLayoutRefreshesNonNilTicketWithdrawnAfterConfigure
+    VaneTests.SidebarNativeReadinessTests/testNativeReadinessBeforeIdentityAckRetiresInTheAcknowledgingTransaction
+    VaneTests.SidebarNativeReadinessTests/testNewBodyDeclarationSurvivesSameScopeShellReplacementGap
+    VaneTests.SidebarNativeReadinessTests/testNewOwnerConfiguredBeforeFinalWithdrawalRefreshesItsNonNilNativeTicket
+    VaneTests.SidebarNativeReadinessTests/testNewStructureAndGeometrySynchronouslyRevokeCompletedPopulation
+    VaneTests.SidebarNativeReadinessTests/testOldAnchorRefreshCannotOverwriteNewBodyOwnerOrAcquireItsLease
+    VaneTests.SidebarNativeReadinessTests/testOwnWrongMembershipRevokesPreviouslyReadySemanticSection
+    VaneTests.SidebarNativeReadinessTests/testPassiveOldSectionCannotDisplaceReplacementOrRegisterWrongMembership
+    VaneTests.SidebarNativeReadinessTests/testPreviewAndColdCachedProfilePopulationsAreIndependent
+    VaneTests.SidebarNativeReadinessTests/testReleasingOldShellDoesNotWithdrawOverlappingReplacementOwner
+    VaneTests.SidebarNativeReadinessTests/testReplacementOwnerRefreshesNonNilTicketInvalidatedByFinalWithdrawal
+    VaneTests.SidebarNativeReadinessTests/testUnlaidOutPreparedPreviewIsNotClaimable
+    VaneTests.SidebarObservationTests/testLiveOnlyPresentationChangesDoNotInvalidateCapturedSidebars
+    VaneTests.SidebarObservationTests/testMountedRowSkipsVisibilityButStillRendersContentChanges
+    VaneTests.SidebarObservationTests/testMountedSidebarSkipsSearchUpdatesButRendersRenameChanges
+    VaneTests.SidebarObservationTests/testOutlineSelectionRenameAndProtectionStillInvalidateRowsSynchronously
+    VaneTests.SidebarObservationTests/testRowContentSharesCompletedChangeBatching
+    VaneTests.SidebarObservationTests/testRowContentSkipsVisibilityWhileOwnerAndCapturePublishSynchronously
+    VaneTests.SidebarObservationTests/testSearchAndChromeChangesDoNotInvalidateEverySidebarRow
+    VaneTests.SidebarObservationTests/testSnapshotChangesRevokeBeforeOutlineAssignmentAndIncludeProtection
+    VaneTests.SidebarRowRetentionTests/testSmallSidebarKeepsControlsThroughFolderToggleAndScroll
+    VaneTests.SpaceColourTransitionTests/testLandingAndCancellationUseTheExactRestingSurface
+    VaneTests.SpaceColourTransitionTests/testRenderedColourArrivesWithoutASecondLandingChange
+    VaneTests.SpaceColourTransitionTests/testRenderedGradientAndOpacityArriveWithoutASecondLandingChange
+    VaneTests.SpaceColourTransitionTests/testSwipeEndpointMatchesDestinationIntensity
+    VaneTests.SpaceColourTransitionTests/testTwoStopGradientKeepsItsMidpointAndVectorArithmeticIsStable
+    VaneTests.SpaceCreationSwipeRenderingTests/testAccidentalPullReturnsAndDeliberatePullShowsAUsableForm
+    VaneTests.SpaceCreationSwipeRenderingTests/testDelayedSamplingStillObservesReleaseThroughTheUsableForm
+    VaneTests.SpaceCreationSwipeRenderingTests/testPacedRecordedPullOpensCreationAfterSwipingAcrossThreeProfiles
+    VaneTests.SpaceCreationSwipeRenderingTests/testRecordedPullKeepsTheExistingProfilesFooterMarkers
+    VaneTests.SpaceCreationSwipeRenderingTests/testRecordedPullReadmitsItsWindowAfterPreparation
+    VaneTests.SpaceNativeRenderingTests/testAbortedFingerTrackingRemovesNativeSurface
+    VaneTests.SpaceNativeRenderingTests/testActualMetadataContentAndFolderProtectionStillRevokePreparedCaptures
+    VaneTests.SpaceNativeRenderingTests/testAdjacentButtonSelectionReusesPreparedPopulatedNativeSurfaceWithoutChangingTiming
+    VaneTests.SpaceNativeRenderingTests/testAnotherWindowLosingFocusDoesNotCancelThisWindowsSpaceGesture
+    VaneTests.SpaceNativeRenderingTests/testArmedNativeLandingKeepsReleaseVelocityAcrossPagePreparation
+    VaneTests.SpaceNativeRenderingTests/testAttachedArrivalSharesTheSourceWashClockWithoutPointUpdates
+    VaneTests.SpaceNativeRenderingTests/testBatterySaverFooterFollowsFractionalNativeSpaceTravel
+    VaneTests.SpaceNativeRenderingTests/testButtonSelectionRejectsCaptureFromBeforeANewPreviewSupplier
+    VaneTests.SpaceNativeRenderingTests/testCachedArrivingWashIsPrimedBeforeItsNextSwiftUIUpdate
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileReturnInstallsInputBeforeTheNextRender
+    VaneTests.SpaceNativeRenderingTests/testCanceledNativeDragUsesTheReturnSpring
+    VaneTests.SpaceNativeRenderingTests/testCancelledSwipeRepreparesBothNeighbours
+    VaneTests.SpaceNativeRenderingTests/testCancelledSwipeWhilePreparationPendingRepreparesBothNeighbours
+    VaneTests.SpaceNativeRenderingTests/testCommittedNativeLandingRetainsFingerVelocity
+    VaneTests.SpaceNativeRenderingTests/testCompactWindowReusesPreparedSurfaceAtItsFittedSidebarWidth
+    VaneTests.SpaceNativeRenderingTests/testCompletedCoverKeepsLiveRowsHiddenUntilPopulationIsReady
+    VaneTests.SpaceNativeRenderingTests/testCreateFormDefersReplacementPreparationUntilDismissed
+    VaneTests.SpaceNativeRenderingTests/testCrossProfileButtonSelectionReusesPreparedNativeSurface
+    VaneTests.SpaceNativeRenderingTests/testDestinationVisibilityNotificationCannotAbortTheSourceLanding
+    VaneTests.SpaceNativeRenderingTests/testDisappearingSourceDoesNotUncoverAVisibleArrivingSidebarBeforeAcknowledgement
+    VaneTests.SpaceNativeRenderingTests/testDockedRevealDefersAdjacentSurfacePreparationUntilAfterTravel
+    VaneTests.SpaceNativeRenderingTests/testDuplicateSectionsViewportsRejectPreparedReuse
+    VaneTests.SpaceNativeRenderingTests/testFingerTrackingCanCrossZeroAndReverseToAnotherNeighbour
+    VaneTests.SpaceNativeRenderingTests/testFingerTrackingReusesNativeSurfaceThroughCommit
+    VaneTests.SpaceNativeRenderingTests/testFirstNativeDragReusesSurfacesPreparedWhileIdle
+    VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testFloatingRevealDefersAdjacentSurfacePreparationUntilAfterTravel
+    VaneTests.SpaceNativeRenderingTests/testFolderDisclosureDefersHiddenSpacePreparationAndDisposal
+    VaneTests.SpaceNativeRenderingTests/testFreshSurfaceReachesCompositorBeforeCoveringLiveSidebar
+    VaneTests.SpaceNativeRenderingTests/testHiddenCrossProfileLandingTracksAndRetiresTheActualArrivingSidebar
+    VaneTests.SpaceNativeRenderingTests/testHiddenProfileSynchronouslyDropsWarmOwnersDuringLanding
+    VaneTests.SpaceNativeRenderingTests/testHiddenSidebarDoesNotPrepareNativeSurfaces
+    VaneTests.SpaceNativeRenderingTests/testHiddenSidebarStillRevokesStructurallyInvalidPreparedSurfaces
+    VaneTests.SpaceNativeRenderingTests/testHidingSidebarRetiresCommittedNativeLandingWithoutCoveringThePage
+    VaneTests.SpaceNativeRenderingTests/testHidingTheRetainedSidebarEndsAnUncommittedSwipe
+    VaneTests.SpaceNativeRenderingTests/testIdleSurfacesRefreshWithSidebarContentAndLeaveWithMonitor
+    VaneTests.SpaceNativeRenderingTests/testInactiveWarmOwnerBudgetAppliesAcrossPinnedAndTodaySections
+    VaneTests.SpaceNativeRenderingTests/testLandingDoesNotRebuildTheMenuAfterSelectionHasUpdatedIt
+    VaneTests.SpaceNativeRenderingTests/testLandingKeepsOneContinuousNativeProgressSource
+    VaneTests.SpaceNativeRenderingTests/testMemoryPressureDropsWarmOwnersWithTabSuspensionDisabled
+    VaneTests.SpaceNativeRenderingTests/testMissingSectionsViewportRejectsPreparedReuse
+    VaneTests.SpaceNativeRenderingTests/testMouseWheelScrollingAlsoPostponesHiddenPreparation
+    VaneTests.SpaceNativeRenderingTests/testNativeCoverWaitsForTheLiveSidebarAcknowledgement
+    VaneTests.SpaceNativeRenderingTests/testNativeFingerSamplePublishesOneCoherentGestureChange
+    VaneTests.SpaceNativeRenderingTests/testNativeLandingDiscardsVelocityAfterAnEventTimeHold
+    VaneTests.SpaceNativeRenderingTests/testNativeLandingKeepsEventVelocityAcrossDelayedDelivery
+    VaneTests.SpaceNativeRenderingTests/testNativeLandingRetainsTheLiveScrollShellAndResetsItsOffset
+    VaneTests.SpaceNativeRenderingTests/testNativeLandingReusesItsCoverBeforeTheLiveAnchorMounts
+    VaneTests.SpaceNativeRenderingTests/testNativeSpaceClickBlendsBackgroundDuringSidebarTravel
+    VaneTests.SpaceNativeRenderingTests/testNativeSurfaceCoversTheLiveSidebarUpdateTurn
+    VaneTests.SpaceNativeRenderingTests/testNativeSwipePreparationKeepsOneLiveSidebarUntilItsOverlayIsMounted
+    VaneTests.SpaceNativeRenderingTests/testNativeWashCancellationCopiesSpringAndCanRestoreOriginImmediately
+    VaneTests.SpaceNativeRenderingTests/testNativeWashUsesLandingCurveAndReleasesOwnershipForReducedMotion
+    VaneTests.SpaceNativeRenderingTests/testNewPreviewSupplyingStoreCannotReuseAnOlderPreparedDestination
+    VaneTests.SpaceNativeRenderingTests/testOldNativeWashCompletionCannotCancelReplacementAnimation
+    VaneTests.SpaceNativeRenderingTests/testPageInputExtendsPendingPreparationWithoutDiscardingWarmSurfaces
+    VaneTests.SpaceNativeRenderingTests/testPageScrollingKeepsThePreparedSidebarReady
+    VaneTests.SpaceNativeRenderingTests/testPeekingSidebarPreparesAndReusesItsNativeSurface
+    VaneTests.SpaceNativeRenderingTests/testPopulatedRapidSwipeInputTiming
+    VaneTests.SpaceNativeRenderingTests/testPreparedDestinationInvalidatesBeforeAnotherProfileMutatesItsTabs
+    VaneTests.SpaceNativeRenderingTests/testPreparedProfileKeepsWindowAuthorityWithSourceUntilHop
+    VaneTests.SpaceNativeRenderingTests/testPreparedSurfaceStaysAttachedToCompositorAtButtonSelection
+    VaneTests.SpaceNativeRenderingTests/testPreparedSurfaceStaysAttachedToCompositorAtFirstDrag
+    VaneTests.SpaceNativeRenderingTests/testProfileClickDoesNotRestoreItsDepartureColour
+    VaneTests.SpaceNativeRenderingTests/testProfileClickPreservesSlideAndReduceMotionAcrossHosts
+    VaneTests.SpaceNativeRenderingTests/testProfileClickStartsCapturedTravelBeforePreparingTheDestination
+    VaneTests.SpaceNativeRenderingTests/testProfileOriginClickReversesBeforeTheCurrentLandingFinishes
+    VaneTests.SpaceNativeRenderingTests/testProfileSwipeDoesNotRestoreItsDepartureColour
+    VaneTests.SpaceNativeRenderingTests/testProfileWashTravelGateRejectsStationaryAndSnappedFrames
+    VaneTests.SpaceNativeRenderingTests/testProtectionRevocationSynchronouslyDropsInactiveWarmOwners
+    VaneTests.SpaceNativeRenderingTests/testQueuedDestinationDoesNotReplaceAlreadyVisibleIncomingRows
+    VaneTests.SpaceNativeRenderingTests/testQueuedDestinationHonorsLatestClickAndClearsForVisibleOrOriginClicks
+    VaneTests.SpaceNativeRenderingTests/testQueuedDestinationKeepsVisibleIncomingDuringNativeReturnSpring
+    VaneTests.SpaceNativeRenderingTests/testQueuedDestinationResolvesReducedMotionAndDoesNotSurviveAbortOrHide
+    VaneTests.SpaceNativeRenderingTests/testQueuedDestinationRevalidatesDeletionAndExternalSelection
+    VaneTests.SpaceNativeRenderingTests/testQueuedDestinationStartsFromActualArrivingProfileStore
+    VaneTests.SpaceNativeRenderingTests/testQueuedSameProfileSelectionPreservesVisibleProfileLandingBeforeReturning
+    VaneTests.SpaceNativeRenderingTests/testRapidBackToBackSwipesDoNotWaitForThePreviousLanding
+    VaneTests.SpaceNativeRenderingTests/testRapidProfileBoundarySwipesCanImmediatelyReverse
+    VaneTests.SpaceNativeRenderingTests/testRealShortSwipeRestoresLiveSidebarAfterCancellation
+    VaneTests.SpaceNativeRenderingTests/testRealSwipePresentedColourFollowsNativeLandingPosition
+    VaneTests.SpaceNativeRenderingTests/testRelockingAWarmSpacePurgesItsGraphAndNeverRemountsItsPrivateRows
+    VaneTests.SpaceNativeRenderingTests/testRenderedSpaceLandingAcknowledgesItsLiveSidebarPromptly
+    VaneTests.SpaceNativeRenderingTests/testRetargetedLandingPreservesPresentedWashForReversalAndNewDestination
     VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
-  VANE_CANDIDATE_SHA: fed82d0f2f8153eb4bc79c36fb7e550816ad3ff2
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/(testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows)$'
+    VaneTests.SpaceNativeRenderingTests/testReverseSwipeTakesOverThePresentedLandingWithoutFinishingIt
+    VaneTests.SpaceNativeRenderingTests/testRevokedCurrentVisitCannotBeArchivedByLaterSameScopeUpdates
+    VaneTests.SpaceNativeRenderingTests/testScrollingReusesPreparedSurfacesAndRefreshesNativeOffset
+    VaneTests.SpaceNativeRenderingTests/testSearchDefersAdjacentPreparationUntilDismissalFinishes
+    VaneTests.SpaceNativeRenderingTests/testSearchDefersDestructionOfStructurallyInvalidatedHostingTrees
+    VaneTests.SpaceNativeRenderingTests/testSearchPresentationAndSuggestionsKeepPreparedSidebars
+    VaneTests.SpaceNativeRenderingTests/testSidebarHideAndRevealReusePreparedSurfaces
+    VaneTests.SpaceNativeRenderingTests/testSidebarPreparationWaitsUntilLibraryDragIsIdle
+    VaneTests.SpaceNativeRenderingTests/testSlowNativeSpaceLandingNeverReversesItsPresentation
+    VaneTests.SpaceNativeRenderingTests/testSnapshotBurstWaitsForQuietThenWarmsBothNeighbours
+    VaneTests.SpaceNativeRenderingTests/testSuccessfulFolderUnlockDefersPreviewDisposalBeforeGrantPublication
+    VaneTests.SpaceNativeRenderingTests/testSynchronousLiveSidebarAcknowledgementIsNotLostDuringCompletion
+    VaneTests.SpaceNativeRenderingTests/testTargetClickInterruptsTheSameProfileReturnSpring
+    VaneTests.SpaceNativeRenderingTests/testUnchangedAnchorUpdatesKeepPreparedSidebars
+    VaneTests.SpaceNativeRenderingTests/testUnchangedSpaceSavesAndAbsentWarningsKeepPreparedCaptureClaimable
+    VaneTests.SpaceNativeRenderingTests/testVerticalScrollingDefersAdjacentSurfacePreparationUntilIdle
+    VaneTests.SpaceNativeRenderingTests/testWarmReturnAtStoreBudgetReusesSurvivingSectionOwners
+    VaneTests.SpaceNativeRenderingTests/testWarmReturnAtStoreBudgetWithTallViewportReusesBothSections
+    VaneTests.SpaceNativeRenderingTests/testZeroOffsetKeepsTheIncomingBackgroundColourPrepared
+    VaneTests.SpaceSwitchPerformanceTests/testBulkFavouriteRestoreDoesNotReinsertRowsPropagatedToOtherWindows
+    VaneTests.SpaceSwitchPerformanceTests/testColdSpacePublishesCompletedCollectionsInsteadOfEachRestoredTab
+    VaneTests.SpaceSwitchPerformanceTests/testColdTemplatePublishesCompletedCollectionsInsteadOfEachRestoredTab
+    VaneTests.SpaceSwitchPerformanceTests/testWarmSpacePublishesOnlyItsCompletedSidebar
+    VaneTests.TabClosePublicationTests/testBackgroundTodayCloseDoesNotInvalidateUnchangedPinsOrSelection
+    VaneTests.TabClosePublicationTests/testCloseInvalidatesSidebarOnceWithCompletedState
+    VaneTests.TabClosePublicationTests/testCloseRemovesSelectedIDAndKeepsSynchronousWillChange
+    VaneTests.TabClosePublicationTests/testEachCloseAndLaterSidebarEditStillInvalidate
+    VaneTests.TabClosePublicationTests/testLastTodayFolderClosePublishesOnlyThePrunedOutline
+    VaneTests.TabClosePublicationTests/testRetiredParkedTabCannotResumeFromALateCallback
+    VaneTests.ThemeWashSurfaceTests/testBrowserFloatingSidebarSharesTheWindowWash
+    VaneTests.ThemeWashSurfaceTests/testFloatingCopyKeepsTheWindowWashAndNativeTransitions
+    VaneTests.ThemeWashSurfaceTests/testFloatingGradientSamplesTheWindowInsteadOfRestartingInsideThePanel
+    VaneTests.ThemeWashSurfaceTests/testInterruptedOrdinaryGrainCompletionCannotHideNewOwnersVisibleFade
+    VaneTests.ThemeWashSurfaceTests/testInvisibleGrainDoesNotRasterizeDuringResizeAndFadesRemainVisible
+    VaneTests.ThemeWashSurfaceTests/testOrdinaryGrainFadeHidesSettledSourceAndCopies
+    VaneTests.ThemeWashSurfaceTests/testRepeatedDestinationDoesNotInterruptColourBlend
+    VaneTests.ThemeWashSurfaceTests/testReplacingSourceWithSameDestinationClearsThePreviousSourcesAnimation
+  VANE_CANDIDATE_SHA: ${{ github.sha }}
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](SpaceNativeRenderingTests|LibrarySwipeTests|EdgeSidebarScrollContinuityTests|PageResizeStyleTests|NativeContentBoundaryTests|ThemeWashSurfaceTests|SpaceColourTransitionTests|SidebarObservationTests|TabClosePublicationTests|SidebarHousekeepingTests|SpaceSwitchPerformanceTests|SpaceCreationSwipeRenderingTests|SidebarNativeReadinessTests|OffscreenNativeSidebarReadinessTests|NativeSidebarStableOwnershipTests|SidebarRowRetentionTests|LiveSidebarResponsivenessTests|BoundedSidebarMountingTests)/'
 jobs:
   diagnostic:
     name: Build and diagnose native fixtures
@@ -19,7 +319,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: fed82d0f2f8153eb4bc79c36fb7e550816ad3ff2
+          ref: ${{ github.sha }}
       - name: Verify exact diagnostic source
         run: |
           set -euo pipefail
@@ -27,20 +327,68 @@ jobs:
           test "$(git rev-parse HEAD)" = "$VANE_CANDIDATE_SHA"
           test -n "$VANE_DIAGNOSTIC_FILTER"
 
-      - name: Identify actual runner toolchain
+      - name: Identify Swift toolchain
+        id: toolchain
         run: |
+          set -euo pipefail
           swift --version
           xcodebuild -version
-          sw_vers
-      - name: Download exact previously compiled public runtime
-        uses: actions/download-artifact@v8
+          KEY=$(python3 scripts/ci-build-artifact.py toolchain)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      # Only checks builds go into this cache. Release builds compile an OAuth secret
+      # into the app, so their build products must never enter a PR-readable cache.
+      # PRs reuse main's cache without leaving a separate archive for every revision.
+      - name: Restore Swift debug build
+        id: swift-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**', 'Tests/**', 'scripts/ci-source-state.py', 'make-app.sh', '.github/workflows/checks.yml') }}
+          restore-keys: |
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+
+      # Checkout gives even unchanged inputs new mtimes. Restore only content-matching
+      # timestamps for Swift, C/Objective-C bridges, headers and resources. Rebuilding
+      # an unchanged bridge can invalidate all dependent Swift compilation.
+      - name: Restore unchanged source timestamps
+        run: python3 scripts/ci-source-state.py restore
+
+      - name: Build app and native tests once
+        run: swift build -c debug --build-tests --disable-index-store
+
+      - name: Bundle
+        env:
+          VANE_CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}
+        run: ./make-app.sh debug --skip-app-build
+
+      - name: Package shared debug runtime
+        run: |
+          set -euo pipefail
+          BIN_PATH=$(swift build -c debug --show-bin-path)
+          python3 scripts/ci-build-artifact.py pack \
+            --bin-path "$BIN_PATH" --revision "$VANE_CANDIDATE_SHA" \
+            --archive "$RUNNER_TEMP/vane-debug-runtime.tar.gz"
+
+      - name: Share compiled runtime
+        uses: actions/upload-artifact@v6
         with:
           name: public-debug-runtime
-          run-id: 43478822882
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/runtime
-      - name: Restore and verify exact runtime provenance
-        run: python3 scripts/ci-build-artifact.py restore --revision "$VANE_CANDIDATE_SHA" --archive "$RUNNER_TEMP/runtime/vane-debug-runtime.tar.gz"
+          path: ${{ runner.temp }}/vane-debug-runtime.tar.gz
+          compression-level: 0
+          overwrite: true
+          retention-days: 1
+
+      - name: Save source timestamps for the build cache
+        run: python3 scripts/ci-source-state.py save
+
+      - name: Save Swift debug build
+        if: steps.swift-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .build
+          key: ${{ steps.swift-cache.outputs.cache-primary-key }}
 
       - name: Admit actual system motion on this disposable runner
         run: |
@@ -89,82 +437,14 @@ jobs:
           (r/'vane-diag-manifest.json').write_text(json.dumps({'schema':1,'tests':tests},indent=2)+'\n')
           print('Selected diagnostic methods:',len(tests))
           PYCODE
-      - name: Diagnose original native outcomes and exact owned process
+      - name: Observe original native outcomes
         timeout-minutes: 24
         env:
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/owned-sample-diagnostic.py" <<'OWNEDSAMPLE'
-          #!/usr/bin/env python3
-          """Diagnostic-only wrapper: preserve native status; sample one exact owned XCTest.
-          Usage: python3 owned-sample-diagnostic.py EVIDENCE_DIR -- ORIGINAL_NATIVE_COMMAND...
-          Run with a focused repeated-profile selection so 15 seconds includes several handoffs.
-          No source hooks, no artificial sampling delay, no upfront symbolication (-mayDie).
-          """
-          import datetime,json,os,pathlib,re,subprocess,sys,time
-          out=pathlib.Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
-          assert sys.argv[2]=='--' and len(sys.argv)>3
-          cwd=pathlib.Path.cwd().resolve();build=str(cwd/'.build')+'/'
-          record={'diagnostic_only':True,'command':sys.argv[3:],'started':datetime.datetime.now(datetime.timezone.utc).isoformat()}
-          sampler=None;sampling_log=None;sample_started=None;sample_status=None
-          with (out/'native.log').open('w') as native:
-           primary=subprocess.Popen(sys.argv[3:],stdout=native,stderr=subprocess.STDOUT)
-           while primary.poll() is None:
-            if sampler is None and not record.get('watch_disabled'):
-             try:
-              rows=[]
-              for line in subprocess.check_output(['ps','-axo','pid=,ppid=,lstart=,command='],text=True).splitlines():
-               match=re.match(r'\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)',line)
-               if match:rows.append((int(match[1]),int(match[2]),match[3],match[4]))
-              owned={primary.pid}
-              for _ in range(8):
-               for pid,ppid,start,command in rows:
-                if ppid in owned:owned.add(pid)
-              candidates=[(pid,start,command) for pid,ppid,start,command in rows if pid in owned and command.startswith('/Applications/Xcode') and '/xctest ' in command and build in command and 'testCachedProfileColourStaysContinuousAcrossRepeatedSwipes' in command]
-              if candidates:
-               assert len(candidates)==1
-               pid,start,command=candidates[0]
-               verified=subprocess.check_output(['ps','-p',str(pid),'-o','lstart=,command='],text=True).strip()
-               assert verified.startswith(start) and verified.endswith(command)
-               record['sample_host']={'pid':pid,'start':start,'command':command}
-               sampling_log=(out/'sample.log').open('w')
-               sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'15','5','-file',str(out/'main-thread.sample')],stdout=sampling_log,stderr=subprocess.STDOUT)
-               record['sample_pid']=sampler.pid;sample_started=time.monotonic()
-             except Exception as error:
-              record.setdefault('watch_errors',[]).append(type(error).__name__+': '+str(error))
-              # Keep the original native wrapper running through its owned cleanup even
-              # if process discovery fails. A diagnostic error must never orphan it.
-              record['watch_disabled']=True
-            elif sampler is not None and sampler.poll() is None and time.monotonic()-sample_started>60:
-             # Popen retains the unreaped child identity; only this exact owned sampler is stopped.
-             sampler.terminate()
-             try:sampler.wait(timeout=5)
-             except subprocess.TimeoutExpired:sampler.kill();sampler.wait()
-             record['sample_timeout']=True
-            time.sleep(.05)
-           primary_status=primary.wait()
-          if sampler is not None:
-           try:sample_status=sampler.wait(timeout=max(1,60-(time.monotonic()-sample_started)))
-           except subprocess.TimeoutExpired:
-            sampler.terminate()
-            try:sample_status=sampler.wait(timeout=5)
-            except subprocess.TimeoutExpired:sampler.kill();sample_status=sampler.wait()
-            record['sample_timeout']=True
-           sampling_log.close()
-          record.update(primary_status=primary_status,sample_status=sample_status,sample_exists=(out/'main-thread.sample').exists(),finished=datetime.datetime.now(datetime.timezone.utc).isoformat())
-          (out/'diagnostic-status.json').write_text(json.dumps(record,indent=2)+'\n')
-          print(json.dumps(record))
-          sys.exit(primary_status or (0 if sample_status==0 and record['sample_exists'] and not record.get('sample_timeout') and not record.get('watch_errors') else 1))
-          OWNEDSAMPLE
-          set +e
-          python3 "$RUNNER_TEMP/owned-sample-diagnostic.py" "$RUNNER_TEMP/owned-sampling" -- python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER"
-          native_diagnostic_status=$?
-          set -e
-          cp "$RUNNER_TEMP/owned-sampling/native.log" "$RUNNER_TEMP/vane-diag-tests.log"
-          cat "$RUNNER_TEMP/vane-diag-tests.log"
-          exit "$native_diagnostic_status"
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER" 2>&1 | tee "$RUNNER_TEMP/vane-diag-tests.log"
       - name: Verify completed selection when successful
         run: |
           set -euo pipefail
@@ -195,6 +475,5 @@ jobs:
             ${{ runner.temp }}/vane-diag-inventory.txt
             ${{ runner.temp }}/vane-motion-admission.log
             ${{ runner.temp }}/vane-motion-smoke.log
-            ${{ runner.temp }}/owned-sampling
           if-no-files-found: ignore
           retention-days: 7
