@@ -349,6 +349,21 @@ import XCTest
     }
 
     func testQuickOpeningReleaseContinuesFromTheLastFingerPosition() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        do {
+            try await checkQuickOpeningReleaseContinuesFromTheLastFingerPosition()
+        } catch {
+            try await loop.close()
+            throw error
+        }
+        try await loop.close()
+    }
+
+    private func checkQuickOpeningReleaseContinuesFromTheLastFingerPosition() async throws {
         try XCTSkipIf(Motion.reduced, "Requires animated navigation")
         let (store, window, monitor) = fixture(withSpaces: true)
         Library.open(.downloads, in: store)
@@ -358,9 +373,21 @@ import XCTest
         let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         window.contentView = host
-        window.orderFront(nil)
+        window.styleMask = [.titled, .fullSizeContentView]
+        window.animationBehavior = .none
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         defer { window.orderOut(nil); window.contentView = nil }
-        try await Task.sleep(for: .milliseconds(150))
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
+                  window.isVisible, window.occlusionState.contains(.visible),
+                  NSApp.modalWindow == nil, window.attachedSheet == nil,
+                  let marker = monitor.presentationView, marker.window === window,
+                  let model = marker.layer, let presented = model.presentation(),
+                  let root = host.layer, let presentedRoot = root.presentation() else { return false }
+            return abs(presented.convert(.zero, to: presentedRoot).x - model.convert(.zero, to: root).x) < 0.125
+        }
         let marker = try XCTUnwrap(monitor.presentationView)
         func x() throws -> CGFloat {
             try XCTUnwrap(marker.layer?.presentation()).convert(.zero,

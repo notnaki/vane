@@ -4712,6 +4712,15 @@ struct Stash {
     /// even a rebuild lands on the same page, scroll offset and back/forward list, and only
     /// the tab that becomes current actually loads.
     func switchTo(space requested: Space) {
+        // Native row hosts can flush synchronously during restoration. Publish
+        // their rendering bridge only after the destination's entire outline and
+        // selection are assigned; snapshot/protection revocation stays immediate.
+        sidebarObservation.withCompletedChanges {
+            switchSpace(to: requested)
+        }
+    }
+
+    private func switchSpace(to requested: Space) {
         // Gestures and menus may hold an older Space value while another window edits it.
         guard let space = ProfileManager.shared.spaces(for: requested.profileID)
             .first(where: { $0.id == requested.id }) else { return }

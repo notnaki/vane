@@ -1345,6 +1345,42 @@ import XCTest
     }
 
 
+    func testProfileClickStartsCapturedTravelBeforePreparingTheDestination() async throws {
+        try await withFixtureApplicationLoop {
+            try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
+            let manager = ProfileManager.shared
+            let previous = manager.active
+            let profiles = [fixtureProfile(named: "Responsive source"), fixtureProfile(named: "Responsive arrival")]
+            let first = manager.createSpace(name: "Source", in: profiles[0].id)
+            var second = manager.createSpace(name: "Arrival", in: profiles[1].id)
+            second.tabURLs = [URL(string: "about:blank")!]
+            XCTAssertTrue(manager.updateSpace(second))
+            let source = Windows.open(profile: profiles[0], space: first, focus: false)
+            let window = try XCTUnwrap(source.window)
+            window.animationBehavior = .none
+            defer {
+                self.retireProfileWindow(window)
+                profiles.forEach { _ = manager.delete($0.id) }
+                manager.active = previous
+            }
+            source.palette = nil
+            try await self.admitFixtureSidebar(source, window: window)
+            let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+            source.spaceGesture.monitor.select(second, in: source)
+            let slide = try XCTUnwrap(host.spaceSlide)
+            XCTAssertTrue(slide.hasStartedLanding,
+                          "Captured travel must start in the input action, before live profile restoration")
+            XCTAssertNotNil(slide.outgoing.layer?.animation(forKey: "space-position"))
+            XCTAssertFalse(TabStore.all.contains { $0.profileID == profiles[1].id && $0.parkedIn === window },
+                           "Do not construct and lay out a hidden destination browser in the input action")
+            XCTAssertTrue(source.window === window, "Page activation stays on the queued handoff")
+            try await compatibilityWait {
+                TabStore.all.contains { $0.window === window && $0.currentSpaceID == second.id }
+                    && host.spaceSlide == nil
+            }
+        }
+    }
+
     func testPreparedProfileKeepsWindowAuthorityWithSourceUntilHop() async throws {
         try await withFixtureApplicationLoop {
             let manager = ProfileManager.shared
