@@ -24,7 +24,7 @@ struct ICloudSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 1.5) {
             SettingsCard {
-                SettingsRow("Sync Vane with iCloud") {
+                SettingsRow("Sync Vane with iCloud", icon: "icloud.fill", tint: .blue) {
                     Toggle("Sync Vane with iCloud", isOn: Binding(
                         get: { controller.masterEnabled },
                         set: { enabled in
@@ -36,12 +36,11 @@ struct ICloudSettings: View {
                     .disabled(!controller.masterEnabled && (controller.busy || !controller.canEnable))
                 }
                 Footnote("Uses this Mac’s Apple Account. Review the categories below before enabling. Your first sync saves a local recovery point and merges your saved library with iCloud.")
-                SettingsRow(controller.status) {
+                SettingsRow(controller.status, icon: "arrow.triangle.2.circlepath", tint: .blue) {
+                    if controller.busy { ProgressView().controlSize(.small) }
                     Button("Sync Now") { Task { await controller.syncNow() } }
                         .disabled(controller.busy || !controller.masterEnabled || controller.needsAccountConsent)
                 }
-                Feel06ActivityLine(busy: controller.busy, text: controller.status)
-                    .padding(.horizontal, Look.cardInset).padding(.vertical, Look.inset)
                 if let date = controller.lastSuccess {
                     Footnote("Last successful sync: \(date.formatted(date: .abbreviated, time: .shortened)).")
                 } else {
@@ -54,13 +53,13 @@ struct ICloudSettings: View {
                         .textSelection(.enabled)
                 }
                 if controller.needsAccountConsent {
-                    SettingsRow("Your Apple Account changed") {
+                    SettingsRow("Your Apple Account changed", icon: "person.crop.circle.badge.exclamationmark", tint: .orange) {
                         Button("Review Merge…") { present(.account) }.disabled(controller.busy)
                     }
                     Footnote("Sync is paused. Your local library is preserved. Review your choices before merging it with the current Apple Account.")
                 }
                 if controller.pendingRemoval {
-                    SettingsRow("Previous iCloud removal is unfinished") {
+                    SettingsRow("Previous iCloud removal is unfinished", icon: "exclamationmark.arrow.triangle.2.circlepath", tint: .orange) {
                         Button("Finish Removal") { Task { await controller.resumeCloudRemoval() } }
                             .disabled(controller.busy || !controller.canEnable)
                     }
@@ -68,23 +67,28 @@ struct ICloudSettings: View {
                 }
             }
 
-            SettingsCard {
-                SettingsRow("Categories on this Mac") {
-                    Button("Select All…") { present(.selectAll) }.disabled(controller.busy)
-                }
-                Footnote(controller.masterEnabled
-                         ? "Each switch controls both sending and receiving on this Mac. Turning one off keeps existing local and iCloud copies."
-                         : "Choose what this Mac sends and receives. Nothing is uploaded until you enable iCloud and accept the review.")
-            }
-
-            ForEach(groups, id: \.0) { title, categories in
-                SettingsSection(title) {
+            SettingsDisclosure("Categories on this Mac", summary: "Library, browsing, saved work, and preferences",
+                               icon: "square.grid.2x2.fill", tint: .purple) {
+                VStack(alignment: .leading, spacing: Look.inset * 1.5) {
                     SettingsCard {
-                        ForEach(categories, id: \.rawValue) { category in
-                            categoryRow(category)
+                        SettingsRow("Categories on this Mac", icon: "checklist", tint: .purple) {
+                            Button("Select All…") { present(.selectAll) }.disabled(controller.busy)
                         }
-                        if title == "iCloud Keychain" {
-                            Footnote("Passwords and AI keys use iCloud Keychain separately from your library. Turning these switches off stops Vane’s cloud reads and writes; it cannot stop Apple’s background transport for items already in iCloud Keychain. Removing cloud items is a separate action below.")
+                        Footnote(controller.masterEnabled
+                                 ? "Each switch controls both sending and receiving on this Mac. Turning one off keeps existing local and iCloud copies."
+                                 : "Choose what this Mac sends and receives. Nothing is uploaded until you enable iCloud and accept the review.")
+                    }
+
+                    ForEach(groups, id: \.0) { title, categories in
+                        SettingsSection(title) {
+                            SettingsCard {
+                                ForEach(categories, id: \.rawValue) { category in
+                                    categoryRow(category)
+                                }
+                                if title == "iCloud Keychain" {
+                                    Footnote("Passwords and AI keys use iCloud Keychain separately from your library. Turning these switches off stops Vane’s cloud reads and writes; it cannot stop Apple’s background transport for items already in iCloud Keychain. Removing cloud items is a separate action below.")
+                                }
+                            }
                         }
                     }
                 }
@@ -94,14 +98,14 @@ struct ICloudSettings: View {
                 SettingsSection("Credential conflicts") {
                     ForEach(controller.secretConflicts) { conflict in
                         SettingsCard {
-                            SettingsRow(conflict.identity.origin ?? "AI provider key") {
+                            SettingsRow(conflict.identity.origin ?? "AI provider key", icon: "key.fill", tint: .orange) {
                                 Button("Keep This Mac’s Copy") {
                                     Task { await controller.resolveSecretConflict(conflict, choosing: .keepThisMac) }
                                 }
                                 .disabled(controller.busy || !controller.masterEnabled || !controller.enabledCategories.contains(conflict.category))
                             }
                             Footnote(conflict.identity.account.isEmpty ? "Account without a username" : conflict.identity.account)
-                            SettingsRow("Use a reviewed iCloud version") {
+                            SettingsRow("Use a reviewed iCloud version", icon: "icloud.fill", tint: .blue) {
                                 Button("Review iCloud Versions…") { Motion.animate(Look.quick) { comparing = conflict } }
                                 .disabled(controller.busy || !controller.masterEnabled || !controller.enabledCategories.contains(conflict.category))
                             }
@@ -111,7 +115,8 @@ struct ICloudSettings: View {
                 }
             }
 
-            SettingsSection("Other Macs") {
+            SettingsDisclosure("Other Macs", summary: "Tabs and completed-download history",
+                               icon: "desktopcomputer", tint: .blue) {
                 if let library = controller.library {
                     ICloudOtherMacs(library: library, enabled: controller.enabledCategories)
                 } else {
@@ -119,7 +124,8 @@ struct ICloudSettings: View {
                 }
             }
 
-            SettingsSection("What stays on this Mac") {
+            SettingsDisclosure("What stays on this Mac", summary: "Private data, sign-ins, and local files",
+                               icon: "lock.shield.fill", tint: .green) {
                 SettingsCard {
                     Footnote("Private browsing, cookies, website sign-ins, website storage, passkeys, unsaved forms, active media, downloaded files, and in-progress downloads stay local. You may need to sign in to websites again on another Mac.")
                     Footnote("GitHub Live Folder definitions can sync, but GitHub authentication stays on each Mac: sign in again there. macOS permissions, extension grants, local paths, file access grants, biometric unlock, and certificate exceptions also stay local. Extension storage outside its sync namespace stays with the extension on each Mac.")
@@ -128,9 +134,10 @@ struct ICloudSettings: View {
                 }
             }
 
-            SettingsSection("Remove cloud copies") {
+            SettingsDisclosure("Remove cloud copies", summary: "Choose iCloud data to remove; keep local copies",
+                               icon: "trash.fill", tint: .red) {
                 SettingsCard {
-                    SettingsRow("Remove selected iCloud data") {
+                    SettingsRow("Remove selected iCloud data", icon: "trash.fill", tint: .red) {
                         Button("Remove iCloud Data…") { present(.remove) }.disabled(controller.busy)
                     }
                     Footnote("Choose categories and confirm first. This pauses all sync on this Mac and keeps local copies. Other Macs pause the removed library categories until you deliberately enable them again. iCloud Keychain items have a separate removal section.")
@@ -158,7 +165,8 @@ struct ICloudSettings: View {
     private func present(_ item: Review) { Motion.animate(Look.quick) { review = item } }
 
     @ViewBuilder private func categoryRow(_ category: ICloudCategory) -> some View {
-        SettingsRow(category.title) {
+        let style = Self.style(category)
+        SettingsRow(category.title, icon: style.icon, tint: style.tint) {
             Toggle(category.title, isOn: Binding(
                 get: { controller.enabledCategories.contains(category) },
                 set: { enabled in
@@ -167,6 +175,37 @@ struct ICloudSettings: View {
             )).labelsHidden()
         }
         if let detail = Self.detail(category) { Footnote(detail) }
+    }
+
+    private static func style(_ category: ICloudCategory) -> (icon: String, tint: Color) {
+        switch category {
+        case .profiles: ("person.fill", .purple)
+        case .spaces: ("square.grid.2x2.fill", .purple)
+        case .favourites: ("star.fill", .purple)
+        case .pinnedTabs: ("pin.fill", .purple)
+        case .sidebarFolders: ("folder.fill", .purple)
+        case .bookmarks: ("bookmark.fill", .purple)
+        case .openTabs: ("macwindow", .blue)
+        case .recentlyClosedTabs: ("arrow.uturn.backward", .blue)
+        case .history: ("clock.fill", .blue)
+        case .downloadHistory: ("arrow.down.circle.fill", .blue)
+        case .easels: ("rectangle.on.rectangle", .green)
+        case .readingQueue: ("text.book.closed.fill", .green)
+        case .offlineArticles: ("doc.text.fill", .green)
+        case .spaceTemplates: ("square.on.square", .green)
+        case .boosts: ("paintbrush.fill", .green)
+        case .appearance: ("paintpalette.fill", .blue)
+        case .readerPreferences: ("book.fill", .blue)
+        case .search: ("magnifyingglass", .blue)
+        case .keyboardShortcuts: ("keyboard", .blue)
+        case .portablePreferences: ("slider.horizontal.3", .blue)
+        case .siteSettings: ("globe", .blue)
+        case .contentBlocking: ("hand.raised.fill", .blue)
+        case .extensions: ("puzzlepiece.extension.fill", .purple)
+        case .extensionSyncData: ("externaldrive.fill", .purple)
+        case .passwords: ("key.fill", .green)
+        case .aiKeys: ("sparkles", .green)
+        }
     }
 
     private static func detail(_ category: ICloudCategory) -> String? {
