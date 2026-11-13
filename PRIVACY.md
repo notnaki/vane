@@ -2,7 +2,7 @@
 
 Effective and last updated: **10 November 2026**
 
-This policy covers the Vane macOS browser and its [project website](https://notnaki.github.io/vane/), maintained by [notnaki](https://github.com/notnaki). It describes the current implementation in this repository. Older releases and third-party builds may behave differently.
+This policy covers the Vane macOS browser and its [project website](https://vane.so/), maintained by [notnaki](https://github.com/notnaki). It describes the current implementation in this repository. Older releases and third-party builds may behave differently.
 
 Vane stores your browser library on your Mac. It has no Vane account or Vane-hosted browsing-history service. Explicitly provisioned builds offer optional iCloud sync through Apple's services; sync starts off. Ordinary local builds keep sync unavailable. Vane does not include app analytics or automatic crash-report uploads. Browsing and the features below still make network requests; local storage does not mean that nothing leaves your device.
 

@@ -11,8 +11,11 @@ import sys
 ROUTING_FILES = {"scripts/ci-change-scope.py", "scripts/test-ci-change-scope.py",
                  "scripts/test-checks-workflow.py"}
 WORKFLOW = ".github/workflows/checks.yml"
+WEBSITE_FILES = {"docs/.nojekyll", "docs/CNAME", "docs/robots.txt", "docs/sitemap.xml",
+                 "scripts/check-site-rendering.swift", "docs/versions/galaxy-v2/VERSION.txt",
+                 "docs/versions/liquid-v3/VERSION.txt"}
 WEBSITE_SUFFIXES = {".html", ".css", ".js", ".cjs", ".svg", ".png", ".jpg", ".jpeg",
-                    ".webp", ".gif", ".ico", ".woff", ".woff2"}
+                    ".webp", ".gif", ".ico", ".woff", ".woff2", ".ttf", ".mp4", ".webm"}
 
 
 def routing_only_workflow_change(base, head):
@@ -36,14 +39,17 @@ def routing_only_workflow_change(base, head):
         versions.append(jobs)
     before, after = versions
     return headers[0] == headers[1] and before.keys() == after.keys() and all(
-        before[name] == after[name] for name in before if name not in {"changes", "checks"})
+        before[name] == after[name] for name in before if name not in {"changes", "checks", "routing"})
 
 
 def cheap_checks_only(path):
     parts = PurePosixPath(path).parts
-    if path in ROUTING_FILES or path == "docs/.nojekyll":
+    if path in ROUTING_FILES or path in WEBSITE_FILES:
         return True
     if parts and parts[0] == "docs" and PurePosixPath(path).suffix in WEBSITE_SUFFIXES:
+        return True
+    if parts[:2] == ("docs", "fonts") and len(parts) == 3 and (
+            parts[2] == "OFL.txt" or parts[2].endswith("-OFL.txt")):
         return True
     return path == ".gitignore" or path.endswith(".md") and (
         len(parts) == 1 or parts[0] == "docs" or
@@ -62,6 +68,19 @@ def main():
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0 for ref in refs)
     app_required = True
     if known:
+        # A PR event can retain an older target SHA while checkout supplies a
+        # newer integration merge. Compare that merge with its actual target,
+        # only after authenticating both the merge and PR source parents.
+        base, head = refs
+        if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+            parents = subprocess.check_output(
+                ["git", "rev-list", "--parents", "-n", "1", "--end-of-options", head],
+                text=True).split()
+            if (len(parents) == 3 and parents[0] == os.environ.get("GITHUB_SHA")
+                    and parents[2] == os.environ.get("PR_HEAD_SHA")):
+                base = parents[1]
+                print(f"Comparing PR integration with actual target {base}", file=sys.stderr)
+        refs = (base, head)
         # Disable rename detection so both old and new paths count.
         result = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", *refs, "--"],
                                 check=True, capture_output=True)

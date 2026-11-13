@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/notnaki/vane/releases/latest"><strong>Download Vane</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://notnaki.github.io/vane/">Website</a>
+  <a href="https://vane.so/">Website</a>
   &nbsp;·&nbsp;
   <a href="docs/README.md">Documentation</a>
   &nbsp;·&nbsp;
@@ -31,15 +31,17 @@
   <a href="https://github.com/notnaki/vane/releases/latest"><img src="https://img.shields.io/github/v/release/notnaki/vane" alt="Latest release"></a>
 </p>
 
-![Vane showing Wikipedia with sidebar tabs and Spaces](docs/media/vane-spaces-dark.png)
+![Vane showing NASA Mars with sidebar tabs and Spaces](https://vane.so/media/vane-varied-spaces-v1-1536.webp)
 
-<p align="center"><sub>Spaces, favourites, and the web in one native window. <a href="docs/media/README.md">About this screenshot</a>.</sub></p>
+<p align="center"><sub>Spaces, favourites, and the web in one native window. <a href="https://github.com/notnaki/vane/blob/website/media/README.md">About this screenshot</a>.</sub></p>
 
 Vane is built with Swift, SwiftUI, AppKit, and WebKit. Apple’s `WKWebView`
 renders pages; Vane adds tools to organize, read, and make the browser your own.
 
 > **In active development.** Requires macOS 26 or later. Read the
 > [limitations](#limitations) before relying on Vane as your only browser.
+> The docs follow current `main`; the latest published build may lag behind.
+> See [current development and the upcoming release](docs/CURRENT-DEVELOPMENT.md).
 
 [Explore the features](#feature-overview) · [Get started](#start-browsing) ·
 [Build from source](#build-and-run) · [Privacy policy](PRIVACY.md)
@@ -82,8 +84,8 @@ prompt once. Local, debug, and prerelease builds skip it. The manual
 | Reading | Reader preferences, an offline article queue, find on page, and page capture. |
 | Media | Custom Picture in Picture, a minimized sidebar player, and embedded-player controls with native PiP fallback. |
 | Visual tools | Easels with notes, drawing, captures, live web views, and editable JSON or PNG export; per-site Boosts for styles, Zap, and opt-in scripts. |
-| Data | Separate profiles, local Keychain passwords and account chooser, browser imports, exports, complete library backups, and local recovery points. |
-| Controls | Custom search engines and site-search shortcuts, keyboard bindings, themes, app icons, Battery Saver, and site controls. |
+| Data | Separate profiles, Keychain passwords and account chooser, browser imports, exports, library backups, and local recovery points; optional per-category iCloud sync in provisioned builds. |
+| Controls | Custom search engines and site-search shortcuts, keyboard bindings, themes, app icons, Battery Saver, site controls, and searchable animation-speed settings. |
 | Integrations | Chrome Web Store extensions, unpacked WebExtensions and verified Safari extensions from apps, EasyList-subset blocking and HTTPS subscriptions, GitHub Live Folders, and multiple AI connections using your own keys or ChatGPT plan, with per-feature routing. |
 
 “Implemented” describes available behavior. Verification is scoped to the
@@ -126,12 +128,12 @@ troubleshooting, specialist audits, and recorded validation.
 | [Releases and distribution](docs/RELEASING.md) | Publishing, signing/notarization, updater checks, and candidate validation. |
 
 Prefer a visual introduction? Browse the
-[website field guide](https://notnaki.github.io/vane/docs.html).
+[website field guide](https://vane.so/docs.html).
 The Markdown guides above cover current controls and caveats in detail.
 
 The [privacy policy](PRIVACY.md) explains local storage, network requests,
 optional services, and data controls. It is also available on the
-[website](https://notnaki.github.io/vane/privacy.html).
+[website](https://vane.so/privacy.html).
 
 ## Build and run
 
