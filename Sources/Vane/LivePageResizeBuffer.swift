@@ -439,8 +439,8 @@ struct LivePageResizeAnchor {
         let nextLeading = navigation.map { sidebarWidth ?? latest.sidebar ?? $0.leading }
             ?? layout.leadingWidth(at: size.width)
         let horizontal = size.width - lastSize.width + oldSidebar - nextLeading
-        if horizontal != 0 { shrinkingWidth = horizontal < 0; lead.width = min(navigation == nil ? 192 : 64, max(48, abs(horizontal) / elapsed * 0.18)); axes.width = 1 }
-        if size.height != lastSize.height { shrinkingHeight = size.height < lastSize.height; lead.height = min(192, max(48, abs(size.height - lastSize.height) / elapsed * 0.18)); axes.height = 1 }
+        if horizontal != 0 { shrinkingWidth = navigation != nil && horizontal < 0; lead.width = min(navigation == nil ? 192 : 64, max(48, abs(horizontal) / elapsed * 0.18)); axes.width = 1 }
+        if size.height != lastSize.height { shrinkingHeight = navigation != nil && size.height < lastSize.height; lead.height = min(192, max(48, abs(size.height - lastSize.height) / elapsed * 0.18)); axes.height = 1 }
         lastSize = size
         lastTime = now()
         latest = request
@@ -692,9 +692,9 @@ struct LivePageResizeAnchor {
             } else { prepare(exact: true) }
             return
         }
-        // Growth needs painted lookahead. Shrinking already has coverage: keep
-        // only a small hysteresis band, otherwise responsive pages retain entire
-        // columns outside the visible card and jump by up to 192pt at release.
+        // Native window/sidebar resizing retains its original adaptive lookahead
+        // and submitted-parent floor contract. Only Library navigation trims
+        // a shrinking document to the smaller responsive-layout band.
         let needsRefill = zip(pages, desired).contains { page, size in
             let horizontal = page.mask.contains(.width) ? axes.width * lead.width * page.fraction.width : 0
             let vertical = page.mask.contains(.height) ? axes.height * lead.height * page.fraction.height : 0

@@ -56,6 +56,28 @@ import XCTest
         return paints.removeFirst()
     }
 
+    func testShrinkingLibraryViewportDoesNotRetainAWholeResponsiveColumnOutsideTheCard() throws {
+        let f = Fixture(); defer { f.close() }
+        let owner = UUID()
+        f.host.libraryNavigationPaintOwner = owner
+        var paints: [@MainActor @Sendable () -> Void] = []
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in },
+            now: { f.time }, navigation: .init(owner: owner, leading: 0), apply: { _, leading in
+                if let leading { f.host.setFrameSize(NSSize(width: 600 - leading, height: 400)) }
+            }))
+        defer { buffer.cancel() }
+        buffer.start(); nextPaint(&paints)()
+        for width in stride(from: 598, through: 450, by: -2) {
+            f.time += 1.0 / 60
+            XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: CGFloat(600 - width)))
+            if !paints.isEmpty { nextPaint(&paints)() }
+            XCTAssertGreaterThanOrEqual(f.web.frame.width, f.host.bounds.width)
+            XCTAssertLessThanOrEqual(f.web.frame.width - f.host.bounds.width, 48.001,
+                "Library shrinking must follow the visible responsive width")
+        }
+    }
+
     func testLibraryFinishSupersedesObsoleteLookaheadWithoutAcceptingItsCallback() throws {
         let f = Fixture(); defer { f.close() }
         let owner = UUID()
@@ -840,7 +862,7 @@ import XCTest
         XCTAssertEqual(f.web.frame.width, 912, "Do not add lookahead to the already enlarged web frame")
         nextPaint(&f.paints)()
         f.request(500)
-        XCTAssertEqual(f.web.frame.width, 524)
+        XCTAssertEqual(f.web.frame.width, 692)
         f.request(800)
         XCTAssertEqual(f.window.frame.width, 500, "A reversal cannot expose the smaller in-flight paint")
         nextPaint(&f.paints)()
@@ -850,19 +872,7 @@ import XCTest
         XCTAssertEqual(f.window.frame.width, 800)
     }
 
-    func testShrinkingViewportDoesNotRetainAWholeResponsiveColumnOutsideTheCard() {
-        let f = Fixture(); defer { f.close() }
-        f.buffer.start(); nextPaint(&f.paints)()
-        for width in stride(from: 598, through: 450, by: -2) {
-            f.request(CGFloat(width))
-            if !f.paints.isEmpty { nextPaint(&f.paints)() }
-            XCTAssertGreaterThanOrEqual(f.web.frame.width, f.host.bounds.width)
-            XCTAssertLessThanOrEqual(f.web.frame.width - f.host.bounds.width, 48.001,
-                "A shrinking page must follow its visible width instead of keeping a stale responsive breakpoint")
-        }
-    }
-
-    func testSlowSidebarShrinkKeepsAResponsiveViewportWithinASmallPaintedBand() throws {
+    func testSlowSidebarShrinkReusesCoverageWithinTheAbsoluteLeadCeiling() throws {
         let f = Fixture(); defer { f.close() }
         f.host.resizeLayout.sidebarWidth = 228
         var paints: [@MainActor @Sendable () -> Void] = []
@@ -881,11 +891,11 @@ import XCTest
             XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: CGFloat(sidebar)))
             XCTAssertEqual(f.host.bounds.width, CGFloat(828 - sidebar), "Covered shrinking geometry must publish immediately")
             XCTAssertGreaterThanOrEqual(f.web.frame.width, f.host.bounds.width)
-            XCTAssertLessThanOrEqual(f.web.frame.width - f.host.bounds.width, 48.001)
+            XCTAssertLessThanOrEqual(f.web.frame.width - f.host.bounds.width, 192.001)
             if !paints.isEmpty { nextPaint(&paints)() }
             XCTAssertTrue(paints.isEmpty, "One completed shrink trim must not immediately schedule another")
         }
-        XCTAssertEqual(presentations, 8, "A 24pt hysteresis band follows responsive layout without repainting every 2pt sample")
+        XCTAssertEqual(presentations, 2, "The prime plus one bounded trim covers this172pt shrink; repainting each2pt step defeats buffering")
         buffer.finish()
         nextPaint(&paints)()
         XCTAssertEqual(f.web.frame.width, 428)
@@ -897,30 +907,27 @@ import XCTest
         let f = Fixture(); defer { f.close() }
         f.buffer.start(); nextPaint(&f.paints)()
         f.time += 1
-        f.request(598)
-        XCTAssertEqual(f.window.frame.width, 598)
-        XCTAssertEqual(f.web.frame.width, 622, "Shrink trims to a small 24pt lead")
-        nextPaint(&f.paints)()
-        f.time += 1
-        f.request(574)
-        XCTAssertEqual(f.web.frame.width, 622, "Retain paint at exactly 48pt excess")
+        f.request(456)
+        XCTAssertEqual(f.window.frame.width, 456)
+        XCTAssertEqual(f.web.frame.width, 648, "Retain the existing paint at exactly192pt excess")
         XCTAssertTrue(f.paints.isEmpty)
         f.time += 1
-        f.request(572)
-        XCTAssertEqual(f.web.frame.width, 596, "Crossing 48pt trims back to the 24pt target")
+        f.request(454)
+        XCTAssertEqual(f.window.frame.width, 454)
+        XCTAssertEqual(f.web.frame.width, 502, "Crossing192pt must trim back to the48pt target")
         XCTAssertEqual(f.paints.count, 1)
         f.time += 1
-        f.request(610)
-        XCTAssertEqual(f.window.frame.width, 572, "The old paint cannot cover a reversal beyond the pending viewport")
+        f.request(520)
+        XCTAssertEqual(f.window.frame.width, 454, "The old648pt paint cannot cover a reversal beyond the pending502pt viewport")
         nextPaint(&f.paints)()
-        XCTAssertEqual(f.window.frame.width, 572)
-        XCTAssertEqual(f.web.frame.width, 658)
+        XCTAssertEqual(f.window.frame.width, 454)
+        XCTAssertEqual(f.web.frame.width, 568)
         nextPaint(&f.paints)()
-        XCTAssertEqual(f.window.frame.width, 610)
+        XCTAssertEqual(f.window.frame.width, 520)
         f.time += 1
-        f.request(636)
-        XCTAssertEqual(f.window.frame.width, 636)
-        XCTAssertEqual(f.web.frame.width, 684, "Growth still refills once less than half its painted lead remains")
+        f.request(546)
+        XCTAssertEqual(f.window.frame.width, 546)
+        XCTAssertEqual(f.web.frame.width, 594, "Growth still refills once less than half the48pt target remains")
         XCTAssertEqual(f.paints.count, 1)
     }
 
@@ -943,14 +950,14 @@ import XCTest
         buffer.start(); nextPaint(&paints)()
         f.time = 1
         XCTAssertTrue(buffer.request(frame: NSRect(x: 0, y: 0,
-            width: 600, height: 400)))
+            width: horizontal ? 456 : 600, height: horizontal ? 400 : 256)))
         XCTAssertEqual(f.web.frame.size, NSSize(width: 624, height: 424))
-        XCTAssertTrue(paints.isEmpty, "Each half-size pane retains at most 24pt before trimming")
+        XCTAssertTrue(paints.isEmpty, "Each half-size pane may retain96pt, not just its24pt refill target")
         f.time = 2
         XCTAssertTrue(buffer.request(frame: NSRect(x: 0, y: 0,
-            width: horizontal ? 598 : 600, height: horizontal ? 400 : 398)))
-        XCTAssertEqual(f.web.frame.size, horizontal ? NSSize(width: 611, height: 424) : NSSize(width: 624, height: 411))
-        XCTAssertEqual(paints.count, 1, "Trim to 12pt when either pane-local axis exceeds its 24pt ceiling")
+            width: horizontal ? 454 : 600, height: horizontal ? 400 : 254)))
+        XCTAssertEqual(f.web.frame.size, horizontal ? NSSize(width: 551, height: 424) : NSSize(width: 624, height: 351))
+        XCTAssertEqual(paints.count, 1, "Trim when either pane-local axis exceeds its96pt ceiling")
     }
 
     func testFinishRetainsLatestEndpointThenRestoresExactNativeSizingOnce() {
@@ -1058,8 +1065,7 @@ import XCTest
         XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: 500))
         XCTAssertEqual(widths, [500])
         // At600pt root width, the same fitting formula caps the sidebar at400.
-        XCTAssertEqual(f.web.frame.width, 648, accuracy: 0.001,
-                       "Do not trim before the pending native parent moves; its current 600pt clip is already covered")
+        XCTAssertEqual(f.web.frame.width, 620, accuracy: 0.001)
         f.host.setFrameSize(NSSize(width: 428, height: 400))
         buffer.finish { finished = true }
         nextPaint(&paints)()
