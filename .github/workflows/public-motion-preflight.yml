@@ -156,7 +156,7 @@ jobs:
           out=pathlib.Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
           assert sys.argv[2]=='--' and len(sys.argv)>3
           cwd=pathlib.Path.cwd().resolve();build=str(cwd/'.build')+'/'
-          record={'diagnostic_only':True,'duration_seconds':10,'sampling_interval_ms':1,'no_app_handshake':True,'command':sys.argv[3:],'started':datetime.datetime.now(datetime.timezone.utc).isoformat()}
+          record={'diagnostic_only':True,'duration_seconds':20,'sampling_interval_ms':5,'no_app_handshake':True,'command':sys.argv[3:],'started':datetime.datetime.now(datetime.timezone.utc).isoformat()}
           sampler=None;sampling_log=None;sample_started=None;sample_status=None
           with (out/'native.log').open('w') as native:
            primary=subprocess.Popen(sys.argv[3:],stdout=native,stderr=subprocess.STDOUT)
@@ -179,7 +179,7 @@ jobs:
                assert verified.startswith(start) and verified.endswith(command)
                record['sample_host']={'pid':pid,'start':start,'command':command}
                sampling_log=(out/'sample.log').open('w')
-               sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'10','1','-file',str(out/'main-thread.sample')],stdout=sampling_log,stderr=subprocess.STDOUT)
+               sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'20','5','-mayDie','-file',str(out/'main-thread.sample')],stdout=sampling_log,stderr=subprocess.STDOUT)
                record['sample_pid']=sampler.pid;sample_started=time.monotonic();record['sample_started_epoch']=time.time()
              except Exception as error:
               record.setdefault('watch_errors',[]).append(type(error).__name__+': '+str(error))
