@@ -11,7 +11,7 @@ extension Look {
     @Published var progress: CGFloat? {
         didSet { if progress == nil { pageWidth = nil; pageLeadingInset = nil } }
     }
-    /// Translate an unchanged page while the fingers move; resize WebKit once at rest.
+    /// Keep the document viewport unchanged while the card follows navigation geometry.
     @Published var pageWidth: CGFloat?
     @Published var pageLeadingInset: CGFloat?
 }
@@ -20,10 +20,18 @@ private struct LibraryPageLeadingInset: EnvironmentKey {
     static let defaultValue: CGFloat? = nil
 }
 
+private struct LibraryPageWidth: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
 extension EnvironmentValues {
     var libraryPageLeadingInset: CGFloat? {
         get { self[LibraryPageLeadingInset.self] }
         set { self[LibraryPageLeadingInset.self] = newValue }
+    }
+    var libraryPageWidth: CGFloat? {
+        get { self[LibraryPageWidth.self] }
+        set { self[LibraryPageWidth.self] = newValue }
     }
 }
 
@@ -52,7 +60,8 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
                         * (1 - progress) + panelWidth * progress)
                     // Resolve navigation geometry once per surface, rather than per leaf.
                     page.environment(\.libraryPageLeadingInset, gesture.pageLeadingInset)
-                        .geometryGroup().frame(width: gesture.pageWidth ?? max(0,
+                        .environment(\.libraryPageWidth, gesture.pageWidth)
+                        .geometryGroup().frame(width: max(0,
                         geometry.size.width - ((sidebarShown ? sidebarWidth : 0) * (1 - progress)
                             + panelWidth * progress)))
                 }
