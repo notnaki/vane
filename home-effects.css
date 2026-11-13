@@ -4,7 +4,7 @@
 .wordmark-home { --hero-word-size:clamp(180px,33vw,460px); }
 .wordmark-home .opening .wordmark-intro { position:relative; z-index:0; padding:12px 0 0; text-align:center; }
 .wordmark-home .opening::before { background-color:#574660; background-image:linear-gradient(180deg,#090711d6,#0e0b16c7 60%,#0e0b16e0),url('media/sunlight.webp'); background-size:cover; background-position:center calc(50% + var(--backdrop-y,0px)); background-blend-mode:multiply,luminosity; filter:blur(10px); mask-image:linear-gradient(to bottom,#000 0%,#000 45%,transparent 96%); -webkit-mask-image:linear-gradient(to bottom,#000 0%,#000 45%,transparent 96%); }
-.wordmark-home .opening h1 { font-family:Pinyon,Cormorant,Georgia,serif; font-weight:400; font-size:var(--hero-word-size); line-height:1; letter-spacing:0; color:#f2e9fa; }
+.wordmark-home .opening h1 { font-family:Pinyon,Cormorant,Georgia,serif; font-weight:400; font-size:var(--hero-word-size); line-height:1; letter-spacing:0; color:#f2e9fa; -webkit-user-select:none; user-select:none; }
 .wordmark-home .opening .product-demo { position:relative; z-index:1; display:flex; flex-direction:column; width:min(100%,calc((100svh - 180px)*1.5238)); margin:calc(var(--hero-word-size)*-.36) auto 0; }
 .home-layout .page-content { position:relative; }
 .home-layout [data-home-depth] { translate:0 var(--depth-y,0px); }
@@ -34,9 +34,11 @@
 
 /* Native video pixels supply the window shape; no extra corner treatment. */
 .session-video video { display:block; width:100%; height:auto; aspect-ratio:1600 / 1050; border-radius:0; background:transparent; filter:drop-shadow(0 20px 32px #08050c70); }
-.session-video-actions { display:flex; justify-content:flex-end; min-height:44px; margin-top:8px; }
-.session-playback { display:inline-flex; align-items:center; gap:8px; min-height:44px; padding:8px 0 8px 12px; border:0; background:transparent; color:#cbb9d8; font-size:12px; }
-.session-playback:hover { color:#f2e9fa; }
+.session-video-actions { position:absolute; inset:0; pointer-events:none; }
+.session-playback { display:block; width:100%; height:100%; padding:0; border:0; background:transparent; pointer-events:auto; }
+.session-playback-icon { position:absolute; right:12px; bottom:12px; display:grid; place-items:center; width:36px; height:36px; border:1px solid #f2e9fa24; border-radius:50%; background:#101014c9; color:#f2e9fa; opacity:0; transition:opacity 160ms; }
+.session-playback:focus-visible .session-playback-icon { opacity:1; }
+@media(hover:hover) and (pointer:fine) { .session-playback:hover .session-playback-icon { opacity:1; } }
 .session-playback svg { width:16px; height:16px; fill:none; stroke-width:1.8; }
 .session-playback .session-pause-icon { display:none; }
 .session-playback.is-playing .session-pause-icon { display:block; }
