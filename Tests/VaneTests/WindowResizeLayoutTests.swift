@@ -115,6 +115,15 @@ import XCTest
         try await resizeFixture(capture: true, libraryNavigation: true)
     }
 
+    func testProductionParentRefreshKeepsLibraryViewportOwnedAndPainted() async throws {
+        TestEnvironment.prepare()
+        let mode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.off)
+        defer { BatterySaver.shared.setMode(mode) }
+        try XCTSkipIf(Motion.spaceReduced, "Requires normal motion")
+        try await resizeFixture(capture: true, libraryNavigation: true, refreshLibraryParent: true)
+    }
+
     func testWideSidebarLibraryNavigationKeepsTheResponsiveDocumentPainted() async throws {
         TestEnvironment.prepare()
         let mode = BatterySaver.shared.mode
@@ -146,7 +155,7 @@ import XCTest
                                mixedAxes: Bool = false, sidebarDrag: Bool = false,
                                queuedGeometry: Bool = false, hideBeforeAdmission: Bool = false,
                                libraryNavigation: Bool = false, libraryFloating: Bool = false, rapidLibrary: Bool = false,
-                               librarySidebarWidth: CGFloat = 228) async throws {
+                               librarySidebarWidth: CGFloat = 228, refreshLibraryParent: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -223,7 +232,9 @@ import XCTest
                 }
                 try await presentation(page)
                 if libraryNavigation {
-                    try await captureLibraryPixels(window, store: store, web: page, rapid: rapidLibrary)
+                    if refreshLibraryParent { try await verifyProductionLibraryPermissions(window, store: store, web: page) }
+                    try await captureLibraryPixels(window, store: store, web: page, rapid: rapidLibrary,
+                                                   refreshParent: refreshLibraryParent)
                 } else if sidebarToggle {
                     try await captureSidebarPixels(window, store: store, web: page)
                 } else if capture {
@@ -254,7 +265,57 @@ import XCTest
         if let failure { throw failure }
     }
 
-    private func captureLibraryPixels(_ window: VaneWindow, store: TabStore, web: WKWebView, rapid: Bool) async throws {
+    private func verifyProductionLibraryPermissions(_ window: VaneWindow, store: TabStore, web: WKWebView) async throws {
+        Motion.instant { store.librarySwipeProgress = 0.4; store.findOpen = true }
+        func pending(_ view: NSView) -> Bool {
+            if let bridge = view as? LibraryPaintView { return !bridge.isSettled }
+            return view.subviews.contains(where: pending)
+        }
+        try await compatibilityWait {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return !pending(window.contentView!) && (web.superview as? WebHost)?.resizeLayout.enabled == false
+        }
+        let host = try XCTUnwrap(web.superview as? WebHost)
+        let owner = try XCTUnwrap(host.libraryNavigationPaintOwner)
+        let native = LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0), apply: { _, _ in })
+        XCTAssertNil(native, "Native resize remains excluded during a held Library gesture")
+        native?.cancel()
+        var paints: [@MainActor @Sendable () -> Void] = []
+        let navigation = try XCTUnwrap(LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in },
+            navigation: .init(owner: owner, leading: 0), apply: { _, _ in }),
+            "Production parent metadata must permit Library paint ownership while excluding native resize")
+        defer { navigation.cancel() }
+        navigation.start()
+        let revision = host.resizeLayoutRevision
+        Motion.instant { store.findOpen = false }
+        try await compatibilityWait {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return host.resizeLayoutRevision > revision
+        }
+        XCTAssertTrue(navigation.request(frame: window.frame, sidebarWidth: 0),
+                      "Refreshing the production parent must not cancel Library's active viewport")
+        XCTAssertEqual(web.autoresizingMask, [])
+        XCTAssertNotNil(host.pageResizeOwnershipWillChange)
+        navigation.cancel()
+        Motion.instant { store.spaceGesture.swiping = true; store.findOpen = true }
+        let spaceRevision = host.resizeLayoutRevision
+        try await compatibilityWait {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return host.resizeLayoutRevision > spaceRevision
+        }
+        let spaceNavigation = LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0),
+            navigation: .init(owner: owner, leading: 0), apply: { _, _ in })
+        XCTAssertNil(spaceNavigation, "A Space handoff must still exclude Library viewport ownership")
+        spaceNavigation?.cancel()
+        Motion.instant { store.spaceGesture.swiping = false; store.findOpen = false; store.librarySwipeProgress = nil }
+        try await compatibilityWait { window.contentView?.layoutSubtreeIfNeeded(); return !pending(window.contentView!) }
+        XCTAssertEqual(web.autoresizingMask, [.width, .height])
+        XCTAssertNil(host.pageResizeOwnershipWillChange)
+        try await presentation(web)
+    }
+
+    private func captureLibraryPixels(_ window: VaneWindow, store: TabStore, web: WKWebView, rapid: Bool, refreshParent: Bool = false) async throws {
         try await ResizeNativeWindowAdmission.wait(window, web: web)
         let owner = ResizeCaptureOwner(window: window, stage: "Library navigation")
         let observations = [
@@ -291,12 +352,18 @@ import XCTest
             let stepsPerStroke = rapid ? 20 : max(1, Int(ceil(abs(travel) / 2)))
             for _ in 0..<3 {
                 for step in 0...stepsPerStroke {
-                    Motion.instant { store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke) }
+                    Motion.instant {
+                        store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
+                        if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
+                    }
                     window.contentView?.layoutSubtreeIfNeeded()
                     try await Task.sleep(for:.milliseconds(8))
                 }
                 for step in (0...stepsPerStroke).reversed() {
-                    Motion.instant { store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke) }
+                    Motion.instant {
+                        store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
+                        if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
+                    }
                     window.contentView?.layoutSubtreeIfNeeded()
                     try await Task.sleep(for:.milliseconds(8))
                 }
