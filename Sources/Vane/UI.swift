@@ -68,6 +68,7 @@ struct WebView: NSViewRepresentable {
             host.resizeFraction = NSSize(width: split.vertical ? 1 : weight,
                                          height: split.vertical ? weight : 1)
         }
+        host.didUpdateResizeLayout()
     }
     static func dismantleNSView(_ host: WebHost, coordinator: ()) {
         host.removePage()
@@ -98,6 +99,27 @@ final class WebHost: NSView {
     var resizeLayout = PageResizeLayout()
     var resizeFraction = NSSize(width: 1, height: 1)
     var pageLayoutDidResize: (() -> Void)?
+    var pageResizeOwnershipWillChange: (() -> Void)?
+    var pageResizeLayoutDidUpdate: (() -> Void)?
+    var pageResizeLayoutNeedsUpdate: (() -> Bool)?
+    private(set) var resizeLayoutRevision: UInt = 0
+    private var resizeLayoutAckScheduled = false
+
+    /// Same-size SwiftUI updates need an acknowledgment after native layout too.
+    /// Schedule only this host's normal layout; never force the containing tree.
+    func didUpdateResizeLayout() {
+        resizeLayoutRevision &+= 1
+        resizeLayoutAckScheduled = pageResizeLayoutNeedsUpdate?() == true
+        if resizeLayoutAckScheduled { needsLayout = true }
+    }
+
+    override func layout() {
+        super.layout()
+        guard resizeLayoutAckScheduled else { return }
+        resizeLayoutAckScheduled = false
+        guard pageResizeLayoutNeedsUpdate?() == true else { return }
+        pageResizeLayoutDidUpdate?()
+    }
     private(set) var web: WKWebView?
     /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
     /// of the window's key loop and out of the accessibility tree, so an invisible page is
@@ -105,7 +127,12 @@ final class WebHost: NSView {
     /// Measured: it does *not* stop the page's media, unlike taking the view out of the
     /// window, which is what the mini audio player is up against in the first place.
     var offscreen = false {
-        didSet { if offscreen != oldValue { isHidden = offscreen } }
+        didSet {
+            if offscreen != oldValue {
+                if offscreen { pageResizeOwnershipWillChange?() }
+                isHidden = offscreen
+            }
+        }
     }
 
     /// `offscreen` at init and not only through the property, so a host is what it is from
@@ -122,18 +149,50 @@ final class WebHost: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        pageResizeOwnershipWillChange?()
         if !offscreen, let web { PageResizeStyle.warm(web) }
+    }
+
+    override func viewWillMove(toSuperview newSuperview: NSView?) {
+        if newSuperview !== superview { pageResizeOwnershipWillChange?() }
+        super.viewWillMove(toSuperview: newSuperview)
+    }
+
+    override func viewDidHide() {
+        pageResizeOwnershipWillChange?()
+        super.viewDidHide()
+    }
+
+    override func willRemoveSubview(_ subview: NSView) {
+        if subview === web { pageResizeOwnershipWillChange?() }
+        super.willRemoveSubview(subview)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         let previous = frame.size
         let wasEmpty = frame.width <= 0 || frame.height <= 0
+        // Sidebar/split drags have no native window proposal. Reactivate the
+        // automatic hints before ordinary autoresizing, including after a window
+        // drag cleared them. Prepared pages have their native mask suspended.
+        if !wasEmpty, !offscreen, window != nil, let web, web.superview === self,
+           !web.isHiddenOrHasHiddenAncestor,
+           (newSize.width != previous.width && web.autoresizingMask.contains(.width)
+            || newSize.height != previous.height && web.autoresizingMask.contains(.height)) {
+            let mask = web.autoresizingMask
+            let next = NSSize(width: web.frame.width + (mask.contains(.width) ? newSize.width - previous.width : 0),
+                              height: web.frame.height + (mask.contains(.height) ? newSize.height - previous.height : 0))
+            PageResizeStyle.prepare(web, nextSize: next)
+        }
         super.setFrameSize(newSize)
-        if previous != newSize { pageLayoutDidResize?() }
+        if previous != newSize {
+            resizeLayoutAckScheduled = false
+            pageLayoutDidResize?()
+        }
         if wasEmpty, !offscreen, let web { PageResizeStyle.warm(web) }
     }
 
     func removePage() {
+        pageResizeOwnershipWillChange?()
         for page in recent {
             Inspector.hideAttached(to: page, in: self)
             if page.superview === self { page.removeFromSuperview() }
@@ -231,10 +290,13 @@ final class WebHost: NSView {
     func show(_ next: WKWebView, keeping live: [WKWebView] = []) {
         guard !CallPopout.holds(next) else { return }
         let outgoing = web
+        if outgoing !== next { pageResizeOwnershipWillChange?() }
         if let outgoing, outgoing !== next { Inspector.hideAttached(to: outgoing, in: self) }
         if next.superview !== self {
             if let previousHost = next.superview {
                 Inspector.hideAttached(to: next, in: previousHost)
+                // Retire the previous host's resize owner before destination geometry.
+                next.removeFromSuperview()
             }
             next.frame = bounds
             next.autoresizingMask = [.width, .height]
@@ -287,6 +349,7 @@ final class WebHost: NSView {
     /// Put a floating call back without replacing the newer tab this host now shows.
     func restoreCallPage(_ page: WKWebView) {
         if web == nil || web === page { show(page); return }
+        if page.superview !== self { page.removeFromSuperview() }
         page.frame = bounds
         page.autoresizingMask = [.width, .height]
         page.isHidden = true
@@ -427,7 +490,7 @@ struct BrowserWindow: View {
     var presentsPalette = true
     @ObservedObject private var batterySaver = BatterySaver.shared
     @EnvironmentObject var store: TabStore
-    @EnvironmentObject var profiles: ProfileManager
+    @ProfileChromeObserved var profiles = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The sidebar sliding in over the page because the pointer went to the window's edge.
     private var peeking: Bool {
@@ -435,14 +498,10 @@ struct BrowserWindow: View {
         nonmutating set { store.sidebarPeeking = newValue }
     }
     @State private var peekTask: Task<Void, Never>?
-    /// App-wide, so every window's sidebar is the width the user last dragged one to.
-    @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var library = Library.shared
-    /// The window's own width, so the Library can be told how much it may take from the
-    /// page. `onGeometryChange` rather than a `GeometryReader` around the stack: the reader
-    /// would have to wrap everything to measure it, and this is one number.
+    /// Available chrome width, capped once both navigation columns fit. The page
+    /// still receives exact native geometry without republishing every window pixel.
     @State private var windowWidth: CGFloat = 0
-    private var sidebarWidth: CGFloat { SidebarWidth.fitting(sidebar.width, in: windowWidth) }
 
     /// Whether the window is showing any chrome at all, which is what the traffic lights
     /// follow. The Library counts: it stands where the sidebar does, with the lights' own
@@ -464,15 +523,24 @@ struct BrowserWindow: View {
     }
 
     var body: some View {
-        ZStack(alignment: .leading) {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.browser")
+        #endif
+        let chromeLayout = PageResizeLayout(librarySection: library.section, spaces: spaceCount,
+                                            isPrivate: store.isPrivate)
+        return ZStack(alignment: .leading) {
             WindowGlass()
             SpaceGround()
             LibraryNavigationLayout(gesture: store.libraryGesture,
                 libraryOpen: store.libraryOpen, sidebarShown: store.sidebarShown,
-                floating: store.sidebarFloatingChrome, sidebarWidth: sidebarWidth,
+                floating: store.sidebarFloatingChrome,
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
                 page: WebCard().modifier(DownloadFeedbackAnchor(target: .page))
+                    .modifier(SidebarPageResizeMetadata(sidebarShown: store.sidebarShown,
+                        layout: PageResizeLayout(librarySection: store.libraryOpen ? library.section : nil,
+                            spaces: spaceCount, isPrivate: store.isPrivate,
+                            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping)))
                     .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
                 sidebar: sidebarSurface, panel: LibraryPanel())
             edgeStrip
@@ -481,7 +549,7 @@ struct BrowserWindow: View {
             // Not while the Library is up: the rail is not the sidebar, and is not dragged.
             if store.sidebarShown && !store.libraryOpen {
                 // Arc's rounded rule sits 4pt inside the sidebar's trailing edge.
-                SidebarHandle().offset(x: sidebarWidth - SidebarHandle.hitTestWidth)
+                SidebarHandle()
                     .zIndex(1)
             }
             if presentsPalette { BrowserPaletteOverlay().zIndex(2) }
@@ -491,7 +559,7 @@ struct BrowserWindow: View {
         // traffic lights instead of beside them, and the card loses its top inset.
         .ignoresSafeArea()
         .modifier(PeekContentTracking(area: store.peekContent))
-        .modifier(ToastPresentation(store: store, sidebarWidth: sidebarWidth))
+        .modifier(SidebarToastPresentation(store: store))
         .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
@@ -507,8 +575,10 @@ struct BrowserWindow: View {
         .sheet(isPresented: $store.organizationSheet.presented(when: store.profileVisible)) {
             TabOrganizationSheet(store: store)
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
-        .environment(\.sidebarWindowWidth, windowWidth > 0 ? windowWidth : .infinity)
+        .onGeometryChange(for: CGFloat.self) {
+            chromeLayout.chromeWidth(at: $0.size.width)
+        } action: { windowWidth = $0 }
+        .environment(\.sidebarWindowWidth, windowWidth > 0 ? min(windowWidth, SidebarWidth.maximum + 200) : .infinity)
         .environment(\.librarySpaceCatalog, librarySpaces)
         .onAppear {
             if !store.isPrivate { librarySpaces.prepare(manager: profiles) }
@@ -545,11 +615,6 @@ struct BrowserWindow: View {
         .librarySwipe(store)
         .onAppear { store.applySpaceAppearance() }
         .environmentObject(store.spaceGesture)
-        .environment(\.pageResizeLayout, PageResizeLayout(
-            sidebarWidth: store.sidebarShown ? sidebar.width : 0,
-            librarySection: store.libraryOpen ? library.section : nil,
-            spaces: spaceCount, isPrivate: store.isPrivate,
-            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping))
         // A cached profile adopts the window's current presentation at rest. The
         // revision survives detachment, unlike the transaction used to write the model.
         .transaction(value: store.sidebarPresentationRevision) {
@@ -585,27 +650,7 @@ struct BrowserWindow: View {
         return Sidebar()
             .disabled(!visible || store.palette != nil || store.libraryOpen)
             .accessibilityHidden(!visible || store.palette != nil || store.libraryOpen)
-            .frame(width: sidebarWidth)
-            .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
-            .background {
-                ZStack {
-                    WindowGlass()
-                    NativeThemeWashCopy(gesture: store.spaceGesture)
-                }
-                    .clipShape(.rect(cornerRadius: Look.floatingSidebarRadius))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
-                            .strokeBorder(Look.floatingSidebarStroke,
-                                          lineWidth: Look.floatingSidebarStrokeWidth)
-                    }
-                    .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
-                    .opacity(floating ? 1 : 0)
-                    .allowsHitTesting(false)
-            }
-            .modifier(SidebarTrafficLightMotion(store: store,
-                slide: visible ? 0 : -(sidebarWidth + 2 * Look.floatingSidebarGap),
-                inset: floating ? Look.floatingSidebarGap : 0,
-                visibility: visible ? 1 : 0,
+            .modifier(SidebarSurfaceLayout(store: store, visible: visible, floating: floating,
                 libraryOpen: store.libraryOpen, peeking: !store.sidebarShown && peeking))
             .allowsHitTesting(visible && !store.libraryOpen)
             // Above the page during edge reveal and dismissal; below the resize handle.
@@ -627,6 +672,63 @@ struct BrowserWindow: View {
         }
     }
 
+}
+
+/// Width changes relayout the surface without rebuilding its sidebar content.
+private struct SidebarSurfaceLayout: ViewModifier {
+    @WindowSidebarWidth private var width
+    let store: TabStore
+    let visible: Bool
+    let floating: Bool
+    let libraryOpen: Bool
+    let peeking: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: width)
+            .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
+            .background {
+                ZStack {
+                    WindowGlass()
+                    NativeThemeWashCopy(gesture: store.spaceGesture)
+                }
+                .clipShape(.rect(cornerRadius: Look.floatingSidebarRadius))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
+                        .strokeBorder(Look.floatingSidebarStroke, lineWidth: Look.floatingSidebarStrokeWidth)
+                }
+                .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
+                .opacity(floating ? 1 : 0)
+                .allowsHitTesting(false)
+            }
+            .modifier(SidebarTrafficLightMotion(store: store,
+                slide: visible ? 0 : -(width + 2 * Look.floatingSidebarGap),
+                inset: floating ? Look.floatingSidebarGap : 0,
+                visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking))
+    }
+}
+
+private struct SidebarToastPresentation: ViewModifier {
+    @WindowSidebarWidth private var width
+    let store: TabStore
+
+    func body(content: Content) -> some View {
+        content.modifier(ToastPresentation(store: store, sidebarWidth: width))
+    }
+}
+
+/// The native page hosts need the raw shared preference for future window fitting.
+/// Scope its changing environment to the page tree, including splits and offscreen pages.
+private struct SidebarPageResizeMetadata: ViewModifier {
+    @ObservedObject private var sidebar = SidebarWidth.shared
+    let sidebarShown: Bool
+    var layout: PageResizeLayout
+
+    func body(content: Content) -> some View {
+        var current = layout
+        current.sidebarWidth = sidebarShown ? sidebar.width : 0
+        return content.environment(\.pageResizeLayout, current)
+    }
 }
 
 /// Shared by standalone SwiftUI windows and the native overlay above Space travel.
@@ -678,7 +780,7 @@ struct SpaceGround: View {
     @WindowSidebarWidth private var sidebarWidth
     @EnvironmentObject var store: TabStore
     @EnvironmentObject private var gesture: SpaceGesture
-    @EnvironmentObject var profiles: ProfileManager
+    @ProfileChromeObserved var profiles = ProfileManager.shared
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -735,7 +837,7 @@ struct WebCard: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.libraryPageLeadingInset) private var libraryPageLeadingInset
     @ObservedObject private var batterySaver = BatterySaver.shared
-    @ObservedObject private var profileManager = ProfileManager.shared
+    @ProfileChromeObserved private var profileManager = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Clearance between the chrome and the page; Little Vane uses no gap.
     var topGap: CGFloat = Look.cardGap
@@ -925,8 +1027,7 @@ private struct Sidebar: View {
     @AppStorage(LibraryHoverCategory.key, store: .vane) private var hoverCategory = "downloads"
     @State private var previewItems: [LibraryHoverItem] = []
     @ObservedObject private var batterySaver = BatterySaver.shared
-    @WindowSidebarWidth private var sidebarWidth
-    @ObservedObject private var previewProfiles = ProfileManager.shared
+    @ProfileChromeObserved private var previewProfiles = ProfileManager.shared
     @State private var sidebarHeight: CGFloat = 0
 
     private var downloads: DownloadLibrary { DownloadLibrary.library(for: store.profileID) }
@@ -944,6 +1045,9 @@ private struct Sidebar: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.sidebar")
+        #endif
         SidebarChrome {
             TopRow()
             AddressPill(tab: store.active)
@@ -1046,7 +1150,6 @@ private struct Sidebar: View {
         .onChange(of: store.profileVisible) { _, visible in
             if !visible { downloadsHover.dismiss() }
         }
-        .frame(width: sidebarWidth, alignment: .leading)
         .background(SidebarDragAnchor(preview: dragPreview, store: store, region: .root))
         .environmentObject(dragPreview)
         .environment(\.sidebarDragPreview, dragPreview)
@@ -1111,6 +1214,9 @@ struct TopRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.header")
+        #endif
         HStack(spacing: layout.headerSpacing) {
             Spacer().frame(width: Look.trafficLights)
             if !layout.usesOverflow { toggle }
@@ -1348,6 +1454,9 @@ private struct PillBody: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.pill")
+        #endif
         field
         .animation(reduced ? nil : Look.quick, value: hovering)
         .animation(reduced ? nil : Look.quick, value: compact)
@@ -1760,6 +1869,9 @@ private struct Favorites: View {
     @State private var side: Landing.Band?
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.favorites")
+        #endif
         let pinned = previewTabs
         if !pinned.isEmpty {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),

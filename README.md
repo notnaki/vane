@@ -166,9 +166,12 @@ and [release procedures](docs/RELEASING.md) for testing and distribution.
 Vane uses the system WebKit engine. Support depends on the installed macOS and
 WebKit version, the website, and sometimes signing or Apple-managed capabilities.
 
-- **Compatibility is incomplete.** Scoped macOS 27 public-demo and local-fixture
-  passes do not establish provider sign-ins, subscription streaming, cross-network
-  calls, all hardware permissions, or minimum-macOS/notarized-candidate coverage.
+- **Compatibility is incomplete.** Scoped macOS 27 public-demo, local-fixture, and
+  [live streaming checks](docs/STREAMING-COMPATIBILITY.md) cover only their listed
+  environments and flows. Netflix 4K SDR/Dolby Vision, Spotify music, and Disney+
+  protected video at 720p were
+  observed on one signed, notarized nightly; this does not establish every service,
+  provider sign-in, cross-network call, hardware permission, or minimum-macOS setup.
   See the [compatibility matrix](docs/REAL-SITE-COMPATIBILITY.md).
 - **Passkeys are pending** Apple managed browser entitlement approval, matching
   provisioning, and registration/sign-in validation. Developer ID alone is insufficient.
@@ -186,7 +189,9 @@ WebKit version, the website, and sometimes signing or Apple-managed capabilities
   files update automatically after opt-in linkage, can be checked manually, and
   retain their last-good rules on failure. Disk imports remain fixed snapshots;
   URL subscriptions also update automatically.
-- **Data does not sync between Macs.** Backup exports offer password encryption and exclude Keychain
+- **iCloud sync requires a provisioned build.** Sync starts off, with individual category switches.
+  Downloaded files stay local; cross-Mac propagation is unverified. See
+  [iCloud setup and boundaries](docs/ICLOUD-PROVISIONING.md). Backup exports offer password encryption and exclude Keychain
   secrets, cookies/site storage, downloaded files, and extension code/data.
   Supported Chromium imports offer a separate, opt-in cookie/session copy;
   unsupported encryption and device-bound credentials are excluded, and copied

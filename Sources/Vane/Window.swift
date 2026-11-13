@@ -15,14 +15,40 @@ final class VaneWindow: NSWindow {
     private var resizeAnchor: WindowResizeAnchor?
     private var committingResize = false
     private var sidebarResizePreparation: SidebarPageResizePreparation?
+    private var livePageResizeBuffer: LivePageResizeBuffer?
+    private var liveResizeOwner = UUID()
+    private var sidebarDrag = false
+    private var sidebarResizePublication: SidebarResizePublication?
 
     /// A second close command cancels the pending close; a command after its
     /// publication may proceed as a normal reopen.
     func cancelSidebarResize() -> Bool {
+        cancelLiveSidebarResize()
         let waiting = sidebarResizePreparation?.awaitingPaint == true
         sidebarResizePreparation?.cancel()
         sidebarResizePreparation = nil
         return waiting
+    }
+
+    /// Gesture disappearance belongs only to the continuous drag. The separate
+    /// discrete close may already be painting/animating its covered endpoint.
+    func cancelLiveSidebarResize() {
+        if sidebarDrag {
+            sidebarResizePublication?.cancel()
+            livePageResizeBuffer?.cancel()
+        }
+    }
+
+    override var contentView: NSView? {
+        willSet {
+            if newValue !== contentView { livePageResizeBuffer?.cancel() }
+        }
+    }
+
+    override func orderOut(_ sender: Any?) {
+        resizeAnchor = nil
+        livePageResizeBuffer?.cancel()
+        super.orderOut(sender)
     }
 
     func prepareSidebarClose(_ store: TabStore) -> Bool {
@@ -42,10 +68,74 @@ final class VaneWindow: NSWindow {
         return true
     }
 
-    var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true }
+    var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true || livePageResizeBuffer?.isPreparing == true }
+
+    /// A covered native commit already runs AppKit's window layout lifecycle.
+    /// Its prepared WebKit viewport does not need another eager hosting render
+    /// from inside setFrameSize. All other sizing retains immediate propagation.
+    var isCommittingBufferedPageResize: Bool {
+        committingResize && resizeAnchor != nil && !sidebarDrag
+            && livePageResizeBuffer?.usesNativeSidebarSizing == false
+    }
+
+    func beginSidebarResize(_ store: TabStore, frameDriver: SidebarResizePublication.FrameDriver? = nil) {
+        _ = cancelSidebarResize()
+        livePageResizeBuffer?.cancel()
+        resizePreparation?.cancel()
+        sidebarDrag = true
+        let owner = UUID()
+        liveResizeOwner = owner
+        livePageResizeBuffer = LivePageResizeBuffer(window: self, axes: NSSize(width: 1, height: 0),
+            isCurrent: { [weak self, weak store] in
+                guard let self, let store else { return false }
+                return self.liveResizeOwner == owner && store.window === self && store.profileVisible
+                    && store.sidebarShown && !store.libraryOpen
+            }, apply: { [weak self] _, width in
+                if let width { self?.sidebarResizePublication?.enqueue(width) }
+            }, completion: { [weak self] in
+                guard let self, self.liveResizeOwner == owner else { return }
+                self.sidebarResizePublication?.cancel()
+                self.sidebarResizePublication = nil
+                self.livePageResizeBuffer = nil
+                self.sidebarDrag = false
+            })
+        guard let buffer = livePageResizeBuffer, let root = contentView else {
+            livePageResizeBuffer?.cancel()
+            sidebarDrag = false
+            return
+        }
+        let frameLayout = SidebarResizeFrameLayout(window: self, root: root,
+            isCurrent: { [weak self, weak buffer] in
+                guard let self, let buffer, self.liveResizeOwner == owner,
+                      self.livePageResizeBuffer === buffer else { return false }
+                return buffer.validateSidebarPublication()
+            })
+        sidebarResizePublication = SidebarResizePublication(buffer: buffer,
+            frameDriver: frameDriver ?? SidebarResizePublication.displayFrames(for: self),
+            afterFrame: { frameLayout.presentFrame() },
+            publish: { [weak store] width in
+                let previous = SidebarWidth.shared.width
+                SidebarWidth.shared.setLiveWidth(width, available: store?.window?.contentView?.bounds.width)
+                frameLayout.didPublishWidth(from: previous, to: SidebarWidth.shared.width)
+            })
+        buffer.start()
+    }
+
+    @discardableResult func updateSidebarResize(_ width: CGFloat) -> Bool {
+        guard sidebarDrag else { return false }
+        return livePageResizeBuffer?.request(frame: frame, sidebarWidth: width) == true
+    }
+
+    @discardableResult func endSidebarResize(_ width: CGFloat, completion: @escaping @MainActor () -> Void) -> Bool {
+        guard updateSidebarResize(width), let buffer = livePageResizeBuffer else { return false }
+        sidebarResizePublication?.finish()
+        buffer.finish(completion)
+        return true
+    }
 
     @discardableResult func preparePageResize(frame: NSRect, display: Bool) -> Bool {
         _ = cancelSidebarResize()
+        livePageResizeBuffer?.cancel()
         if resizePreparation == nil {
             resizePreparation = WindowResizePreparation(window: self) { [weak self] frame, display in
                 self?.commitPreparedResize(frame, display: display)
@@ -63,24 +153,42 @@ final class VaneWindow: NSWindow {
 
     func beginPageResize(at point: NSPoint = NSEvent.mouseLocation) {
         _ = cancelSidebarResize()
+        livePageResizeBuffer?.cancel()
+        resizePreparation?.cancel()
         resizeAnchor = WindowResizeAnchor(frame: frame, pointer: point)
+        let nearHorizontal = min(abs(point.x - frame.minX), abs(point.x - frame.maxX)) <= 24
+        let nearVertical = min(abs(point.y - frame.minY), abs(point.y - frame.maxY)) <= 24
+        let owner = UUID()
+        liveResizeOwner = owner
+        livePageResizeBuffer = LivePageResizeBuffer(window: self,
+            axes: NSSize(width: nearHorizontal ? 1 : 0, height: nearVertical ? 1 : 0),
+            frameDriver: SidebarResizePublication.displayFrames(for: self),
+            apply: { [weak self] frame, _ in self?.commitPreparedResize(frame, display: true) },
+            completion: { [weak self] in
+                guard let self, self.liveResizeOwner == owner else { return }
+                self.livePageResizeBuffer = nil
+            })
+        livePageResizeBuffer?.start()
         resizePreparation?.beginLiveResize()
     }
 
     func proposedPageResize(_ size: NSSize) -> NSSize {
         guard !committingResize, let resizeAnchor, !styleMask.contains(.fullScreen) else { return size }
         let target = resizeAnchor.frame(for: size)
+        if livePageResizeBuffer?.request(frame: target) == true { return frame.size }
         return preparePageResize(frame: target, display: true) ? frame.size : size
     }
 
     func endPageResize() {
         resizeAnchor = nil
+        livePageResizeBuffer?.finish()
         resizePreparation?.endLiveResize()
     }
 
     override func close() {
         _ = cancelSidebarResize()
         endPageResize()
+        livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.close()
     }
@@ -88,6 +196,7 @@ final class VaneWindow: NSWindow {
     override func miniaturize(_ sender: Any?) {
         _ = cancelSidebarResize()
         endPageResize()
+        livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.miniaturize(sender)
     }
@@ -95,6 +204,7 @@ final class VaneWindow: NSWindow {
     override func toggleFullScreen(_ sender: Any?) {
         _ = cancelSidebarResize()
         endPageResize()
+        livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.toggleFullScreen(sender)
     }
@@ -832,6 +942,35 @@ extension VaneWindow {
         return arriving
     }
 
+    /// Prepare only a committed navigation target. Its profile remains parked
+    /// and hidden: window, footer, traffic lights and input still belong to source.
+    @discardableResult
+    static func prepareHop(_ source: TabStore, to space: Space) -> TabStore? {
+        guard !source.isPrivate, !source.isLittle, !source.isParked,
+              space.profileID != source.profileID, let window = source.window,
+              window.delegate is WindowDelegate,
+              let profile = ProfileManager.shared.profiles.first(where: { $0.id == space.profileID }),
+              let host = window.contentView as? BrowserWindowHost else { return nil }
+        let arriving = parked(profile.id, in: window) ?? TabStore(profileID: profile.id, space: space)
+        guard arriving !== source, arriving.window == nil else { return nil }
+        arriving.parkedIn = window
+        arriving.profileVisible = false
+        arriving.sidebarShown = source.sidebarShown
+        arriving.sidebarPeeking = source.sidebarPeeking
+        arriving.resolveStaleSpace()
+        arriving.switchTo(space: space)
+        // Construct only the pages this explicit navigation is committing to.
+        // Do not claim their SharedTabs presentation lease or move an existing
+        // page out of another window, and preserve recovery/authentication gates.
+        for tab in arriving.onScreenTabs where !tab.tornDown && !tab.needsRecovery
+            && tab.easelSession == nil && !arriving.isTabLocked(tab.id) {
+            tab.resume()
+            if !tab.suspended { _ = tab.web }
+        }
+        host.prepare(arriving)
+        return arriving
+    }
+
     /// The store this window is holding for `profileID` behind the one it is showing, if it
     /// has been in that profile before.
     private static func parked(_ profileID: UUID, in window: NSWindow) -> TabStore? {
@@ -987,6 +1126,7 @@ extension VaneWindow {
         super.setFrameSize(newSize)
         guard previous != newSize, window != nil, !isHiddenOrHasHiddenAncestor,
               !applyingFrame else { return }
+        guard (window as? VaneWindow)?.isCommittingBufferedPageResize != true else { return }
         applyingFrame = true
         defer { applyingFrame = false }
         super.layout()
@@ -1101,6 +1241,60 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    private func profileHosts(for store: TabStore) -> ProfileHosts {
+        let id = ObjectIdentifier(store)
+        if let existing = hosts[id] { return existing }
+        let content = BrowserHostingView(rootView: BrowserWindow(presentsPalette: false)
+            .environmentObject(store)
+            .environmentObject(ProfileManager.shared)
+            .environment(\.spaceFooterPresentation, footerPresentation)
+            .font(Look.text))
+        // The outer native container supplies the frame; do not separately
+        // measure minimum, ideal and maximum sizes on each resize.
+        content.sizingOptions = []
+        let palette = BrowserPaletteHost(rootView: AnyView(BrowserPaletteOverlay()
+            .environmentObject(store)
+            .environmentObject(ProfileManager.shared)
+            .spaceChrome(store)
+            .vaneMotionPolicy()
+            .font(Look.text)
+            .ignoresSafeArea()))
+        palette.store = store
+        palette.sizingOptions = []
+        let host = ProfileHosts(content: content, palette: palette)
+        hosts[id] = host
+        return host
+    }
+
+    func prepare(_ store: TabStore) {
+        guard let window, store.window == nil, store.parkedIn === window,
+              !store.profileVisible else { return }
+        let host = profileHosts(for: store)
+        let visible = current.flatMap { hosts[$0]?.content }
+        for view in host.views {
+            view.isHidden = true
+            view.frame = bounds
+            view.autoresizingMask = [.width, .height]
+        }
+        if host.content.superview !== self {
+            addSubview(host.content, positioned: .below, relativeTo: visible ?? paletteLayer)
+        }
+        if host.palette.superview !== paletteLayer { paletteLayer.addSubview(host.palette) }
+        host.content.needsLayout = true
+        host.palette.needsLayout = true
+        host.content.layoutSubtreeIfNeeded()
+        host.palette.layoutSubtreeIfNeeded()
+        CATransaction.flush()
+    }
+
+    /// A committed profile already has its captured native rows. Prepare the
+    /// displayed roots without walking the parked profiles' pending layouts.
+    func layoutDisplayedProfile() {
+        guard let current, let host = hosts[current] else { return }
+        host.content.layoutSubtreeIfNeeded()
+        host.palette.layoutSubtreeIfNeeded()
+    }
+
     private func show(_ store: TabStore) {
         let id = ObjectIdentifier(store)
         footerPresentation.activate(store)
@@ -1110,29 +1304,7 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         for stale in Array(hosts.keys) where !kept.contains(stale) {
             hosts.removeValue(forKey: stale)?.views.forEach { $0.removeFromSuperview() }
         }
-        let host: ProfileHosts
-        if let existing = hosts[id] { host = existing }
-        else {
-            let content = BrowserHostingView(rootView: BrowserWindow(presentsPalette: false)
-                .environmentObject(store)
-                .environmentObject(ProfileManager.shared)
-                .environment(\.spaceFooterPresentation, footerPresentation)
-                .font(Look.text))
-            // The outer native container supplies the frame; do not separately
-            // measure minimum, ideal and maximum sizes on each resize.
-            content.sizingOptions = []
-            let palette = BrowserPaletteHost(rootView: AnyView(BrowserPaletteOverlay()
-                .environmentObject(store)
-                .environmentObject(ProfileManager.shared)
-                .spaceChrome(store)
-                .vaneMotionPolicy()
-                .font(Look.text)
-                .ignoresSafeArea()))
-            palette.store = store
-            palette.sizingOptions = []
-            host = ProfileHosts(content: content, palette: palette)
-            hosts[id] = host
-        }
+        let host = profileHosts(for: store)
         let departing = current.flatMap { hosts[$0] }
         for view in host.views {
             view.frame = bounds
@@ -1273,6 +1445,31 @@ private struct NativeSpacePreview: View {
     /// A completed cover can remain mounted for presentation handoff. Its identity is
     /// still useful for cleanup, but it must never reacquire input or animation ownership.
     var isActive: Bool { !finished }
+    /// Failure-only fixture evidence; reading this must not advance the handoff.
+    var retirementDiagnosticString: String {
+        let store = retirementStore ?? destination ?? source
+        let acknowledgement = store.flatMap { sidebarAcknowledgements[ObjectIdentifier($0)] }
+        let ready = retirementStore.map {
+            SidebarNativeReadinessCoordinator.shared.isReady(
+                SidebarNativeReadinessScope(store: $0, spaceID: retirementSpaceID),
+                allowingUnregistered: !requiresNativePopulation)
+        }
+        let sections = store?.spaceGesture.sectionsView
+        return "finished=\(finished) retired=\(retired) completingSelection=\(completingSelection)"
+            + " hasStartedLanding=\(hasStartedLanding) animationID=\(String(describing: animationID))"
+            + " ownsSidebarVisibility=\(ownsSidebarVisibility) requiresNativePopulation=\(requiresNativePopulation)"
+            + " retirementStore=\(String(describing: retirementStore.map { ObjectIdentifier($0) }))"
+            + " store=\(String(describing: store.map { ObjectIdentifier($0) }))"
+            + " currentSpaceID=\(String(describing: store?.currentSpaceID)) retirementSpaceID=\(String(describing: retirementSpaceID))"
+            + " acknowledgement=\(String(describing: acknowledgement)) populationReady=\(String(describing: ready))"
+            + " swiping=\(String(describing: store?.spaceSwiping)) profileSliding=\(String(describing: store?.spaceGesture.profileSliding))"
+            + " drag=\(String(describing: store?.spaceDrag)) attached=\(window != nil)"
+            + " storeWindowMatches=\(store?.window != nil && store?.window === window)"
+            + " sectionsWindowMatches=\(sections?.window != nil && sections?.window === window)"
+            + " sectionsFrame=\(String(describing: sections?.frame)) sectionsBounds=\(String(describing: sections?.bounds))"
+            + " retirementScheduled=\(retirementScheduled) observingReadiness=\(retirementReadinessObservation != nil)"
+            + " hasRetirementTimeout=\(retirementTimeout != nil) offset=\(offset)"
+    }
     private var restingSpaceID: UUID?
     fileprivate var completedSpaceID: UUID { restingSpaceID ?? targetID }
     func isDestination(_ store: TabStore) -> Bool { destination === store }
@@ -1284,18 +1481,42 @@ private struct NativeSpacePreview: View {
         guard (!finished || completingSelection), destination !== store else { return }
         destination = store
         ownsSidebarVisibility = true
-        store.spaceSwiping = true
-        store.spaceGesture.outgoing = originPreview
-        store.spaceGesture.neighbour = preparedTarget
-        store.spaceGesture.previewDirection = direction
-        store.spaceGesture.nativeDrag = lastPublishedDrag
-        store.spaceGesture.profileSlidesFavorites = includesFavorites
-        store.spaceGesture.profileSliding = true
+        store.spaceGesture.withPresentationUpdate {
+            store.spaceSwiping = true
+            store.spaceGesture.outgoing = originPreview
+            store.spaceGesture.neighbour = preparedTarget
+            store.spaceGesture.previewDirection = direction
+            store.spaceGesture.nativeDrag = lastPublishedDrag
+            store.spaceGesture.profileSlidesFavorites = includesFavorites
+            store.spaceGesture.profileSliding = true
+        }
         // Paint before BrowserWindowHost exposes a cached root. Its old settled
         // wash must not appear for a frame before the progress display link runs.
         // Until CA commits a new animation, offset can still report its old/model
         // endpoint; retain the progress actually published for this landing.
         store.spaceGesture.trackGround?(Double(min(1, abs(lastPublishedDrag / travelWidth))))
+        store.spaceGesture.nativeGroundDidUpdate = { [weak self] in self?.joinDestinationGround() }
+        joinDestinationGround()
+    }
+
+    private weak var joinedDestinationSurface: ThemeWashSurface?
+    private var finishDestinationGround: ((Space?) -> Void)?
+
+    private func joinDestinationGround() {
+        guard isActive, let source, let destination, source !== destination,
+              let origin = source.spaceGesture.groundSurface,
+              let arriving = destination.spaceGesture.groundSurface,
+              arriving !== joinedDestinationSurface else { return }
+        finishDestinationGround?(destination.swipeSpace)
+        finishDestinationGround = destination.spaceGesture.joinNativeGround?(origin)
+        if finishDestinationGround != nil { joinedDestinationSurface = arriving }
+    }
+
+    private func releaseDestinationGround() {
+        destination?.spaceGesture.nativeGroundDidUpdate = nil
+        finishDestinationGround?(destination?.swipeSpace)
+        finishDestinationGround = nil
+        joinedDestinationSurface = nil
     }
 
     func follows(_ target: Space, direction: Int) -> Bool {
@@ -1320,6 +1541,7 @@ private struct NativeSpacePreview: View {
         progressLink = nil
         source?.spaceGesture.monitor.interruptLanding()
         destination?.spaceGesture.monitor.interruptLanding()
+        releaseDestinationGround()
         finishGround?(source?.swipeSpace)
         finishGround = nil
         if let previous = source, previous !== store {
@@ -1370,11 +1592,10 @@ private struct NativeSpacePreview: View {
     }
 
     /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
-    func track(drag: CGFloat) {
+    func track(drag: CGFloat, at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard isActive else { return }
         ownsSidebarVisibility = true
         lastPublishedDrag = drag
-        let now = ProcessInfo.processInfo.systemUptime
         if let previous = lastTracking {
             let dt = now - previous.time
             if dt > 0.001, dt < 0.1 { trackingVelocity = (drag - previous.offset) / dt }
@@ -1417,9 +1638,37 @@ private struct NativeSpacePreview: View {
     }
     private var finishGround: ((Space?) -> Void)?
     private var animationID: UUID?
+    private(set) var hasStartedLanding = false
+    private var committedTrackingVelocity: CGFloat?
+
+    private func freshTrackingVelocity(at now: TimeInterval) -> CGFloat {
+        guard let lastTracking,
+              now - lastTracking.time < 0.1 else { return 0 }
+        return trackingVelocity
+    }
+
+    /// Selection stays queued until after its input action returns. A sidebar
+    /// hidden before that turn must still finish the committed profile change.
+    func armLanding(to target: Space, at now: TimeInterval = ProcessInfo.processInfo.systemUptime,
+                    completion: @escaping () -> Void) {
+        guard isActive else { return }
+        // A committed release owns this sample even if page preparation takes
+        // longer than the finger-event freshness window.
+        committedTrackingVelocity = freshTrackingVelocity(at: now)
+        ownsSidebarVisibility = true
+        self.completion = completion
+        restingSpaceID = target.id
+        source?.spaceGesture.withPresentationUpdate {
+            source?.spaceGesture.profileSlidesFavorites = includesFavorites
+            source?.spaceGesture.profileSliding = true
+        }
+    }
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
+        let releaseVelocity = committedTrackingVelocity ?? freshTrackingVelocity(at: ProcessInfo.processInfo.systemUptime)
+        committedTrackingVelocity = nil
+        hasStartedLanding = true
         ownsSidebarVisibility = true
         self.completion = completion
         restingSpaceID = returning ? preparedOrigin.id : targetID
@@ -1454,6 +1703,9 @@ private struct NativeSpacePreview: View {
                 self.finish()
             }
         }
+        let animationStart = CACurrentMediaTime()
+        var groundTiming: CABasicAnimation?
+        var groundFraction = 0.0
         for (layer, from) in [(outgoingLayer, fromOutgoing), (incomingLayer, fromIncoming)] {
             let animation: CABasicAnimation
             if returning {
@@ -1477,30 +1729,47 @@ private struct NativeSpacePreview: View {
                 spring.stiffness = frequency * frequency
                 spring.damping = 2 * frequency
                 let distance = layer.position.x - from.x
-                let fresh = lastTracking.map { ProcessInfo.processInfo.systemUptime - $0.time < 0.1 } ?? false
-                if fresh, distance != 0 {
+                if distance != 0 {
                     // Critical damping stays monotonic up to this normalized speed.
                     // Preserve the flick without allowing a fast release to overshoot.
-                    spring.initialVelocity = max(0, min(frequency, Double(trackingVelocity / distance)))
+                    spring.initialVelocity = max(0, min(frequency, Double(releaseVelocity / distance)))
                 }
                 spring.duration = duration
                 animation = spring
             }
+            // Resolve one shared clock before copying the curve to the wash and
+            // footer, including a destination joining on a later display turn.
+            animation.beginTime = layer.convertTime(animationStart, from: nil)
             animation.fromValue = NSValue(point: from)
             animation.toValue = NSValue(point: layer.position)
             animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
             layer.add(animation, forKey: "space-position")
             if layer === outgoingLayer {
-                finishGround?(source?.swipeSpace)
-                let start = Double(min(1, abs((from.x - outgoingLayer.bounds.width * outgoingLayer.anchorPoint.x - contentInset) / travelWidth)))
-                finishGround = source?.spaceGesture.animateGround?(preparedOrigin, preparedTarget,
-                    start, returning ? 0 : 1, animation, presentedGround)
-                (superview as? BrowserWindowHost)?.footerPresentation.animate(
-                    origin: preparedOrigin.id, target: preparedTarget.id,
-                    from: start, to: returning ? 0 : 1, timing: animation)
+                groundTiming = animation
+                groundFraction = Double(min(1, abs((from.x - outgoingLayer.bounds.width * outgoingLayer.anchorPoint.x - contentInset) / travelWidth)))
             }
         }
         CATransaction.commit()
+        // Completion belongs to the two visible row surfaces. The source wash
+        // can be parked, and its retained copies deliberately hold their last
+        // frame until finish() releases them; they must not gate that release.
+        if let groundTiming {
+            releaseDestinationGround()
+            finishGround?(source?.swipeSpace)
+            finishGround = source?.spaceGesture.animateGround?(preparedOrigin, preparedTarget,
+                groundFraction, returning ? 0 : 1, groundTiming, presentedGround)
+            if let destination {
+                destination.spaceGesture.nativeGroundDidUpdate = { [weak self] in self?.joinDestinationGround() }
+                joinDestinationGround()
+            }
+            let footerTiming = groundTiming.copy() as! CABasicAnimation
+            // Footer markers own different layers; pass the shared media time
+            // explicitly so each marker can convert it to its own local clock.
+            footerTiming.beginTime = animationStart
+            (superview as? BrowserWindowHost)?.footerPresentation.animate(
+                origin: preparedOrigin.id, target: preparedTarget.id,
+                from: groundFraction, to: returning ? 0 : 1, timing: footerTiming)
+        }
         if let screen = window?.screen ?? NSScreen.main {
             progressLink?.invalidate()
             let link = screen.displayLink(target: self, selector: #selector(advanceProgress(_:)))
@@ -1550,6 +1819,7 @@ private struct NativeSpacePreview: View {
     /// An unused idle surface has never owned the gesture's visibility state.
     func discardPreparation() {
         finished = true
+        releaseDestinationGround()
         finishGround?(source?.swipeSpace)
         finishGround = nil
         progressLink?.invalidate()
@@ -1575,6 +1845,7 @@ private struct NativeSpacePreview: View {
         // The wash belongs to the source host. A profile hop parks that host for
         // reuse, so restore its own Space rather than caching the arriving profile's
         // colour. Within one profile, source already selects the destination Space.
+        releaseDestinationGround()
         finishGround?(source?.swipeSpace)
         finishGround = nil
         Motion.spaceHandoff {

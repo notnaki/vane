@@ -34,7 +34,7 @@ struct BackupLibrary: @unchecked Sendable {
     struct Profiles: Codable { var profiles: [Profile]; var activeID: UUID }
 
     static func isLocalPreference(_ key: String) -> Bool {
-        key.hasPrefix("backup.") || ["blockerLastGoodList", "firstLaunchWelcome"].contains(key)
+        key.hasPrefix("backup.") || key.hasPrefix("icloud.") || ["blockerLastGoodList", "firstLaunchWelcome"].contains(key)
     }
     private static func isRememberedSecurityDecision(_ key: String) -> Bool {
         if ["certException.", "sitePermission.", "externalApp."].contains(where: { key.hasPrefix($0) }) { return true }

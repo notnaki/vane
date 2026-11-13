@@ -1,5 +1,11 @@
 # Real-site compatibility evidence
 
+The [2026-11-11 subscription-streaming checks](STREAMING-COMPATIBILITY.md) add
+live Netflix 4K SDR/Dolby Vision, Spotify music, and Disney+ 720p protected-playback
+observations in an installed Developer ID signed, notarized nightly. These later
+results do not change the historical
+scope of the October checks below.
+
 The public-demo pass on **2026-10-06** verified password-session navigation,
 print-to-PDF, local WebRTC media, screen capture, clear HLS playback, FairPlay
 demo playback, and basic editing in two complex web apps. File-picker uploads

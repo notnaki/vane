@@ -155,6 +155,7 @@ struct BackupCandidate: Identifiable, Sendable {
             restorePending = true
             guard AppLifecycle.shared.beginPersistenceExit() else { throw BackupError.saveFailed }
             quiescent = true
+            await ICloudController.suspendIfRunning()
             Motion.list { progress = "Finishing saved changes…" }
             var drained = false
             for _ in 0..<3 {

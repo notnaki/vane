@@ -40,6 +40,10 @@ struct ReadingArticle: Codable, Sendable, Identifiable, Equatable {
     var nodes: [Node]
     var resources: [Resource] = []
     var missingImages = 0
+    // Absent on existing archives, where both halves are present. A child-only sync
+    // creates an opaque placeholder without accidentally exporting the other category.
+    var hasQueueMetadata: Bool?
+    var hasOfflineContent: Bool?
 }
 
 struct ReadingQueueCandidate: Sendable {

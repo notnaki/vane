@@ -25,6 +25,8 @@ name: release
 #   AC_API_ISSUER_ID               App Store Connect issuer id        (notarytool)
 #   AC_API_KEY_P8_BASE64           base64 of the AuthKey_XXXX.p8      (notarytool)
 #   GH_OAUTH_CLIENT_SECRET         the GitHub OAuth app's client secret (live folders)
+#   VANE_ICLOUD_PROFILE_BASE64     base64 of Vane's Developer ID CloudKit profile
+# VARIABLE: VANE_ICLOUD_CONTAINER  the assigned CloudKit container identifier
 # Signing needs the first two; notarizing needs those five, since an unsigned app cannot be
 # notarized. The names match Vesta's, so the same material pastes into both repos. The sixth
 # stands alone: it is compiled into Sources/Vane/OAuthSecret.swift below and is what lets
@@ -109,9 +111,11 @@ jobs:
           KEY_ID: ${{ secrets.AC_API_KEY_ID }}
           ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
           KEY_B64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
+          ICLOUD_PROFILE_B64: ${{ secrets.VANE_ICLOUD_PROFILE_BASE64 }}
+          ICLOUD_CONTAINER: ${{ vars.VANE_ICLOUD_CONTAINER }}
         run: |
           set -euo pipefail
-          for name in CERT_B64 CERT_PW KEY_ID ISSUER_ID KEY_B64; do
+          for name in CERT_B64 CERT_PW KEY_ID ISSUER_ID KEY_B64 ICLOUD_PROFILE_B64 ICLOUD_CONTAINER; do
             if [ -z "${!name}" ]; then
               echo "::error::Required signing/notarization credential $name is missing"
               exit 1
@@ -222,6 +226,30 @@ jobs:
           [ -n "$IDENT" ] || { echo "the .p12 imported but holds no Developer ID Application identity"; exit 1; }
           echo "SIGN_ID=$IDENT" >> "$GITHUB_ENV"
           echo "signing identity: $IDENT"
+
+      - name: Install iCloud provisioning profile
+        env:
+          ICLOUD_PROFILE_B64: ${{ secrets.VANE_ICLOUD_PROFILE_BASE64 }}
+          ICLOUD_CONTAINER: ${{ vars.VANE_ICLOUD_CONTAINER }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$ICLOUD_CONTAINER" =~ ^iCloud\.[A-Za-z0-9.-]+$ ]] \
+            || { echo '::error::Invalid CloudKit container identifier'; exit 1; }
+          python3 - <<'PY'
+          import base64, os, pathlib
+          encoded = "".join(os.environ["ICLOUD_PROFILE_B64"].split())
+          profile = base64.b64decode(encoded, validate=True)
+          pathlib.Path(os.environ["RUNNER_TEMP"], "vane-icloud.provisionprofile").write_bytes(profile)
+          PY
+          [ -s "$RUNNER_TEMP/vane-icloud.provisionprofile" ] \
+            || { echo '::error::The iCloud provisioning profile is empty'; exit 1; }
+          # make-app.sh validates the signed profile and exact certificate/app grants.
+          {
+            printf 'VANE_ICLOUD_PROFILE=%s\n' "$RUNNER_TEMP/vane-icloud.provisionprofile"
+            printf 'VANE_ICLOUD_CONTAINER=%s\n' "$ICLOUD_CONTAINER"
+            echo 'VANE_ICLOUD_ENVIRONMENT=Production'
+          } >> "$GITHUB_ENV"
 
       - name: Compile in the GitHub client secret
         # The one secret that goes into the source tree, and only ever into a release build's
@@ -348,7 +376,7 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
-          rm -f "$RUNNER_TEMP/ac_key.p8" "$RUNNER_TEMP/cert.p12"
+          rm -f "$RUNNER_TEMP/ac_key.p8" "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/vane-icloud.provisionprofile"
           KEYCHAIN=$RUNNER_TEMP/vane-signing.keychain-db
           [ -f "$KEYCHAIN" ] || exit 0
           security list-keychains -d user -s login.keychain-db || true
