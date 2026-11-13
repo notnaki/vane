@@ -1,6 +1,54 @@
 (() => {
   'use strict';
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  function setupMobileNavigation() {
+    const navigation = document.querySelector('.navigation');
+    const links = navigation?.querySelector('.nav-links');
+    if (!links) return;
+    const compact = matchMedia('(max-width: 520px)');
+    const toggle = document.createElement('button');
+    toggle.className = 'nav-menu-toggle';
+    toggle.type = 'button';
+    toggle.setAttribute('aria-controls', 'site-nav-links');
+    toggle.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="menu-line-first" d="M5 8h14"/><path class="menu-line-last" d="M5 16h14"/></svg>';
+    links.id = 'site-nav-links';
+    const items = document.createElement('div');
+    items.className = 'nav-menu-items';
+    items.append(...links.childNodes);
+    links.append(items);
+    navigation.append(toggle);
+    navigation.classList.add('has-mobile-menu');
+    let open = false;
+    function setOpen(next, restoreFocus = false) {
+      open = next && compact.matches;
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+      navigation.classList.toggle('is-menu-open', open);
+      links.inert = compact.matches && !open;
+      if (restoreFocus) toggle.focus();
+    }
+    function layout() {
+      const focused = document.activeElement;
+      if (compact.matches) navigation.append(links);
+      else navigation.insertBefore(links, navigation.querySelector('.site-search-trigger'));
+      setOpen(false);
+      if (compact.matches && links.contains(focused)) toggle.focus();
+      else if (!compact.matches && focused === toggle) links.querySelector('a').focus();
+      else if (!compact.matches && links.contains(focused)) focused.focus();
+    }
+    toggle.addEventListener('click', () => setOpen(!open));
+    navigation.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && open) {
+        event.preventDefault();
+        setOpen(false, true);
+      }
+    });
+    links.addEventListener('click', event => { if (event.target.closest('a')) setOpen(false); });
+    document.addEventListener('click', event => { if (open && !navigation.contains(event.target)) setOpen(false); });
+    compact.addEventListener('change', layout);
+    layout();
+  }
+  setupMobileNavigation();
   const arrow = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
   const pages = [
     { url:'index.html', title:'Vane', description:'A native Mac browser. Spaces, Split View, and Little Vane.' },

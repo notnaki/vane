@@ -257,3 +257,22 @@ body:has(.finder[open]),body:has(.capture-dialog[open]) { overflow:hidden; }
 .sidebar-highlight.is-magnified { box-shadow:0 8px 22px #08050c80; }
 .sidebar-magnified-image { position:absolute; display:block; max-width:none; height:auto; border-radius:0; transition:left 280ms var(--ease-out),top 280ms var(--ease-out),width 280ms var(--ease-out); }
 @media(prefers-reduced-motion:reduce) { .sidebar-highlight,.sidebar-magnified-image { transition:none; } }
+
+/* Progressive mobile navigation: ordinary links remain available without JS. */
+.nav-menu-toggle { display:none; }
+.nav-menu-items { display:contents; }
+@media(max-width:520px) {
+ .navigation.has-mobile-menu { gap:0 8px; }
+ .has-mobile-menu .brand span { display:none; }
+ .has-mobile-menu .nav-menu-toggle { display:grid; place-items:center; flex-shrink:0; width:44px; height:44px; padding:10px; border:0; border-radius:10px; background:transparent; color:var(--foreground); }
+ .has-mobile-menu .nav-menu-toggle:hover { background:var(--surface); }
+ .nav-menu-toggle svg { width:24px; height:24px; }
+ .nav-menu-toggle path { transform-origin:12px 12px; transition:transform 180ms var(--ease-out); }
+ .is-menu-open .menu-line-first { transform:translateY(4px) rotate(45deg); transform-origin:12px 8px; }
+ .is-menu-open .menu-line-last { transform:translateY(-4px) rotate(-45deg); transform-origin:12px 16px; }
+ .navigation.has-mobile-menu .nav-links { display:grid; grid-template-rows:0fr; order:4; flex-basis:100%; width:100%; margin:0; gap:0; background:#241d2d66; border-radius:10px; visibility:hidden; opacity:0; transition:grid-template-rows 180ms var(--ease-out),opacity 160ms; }
+ .has-mobile-menu .nav-menu-items { display:flex; flex-direction:column; min-height:0; overflow:hidden; padding-inline:4px; }
+ .navigation.has-mobile-menu .nav-links a { padding:8px 12px; border-radius:8px; }
+ .navigation.has-mobile-menu .nav-links a:focus-visible { outline-offset:-3px; }
+ .navigation.is-menu-open .nav-links { grid-template-rows:1fr; visibility:visible; opacity:1; }
+}
