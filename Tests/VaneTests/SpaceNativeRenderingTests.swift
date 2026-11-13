@@ -3610,6 +3610,7 @@ private final class ProfilePixelCharacterization: NSObject, SCStreamOutput, @unc
     private let queue = DispatchQueue(label: "vane.profile.pixel-characterization")
     private var frames: [Frame] = []
     private var dropped = 0
+    private var queueDrained = false
     @MainActor private var stream: SCStream?
     @MainActor private var generation: UUID?
     @MainActor private var legs: [Leg] = []
@@ -3739,9 +3740,13 @@ private final class ProfilePixelCharacterization: NSObject, SCStreamOutput, @unc
             if failure == nil { failure = error }
             else { XCTFail("Profile pixel output removal also failed: \(error)") }
         }
-        let drained = DispatchSemaphore(value: 0)
-        queue.async { drained.signal() }
-        if drained.wait(timeout: .now() + 1) != .success {
+        lock.withLock { queueDrained = false }
+        queue.async { [self] in lock.withLock { queueDrained = true } }
+        let drainDeadline = ContinuousClock.now + .seconds(1)
+        while !lock.withLock({ queueDrained }), ContinuousClock.now < drainDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        if !lock.withLock({ queueDrained }) {
             XCTFail("Profile pixel callback queue did not drain")
             if failure == nil { failure = NSError(domain: "ProfilePixelDrain", code: 1) }
         }
@@ -3867,6 +3872,9 @@ private final class ProfilePixelCharacterization: NSObject, SCStreamOutput, @unc
         samples.reserveCapacity(256)
     }
     func start(on screen: NSScreen) {
+#if DEBUG
+        ProfileHopPhaseDiagnostics.reset()
+#endif
         let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
         let rate = Float(screen.maximumFramesPerSecond)
         link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
@@ -3923,6 +3931,9 @@ private final class ProfilePixelCharacterization: NSObject, SCStreamOutput, @unc
                 && window.occlusionState.contains(.visible)))
     }
     func stopAndDump(label: String) {
+#if DEBUG
+        ProfileHopPhaseDiagnostics.dump()
+#endif
         link?.invalidate()
         link = nil
         guard began != nil else { return }

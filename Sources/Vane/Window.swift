@@ -3,6 +3,92 @@ import SwiftUI
 import Combine
 import WebKit
 
+#if DEBUG
+/// Temporary value-only phase trace. The test dumps it only after its actions.
+@MainActor enum ProfileHopPhaseDiagnostics {
+    static let enabled = ProcessInfo.processInfo.environment["VANE_PROFILE_HOP_DIAGNOSTICS"] == "1"
+    private struct Admission {
+        let target: UUID
+        let web: ObjectIdentifier?
+        let loading: Bool?
+        let sectionsReady: Bool
+        let previewReady: Bool
+        let preparedCount: Int
+    }
+    private struct Entry {
+        let phase: String
+        let time: TimeInterval
+        let source: ObjectIdentifier?
+        let sourceSpace: UUID?
+        let arriving: ObjectIdentifier?
+        let window: ObjectIdentifier?
+        let visible: ObjectIdentifier?
+        let visibleSpace: UUID?
+        let visibleProfile: UUID?
+        let visiblePalette: Bool
+        let admission: Admission?
+    }
+    private static weak var source: TabStore?
+    private static weak var window: NSWindow?
+    private static weak var arriving: TabStore?
+    private static var slide: ObjectIdentifier?
+    private static var entries: [Entry] = []
+    private static var dropped = 0
+
+    static func reset() {
+        guard enabled else { return }
+        source = nil; window = nil; arriving = nil; slide = nil
+        entries.removeAll(keepingCapacity: true)
+        entries.reserveCapacity(64)
+        dropped = 0
+    }
+    static func begin(source: TabStore, target: Space, slide: ProfileSpaceSlide) {
+        guard enabled else { return }
+        self.source = source
+        window = source.window
+        arriving = nil
+        self.slide = ObjectIdentifier(slide)
+        let web = source.active?.existingWeb
+        let admission = Admission(target: target.id, web: web.map(ObjectIdentifier.init), loading: web?.isLoading,
+            sectionsReady: SidebarNativeReadinessCoordinator.shared.isReady(
+                SidebarNativeReadinessScope(store: source, spaceID: source.currentSpaceID),
+                allowingUnregistered: !NativeCachedSidebarBatchesExperiment.enabled),
+            previewReady: slide.preparedPopulationReady,
+            preparedCount: source.spaceGesture.monitor.preparedSlides.count)
+        mark("before-clock", admission: admission)
+    }
+    static func clock(_ slide: ProfileSpaceSlide, at time: TimeInterval) {
+        guard enabled, self.slide == ObjectIdentifier(slide) else { return }
+        mark("animation-clock", admission: nil, at: time)
+    }
+    static func mark(_ phase: String, source expected: TabStore? = nil, arriving: TabStore? = nil) {
+        guard enabled, source != nil, expected == nil || expected === source else { return }
+        if let arriving { self.arriving = arriving }
+        mark(phase, admission: nil)
+    }
+    private static func mark(_ phase: String, admission: Admission?, at time: TimeInterval = CACurrentMediaTime()) {
+        guard entries.count < 64 else { dropped += 1; return }
+        let visible = window.flatMap { window in TabStore.all.first { $0.window === window } }
+        entries.append(Entry(phase: phase, time: time, source: source.map(ObjectIdentifier.init),
+            sourceSpace: source?.currentSpaceID, arriving: arriving.map(ObjectIdentifier.init),
+            window: window.map(ObjectIdentifier.init), visible: visible.map(ObjectIdentifier.init),
+            visibleSpace: visible?.currentSpaceID, visibleProfile: visible?.profileID,
+            visiblePalette: visible?.palette != nil, admission: admission))
+    }
+    static func dump() {
+        guard enabled else { return }
+        print("PROFILE_HOP_PHASE_BEGIN count=\(entries.count) dropped=\(dropped)")
+        for entry in entries {
+            print("PROFILE_HOP_PHASE phase=\(entry.phase) time=\(entry.time) source=\(String(describing: entry.source)) sourceSpace=\(String(describing: entry.sourceSpace)) arriving=\(String(describing: entry.arriving)) window=\(String(describing: entry.window)) visible=\(String(describing: entry.visible)) visibleSpace=\(String(describing: entry.visibleSpace)) visibleProfile=\(String(describing: entry.visibleProfile)) palette=\(entry.visiblePalette)")
+            if let admission = entry.admission {
+                print("PROFILE_HOP_ADMISSION target=\(admission.target) web=\(String(describing: admission.web)) loading=\(String(describing: admission.loading)) sectionsReady=\(admission.sectionsReady) previewReady=\(admission.previewReady) preparedCount=\(admission.preparedCount)")
+            }
+        }
+        print("PROFILE_HOP_PHASE_END")
+    }
+}
+#endif
+
 /// The native browser frame, page-paint coordination, and traffic-light placement.
 ///
 /// AppKit picks where the lights go from the titlebar's height, and it re-picks after every
@@ -888,11 +974,20 @@ extension VaneWindow {
         // Every route into a hop must persist the departing Space, including the Profiles
         // menu's direct call above. Otherwise its tabs exist only in the parked store until
         // the next session save and a crash before then loses them.
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("hop-enter", source: store)
+#endif
         store.saveCurrentSpace()
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("source-saved", source: store)
+#endif
         // Either the store this window already has for that profile, or a new one opened
         // straight into the Space being walked to — there is no intermediate Space to show.
         let arriving = parked(profile.id, in: window)
             ?? TabStore(profileID: profile.id, space: space)
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("arrival-resolved", source: store, arriving: arriving)
+#endif
         // Visibility belongs to the window, across every Space and profile. Apply it
         // before mounting the arriving host, including when reusing a parked profile.
         arriving.sidebarShown = store.sidebarShown
@@ -904,31 +999,58 @@ extension VaneWindow {
             // arriving profile. The native sidebar continues travelling above this host.
             slide.attach(arriving)
         }
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("capture-attached", source: store)
+#endif
         store.sidebarPeeking = false
         store.parkedIn = window
         store.window = nil
         store.profileVisible = false
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("source-hidden", source: store)
+#endif
         arriving.parkedIn = nil
         arriving.window = window
         arriving.profileVisible = true
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("window-assigned", source: store)
+#endif
         ProfileManager.shared.active = profile
         // Live folders keep themselves filled for as long as a window is showing the profile.
         LiveFolders.shared(for: profile.id).begin()
         // A Space deleted while this store was parked leaves it pointing at one that is not
         // on disk, and an ordinary window always shows a real Space.
         arriving.resolveStaleSpace()
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("stale-space-resolved", source: store)
+#endif
         arriving.switchTo(space: space)         // a no-op for a store built into it just now
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("destination-selected", source: store)
+#endif
         arriving.applySpaceAppearance()
         delegate.shown.store = arriving         // expose only the finalized destination
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("host-shown", source: store)
+#endif
         // A cached host can take another display turn to acknowledge visibility.
         // The next gesture already belongs to this profile when hop returns.
         arriving.librarySwipeMonitor.install(arriving)
         if arriving.sidebarShown || arriving.sidebarPeeking {
             arriving.spaceGesture.monitor.install(arriving)
         }
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("monitors-installed", source: store)
+#endif
         SharedTabs.refreshPresentation()
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("shared-presentation-refreshed", source: store)
+#endif
         store.extensions.sync()
         arriving.extensions.sync()
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("extensions-synced", source: store)
+#endif
         // The parked profile is intentionally absent from SharedTabs' visible-window
         // election. Its outgoing panes still need their call departure considered.
         store.onScreenTabs.forEach(CallPopout.presentationChanged)
@@ -936,9 +1058,15 @@ extension VaneWindow {
         // its profile was parked and had no window to update.
         window.title = WindowTitle.current(in: arriving)
         rebuild()                               // the Spaces menu's checkmark has changed profile
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("menu-rebuilt", source: store)
+#endif
         // Swapping the profile host detaches the old first responder. Put the keyboard on
         // the arriving page once AppKit has mounted it, so a keyboard switch can keep typing.
         arriving.focusPageAfterHop()
+#if DEBUG
+        ProfileHopPhaseDiagnostics.mark("hop-return", source: store)
+#endif
         return arriving
     }
 
@@ -1704,6 +1832,9 @@ private struct NativeSpacePreview: View {
             }
         }
         let animationStart = CACurrentMediaTime()
+#if DEBUG
+        ProfileHopPhaseDiagnostics.clock(self, at: animationStart)
+#endif
         var groundTiming: CABasicAnimation?
         var groundFraction = 0.0
         for (layer, from) in [(outgoingLayer, fromOutgoing), (incomingLayer, fromIncoming)] {

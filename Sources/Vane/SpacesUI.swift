@@ -2038,6 +2038,11 @@ private struct SpaceSwipe: ViewModifier {
         if let slide = nativeSlide {
             // Scroll events retain their input clock through synchronous native work.
             // Click callers use invocation time and still expire stale finger input.
+#if DEBUG
+            if includesFavorites, ProfileHopPhaseDiagnostics.enabled {
+                ProfileHopPhaseDiagnostics.begin(source: store, target: destination, slide: slide)
+            }
+#endif
             slide.armLanding(to: destination, at: eventTime, completion: finish)
             // Keep native presentation as the footer/tint source across release. Updating
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.
@@ -2053,11 +2058,20 @@ private struct SpaceSwipe: ViewModifier {
                           slide.isActive, host.spaceSlide === slide,
                           store.currentSpaceID == self.landingFrom,
                           store.spaceGesture.neighbour?.id == destination.id else { return }
+#if DEBUG
+                    ProfileHopPhaseDiagnostics.mark("queued-enter", source: store)
+#endif
                     // The input's batched visibility publication has now completed.
                     // Send its captured curve to the compositor before live layout.
                     CATransaction.flush()
+#if DEBUG
+                    ProfileHopPhaseDiagnostics.mark("initial-flush-ended", source: store)
+#endif
                     let window = store.window
                     _ = self.activate(destination, in: store)
+#if DEBUG
+                    ProfileHopPhaseDiagnostics.mark("activate-returned", source: store)
+#endif
                     guard let window, host.window === window, host.spaceSlide === slide,
                           slide.isActive,
                           TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
@@ -2065,8 +2079,17 @@ private struct SpaceSwipe: ViewModifier {
                         return
                     }
                     host.layoutDisplayedProfile()
+#if DEBUG
+                    ProfileHopPhaseDiagnostics.mark("layout-ended", source: store)
+#endif
                     window.displayIfNeeded()
+#if DEBUG
+                    ProfileHopPhaseDiagnostics.mark("display-ended", source: store)
+#endif
                     CATransaction.flush()
+#if DEBUG
+                    ProfileHopPhaseDiagnostics.mark("final-flush-ended", source: store)
+#endif
                 }
             } else {
                 // Within a profile, prepare under the captured rows before starting

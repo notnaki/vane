@@ -5,12 +5,16 @@ on:
 permissions:
   contents: read
 env:
+  VANE_PROFILE_HOP_DIAGNOSTICS: '1'
   VANE_EXPECTED_TESTS: |
     VaneTests.LibrarySwipeTests/testExplicitCloseSupersedesOpeningLanding
     VaneTests.LibrarySwipeTests/testLibraryReturnObservationRejectsAnEndpointJump
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
+    VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
   VANE_CANDIDATE_SHA: ${{ github.sha }}
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](LibrarySwipeTests/(testExplicitCloseSupersedesOpeningLanding|testLibraryReturnObservationRejectsAnEndpointJump)|SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes)$'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](LibrarySwipeTests/(testExplicitCloseSupersedesOpeningLanding|testLibraryReturnObservationRejectsAnEndpointJump)|SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows))$'
 jobs:
   diagnostic:
     name: Build and diagnose native fixtures
