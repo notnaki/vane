@@ -110,7 +110,7 @@ import XCTest
         }
         ResizeTimingDiagnostics.stateSink = { event, time, fields in
             if records.count < 2048 { records.append((event, time, fields)) }
-            if ProcessInfo.processInfo.environment["VANE_PROFILE_PARENT_SAMPLE"] == "1",
+            if ProcessInfo.processInfo.environment["VANE_PROFILE_PARENT_STACK"] == "1",
                ["profile.cost.content.layout.begin", "profile.cost.content.layout.end"].contains(event),
                let temporary = ProcessInfo.processInfo.environment["RUNNER_TEMP"] {
                 // Signal the already-owned sampler without gating or waiting for it.
@@ -168,49 +168,6 @@ import XCTest
             fields: ["value": String(describing: value)])
         #endif
         return value
-    }
-
-    /// Temporary diagnostic prerequisite, before the original landing/clock starts.
-    /// The external owner validates this exact XCTest process and arms one short sample.
-    private func prearmProfileParentSample() throws {
-        #if DEBUG
-        guard ProcessInfo.processInfo.environment["VANE_PROFILE_PARENT_SAMPLE"] == "1",
-              let temporary = ProcessInfo.processInfo.environment["RUNNER_TEMP"] else { return }
-        let directory = URL(fileURLWithPath: temporary).appendingPathComponent("profile-parent-stack")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let pid = Int(ProcessInfo.processInfo.processIdentifier)
-        let request: [String: Any] = ["pid": pid, "epoch": Date().timeIntervalSince1970,
-                                      "uptime": ProcessInfo.processInfo.systemUptime]
-        try JSONSerialization.data(withJSONObject: request).write(
-            to: directory.appendingPathComponent("request.json"), options: .atomic)
-        // Do not yield another AppKit display turn between the admitted held
-        // position and the sampling prerequisite. No wait occurs after land().
-        let deadline = ProcessInfo.processInfo.systemUptime + 10
-        struct Arming: Decodable {
-            let pid: Int
-            let armed: Bool
-            let deadlineUptime: Double
-        }
-        var lastObservation = "ready file not readable"
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            do {
-                let data = try Data(contentsOf: directory.appendingPathComponent("armed.json"))
-                let reply = try JSONDecoder().decode(Arming.self, from: data)
-                let remaining = reply.deadlineUptime - ProcessInfo.processInfo.systemUptime
-                lastObservation = "pid=\(reply.pid), armed=\(reply.armed), remaining=\(remaining)"
-                if reply.pid == pid, reply.armed, remaining > 0.4 {
-                    ResizeTimingDiagnostics.recordState("profile.stack.armed",
-                        fields: ["epoch": String(Date().timeIntervalSince1970), "remaining": String(remaining)])
-                    return
-                }
-            } catch {
-                lastObservation = String(describing: error)
-            }
-            Thread.sleep(forTimeInterval: 0.002)
-        }
-        throw NSError(domain: "ProfileParentStackPrearm", code: 1,
-                      userInfo: [NSLocalizedDescriptionKey: "External sampler did not arm before landing: " + lastObservation])
-        #endif
     }
 
     private func fixtureProfile(named name: String) -> Profile {
@@ -1255,7 +1212,6 @@ import XCTest
         }
         let finishCosts = profileBoundaryCosts("reverse", host: host)
         defer { finishCosts() }
-        try prearmProfileParentSample()
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
