@@ -6,11 +6,13 @@ permissions:
   contents: read
 env:
   VANE_EXPECTED_TESTS: |
-    VaneTests.LibrarySwipeTests/testOpeningCommandBarSupersedesPendingLibraryOpening
-    VaneTests.LibrarySwipeTests/testRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose
-    VaneTests.EdgeSidebarScrollContinuityTests/testLibraryWithAnActivePageKeepsTheScrolledViewportAndPageWidthSteady
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
+    VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
+    VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testProfileClickStartsCapturedTravelBeforePreparingTheDestination
   VANE_CANDIDATE_SHA: ${{ github.sha }}
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](LibrarySwipeTests/(testOpeningCommandBarSupersedesPendingLibraryOpening|testRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose)|EdgeSidebarScrollContinuityTests/testLibraryWithAnActivePageKeepsTheScrolledViewportAndPageWidthSteady)$'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testProfileClickStartsCapturedTravelBeforePreparingTheDestination)$'
 jobs:
   diagnostic:
     name: Build and diagnose native fixtures
