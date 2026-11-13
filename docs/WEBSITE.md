@@ -2,11 +2,20 @@
 
 [Documentation index](README.md) · [Current development](CURRENT-DEVELOPMENT.md)
 
-The public site uses **https://vane.so/**, set by `docs/CNAME`. Its five primary
-pages are static HTML in `docs/`: the homepage, features, guide, download page,
+The public site uses **https://vane.so/**, set by the root `CNAME` on the
+[`website` branch](https://github.com/notnaki/vane/tree/website). Its five primary
+pages are static HTML at that branch’s root: the homepage, features, guide, download page,
 and privacy policy. Keep the download destination on published GitHub releases;
 the guide and feature descriptions follow current `main` and say when published
 builds can differ. Updating this site does not publish an app release.
+
+The native app and technical Markdown guides remain on `main`; the website
+branch contains no application source. GitHub Pages publishes `website` at `/`
+using the existing custom domain. Website PRs target `website` and use that
+branch’s standalone `website.yml` checks. App/docs PRs target `main` and keep its
+existing required checks. A normal all-branch clone can still fetch both histories;
+use `git clone --single-branch --branch main --depth 1 https://github.com/notnaki/vane.git`
+for an app-only shallow checkout. Existing Git history is not rewritten.
 
 ## Search identity and discovery
 
@@ -59,10 +68,12 @@ or testing every recipient's device.
 
 ## Validation
 
-Run `node docs/tests/site-metadata.test.cjs` for canonical URLs, the banner's
+In a website checkout, run `node tests/site-metadata.test.cjs` for canonical URLs, the banner's
 actual PNG dimensions, required preview metadata, site identity, and sitemap
-links. The existing `node docs/tests/galaxy.test.cjs` entry point runs this
-fixture with the other website regressions. Check local links and page anchors,
+links. The existing `node tests/galaxy.test.cjs` entry point runs this
+fixture with the other website regressions. `python3 tests/site-links.py` checks
+local references and the sitemap. Check page anchors,
 responsive layouts, and successful public HTML/icon/image responses after
-deployment. `robots.txt` and `sitemap.xml` are explicitly website-only CI paths;
-unknown text/XML and mixed application changes still require app validation.
+deployment. The app branch no longer runs the website fixtures. Its CI routing and aggregate
+gates still reject unknown or mixed application changes; native job definitions
+and their failure requirements are unchanged.

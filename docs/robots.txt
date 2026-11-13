@@ -1,9 +1,0 @@
-User-agent: *
-Allow: /
-Disallow: /versions/
-Disallow: /concepts/
-Disallow: /tests/
-Disallow: /media/display.html
-Disallow: /media/share-card.html
-
-Sitemap: https://vane.so/sitemap.xml

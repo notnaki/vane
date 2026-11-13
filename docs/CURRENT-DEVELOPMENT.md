@@ -43,7 +43,7 @@ announced here.
   [readiness tracker](BROWSER-READINESS-TODO.md).
 
 The website's native video and screenshots keep their recorded
-[capture provenance](media/README.md); they are product illustrations, not new
+[capture provenance](https://github.com/notnaki/vane/blob/website/media/README.md); they are product illustrations, not new
 validation of every current feature. Installation files remain on the
 [published releases page](https://github.com/notnaki/vane/releases).
 Follow [release procedures](RELEASING.md) for version selection, signing,

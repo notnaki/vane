@@ -150,7 +150,8 @@ class ChangeScopeTests(unittest.TestCase):
                 self.scope(False, base)
 
     def test_named_search_indexing_files_skip_app_work(self):
-        for name in ("docs/robots.txt", "docs/sitemap.xml"):
+        for name in ("docs/robots.txt", "docs/sitemap.xml", "docs/CNAME", "scripts/check-site-rendering.swift",
+                     "docs/versions/galaxy-v2/VERSION.txt", "docs/versions/liquid-v3/VERSION.txt"):
             with self.subTest(name=name):
                 p = self.root / name
                 p.parent.mkdir(parents=True, exist_ok=True)
@@ -187,6 +188,10 @@ class ChangeScopeTests(unittest.TestCase):
         workflow.write_text(original)
         self.base = self.commit()
         workflow.write_text(original.replace("name: Change scope and diff checks", "name: Fast routing checks"))
+        self.commit()
+        self.scope(False)
+        workflow.write_text(original.replace("python3 scripts/test-ci-change-scope.py",
+                                             "python3 -B scripts/test-ci-change-scope.py"))
         self.commit()
         self.scope(False)
         for changed in (

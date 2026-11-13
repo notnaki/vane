@@ -31,9 +31,9 @@
   <a href="https://github.com/notnaki/vane/releases/latest"><img src="https://img.shields.io/github/v/release/notnaki/vane" alt="Latest release"></a>
 </p>
 
-![Vane showing NASA Mars with sidebar tabs and Spaces](docs/media/vane-varied-spaces-v1-1536.webp)
+![Vane showing NASA Mars with sidebar tabs and Spaces](https://vane.so/media/vane-varied-spaces-v1-1536.webp)
 
-<p align="center"><sub>Spaces, favourites, and the web in one native window. <a href="docs/media/README.md">About this screenshot</a>.</sub></p>
+<p align="center"><sub>Spaces, favourites, and the web in one native window. <a href="https://github.com/notnaki/vane/blob/website/media/README.md">About this screenshot</a>.</sub></p>
 
 Vane is built with Swift, SwiftUI, AppKit, and WebKit. Apple’s `WKWebView`
 renders pages; Vane adds tools to organize, read, and make the browser your own.

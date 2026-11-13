@@ -111,8 +111,7 @@ def main():
     assert 'actions: read' in sections['changes'] and 'pull-requests: read' in sections['changes']
     assert 'runs-on: ubuntu-latest' in sections['routing']
     assert not dependencies(sections['routing']), 'routing fixtures run alongside scope detection'
-    for command in ('python3 scripts/test-ci-native-reuse.py', 'python3 scripts/test-ci-change-scope.py', 'python3 scripts/test-checks-workflow.py',
-                    'node docs/tests/galaxy.test.cjs'):
+    for command in ('python3 scripts/test-ci-native-reuse.py', 'python3 scripts/test-ci-change-scope.py', 'python3 scripts/test-checks-workflow.py'):
         assert command in sections['routing'], command + ' must also validate the fast path'
     for name in ('source', 'build', 'native', 'packaging'):
         section = sections[name]
@@ -134,8 +133,8 @@ def main():
     assert "hashFiles('Sources/**', 'Tests/**', 'scripts/ci-source-state.py', 'make-app.sh', '.github/workflows/checks.yml')" in build
     assert 'key: swift-debug-v3-' in build
     assert '            swift-debug-v2-' in build, 'old caches remain a migration fallback'
-    for command in ('python3 scripts/test-ci-change-scope.py', 'python3 scripts/test-checks-workflow.py',
-                    'node docs/tests/galaxy.test.cjs'):
+    assert 'node docs/tests/galaxy.test.cjs' not in text, 'website fixtures belong to the website branch'
+    for command in ('python3 scripts/test-ci-change-scope.py', 'python3 scripts/test-checks-workflow.py'):
         assert text.count(command) == 1, command + ' must run once for every scope'
     assert 'scripts/ci-build-artifact.py pack' in build
     assert 'name: debug-runtime' in build and 'compression-level: 0' in build

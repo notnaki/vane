@@ -35,7 +35,7 @@ For blurry Google Docs canvases, read the [rendering investigation](GOOGLE-DOCS-
 - [Browser readiness](BROWSER-READINESS-TODO.md): completed work with evidence and
   remaining engineering or environment-dependent validation.
 - [App icon maintenance](../AppIcons/README.md) and
-  [screenshot provenance](media/README.md).
+  [screenshot provenance](https://github.com/notnaki/vane/blob/website/media/README.md).
 - [Website, search, and shared links](WEBSITE.md): canonical URLs, Google
   discovery, Messages previews, the share banner, and deployment checks.
 
@@ -73,7 +73,9 @@ record decisions at the time of their work. Open checklist items there may be
 superseded by merged fixes and later evidence; use the readiness tracker and audits
 above for current boundaries.
 
-The public site keeps `index.html`, `docs.html`, `features.html`, `download.html`, `privacy.html`,
-styles/scripts, and archived designs under `versions/`. These guides do not
-rearrange that site or replace its assets. Screenshots and evidence stay at their
-existing paths so links remain usable.
+The public site lives at the root of the dedicated
+[`website` branch](https://github.com/notnaki/vane/tree/website), including its
+HTML, CSS, scripts, fonts, screenshots, and `versions/` archives. Technical guides,
+audits, and application evidence stay on `main`. See [website maintenance](WEBSITE.md)
+for branch-specific checks and deployment. Historical commits still retain older
+website assets; moving the source does not rewrite Git history.

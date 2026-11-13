@@ -11,6 +11,9 @@ import sys
 ROUTING_FILES = {"scripts/ci-change-scope.py", "scripts/test-ci-change-scope.py",
                  "scripts/test-checks-workflow.py"}
 WORKFLOW = ".github/workflows/checks.yml"
+WEBSITE_FILES = {"docs/.nojekyll", "docs/CNAME", "docs/robots.txt", "docs/sitemap.xml",
+                 "scripts/check-site-rendering.swift", "docs/versions/galaxy-v2/VERSION.txt",
+                 "docs/versions/liquid-v3/VERSION.txt"}
 WEBSITE_SUFFIXES = {".html", ".css", ".js", ".cjs", ".svg", ".png", ".jpg", ".jpeg",
                     ".webp", ".gif", ".ico", ".woff", ".woff2", ".ttf", ".mp4", ".webm"}
 
@@ -36,12 +39,12 @@ def routing_only_workflow_change(base, head):
         versions.append(jobs)
     before, after = versions
     return headers[0] == headers[1] and before.keys() == after.keys() and all(
-        before[name] == after[name] for name in before if name not in {"changes", "checks"})
+        before[name] == after[name] for name in before if name not in {"changes", "checks", "routing"})
 
 
 def cheap_checks_only(path):
     parts = PurePosixPath(path).parts
-    if path in ROUTING_FILES or path in {"docs/.nojekyll", "docs/robots.txt", "docs/sitemap.xml"}:
+    if path in ROUTING_FILES or path in WEBSITE_FILES:
         return True
     if parts and parts[0] == "docs" and PurePosixPath(path).suffix in WEBSITE_SUFFIXES:
         return True

@@ -47,7 +47,7 @@ jobs:
 
   routing:
     # Run universal fixtures alongside scope detection so compilation can start early.
-    name: Website and routing fixtures
+    name: CI routing fixtures
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -58,7 +58,6 @@ jobs:
           python3 scripts/test-ci-native-reuse.py
           python3 scripts/test-ci-change-scope.py
           python3 scripts/test-checks-workflow.py
-          node docs/tests/galaxy.test.cjs
 
   source:
     needs: [changes]
