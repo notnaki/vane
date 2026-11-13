@@ -3398,6 +3398,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     var tracesLiveInput = false
     var allowsWindowDrag = true
     var reportOffset: (CGFloat) -> Void = { _ in }
+    var reportExtent: (CGFloat) -> Void = { _ in }
     @ViewBuilder let header: () -> Header
     @ViewBuilder let rows: () -> Rows
     // Native row owners already provide the section's complete fixed extent.
@@ -3428,6 +3429,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
             .onScrollGeometryChange(for: SidebarScrollCutoffs.self) {
                 SidebarScrollCutoffs(visibleRect: $0.visibleRect, contentHeight: $0.contentSize.height)
             } action: { _, value in
+                reportExtent(value.contentHeight)
                 // A newly mounted swipe ghost must already match the settled viewport.
                 var transaction = Transaction()
                 transaction.disablesAnimations = !measuredCutoffs
@@ -3490,37 +3492,53 @@ struct SidebarSpaceSections: View {
 private struct SidebarSpaceSectionContent: View {
     @SidebarRowObserved var store: TabStore
     @State private var pinnedRowsCache = Feel02SidebarRowsCache()
+    @ObservedObject private var materialization: SidebarMaterialization
     @Environment(\.nativeCachedSidebarBatches) private var groupedNativeRows
 
+    init(store: TabStore) {
+        _store = SidebarRowObserved(wrappedValue: store)
+        materialization = store.spaceGesture.materialization
+    }
+
     var body: some View {
-        let pinned = pinnedRowsCache.resolve(in: store, shape: store.pins)
         SpaceSectionsLayout(resetIdentity: store.currentSpaceID,
                             retainsRows: Feel02SidebarRowsCache.retainsRows(in: store),
                             tracesLiveInput: true,
-                            reportOffset: { store.spaceGesture.sidebarOffset = $0 }) {
+                            reportOffset: { store.spaceGesture.sidebarOffset = $0 },
+                            reportExtent: { materialization.rememberRowsExtent($0) }) {
             SpaceRow().id(store.currentSpaceID)
         } rows: {
-            PinnedTabs(store: store, snapshot: pinned)
-            if TidyTabs.todayCount(store) > 0 {
-                TidyRow().id(store.currentSpaceID)
-                    .transition(.opacity)
+            if materialization.isDeferred {
+                Color.clear.frame(height: materialization.rowsExtent)
+                    .accessibilityHidden(true).allowsHitTesting(false)
+            } else {
+                materializedRows
             }
-            NewTabRow()
-                .id(store.currentSpaceID)
-                .background(alignment: .topLeading) {
-                    // An empty native owner still acknowledges its section, but
-                    // must not become an extra child in the spaced row stack.
-                    if pinned.rows.isEmpty && (groupedNativeRows || NativeCachedSidebarBatchesExperiment.enabled) {
-                        SidebarSectionRows(store: store, snapshot: pinned, readinessSection: "pinned",
-                                           transition: .rowCollapse) { _, _, _ in EmptyView() }
-                            .frame(height: 0)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
-                    }
-                }
-            OpenTabs(store: store)
-            TodayEndDropArea().id(store.currentSpaceID)
         }
+    }
+
+    @ViewBuilder private var materializedRows: some View {
+        let pinned = pinnedRowsCache.resolve(in: store, shape: store.pins)
+        PinnedTabs(store: store, snapshot: pinned)
+        if TidyTabs.todayCount(store) > 0 {
+            TidyRow().id(store.currentSpaceID)
+                .transition(.opacity)
+        }
+        NewTabRow()
+            .id(store.currentSpaceID)
+            .background(alignment: .topLeading) {
+                // An empty native owner still acknowledges its section, but
+                // must not become an extra child in the spaced row stack.
+                if pinned.rows.isEmpty && (groupedNativeRows || NativeCachedSidebarBatchesExperiment.enabled) {
+                    SidebarSectionRows(store: store, snapshot: pinned, readinessSection: "pinned",
+                                       transition: .rowCollapse) { _, _, _ in EmptyView() }
+                        .frame(height: 0)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+        OpenTabs(store: store)
+        TodayEndDropArea().id(store.currentSpaceID)
     }
 }
 

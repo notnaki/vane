@@ -1077,7 +1077,8 @@ private final class NativeBatchMouseObservation {
     private func mayRetain(_ scope: SidebarNativeReadinessScope?) -> Bool {
         guard let store = supplyingStore, let scope else { return false }
         return ownerVisible && store.profileVisible && scope.storeID == ObjectIdentifier(store)
-            && scope.surfaceID == nil && scope.spaceID != nil && !SidebarWarmOwnerBudget.underPressure
+            && scope.surfaceID == nil && scope.materializationID == store.spaceGesture.materialization.generationID
+            && scope.spaceID != nil && !SidebarWarmOwnerBudget.underPressure
     }
 
     private func changeScope(_ next: SidebarNativeReadinessScope?) {

@@ -1,4 +1,4 @@
-name: Public boundary handoff phase diagnosis
+name: Public covered-strip lease causal preflight
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -9,10 +9,15 @@ env:
   VANE_PROFILE_BOUNDARY_COSTS: '1'
   VANE_EXPECTED_TESTS: |
     VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
     VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
+    VaneTests.SidebarMaterializationTests/testAnOldCompletionCannotReleaseTheReplacementCover
+    VaneTests.SidebarMaterializationTests/testRetargetingTheSameCoverInvalidatesTheOldRenderedGeneration
+    VaneTests.SidebarMaterializationTests/testRepeatedTrackingKeepsItsLeaseAndCachedDocumentExtent
+    VaneTests.SidebarMaterializationTests/testUnregisteredPlaceholderCannotBecomeReadyUntilItsExactScopeRenders
   VANE_CANDIDATE_SHA: ${{ github.sha }}
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows)$'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows)|SidebarMaterializationTests/(testAnOldCompletionCannotReleaseTheReplacementCover|testRetargetingTheSameCoverInvalidatesTheOldRenderedGeneration|testRepeatedTrackingKeepsItsLeaseAndCachedDocumentExtent|testUnregisteredPlaceholderCannotBecomeReadyUntilItsExactScopeRenders))$'
 jobs:
   diagnostic:
     name: Build and diagnose native fixtures

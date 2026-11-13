@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 /// Publishing them on TabStore would invalidate the entire browser on every scroll event.
 @MainActor final class SpaceGesture: ObservableObject {
     let monitor = SwipeMonitor()
+    let materialization = SidebarMaterialization()
     struct Presentation: Equatable {
         var drag: CGFloat = 0
         var pull: CGFloat = 0
@@ -405,6 +406,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
     let sections: Sections
     private let favoriteCount: Int
     @ObservedObject private var gesture: SpaceGesture
+    @ObservedObject private var materialization: SidebarMaterialization
     @Environment(\.nativeCachedSidebarBatches) private var nativeCachedBatches
     @State private var readinessPinnedRows = Feel02SidebarRowsCache()
     @State private var readinessTodayRows = Feel02SidebarRowsCache()
@@ -416,6 +418,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
         self.sections = sections
         favoriteCount = store.tabs.filter { $0.kind == .favourite }.count
         gesture = store.spaceGesture
+        materialization = store.spaceGesture.materialization
     }
 
     // A pull past the last Space keeps the current list. Mounting an outgoing ghost
@@ -446,12 +449,19 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
         let _ = ResizeTimingDiagnostics.record("sidebar.body.strip")
         #endif
         let readinessScope = SidebarNativeReadinessScope(store: store, spaceID: store.currentSpaceID)
-        let readinessSections = declareNativePopulation(readinessScope)
+        let readinessSections = materialization.isDeferred ? nil : declareNativePopulation(readinessScope)
 
         // Keep both sections in one tree when a gesture starts, reverses or springs back.
         // Only profile boundaries move the grid; ordinary Space switches leave it fixed.
         VStack(spacing: Look.rowGap) {
-            favorites.offset(x: gesture.travelsFavorites ? gesture.liveContentDrag : 0)
+            if materialization.isDeferred {
+                if materialization.favoritesHeight > 0 {
+                    Color.clear.frame(height: materialization.favoritesHeight)
+                        .accessibilityHidden(true).allowsHitTesting(false)
+                }
+            } else {
+                favorites.offset(x: gesture.travelsFavorites ? gesture.liveContentDrag : 0)
+            }
             ZStack(alignment: .topLeading) {
                 sections.spaceSlide(store)
                     .environment(\.sidebarNativeReadinessScope, readinessScope)
@@ -477,7 +487,9 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
             .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false, sectionsOnly: true,
                                          renderedSpaceID: store.currentSpaceID,
                                          renderedAtRest: !gesture.swiping && !gesture.profileSliding && gesture.drag == 0,
-                                         readinessSections: readinessSections, readinessOwnerID: readinessOwnerID))
+                                         readinessSections: readinessSections, readinessOwnerID: readinessOwnerID,
+                                         populationDeferred: materialization.isDeferred,
+                                         materializationID: materialization.generationID))
             .opacity(gesture.profileSliding ? 0 : 1)
         }
         .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false))
@@ -563,6 +575,8 @@ private struct SpaceStripAnchor: NSViewRepresentable {
     var renderedAtRest = false
     var readinessSections: [String: [String]]? = nil
     var readinessOwnerID: UUID? = nil
+    var populationDeferred = false
+    var materializationID: UUID? = nil
     func makeNSView(context: Context) -> Anchor {
         let view = Anchor()
         view.wantsLayer = true
@@ -573,12 +587,17 @@ private struct SpaceStripAnchor: NSViewRepresentable {
     }
     func updateNSView(_ view: Anchor, context: Context) {
         if sectionsOnly {
-            view.setReadinessScope(nativeCachedBatches || NativeCachedSidebarBatchesExperiment.enabled
-                ? SidebarNativeReadinessScope(store: store, spaceID: renderedSpaceID) : nil,
-                sections: readinessSections, populationOwnerID: readinessOwnerID)
+            let scope = SidebarNativeReadinessScope(storeID: ObjectIdentifier(store), spaceID: renderedSpaceID,
+                                                    materializationID: materializationID)
+            view.setReadinessScope(!populationDeferred && (nativeCachedBatches || NativeCachedSidebarBatchesExperiment.enabled)
+                ? scope : nil, sections: readinessSections, populationOwnerID: readinessOwnerID)
+            if !populationDeferred, gesture.materialization.didRender(materializationID) {
+                SidebarNativeReadinessCoordinator.shared.endMaterialization(scope)
+            }
             gesture.monitor.schedulePreparation(in: store)
             (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidUpdate(
-                store, renderedSpaceID: renderedSpaceID, atRest: renderedAtRest)
+                store, renderedSpaceID: renderedSpaceID, atRest: renderedAtRest,
+                materializationID: materializationID)
         }
     }
     static func dismantleNSView(_ view: Anchor, coordinator: ()) {
