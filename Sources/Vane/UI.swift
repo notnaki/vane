@@ -836,6 +836,7 @@ struct SpaceGround: View {
 struct WebCard: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.libraryPageLeadingInset) private var libraryPageLeadingInset
+    @Environment(\.libraryPageWidth) private var libraryPageWidth
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ProfileChromeObserved private var profileManager = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -854,7 +855,7 @@ struct WebCard: View {
                 LockedFolderPage(folder: folder)
                     .transition(.opacity)
             } else if let split = store.activeSplit {
-                SplitPanes(split: split)
+                documentViewport { SplitPanes(split: split) }
             } else if let tab = store.active {
                 // The list of saved accounts hangs off a field *in this page*, so it is an
                 // overlay on the page and not on the window's card — which is also what puts
@@ -870,7 +871,7 @@ struct WebCard: View {
                 // the one swapped: suspension excludes the active tab on both paths, the
                 // idle timer and memory pressure. Entering a split takes this branch away
                 // altogether and the held pages go with it.
-                TabPage(tab: tab, keepPages: true)
+                documentViewport { TabPage(tab: tab, keepPages: true) }
             } else {
                 // No tabs: the sheet a page will land on, and nothing in it. With nothing
                 // mounted there is also no WKWebView to argue with over a dropped file, so
@@ -938,6 +939,18 @@ struct WebCard: View {
         .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
         .padding(.top, topGap)
         .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
+    }
+
+    /// Freeze only the document during a Library swipe. The surrounding card and its
+    /// overlays still fill the remaining window width, keeping the right rim in place.
+    private func documentViewport<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        let document = content()
+        let inset = edgeToEdge ? 0 : Look.cardGap + (libraryPageLeadingInset ?? 0)
+        return GeometryReader { geometry in
+            document.frame(width: libraryPageWidth.map { max(0, $0 - inset) } ?? geometry.size.width,
+                           height: geometry.size.height, alignment: .topLeading)
+        }
+        .background(Color(nsColor: Look.pageGround))
     }
 }
 
