@@ -81,6 +81,25 @@ import SwiftUI
     }
     @MainActor required dynamic init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    #if DEBUG
+    override func layout() {
+        ResizeTimingDiagnostics.recordState("profile.cost.boundary.layout.begin",
+            fields: ["owner": String(ObjectIdentifier(self).hashValue)])
+        defer {
+            ResizeTimingDiagnostics.recordState("profile.cost.boundary.layout.end",
+                fields: ["owner": String(ObjectIdentifier(self).hashValue)])
+        }
+        super.layout()
+    }
+    override func viewDidMoveToWindow() {
+        ResizeTimingDiagnostics.recordState("profile.cost.boundary.window.begin",
+            fields: ["owner": String(ObjectIdentifier(self).hashValue), "mounted": String(window != nil)])
+        super.viewDidMoveToWindow()
+        ResizeTimingDiagnostics.recordState("profile.cost.boundary.window.end",
+            fields: ["owner": String(ObjectIdentifier(self).hashValue), "mounted": String(window != nil)])
+    }
+    #endif
+
     override func accessibilityParent() -> Any? {
         boundaryAccessibilityParent ?? super.accessibilityParent()
     }
@@ -108,13 +127,35 @@ import SwiftUI
     func updateRoot(_ root: (UInt64) -> AnyView) {
         guard live else { return }
         rootRevision &+= 1
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.boundary.root_assign.begin",
+            fields: ["owner": String(ObjectIdentifier(host).hashValue), "anchor": String(ObjectIdentifier(self).hashValue)])
+        #endif
         host.rootView = root(rootRevision)
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.boundary.root_assign.end",
+            fields: ["owner": String(ObjectIdentifier(host).hashValue), "anchor": String(ObjectIdentifier(self).hashValue)])
+        #endif
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.boundary.sync.begin",
+            fields: ["owner": String(ObjectIdentifier(host).hashValue), "anchor": String(ObjectIdentifier(self).hashValue)])
+        #endif
         synchronizeHost()
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.boundary.sync.end",
+            fields: ["owner": String(ObjectIdentifier(host).hashValue), "anchor": String(ObjectIdentifier(self).hashValue)])
+        #endif
     }
 
     private func synchronizeHost() {
         guard live, !synchronizing else { return }
         synchronizing = true
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.boundary.synchronize.begin",
+            fields: ["owner": String(ObjectIdentifier(host).hashValue), "anchor": String(ObjectIdentifier(self).hashValue)])
+        defer { ResizeTimingDiagnostics.recordState("profile.cost.boundary.synchronize.end",
+            fields: ["owner": String(ObjectIdentifier(host).hashValue), "anchor": String(ObjectIdentifier(self).hashValue)]) }
+        #endif
         defer { synchronizing = false }
         guard let parent = superview else {
             host.removeFromSuperview()

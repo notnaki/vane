@@ -2047,26 +2047,69 @@ private struct SpaceSwipe: ViewModifier {
                 // travel before restoring/layouting the destination browser: hidden
                 // profile preparation blocks the input action and delays the first
                 // moving frame, then repeats layout when the profile is exposed.
+                #if DEBUG
+                ResizeTimingDiagnostics.record("profile.cost.curve.start.begin")
+                #endif
                 slide.start(duration: duration, completion: finish)
+                #if DEBUG
+                ResizeTimingDiagnostics.record("profile.cost.curve.start.end")
+                #endif
                 DispatchQueue.main.async { [weak self, weak store, weak host, weak slide] in
                     guard let self, self.transition == token, let store, let host, let slide,
                           slide.isActive, host.spaceSlide === slide,
                           store.currentSpaceID == self.landingFrom,
                           store.spaceGesture.neighbour?.id == destination.id else { return }
+                    #if DEBUG
+                    ResizeTimingDiagnostics.record("profile.cost.queue.enter")
+                    #endif
                     // The input's batched visibility publication has now completed.
                     // Send its captured curve to the compositor before live layout.
+                    #if DEBUG
+                    ResizeTimingDiagnostics.record("profile.cost.preflush.begin")
+                    #endif
                     CATransaction.flush()
+                    #if DEBUG
+                    ResizeTimingDiagnostics.record("profile.cost.preflush.end")
+                    #endif
                     let window = store.window
+                    #if DEBUG
+                    ResizeTimingDiagnostics.record("profile.cost.activate.begin")
+                    #endif
                     _ = self.activate(destination, in: store)
+                    #if DEBUG
+                    ResizeTimingDiagnostics.record("profile.cost.activate.end")
+                    #endif
                     guard let window, host.window === window, host.spaceSlide === slide,
                           slide.isActive,
                           TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
                         slide.cancel()
                         return
                     }
+                    #if DEBUG
+                    // The original ownership guard above has just succeeded.
+                    ResizeTimingDiagnostics.record("profile.cost.ownership.admitted")
+                    #endif
+                    #if DEBUG
+                    ResizeTimingDiagnostics.record("profile.cost.layout.begin")
+                    #endif
                     host.layoutDisplayedProfile()
+                    #if DEBUG
+                    ResizeTimingDiagnostics.record("profile.cost.layout.end")
+                    #endif
+                    #if DEBUG
+                    ResizeTimingDiagnostics.record("profile.cost.display.begin")
+                    #endif
                     host.displayDisplayedProfile()
+                    #if DEBUG
+                    ResizeTimingDiagnostics.record("profile.cost.display.end")
+                    #endif
+                    #if DEBUG
+                    ResizeTimingDiagnostics.record("profile.cost.finalflush.begin")
+                    #endif
                     CATransaction.flush()
+                    #if DEBUG
+                    ResizeTimingDiagnostics.record("profile.cost.finalflush.end")
+                    #endif
                 }
             } else {
                 // Within a profile, prepare under the captured rows before starting

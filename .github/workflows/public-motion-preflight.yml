@@ -1,4 +1,4 @@
-name: Public sibling sidebar graph experiment
+name: Public boundary handoff phase diagnosis
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -6,28 +6,13 @@ permissions:
   contents: read
 env:
   VANE_EXPERIMENT_SIDEBAR_HOST: '1'
+  VANE_PROFILE_BOUNDARY_COSTS: '1'
   VANE_EXPECTED_TESTS: |
-    VaneTests.LibrarySwipeTests/testReverseSwipeDuringOpeningLandingUsesReleasedIntent
-    VaneTests.LibrarySwipeTests/testExplicitCloseSupersedesOpeningLanding
-    VaneTests.LibrarySwipeTests/testExplicitCloseInBrowserWindowHostSupersedesOpeningLanding
-    VaneTests.LibrarySwipeTests/testLibraryReturnObservationRejectsAnEndpointJump
-    VaneTests.LibrarySwipeTests/testLibraryReturnObservationRejectsSubpixelRounding
     VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
-    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
-    VaneTests.SpaceNativeRenderingTests/testProfileClickStartsCapturedTravelBeforePreparingTheDestination
-    VaneTests.SpaceNativeRenderingTests/testArmedNativeLandingKeepsReleaseVelocityAcrossPagePreparation
-    VaneTests.SpaceNativeRenderingTests/testHiddenProfileSynchronouslyDropsWarmOwnersDuringLanding
-    VaneTests.SpaceNativeRenderingTests/testActualMetadataContentAndFolderProtectionStillRevokePreparedCaptures
-    VaneTests.NativeContentBoundaryTests/testParentResponderQueryDoesNotWalkSiblingHostingRoot
-    VaneTests.NativeContentBoundaryTests/testAnchorReparentResizeVisibilityAndDismantleFollowNativeLifetime
-    VaneTests.NativeContentBoundaryTests/testDismantleReleasesContentRatherThanRetainingAHiddenHostingTree
-    VaneTests.NativeContentBoundaryTests/testEnvironmentObjectThemeEnabledMotionNamespaceAndUpdatesReachChild
-    VaneTests.NativeContentBoundaryTests/testChildAnchorPreferenceAndConsumerResolveInsideTheSameGraph
-    VaneTests.NativeContentBoundaryTests/testAccessibilityBridgeForwardsRealMountedControlAndHidesWithAnchor
   VANE_CANDIDATE_SHA: ${{ github.sha }}
-  VANE_DIAGNOSTIC_FILTER: '^(?:VaneTests\.LibrarySwipeTests/testReverseSwipeDuringOpeningLandingUsesReleasedIntent|VaneTests\.LibrarySwipeTests/testExplicitCloseSupersedesOpeningLanding|VaneTests\.LibrarySwipeTests/testExplicitCloseInBrowserWindowHostSupersedesOpeningLanding|VaneTests\.LibrarySwipeTests/testLibraryReturnObservationRejectsAnEndpointJump|VaneTests\.LibrarySwipeTests/testLibraryReturnObservationRejectsSubpixelRounding|VaneTests\.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding|VaneTests\.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding|VaneTests\.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows|VaneTests\.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|VaneTests\.SpaceNativeRenderingTests/testProfileClickStartsCapturedTravelBeforePreparingTheDestination|VaneTests\.SpaceNativeRenderingTests/testArmedNativeLandingKeepsReleaseVelocityAcrossPagePreparation|VaneTests\.SpaceNativeRenderingTests/testHiddenProfileSynchronouslyDropsWarmOwnersDuringLanding|VaneTests\.SpaceNativeRenderingTests/testActualMetadataContentAndFolderProtectionStillRevokePreparedCaptures|VaneTests\.NativeContentBoundaryTests/testParentResponderQueryDoesNotWalkSiblingHostingRoot|VaneTests\.NativeContentBoundaryTests/testAnchorReparentResizeVisibilityAndDismantleFollowNativeLifetime|VaneTests\.NativeContentBoundaryTests/testDismantleReleasesContentRatherThanRetainingAHiddenHostingTree|VaneTests\.NativeContentBoundaryTests/testEnvironmentObjectThemeEnabledMotionNamespaceAndUpdatesReachChild|VaneTests\.NativeContentBoundaryTests/testChildAnchorPreferenceAndConsumerResolveInsideTheSameGraph|VaneTests\.NativeContentBoundaryTests/testAccessibilityBridgeForwardsRealMountedControlAndHidesWithAnchor)$'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows)$'
 jobs:
   diagnostic:
     name: Build and diagnose native fixtures
@@ -188,6 +173,7 @@ jobs:
           name: public-native-logs
           path: |
             ${{ runner.temp }}/vane-diag-tests.log
+            ${{ runner.temp }}/profile-boundary-costs
             ${{ runner.temp }}/vane-diag-manifest.json
             ${{ runner.temp }}/vane-diag-inventory.txt
             ${{ runner.temp }}/vane-motion-admission.log

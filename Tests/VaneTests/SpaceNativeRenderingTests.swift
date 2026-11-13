@@ -97,6 +97,68 @@ import XCTest
         if let failure { throw failure }
     }
 
+    /// Temporary buffered phase evidence. No added presentation reads or waits.
+    private func profileBoundaryCosts(_ name: String, host: NSView) -> @MainActor () -> Void {
+        #if DEBUG
+        guard ProcessInfo.processInfo.environment["VANE_PROFILE_BOUNDARY_COSTS"] == "1" else { return {} }
+        let previous = ResizeTimingDiagnostics.sink
+        let previousState = ResizeTimingDiagnostics.stateSink
+        var records: [(String, TimeInterval, [String: String])] = []
+        records.reserveCapacity(2048)
+        ResizeTimingDiagnostics.sink = { event, time, _, _ in
+            if records.count < 2048 { records.append((event, time, [:])) }
+        }
+        ResizeTimingDiagnostics.stateSink = { event, time, fields in
+            if records.count < 2048 { records.append((event, time, fields)) }
+        }
+        return {
+            ResizeTimingDiagnostics.sink = previous
+            ResizeTimingDiagnostics.stateSink = previousState
+            if let first = records.first?.1 {
+                for (event, time, fields) in records {
+                    let values = fields.map { $0.key + "=" + $0.value }.sorted().joined(separator: ",")
+                    print("PROFILE_BOUNDARY_COST label=\(name) event=\(event) ms=\((time - first) * 1000) fields=\(values)")
+                }
+            }
+            var anchors = 0, hosts = 0, visible = 0
+            @MainActor func visit(_ view: NSView) {
+                if view is NativeContentBoundaryAnchor {
+                    anchors += 1
+                    if !view.isHiddenOrHasHiddenAncestor { visible += 1 }
+                }
+                if view is NativeContentBoundaryHostingView { hosts += 1 }
+                for child in view.subviews { visit(child) }
+            }
+            visit(host)
+            print("PROFILE_BOUNDARY_GRAPH label=\(name) anchors=\(anchors) siblingHosts=\(hosts) visibleAnchors=\(visible)")
+            if let temporary = ProcessInfo.processInfo.environment["RUNNER_TEMP"] {
+                do {
+                    let directory = URL(fileURLWithPath: temporary).appendingPathComponent("profile-boundary-costs")
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    let first = records.first?.1 ?? 0
+                    let report: [String: Any] = ["label": name, "anchors": anchors,
+                        "siblingHosts": hosts, "visibleAnchors": visible,
+                        "bufferLimit": 2048, "possiblyTruncated": records.count == 2048,
+                        "events": records.map { ["event": $0.0, "ms": ($0.1 - first) * 1000, "fields": $0.2] as [String: Any] }]
+                    try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                        .write(to: directory.appendingPathComponent(name + "-" + UUID().uuidString + ".json"), options: .atomic)
+                } catch { print("PROFILE_BOUNDARY_DIAGNOSTIC_WRITE_FAILED \(error)") }
+            }
+        }
+        #else
+        return {}
+        #endif
+    }
+
+    /// Preserve the original read and short-circuit order while recording its value.
+    private func profileBoundaryValue<Value>(_ event: String, _ value: Value) -> Value {
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.sample." + event,
+            fields: ["value": String(describing: value)])
+        #endif
+        return value
+    }
+
     private func fixtureProfile(named name: String) -> Profile {
         let profile = ProfileManager.shared.create(name: name)
         // Register before the fixture's teardown so its windows/tabs retire first.
@@ -1137,13 +1199,18 @@ import XCTest
         try await compatibilityWait {
             abs(slide.offset - heldDrag) < 0.125 && slide.outgoing.layer?.presentation() != nil
         }
+        let finishCosts = profileBoundaryCosts("reverse", host: host)
+        defer { finishCosts() }
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
         try await compatibilityWait {
-            return slide.isActive && abs(slide.offset) > width * 0.45 && abs(slide.offset) < width * 0.8
-                && TabStore.all.first { $0.window === window }?.currentSpaceID == target.id
-                && slide.outgoing.layer?.animation(forKey: "space-position") != nil
+            return profileBoundaryValue("reverse.active", slide.isActive)
+                && abs(profileBoundaryValue("reverse.lowerOffset", slide.offset)) > width * 0.45
+                && abs(profileBoundaryValue("reverse.upperOffset", slide.offset)) < width * 0.8
+                && profileBoundaryValue("reverse.targetOwner",
+                    TabStore.all.first { $0.window === window }?.currentSpaceID == target.id)
+                && profileBoundaryValue("reverse.animation", slide.outgoing.layer?.animation(forKey: "space-position") != nil)
         }
         XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, target.id)
         let originalRows = slide.outgoing
@@ -1840,6 +1907,8 @@ import XCTest
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
+        let finishCosts = profileBoundaryCosts(cached ? "cached" : "cold", host: host)
+        defer { finishCosts() }
         monitor.land(1, to: second, width: fixtureSidebarWidth(in: source), store: source, duration: 0.8)
         try await Task.sleep(for: .milliseconds(100))
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
@@ -1851,16 +1920,16 @@ import XCTest
         if !pageMounted {
             print("EARLY_PROFILE_PAGE cached=\(cached) tabs=\(arriving.tabs.count) active=\(String(describing: arriving.active?.id)) superview=\(String(describing: arriving.active?.web.superview)) profileVisible=\(arriving.profileVisible) activeApp=\(NSApp.isActive) key=\(window.isKeyWindow)")
         }
-        XCTAssertTrue(pageMounted,
+        XCTAssertTrue(profileBoundaryValue("early.mounted", pageMounted),
                       "The destination web content must be mounted during landing")
         let arrivingPage = try XCTUnwrap(arriving.active?.web)
-        XCTAssertFalse(arrivingPage.isHiddenOrHasHiddenAncestor,
+        XCTAssertFalse(profileBoundaryValue("early.hidden", arrivingPage.isHiddenOrHasHiddenAncestor),
                        "The early handoff must expose the destination page")
-        XCTAssertGreaterThan(arrivingPage.bounds.width, 1,
+        XCTAssertGreaterThan(profileBoundaryValue("early.width", arrivingPage.bounds.width), 1,
                              "Root layout must install the destination page viewport during landing")
-        XCTAssertGreaterThan(arrivingPage.bounds.height, 1)
+        XCTAssertGreaterThan(profileBoundaryValue("early.height", arrivingPage.bounds.height), 1)
         if arrivingPage.window === window && host.window === window {
-            XCTAssertTrue(arrivingPage.convert(arrivingPage.bounds, to: host).intersects(host.bounds),
+            XCTAssertTrue(profileBoundaryValue("early.intersects", arrivingPage.convert(arrivingPage.bounds, to: host).intersects(host.bounds)),
                           "The destination page must occupy the visible window during landing")
         } else {
             XCTFail("Page geometry requires the destination page and host in the admitted window")

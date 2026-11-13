@@ -1295,8 +1295,24 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     /// display still services dirty descendants, as it does after native resizing.
     func layoutDisplayedProfile() {
         guard let current, let host = hosts[current] else { return }
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.content.layout.begin",
+            fields: ["owner": String(ObjectIdentifier(host.content).hashValue)])
+        #endif
         host.content.layout()
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.content.layout.end",
+            fields: ["owner": String(ObjectIdentifier(host.content).hashValue)])
+        #endif
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.palette.layout.begin",
+            fields: ["owner": String(ObjectIdentifier(host.palette).hashValue)])
+        #endif
         host.palette.layout()
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.palette.layout.end",
+            fields: ["owner": String(ObjectIdentifier(host.palette).hashValue)])
+        #endif
     }
 
     /// The captured sidebar is already mounted and owns the landing. Display the
@@ -1306,8 +1322,24 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         guard let current, let host = hosts[current] else { return }
         // These roots can be transparent. Ordinary displayIfNeeded backs up to
         // an opaque ancestor and would walk the window's other hosts again.
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.content.display.begin",
+            fields: ["owner": String(ObjectIdentifier(host.content).hashValue)])
+        #endif
         host.content.displayIfNeededIgnoringOpacity()
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.content.display.end",
+            fields: ["owner": String(ObjectIdentifier(host.content).hashValue)])
+        #endif
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.palette.display.begin",
+            fields: ["owner": String(ObjectIdentifier(host.palette).hashValue)])
+        #endif
         host.palette.displayIfNeededIgnoringOpacity()
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.cost.palette.display.end",
+            fields: ["owner": String(ObjectIdentifier(host.palette).hashValue)])
+        #endif
     }
 
     private func show(_ store: TabStore) {
@@ -1319,23 +1351,47 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         for stale in Array(hosts.keys) where !kept.contains(stale) {
             hosts.removeValue(forKey: stale)?.views.forEach { $0.removeFromSuperview() }
         }
+        #if DEBUG
+        ResizeTimingDiagnostics.record("profile.cost.show.hosts.begin")
+        #endif
         let host = profileHosts(for: store)
+        #if DEBUG
+        ResizeTimingDiagnostics.record("profile.cost.show.hosts.end")
+        #endif
         let departing = current.flatMap { hosts[$0] }
         for view in host.views {
             view.frame = bounds
             view.autoresizingMask = [.width, .height]
         }
+        #if DEBUG
+        ResizeTimingDiagnostics.record("profile.cost.show.attach.begin")
+        #endif
         if host.content.superview !== self {
             addSubview(host.content, positioned: .below, relativeTo: (spaceSlide as NSView?) ?? paletteLayer)
         }
         if host.palette.superview !== paletteLayer { paletteLayer.addSubview(host.palette) }
+        #if DEBUG
+        ResizeTimingDiagnostics.record("profile.cost.show.attach.end")
+        #endif
         // Keep both trees mounted when parking a profile, including a typed query.
         if let departing, let holder = window?.firstResponder as? NSView,
            departing.views.contains(where: { holder.isDescendant(of: $0) }) {
             window?.makeFirstResponder(nil)
         }
+        #if DEBUG
+        ResizeTimingDiagnostics.record("profile.cost.show.hide.begin")
+        #endif
         departing?.views.forEach { $0.isHidden = true }
+        #if DEBUG
+        ResizeTimingDiagnostics.record("profile.cost.show.hide.end")
+        #endif
+        #if DEBUG
+        ResizeTimingDiagnostics.record("profile.cost.show.reveal.begin")
+        #endif
         host.views.forEach { $0.isHidden = false }
+        #if DEBUG
+        ResizeTimingDiagnostics.record("profile.cost.show.reveal.end")
+        #endif
         current = id
     }
 }
@@ -1349,7 +1405,10 @@ private struct NativeSpacePreview: View {
     let windowWidth: CGFloat
 
     var body: some View {
-        preview.equatable()
+        #if DEBUG
+        ResizeTimingDiagnostics.record("profile.cost.capture.body")
+        #endif
+        return preview.equatable()
             .environment(\.sidebarWindowWidth, windowWidth)
             .environment(\.sidebarNativeReadinessScope, scope)
             .environment(\.spaceChromeTheme, theme)
