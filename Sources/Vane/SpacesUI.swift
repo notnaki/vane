@@ -2064,9 +2064,7 @@ private struct SpaceSwipe: ViewModifier {
                         slide.cancel()
                         return
                     }
-                    // The arriving host is attached and owned by the window now.
-                    // Let its normal hosting-view update perform layout rather than
-                    // forcing a synchronous root graph pass during captured travel.
+                    host.layoutDisplayedProfile()
                     host.displayDisplayedProfile()
                     CATransaction.flush()
                 }
