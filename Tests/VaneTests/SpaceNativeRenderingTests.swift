@@ -3547,6 +3547,8 @@ import XCTest
     var reds: [Double] = []
     private var heldRed: Double?
     private var transitionSnapshot: ProfileWashLayerSnapshot?
+    private var admittingHeldPresentation = false
+    private var heldPresentationReds: [Double] = []
     var travelReds: [Double] { heldRed.map { Self.travelValues(in: reds, held: $0) } ?? [] }
 
     static func travelValues(in reds: [Double], held: Double) -> [Double] {
@@ -3609,13 +3611,22 @@ import XCTest
         XCTAssertEqual(owners.count, 2, "Both cached profile owners must be known before sampling")
         XCTAssertEqual(surfaces.count, 2, "Both cached profile washes must be mounted before sampling")
         transitionSnapshot = try ProfileWashLayerSnapshot(host: host, expectedSurfaces: surfaces)
-        // Admit stable held presentation before release; these are prerequisites,
-        // never counted as travelling frames or used to await a landing outcome.
+        admittingHeldPresentation = true
+        heldPresentationReds.removeAll(keepingCapacity: true)
+        defer { admittingHeldPresentation = false }
+        // AppKit can attach the held slide's backing root after track returns.
+        // Admit that current hierarchy before release, and require three fresh
+        // consecutive native samples from it. Once released, never recapture.
         try await compatibilityWait {
-            let held = self.reds.suffix(3)
+            if self.transitionSnapshot?.matchesModelHierarchy(exactRoots: true) != true {
+                self.transitionSnapshot = try ProfileWashLayerSnapshot(host: host, expectedSurfaces: surfaces)
+                self.heldPresentationReds.removeAll(keepingCapacity: true)
+                return false
+            }
+            let held = self.heldPresentationReds
             return held.count == 3 && (held.max()! - held.min()!) <= 0.000001
         }
-        heldRed = reds.last
+        heldRed = heldPresentationReds.last
         reds.removeAll(keepingCapacity: true)
         unadmittedTransitionCallbacks = 0
         maxGap = 0
@@ -3634,11 +3645,8 @@ import XCTest
         if let last { maxGap = max(maxGap, now - last) }
         last = now
         if let snapshot = transitionSnapshot {
-            let roots = Set((snapshot.host.sublayers ?? []).map(ObjectIdentifier.init))
-            let ancestryValid = snapshot.surfaces.allSatisfy { surface in
-                zip(surface.ancestry, surface.ancestry.dropFirst()).allSatisfy { $0.superlayer === $1 }
-            }
-            guard roots.isSubset(of: snapshot.roots), ancestryValid else {
+            guard snapshot.matchesModelHierarchy(exactRoots: admittingHeldPresentation) else {
+                heldPresentationReds.removeAll(keepingCapacity: true)
                 if samplingTransition { unadmittedTransitionCallbacks += 1 }
                 return
             }
@@ -3646,8 +3654,13 @@ import XCTest
         guard let host, let surface = visibleSurface(in: host),
               let cg = (surface.base.presentation()?.colors as? [CGColor])?.first,
               let colour = NSColor(cgColor: cg)?.usingColorSpace(.deviceRGB) else {
+            heldPresentationReds.removeAll(keepingCapacity: true)
             if samplingTransition { unadmittedTransitionCallbacks += 1 }
             return
+        }
+        if admittingHeldPresentation {
+            heldPresentationReds.append(colour.redComponent)
+            if heldPresentationReds.count > 3 { heldPresentationReds.removeFirst() }
         }
         reds.append(colour.redComponent)
     }
@@ -3663,6 +3676,14 @@ import XCTest
     let roots: Set<ObjectIdentifier>
     let surfaces: [Surface]
     let surfaceSignature: [ObjectIdentifier: [ObjectIdentifier]]
+
+    func matchesModelHierarchy(exactRoots: Bool) -> Bool {
+        let currentRoots = Set((host.sublayers ?? []).map(ObjectIdentifier.init))
+        guard exactRoots ? currentRoots == roots : currentRoots.isSubset(of: roots) else { return false }
+        return surfaces.allSatisfy { surface in
+            zip(surface.ancestry, surface.ancestry.dropFirst()).allSatisfy { $0.superlayer === $1 }
+        }
+    }
 
     @MainActor init(host view: BrowserWindowHost, expectedSurfaces: [ThemeWashSurface]) throws {
         func washes(in view: NSView) -> [ThemeWashSurface] {

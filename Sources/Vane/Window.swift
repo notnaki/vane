@@ -1304,8 +1304,10 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     /// profile and both captured sidebar trees again in this same handoff.
     func displayDisplayedProfile() {
         guard let current, let host = hosts[current] else { return }
-        host.content.displayIfNeeded()
-        host.palette.displayIfNeeded()
+        // These roots can be transparent. Ordinary displayIfNeeded backs up to
+        // an opaque ancestor and would walk the window's other hosts again.
+        host.content.displayIfNeededIgnoringOpacity()
+        host.palette.displayIfNeededIgnoringOpacity()
     }
 
     private func show(_ store: TabStore) {

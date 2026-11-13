@@ -467,7 +467,7 @@ import XCTest
         XCTAssertEqual(try x(), 0, accuracy: 1)
     }
 
-    private func releasedOpening(nativeWindow: Bool = false) async throws -> (TabStore, NSWindow, LibrarySwipeMonitor, NSView) {
+    private func releasedOpening(nativeWindow: Bool = false, profileHost: Bool = false) async throws -> (TabStore, NSWindow, LibrarySwipeMonitor, NSView) {
         try XCTSkipIf(Motion.reduced, "Requires animated navigation")
         let (store, original, monitor) = fixture(withSpaces: true)
         let window: NSWindow
@@ -484,8 +484,13 @@ import XCTest
         store.libraryOpen = false
         store.sidebarShown = true
         store.palette = nil
-        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
-            .environmentObject(ProfileManager.shared))
+        let host: NSView
+        if profileHost {
+            host = BrowserWindowHost(shown: ShownStore(store))
+        } else {
+            host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+                .environmentObject(ProfileManager.shared))
+        }
         window.contentView = host
         fixtureCleanup { window.orderOut(nil); window.contentView = nil }
         try await admitPresentation(window: window, host: host, monitor: monitor)
@@ -542,8 +547,12 @@ import XCTest
         try await withFixtureApplicationLoop { try await checkExplicitCloseSupersedesOpeningLanding() }
     }
 
-    private func checkExplicitCloseSupersedesOpeningLanding() async throws {
-        let (store, window, monitor, host) = try await releasedOpening()
+    func testExplicitCloseInBrowserWindowHostSupersedesOpeningLanding() async throws {
+        try await withFixtureApplicationLoop { try await checkExplicitCloseSupersedesOpeningLanding(profileHost: true) }
+    }
+
+    private func checkExplicitCloseSupersedesOpeningLanding(profileHost: Bool = false) async throws {
+        let (store, window, monitor, host) = try await releasedOpening(nativeWindow: profileHost, profileHost: profileHost)
         let observer = LibraryReturnObserver(root: host)
         observer.start(on: try XCTUnwrap(window.screen))
         defer { observer.stop() }
@@ -562,12 +571,41 @@ import XCTest
         // Keep the original sample delay. A late task can read the endpoint;
         // native frames retain the actual reversal observed before that read.
         let returning = try observer.intermediate ?? x()
+        XCTAssertTrue(LibraryReturnObserver.isIntermediate(returning, before: before, endpoint: endpoint),
+                      "Observe closing travel beyond pixel rounding, including for the task-sample fallback")
         XCTAssertLessThan(returning, before)
         XCTAssertGreaterThan(returning, endpoint + 1,
                              "An explicit close reverses the landing instead of snapping shut")
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertFalse(store.libraryOpen, "A retired opening completion must not reopen Library")
         XCTAssertNil(store.librarySwipeProgress)
+    }
+
+    func testLibraryReturnObservationRejectsSubpixelRounding() async throws {
+        try await withFixtureApplicationLoop {
+            let (_, window, monitor) = fixture(withSpaces: true)
+            let host = NSView(frame: window.contentLayoutRect)
+            host.wantsLayer = true
+            let marker = NSView(frame: NSRect(x: 200, y: 100, width: 10, height: 10))
+            marker.wantsLayer = true
+            host.addSubview(marker)
+            window.contentView = host
+            monitor.presentationView = marker
+            defer { window.orderOut(nil); window.contentView = nil }
+            try await admitPresentation(window: window, host: host, monitor: monitor)
+            let observer = LibraryReturnObserver(root: host)
+            observer.start(on: try XCTUnwrap(window.screen))
+            defer { observer.stop() }
+            try await compatibilityWait { observer.callbacks >= 2 }
+            observer.arm(marker: marker, before: 200.25, endpoint: 0)
+            try await compatibilityWait { observer.armedSamples >= 3 }
+            observer.stop()
+            let stationary = try XCTUnwrap(marker.layer?.presentation()).convert(.zero,
+                to: host.layer?.presentation()).x
+            XCTAssertNil(observer.intermediate, "Pixel rounding of a held frame is not return travel")
+            XCTAssertFalse(LibraryReturnObserver.isIntermediate(stationary, before: 200.25, endpoint: 0),
+                           "The task-sample fallback must also reject pixel rounding")
+        }
     }
 
     func testLibraryReturnObservationRejectsAnEndpointJump() async throws {
@@ -618,12 +656,7 @@ import XCTest
     }
 
     private func checkOpeningCommandBarSupersedesPendingLibraryOpening() async throws {
-        let (store, window, monitor, host) = try await releasedOpening()
-        let began = CACurrentMediaTime()
-        defer {
-            let x = monitor.presentationView?.layer?.presentation()?.convert(.zero, to: host.layer?.presentation()).x
-            print("LIBRARY_CANCEL_PROBE elapsed=\(CACurrentMediaTime() - began) running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow) progress=\(String(describing: store.librarySwipeProgress)) x=\(String(describing: x)) markerAttached=\(monitor.presentationView?.window === window) animationKeys=\(monitor.presentationView?.layer?.animationKeys() ?? [])")
-        }
+        let (store, _, _, _) = try await releasedOpening()
         store.palette = .address
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertNotNil(store.palette, "A late Library completion must not dismiss the new command bar")
@@ -1565,7 +1598,9 @@ private final class LibraryScrollWindow: NSWindow {
     private(set) var callbacks = 0
     private(set) var armedSamples = 0
     private(set) var intermediate: CGFloat?
-
+    static func isIntermediate(_ x: CGFloat, before: CGFloat, endpoint: CGFloat) -> Bool {
+        x < before - 1 && x > endpoint + 1
+    }
     init(root: NSView) { self.root = root }
     func start(on screen: NSScreen) {
         let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
@@ -1585,7 +1620,7 @@ private final class LibraryScrollWindow: NSWindow {
               let layer = marker.layer?.presentation(), let parent = root.layer?.presentation() else { return }
         armedSamples += 1
         let x = layer.convert(.zero, to: parent).x
-        if intermediate == nil, x < before - 0.125, x > endpoint + 1 { intermediate = x }
+        if intermediate == nil, Self.isIntermediate(x, before: before, endpoint: endpoint) { intermediate = x }
     }
 }
 

@@ -255,6 +255,19 @@ private struct LibrarySwipe: ViewModifier {
         if Motion.reduced || presentationView?.window == nil || store.librarySwipeProgress == nil {
             clear()
         } else {
+            // An explicit command takes over the visible panel, not the old
+            // animation's model endpoint. Commit that unanimated origin before
+            // starting the return so the outgoing timing curve cannot keep
+            // carrying the panel forward during the first closing frames.
+            if let progress = presentedProgress {
+                Motion.instant { store.librarySwipeProgress = progress }
+                if let root = presentationView?.window?.contentView as? BrowserWindowHost {
+                    root.layoutDisplayedProfile()
+                } else {
+                    presentationView?.window?.contentView?.layout()
+                }
+                CATransaction.flush()
+            }
             // A new command bar can introduce unrelated animations into the
             // SwiftUI transaction. Retire this transient state when its own
             // panel has actually reached rest, even if that group stays alive.
