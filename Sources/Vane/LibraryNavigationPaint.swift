@@ -121,13 +121,25 @@ extension EnvironmentValues {
                 },
                 apply: { [weak self, weak root] _, width in
                     guard let self, self.generation == token, let root, let width else { return }
+#if DEBUG
+                    ResizeTimingDiagnostics.record("library.publication.begin", width: width)
+#endif
                     self.buffer?.publishSidebarWidth(width) { _ in
                         Motion.instant {
                             self.progress = self.submitted
+#if DEBUG
+                            ResizeTimingDiagnostics.record("library.root.layout.begin", width: width)
+#endif
                             root.needsLayout = true
                             root.layoutSubtreeIfNeeded()
+#if DEBUG
+                            ResizeTimingDiagnostics.record("library.root.layout.end", width: width)
+#endif
                         }
                     }
+#if DEBUG
+                    ResizeTimingDiagnostics.record("library.publication.end", width: width)
+#endif
                 },
                 completion: { [weak self] in
                     guard let self, self.generation == token else { return }

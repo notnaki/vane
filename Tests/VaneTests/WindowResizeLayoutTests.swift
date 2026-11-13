@@ -266,6 +266,15 @@ import XCTest
     }
 
     private func verifyProductionLibraryPermissions(_ window: VaneWindow, store: TabStore, web: WKWebView) async throws {
+#if DEBUG
+        var parentEvaluations = 0
+        let previousSink = ResizeTimingDiagnostics.sink
+        ResizeTimingDiagnostics.sink = { event, time, width, height in
+            if event == "sidebar.body.browser" { parentEvaluations += 1 }
+            previousSink?(event, time, width, height)
+        }
+        defer { ResizeTimingDiagnostics.sink = previousSink }
+#endif
         Motion.instant { store.librarySwipeProgress = 0.4; store.findOpen = true }
         func pending(_ view: NSView) -> Bool {
             if let bridge = view as? LibraryPaintView { return !bridge.isSettled }
@@ -287,22 +296,39 @@ import XCTest
             "Production parent metadata must permit Library paint ownership while excluding native resize")
         defer { navigation.cancel() }
         navigation.start()
-        let revision = host.resizeLayoutRevision
+        // Find refreshes BrowserWindow, but unchanged resize metadata can be
+        // diff-elided before updateNSView. Observe the production parent itself,
+        // not an unrelated representable update or the outcome under assertion.
+#if DEBUG
+        let evaluation = parentEvaluations
+#endif
         Motion.instant { store.findOpen = false }
         try await compatibilityWait {
             window.contentView?.layoutSubtreeIfNeeded()
-            return host.resizeLayoutRevision > revision
+#if DEBUG
+            return parentEvaluations > evaluation
+#else
+            return false
+#endif
         }
         XCTAssertTrue(navigation.request(frame: window.frame, sidebarWidth: 0),
                       "Refreshing the production parent must not cancel Library's active viewport")
         XCTAssertEqual(web.autoresizingMask, [])
         XCTAssertNotNil(host.pageResizeOwnershipWillChange)
-        let spaceRevision = host.resizeLayoutRevision
+#if DEBUG
+        let spaceEvaluation = parentEvaluations
+#endif
         Motion.instant { store.spaceGesture.swiping = true; store.findOpen = true }
         try await compatibilityWait {
             window.contentView?.layoutSubtreeIfNeeded()
-            return host.resizeLayoutRevision > spaceRevision
+#if DEBUG
+            return parentEvaluations > spaceEvaluation
+#else
+            return false
+#endif
         }
+        XCTAssertFalse(host.resizeLayout.enabled)
+        XCTAssertFalse(host.resizeLayout.permitsLibraryNavigation)
         XCTAssertFalse(navigation.request(frame: window.frame, sidebarWidth: 0),
                        "A Space handoff must revoke the existing Library paint owner too")
         XCTAssertFalse(navigation.isPreparing)
@@ -332,15 +358,30 @@ import XCTest
 #if DEBUG
         let trace = ProcessInfo.processInfo.environment["VANE_LIBRARY_PAINT_TRACE"] == "1"
         var events: [String] = []
+        let previousStateSink = ResizeTimingDiagnostics.stateSink
+        let previousSink = ResizeTimingDiagnostics.sink
         if trace {
+            ResizeTimingDiagnostics.sink = { event, time, width, height in
+                guard events.count < 5000 else { return }
+                if event.hasPrefix("library.") || event == "sidebar.body.browser"
+                    || event == "buffer.presentation.callback" || event == "buffer.host.layout" {
+                    events.append("LIBRARY_TIMING t=\(time) event=\(event) width=\(String(describing: width)) height=\(String(describing: height))")
+                }
+            }
             ResizeTimingDiagnostics.stateSink = { event, time, fields in
                 guard events.count < 5000 else { return }
-                if event.hasPrefix("library.") || event == "prepared.parent" {
+                if event.hasPrefix("library.") || event == "buffer.prepare.before" || event.hasPrefix("buffer.publish") {
                     events.append("LIBRARY_TRACE t=\(time) event=\(event) fields=\(fields)")
                 }
             }
         }
-        defer { if trace { ResizeTimingDiagnostics.stateSink = nil; events.forEach { print($0) } } }
+        defer {
+            if trace {
+                ResizeTimingDiagnostics.stateSink = previousStateSink
+                ResizeTimingDiagnostics.sink = previousSink
+                events.forEach { print($0) }
+            }
+        }
 #endif
         let sampler = ResizePixelSampler()
         try await sampler.start(window)

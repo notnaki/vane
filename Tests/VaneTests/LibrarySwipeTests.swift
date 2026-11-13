@@ -267,12 +267,32 @@ import XCTest
     private func checkLibraryDragKeepsWebKitFillingTheMovingCard() async throws {
 #if DEBUG
         let trace = ProcessInfo.processInfo.environment["VANE_LIBRARY_PAINT_TRACE"] == "1"
-        if trace { ResizeTimingDiagnostics.stateSink = { event, time, fields in
-            if event.hasPrefix("library.") || event.hasPrefix("buffer.complete") || event == "buffer.prepare.before" {
-                print("LIBRARY_TRACE t=\(time) event=\(event) fields=\(fields)")
+        var events: [String] = []
+        let previousStateSink = ResizeTimingDiagnostics.stateSink
+        let previousSink = ResizeTimingDiagnostics.sink
+        if trace {
+            ResizeTimingDiagnostics.stateSink = { event, time, fields in
+                guard events.count < 5000 else { return }
+                if event.hasPrefix("library.") || event.hasPrefix("buffer.complete")
+                    || event == "buffer.prepare.before" || event.hasPrefix("buffer.publish") {
+                    events.append("LIBRARY_TRACE t=\(time) event=\(event) fields=\(fields)")
+                }
             }
-        } }
-        defer { if trace { ResizeTimingDiagnostics.stateSink = nil } }
+            ResizeTimingDiagnostics.sink = { event, time, width, height in
+                guard events.count < 5000 else { return }
+                if event.hasPrefix("library.") || event == "sidebar.body.browser"
+                    || event == "buffer.presentation.callback" || event == "buffer.host.layout" {
+                    events.append("LIBRARY_TIMING t=\(time) event=\(event) width=\(String(describing: width)) height=\(String(describing: height))")
+                }
+            }
+        }
+        defer {
+            if trace {
+                ResizeTimingDiagnostics.stateSink = previousStateSink
+                ResizeTimingDiagnostics.sink = previousSink
+                events.forEach { print($0) }
+            }
+        }
 #endif
         try XCTSkipIf(Motion.reduced, "Requires interactive navigation")
         let (store, window, _) = fixture(withSpaces: true)
