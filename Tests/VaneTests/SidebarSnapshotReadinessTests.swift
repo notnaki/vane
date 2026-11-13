@@ -156,9 +156,17 @@ import XCTest
             var displaced = false
             let occlusion = SnapshotOcclusion()
             var recovered = false
+            defer {
+                print("Snapshot occlusion displaced=\(displaced) observed=\(occlusion.observed) recovered=\(recovered)")
+            }
             _ = try await SidebarSnapshot.imageWhenReady(Color.gray, observePresentation: { window in
                 if displaced, window.isKeyWindow, NSApp.keyWindow === window,
                    !window.occlusionState.contains(.visible) { occlusion.observed = true }
+            }, allowRecovery: { _ in
+                // Native occlusion arrives asynchronously after displacement.
+                // Preserve that injected prerequisite until the observer sees it;
+                // re-presenting earlier can move the window back on screen first.
+                !displaced || occlusion.observed
             }) { host in
                 guard let window = host.window else { return false }
                 if !displaced {
