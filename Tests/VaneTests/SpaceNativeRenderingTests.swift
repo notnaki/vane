@@ -1142,8 +1142,21 @@ import XCTest
         // can sample the insertion frame or an endpoint on a loaded desktop.
         let middleStart = CACurrentMediaTime()
         var middleState = "not sampled"
-        defer { print("REVERSE_LANDING_MIDDLE \(middleState)") }
+        // Temporary public-only discriminator: retain the first admitted values,
+        // not just the final timeout frame, without printing in the sample path.
+        var middleSamples: [(TimeInterval, CGFloat, CGFloat, Bool, Bool)] = []
+        defer {
+            print("REVERSE_LANDING_MIDDLE \(middleState)")
+            for (elapsed, offset, model, active, targetActive) in middleSamples {
+                print("REVERSE_LANDING_FIRST elapsed=\(elapsed) offset=\(offset) model=\(model) active=\(active) targetActive=\(targetActive)")
+            }
+        }
         try await compatibilityWait {
+            if middleSamples.count < 8 {
+                middleSamples.append((CACurrentMediaTime() - middleStart, slide.offset,
+                                      slide.outgoing.frame.minX, slide.isActive,
+                                      TabStore.all.first { $0.window === window }?.currentSpaceID == target.id))
+            }
             middleState = "elapsed=\(CACurrentMediaTime() - middleStart) active=\(slide.isActive) offset=\(slide.offset) width=\(width) source=\(store.currentSpaceID == origin.id) target=\(store.currentSpaceID == target.id) app=\(NSApp.isActive) key=\(window.isKeyWindow) animation=\(String(describing: slide.outgoing.layer?.animation(forKey: "space-position")))"
             return slide.isActive && abs(slide.offset) > width * 0.45 && abs(slide.offset) < width * 0.8
                 && TabStore.all.first { $0.window === window }?.currentSpaceID == target.id
