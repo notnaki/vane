@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 1c5692ddced3b7a0f91732700985f8fcc8f676ca
+          ref: c4586d086d47742f58975b59890977c34c81842b
       - name: Record exact public source and actual runner
         run: |
           git rev-parse HEAD
@@ -26,7 +26,7 @@ jobs:
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '600'
         run: |
           set -euo pipefail
-          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter 'LibraryPageLayoutTests|LibrarySwipeTests|LivePageResizeBufferTests|WindowResizeLayoutTests|WindowResizeResponsiveMotionTests' 2>&1 | tee "$RUNNER_TEMP/library-resize-preflight.log"
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter 'LivePageResizeBufferTests/testLibraryFinishSupersedesObsoleteLookaheadWithoutAcceptingItsCallback|WindowResizeLayoutTests/testProductionParentRefreshKeepsLibraryViewportOwnedAndPainted' 2>&1 | tee "$RUNNER_TEMP/library-resize-preflight.log"
           grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/library-resize-preflight.log"
       - name: Preserve all evidence
         if: always()

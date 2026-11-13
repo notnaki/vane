@@ -56,6 +56,41 @@ import XCTest
         return paints.removeFirst()
     }
 
+    func testLibraryFinishSupersedesObsoleteLookaheadWithoutAcceptingItsCallback() throws {
+        let f = Fixture(); defer { f.close() }
+        let owner = UUID()
+        f.host.libraryNavigationPaintOwner = owner
+        var paints: [@MainActor @Sendable () -> Void] = []
+        var deadlines: [@MainActor @Sendable () -> Void] = []
+        var completions = 0
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in paints.append(callback) },
+            deadline: { _, callback in deadlines.append(callback) },
+            navigation: .init(owner: owner, leading: 228), apply: { _, _ in },
+            completion: { completions += 1 }))
+        defer { buffer.cancel() }
+        buffer.start()
+        let obsoletePaint = nextPaint(&paints)
+        let obsoleteDeadline = try XCTUnwrap(deadlines.first)
+        XCTAssertGreaterThan(f.web.frame.width, f.host.bounds.width)
+        buffer.finish()
+        XCTAssertEqual(f.web.frame.size, f.host.bounds.size,
+                       "An already covered installed clip must replace obsolete lookahead immediately")
+        XCTAssertEqual(paints.count, 1, "Exact geometry needs its own presentation acknowledgement")
+        XCTAssertTrue(buffer.isPreparing)
+        obsoletePaint()
+        obsoleteDeadline()
+        XCTAssertEqual(completions, 0, "An obsolete callback or deadline cannot acknowledge the exact replacement")
+        XCTAssertTrue(buffer.isPreparing)
+        guard paints.count == 1 else { return }
+        nextPaint(&paints)()
+        XCTAssertEqual(completions, 1)
+        XCTAssertFalse(buffer.isPreparing)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+        obsoletePaint(); obsoleteDeadline()
+        XCTAssertEqual(completions, 1)
+    }
+
     func testNativeWindowResizeRetiresPendingLibraryViewportBeforeCapturingSizing() throws {
         let f = Fixture(); defer { f.close() }
         let owner = UUID()
