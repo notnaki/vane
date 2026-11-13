@@ -247,7 +247,33 @@ import XCTest
         }
     }
 
-    func testLibraryDragMovesThePageWithoutResizingWebKitForEachSample() async throws {
+    private func withLibraryApplicationLoop(_ body: @MainActor () async throws -> Void) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await body() } catch { failure = error }
+        do { try await loop.close() }
+        catch { if failure == nil { failure = error } else { XCTFail("Library fixture cleanup also failed: \(error)") } }
+        if let failure { throw failure }
+    }
+
+    func testLibraryDragKeepsWebKitFillingTheMovingCard() async throws {
+        try await withLibraryApplicationLoop { try await checkLibraryDragKeepsWebKitFillingTheMovingCard() }
+    }
+
+    private func checkLibraryDragKeepsWebKitFillingTheMovingCard() async throws {
+#if DEBUG
+        let trace = ProcessInfo.processInfo.environment["VANE_LIBRARY_PAINT_TRACE"] == "1"
+        if trace { ResizeTimingDiagnostics.stateSink = { event, time, fields in
+            if event.hasPrefix("library.") || event.hasPrefix("buffer.complete") || event == "buffer.prepare.before" {
+                print("LIBRARY_TRACE t=\(time) event=\(event) fields=\(fields)")
+            }
+        } }
+        defer { if trace { ResizeTimingDiagnostics.stateSink = nil } }
+#endif
         try XCTSkipIf(Motion.reduced, "Requires interactive navigation")
         let (store, window, _) = fixture(withSpaces: true)
         Library.open(.downloads, in: store)
@@ -258,31 +284,47 @@ import XCTest
         let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         window.contentView = host
+        window.styleMask = [.titled, .fullSizeContentView]
+        window.animationBehavior = .none
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
-        try await Task.sleep(for: .milliseconds(100))
+        try await ResizeNativeWindowAdmission.wait(window, web: tab.web, layout: true)
+        try await compatibilityWait { !tab.web.isLoading }
+        let ready = XCTestExpectation(description: "Initial Library document paint")
+        let presented: @convention(block) () -> Void = { ready.fulfill() }
+        tab.web.perform(NSSelectorFromString("_doAfterNextPresentationUpdate:"), with: presented)
+        guard await XCTWaiter.fulfillment(of: [ready], timeout: 3) == .completed else {
+            throw NSError(domain: "LibraryDocumentPaintReadiness", code: 1)
+        }
         let initialWidth = tab.web.bounds.width
         let initialX = tab.web.convert(.zero, to: host).x
         XCTAssertGreaterThan(initialWidth, 100)
         send(window, phase: .began)
         send(window, dx: 40)
         try await Task.sleep(for: .milliseconds(40))
-        XCTAssertEqual(tab.web.bounds.width, initialWidth, accuracy: 1,
-                       "Finger tracking must translate the page, without repeated WebKit reflow")
+        XCTAssertEqual(tab.web.bounds.width + tab.web.convert(.zero, to: host).x,
+                       initialWidth + initialX, accuracy: 1,
+                       "The document and the visible card must share the same right edge")
         XCTAssertGreaterThan(tab.web.convert(.zero, to: host).x, initialX + 5,
                              "The stable page must still move with the navigation")
         send(window, dx: 40)
         try await Task.sleep(for: .milliseconds(40))
-        XCTAssertEqual(tab.web.bounds.width, initialWidth, accuracy: 1)
+        XCTAssertEqual(tab.web.bounds.width + tab.web.convert(.zero, to: host).x,
+                       initialWidth + initialX, accuracy: 1)
+        XCTAssertLessThan(tab.web.bounds.width, initialWidth)
         send(window, phase: .ended)
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertNil(store.librarySwipeProgress)
-        XCTAssertNil(store.libraryGesture.pageWidth)
+        XCTAssertNil(store.libraryGesture.pageLeadingInset)
         XCTAssertLessThan(tab.web.bounds.width, initialWidth - 50,
-                          "Apply the destination page width once the navigation settles")
+                          "The destination viewport remains fitted when navigation settles")
     }
 
-    func testFloatingSidebarLibraryLandingKeepsInnerWebWidthFixed() async throws {
+    func testFloatingSidebarLibraryLandingKeepsTheDocumentAtTheRightRim() async throws {
+        try await withLibraryApplicationLoop { try await checkFloatingSidebarLibraryLandingKeepsTheDocumentAtTheRightRim() }
+    }
+
+    private func checkFloatingSidebarLibraryLandingKeepsTheDocumentAtTheRightRim() async throws {
         try XCTSkipIf(Motion.reduced, "Requires animated navigation")
         let (store, window, monitor) = fixture(withSpaces: true)
         Library.open(.downloads, in: store)
@@ -292,9 +334,18 @@ import XCTest
         let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         window.contentView = host
+        window.styleMask = [.titled, .fullSizeContentView]
+        window.animationBehavior = .none
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
-        try await Task.sleep(for: .milliseconds(100))
+        try await ResizeNativeWindowAdmission.wait(window, web: tab.web, layout: true)
+        try await compatibilityWait { !tab.web.isLoading }
+        let ready = XCTestExpectation(description: "Initial Library document paint")
+        let presented: @convention(block) () -> Void = { ready.fulfill() }
+        tab.web.perform(NSSelectorFromString("_doAfterNextPresentationUpdate:"), with: presented)
+        guard await XCTWaiter.fulfillment(of: [ready], timeout: 3) == .completed else {
+            throw NSError(domain: "LibraryDocumentPaintReadiness", code: 1)
+        }
         let width = tab.web.bounds.width
         send(window, phase: .began)
         send(window, dx: -80)
@@ -304,15 +355,19 @@ import XCTest
         var landingSamples = 0
         for _ in 0..<4 {
             try await Task.sleep(for: .milliseconds(30))
-            if store.libraryGesture.pageWidth != nil {
+            if store.libraryGesture.pageLeadingInset != nil {
                 landingSamples += 1
-                XCTAssertEqual(tab.web.bounds.width, width, accuracy: 0.5,
-                               "The floating card's inner padding must stay fixed through landing")
+                let viewport = try XCTUnwrap(tab.web.superview as? WebHost)
+                let bounds = viewport.convert(viewport.bounds, to: host)
+                XCTAssertEqual(bounds.maxX, host.bounds.width - Look.cardGap, accuracy: 1,
+                               "A floating card must keep its visible document viewport at the window's right rim")
+                if !tab.web.autoresizingMask.contains(.width) {
+                    XCTAssertTrue(viewport.clipsToBounds, "A prepared native viewport must not escape its visible card")
+                }
             }
         }
         XCTAssertGreaterThan(landingSamples, 0, "Inspect the page while its landing is in progress")
         try await Task.sleep(for: .milliseconds(300))
-        XCTAssertNil(store.libraryGesture.pageWidth)
         XCTAssertNil(store.libraryGesture.pageLeadingInset)
         XCTAssertGreaterThan(tab.web.bounds.width, width + 50)
     }
@@ -938,7 +993,7 @@ import XCTest
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertNil(store.librarySwipeProgress)
         XCTAssertTrue(search(host) === field, "Keep the panel ready offscreen for the next gesture")
-        XCTAssertFalse(field.isEnabled, "Closed Library fields cannot retain keyboard interaction")
+        XCTAssertFalse(field.isEnabled, "Closed Library fields cannot retain keyboard interaction; open=\(store.libraryOpen) progress=\(String(describing: store.librarySwipeProgress)) paint=\(String(describing: store.libraryGesture.paint?.progress))")
 
         // A short swipe springs back without committing; the prepared panel stays inactive.
         send(window, phase: .began)

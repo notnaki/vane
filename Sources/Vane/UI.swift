@@ -34,6 +34,7 @@ import Combine
 /// me", which is what a page inside a card actually wants.
 struct WebView: NSViewRepresentable {
     @Environment(\.pageResizeLayout) private var resizeLayout
+    @Environment(\.libraryNavigationPaintOwner) private var libraryPaintOwner
     let web: WKWebView
     /// Every page the window still has, so the host can tell a page that is merely not on
     /// screen from one whose tab has been closed. Only the card passes it — see `WebCard`
@@ -59,6 +60,7 @@ struct WebView: NSViewRepresentable {
     func updateNSView(_ host: WebHost, context: Context) {
         if mayMount { host.show(web, keeping: live) } else { host.removePage() }
         host.offscreen = offscreen
+        host.libraryNavigationPaintOwner = libraryPaintOwner
         host.resizeLayout = resizeLayout
         host.resizeFraction = NSSize(width: 1, height: 1)
         if pane, let split = store?.activeSplit,
@@ -96,6 +98,7 @@ struct WebView: NSViewRepresentable {
 /// a page is still a fresh attach, and still arrives a frame late; there is nothing to
 /// unhide that has never been shown.
 final class WebHost: NSView {
+    var libraryNavigationPaintOwner: UUID?
     var resizeLayout = PageResizeLayout()
     var resizeFraction = NSSize(width: 1, height: 1)
     var pageLayoutDidResize: (() -> Void)?
@@ -836,7 +839,6 @@ struct SpaceGround: View {
 struct WebCard: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.libraryPageLeadingInset) private var libraryPageLeadingInset
-    @Environment(\.libraryPageWidth) private var libraryPageWidth
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ProfileChromeObserved private var profileManager = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -886,6 +888,10 @@ struct WebCard: View {
             }
             OffscreenPages()
             if let tab = store.active { LoadingBar(tab: tab, hidden: store.findOpen) }
+        }
+        // Controls float over a viewport; their intrinsic widths must never
+        // enlarge the page's layout proposal (especially next to Library).
+        .overlay(alignment: .topTrailing) {
             VStack(spacing: 8) {
                 if !profileManager.saveFailures.isEmpty {
                     ProfileSaveNotice(manager: profileManager)
@@ -918,10 +924,9 @@ struct WebCard: View {
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: batterySaver.notice?.id)
             .animation(reduceMotion || batterySaver.isActive ? nil : .easeOut(duration: 0.2),
                        value: profileManager.saveFailures)
-            // Last in the stack, so it is above the page: a dragged sidebar tab lands on the
-            // card's edge bands as a new pane. Only in the tree while a drag is in flight.
-            SplitDropWell()
         }
+        // Drag targets stay above the page controls without determining its size.
+        .overlay { SplitDropWell() }
         // The status bar: the hovered link's url, bottom-left, inside the card's clip the
         // way Arc's sits on the page rather than under it.
         .overlay(alignment: .bottomLeading) {
@@ -941,21 +946,13 @@ struct WebCard: View {
         .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
     }
 
-    /// Freeze only the document during a Library swipe. The surrounding card and its
-    /// overlays still fill the remaining window width, keeping the right rim in place.
+    /// The native viewport and the card share one width. Freezing only the
+    /// document leaves uncovered space while closing and forces a second reflow
+    /// when the gesture clears, after the surrounding card has already landed.
     private func documentViewport<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        let inset = edgeToEdge ? 0 : Look.cardGap + (libraryPageLeadingInset ?? 0)
-        return content()
-            .frame(width: libraryPageWidth.map { max(0, $0 - inset) }, alignment: .topLeading)
-            // Accept the actual clip width even when the captured document is wider.
-            // An implicit minimum otherwise expands and centers the entire card.
+        content()
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
                    alignment: .topLeading)
-            .background {
-                // Only a frozen document can uncover part of the larger card.
-                // Ordinary WebKit resizing already paints its own background.
-                if libraryPageWidth != nil { Color(nsColor: Look.pageGround) }
-            }
     }
 }
 

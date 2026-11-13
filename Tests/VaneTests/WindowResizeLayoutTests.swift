@@ -12,10 +12,10 @@ import XCTest
     }
 
     func testMissingPaintMarkerCannotBeAnAdmittedBaseline() {
-        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 10_000, markerGap: 10_000, extent: .zero).isPaintedBaseline)
-        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 64, markerGap: 0, extent: .zero).isPaintedBaseline)
-        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 0, markerGap: 10_000, extent: .zero).isPaintedBaseline)
-        XCTAssertTrue(ResizePixelFrames.Frame(time: 0, gap: 1.714, markerGap: 1.714, extent: .zero).isPaintedBaseline)
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 10_000, markerGap: 10_000, left: 0, extent: .zero).isPaintedBaseline)
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 64, markerGap: 0, left: 0, extent: .zero).isPaintedBaseline)
+        XCTAssertFalse(ResizePixelFrames.Frame(time: 0, gap: 0, markerGap: 10_000, left: 0, extent: .zero).isPaintedBaseline)
+        XCTAssertTrue(ResizePixelFrames.Frame(time: 0, gap: 1.714, markerGap: 1.714, left: 0, extent: .zero).isPaintedBaseline)
     }
 
     func testPaintCaptureDoesNotTreatTranslucentPixelsOutsideOpaqueWindowAsAGap() throws {
@@ -106,9 +106,47 @@ import XCTest
         try await resizeFixture(capture: true, slowResize: true, mixedAxes: true)
     }
 
+    func testLibraryNavigationKeepsTheResponsiveDocumentPainted() async throws {
+        TestEnvironment.prepare()
+        let mode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.off)
+        defer { BatterySaver.shared.setMode(mode) }
+        try XCTSkipIf(Motion.spaceReduced, "Requires normal motion")
+        try await resizeFixture(capture: true, libraryNavigation: true)
+    }
+
+    func testWideSidebarLibraryNavigationKeepsTheResponsiveDocumentPainted() async throws {
+        TestEnvironment.prepare()
+        let mode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.off)
+        defer { BatterySaver.shared.setMode(mode) }
+        try XCTSkipIf(Motion.spaceReduced, "Requires normal motion")
+        try await resizeFixture(capture: true, libraryNavigation: true, librarySidebarWidth: 438)
+    }
+
+    func testFloatingLibraryNavigationKeepsTheResponsiveDocumentPainted() async throws {
+        TestEnvironment.prepare()
+        let mode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.off)
+        defer { BatterySaver.shared.setMode(mode) }
+        try XCTSkipIf(Motion.spaceReduced, "Requires normal motion")
+        try await resizeFixture(capture: true, libraryNavigation: true, libraryFloating: true)
+    }
+
+    func testRapidLibraryReversalsKeepTheResponsiveDocumentPainted() async throws {
+        TestEnvironment.prepare()
+        let mode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.off)
+        defer { BatterySaver.shared.setMode(mode) }
+        try XCTSkipIf(Motion.spaceReduced, "Requires normal motion")
+        try await resizeFixture(capture: true, libraryNavigation: true, rapidLibrary: true)
+    }
+
     private func resizeFixture(capture: Bool, slowResize: Bool = false, sidebarToggle: Bool = false,
                                mixedAxes: Bool = false, sidebarDrag: Bool = false,
-                               queuedGeometry: Bool = false, hideBeforeAdmission: Bool = false) async throws {
+                               queuedGeometry: Bool = false, hideBeforeAdmission: Bool = false,
+                               libraryNavigation: Bool = false, libraryFloating: Bool = false, rapidLibrary: Bool = false,
+                               librarySidebarWidth: CGFloat = 228) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -118,9 +156,9 @@ import XCTest
         do {
             let store = TabStore(isPrivate: true)
             let sidebarWidth = SidebarWidth.shared.width
-            SidebarWidth.shared.width = 228
+            SidebarWidth.shared.width = librarySidebarWidth
             defer { SidebarWidth.shared.width = sidebarWidth }
-            store.sidebarShown = true
+            store.sidebarShown = !libraryFloating
             let tab = store.newBlankTab()
             store.palette = nil
             _ = tab.web
@@ -158,7 +196,7 @@ import XCTest
             tab.web.loadHTMLString(html, baseURL: nil)
             try await compatibilityWait { !tab.web.isLoading && tab.web.title == "Resize ready" }
             for direct in [false, true] {
-                if (sidebarToggle || sidebarDrag) && direct { continue }
+                if (sidebarToggle || sidebarDrag || libraryNavigation) && direct { continue }
                 // The control has an independent page. Borrowing a page from a
                 // retained SwiftUI root lets a later update mount it back there.
                 let page: WKWebView
@@ -184,7 +222,9 @@ import XCTest
                     if direct { page.stopLoading(); (root as? WebHost)?.removePage() }
                 }
                 try await presentation(page)
-                if sidebarToggle {
+                if libraryNavigation {
+                    try await captureLibraryPixels(window, store: store, web: page, rapid: rapidLibrary)
+                } else if sidebarToggle {
                     try await captureSidebarPixels(window, store: store, web: page)
                 } else if capture {
                     try await captureResizePixels(window, web: page, direct: direct,
@@ -212,6 +252,89 @@ import XCTest
             else { XCTFail("Resize fixture AppKit loop cleanup also failed: \(error)") }
         }
         if let failure { throw failure }
+    }
+
+    private func captureLibraryPixels(_ window: VaneWindow, store: TabStore, web: WKWebView, rapid: Bool) async throws {
+        try await ResizeNativeWindowAdmission.wait(window, web: web)
+        let owner = ResizeCaptureOwner(window: window, stage: "Library navigation")
+        let observations = [
+            NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
+                object: window, queue: .main) { _ in MainActor.assumeIsolated { owner.lostForeground("window resigned key") } },
+            NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                object: NSApp, queue: .main) { _ in MainActor.assumeIsolated { owner.lostForeground("application resigned active") } }
+        ]
+        defer { observations.forEach(NotificationCenter.default.removeObserver) }
+#if DEBUG
+        let trace = ProcessInfo.processInfo.environment["VANE_LIBRARY_PAINT_TRACE"] == "1"
+        var events: [String] = []
+        if trace {
+            ResizeTimingDiagnostics.stateSink = { event, time, fields in
+                guard events.count < 5000 else { return }
+                if event.hasPrefix("library.") || event == "prepared.parent" {
+                    events.append("LIBRARY_TRACE t=\(time) event=\(event) fields=\(fields)")
+                }
+            }
+        }
+        defer { if trace { ResizeTimingDiagnostics.stateSink = nil; events.forEach { print($0) } } }
+#endif
+        let sampler = ResizePixelSampler()
+        try await sampler.start(window)
+        do {
+            let baseline = try XCTUnwrap(sampler.frames.last)
+            guard baseline.isPaintedBaseline else { throw NSError(domain:"LibraryPaintAdmission",code:1) }
+            let began = CACurrentMediaTime()
+            let travel = Library.panelWidth(section: Library.shared.section,
+                spaces: ProfileManager.shared.allSpaces.count, private: store.isPrivate,
+                available: window.contentView!.bounds.width) - (store.sidebarShown ? SidebarWidth.inWindow(store) : Look.cardGap)
+            // Match the existing resize cadence gate's 2pt / 8ms input. The
+            // separate rapid case retains the original 20-sample reversals.
+            let stepsPerStroke = rapid ? 20 : max(1, Int(ceil(abs(travel) / 2)))
+            for _ in 0..<3 {
+                for step in 0...stepsPerStroke {
+                    Motion.instant { store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke) }
+                    window.contentView?.layoutSubtreeIfNeeded()
+                    try await Task.sleep(for:.milliseconds(8))
+                }
+                for step in (0...stepsPerStroke).reversed() {
+                    Motion.instant { store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke) }
+                    window.contentView?.layoutSubtreeIfNeeded()
+                    try await Task.sleep(for:.milliseconds(8))
+                }
+            }
+            Motion.instant { store.librarySwipeProgress = nil }
+            func pending(_ view: NSView) -> Bool {
+                if let bridge = view as? LibraryPaintView { return !bridge.isSettled }
+                return view.subviews.contains(where: pending)
+            }
+            try await compatibilityWait { !pending(window.contentView!) }
+            try await presentation(web)
+            try await sampler.captureFinalFrame(window)
+            try await sampler.stop()
+            try sampler.frames.saveImages(prefix:"library-\(ProcessInfo.processInfo.processIdentifier)")
+            let samples = sampler.frames.samples.filter { $0.time >= began }
+            let maximum = samples.map(\.gap).max() ?? 0
+            print("LIBRARY_PIXELS samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum)")
+            var changes = [ResizePixelFrames.Frame(time: began, gap: baseline.gap,
+                markerGap: baseline.markerGap, left: baseline.left, extent: baseline.extent)]
+            for sample in samples where abs(sample.left - changes.last!.left) > 0.5 { changes.append(sample) }
+            let pauses = zip(changes,changes.dropFirst()).map { ($1.time-$0.time)*1000 }.sorted()
+            // SCK's Float content scale introduces sub-micro-point roundoff.
+            let steps = zip(changes,changes.dropFirst()).map { (abs($1.left-$0.left) * 1000).rounded() / 1000 }
+            let p95 = pauses.isEmpty ? .infinity : pauses[Int(Double(pauses.count-1)*0.95)]
+            print("LIBRARY_MOTION rapid=\(rapid) changes=\(changes.count) p95=\(p95) max=\(pauses.last ?? .infinity) step=\(steps.max() ?? .infinity)")
+            XCTAssertLessThanOrEqual(p95,25)
+            XCTAssertLessThanOrEqual(pauses.last ?? .infinity,80)
+            if !rapid { XCTAssertLessThanOrEqual(steps.max() ?? .infinity,24) }
+            XCTAssertFalse(owner.interrupted, "Library capture must retain actual foreground ownership")
+            XCTAssertGreaterThanOrEqual(changes.map(\.left).max() ?? 0, 368)
+            if travel < 0 {
+                XCTAssertLessThanOrEqual(changes.map(\.left).min() ?? .infinity, baseline.left + travel + 2)
+            }
+            XCTAssertEqual(try XCTUnwrap(sampler.frames.last).left, baseline.left, accuracy: 1)
+            XCTAssertGreaterThan(samples.count,3)
+            XCTAssertLessThanOrEqual(maximum, baseline.gap + 2, "Library movement must keep actual document paint up to the card edge")
+            XCTAssertLessThanOrEqual(try XCTUnwrap(sampler.frames.last).markerGap,baseline.markerGap+2)
+        } catch { try? await sampler.stop(); throw error }
     }
 
     private func captureSidebarPixels(_ window: VaneWindow, store: TabStore, web: WKWebView) async throws {
@@ -599,7 +722,7 @@ import XCTest
         // ScreenCaptureKit can retain pixels from the previously wider window
         // outside this frame's content rectangle. Those are not visible content.
         let row = Int(valid.midY) * CVPixelBufferGetBytesPerRow(pixel)
-        var firstRed: Int?, lastRed: Int?, lastPainted: Int?, rightWindow: Int?
+        var firstRed: Int?, lastRed: Int?, firstPainted: Int?, lastPainted: Int?, rightWindow: Int?
         var rawRightWindow: Int?, rawLastPainted: Int?
         for x in max(0, Int(ceil(valid.minX)))..<min(width, Int(floor(valid.maxX))) {
             let p = row + x * 4
@@ -619,7 +742,7 @@ import XCTest
                 if firstRed == nil { firstRed = x }
                 lastRed = x
             }
-            if red || blue { lastPainted = x }
+            if red || blue { if firstPainted == nil { firstPainted = x }; lastPainted = x }
         }
         // Measure the actual empty strip, using the stream's point scale.
         // During a native shrink the larger page is clipped until it repaints;
@@ -648,7 +771,7 @@ import XCTest
             "rawLastPainted": rawLastPainted.map(String.init) ?? "nil"
         ])
 #endif
-        frames.append(time: time, gap: gap, markerGap: markerGap,
+        frames.append(time: time, gap: gap, markerGap: markerGap, left: firstPainted.map { Double($0) / pixelsPerPoint } ?? -1,
                       extent: CGSize(width: valid.width / pixelsPerPoint, height: valid.height / pixelsPerPoint), image: snapshot)
     }
 
@@ -659,6 +782,7 @@ private final class ResizePixelFrames: @unchecked Sendable {
         let time: Double
         let gap: Double
         let markerGap: Double
+        let left: Double
         let extent: CGSize
         // These documents paint to the edge apart from the native <=2pt gutter.
         var isPaintedBaseline: Bool { gap >= 0 && gap <= 2 && markerGap >= 0 && markerGap <= 2 }
@@ -675,16 +799,16 @@ private final class ResizePixelFrames: @unchecked Sendable {
     var samples: [Frame] { lock.withLock { recorded } }
     func recordLog(_ line: String) { lock.withLock { if logs.count < 256 { logs.append(line) } } }
     func needsImage(for gap: Double) -> Bool { lock.withLock { baselineImage == nil || gap > worstGap } }
-    func append(time: Double, gap: Double, markerGap: Double, extent: CGSize, image: Image?) {
+    func append(time: Double, gap: Double, markerGap: Double, left: Double, extent: CGSize, image: Image?) {
         lock.withLock {
-            let frame = Frame(time: time, gap: gap, markerGap: markerGap, extent: extent)
+            let frame = Frame(time: time, gap: gap, markerGap: markerGap, left: left, extent: extent)
             recorded.append(frame)
             if baselineImage == nil, frame.isPaintedBaseline { baselineImage = image }
             if baselineImage != nil, gap > worstGap { worstGap = gap; worstImage = image }
         }
     }
     func repeatFrame(_ time: Double) {
-        lock.withLock { if let last = recorded.last { recorded.append(Frame(time: time, gap: last.gap, markerGap: last.markerGap, extent: last.extent)) } }
+        lock.withLock { if let last = recorded.last { recorded.append(Frame(time: time, gap: last.gap, markerGap: last.markerGap, left: last.left, extent: last.extent)) } }
     }
     @discardableResult @MainActor func saveImages(prefix: String) throws -> String {
         for line in lock.withLock({ logs }) { print(line) }
