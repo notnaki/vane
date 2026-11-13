@@ -6,13 +6,71 @@ permissions:
   contents: read
 env:
   VANE_EXPECTED_TESTS: |
-    VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
-    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
-    VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
-    VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
-    VaneTests.SpaceNativeRenderingTests/testProfileClickStartsCapturedTravelBeforePreparingTheDestination
+    VaneTests.EdgeSidebarScrollContinuityTests/testClickingCurrentSpaceAtCreateEdgeAnimatesTheLiveViewportHome
+    VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCancellationAnimatesTheLiveViewportHome
+    VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeCommitKeepsScrolledViewportUntilFormTakesOver
+    VaneTests.EdgeSidebarScrollContinuityTests/testCreateEdgeNeverShowsAnOutgoingViewportAtTheTop
+    VaneTests.EdgeSidebarScrollContinuityTests/testLibraryDiagonalStartupAndMomentumKeepTheClaimedViewportSteady
+    VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgeCommitAndCloseRestoreTheScrolledViewport
+    VaneTests.EdgeSidebarScrollContinuityTests/testLibraryEdgePreservesScrolledLiveViewportThroughClaimReversalAndCancel
+    VaneTests.EdgeSidebarScrollContinuityTests/testLibraryWithAnActivePageKeepsTheScrolledViewportAndPageWidthSteady
+    VaneTests.LibrarySwipeTests/testBatterySaverUsesImmediateDestinationWithoutInteractivePreview
+    VaneTests.LibrarySwipeTests/testCancelledReverseDuringOpeningStillReachesReleasedDestination
+    VaneTests.LibrarySwipeTests/testClickOpeningPresentsIntermediatePanelPositions
+    VaneTests.LibrarySwipeTests/testCloseCommandDuringOpeningLandingDoesNotArchiveThePage
+    VaneTests.LibrarySwipeTests/testClosedLibraryMouseWheelAndOtherWindowKeepTheirEvents
+    VaneTests.LibrarySwipeTests/testClosingMountedLibrarySearchReturnsKeyboardToPage
+    VaneTests.LibrarySwipeTests/testEscapeDuringOpeningLandingClosesLibrary
+    VaneTests.LibrarySwipeTests/testExplicitCloseSupersedesOpeningLanding
+    VaneTests.LibrarySwipeTests/testFindDuringOpeningLandingTargetsLibrarySearch
+    VaneTests.LibrarySwipeTests/testFindFocusAcquiredDuringClosingSurvivesLanding
+    VaneTests.LibrarySwipeTests/testFingerUpdatesDoNotInvalidateBrowserState
+    VaneTests.LibrarySwipeTests/testFirstSpaceOpeningWinsRegardlessOfMonitorInstallationOrder
+    VaneTests.LibrarySwipeTests/testFloatingSidebarLibraryLandingKeepsInnerWebWidthFixed
+    VaneTests.LibrarySwipeTests/testFloatingSidebarOpensLibraryButPageAndOuterGapsKeepTheirSwipes
+    VaneTests.LibrarySwipeTests/testFullyDraggedLibraryActivatesBeforeClearingPreview
+    VaneTests.LibrarySwipeTests/testHiddenSidebarDoesNotClaimLibraryOpeningSwipes
+    VaneTests.LibrarySwipeTests/testImmediateLibraryReleaseStillShowsIntermediatePositions
+    VaneTests.LibrarySwipeTests/testInterruptedGestureAndRemovedMonitorDoNotDismissLibrary
+    VaneTests.LibrarySwipeTests/testInterruptedSwipeClearsPresentationWithoutChangingDestination
+    VaneTests.LibrarySwipeTests/testLeftSwipeClosesLibraryWithinPanelWithSidebarHidden
+    VaneTests.LibrarySwipeTests/testLibraryClosingUsesEachSectionsPanelBoundary
+    VaneTests.LibrarySwipeTests/testLibraryDragMovesThePageWithoutResizingWebKitForEachSample
+    VaneTests.LibrarySwipeTests/testLibraryIsLaidOutBeforeFirstDragSample
+    VaneTests.LibrarySwipeTests/testMomentumCannotDismissReopenedLibraryOrReachThePage
+    VaneTests.LibrarySwipeTests/testNextSpaceSwipeClosesWithEitherNaturalScrollingPreference
+    VaneTests.LibrarySwipeTests/testOpeningAndClosingTrackFingersBeforeCommitting
+    VaneTests.LibrarySwipeTests/testOpeningCommandBarSupersedesPendingLibraryOpening
+    VaneTests.LibrarySwipeTests/testOpeningEaselReleasesDepartingLibrarySearchFocus
+    VaneTests.LibrarySwipeTests/testOpeningGestureMomentumCannotCloseLibraryAgain
+    VaneTests.LibrarySwipeTests/testOpeningLibraryReplacesAnOpenCommandPalette
+    VaneTests.LibrarySwipeTests/testOriginalLibraryAxisLockAcceptsHorizontalTravelAfterStartupNoise
+    VaneTests.LibrarySwipeTests/testOriginalShortLibraryDragsReturnAtAnySpeed
+    VaneTests.LibrarySwipeTests/testPageSwipesPassThroughWithLibraryOpenOrClosedRegardlessOfMonitorOrder
+    VaneTests.LibrarySwipeTests/testPopulatedArchiveSwipeTiming
+    VaneTests.LibrarySwipeTests/testPreviousSpaceSwipeOpensWithEitherNaturalScrollingPreference
+    VaneTests.LibrarySwipeTests/testProfileDepartureSupersedesPendingLibraryOpening
+    VaneTests.LibrarySwipeTests/testQuickOpeningReleaseContinuesFromTheLastFingerPosition
+    VaneTests.LibrarySwipeTests/testReducedMotionFinishesReleasedLibraryDestination
+    VaneTests.LibrarySwipeTests/testReducingMotionDuringDragClearsPreviewButKeepsGestureOwnership
+    VaneTests.LibrarySwipeTests/testRejectedOpeningGesturesKeepFirstSpaceAndLibraryClosed
+    VaneTests.LibrarySwipeTests/testRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose
+    VaneTests.LibrarySwipeTests/testReopeningMountedDownloadAndMediaPanesRefreshesMissingFiles
+    VaneTests.LibrarySwipeTests/testReverseShortCancelledAndReturnedSwipesKeepLibraryOpen
+    VaneTests.LibrarySwipeTests/testReverseSwipeDuringOpeningLandingUsesReleasedIntent
+    VaneTests.LibrarySwipeTests/testRightSwipeOnLaterSpaceDoesNotOpenLibraryOrConsumePageScrolls
+    VaneTests.LibrarySwipeTests/testRightSwipeOnLaterSpaceStillSelectsPreviousSpaceInSidebar
+    VaneTests.LibrarySwipeTests/testRightSwipeOpensLastLibrarySectionFromFirstSpaceSidebar
+    VaneTests.LibrarySwipeTests/testScrollingSpaceFooterKeepsWholeGestureAwayFromSidebarNavigation
+    VaneTests.LibrarySwipeTests/testSmallOpeningSamplesAreNotCountedTwiceByBothMonitors
+    VaneTests.LibrarySwipeTests/testSpaceChangeOrCreationDuringOpeningGestureCancelsIt
+    VaneTests.LibrarySwipeTests/testSpaceChangeSupersedesPendingLibraryOpening
+    VaneTests.LibrarySwipeTests/testSubpixelHorizontalWobbleReleasesLibraryToVerticalScrolling
+    VaneTests.LibrarySwipeTests/testToggleDuringOpeningLandingClosesTheReleasedDestination
+    VaneTests.LibrarySwipeTests/testVerticalScrollLocksOutLaterHorizontalDrift
+  VANE_ALLOWED_SKIPS: VaneTests.LibrarySwipeTests/testPopulatedArchiveSwipeTiming
   VANE_CANDIDATE_SHA: ${{ github.sha }}
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testProfileClickStartsCapturedTravelBeforePreparingTheDestination)$'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](LibrarySwipeTests|EdgeSidebarScrollContinuityTests)/'
 jobs:
   diagnostic:
     name: Build and diagnose native fixtures
@@ -161,8 +219,10 @@ jobs:
           for cls,method,status in re.findall(r"Test Case '-\[VaneTests\.(\w+) (\w+)\]' (passed|failed|skipped)", (r/'vane-diag-tests.log').read_text()):
               key=f'VaneTests.{cls}/{method}'
               if key in outcomes: outcomes[key].append(status)
-          assert all(v==['passed'] for v in outcomes.values()), f'Every selected case must pass once: {outcomes}'
-          print('All exact preflight cases passed once; no skips.')
+          allowed=set(os.environ['VANE_ALLOWED_SKIPS'].splitlines())
+          assert allowed<=expected
+          assert all(v==['passed'] or k in allowed and v==['skipped'] for k,v in outcomes.items()), f'Every ordinary case must pass once: {outcomes}'
+          print('All exact preflight cases passed once; only the named opt-in performance skip is permitted.')
           PASSGUARD
           grep -Fxq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-diag-tests.log"
           if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-diag-tests.log"; then exit 1; fi

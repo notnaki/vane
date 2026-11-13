@@ -93,6 +93,14 @@ import XCTest
                 let expected = layer.convert(CGPoint.zero, to: root)
                 return abs(actual.x - expected.x) < 0.125 && abs(actual.y - expected.y) < 0.125
             }
+            if activePage {
+                let page = try XCTUnwrap(store.active?.web)
+                try await compatibilityWait {
+                    host.layoutSubtreeIfNeeded()
+                    return page.window === window && !page.isHiddenOrHasHiddenAncestor
+                        && page.url != nil && !page.isLoading && page.bounds.width > 0
+                }
+            }
             try await exercise(store, window, host)
         } catch {
             let sections = store.spaceGesture.sectionsView

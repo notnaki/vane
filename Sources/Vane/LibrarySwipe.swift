@@ -180,6 +180,55 @@ private struct LibrarySwipe: ViewModifier {
         let keyboard: KeyboardOwner
     }
     private var destination: Destination?
+    private var cleanupLink: CADisplayLink?
+    private var cleanupToken: UUID?
+    private var cleanupTarget: CGFloat = 0
+    private var cleanupRestFrames = 0
+    private var cleanupCompletion: (() -> Void)?
+
+    private func stopCleanupObservation() {
+        cleanupLink?.invalidate()
+        cleanupLink = nil
+        cleanupToken = nil
+        cleanupRestFrames = 0
+        cleanupCompletion = nil
+    }
+
+    private func observeCleanup(token: UUID, target: CGFloat, in store: TabStore,
+                                completion: @escaping () -> Void) {
+        stopCleanupObservation()
+        guard let screen = store.window?.screen ?? NSScreen.main else { return }
+        cleanupToken = token
+        cleanupTarget = target
+        cleanupCompletion = completion
+        let link = screen.displayLink(target: self, selector: #selector(advanceCleanup(_:)))
+        cleanupLink = link
+        link.add(to: .main, forMode: .common)
+    }
+
+    @objc private func advanceCleanup(_ link: CADisplayLink) {
+        guard cleanupLink === link, let token = cleanupToken else { return }
+        guard settlement == token else { stopCleanupObservation(); return }
+        guard let store else { stopCleanupObservation(); return }
+        guard let window = store.window, let marker = presentationView, marker.window === window else {
+            let completion = cleanupCompletion
+            stopCleanupObservation()
+            completion?()
+            return
+        }
+        guard let layer = marker.layer?.presentation(),
+              let root = window.contentView?.layer?.presentation() else {
+            cleanupRestFrames = 0
+            return
+        }
+        let x = layer.convert(.zero, to: root).x
+        let endpoint = (cleanupTarget - 1) * max(1, panelWidth)
+        cleanupRestFrames = abs(x - endpoint) < 0.25 ? cleanupRestFrames + 1 : 0
+        guard cleanupRestFrames >= 2 else { return }
+        let completion = cleanupCompletion
+        stopCleanupObservation()
+        completion?()
+    }
 
     /// Route a second gesture against the released gesture's intent while the
     /// visible layout is still landing. The browser itself changes only at rest.
@@ -200,11 +249,16 @@ private struct LibrarySwipe: ViewModifier {
         settlement = token
         let clear = { [weak self, weak store] in
             guard let self, self.settlement == token, let store else { return }
+            self.stopCleanupObservation()
             Motion.instant { store.librarySwipeProgress = nil }
         }
         if Motion.reduced || presentationView?.window == nil || store.librarySwipeProgress == nil {
             clear()
         } else {
+            // A new command bar can introduce unrelated animations into the
+            // SwiftUI transaction. Retire this transient state when its own
+            // panel has actually reached rest, even if that group stays alive.
+            observeCleanup(token: token, target: target, in: store, completion: clear)
             withAnimation(Look.appear, completionCriteria: .removed) {
                 store.librarySwipeProgress = target
             } completion: { clear() }
@@ -257,6 +311,7 @@ private struct LibrarySwipe: ViewModifier {
 
     private func reset(clearPresentation: Bool = true) {
         if clearPresentation {
+            stopCleanupObservation()
             settlement = UUID()
             if let store {
                 Motion.instant {
@@ -275,6 +330,7 @@ private struct LibrarySwipe: ViewModifier {
     }
 
     func finishForReducedMotion() {
+        stopCleanupObservation()
         settlement = UUID()
         if let store {
             Motion.instant {
