@@ -69,14 +69,13 @@ private struct LinkPreviewStreamSurface: View {
     func testMountedTypingExpandsThroughIntermediateTextHeights() async throws {
         TestEnvironment.prepare()
         guard !Motion.reduced else { throw XCTSkip("The active system motion policy requires immediate text") }
-        let policy = NSApplication.shared.activationPolicy()
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .regular)
+        // Measuring a visible card needs a running AppKit loop, not foreground
+        // activation. Avoid a regular→prohibited policy handoff that can enqueue
+        // application hiding after the next fixture has already mounted its window.
+        let loop = try await NativeFixtureApplicationLoop.acquire()
         var failure: (any Error)?
         do { try await checkMountedTyping() } catch { failure = error }
         do { try await loop.close() } catch { if failure == nil { failure = error } }
-        NSApp.setActivationPolicy(policy)
-        do { try await compatibilityWait { NSApp.activationPolicy() == policy } }
-        catch { if failure == nil { failure = error } }
         if let failure { throw failure }
     }
 
@@ -87,7 +86,7 @@ private struct LinkPreviewStreamSurface: View {
                               styleMask: .titled, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
-        window.makeKeyAndOrderFront(nil)
+        window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil; window.close() }
         try await compatibilityWait {
             host.layoutSubtreeIfNeeded()

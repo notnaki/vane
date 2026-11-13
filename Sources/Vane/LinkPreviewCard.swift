@@ -40,6 +40,8 @@ struct LinkPreviewOverlay: View {
 }
 
 enum LinkPreviewLayout {
+    static let cornerRadius: CGFloat = 12
+
     static func hasTitle(_ preview: Previews.Preview) -> Bool {
         !preview.title.isEmpty && preview.title != preview.url.host
     }
@@ -91,7 +93,7 @@ struct LinkPreviewCard: View {
                     .resizable()
                     .scaledToFill()
                     .frame(width: size.width, height: min(144, size.height * 0.52), alignment: .top)
-                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: LinkPreviewLayout.cornerRadius))
                     .accessibilityHidden(true)
                     .transition(.opacity)
             }
@@ -133,7 +135,7 @@ struct LinkPreviewCard: View {
         }
         .frame(width: size.width, alignment: .topLeading)
         .background(Look.panelFill)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: LinkPreviewLayout.cornerRadius))
         .shadow(color: Look.pageShadow, radius: 12, y: 4)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Link preview")
