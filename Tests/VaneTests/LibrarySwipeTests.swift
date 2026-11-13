@@ -543,7 +543,10 @@ import XCTest
     }
 
     private func checkExplicitCloseSupersedesOpeningLanding() async throws {
-        let (store, _, monitor, host) = try await releasedOpening()
+        let (store, window, monitor, host) = try await releasedOpening()
+        let probe = LibraryCloseCallbackProbe(monitor: monitor, host: host, store: store)
+        probe.start(on: window.screen)
+        defer { probe.stop(); probe.dump() }
         try await Task.sleep(for: .milliseconds(30))
         let marker = try XCTUnwrap(monitor.presentationView)
         func x() throws -> CGFloat {
@@ -551,8 +554,11 @@ import XCTest
                 to: host.layer?.presentation()).x
         }
         let before = try x()
+        probe.record("before.close")
         Library.close(store)
+        probe.record("after.close")
         try await Task.sleep(for: .milliseconds(30))
+        probe.record("task.after30")
         XCTAssertLessThan(try x(), before)
         XCTAssertGreaterThan(try x(), -Look.libraryRail - Look.libraryList + 1,
                              "An explicit close reverses the landing instead of snapping shut")
@@ -1490,6 +1496,41 @@ private final class LibraryScrollWindow: NSWindow {
         if event.type == .scrollWheel { scrolls += 1 }
         else { super.sendEvent(event) }
     }
+}
+
+/// Temporary test-only timing discriminator; stores values and emits after sampling.
+@MainActor private final class LibraryCloseCallbackProbe: NSObject {
+    private weak var monitor: LibrarySwipeMonitor?
+    private weak var host: NSView?
+    private weak var store: TabStore?
+    private let began = CACurrentMediaTime()
+    private var link: CADisplayLink?
+    private var samples: [String] = []
+    init(monitor: LibrarySwipeMonitor, host: NSView, store: TabStore) {
+        self.monitor = monitor; self.host = host; self.store = store
+        samples.reserveCapacity(256)
+    }
+    func start(on screen: NSScreen?) {
+        guard let screen else { return }
+        let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+    func stop() { link?.invalidate(); link = nil }
+    @objc private func tick(_ link: CADisplayLink) {
+        guard CACurrentMediaTime() - began <= 1.2 else { stop(); return }
+        record("native display=\(link.timestamp) target=\(link.targetTimestamp)")
+    }
+    func record(_ phase: String) {
+        guard samples.count < 256 else { return }
+        let marker = monitor?.presentationView
+        let x: CGFloat?
+        if let layer = marker?.layer?.presentation(), let root = host?.layer?.presentation() {
+            x = layer.convert(.zero, to: root).x
+        } else { x = nil }
+        samples.append("LIBRARY_CLOSE_CALLBACK phase=\(phase) elapsed=\(CACurrentMediaTime() - began) x=\(String(describing: x)) progress=\(String(describing: store?.librarySwipeProgress)) marker=\(marker.map { String(describing: ObjectIdentifier($0)) } ?? "nil") hidden=\(String(describing: marker?.isHiddenOrHasHiddenAncestor)) key=\(host?.window?.isKeyWindow ?? false)")
+    }
+    func dump() { samples.forEach { print($0) } }
 }
 
 private final class LibraryScrollEvent: NSEvent, @unchecked Sendable {

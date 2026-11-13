@@ -1114,6 +1114,9 @@ import XCTest
         store.palette = nil
         let width = fixtureSidebarWidth(in: store)
         let sign = CGFloat(direction)
+        let callbackProbe = ProfileLandingCallbackProbe(window: window, targetID: target.id)
+        callbackProbe.start(on: try XCTUnwrap(window.screen))
+        defer { callbackProbe.stopAndDump(label: "reverse") }
         try await compatibilityWait {
             if !NSApp.isActive || NSApp.keyWindow !== window {
                 window.makeKeyAndOrderFront(nil)
@@ -1137,6 +1140,7 @@ import XCTest
         try await compatibilityWait {
             abs(slide.offset - heldDrag) < 0.125 && slide.outgoing.layer?.presentation() != nil
         }
+        callbackProbe.begin(slide: slide)
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
@@ -1153,6 +1157,7 @@ import XCTest
         }
         try await compatibilityWait {
             if middleSamples.count < 8 {
+                callbackProbe.noteTask("middle")
                 middleSamples.append((CACurrentMediaTime() - middleStart, slide.offset,
                                       slide.outgoing.frame.minX, slide.isActive,
                                       TabStore.all.first { $0.window === window }?.currentSpaceID == target.id))
@@ -1790,6 +1795,9 @@ import XCTest
             _ = manager.delete(secondProfile.id)
             manager.active = previous
         }
+        let callbackProbe = ProfileLandingCallbackProbe(window: window, targetID: second.id)
+        callbackProbe.start(on: try XCTUnwrap(window.screen))
+        defer { callbackProbe.stopAndDump(label: "early cached=\(cached)") }
         if cached {
             source.switchTo(space: second)
             let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
@@ -1862,8 +1870,10 @@ import XCTest
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
+        callbackProbe.begin(slide: slide)
         monitor.land(1, to: second, width: fixtureSidebarWidth(in: source), store: source, duration: 0.8)
         try await Task.sleep(for: .milliseconds(100))
+        callbackProbe.noteTask("early100")
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
         XCTAssertEqual(arriving.profileID, secondProfile.id,
                        "Profile activation must not wait for the sidebar animation to finish")
@@ -1891,6 +1901,7 @@ import XCTest
         source.externalApp = ExternalApps.Prompt(url: URL(string: "example-app://background")!,
             scope: nil, tabID: source.active!.id, documentID: UUID(), scheme: "example-app", app: nil, name: nil)
         try await Task.sleep(for: .milliseconds(40))
+        callbackProbe.noteTask("early40")
         XCTAssertNil(window.attachedSheet,
                      "A late result from a parked root must not present over the arriving profile")
         source.liveFolderSheet = false
@@ -3549,6 +3560,109 @@ import XCTest
         XCTAssertTrue(source.window === window)
         XCTAssertEqual(source.currentSpaceID, local.id, "The latest requested local Space must follow the visible profile leg")
         XCTAssertNil(host.spaceSlide)
+    }
+}
+
+/// Temporary public-only discriminator. A native main-run-loop callback and a
+/// Swift task read the same values, without changing any gesture or assertion.
+@MainActor private final class ProfileLandingCallbackProbe: NSObject {
+    private struct Sample {
+        let channel: String
+        let time: TimeInterval
+        let displayTime: TimeInterval?
+        let targetTime: TimeInterval?
+        let offset: CGFloat
+        let modelX: CGFloat
+        let active: Bool
+        let targetActive: Bool
+        let pageMounted: Bool
+        let ownerPresented: Bool
+        let red: CGFloat?
+        let footerDrag: CGFloat?
+        let profileSliding: Bool
+        let animation: Bool
+        let foreground: Bool
+    }
+    private weak var window: NSWindow?
+    private weak var slide: ProfileSpaceSlide?
+    private let targetID: UUID
+    private var began: TimeInterval?
+    private var link: CADisplayLink?
+    private var samples: [Sample] = []
+    private var nativeCallbacks = 0
+    private var nativeCallbacksBeforeRelease = 0
+    private var dropped = 0
+
+    init(window: NSWindow, targetID: UUID) {
+        self.window = window
+        self.targetID = targetID
+        samples.reserveCapacity(256)
+    }
+    func start(on screen: NSScreen) {
+        let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
+        let rate = Float(screen.maximumFramesPerSecond)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+    func begin(slide: ProfileSpaceSlide) {
+        self.slide = slide
+        began = CACurrentMediaTime()
+        nativeCallbacksBeforeRelease = nativeCallbacks
+        samples.removeAll(keepingCapacity: true)
+    }
+    func noteTask(_ name: String) { record(channel: "task:\(name)", link: nil) }
+    @objc private func tick(_ link: CADisplayLink) {
+        nativeCallbacks += 1
+        record(channel: "native", link: link)
+    }
+    private func record(channel: String, link: CADisplayLink?) {
+        guard let began, let slide, let window else { return }
+        let now = CACurrentMediaTime()
+        if link != nil, now - began > 1.2 {
+            self.link?.invalidate()
+            self.link = nil
+            return
+        }
+        guard samples.count < 256 else { dropped += 1; return }
+        let owner = TabStore.all.first { $0.window === window }
+        let surface = owner?.spaceGesture.groundSurface
+        var ownerPresented = surface?.window === window
+        var reachedHost = false
+        var node: NSView? = surface
+        while let view = node {
+            if let layer = view.layer {
+                guard let presentation = layer.presentation() else { ownerPresented = false; break }
+                if presentation.isHidden || presentation.opacity <= 0 { ownerPresented = false; break }
+            } else if view.isHidden { ownerPresented = false; break }
+            if view === window.contentView { reachedHost = true; break }
+            node = view.superview
+        }
+        ownerPresented = ownerPresented && reachedHost
+        let red: CGFloat?
+        if let color = (surface?.base.presentation()?.colors as? [CGColor])?.first,
+           let rgb = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) { red = rgb.redComponent }
+        else { red = nil }
+        samples.append(Sample(channel: channel, time: now - began,
+            displayTime: link.map { $0.timestamp - began }, targetTime: link.map { $0.targetTimestamp - began },
+            offset: slide.offset, modelX: slide.outgoing.frame.minX, active: slide.isActive,
+            targetActive: owner?.currentSpaceID == targetID,
+            pageMounted: owner?.active?.existingWeb?.window === window,
+            ownerPresented: ownerPresented, red: red, footerDrag: owner?.spaceGesture.footer.drag,
+            profileSliding: owner?.spaceGesture.profileSliding == true,
+            animation: slide.outgoing.layer?.animation(forKey: "space-position") != nil,
+            foreground: NSApp.isActive && NSApp.keyWindow === window && window.isVisible
+                && window.occlusionState.contains(.visible)))
+    }
+    func stopAndDump(label: String) {
+        link?.invalidate()
+        link = nil
+        guard began != nil else { return }
+        print("PROFILE_CALLBACK_PROBE_BEGIN \(label) baselineCallbacks=\(nativeCallbacksBeforeRelease) dropped=\(dropped)")
+        for sample in samples {
+            print("PROFILE_CALLBACK_PROBE channel=\(sample.channel) time=\(sample.time) display=\(String(describing: sample.displayTime)) nextDisplay=\(String(describing: sample.targetTime)) offset=\(sample.offset) modelX=\(sample.modelX) active=\(sample.active) target=\(sample.targetActive) page=\(sample.pageMounted) presented=\(sample.ownerPresented) red=\(String(describing: sample.red)) footer=\(String(describing: sample.footerDrag)) sliding=\(sample.profileSliding) animation=\(sample.animation) foreground=\(sample.foreground)")
+        }
+        print("PROFILE_CALLBACK_PROBE_END \(label)")
     }
 }
 
