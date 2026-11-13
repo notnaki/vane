@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import Network
 
@@ -101,9 +102,7 @@ import Network
         }
     }
     private func respond(_ connection: NWConnection, success: Bool) {
-        let body = success ? "ChatGPT authorization received. Return to Vane to finish connecting." : "This sign-in request could not be accepted. Return to Vane."
-        let response = "HTTP/1.1 \(success ? "200 OK" : "400 Bad Request")\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'\r\nConnection: close\r\nContent-Length: \(body.utf8.count)\r\n\r\n" + body
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+        connection.send(content: ChatGPTSignInResponse.data(success: success), completion: .contentProcessed { _ in connection.cancel() })
         connections.removeAll { $0 === connection }
     }
     private func stop(_ error: Error) {
@@ -114,5 +113,24 @@ import Network
         ready?.resume(throwing: error); ready = nil
         callback?.resume(throwing: error); callback = nil
         pending = nil
+    }
+}
+
+enum ChatGPTSignInResponse {
+    static func data(success: Bool) -> Data {
+        // External browsers may refuse to close an app-opened tab. Keep useful copy
+        // in that case, and allow only this fixed script rather than arbitrary inline JS.
+        let script = "window.close();"
+        let hash = Data(SHA256.hash(data: Data(script.utf8))).base64EncodedString()
+        let policy = "default-src 'none'" + (success ? "; script-src 'sha256-\(hash)'" : "")
+        let body = success ? """
+            <!doctype html>
+            <html lang="en"><meta charset="utf-8"><title>Return to Vane</title>
+            <body><p>ChatGPT authorization received. You can close this tab and return to Vane to finish connecting.</p>
+            <script>\(script)</script></body></html>
+            """ : "This sign-in request could not be accepted. Return to Vane."
+        let type = success ? "text/html" : "text/plain"
+        let response = "HTTP/1.1 \(success ? "200 OK" : "400 Bad Request")\r\nContent-Type: \(type); charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: \(policy)\r\nConnection: close\r\nContent-Length: \(body.utf8.count)\r\n\r\n" + body
+        return Data(response.utf8)
     }
 }
