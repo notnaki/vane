@@ -33,6 +33,24 @@ import XCTest
         if let failure { throw failure }
     }
 
+    private func admitPresentation(window: NSWindow, host: NSView,
+                                   monitor: LibrarySwipeMonitor) async throws {
+        window.styleMask = [.titled, .fullSizeContentView]
+        window.animationBehavior = .none
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        try await compatibilityWait {
+            host.layoutSubtreeIfNeeded()
+            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
+                  window.isVisible, window.occlusionState.contains(.visible),
+                  NSApp.modalWindow == nil, window.attachedSheet == nil,
+                  let marker = monitor.presentationView, marker.window === window,
+                  let model = marker.layer, let presented = model.presentation(),
+                  let root = host.layer, let presentedRoot = root.presentation() else { return false }
+            return abs(presented.convert(.zero, to: presentedRoot).x - model.convert(.zero, to: root).x) < 0.125
+        }
+    }
+
     private func fixture(withSpaces: Bool = false) -> (TabStore, LibraryScrollWindow, LibrarySwipeMonitor) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -469,23 +487,8 @@ import XCTest
         let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         window.contentView = host
-        window.styleMask = [.titled, .fullSizeContentView]
-        window.animationBehavior = .none
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
         fixtureCleanup { window.orderOut(nil); window.contentView = nil }
-        // Admit the actual presentation owner before starting the gesture. The
-        // former borderless fixture could send events with no running app/key window.
-        try await compatibilityWait {
-            host.layoutSubtreeIfNeeded()
-            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
-                  window.isVisible, window.occlusionState.contains(.visible),
-                  NSApp.modalWindow == nil, window.attachedSheet == nil,
-                  let marker = monitor.presentationView, marker.window === window,
-                  let model = marker.layer, let presented = model.presentation(),
-                  let root = host.layer, let presentedRoot = root.presentation() else { return false }
-            return abs(presented.convert(.zero, to: presentedRoot).x - model.convert(.zero, to: root).x) < 0.125
-        }
+        try await admitPresentation(window: window, host: host, monitor: monitor)
         send(window, phase: .began)
         for _ in 0..<5 {
             send(window, dx: 20)
@@ -575,7 +578,12 @@ import XCTest
     }
 
     private func checkOpeningCommandBarSupersedesPendingLibraryOpening() async throws {
-        let (store, _, _, _) = try await releasedOpening()
+        let (store, window, monitor, host) = try await releasedOpening()
+        let began = CACurrentMediaTime()
+        defer {
+            let x = monitor.presentationView?.layer?.presentation()?.convert(.zero, to: host.layer?.presentation()).x
+            print("LIBRARY_CANCEL_PROBE elapsed=\(CACurrentMediaTime() - began) running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow) progress=\(String(describing: store.librarySwipeProgress)) x=\(String(describing: x)) markerAttached=\(monitor.presentationView?.window === window) animationKeys=\(monitor.presentationView?.layer?.animationKeys() ?? [])")
+        }
         store.palette = .address
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertNotNil(store.palette, "A late Library completion must not dismiss the new command bar")
@@ -941,6 +949,10 @@ import XCTest
     }
 
     func testRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose() async throws {
+        try await withFixtureApplicationLoop { try await checkRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose() }
+    }
+
+    private func checkRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose() async throws {
         let saver = BatterySaver.shared
         let previousMode = saver.mode
         saver.setMode(.off)
@@ -954,9 +966,8 @@ import XCTest
         let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         window.contentView = host
-        window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
-        try await Task.sleep(for: .milliseconds(80))
+        try await admitPresentation(window: window, host: host, monitor: monitor)
         func scroll(in view: NSView) -> NSScrollView? {
             if let scroll = view as? NSScrollView { return scroll }
             return view.subviews.lazy.compactMap { scroll(in: $0) }.first
