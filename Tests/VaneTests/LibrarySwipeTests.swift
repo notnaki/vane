@@ -544,9 +544,9 @@ import XCTest
 
     private func checkExplicitCloseSupersedesOpeningLanding() async throws {
         let (store, window, monitor, host) = try await releasedOpening()
-        let probe = LibraryCloseCallbackProbe(monitor: monitor, host: host, store: store)
-        probe.start(on: window.screen)
-        defer { probe.stop(); probe.dump() }
+        let observer = LibraryReturnObserver(root: host)
+        observer.start(on: try XCTUnwrap(window.screen))
+        defer { observer.stop() }
         try await Task.sleep(for: .milliseconds(30))
         let marker = try XCTUnwrap(monitor.presentationView)
         func x() throws -> CGFloat {
@@ -554,17 +554,51 @@ import XCTest
                 to: host.layer?.presentation()).x
         }
         let before = try x()
-        probe.record("before.close")
+        let endpoint = -Look.libraryRail - Look.libraryList
+        observer.arm(marker: marker, before: before, endpoint: endpoint)
         Library.close(store)
-        probe.record("after.close")
         try await Task.sleep(for: .milliseconds(30))
-        probe.record("task.after30")
-        XCTAssertLessThan(try x(), before)
-        XCTAssertGreaterThan(try x(), -Look.libraryRail - Look.libraryList + 1,
+        observer.stop()
+        // Keep the original sample delay. A late task can read the endpoint;
+        // native frames retain the actual reversal observed before that read.
+        let returning = try observer.intermediate ?? x()
+        XCTAssertLessThan(returning, before)
+        XCTAssertGreaterThan(returning, endpoint + 1,
                              "An explicit close reverses the landing instead of snapping shut")
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertFalse(store.libraryOpen, "A retired opening completion must not reopen Library")
         XCTAssertNil(store.librarySwipeProgress)
+    }
+
+    func testLibraryReturnObservationRejectsAnEndpointJump() async throws {
+        try await withFixtureApplicationLoop {
+            let (_, window, monitor) = fixture(withSpaces: true)
+            let host = NSView(frame: window.contentLayoutRect)
+            host.wantsLayer = true
+            let marker = NSView(frame: NSRect(x: 200, y: 100, width: 10, height: 10))
+            marker.wantsLayer = true
+            host.addSubview(marker)
+            window.contentView = host
+            monitor.presentationView = marker
+            defer { window.orderOut(nil); window.contentView = nil }
+            try await admitPresentation(window: window, host: host, monitor: monitor)
+            let observer = LibraryReturnObserver(root: host)
+            observer.start(on: try XCTUnwrap(window.screen))
+            defer { observer.stop() }
+            try await compatibilityWait { observer.callbacks >= 2 }
+            observer.arm(marker: marker, before: 200, endpoint: 0)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            marker.setFrameOrigin(NSPoint(x: 0, y: 100))
+            CATransaction.commit()
+            window.displayIfNeeded()
+            CATransaction.flush()
+            try await compatibilityWait { observer.armedSamples >= 3 }
+            observer.stop()
+            XCTAssertNil(observer.intermediate, "An instantaneous endpoint jump must not qualify as a reversal")
+            XCTAssertEqual(try XCTUnwrap(marker.layer?.presentation()).convert(.zero,
+                to: host.layer?.presentation()).x, 0, accuracy: 0.125)
+        }
     }
 
     func testToggleDuringOpeningLandingClosesTheReleasedDestination() async throws {
@@ -1498,39 +1532,38 @@ private final class LibraryScrollWindow: NSWindow {
     }
 }
 
-/// Temporary test-only timing discriminator; stores values and emits after sampling.
-@MainActor private final class LibraryCloseCallbackProbe: NSObject {
-    private weak var monitor: LibrarySwipeMonitor?
-    private weak var host: NSView?
-    private weak var store: TabStore?
-    private let began = CACurrentMediaTime()
+/// Retains a genuine intermediate frame during the existing task observation wait.
+@MainActor private final class LibraryReturnObserver: NSObject {
+    private weak var root: NSView?
+    private weak var marker: NSView?
     private var link: CADisplayLink?
-    private var samples: [String] = []
-    init(monitor: LibrarySwipeMonitor, host: NSView, store: TabStore) {
-        self.monitor = monitor; self.host = host; self.store = store
-        samples.reserveCapacity(256)
-    }
-    func start(on screen: NSScreen?) {
-        guard let screen else { return }
+    private var before: CGFloat?
+    private var endpoint: CGFloat = 0
+    private(set) var callbacks = 0
+    private(set) var armedSamples = 0
+    private(set) var intermediate: CGFloat?
+
+    init(root: NSView) { self.root = root }
+    func start(on screen: NSScreen) {
         let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
         self.link = link
     }
+    func arm(marker: NSView, before: CGFloat, endpoint: CGFloat) {
+        self.marker = marker; self.before = before; self.endpoint = endpoint
+        armedSamples = 0; intermediate = nil
+    }
     func stop() { link?.invalidate(); link = nil }
     @objc private func tick(_ link: CADisplayLink) {
-        guard CACurrentMediaTime() - began <= 1.2 else { stop(); return }
-        record("native display=\(link.timestamp) target=\(link.targetTimestamp)")
+        callbacks += 1
+        guard let before, let root, let marker, let window = root.window,
+              marker.window === window, NSApp.isActive, NSApp.keyWindow === window,
+              window.isVisible, window.occlusionState.contains(.visible),
+              let layer = marker.layer?.presentation(), let parent = root.layer?.presentation() else { return }
+        armedSamples += 1
+        let x = layer.convert(.zero, to: parent).x
+        if intermediate == nil, x < before - 0.125, x > endpoint + 1 { intermediate = x }
     }
-    func record(_ phase: String) {
-        guard samples.count < 256 else { return }
-        let marker = monitor?.presentationView
-        let x: CGFloat?
-        if let layer = marker?.layer?.presentation(), let root = host?.layer?.presentation() {
-            x = layer.convert(.zero, to: root).x
-        } else { x = nil }
-        samples.append("LIBRARY_CLOSE_CALLBACK phase=\(phase) elapsed=\(CACurrentMediaTime() - began) x=\(String(describing: x)) progress=\(String(describing: store?.librarySwipeProgress)) marker=\(marker.map { String(describing: ObjectIdentifier($0)) } ?? "nil") hidden=\(String(describing: marker?.isHiddenOrHasHiddenAncestor)) key=\(host?.window?.isKeyWindow ?? false)")
-    }
-    func dump() { samples.forEach { print($0) } }
 }
 
 private final class LibraryScrollEvent: NSEvent, @unchecked Sendable {

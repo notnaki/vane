@@ -327,7 +327,7 @@ import WebKit
                             && privateWindow.strip.isEmpty,
                             "incognito cannot inherit or browse saved profile spaces")
                 try require(privateWindow.window?.appearance?.name == .darkAqua
-                            && privateWindow.profile.colorHex == "#111111",
+                            && Look.hsb(hex: privateWindow.profile.colorHex).map { $0.b < 0.1 } == true,
                             "incognito uses a near-black theme and forces dark window chrome")
                 try require(ProfileManager.shared.profiles == profilesBefore,
                             "incognito never becomes a saved profile")
@@ -571,8 +571,7 @@ import WebKit
             let missing = makeTab(profile: ProfileManager.shared.create(name: "Favicon checks").id)
             let before = server.requests["/favicon.ico", default: 0]
             _ = missing.favicons.icon(for: url)
-            let companion = makeTab(profile: missing.profileID)
-            companion.park(url: url, Parked(title: "Another restored tab"))
+            let companion = try makeParkedTab(profile: missing.profileID, url: url, title: "Another restored tab")
             try await wait("favicon fallback is requested") {
                 server.requests["/favicon.ico", default: 0] > before
             }
@@ -599,7 +598,8 @@ import WebKit
             try require(missing.favicon?.isValid == true,
                         "a failed fallback does not suppress a page's declared icon")
             try await wait("a parked tab receives another tab's discovered icon") { companion.favicon != nil }
-            try require(companion.suspended && companion.favicon?.isValid == true,
+            try require(companion.suspended && companion.existingWeb == nil
+                        && companion.currentURL == url && companion.favicon?.isValid == true,
                         "a parked tab updates when a loaded tab discovers the same site's icon")
 
             let racing = makeTab(profile: ProfileManager.shared.create(name: "Favicon checks").id)
@@ -643,35 +643,35 @@ import WebKit
             try require(raceFiles.isEmpty, "a regular fallback does not persist a private-only declared icon")
 
             server.faviconAvailable = true
-            let parked = makeTab(profile: ProfileManager.shared.create(name: "Favicon checks").id)
-            parked.park(url: url, Parked(title: "Parked icon", state: nil))
+            let parked = try makeParkedTab(profile: ProfileManager.shared.create(name: "Favicon checks").id,
+                                          url: url, title: "Parked icon")
             try await wait("a parked tab's fetched icon") { parked.favicon != nil }
-            try require(parked.suspended && parked.web.url == nil && parked.favicon?.isValid == true,
+            try require(parked.suspended && parked.existingWeb == nil && parked.favicon?.isValid == true,
                         "a restored tab receives its favicon without loading its page")
-            let privateTab = makeTab(profile: ProfileManager.shared.create(name: "Private favicon checks").id, isPrivate: true)
-            privateTab.park(url: url, Parked(title: "Private restored tab"))
+            let privateTab = try makeParkedTab(profile: ProfileManager.shared.create(name: "Private favicon checks").id,
+                                              url: url, title: "Private restored tab", isPrivate: true)
             try await wait("a private parked tab's fetched icon") { privateTab.favicon != nil }
             let privateCache = ProfileManager.faviconDir(for: privateTab.profileID, in: Store.directory)
             let files = (try? FileManager.default.contentsOfDirectory(atPath: privateCache.path)) ?? []
             try require(files.isEmpty, "fetching a private parked tab's icon does not write it to disk")
 
             let qualityURL = URL(string: "\(base)/quality-icon-page")!
-            let upgrade = makeTab(profile: ProfileManager.shared.create(name: "Icon quality checks").id)
-            upgrade.park(url: qualityURL, Parked(title: "Cached small icon"))
+            let upgrade = try makeParkedTab(profile: ProfileManager.shared.create(name: "Icon quality checks").id,
+                                           url: qualityURL, title: "Cached small icon")
             try await wait("cached low-resolution fallback") { upgrade.favicon != nil }
             let smallIcon = upgrade.favicon
-            let sibling = makeTab(profile: upgrade.profileID)
-            sibling.park(url: qualityURL, Parked(title: "Parked sibling"))
+            let sibling = try makeParkedTab(profile: upgrade.profileID, url: qualityURL, title: "Parked sibling")
             try await wait("sibling uses cached fallback") { sibling.favicon != nil }
             let qualityBefore = server.requests["/brand.png", default: 0]
             upgrade.resume()
+            host(upgrade)
             try await loaded(upgrade, path: qualityURL.path, title: "Fixture Quality")
             try await wait("a cached fallback upgrades to the declared touch icon") {
                 server.requests["/brand.png", default: 0] > qualityBefore && upgrade.favicon !== smallIcon
             }
             try require(upgrade.favicon?.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width == 64,
                         "touch-icon rel metadata wins even when its filename does not say apple-touch")
-            try require(sibling.suspended && sibling.favicon === upgrade.favicon,
+            try require(sibling.suspended && sibling.existingWeb == nil && sibling.favicon === upgrade.favicon,
                         "a sharper declared icon also updates parked rows")
             let restoredCache = Favicons(profileID: upgrade.profileID)
             _ = restoredCache.icon(for: qualityURL)
@@ -722,6 +722,17 @@ import WebKit
         private func makeTab(profile: UUID, isPrivate: Bool = false) -> Tab {
             let tab = Tab(isPrivate: isPrivate, profileID: profile)
             host(tab)
+            return tab
+        }
+
+        private func makeParkedTab(profile: UUID, url: URL, title: String, isPrivate: Bool = false) throws -> Tab {
+            // makeTab hosts tab.web. A restored row must have no page: an empty live
+            // view would hide parkedURL from currentURL and miss host arrivals.
+            let tab = Tab(isPrivate: isPrivate, profileID: profile)
+            tabs.append(tab)
+            tab.park(url: url, Parked(title: title))
+            try require(tab.suspended && tab.existingWeb == nil && tab.currentURL == url,
+                        "the favicon fixture is parked at its saved URL without a web view")
             return tab
         }
 
@@ -830,7 +841,7 @@ import WebKit
             window.setFrameOrigin(NSPoint(x: -4000, y: -4000))
             window.orderFront(nil)
             windows.append(window)
-            tabs.append(tab)
+            if !tabs.contains(where: { $0 === tab }) { tabs.append(tab) }
         }
 
         private func pageEnhancements(_ tab: Tab) async throws {

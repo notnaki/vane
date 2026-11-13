@@ -1,4 +1,7 @@
 import AppKit
+import CoreMedia
+import CoreVideo
+@preconcurrency import ScreenCaptureKit
 import SwiftUI
 import XCTest
 @testable import vane
@@ -1576,6 +1579,24 @@ import XCTest
         try await sampler.close()
     }
 
+    private func withProfilePixelCharacterization(source: TabStore, host: BrowserWindowHost, window: NSWindow,
+                                                  _ body: (ProfilePixelCharacterization) async throws -> Void) async throws {
+        let pixels = ProfilePixelCharacterization()
+        do {
+            try await pixels.start(source: source, host: host, window: window)
+            try await body(pixels)
+        } catch {
+            let primary = error
+            do { try await pixels.stop() }
+            catch { XCTFail("Profile pixel characterization cleanup also failed: \(error)") }
+            pixels.dump()
+            throw primary
+        }
+        do { try await pixels.stop() }
+        catch { pixels.dump(); throw error }
+        pixels.dump()
+    }
+
     private func checkRepeatedProfileSwipes(mixedThemes: Bool) async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
@@ -1614,6 +1635,7 @@ import XCTest
         }
         TabStore.all.first { $0.window === window }?.switchTo(space: spaces[0])
         try await Task.sleep(for: .milliseconds(150))
+        try await withProfilePixelCharacterization(source: source, host: host, window: window) { pixels in
         // Alternate twelve times with both saturated themes and mixed default themes.
         for leg in 0..<12 {
             let index = (leg + 1) % 2
@@ -1645,6 +1667,7 @@ import XCTest
                 XCTAssertNotNil(showing.beginSpaceSelection(spaces[index]))
                 monitor.track(-CGFloat(direction) * 70, width: fixtureSidebarWidth(in: source), in: showing)
                 try await sampler.admitTransitionLayers()
+                pixels.beginLeg(label: "mixed=\(mixedThemes) leg=\(leg) direction=\(direction)")
                 monitor.land(direction, to: spaces[index], width: fixtureSidebarWidth(in: source),
                              store: showing, duration: 0.3)
                 print("PROFILE_ACTION mixed=\(mixedThemes) leg=\(leg) actionMS=\((CACurrentMediaTime() - actionBegan) * 1000) active=\(NSApp.isActive) key=\(window.isKeyWindow)")
@@ -1655,7 +1678,9 @@ import XCTest
                 while host.spaceSlide != nil, ContinuousClock.now < retirementDeadline {
                     try await Task.sleep(for: .milliseconds(10))
                 }
+                pixels.endLeg()
                 try await sampler.close()
+                sampler.dumpLayerCharacterization(label: "mixed=\(mixedThemes) leg=\(leg) direction=\(direction)")
                 try sampler.validateTransitionLayers()
                 XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, spaces[index].id)
                 XCTAssertFalse(sampler.foregroundInterrupted, "Profile sampling must retain actual foreground ownership")
@@ -1675,7 +1700,9 @@ import XCTest
                                   "The displayed background must not flash back toward its source after profile activation")
                 XCTAssertNil(host.spaceSlide)
                 XCTAssertEqual(showing.spaceDrag, 0, "Parked profile progress must be released at every landing")
+                try await pixels.completeLegObservation()
             }
+        }
         }
     }
 
@@ -3563,6 +3590,247 @@ import XCTest
     }
 }
 
+/// Temporary characterization of WindowServer pixels. These observations never
+/// replace the base-gradient assertions or interpret missing capture as continuity.
+private final class ProfilePixelCharacterization: NSObject, SCStreamOutput, @unchecked Sendable {
+    private struct Frame {
+        let time: Double
+        let receipt: Double
+        let status: Int
+        let sites: [[Double]]?
+    }
+    private struct Leg {
+        let label: String
+        let start: Double
+        let baseline: Frame?
+        var retired: Double?
+        var end: Double?
+    }
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "vane.profile.pixel-characterization")
+    private var frames: [Frame] = []
+    private var dropped = 0
+    @MainActor private var stream: SCStream?
+    @MainActor private var generation: UUID?
+    @MainActor private var legs: [Leg] = []
+    @MainActor private var geometry = "not-started"
+    @MainActor private var calibration = "not-started"
+    @MainActor private var started = false
+    @MainActor private var stopped = false
+    private var lastComplete: Frame? { lock.withLock { frames.last { $0.sites != nil && $0.status == SCFrameStatus.complete.rawValue } } }
+
+    @MainActor private func bounded(_ name: String, _ operation: @escaping @MainActor () async throws -> Void) async throws {
+        var result: Result<Void, any Error>?
+        let task = Task { @MainActor in
+            do { try await operation(); result = .success(()) }
+            catch { result = .failure(error) }
+        }
+        defer { task.cancel() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while result == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        guard let result else {
+            XCTFail("Profile pixel characterization timed out: \(name)")
+            throw NSError(domain: "ProfilePixelCharacterizationTimeout", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: name])
+        }
+        try result.get()
+    }
+
+    @MainActor func start(source: TabStore, host: BrowserWindowHost, window: NSWindow) async throws {
+        let pill = try XCTUnwrap(source.mountedAddressEndpoint)
+        XCTAssertTrue(pill.window === window && host.window === window)
+        let pillRect = pill.convert(pill.bounds, to: host)
+        let width = SidebarWidth.inWindow(source)
+        let middleY = host.isFlipped ? pillRect.minY - Look.inset / 2 : pillRect.maxY + Look.inset / 2
+        let band = CGRect(x: host.bounds.minX + 2 * Look.inset, y: middleY - 2,
+                          width: width - 4 * Look.inset, height: 4)
+        let sidebar = CGRect(x: host.bounds.minX, y: host.bounds.minY, width: width, height: host.bounds.height)
+        guard band.width >= 12, host.bounds.contains(band), sidebar.contains(band), !band.intersects(pillRect) else {
+            XCTFail("Profile pixel crop must be an admitted sidebar gap outside the address pill")
+            throw NSError(domain: "ProfilePixelCrop", code: 1)
+        }
+        for owner in TabStore.all where owner.window === window || owner.parkedIn === window {
+            let strip = try XCTUnwrap(owner.spaceGesture.stripView)
+            XCTAssertTrue(strip.window === window)
+            XCTAssertFalse(band.intersects(strip.convert(strip.bounds, to: host)),
+                           "Moving row ink must never cross the pixel crop")
+        }
+        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            if let button = window.standardWindowButton(kind) {
+                XCTAssertFalse(band.intersects(button.convert(button.bounds, to: host)),
+                               "Traffic lights must remain outside the pixel crop")
+            }
+        }
+        let screenCrop = window.convertToScreen(host.convert(band, to: nil))
+        let sourceRect = CGRect(x: screenCrop.minX - window.frame.minX,
+            y: window.frame.maxY - screenCrop.maxY, width: band.width, height: band.height)
+        guard CGRect(origin: .zero, size: window.frame.size).contains(sourceRect) else {
+            XCTFail("Profile pixel sourceRect must lie inside the exact filtered window")
+            throw NSError(domain: "ProfilePixelCrop", code: 2)
+        }
+        geometry = "host=\(host.bounds) sidebar=\(sidebar) pill=\(pillRect) band=\(band) sourceRect=\(sourceRect) windowSize=\(window.frame.size)"
+        calibration = "media=\(CACurrentMediaTime()) uptime=\(ProcessInfo.processInfo.systemUptime) cmHost=\(CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock())))"
+        let token = UUID()
+        generation = token
+        var content: SCShareableContent?
+        try await bounded("currentProcess") { content = try await SCShareableContent.currentProcess }
+        let target = try XCTUnwrap(content?.windows.first { $0.windowID == CGWindowID(window.windowNumber) })
+        let filter = SCContentFilter(desktopIndependentWindow: target)
+        let scale = CGFloat(filter.pointPixelScale)
+        let configuration = SCStreamConfiguration()
+        configuration.sourceRect = sourceRect
+        configuration.width = max(1, Int(ceil(band.width * scale)))
+        configuration.height = max(1, Int(ceil(band.height * scale)))
+        configuration.showsCursor = false
+        configuration.ignoreShadowsSingleWindow = true
+        configuration.captureDynamicRange = .SDR
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        configuration.colorSpaceName = CGColorSpace.displayP3
+        configuration.minimumFrameInterval = CMTime(value: 1,
+            timescale: CMTimeScale(window.screen?.maximumFramesPerSecond ?? 60))
+        configuration.queueDepth = 8
+        let capture = SCStream(filter: filter, configuration: configuration, delegate: nil)
+        try capture.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        stream = capture
+        try await bounded("startCapture") { [self] in
+            try await capture.startCapture()
+            // A cancelled startup must not adopt a stream after fixture cleanup.
+            guard generation == token, !Task.isCancelled else {
+                try await capture.stopCapture()
+                throw CancellationError()
+            }
+        }
+        started = true
+        let admissionDeadline = ContinuousClock.now + .seconds(5)
+        while lastComplete == nil, ContinuousClock.now < admissionDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard lastComplete != nil else {
+            XCTFail("Profile pixel characterization needs a complete baseline before input")
+            throw NSError(domain: "ProfilePixelBaseline", code: 1)
+        }
+    }
+
+    @MainActor func beginLeg(label: String) {
+        legs.append(Leg(label: label, start: CACurrentMediaTime(), baseline: lastComplete))
+    }
+    @MainActor func endLeg() {
+        guard !legs.isEmpty else { return }
+        legs[legs.count - 1].retired = CACurrentMediaTime()
+    }
+    // Characterization-only tail begins after every original action/assertion.
+    // It cannot extend a gesture, retirement deadline, or raw continuity gate.
+    @MainActor func completeLegObservation() async throws {
+        guard let retired = legs.last?.retired else { return }
+        let deadline = retired + 0.1
+        while CACurrentMediaTime() < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        legs[legs.count - 1].end = CACurrentMediaTime()
+    }
+    @MainActor func stop() async throws {
+        generation = nil
+        guard let capture = stream else { return }
+        var failure: (any Error)?
+        do { try await bounded("stopCapture") { try await capture.stopCapture() }; stopped = true }
+        catch { failure = error }
+        do { try capture.removeStreamOutput(self, type: .screen) }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Profile pixel output removal also failed: \(error)") }
+        }
+        let drained = DispatchSemaphore(value: 0)
+        queue.async { drained.signal() }
+        if drained.wait(timeout: .now() + 1) != .success {
+            XCTFail("Profile pixel callback queue did not drain")
+            if failure == nil { failure = NSError(domain: "ProfilePixelDrain", code: 1) }
+        }
+        if stopped { stream = nil }
+        if let failure { throw failure }
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .screen else { return }
+        let time = CMTimeGetSeconds(buffer.presentationTimeStamp)
+        let receipt = CACurrentMediaTime()
+        let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]]
+        let status = buffer.isValid ? (attachments?.first?[.status] as? Int ?? -1) : -2
+        var sites: [[Double]]?
+        if status == SCFrameStatus.complete.rawValue, let pixel = buffer.imageBuffer {
+            CVPixelBufferLockBaseAddress(pixel, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
+            if let bytes = CVPixelBufferGetBaseAddress(pixel)?.assumingMemoryBound(to: UInt8.self) {
+                let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
+                let stride = CVPixelBufferGetBytesPerRow(pixel)
+                if width >= 6, height >= 1 {
+                    sites = [1, 3, 5].map { sixth in
+                        let x = min(width - 1, width * sixth / 6)
+                        let offset = height / 2 * stride + x * 4
+                        return [Double(bytes[offset + 2]) / 255, Double(bytes[offset + 1]) / 255, Double(bytes[offset]) / 255]
+                    }
+                }
+            }
+        }
+        let frame = Frame(time: time, receipt: receipt, status: status, sites: sites)
+        lock.withLock {
+            if frames.count < 4096 { frames.append(frame) }
+            else { dropped += 1 }
+        }
+    }
+
+    @MainActor func dump() {
+        let recorded = lock.withLock { (frames, dropped) }
+        let invalid = recorded.0.filter { !$0.time.isFinite }
+        print("PROFILE_PIXEL_BEGIN started=\(started) stopped=\(stopped) dropped=\(recorded.1) invalidTimes=\(invalid.count) \(geometry) calibration={\(calibration)}")
+        for frame in invalid {
+            print("PROFILE_PIXEL_INVALID time=\(frame.time) receipt=\(frame.receipt) status=\(frame.status)")
+        }
+        func red(_ frame: Frame) -> Double? { frame.sites.map { $0.map { $0[0] }.sorted()[1] } }
+        func spread(_ frame: Frame) -> Double {
+            guard let sites = frame.sites else { return .infinity }
+            return (0..<3).map { channel in
+                let values = sites.map { $0[channel] }
+                return values.max()! - values.min()!
+            }.max()!
+        }
+        for leg in legs {
+            let end = leg.end ?? leg.start
+            let observed = recorded.0.filter { $0.time.isFinite && $0.time >= leg.start && $0.time <= end }
+            let complete = observed.filter { $0.status == SCFrameStatus.complete.rawValue && $0.sites != nil }
+            let last = complete.last
+            let contrast = abs((leg.baseline.flatMap(red) ?? 0) - (last.flatMap(red) ?? 0))
+            // Cover the entire actual handoff and post-retirement observation,
+            // including delayed commits; the nominal 300 ms is not its endpoint.
+            let times = [leg.start] + observed.map(\.time) + [end]
+            let maxGap = zip(times, times.dropFirst()).map { $1 - $0 }.max() ?? .infinity
+            let badStatus = observed.contains {
+                ($0.status != SCFrameStatus.complete.rawValue && $0.status != SCFrameStatus.idle.rawValue)
+                    || ($0.status == SCFrameStatus.complete.rawValue && $0.sites == nil)
+            }
+            let monotonic = zip(observed, observed.dropFirst()).allSatisfy { $0.time <= $1.time }
+            let spatial = max(leg.baseline.map(spread) ?? .infinity, complete.map(spread).max() ?? .infinity)
+            let baselineFresh = leg.baseline.map { (0...0.1).contains(leg.start - $0.time) } ?? false
+            let endpointFresh = last.map { frame in
+                guard let retired = leg.retired else { return false }
+                return frame.time >= retired && (0...0.1).contains(end - frame.time)
+            } ?? false
+            let adequate = started && stopped && recorded.1 == 0 && invalid.isEmpty && monotonic && leg.end != nil && leg.retired != nil
+                && complete.count > 3 && contrast > 0.025 && maxGap <= 0.05 && !badStatus && spatial <= 0.03
+                && baselineFresh && endpointFresh
+            let sourceRed = leg.baseline.flatMap(red)
+            let endpointRed = last.flatMap(red)
+            let reds = [leg.baseline].compactMap { $0 }.compactMap(red) + complete.compactMap(red)
+            let direction = (endpointRed ?? 0) >= (sourceRed ?? 0) ? 1.0 : -1.0
+            let reverse = zip(reds, reds.dropFirst()).map { ($0 - $1) * direction }.max() ?? 0
+            print("PROFILE_PIXEL_LEG \(leg.label) sensitivity=\(adequate ? "ADEQUATE" : "INCONCLUSIVE") start=\(leg.start) retired=\(String(describing: leg.retired)) end=\(end) complete=\(complete.count) statuses=\(observed.map(\.status)) contrast=\(contrast) spatial=\(spatial) maxGap=\(maxGap) source=\(String(describing: sourceRed)) endpoint=\(String(describing: endpointRed)) maxReverse=\(reverse) normalizedReverse=\(contrast > 0 ? reverse / contrast : .infinity)")
+            for frame in observed {
+                print("PROFILE_PIXEL_FRAME \(leg.label) time=\(frame.time) relative=\(frame.time - leg.start) receipt=\(frame.receipt) status=\(frame.status) rgb=\(String(describing: frame.sites))")
+            }
+        }
+        print("PROFILE_PIXEL_END")
+    }
+}
+
 /// Temporary public-only discriminator. A native main-run-loop callback and a
 /// Swift task read the same values, without changing any gesture or assertion.
 @MainActor private final class ProfileLandingCallbackProbe: NSObject {
@@ -3788,6 +4056,15 @@ import XCTest
         }
         if !samplingTransition { baselineReds.append(colour.redComponent) }
     }
+    func dumpLayerCharacterization(label: String) {
+        guard let transitionSampler else { return }
+        let trace = transitionSampler.snapshot
+        print("PROFILE_RAW_BEGIN \(label) records=\(trace.frames.count) dropped=\(trace.droppedFrames)")
+        for frame in trace.frames {
+            print("PROFILE_RAW_FRAME time=\(frame.time) display=\(frame.displayTime) targetDisplay=\(frame.targetTime) surface=\(String(describing: frame.read.surfaceIndex)) presented=\(String(describing: frame.read.red)) model=\(String(describing: frame.read.modelRed)) animation=\(frame.read.animationPresent) begin=\(String(describing: frame.read.animationBegin)) reason=\(frame.read.reason)")
+        }
+        print("PROFILE_RAW_END \(label)")
+    }
     func dumpDiagnostics(label: String) {
         guard diagnosticsEnabled else { return }
         print("PROFILE_WASH_DIAGNOSTICS_BEGIN \(label)")
@@ -3894,7 +4171,23 @@ private final class ProfileWashLayerSnapshot: @unchecked Sendable {
 /// animation. A separate display-link run loop observes its original layer-color
 /// metric while the compositor moves, without touching AppKit from that thread.
 private final class ProfileWashLayerSampler: NSObject, @unchecked Sendable {
+    struct LayerRead {
+        var red: Double?
+        var modelRed: Double?
+        var surfaceIndex: Int?
+        var animationPresent = false
+        var animationBegin: TimeInterval?
+        var reason: String
+    }
+    struct Frame {
+        let time: TimeInterval
+        let displayTime: TimeInterval
+        let targetTime: TimeInterval
+        let read: LayerRead
+    }
     struct Samples {
+        var frames: [Frame] = []
+        var droppedFrames = 0
         var reds: [Double] = []
         var unadmitted = 0
         var maxGap: TimeInterval = 0
@@ -3947,12 +4240,16 @@ private final class ProfileWashLayerSampler: NSObject, @unchecked Sendable {
     @objc private func tick(_ link: CADisplayLink) {
         let now = ProcessInfo.processInfo.systemUptime
         CATransaction.lock()
-        let red = presentedRed()
+        let read = presentedRead()
         CATransaction.unlock()
         lock.withLock {
+            if samples.frames.count < 256 {
+                samples.frames.append(Frame(time: now, displayTime: link.timestamp,
+                                            targetTime: link.targetTimestamp, read: read))
+            } else { samples.droppedFrames += 1 }
             if let last = samples.last { samples.maxGap = max(samples.maxGap, now - last) }
             samples.last = now
-            guard let red, samples.reds.count < 4096 else {
+            guard let red = read.red, samples.reds.count < 4096 else {
                 samples.unadmitted += 1
                 return
             }
@@ -3963,26 +4260,35 @@ private final class ProfileWashLayerSampler: NSObject, @unchecked Sendable {
     /// Called only under CATransaction's recursive lock. Reject unknown roots,
     /// detached ancestry and ambiguous/missing visibility rather than silently
     /// dropping a frame that could hide a color reversal.
-    private func presentedRed() -> Double? {
+    private func presentedRead() -> LayerRead {
+        func failure(_ reason: String) -> LayerRead { LayerRead(reason: reason) }
+        func red(_ colors: Any?) -> Double? {
+            guard let color = (colors as? [CGColor])?.first,
+                  let rgb = color.converted(to: CGColorSpaceCreateDeviceRGB(), intent: .defaultIntent, options: nil),
+                  let components = rgb.components, components.count >= 3 else { return nil }
+            return Double(components[0])
+        }
         let currentRoots = Set((layers.host.sublayers ?? []).map(ObjectIdentifier.init))
-        guard currentRoots.isSubset(of: layers.roots) else { return nil }
-        var visible: [CAGradientLayer] = []
-        for surface in layers.surfaces {
+        guard currentRoots.isSubset(of: layers.roots) else { return failure("unknown-root") }
+        var visible: [(Int, CAGradientLayer)] = []
+        for (index, surface) in layers.surfaces.enumerated() {
             for (child, parent) in zip(surface.ancestry, surface.ancestry.dropFirst()) {
-                guard child.superlayer === parent else { return nil }
+                guard child.superlayer === parent else { return failure("detached-ancestry") }
             }
             var hidden = false
             for ancestor in surface.ancestry.reversed() {
-                guard let presentation = ancestor.presentation() else { return nil }
+                guard let presentation = ancestor.presentation() else { return failure("missing-presentation") }
                 if presentation.isHidden || presentation.opacity <= 0 { hidden = true; break }
             }
-            if !hidden { visible.append(surface.base) }
+            if !hidden { visible.append((index, surface.base)) }
         }
-        guard visible.count == 1,
-              let color = (visible[0].presentation()?.colors as? [CGColor])?.first,
-              let rgb = color.converted(to: CGColorSpaceCreateDeviceRGB(), intent: .defaultIntent, options: nil),
-              let components = rgb.components, components.count >= 3 else { return nil }
-        return Double(components[0])
+        guard visible.count == 1 else { return failure("visible-count-\(visible.count)") }
+        let (index, base) = visible[0]
+        guard let presentedRed = red(base.presentation()?.colors) else { return failure("missing-color") }
+        let animation = base.animation(forKey: "colors")
+        return LayerRead(red: presentedRed, modelRed: red(base.colors), surfaceIndex: index,
+                         animationPresent: animation != nil,
+                         animationBegin: animation.map { base.convertTime($0.beginTime, to: nil) }, reason: "admitted")
     }
 }
 
