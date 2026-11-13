@@ -5,7 +5,6 @@ on:
 permissions:
   contents: read
 env:
-  VANE_PROFILE_HOP_DIAGNOSTICS: '1'
   VANE_EXPECTED_TESTS: |
     VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes

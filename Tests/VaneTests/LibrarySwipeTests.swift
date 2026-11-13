@@ -802,6 +802,10 @@ import XCTest
     /// machine-dependent assertions; the ordinary test above guards the invalidation boundary.
     func testPopulatedArchiveSwipeTiming() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1")
+        try await withFixtureApplicationLoop { try await checkPopulatedArchiveSwipeTiming() }
+    }
+
+    private func checkPopulatedArchiveSwipeTiming() async throws {
         let saver = BatterySaver.shared
         let previousMode = saver.mode
         saver.setMode(.off)
@@ -832,11 +836,17 @@ import XCTest
         store.syncShapes()
         let key = ProfileManager.defaultsKey("archivedTabs", store.profileID)
         let oldArchive = UserDefaults.vane.data(forKey: key)
+        let archive = Archive.shared(for: store.profileID)
+        let oldEntries = archive.entries
         let archived = (0..<2000).map { Archive.Entry(url: "about:blank#archive-\($0)",
             title: "Archived fixture \($0)", at: Date.now.addingTimeInterval(Double(-$0 * 60))) }
-        UserDefaults.vane.set(try JSONEncoder().encode(archived), forKey: key)
+        // The shared Library may already observe this cached Archive. Seed the
+        // model's real publication path, preserving the fixture's newest-first order.
+        archive.clear()
+        archive.add(Array(archived.reversed()))
         defer {
-            Archive.shared(for: store.profileID).clear()
+            archive.clear()
+            archive.add(Array(oldEntries.reversed()))
             UserDefaults.vane.set(oldArchive, forKey: key)
             window.contentView = nil
             window.orderOut(nil)
@@ -854,6 +864,19 @@ import XCTest
         window.orderFrontRegardless()
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(500))
+        try await compatibilityWait {
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            host.layoutSubtreeIfNeeded()
+            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
+                  window.isVisible, window.occlusionState.contains(.visible),
+                  let marker = monitor.presentationView, marker.window === window,
+                  let model = marker.layer, let presented = model.presentation(),
+                  let root = host.layer, let presentedRoot = root.presentation() else { return false }
+            return abs(presented.convert(.zero, to: presentedRoot).x - model.convert(.zero, to: root).x) < 0.125
+        }
+        XCTAssertEqual(ArchiveLibrary.library(for: store.profileID).entries.count, 2000,
+                       "Measure the populated archive, including when its model was already cached")
         print("LIBRARY_SWIPE_WINDOW visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) active=\(NSApp.isActive) frame=\(window.frame) screens=\(NSScreen.screens.map(\.frame))")
         // Force native layout even when this desktop session occludes test windows.
         // These timings measure main-thread update work, not displayed frame rate.
