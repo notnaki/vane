@@ -77,7 +77,9 @@ import XCTest
             var pointer = NSEvent.mouseLocation
             var previousHost: NSView?
             var phase = 0
-            defer { print("Snapshot pointer-intrusion phase=\(phase)") }
+            defer {
+                print("Snapshot pointer-intrusion phase=\(phase) probe=\(state.probe != nil) attached=\(state.probe?.window != nil) control=\(state.setHovered != nil)")
+            }
             _ = try await SidebarSnapshot.imageWhenReady(SnapshotInteractiveSurface(state: state),
                                                          pointerLocation: { pointer }) { host in
                 guard let probe = state.probe, probe.window === host.window, let setHovered = state.setHovered else { return false }
@@ -211,19 +213,33 @@ private struct SnapshotInteractiveSurface: View {
     var body: some View {
         Color(white: hovered ? 0.8 : 0.2)
             .animation(.easeOut(duration: 0.15), value: hovered)
-            .background(SnapshotInteractiveProbe(state: state, hovered: hovered))
-            .onAppear { state.setHovered = { hovered = $0 } }
+            .background(SnapshotInteractiveProbe(state: state, hovered: $hovered))
     }
 }
 
 private struct SnapshotInteractiveProbe: NSViewRepresentable {
-    final class Native: NSView { var hovered = false }
+    final class Native: NSView {
+        var hovered = false
+        weak var state: SnapshotInteractiveState?
+    }
     let state: SnapshotInteractiveState
-    let hovered: Bool
+    @Binding var hovered: Bool
     func makeNSView(context: Context) -> Native { Native() }
     func updateNSView(_ view: Native, context: Context) {
+        // Install the actuator with the exact native probe. A separate onAppear
+        // callback can remain pending even after this visible owner is mounted.
+        view.state = state
         state.probe = view
+        let binding = $hovered
+        state.setHovered = { binding.wrappedValue = $0 }
         view.hovered = hovered
+    }
+    static func dismantleNSView(_ view: Native, coordinator: ()) {
+        if let state = view.state, state.probe === view {
+            state.probe = nil
+            state.setHovered = nil
+        }
+        view.state = nil
     }
 }
 

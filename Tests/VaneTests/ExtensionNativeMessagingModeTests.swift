@@ -348,6 +348,11 @@ extension ExtensionNativeMessagingErrorTests {
         }
     }
 
+    func testRetryPageWaitsForLaunchReadinessToRecoverBeforeAction() async throws {
+        try await exerciseSequentialRetries(approvedModes: [true], injectObservedHide: false,
+                                            withdrawLaunchReadiness: true)
+    }
+
     func testReviewedSequentialRetriesYieldToTheExtensionPageTimer() async throws {
         try await exerciseSequentialRetries(approvedModes: [false, true], injectObservedHide: false)
     }
@@ -356,16 +361,22 @@ extension ExtensionNativeMessagingErrorTests {
         try await exerciseSequentialRetries(approvedModes: [true], injectObservedHide: true)
     }
 
-    private func exerciseSequentialRetries(approvedModes: [Bool], injectObservedHide: Bool) async throws {
+    private func exerciseSequentialRetries(approvedModes: [Bool], injectObservedHide: Bool,
+                                           withdrawLaunchReadiness: Bool = false) async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let lifecycleTrace = NativeModePageTrace(window: nil)
         defer { lifecycleTrace.close() }
+        let launch = NativeModeInteractionReadiness()
         for approved in approvedModes {
             lifecycleTrace.record("before fixture approved=\(approved)")
-            try await withNativeModeFixture(retryPage: true, lifecycleTrace: lifecycleTrace) { fixture in
+            try await withNativeModeFixture(retryPage: true, lifecycleTrace: lifecycleTrace,
+                                            launchReadiness: { launch.observe() }) { fixture in
                 if approved { _ = try await fixture.host.setNativeMessagingErrorCompatibility(true, for: fixture.folder.path) { _ in true } }
-                try fixture.verifyRunning()
+                let foregroundDeadline = ContinuousClock.now + .seconds(5)
+                try await waitNativeModePage("retry fixture launch readiness", deadline: foregroundDeadline) {
+                    try fixture.isReadyForInteraction()
+                }
                 let context = try XCTUnwrap(fixture.host.installed.first)
                 let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 360, height: 240),
                                     configuration: try XCTUnwrap(context.webViewConfiguration))
@@ -382,7 +393,9 @@ extension ExtensionNativeMessagingErrorTests {
                 window.contentView = web
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
-                try await waitNativeModePage("retry page foreground") { NSApp.isActive && window.isKeyWindow && web.window === window }
+                try await waitNativeModePage("retry page foreground", deadline: foregroundDeadline) {
+                    try fixture.isReadyForInteraction() && NSApp.isActive && window.isKeyWindow && web.window === window
+                }
                 web.load(URLRequest(url: try XCTUnwrap(context.optionsPageURL)))
                 var actionInvoked = false
                 let ready = {
@@ -447,10 +460,10 @@ extension ExtensionNativeMessagingErrorTests {
                 var before = 0
                 #endif
                 let result = NativeModeRetryResult()
+                launch.withdrawNext = withdrawLaunchReadiness
                 let readmissions = try await withAdmittedNativeModeRetryPage(web, window: window, context: context,
                     fixture: fixture, trace: trace, diagnostics: diagnostics, ready: ready) { deadline in
                     try Task.checkCancellation()
-                    try fixture.verifyRunning()
                     guard ready() && !NSApp.isHidden else { throw ExtensionHost.Failure("Retry owner withdrew before action") }
                     #if DEBUG
                     before = fixture.host.nativeMessagingDeniedRequestCount
@@ -462,6 +475,10 @@ extension ExtensionNativeMessagingErrorTests {
                     web.callAsyncJavaScript("return await window.exerciseNativeRetries();", arguments: [:], in: nil, in: .page) {
                         result.value = $0
                     }
+                }
+                if withdrawLaunchReadiness {
+                    XCTAssertTrue(launch.withdrew, "The control must withdraw actual loop readiness before action")
+                    XCTAssertTrue(launch.recovered, "Preparation must observe launch recovery before starting native retries")
                 }
                 if injectObservedHide { XCTAssertEqual(readmissions, 1, "One observed application hide requires exactly one owned readmission") }
                 try await waitNativeModePage("bounded retries and page timer") { result.value != nil }
@@ -503,7 +520,7 @@ extension ExtensionNativeMessagingErrorTests {
         var readmissions = 0
         while true {
             try Task.checkCancellation()
-            try fixture.verifyRunning()
+            let launchReady = try fixture.isReadyForInteraction()
             guard ContinuousClock.now < deadline else {
                 throw ExtensionHost.Failure("Timed out: retry page loaded in exact owner " + diagnostics())
             }
@@ -515,9 +532,15 @@ extension ExtensionNativeMessagingErrorTests {
             guard trace.applicationHideCount <= 1 else {
                 throw ExtensionHost.Failure("Retry application hid a second time before action " + diagnostics())
             }
-            if !application.isHidden && ready() && web.url == context.optionsPageURL {
+            if launchReady && !application.isHidden && ready() && web.url == context.optionsPageURL {
                 guard ContinuousClock.now < deadline else {
                     throw ExtensionHost.Failure("Timed out: retry page loaded in exact owner " + diagnostics())
+                }
+                // Readiness may withdraw while native owner/document getters run.
+                // Keep that withdrawal pending inside this same preparation budget.
+                guard try fixture.isReadyForInteraction() else {
+                    try await Task.sleep(for: .milliseconds(10))
+                    continue
                 }
                 try action(deadline)
                 return readmissions
@@ -593,9 +616,10 @@ extension ExtensionNativeMessagingErrorTests {
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { note("content process terminated") }
     }
 
-    private func waitNativeModePage(_ description: String, diagnostics: () -> String = { "" }, _ ready: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !ready() {
+    private func waitNativeModePage(_ description: String, diagnostics: () -> String = { "" },
+                                    deadline: ContinuousClock.Instant? = nil, _ ready: () throws -> Bool) async throws {
+        let deadline = deadline ?? ContinuousClock.now + .seconds(5)
+        while !(try ready()) {
             guard ContinuousClock.now < deadline else { throw ExtensionHost.Failure("Timed out: " + description + " " + diagnostics()) }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -604,6 +628,7 @@ extension ExtensionNativeMessagingErrorTests {
     private static let nativePermission = WKWebExtension.Permission(rawValue: "nativeMessaging")
 
     private func withNativeModeFixture(required: [String] = ["storage", "nativeMessaging"], optional: [String] = ["cookies"], hasBackground: Bool = false, retryPage: Bool = false, lifecycleTrace: NativeModePageTrace? = nil,
+        launchReadiness: @escaping @MainActor @Sendable () -> Bool = { true },
         _ body: @MainActor (NativeModeFixture) async throws -> Void) async throws {
         TestEnvironment.prepare()
         let application = NSApplication.shared
@@ -627,10 +652,11 @@ extension ExtensionNativeMessagingErrorTests {
         // caller's policy only after the owned loop has joined.
         let targetPolicy: NSApplication.ActivationPolicy = retryPage ? .regular
             : (originalPolicy == .prohibited ? .accessory : originalPolicy)
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: targetPolicy)
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: targetPolicy, launchReadiness: launchReadiness)
         lifecycleTrace?.record("after acquire")
         let fixture = NativeModeFixture(hasBackground: hasBackground, retryPage: retryPage,
-                                        verifyRunning: { try loop.verifyRunning() })
+                                        verifyRunning: { try loop.verifyRunning() },
+                                        isReadyForInteraction: { try loop.isReadyForInteraction() })
         var failure: (any Error)?
         do {
             try FileManager.default.createDirectory(at: fixture.folder, withIntermediateDirectories: true)
@@ -667,6 +693,17 @@ extension ExtensionNativeMessagingErrorTests {
     }
 }
 
+@MainActor private final class NativeModeInteractionReadiness {
+    var withdrawNext = false
+    private(set) var withdrew = false
+    private(set) var recovered = false
+    func observe() -> Bool {
+        if withdrawNext { withdrawNext = false; withdrew = true; return false }
+        if withdrew { recovered = true }
+        return true
+    }
+}
+
 @MainActor private final class NativeModeFixture {
     let profile = UUID()
     private var otherProfiles = Set<UUID>()
@@ -676,9 +713,12 @@ extension ExtensionNativeMessagingErrorTests {
     private let hasBackground: Bool
     private let retryPage: Bool
     let verifyRunning: @MainActor () throws -> Void
+    let isReadyForInteraction: @MainActor () throws -> Bool
     var cleanupInjectedHide: (@MainActor () async throws -> Void)?
-    init(hasBackground: Bool, retryPage: Bool, verifyRunning: @escaping @MainActor () throws -> Void) {
+    init(hasBackground: Bool, retryPage: Bool, verifyRunning: @escaping @MainActor () throws -> Void,
+         isReadyForInteraction: @escaping @MainActor () throws -> Bool) {
         self.hasBackground = hasBackground; self.retryPage = retryPage; self.verifyRunning = verifyRunning
+        self.isReadyForInteraction = isReadyForInteraction
     }
     var store: ExtensionCodeStore { ExtensionCodeStore(profileID: profile) }
     func otherHost() -> ExtensionHost {
