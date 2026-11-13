@@ -2,9 +2,14 @@
   const home=document.querySelector('.home-layout');
   if(!home)return;
   const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+  const header=document.querySelector('.site-header');
   const opening=document.querySelector('.opening');
   const wordmark=opening.querySelector('h1');
   wordmark.dataset.homeDepth='';
+  // Measure the wrapped navigation instead of assuming a fixed mobile height.
+  function measureHeader(){home.style.setProperty('--home-header-height',header.getBoundingClientRect().height+'px');}
+  new ResizeObserver(measureHeader).observe(header);
+  measureHeader();
   let frame=0;
   function paint(){
     frame=0;if(document.hidden)return;
