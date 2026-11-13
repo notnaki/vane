@@ -543,7 +543,8 @@ struct BrowserWindow: View {
                     .modifier(SidebarPageResizeMetadata(sidebarShown: store.sidebarShown,
                         layout: PageResizeLayout(librarySection: store.libraryOpen ? library.section : nil,
                             spaces: spaceCount, isPrivate: store.isPrivate,
-                            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping)))
+                            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping,
+                            libraryNavigationEnabled: !store.spaceGesture.swiping)))
                     .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
                 sidebar: sidebarSurface, panel: LibraryPanel())
             edgeStrip

@@ -89,7 +89,8 @@ struct LivePageResizeAnchor {
             return web.superview === host && host.web === web && !host.offscreen
                 && !web.isHiddenOrHasHiddenAncestor && web.frame == expectedFrame && host.isFlipped == anchor.flipped
                 && web.autoresizingMask.isEmpty && web.autoresizesSubviews == autoSubviews && host.clipsToBounds
-                && host.resizeFraction == fraction && host.resizeLayout.enabled
+                && host.resizeFraction == fraction
+                && (navigation == nil ? host.resizeLayout.enabled : host.resizeLayout.permitsLibraryNavigation)
                 && host.resizeLayout.librarySection == layout.librarySection
                 && host.resizeLayout.spaces == layout.spaces
                 && host.resizeLayout.isPrivate == layout.isPrivate
@@ -312,7 +313,8 @@ struct LivePageResizeAnchor {
                 // A navigation request waits for an active native pointer resize.
                 // Native resize admission below retires the previous viewport owner.
                 if navigation != nil, host.pageResizeOwnershipWillChange != nil { admitted = false; return }
-                guard host.resizeLayout.enabled else { admitted = false; return }
+                guard navigation == nil ? host.resizeLayout.enabled : host.resizeLayout.permitsLibraryNavigation
+                    else { admitted = false; return }
                 let visible = host.subviews.compactMap { $0 as? WKWebView }.filter { !$0.isHiddenOrHasHiddenAncestor }
                 guard !visible.isEmpty else { return }
                 // Docked inspector frontends are WKWebView siblings with their own
