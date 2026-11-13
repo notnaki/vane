@@ -110,6 +110,17 @@ import XCTest
         }
         ResizeTimingDiagnostics.stateSink = { event, time, fields in
             if records.count < 2048 { records.append((event, time, fields)) }
+            if ProcessInfo.processInfo.environment["VANE_PROFILE_PARENT_SAMPLE"] == "1",
+               ["profile.cost.content.layout.begin", "profile.cost.content.layout.end"].contains(event),
+               let temporary = ProcessInfo.processInfo.environment["RUNNER_TEMP"] {
+                // Signal the already-owned sampler without gating or waiting for it.
+                let directory = URL(fileURLWithPath: temporary).appendingPathComponent("profile-parent-stack")
+                let marker: [String: Any] = ["epoch": Date().timeIntervalSince1970,
+                    "uptime": ProcessInfo.processInfo.systemUptime, "owner": fields["owner"] ?? ""]
+                if let data = try? JSONSerialization.data(withJSONObject: marker) {
+                    try? data.write(to: directory.appendingPathComponent(event + ".json"), options: .atomic)
+                }
+            }
         }
         return {
             ResizeTimingDiagnostics.sink = previous
