@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vane · A native Mac browser</title>
+<meta name="description" content="Vane is a native macOS browser in the shape of Arc: sidebar tabs, Spaces, splits, Little Vane windows, and Live Folders.">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="styles.css?v=11">
+
+<meta name="theme-color" content="#06090d">
+<script src="space.js?v=2" defer></script>
+</head>
+<body class="home-page"><a class="skip-link" href="#main-content">Skip to content</a>
+<header class="site-nav">
+  <a class="brand" href="./" aria-label="Vane home"><img src="icon.png" alt="" width="32" height="32">Vane</a>
+  <nav class="links" aria-label="Main navigation">
+    <a href="features.html">Features</a>
+    <a href="docs.html">Guide</a>
+    <a class="primary" href="download.html" aria-label="Download for macOS">Download<span class="download-platform">&nbsp;for macOS</span></a>
+  </nav>
+</header>
+<main id="main-content" class="home-main">
+  <section class="galaxy-hero" aria-labelledby="hero-heading">
+    <div class="galaxy-stage">
+      <canvas class="galaxy-canvas" data-galaxy="hero" tabindex="0" role="img" aria-label="Interactive spiral galaxy" aria-describedby="galaxy-instructions"></canvas>
+      <p id="galaxy-instructions" class="visually-hidden">Drag or use the arrow keys to rotate the galaxy. Press Home to reset the view. Use the animation button to pause its rotation.</p>
+    </div>
+    <div class="galaxy-copy">
+      <p class="eyebrow">A native browser for macOS</p>
+      <h1 id="hero-heading" class="hero-title">Make room for<br><em>your internet.</em></h1>
+      <p class="intro">Your tabs, your Spaces, your own way of browsing.<br> A quieter home for everything you do on the web.</p>
+      <nav class="hero-actions" aria-label="Get Vane">
+        <a class="primary" href="download.html">Download for macOS <span aria-hidden="true">↓</span></a>
+        <a href="features.html">Explore Vane <span aria-hidden="true">↗</span></a>
+      </nav>
+      <small>macOS 26 or later · Free &amp; open source</small>
+    </div>
+    <div class="galaxy-footer"><span>Vane <span class="footer-dot" aria-hidden="true">·</span> A little personality.</span><div class="galaxy-controls"><span class="drag-hint">Drag to rotate</span><button class="galaxy-toggle" type="button" aria-pressed="false" aria-label="Pause galaxy animation"><svg class="state-pause" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg><svg class="state-play" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m9 5 10 7-10 7Z"/></svg></button><button class="galaxy-reset" type="button" aria-label="Reset galaxy view"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 9a8 8 0 1 1-1 6M5 3v6h6"/></svg></button></div></div>
+  </section>
+  <section class="browser-preview" aria-label="Illustrative preview of Vane's sidebar and browsing space">
+    <aside class="preview-sidebar">
+      <div class="window-controls" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="address">Search or enter URL</div>
+      <div class="space-label">Your everyday</div>
+      <div class="preview-tab"><span>▤</span>Reading list</div>
+      <div class="preview-tab"><span>▧</span>Projects</div>
+      <div class="preview-tab selected"><span>V</span>A little breathing room</div>
+      <div class="preview-tab"><span>＋</span>New tab</div>
+      <div class="sidebar-bottom">Personal · Work · Explore</div>
+    </aside>
+    <div class="preview-page home-preview-page">
+      <div class="page-label">A place to start</div>
+      <div class="preview-orbit" aria-hidden="true"></div>
+      <h2>A little breathing room.<br>A world of possibilities.</h2>
+      <div class="page-links"><span>Something to read</span><span>Something to make</span><span>Somewhere to go</span></div>
+    </div>
+  </section>
+  <p class="preview-caption">An illustrative preview. Sidebar tabs keep your pages close and your view clear.</p>
+<section class="home-invitation"><span class="eyebrow">A place for every part of your day</span><h2>Work. Life.<br><em>Whatever you’re into.</em></h2><p>Spaces keep your worlds together, without mixing them up.</p><div class="space-cards"><a href="features.html#spaces"><canvas class="orbit-art" data-orbit="0" aria-hidden="true"></canvas><span>01</span><strong>Make something.</strong><small>Your project, notes, and next big idea.</small></a><a href="features.html#spaces"><canvas class="orbit-art" data-orbit="1" aria-hidden="true"></canvas><span>02</span><strong>Go somewhere.</strong><small>The plan, the place, and the good coffee.</small></a><a href="features.html#spaces"><canvas class="orbit-art" data-orbit="2" aria-hidden="true"></canvas><span>03</span><strong>Get curious.</strong><small>One question. Quite a few tabs.</small></a></div><a class="primary" href="features.html">Take Vane for a spin</a></section><section class="home-guide"><h2>Little windows.<br>Live Folders.<br>Room for the details.</h2><p>Meet Little Vane, Live Folders, Split View, and the rest of the details that make browsing feel like your own.</p><a class="scene-link" href="features.html">Meet the features</a><a class="scene-link" href="docs.html">Read the field guide</a></section></main><footer><a href="./">Vane · Made for the Mac.</a><div><a href="features.html">Features</a><a href="https://github.com/notnaki/vane">Source</a><a href="docs.html">Guide</a><a href="https://github.com/notnaki/vane/issues">Feedback</a></div></footer>
+</body>
+</html>
