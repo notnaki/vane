@@ -43,7 +43,11 @@ import XCTest
         try checkColdRestore(template: true)
     }
 
-    private func checkColdRestore(template: Bool) throws {
+    func testWarmSpacePublishesOnlyItsCompletedSidebar() throws {
+        try checkColdRestore(template: false, warm: true)
+    }
+
+    private func checkColdRestore(template: Bool, warm: Bool = false) throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let manager = ProfileManager.shared
@@ -67,12 +71,27 @@ import XCTest
             Store.forget(profile)
             manager.delete(profile)
         }
+        if warm {
+            store.switchTo(space: target)
+            store.switchTo(space: source)
+        }
         var publications = 0
         let observation = store.objectWillChange.sink { publications += 1 }
+        var sidebarStates: [(space: UUID?, tabs: [UUID], rows: [String])] = []
+        let sidebarObservation = store.sidebarObservation.objectWillChange.sink {
+            sidebarStates.append((store.currentSpaceID, store.tabs.map(\.id), store.todayShape.tabs))
+        }
         let start = ContinuousClock.now
         store.switchTo(space: target)
         observation.cancel()
-        print("COLD_SPACE_SWITCH template=\(template) publications=\(publications) duration=\(start.duration(to: .now))")
+        sidebarObservation.cancel()
+        print("SPACE_SWITCH template=\(template) warm=\(warm) publications=\(publications) sidebar_publications=\(sidebarStates.count) duration=\(start.duration(to: .now))")
+        XCTAssertEqual(sidebarStates.count, 1, "Native row hosts must render one completed Space, without rebuilding intermediate outlines")
+        for state in sidebarStates {
+            XCTAssertEqual(state.space, target.id)
+            XCTAssertEqual(state.tabs, store.tabs.map(\.id))
+            XCTAssertEqual(state.rows, store.todayShape.tabs)
+        }
         XCTAssertEqual(store.tabs.count, urls.count)
         XCTAssertEqual(store.todayShape.tabs.count, urls.count)
         XCTAssertEqual(store.tabs.compactMap(\.currentURL), urls)
