@@ -951,7 +951,11 @@ struct WebCard: View {
             // An implicit minimum otherwise expands and centers the entire card.
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
                    alignment: .topLeading)
-            .background(Color(nsColor: Look.pageGround))
+            .background {
+                // Only a frozen document can uncover part of the larger card.
+                // Ordinary WebKit resizing already paints its own background.
+                if libraryPageWidth != nil { Color(nsColor: Look.pageGround) }
+            }
     }
 }
 

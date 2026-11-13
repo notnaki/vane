@@ -28,17 +28,27 @@ import XCTest
     }
 
     func testFrozenDocumentCannotPushTheRealCardOverLibraryOrBeyondWindow() async throws {
+        try await frozenDocumentCardBounds(animated: false)
+    }
+
+    func testAnimatedFrozenDocumentKeepsThePresentedCardInsideTheWindow() async throws {
+        TestEnvironment.prepare()
+        try XCTSkipIf(Motion.reduced, "Requires animated card presentation")
+        try await frozenDocumentCardBounds(animated: true)
+    }
+
+    private func frozenDocumentCardBounds(animated: Bool) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
         defer { app.setActivationPolicy(policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
-        do { try await checkFrozenDocumentCardBounds() }
+        do { try await checkFrozenDocumentCardBounds(animated: animated) }
         catch { try await loop.close(); throw error }
         try await loop.close()
     }
 
-    private func checkFrozenDocumentCardBounds() async throws {
+    private func checkFrozenDocumentCardBounds(animated: Bool) async throws {
         let store = TabStore(isPrivate: true, session: [])
         let tab = store.newBlankTab(loading: URL(string: "about:blank"))
         store.sidebarShown = true
@@ -54,6 +64,7 @@ import XCTest
         gesture.pageLeadingInset = 0
         gesture.progress = 0
         let card = NSView()
+        card.wantsLayer = true
         let host = NSHostingView(rootView: LibraryNavigationLayout(gesture: gesture,
             libraryOpen: true, sidebarShown: true, floating: false, panelWidth: 392,
             palettePresented: false, monitor: LibrarySwipeMonitor(),
@@ -72,9 +83,31 @@ import XCTest
         try await compatibilityWait {
             NativeFixtureMountAdmission.surfaceReady(host, in: window)
                 && card.window === window && card.bounds.width > 100 && tab.web.window === window
+                && card.layer?.presentation() != nil && host.layer?.presentation() != nil
         }
+        func presentedCardBounds() throws -> CGRect {
+            let presented = try XCTUnwrap(card.layer?.presentation())
+            let root = try XCTUnwrap(host.layer?.presentation())
+            return presented.convert(presented.bounds, to: root)
+        }
+        var intermediatePositions = 0
         for progress: CGFloat in [0, 0.25, 0.5, 0.75, 1, 0.5, 0] {
-            Motion.instant { gesture.progress = progress }
+            if animated {
+                let start = try presentedCardBounds().minX
+                let target = 228 + 164 * progress
+                withAnimation(.linear(duration: 0.12)) { gesture.progress = progress }
+                for _ in 0..<8 {
+                    try await Task.sleep(for: .milliseconds(20))
+                    let bounds = try presentedCardBounds()
+                    XCTAssertEqual(bounds.maxX, 629, accuracy: 1,
+                        "The visible rim must not drift while the document/card widths differ")
+                    XCTAssertGreaterThanOrEqual(bounds.minX, 227)
+                    XCTAssertLessThanOrEqual(bounds.minX, 393)
+                    if bounds.minX > min(start, target) + 1 && bounds.minX < max(start, target) - 1 {
+                        intermediatePositions += 1
+                    }
+                }
+            } else { Motion.instant { gesture.progress = progress } }
             host.layoutSubtreeIfNeeded()
             // Admit the update without awaiting the bounds under assertion.
             await Task.yield()
@@ -87,6 +120,7 @@ import XCTest
             XCTAssertEqual(tab.web.bounds.width, 661, accuracy: 1,
                 "Only the visible card changes width; the captured document remains stable")
         }
+        if animated { XCTAssertGreaterThan(intermediatePositions, 0, "Observe real intermediate presentation") }
     }
 
     func testClosingLibraryKeepsPageRightEdgeAtWindowInset() async throws {
