@@ -1,0 +1,41 @@
+name: Library resize exact candidate preflight
+on:
+  push:
+    branches: [codex/library-resize-preflight-20261114]
+permissions:
+  contents: read
+jobs:
+  library-resize:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 1c5692ddced3b7a0f91732700985f8fcc8f676ca
+      - name: Record exact public source and actual runner
+        run: |
+          git rev-parse HEAD
+          sw_vers
+          swift --version
+      - name: Build exact candidate
+        run: swift build -c debug --build-tests --disable-index-store --jobs 3
+      - name: Focused original motion paint and admission gates
+        timeout-minutes: 12
+        env:
+          VANE_RESIZE_RESPONSIVE_MOTION: '1'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '600'
+        run: |
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter 'LibraryPageLayoutTests|LibrarySwipeTests|LivePageResizeBufferTests|WindowResizeLayoutTests|WindowResizeResponsiveMotionTests' 2>&1 | tee "$RUNNER_TEMP/library-resize-preflight.log"
+          grep -Fq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/library-resize-preflight.log"
+      - name: Preserve all evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: library-resize-exact-candidate
+          path: |
+            ${{ runner.temp }}/library-resize-preflight.log
+            /tmp/vane-resize-*.png
+            /tmp/vane-resize-*.json
+          if-no-files-found: warn
+          retention-days: 7
