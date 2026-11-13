@@ -146,11 +146,6 @@ import XCTest
 
     private func scrollDown(_ scroll: NSScrollView, window: NSWindow, store: TabStore) async throws {
         let target: CGFloat = 180
-        let began = ProcessInfo.processInfo.systemUptime
-        let page = store.current == nil ? nil : store.active?.web
-        let initialDocument = "url=\(String(describing: page?.url)) loading=\(String(describing: page?.isLoading)) window=\(page?.window === window)"
-        var admissionSamples: [(TimeInterval, TimeInterval, CGFloat, CGFloat)] = []
-        defer { print("EDGE_SCROLL_PROBE initial=\(initialDocument) samples=\(admissionSamples)") }
         // Set up the native viewport directly, as in the scroll-invalidation fixtures.
         // Feeding corrections against precise-wheel animation can reverse unfinished
         // travel and mistake a transient target crossing for a settled departure.
@@ -159,14 +154,9 @@ import XCTest
         scroll.reflectScrolledClipView(scroll.contentView)
         var settledSamples = 0
         repeat {
-            let layoutBegan = ProcessInfo.processInfo.systemUptime
             window.contentView?.layoutSubtreeIfNeeded()
-            let layoutElapsed = ProcessInfo.processInfo.systemUptime - layoutBegan
             let actual = scroll.documentVisibleRect.minY
             let reported = store.spaceGesture.sidebarOffset
-            if admissionSamples.count < 8 {
-                admissionSamples.append((ProcessInfo.processInfo.systemUptime - began, layoutElapsed, actual, reported))
-            }
             if ContinuousClock.now < deadline,
                abs(actual - target) < 0.5 && abs(reported - actual) < 0.5 {
                 settledSamples += 1

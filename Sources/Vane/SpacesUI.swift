@@ -2047,17 +2047,23 @@ private struct SpaceSwipe: ViewModifier {
                 // travel before restoring/layouting the destination browser: hidden
                 // profile preparation blocks the input action and delays the first
                 // moving frame, then repeats layout when the profile is exposed.
+                ShippingMotionStageTrace.mark("profile.start.begin", duration)
                 slide.start(duration: duration, completion: finish)
+                ShippingMotionStageTrace.mark("profile.start.end")
                 DispatchQueue.main.async { [weak self, weak store, weak host, weak slide] in
                     guard let self, self.transition == token, let store, let host, let slide,
                           slide.isActive, host.spaceSlide === slide,
                           store.currentSpaceID == self.landingFrom,
                           store.spaceGesture.neighbour?.id == destination.id else { return }
+                    ShippingMotionStageTrace.mark("profile.queued.enter")
                     // The input's batched visibility publication has now completed.
                     // Send its captured curve to the compositor before live layout.
                     CATransaction.flush()
+                    ShippingMotionStageTrace.mark("profile.preflush.end")
                     let window = store.window
+                    ShippingMotionStageTrace.mark("profile.activate.begin")
                     _ = self.activate(destination, in: store)
+                    ShippingMotionStageTrace.mark("profile.activate.end")
                     guard let window, host.window === window, host.spaceSlide === slide,
                           slide.isActive,
                           TabStore.all.contains(where: { $0.window === window && $0.currentSpaceID == destination.id }) else {
@@ -2066,7 +2072,9 @@ private struct SpaceSwipe: ViewModifier {
                     }
                     host.layoutDisplayedProfile()
                     host.displayDisplayedProfile()
+                    ShippingMotionStageTrace.mark("profile.finalflush.begin")
                     CATransaction.flush()
+                    ShippingMotionStageTrace.mark("profile.finalflush.end")
                 }
             } else {
                 // Within a profile, prepare under the captured rows before starting

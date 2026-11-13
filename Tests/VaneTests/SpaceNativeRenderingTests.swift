@@ -1137,11 +1137,15 @@ import XCTest
         try await compatibilityWait {
             abs(slide.offset - heldDrag) < 0.125 && slide.outgoing.layer?.presentation() != nil
         }
+        ShippingMotionStageTrace.begin("profile.reverse")
+        defer { ShippingMotionStageTrace.dump() }
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
+        ShippingMotionStageTrace.mark("test.reverse.land_returned", width)
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
         try await compatibilityWait {
-            return slide.isActive && abs(slide.offset) > width * 0.45 && abs(slide.offset) < width * 0.8
+            ShippingMotionStageTrace.mark("test.reverse.predicate")
+            return slide.isActive && abs(ShippingMotionStageTrace.observed("test.reverse.offset", slide.offset)) > width * 0.45 && abs(slide.offset) < width * 0.8
                 && TabStore.all.first { $0.window === window }?.currentSpaceID == target.id
                 && slide.outgoing.layer?.animation(forKey: "space-position") != nil
         }
@@ -1840,8 +1844,12 @@ import XCTest
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
+        ShippingMotionStageTrace.begin(cached ? "profile.cached" : "profile.cold")
+        defer { ShippingMotionStageTrace.dump() }
         monitor.land(1, to: second, width: fixtureSidebarWidth(in: source), store: source, duration: 0.8)
+        ShippingMotionStageTrace.mark("test.early.land_returned")
         try await Task.sleep(for: .milliseconds(100))
+        ShippingMotionStageTrace.mark("test.early.after100")
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
         XCTAssertEqual(arriving.profileID, secondProfile.id,
                        "Profile activation must not wait for the sidebar animation to finish")
@@ -1867,6 +1875,7 @@ import XCTest
         }
         let surface = try XCTUnwrap(colourSurface(in: host))
         let colour = try firstColour(of: surface, presented: true)
+        ShippingMotionStageTrace.mark("test.early.colour", colour.redComponent, colour.blueComponent)
         XCTAssertGreaterThan(colour.redComponent, 0.1,
                              "The background must continue blending after the early profile handoff")
         XCTAssertTrue(host.spaceSlide === slide && slide.isActive,

@@ -890,13 +890,16 @@ extension VaneWindow {
         // Every route into a hop must persist the departing Space, including the Profiles
         // menu's direct call above. Otherwise its tabs exist only in the parked store until
         // the next session save and a crash before then loses them.
+        ShippingMotionStageTrace.mark("hop.enter")
         store.saveCurrentSpace()
+        ShippingMotionStageTrace.mark("hop.saved")
         // Either the store this window already has for that profile, or a new one opened
         // straight into the Space being walked to — there is no intermediate Space to show.
         let arriving = parked(profile.id, in: window)
             ?? TabStore(profileID: profile.id, space: space)
         // Visibility belongs to the window, across every Space and profile. Apply it
         // before mounting the arriving host, including when reusing a parked profile.
+        ShippingMotionStageTrace.mark("hop.store_ready")
         arriving.sidebarShown = store.sidebarShown
         arriving.sidebarPeeking = store.sidebarPeeking
         arriving.sidebarPresentationRevision &+= 1
@@ -906,31 +909,41 @@ extension VaneWindow {
             // arriving profile. The native sidebar continues travelling above this host.
             slide.attach(arriving)
         }
+        ShippingMotionStageTrace.mark("hop.attach_and_sidebar")
         store.sidebarPeeking = false
         store.parkedIn = window
         store.window = nil
         store.profileVisible = false
+        ShippingMotionStageTrace.mark("hop.source_hidden")
         arriving.parkedIn = nil
         arriving.window = window
         arriving.profileVisible = true
+        ShippingMotionStageTrace.mark("hop.arrival_visible")
         ProfileManager.shared.active = profile
+        ShippingMotionStageTrace.mark("hop.manager_active")
         // Live folders keep themselves filled for as long as a window is showing the profile.
         LiveFolders.shared(for: profile.id).begin()
+        ShippingMotionStageTrace.mark("hop.live_folders")
         // A Space deleted while this store was parked leaves it pointing at one that is not
         // on disk, and an ordinary window always shows a real Space.
         arriving.resolveStaleSpace()
         arriving.switchTo(space: space)         // a no-op for a store built into it just now
         arriving.applySpaceAppearance()
+        ShippingMotionStageTrace.mark("hop.arrival_finalized")
         delegate.shown.store = arriving         // expose only the finalized destination
         // A cached host can take another display turn to acknowledge visibility.
         // The next gesture already belongs to this profile when hop returns.
+        ShippingMotionStageTrace.mark("hop.shown")
         arriving.librarySwipeMonitor.install(arriving)
         if arriving.sidebarShown || arriving.sidebarPeeking {
             arriving.spaceGesture.monitor.install(arriving)
         }
+        ShippingMotionStageTrace.mark("hop.inputs")
         SharedTabs.refreshPresentation()
+        ShippingMotionStageTrace.mark("hop.shared_tabs")
         store.extensions.sync()
         arriving.extensions.sync()
+        ShippingMotionStageTrace.mark("hop.extensions")
         // The parked profile is intentionally absent from SharedTabs' visible-window
         // election. Its outgoing panes still need their call departure considered.
         store.onScreenTabs.forEach(CallPopout.presentationChanged)
@@ -940,7 +953,9 @@ extension VaneWindow {
         rebuild()                               // the Spaces menu's checkmark has changed profile
         // Swapping the profile host detaches the old first responder. Put the keyboard on
         // the arriving page once AppKit has mounted it, so a keyboard switch can keep typing.
+        ShippingMotionStageTrace.mark("hop.menu_and_title")
         arriving.focusPageAfterHop()
+        ShippingMotionStageTrace.mark("hop.exit")
         return arriving
     }
 
@@ -1295,8 +1310,12 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     /// display still services dirty descendants, as it does after native resizing.
     func layoutDisplayedProfile() {
         guard let current, let host = hosts[current] else { return }
+        ShippingMotionStageTrace.mark("root.content_layout.begin")
         host.content.layout()
+        ShippingMotionStageTrace.mark("root.content_layout.end")
+        ShippingMotionStageTrace.mark("root.palette_layout.begin")
         host.palette.layout()
+        ShippingMotionStageTrace.mark("root.palette_layout.end")
     }
 
     /// The captured sidebar is already mounted and owns the landing. Display the
@@ -1306,8 +1325,12 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         guard let current, let host = hosts[current] else { return }
         // These roots can be transparent. Ordinary displayIfNeeded backs up to
         // an opaque ancestor and would walk the window's other hosts again.
+        ShippingMotionStageTrace.mark("root.content_display.begin")
         host.content.displayIfNeededIgnoringOpacity()
+        ShippingMotionStageTrace.mark("root.content_display.end")
+        ShippingMotionStageTrace.mark("root.palette_display.begin")
         host.palette.displayIfNeededIgnoringOpacity()
+        ShippingMotionStageTrace.mark("root.palette_display.end")
     }
 
     private func show(_ store: TabStore) {

@@ -508,6 +508,8 @@ import XCTest
     }
 
     private func checkReverseSwipeDuringOpeningLandingUsesReleasedIntent() async throws {
+        ShippingMotionStageTrace.begin("library.reverse")
+        defer { ShippingMotionStageTrace.dump() }
         let (store, window, monitor, host) = try await releasedOpening()
         try await Task.sleep(for: .milliseconds(30))
         let marker = try XCTUnwrap(monitor.presentationView)
@@ -516,10 +518,14 @@ import XCTest
                 to: host.layer?.presentation()).x
         }
         let before = try x()
+        ShippingMotionStageTrace.mark("test.library.before", before)
         send(window, phase: .began)
         send(window, dx: -90)
+        ShippingMotionStageTrace.mark("test.library.sent")
         try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(try x(), before - 90, accuracy: 4,
+        let after = try x()
+        ShippingMotionStageTrace.mark("test.library.after20", after, before - 90)
+        XCTAssertEqual(after, before - 90, accuracy: 4,
                        "Reverse from the visible panel, even before opening is published")
         send(window, phase: .ended)
         try await Task.sleep(for: .milliseconds(400))
