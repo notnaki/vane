@@ -1,4 +1,4 @@
-name: Public covered-strip lease causal preflight
+name: Public prearmed parent-layout stack diagnosis
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -7,17 +7,11 @@ permissions:
 env:
   VANE_EXPERIMENT_SIDEBAR_HOST: '1'
   VANE_PROFILE_BOUNDARY_COSTS: '1'
+  VANE_PROFILE_PARENT_SAMPLE: '1'
   VANE_EXPECTED_TESTS: |
-    VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
-    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
-    VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
-    VaneTests.SidebarMaterializationTests/testAnOldCompletionCannotReleaseTheReplacementCover
-    VaneTests.SidebarMaterializationTests/testRetargetingTheSameCoverInvalidatesTheOldRenderedGeneration
-    VaneTests.SidebarMaterializationTests/testRepeatedTrackingKeepsItsLeaseAndCachedDocumentExtent
-    VaneTests.SidebarMaterializationTests/testUnregisteredPlaceholderCannotBecomeReadyUntilItsExactScopeRenders
   VANE_CANDIDATE_SHA: ${{ github.sha }}
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows)|SidebarMaterializationTests/(testAnOldCompletionCannotReleaseTheReplacementCover|testRetargetingTheSameCoverInvalidatesTheOldRenderedGeneration|testRepeatedTrackingKeepsItsLeaseAndCachedDocumentExtent|testUnregisteredPlaceholderCannotBecomeReadyUntilItsExactScopeRenders))$'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows$'
 jobs:
   diagnostic:
     name: Build and diagnose native fixtures
@@ -151,7 +145,94 @@ jobs:
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
           set -euo pipefail
-          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER" 2>&1 | tee "$RUNNER_TEMP/vane-diag-tests.log"
+          cat > "$RUNNER_TEMP/prearmed-parent-stack.py" <<'OWNEDSAMPLE'
+          """Diagnostic only: pre-arm one owned XCTest sample before the original landing.
+          Never interrupt the native wrapper or its cleanup. No assertion/status masking.
+          """
+          import datetime,json,os,pathlib,re,subprocess,sys,time,threading
+          out=pathlib.Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
+          assert not any((out/name).exists() for name in ['request.json','armed.json','native.log','main-thread.sample','diagnostic-status.json']), 'Requires a fresh owned diagnostic directory'
+          assert sys.argv[2]=='--' and len(sys.argv)>3
+          cwd=pathlib.Path.cwd().resolve();build=str(cwd/'.build')+'/'
+          record={'diagnostic_only':True,'command':sys.argv[3:],'started':datetime.datetime.now(datetime.timezone.utc).isoformat(),'duration_seconds':1,'sampling_interval_ms':1,'analysis_scope':'Main Thread only; sample tool collects full process'}
+          sampler=None;reader=None;sample_started=None;sample_status=None
+          
+          def atomic_json(path,value):
+           tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(value,indent=2)+'\n');tmp.replace(path)
+          
+          def read_sample_output(process,target):
+           try:
+            with (out/'sample.log').open('w') as stream:
+             for line in process.stdout:
+              stream.write(line);stream.flush()
+              if line.startswith('Sampling process ') and not record.get('armed'):
+               # Revalidate exact start+command and our still-live sampler before lifting the prerequisite.
+               actual=subprocess.check_output(['ps','-p',str(target['pid']),'-o','lstart=,command='],text=True).strip()
+               assert actual.startswith(target['start']) and actual.endswith(target['command'])
+               assert process.poll() is None
+               record['armed']={'pid':target['pid'],'armed':True,'epoch':time.time(),'monotonic':time.monotonic(),'sampler_pid':process.pid}
+               atomic_json(out/'armed.json',record['armed'])
+           except Exception as error:record['sample_reader_error']=type(error).__name__+': '+str(error)
+          
+          with (out/'native.log').open('w') as native:
+           primary=subprocess.Popen(sys.argv[3:],stdout=native,stderr=subprocess.STDOUT)
+           while primary.poll() is None:
+            request_path=out/'request.json'
+            if sampler is None and request_path.exists() and not record.get('watch_error'):
+             try:
+              request=json.loads(request_path.read_text());pid=request['pid'];assert isinstance(pid,int) and pid>1
+              rows=[]
+              for line in subprocess.check_output(['ps','-axo','pid=,ppid=,lstart=,command='],text=True).splitlines():
+               m=re.match(r'\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)',line)
+               if m:rows.append((int(m[1]),int(m[2]),m[3],m[4]))
+              owned={primary.pid}
+              for _ in range(12):
+               for child,parent,start,command in rows:
+                if parent in owned:owned.add(child)
+              matches=[(p,start,cmd)for p,parent,start,cmd in rows if p==pid and p in owned and cmd.startswith('/Applications/Xcode') and '/xctest 'in cmd and build in cmd and 'testReverseProfileSwipeTakesOverTheSamePresentedNativeRows'in cmd]
+              assert len(matches)==1,matches
+              pid,start,command=matches[0]
+              actual=subprocess.check_output(['ps','-p',str(pid),'-o','lstart=,command='],text=True).strip()
+              assert actual.startswith(start) and actual.endswith(command)
+              target={'pid':pid,'start':start,'command':command};record['sample_host']=target;record['request']=request
+              sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'1','1','-file',str(out/'main-thread.sample')],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1)
+              sample_started=time.monotonic();record['sample_pid']=sampler.pid
+              reader=threading.Thread(target=read_sample_output,args=(sampler,target));reader.start()
+             except Exception as error:record['watch_error']=type(error).__name__+': '+str(error)
+            if sampler is not None and sampler.poll() is None and time.monotonic()-sample_started>30:
+             sampler.terminate()
+             try:sampler.wait(timeout=5)
+             except subprocess.TimeoutExpired:sampler.kill();sampler.wait()
+             record['sample_timeout']=True
+            time.sleep(.02)
+           primary_status=primary.wait()
+          if sampler is not None:
+           try:sample_status=sampler.wait(timeout=5)
+           except subprocess.TimeoutExpired:
+            sampler.terminate()
+            try:sample_status=sampler.wait(timeout=5)
+            except subprocess.TimeoutExpired:sampler.kill();sample_status=sampler.wait()
+            record['sample_timeout']=True
+           if reader:reader.join(timeout=5)
+          record.update(primary_status=primary_status,sample_status=sample_status,sample_exists=(out/'main-thread.sample').exists(),finished=datetime.datetime.now(datetime.timezone.utc).isoformat())
+          if record['sample_exists']:
+           text=(out/'main-thread.sample').read_text(errors='replace');lines=text.splitlines();main=[];inside=False
+           for line in lines:
+            if re.search(r'^\s+\d+ Thread_\d+: Main Thread',line):inside=True
+            elif inside and re.search(r'^\s+\d+ Thread_\d+:',line):break
+            if inside:main.append(line)
+           (out/'main-thread-only.txt').write_text('\n'.join(main)+'\n');record['main_thread_lines']=len(main)
+          atomic_json(out/'diagnostic-status.json',record);print(json.dumps(record))
+          diagnostic_ok=sample_status==0 and record['sample_exists'] and bool(record.get('armed')) and not any(record.get(k)for k in ['watch_error','sample_reader_error','sample_timeout']) and record.get('main_thread_lines',0)>0
+          sys.exit(primary_status or (0 if diagnostic_ok else 1))
+          OWNEDSAMPLE
+          set +e
+          python3 "$RUNNER_TEMP/prearmed-parent-stack.py" "$RUNNER_TEMP/profile-parent-stack" -- python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER"
+          native_diagnostic_status=$?
+          set -e
+          cp "$RUNNER_TEMP/profile-parent-stack/native.log" "$RUNNER_TEMP/vane-diag-tests.log"
+          cat "$RUNNER_TEMP/vane-diag-tests.log"
+          exit "$native_diagnostic_status"
       - name: Verify completed selection when successful
         run: |
           set -euo pipefail
@@ -179,6 +260,7 @@ jobs:
           path: |
             ${{ runner.temp }}/vane-diag-tests.log
             ${{ runner.temp }}/profile-boundary-costs
+            ${{ runner.temp }}/profile-parent-stack
             ${{ runner.temp }}/vane-diag-manifest.json
             ${{ runner.temp }}/vane-diag-inventory.txt
             ${{ runner.temp }}/vane-motion-admission.log

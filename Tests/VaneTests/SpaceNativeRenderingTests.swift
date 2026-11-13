@@ -159,6 +159,30 @@ import XCTest
         return value
     }
 
+    /// Temporary diagnostic prerequisite, before the original landing/clock starts.
+    /// The external owner validates this exact XCTest process and arms one short sample.
+    private func prearmProfileParentSample() async throws {
+        #if DEBUG
+        guard ProcessInfo.processInfo.environment["VANE_PROFILE_PARENT_SAMPLE"] == "1",
+              let temporary = ProcessInfo.processInfo.environment["RUNNER_TEMP"] else { return }
+        let directory = URL(fileURLWithPath: temporary).appendingPathComponent("profile-parent-stack")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let pid = Int(ProcessInfo.processInfo.processIdentifier)
+        let request: [String: Any] = ["pid": pid, "epoch": Date().timeIntervalSince1970,
+                                      "uptime": ProcessInfo.processInfo.systemUptime]
+        try JSONSerialization.data(withJSONObject: request).write(
+            to: directory.appendingPathComponent("request.json"), options: .atomic)
+        try await compatibilityWait {
+            guard let data = try? Data(contentsOf: directory.appendingPathComponent("armed.json")),
+                  let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  reply["pid"] as? Int == pid, reply["armed"] as? Bool == true,
+                  let epoch = reply["epoch"] as? Double else { return false }
+            ResizeTimingDiagnostics.recordState("profile.stack.armed", fields: ["epoch": String(epoch)])
+            return true
+        }
+        #endif
+    }
+
     private func fixtureProfile(named name: String) -> Profile {
         let profile = ProfileManager.shared.create(name: name)
         // Register before the fixture's teardown so its windows/tabs retire first.
@@ -1201,6 +1225,7 @@ import XCTest
         }
         let finishCosts = profileBoundaryCosts("reverse", host: host)
         defer { finishCosts() }
+        try await prearmProfileParentSample()
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
