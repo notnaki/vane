@@ -82,6 +82,62 @@ import XCTest
         try await title("Account settings — Vane", in: store)
     }
 
+    func testLongPageTitlesStayCompactInNativeWindowLists() async throws {
+        let store = try browser(profile: profile("Work"))
+        let tab = store.newBlankTab()
+        try await load("/long-title", in: tab)
+        let pages = [
+            "GitHub - notnaki/vane: Open-source native macOS browser with sidebar tabs, Spaces, Split View, and Little Vane. Built with Swift and WebKit; early development for macOS 26+. · GitHub",
+            String(repeating: "W", count: 500),
+            String(repeating: "👨‍👩‍👧‍👦世界", count: 100)
+        ]
+        for page in pages {
+            tab.title = page
+            try await compatibilityWait { store.window?.title != "Page /long-title — Vane — Work"
+                && store.window?.title.hasPrefix(String(page.prefix(1))) == true }
+            let displayed = try XCTUnwrap(store.window?.title)
+            XCTAssertLessThanOrEqual((displayed as NSString).size(withAttributes:
+                [.font: NSFont.menuFont(ofSize: 0)]).width, 480)
+            XCTAssertTrue(displayed.contains("…"))
+            XCTAssertTrue(displayed.hasSuffix(" — Vane — Work"))
+            XCTAssertEqual(tab.title, page, "Keep the full page title in the tab model")
+        }
+        tab.title = "Short title"
+        try await title("Short title — Vane — Work", in: store)
+    }
+
+    func testLongLittleWindowAndProfileTitlesStayCompact() async throws {
+        let little = LittleArc.open(nil, profileID: profile("Little").id)
+        windows.append(try XCTUnwrap(little.window))
+        let tab = little.newBlankTab()
+        little.palette = nil
+        try await load("/little-long", in: tab)
+        tab.title = String(repeating: "Wide title ", count: 100)
+        try await compatibilityWait { little.window?.title.hasPrefix("Wide title") == true }
+        let littleTitle = try XCTUnwrap(little.window?.title)
+        XCTAssertLessThanOrEqual((littleTitle as NSString).size(withAttributes:
+            [.font: NSFont.menuFont(ofSize: 0)]).width, 480)
+        XCTAssertTrue(littleTitle.contains("…"))
+
+        let store = try browser(profile: profile(String(repeating: "Profile ", count: 100)))
+        let profileTitle = try XCTUnwrap(store.window?.title)
+        XCTAssertLessThanOrEqual((profileTitle as NSString).size(withAttributes:
+            [.font: NSFont.menuFont(ofSize: 0)]).width, 480)
+        XCTAssertTrue(profileTitle.hasPrefix("Vane — "))
+        XCTAssertTrue(profileTitle.contains("…"))
+
+        ProfileManager.shared.rename(store.profileID, to: "Production Support and Engineering")
+        let page = store.newBlankTab()
+        try await load("/long-profile-page", in: page)
+        page.title = String(repeating: "W", count: 500)
+        try await compatibilityWait { store.window?.title.hasPrefix("W") == true }
+        let combined = try XCTUnwrap(store.window?.title)
+        XCTAssertLessThanOrEqual((combined as NSString).size(withAttributes:
+            [.font: NSFont.menuFont(ofSize: 0)]).width, 480)
+        XCTAssertTrue(combined.contains(" — Vane — Production"))
+        XCTAssertTrue(combined.hasSuffix("Engineering"))
+    }
+
     func testSelectionSameTitleAndLateInactiveUpdatesFollowOnlyActiveTab() async throws {
         let store = try browser(profile: profile("Work"))
         let first = store.newBlankTab()
