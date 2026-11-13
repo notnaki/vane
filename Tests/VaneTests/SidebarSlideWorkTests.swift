@@ -90,10 +90,12 @@ private struct SidebarSlideFixture: View {
             store.dropStashes(); TabStore.all.removeAll { $0 === store }
         }
         try await compatibilityWait {
+            if app.isHidden { app.unhide(nil) }
             if !app.isActive { app.activate(ignoringOtherApps: true) }
-            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            if app.keyWindow === window, !window.isKeyWindow { window.orderOut(nil) }
+            if app.keyWindow !== window || !window.isKeyWindow || !window.isVisible { window.makeKeyAndOrderFront(nil) }
             host.layoutSubtreeIfNeeded(); window.displayIfNeeded(); CATransaction.flush()
-            guard app.isRunning, app.isActive, app.keyWindow === window,
+            guard app.isRunning, app.isActive, app.keyWindow === window, window.isKeyWindow,
                   window.occlusionState.contains(.visible),
                   state.marker?.window === window, state.counts.count > 0,
                   let marker = state.marker?.layer?.presentation(),

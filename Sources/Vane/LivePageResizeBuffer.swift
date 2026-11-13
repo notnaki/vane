@@ -464,8 +464,17 @@ struct LivePageResizeAnchor {
         // A paused Library clip is already installed and covered. Supersede
         // lookahead with its exact native viewport immediately; waiting for the
         // older paint would leave native sizing ahead after fingers stop.
-        if navigation != nil, !pendingPaints.isEmpty, covered(sizes(latest)),
+        if navigation != nil, ownsLayout, !pendingPaints.isEmpty, covered(sizes(latest)),
            zip(pages, sizes(latest)).allSatisfy({ $0.parentReached($1) }) {
+            // Retire the obsolete generation before preparing the replacement.
+            // Its paint, style reply and deadline may still arrive afterwards;
+            // none can acknowledge or expire the exact viewport's generation.
+            generation = UUID()
+            deadlineRevision = UUID()
+            timer?.invalidate(); timer = nil
+            pendingPaints.removeAll()
+            pendingStyleReplies.removeAll()
+            styleReplyDeadline = nil
             prepare(exact: true)
         }
         drive()
