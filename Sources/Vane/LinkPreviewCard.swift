@@ -93,7 +93,7 @@ struct LinkPreviewCard: View {
                     .resizable()
                     .scaledToFill()
                     .frame(width: size.width, height: min(144, size.height * 0.52), alignment: .top)
-                    .clipShape(RoundedRectangle(cornerRadius: LinkPreviewLayout.cornerRadius))
+                    .clipped()
                     .accessibilityHidden(true)
                     .transition(.opacity)
             }

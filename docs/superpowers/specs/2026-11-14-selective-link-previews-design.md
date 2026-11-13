@@ -16,4 +16,4 @@ The user explicitly requested typed text, card growth as it is written, no unuse
 
 Independent review also identified two renderer cases: retry a blank first capture within the original paint deadline, while publishing only one useful frame; and revalidate the navigation/document after each snapshot or session await so an adopted client redirect cannot publish old pixels.
 
-The user also requested matching rounded content corners. Clip the preview image on all four corners using the same shared rounded-rectangle radius as the outer card.
+Final corner treatment: retain the outer card’s 12-point rounded corners. The preview image has a rectangular clip and no independent corner radius, as clarified by the user.
