@@ -12,6 +12,7 @@ import XCTest
                                         sidebarScope: SidebarNativeReadinessScope? = nil,
                                         pointerLocation: () -> NSPoint = { NSEvent.mouseLocation },
                                         observePresentation: (NSWindow) -> Void = { _ in },
+                                        allowRecovery: (NSWindow) -> Bool = { _ in true },
                                         ready: (NSView) -> Bool) async throws -> CGImage {
         _ = NSApplication.shared
         let bounds = NSRect(x: 0, y: 0, width: width, height: height)
@@ -52,6 +53,7 @@ import XCTest
                 if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
                 if window.occlusionState.contains(.visible) { occlusionRecoveryPending = false }
                 observePresentation(window)
+                if !allowRecovery(window) { return false }
                 let placed = NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) }
                 if !window.isVisible || !window.isKeyWindow || NSApp.keyWindow !== window
                     || !window.occlusionState.contains(.visible) || !placed {
