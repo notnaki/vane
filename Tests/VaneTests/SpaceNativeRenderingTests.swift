@@ -1743,6 +1743,52 @@ import XCTest
         XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide)
     }
 
+    func testProfileHopPublishesOnlyTheCompletedArrivingSidebar() async throws {
+        try await withFixtureApplicationLoop {
+            let manager = ProfileManager.shared
+            let previous = manager.active
+            let firstProfile = self.fixtureProfile(named: "Completed hop source")
+            let secondProfile = self.fixtureProfile(named: "Completed hop destination")
+            let first = manager.createSpace(name: "Source", in: firstProfile.id)
+            let old = manager.createSpace(name: "Parked outline", in: secondProfile.id)
+            let target = manager.createSpace(name: "Requested outline", in: secondProfile.id)
+            let source = Windows.open(profile: firstProfile, space: first, focus: false)
+            let window = try XCTUnwrap(source.window)
+            defer {
+                self.retireProfileWindow(window)
+                _ = manager.delete(firstProfile.id)
+                _ = manager.delete(secondProfile.id)
+                manager.active = previous
+            }
+            source.switchTo(space: old)
+            let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
+            arriving.switchTo(space: first)
+            XCTAssertTrue(source.window === window && arriving.parkedIn === window)
+            window.contentView?.layoutSubtreeIfNeeded()
+            var rendered: [Bool] = []
+            var revocations = 0
+            var returned = false
+            let renderer = arriving.sidebarObservation.objectWillChange.sink {
+                rendered.append(arriving.window === window && arriving.profileVisible
+                    && arriving.currentSpaceID == target.id
+                    && TabStore.all.first { $0.window === window } === arriving)
+            }
+            let snapshots = arriving.sidebarSnapshotChanges.sink {
+                revocations += 1
+                XCTAssertFalse(returned, "Snapshot and protection revocation must remain synchronous")
+            }
+            defer { renderer.cancel(); snapshots.cancel() }
+            source.switchTo(space: target)
+            returned = true
+            XCTAssertEqual(rendered, [true],
+                           "Expose one completed arriving outline, never the parked Space or half-owned host")
+            XCTAssertGreaterThan(revocations, 0,
+                                 "Rendering coalescing must retain immediate capture revocation")
+            XCTAssertEqual(arriving.currentSpaceID, target.id)
+            XCTAssertTrue(arriving.window === window && arriving.profileVisible)
+        }
+    }
+
     private func checkEarlyProfilePageSelection(cached: Bool) async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Native landing requires animation")

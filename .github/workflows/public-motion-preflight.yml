@@ -1,4 +1,4 @@
-name: Public current-owner early profile oracle preflight
+name: Public completed arriving sidebar publication RED
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -8,15 +8,12 @@ env:
   VANE_EXPERIMENT_SIDEBAR_HOST: '0'
   VANE_LIBRARY_PAINT_TRACE: '0'
   VANE_EXPECTED_TESTS: |
-    VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
-    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
-    VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
-    VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
-  VANE_CANDIDATE_SHA: 993a3bcbd6d211aad187f8d6c27e307b61e19e3d
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows))$'
+    VaneTests.SpaceNativeRenderingTests/testProfileHopPublishesOnlyTheCompletedArrivingSidebar
+  VANE_CANDIDATE_SHA: a982339de0ba50bcd93818620cb9a777cc01899c
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/testProfileHopPublishesOnlyTheCompletedArrivingSidebar$'
 jobs:
   diagnostic:
-    name: Exact original four profile acceptances
+    name: Exact completed arrival publication regression RED
     runs-on: macos-26
     timeout-minutes: 45
     steps:
