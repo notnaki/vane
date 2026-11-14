@@ -97,6 +97,9 @@ import XCTest
             let owner = RetainedBrowserPageHost(store: store, presentation: presentation)
             defer { owner.retire() }
             var pageBounds: CGRect?
+#if DEBUG
+            defer { print("PAGE_PARITY_FINAL_STATE bounds=\(String(describing: pageBounds)) \(owner.nativeAdmissionState(in: window))") }
+#endif
             @MainActor func card(retained: Bool) -> AnyView {
                 AnyView(WebCard(retainedPage: retained ? owner : nil, topGap: 12)
                     .environmentObject(store).environmentObject(ProfileManager.shared)
@@ -135,6 +138,9 @@ import XCTest
             let presentation = BrowserProfilePresentation()
             let owner = RetainedBrowserPageHost(store: store, presentation: presentation)
             defer { owner.retire() }
+#if DEBUG
+            defer { print("PAGE_ADMISSION_FINAL_STATE \(owner.nativeAdmissionState(in: window))") }
+#endif
             let parent = NSHostingView(rootView: BrowserWindow(pageHost: owner, presentation: presentation)
                 .environmentObject(store).environmentObject(ProfileManager.shared))
             parent.frame = root.bounds
