@@ -37,7 +37,7 @@ extension EnvironmentValues {
     private var bufferToken = UUID()
     private var requestedLeading: CGFloat = 0
     private var currentLeading: CGFloat = 0
-    var isPreparing: Bool { arrival != nil || requestedProgress != progress || buffer?.isPreparing == true }
+    var isPreparing: Bool { arrival != nil || requestedProgress != progress || buffer != nil }
 
     init(progress: CGFloat) { self.progress = progress; requestedProgress = progress }
 
@@ -78,6 +78,11 @@ extension EnvironmentValues {
     private func drain() {
         if !finishingBuffer, let window = marker?.window, window.isVisible {
             let leading = requestedLeading
+            // Different logical phases can round to the same backing-pixel edge.
+            // Their already-settled native viewport needs no new paint transaction.
+            if buffer == nil, leading == currentLeading, progress != requestedProgress {
+                Motion.instant { progress = requestedProgress }
+            }
             if requestedProgress != progress || buffer != nil {
                 if buffer == nil {
                     let initial = currentLeading
