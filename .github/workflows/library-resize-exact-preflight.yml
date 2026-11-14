@@ -27,41 +27,23 @@ env:
     VaneTests.LibraryPageMountReceiptTests/testSynchronousWindowRestorationNeverRevivesOldReceipt
     VaneTests.LibraryPageMountReceiptTests/testIdenticalOwnerLifecycleAssignmentsPreserveRestingReceipt
     VaneTests.LibraryPageMountReceiptTests/testHiddenParkedOrUnknownOwnerCannotCapture
-    VaneTests.ClosedTabHistoryTests/testCloseReopenPreservesBackAndForwardHistory
-    VaneTests.ClosedTabHistoryTests/testClosingFromMiddleOfHistoryPreservesForwardBranch
-    VaneTests.ClosedTabHistoryTests/testPendingFaviconFetchDoesNotRetainClosedTab
-    VaneTests.ClosedTabHistoryTests/testPendingSiteBoostDocumentProbeDoesNotRetainClosedTab
-    VaneTests.ClosedTabHistoryTests/testClosingSuspendedTabPreservesHistoryWithoutWakingIt
-    VaneTests.ClosedTabHistoryTests/testClosedStackKeepsOnlyNewest32EntriesInReverseCloseOrder
-    VaneTests.ClosedTabHistoryTests/testPrivateScriptAndPinnedClosesLeaveNoReopenEntry
-    VaneTests.ClosedTabHistoryTests/testRecoveryBlockedTabReopensAsExplicitURLLoad
-    VaneTests.ClosedTabHistoryTests/testCorruptStateFallsBackToURL
-    VaneTests.ClosedTabHistoryTests/testDifferentProfileReopensOnlyURLWithoutImportingHistory
-    VaneTests.ClosedTabHistoryTests/testPrivateDestinationReopensOnlyURLWithoutImportingHistory
-    VaneTests.ClosedTabHistoryTests/testUnavailableStateReopensURLInDestinationContext
-    VaneTests.CrashRecoveryTests/testSavedRecoveryTabLoadsOnSelectionWithoutReplayingPOST
-    VaneTests.CrashRecoveryTests/testUncleanRestartLoadsSelectedTabWithoutReplayingPOST
-    VaneTests.CrashRecoveryTests/testTerminationBeforeFirstCommitKeepsTheRequestedURL
-    VaneTests.CrashRecoveryTests/testUnavailableStorageAndInterruptedWriteKeepLastCompletedSnapshot
-    VaneTests.CrashRecoveryTests/testDamagedAndFutureOriginalsArePreservedBeforeReplacement
-    VaneTests.CrashRecoveryTests/testRecoveryPauseSurvivesSessionAndSpaceSidecar
-    VaneTests.CrashRecoveryTests/testLegacySessionFallbackLoadsFreshWhenHealthySidecarWinsMetadata
-    VaneTests.CrashRecoveryTests/testUncleanReadableLegacySessionKeepsLayoutAndLoadsSelectedURL
-    VaneTests.CrashRecoveryTests/testSidecarFallbackPauseSurvivesSavingOrRemovingAnotherSpace
-    VaneTests.CrashRecoveryTests/testAllRegularProfilesRestoreTheirWindows
-    VaneTests.CrashRecoveryTests/testCorruptPrimaryReadsPreviousSnapshotWithoutReplacingOriginal
-    VaneTests.CrashRecoveryTests/testTerminationParksActiveAndBackgroundPagesUntilExplicitNavigation
-  VANE_CANDIDATE_SHA: 'e4016dc15fbc9d50904ade1ba0a23083555e22dc'
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](LibraryPageMountReceiptTests|ClosedTabHistoryTests|CrashRecoveryTests)/.*$'
+  VANE_CANDIDATE_SHA: 'fcf77a21777a0f62d33e273a9b424c45f3b05db1'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]LibraryPageMountReceiptTests/.*$'
 jobs:
   library-receipt:
+    strategy:
+      fail-fast: false
+      matrix:
+        reduced: ['false', 'true']
+    env:
+      VANE_REDUCED_MOTION: ${{ matrix.reduced }}
     runs-on: macos-26
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.VANE_CANDIDATE_SHA }}
-      - name: Verify exact teardown repair and actual runner
+      - name: Verify exact receipt fixture and actual runner
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$VANE_CANDIDATE_SHA"
@@ -104,16 +86,16 @@ jobs:
           import Foundation
           let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
           print("MOTION_ADMISSION reduceMotion=\(reduced) screens=\(NSScreen.screens.map(\.frame))")
-          if CommandLine.arguments.contains("--require-motion") && reduced { exit(78) }
+          if CommandLine.arguments.count > 1 && reduced != (CommandLine.arguments[1] == "true") { exit(78) }
           SWIFT
           swiftc "$RUNNER_TEMP/vane-motion-probe.swift" -o "$RUNNER_TEMP/vane-motion-probe"
           "$RUNNER_TEMP/vane-motion-probe" | tee "$RUNNER_TEMP/vane-motion-admission.log"
-          defaults write com.apple.universalaccess reduceMotion -bool false
-          defaults -currentHost write com.apple.universalaccess reduceMotion -bool false
+          defaults write com.apple.universalaccess reduceMotion -bool "$VANE_REDUCED_MOTION"
+          defaults -currentHost write com.apple.universalaccess reduceMotion -bool "$VANE_REDUCED_MOTION"
           admitted=false
           for attempt in {1..10}; do
             echo "Motion admission attempt $attempt" >> "$RUNNER_TEMP/vane-motion-admission.log"
-            if "$RUNNER_TEMP/vane-motion-probe" --require-motion >> "$RUNNER_TEMP/vane-motion-admission.log"; then admitted=true; break; fi
+            if "$RUNNER_TEMP/vane-motion-probe" "$VANE_REDUCED_MOTION" >> "$RUNNER_TEMP/vane-motion-admission.log"; then admitted=true; break; fi
             sleep 0.5
           done
           cat "$RUNNER_TEMP/vane-motion-admission.log"
@@ -166,7 +148,10 @@ jobs:
               key=f'VaneTests.{cls}/{method}'
               if key in outcomes: outcomes[key].append(status)
           assert all(v==['passed'] for v in outcomes.values()), f'Every selected case must pass once: {outcomes}'
-          print('All exact preflight cases passed once; no skips.')
+          reduced=os.environ['VANE_REDUCED_MOTION']
+          mode='immediate' if reduced=='true' else 'animated'
+          assert (r/'vane-diag-tests.log').read_text().count(f'RECEIPT_LANDING_POLICY reduced={reduced} path={mode}')==2
+          print('All exact preflight cases passed once; no skips; both tail controls exercised the admitted policy.')
           PASSGUARD
           grep -Fxq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-diag-tests.log"
           if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-diag-tests.log"; then exit 1; fi
@@ -174,7 +159,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
-          name: public-native-logs
+          name: public-native-logs-motion-${{ matrix.reduced }}
           path: |
             ${{ runner.temp }}/vane-diag-tests.log
             ${{ runner.temp }}/profile-boundary-costs
