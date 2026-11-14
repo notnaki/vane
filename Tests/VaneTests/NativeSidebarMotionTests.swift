@@ -25,7 +25,7 @@ import XCTest
         weak var value: NSTextField?
         init(_ value: NSTextField) { self.value = value }
     }
-    private final class Controls { var fields: [String: WeakField] = [:] }
+    @MainActor private final class Controls { var fields: [String: WeakField] = [:] }
     private struct NativeRow: NSViewRepresentable {
         let id: String
         let index: Int

@@ -7,7 +7,7 @@ import XCTest
 /// editors. Repartitioning on topology changes or detaching an editing owner must
 /// break identity, draft preservation, and authoritative index delivery below.
 @MainActor final class NativeSidebarStableOwnershipTests: XCTestCase {
-    private final class Controls {
+    @MainActor private final class Controls {
         var fields: [String: WeakField] = [:]
         var commits: [(String, String)] = []
         var interactions: [String: NativeSidebarInteraction] = [:]
