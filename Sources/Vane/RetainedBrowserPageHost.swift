@@ -353,6 +353,15 @@ struct WebCardEnvelopeSpec: Equatable {
         invalidateGeometry(clearNormalCommit: true)
     }
 
+#if DEBUG
+    var handoffProofDiagnostic: String {
+        "revision=\(revision) normal=\(String(describing: normalRevision))"
+            + " geometry=\(geometry != nil) receipt=\(geometry?.receipt != nil)"
+            + " visible=\(String(describing: store?.profileVisible))"
+            + " hidden=\(String(describing: slot?.isHiddenOrHasHiddenAncestor))"
+    }
+#endif
+
     /// Only a normal native slot/envelope layout callback may commit geometry.
     /// Fast-path admission NEVER overwrites a stamp with current window bounds.
     private func commitNormalGeometry() {
