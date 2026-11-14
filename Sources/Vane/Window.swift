@@ -1170,9 +1170,6 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         let store: ObjectIdentifier
     }
     private var pageDisplayAuthorization: PageDisplayAuthorization?
-#if DEBUG
-    private(set) var lastPageHandoffDiagnostic = "not attempted"
-#endif
     private var subscription: AnyCancellable?
     private(set) var spaceSlide: ProfileSpaceSlide?
     private var queuedSpaceSelection: (slide: ProfileSpaceSlide, target: Space)?
@@ -1308,25 +1305,16 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     func layoutDisplayedProfile() {
         pageDisplayAuthorization = nil
         guard let current, let host = hosts[current] else { return }
-#if DEBUG
-        lastPageHandoffDiagnostic = "cover=\(String(describing: spaceSlide?.isActive)) generation=\(spaceSlide?.pageDisplayGeneration != nil)"
-#endif
         // Only a live cross-profile native cover can use current destination
         // page geometry. Unknown Library ownership retains the full-root path.
         if let window, let slide = spaceSlide, slide.isActive,
            let slideGeneration = slide.pageDisplayGeneration,
            let store = TabStore.all.first(where: { $0.window === window }),
-           slide.isDestination(store) {
-            let accepted = host.page.layoutForProfileHandoff(in: window)
-#if DEBUG
-            lastPageHandoffDiagnostic = "pageAccepted=\(accepted) \(host.page.handoffProofDiagnostic)"
-#endif
-            if accepted {
-                host.palette.layoutSubtreeIfNeeded()
-                pageDisplayAuthorization = PageDisplayAuthorization(window: window, slide: slide,
-                    slideGeneration: slideGeneration, store: current)
-                return
-            }
+           slide.isDestination(store), host.page.layoutForProfileHandoff(in: window) {
+            host.palette.layoutSubtreeIfNeeded()
+            pageDisplayAuthorization = PageDisplayAuthorization(window: window, slide: slide,
+                slideGeneration: slideGeneration, store: current)
+            return
         }
         host.content.layoutSubtreeIfNeeded()
         host.palette.layoutSubtreeIfNeeded()

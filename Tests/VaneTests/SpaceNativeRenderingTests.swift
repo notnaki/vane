@@ -978,9 +978,6 @@ import XCTest
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
-#if DEBUG
-        defer { print("PROFILE_PAGE_ROUTE reverse \((window.contentView as? BrowserWindowHost)?.lastPageHandoffDiagnostic ?? "missing host")") }
-#endif
         try await checkReverseLanding(store: store, origin: spaces[0], target: spaces[1],
                                       window: window, monitor: store.spaceGesture.monitor, direction: 1)
     }
@@ -1771,9 +1768,6 @@ import XCTest
             _ = manager.delete(secondProfile.id)
             manager.active = previous
         }
-#if DEBUG
-        defer { print("PROFILE_PAGE_ROUTE cached=\(cached) \((window.contentView as? BrowserWindowHost)?.lastPageHandoffDiagnostic ?? "missing host")") }
-#endif
         if cached {
             source.switchTo(space: second)
             let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
