@@ -1153,13 +1153,13 @@ import XCTest
                     task_policy_get(mach_task_self_, task_flavor_t(TASK_CATEGORY_POLICY), $0, &count, &getDefault)
                 }
             }
-            let identityState: String = "PROFILE_PROCESS_POLICY pid=\(getpid()) main=\(Thread.isMainThread)"
+            let identityState: String = "PROFILE_PROCESS_POLICY pid=\(getpid()) main=\(pthread_main_np() != 0)"
             let foregroundState: String = " running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window)"
             let activationState: String = " activation=\(NSApp.activationPolicy().rawValue) categoryRead=\(categoryRead)"
             let categoryState: String = " category=\(category.role) default=\(getDefault)"
             let bsdState: String = " bsdRead=\(bsdRead) bsdSize=\(bsdSize)"
             let bsdFlags: String = " flags=\(bsd.pbi_flags) nice=\(bsd.pbi_nice)"
-            let qosState: String = " threadQoS=\(qos_class_self()) processQoS=\(ProcessInfo.processInfo.qualityOfService.rawValue)"
+            let qosState: String = " threadQoS=\(qos_class_self()) processQoS=unavailable"
             let powerState: String = " lowPower=\(ProcessInfo.processInfo.isLowPowerModeEnabled)"
             let parts: [String] = [identityState, foregroundState, activationState, categoryState,
                                    bsdState, bsdFlags, qosState, powerState]
