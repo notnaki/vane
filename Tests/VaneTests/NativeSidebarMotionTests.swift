@@ -214,7 +214,7 @@ import XCTest
         }
         var initialTransaction = Transaction()
         initialTransaction.disablesAnimations = true
-        func configure(_ transaction: Transaction) {
+        @MainActor func configure(_ transaction: Transaction) {
             owner.configure(rows: rows, modelIDs: Set(rows.map(\.id)), environment: EnvironmentValues(), transaction: transaction) { row, index, total in
                 NativeRow(id: row.id, index: index, total: total, controls: controls)
             }

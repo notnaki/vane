@@ -279,7 +279,7 @@ import XCTest
         let window = mount(view)
         defer { window.makeFirstResponder(nil); view.detach(); window.orderOut(nil); window.contentView = nil; window.close() }
         let pitch = Look.rowHeight + Look.rowGap
-        func update(visibleIndex: Int) {
+        @MainActor func update(visibleIndex: Int) {
             view.configure(rows: rows, modelIDs: Set(rows.map(\.id)), environment: EnvironmentValues()) { row, index, total in
                 EditableRow(id: row.id, index: index, total: total, controls: controls)
             }
@@ -330,7 +330,7 @@ import XCTest
         let view = NativeCachedSidebarBatchesView<EditableRow>(frame: NSRect(x: 0, y: 0, width: 250, height: 4095))
         let window = mount(view)
         defer { window.makeFirstResponder(nil); view.detach(); window.orderOut(nil); window.contentView = nil; window.close() }
-        func update(_ y: CGFloat) {
+        @MainActor func update(_ y: CGFloat) {
             view.configure(rows: rows, modelIDs: Set(rows.map(\.id)), environment: EnvironmentValues()) { row, index, total in
                 EditableRow(id: row.id, index: index, total: total, controls: controls)
             }
@@ -364,7 +364,7 @@ import XCTest
         let window = mount(view)
         defer { window.makeFirstResponder(nil); view.detach(); window.orderOut(nil); window.contentView = nil; window.close() }
         let pitch = Look.rowHeight + Look.rowGap
-        func update() {
+        @MainActor func update() {
             view.configure(rows: rows, modelIDs: Set(rows.map(\.id)), environment: EnvironmentValues()) { row, index, total in
                 EditableRow(id: row.id, index: index, total: total, controls: controls)
             }
