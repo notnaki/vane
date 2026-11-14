@@ -389,6 +389,7 @@ import XCTest
             let baseline = try XCTUnwrap(sampler.frames.last)
             guard baseline.isPaintedBaseline else { throw NSError(domain:"LibraryPaintAdmission",code:1) }
             let began = CACurrentMediaTime()
+            var inputTimes: [(mutation: Double, layoutCompleted: Double)] = []
             let travel = Library.panelWidth(section: Library.shared.section,
                 spaces: ProfileManager.shared.allSpaces.count, private: store.isPrivate,
                 available: window.contentView!.bounds.width) - (store.sidebarShown ? SidebarWidth.inWindow(store) : Look.cardGap)
@@ -397,19 +398,23 @@ import XCTest
             let stepsPerStroke = rapid ? 20 : max(1, Int(ceil(abs(travel) / 2)))
             for _ in 0..<3 {
                 for step in 0...stepsPerStroke {
+                    let mutation = CACurrentMediaTime()
                     Motion.instant {
                         store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
                         if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
                     }
                     window.contentView?.layoutSubtreeIfNeeded()
+                    inputTimes.append((mutation, CACurrentMediaTime()))
                     try await Task.sleep(for:.milliseconds(8))
                 }
                 for step in (0...stepsPerStroke).reversed() {
+                    let mutation = CACurrentMediaTime()
                     Motion.instant {
                         store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
                         if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
                     }
                     window.contentView?.layoutSubtreeIfNeeded()
+                    inputTimes.append((mutation, CACurrentMediaTime()))
                     try await Task.sleep(for:.milliseconds(8))
                 }
             }
@@ -420,15 +425,24 @@ import XCTest
             }
             try await compatibilityWait { !pending(window.contentView!) }
             try await presentation(web)
-            try await sampler.captureFinalFrame(window)
             try await sampler.stop()
+            // A screenshot has its own setup/capture latency, not a stream
+            // presentation timestamp. Keep it for final paint/geometry only.
+            let motionSamples = sampler.frames.samples.filter { $0.time >= began }
+            try await sampler.captureFinalFrame(window)
             try sampler.frames.saveImages(prefix:"library-\(ProcessInfo.processInfo.processIdentifier)")
             let samples = sampler.frames.samples.filter { $0.time >= began }
+            for input in inputTimes {
+                print("LIBRARY_INPUT mutation=\(input.mutation) layoutCompleted=\(input.layoutCompleted)")
+            }
+            for sample in motionSamples {
+                print("LIBRARY_PRESENTATION time=\(sample.time) left=\(sample.left)")
+            }
             let maximum = samples.map(\.gap).max() ?? 0
             print("LIBRARY_PIXELS samples=\(samples.count) baselineGap=\(baseline.gap) maxGap=\(maximum)")
             var changes = [ResizePixelFrames.Frame(time: began, gap: baseline.gap,
                 markerGap: baseline.markerGap, left: baseline.left, extent: baseline.extent)]
-            for sample in samples where abs(sample.left - changes.last!.left) > 0.5 { changes.append(sample) }
+            for sample in motionSamples where abs(sample.left - changes.last!.left) > 0.5 { changes.append(sample) }
             let pauses = zip(changes,changes.dropFirst()).map { ($1.time-$0.time)*1000 }.sorted()
             // SCK's Float content scale introduces sub-micro-point roundoff.
             let steps = zip(changes,changes.dropFirst()).map { (abs($1.left-$0.left) * 1000).rounded() / 1000 }

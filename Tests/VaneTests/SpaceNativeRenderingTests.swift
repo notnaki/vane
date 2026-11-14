@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import XCTest
 @testable import vane
@@ -154,8 +155,27 @@ import XCTest
         return view.subviews.lazy.compactMap { self.colourSurface(in: $0) }.first
     }
 
+    func testPresentationColourRejectsAnUnpresentedModelEndpoint() throws {
+        let surface = ThemeWashSurface()
+        surface.base.colors = [NSColor.red.cgColor, NSColor.red.cgColor]
+        XCTAssertNil(surface.base.presentation())
+        XCTAssertEqual(try firstColour(of: surface).redComponent, 1, accuracy: 0.001)
+        XCTAssertThrowsError(try firstColour(of: surface, presented: true),
+                             "An unpresented model cannot prove a visible animation frame")
+    }
+
     private func firstColour(of surface: ThemeWashSurface, presented: Bool = false) throws -> NSColor {
-        let layer = presented ? surface.base.presentation() ?? surface.base : surface.base
+        let layer: CAGradientLayer
+        if presented {
+            guard let presentation = surface.base.presentation() else {
+                // Readiness callers may legitimately probe before presentation.
+                // Throw without recording an XCTest failure inside their try?.
+                throw NSError(domain: "MissingThemeWashPresentation", code: 1)
+            }
+            layer = presentation
+        } else {
+            layer = surface.base
+        }
         let colours = try XCTUnwrap(layer.colors as? [CGColor])
         return try XCTUnwrap(NSColor(cgColor: XCTUnwrap(colours.first))?.usingColorSpace(.deviceRGB))
     }
@@ -1927,9 +1947,31 @@ import XCTest
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
+        var footerFrames = 0
+        let observeFooter: (TabStore) -> AnyCancellable = { arriving in
+            arriving.spaceGesture.footer.$drag.dropFirst().sink { drag in
+                guard let drag else { return }
+                footerFrames += 1
+                XCTAssertEqual(drag, slide.offset, accuracy: 2,
+                               "Each arriving footer frame must follow the same native presentation")
+            }
+        }
+        // A cached destination already exists. Observe its whole landing rather
+        // than subscribing after both the early sample and parked-sheet check.
+        let parked = TabStore.all.first { $0.parkedIn === window && $0.profileID == secondProfile.id }
+        var footerObservation = parked.map(observeFooter)
+        var footerSubscribedAt = footerObservation == nil ? nil : CACurrentMediaTime()
+        defer { footerObservation?.cancel() }
+        let landingStartedAt = CACurrentMediaTime()
         monitor.land(1, to: second, width: fixtureSidebarWidth(in: source), store: source, duration: 0.8)
         try await Task.sleep(for: .milliseconds(100))
+        let earlySampleAt = CACurrentMediaTime()
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
+        if footerObservation == nil {
+            footerObservation = observeFooter(arriving)
+            footerSubscribedAt = CACurrentMediaTime()
+        }
+        print("EARLY_PROFILE_TIMING cached=\(cached) landing=\(landingStartedAt) sample=\(earlySampleAt) elapsedMS=\((earlySampleAt - landingStartedAt) * 1000) footerSubscribed=\(String(describing: footerSubscribedAt))")
         XCTAssertEqual(arriving.profileID, secondProfile.id,
                        "Profile activation must not wait for the sidebar animation to finish")
         XCTAssertEqual(arriving.currentSpaceID, second.id)
@@ -1990,14 +2032,6 @@ import XCTest
         XCTAssertEqual(arriving.spaceGesture.outgoing?.space.id, first.id,
                        "The arriving footer must keep the gesture's original Space")
         XCTAssertNotNil(arriving.spaceGesture.footer.drag)
-        var footerFrames = 0
-        let observation = arriving.spaceGesture.footer.$drag.dropFirst().sink { drag in
-            guard let drag else { return }
-            footerFrames += 1
-            XCTAssertEqual(drag, slide.offset, accuracy: 2,
-                           "Each arriving footer frame must follow the same native presentation")
-        }
-        defer { observation.cancel() }
         try await Task.sleep(for: .milliseconds(1000))
         XCTAssertGreaterThan(footerFrames, 2)
         if let retained = host.spaceSlide {
