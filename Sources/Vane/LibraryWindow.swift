@@ -946,7 +946,7 @@ struct LibraryHead<Filter: View, Actions: View>: View {
     @Binding var query: String
     @ViewBuilder let filter: () -> Filter
     @ViewBuilder let actions: () -> Actions
-    @ObservedObject var profiles: ProfileManager = .shared
+    @ProfileChromeObserved var profiles: ProfileManager = .shared
     @ObservedObject private var library = Library.shared
 
     private var expanded: Bool { library.filterSection == section }

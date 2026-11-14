@@ -1614,7 +1614,7 @@ private struct SpaceSwipe: ViewModifier {
             if let window, let arriving = TabStore.all.first(where: { $0.window === window }) {
                 (window.contentView as? BrowserWindowHost)?.spaceSlide?.attach(arriving)
             }
-            rebuild()
+            // Windows.hop already rebuilt the menu for the finalized destination.
             return false
         }
         if store.spaceGesture.outgoing == nil, let origin = store.swipeSpace {
