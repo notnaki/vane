@@ -1,4 +1,4 @@
-name: Library resize exact candidate preflight
+name: Library native geometry one-case diagnosis
 on:
   push:
     branches: [codex/library-resize-preflight-20261114]
@@ -6,23 +6,10 @@ permissions:
   contents: read
 env:
   VANE_EXPECTED_TESTS: |
-    VaneTests.WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted
-    VaneTests.WindowResizeLayoutTests/testProductionParentRefreshKeepsLibraryViewportOwnedAndPainted
-    VaneTests.WindowResizeLayoutTests/testWideSidebarLibraryNavigationKeepsTheResponsiveDocumentPainted
-    VaneTests.WindowResizeLayoutTests/testFloatingLibraryNavigationKeepsTheResponsiveDocumentPainted
     VaneTests.WindowResizeLayoutTests/testRapidLibraryReversalsKeepTheResponsiveDocumentPainted
-    VaneTests.LibraryPageLayoutTests/testLibraryDocumentFollowsTheVisibleCardWithoutAnEndpointWidthJump
-    VaneTests.LibraryPageLayoutTests/testFindCannotPushTheRealCardOverLibraryOrBeyondWindow
-    VaneTests.LibraryPageLayoutTests/testSplitDocumentsStayInsideTheCardThroughoutLibraryMovement
-    VaneTests.LibraryPageLayoutTests/testFloatingLibraryGutterReachesItsEndpointBeforeTheGestureClears
-    VaneTests.LibraryPageLayoutTests/testAnimatedDocumentKeepsThePresentedCardInsideTheWindow
-    VaneTests.LibraryPageLayoutTests/testClosingLibraryKeepsPageRightEdgeAtWindowInset
-    VaneTests.LibrarySwipeTests/testLibraryDragKeepsWebKitFillingTheMovingCard
-    VaneTests.LibrarySwipeTests/testFloatingSidebarLibraryLandingKeepsTheDocumentAtTheRightRim
-    VaneTests.LibrarySwipeTests/testQuickOpeningReleaseContinuesFromTheLastFingerPosition
-  VANE_CANDIDATE_SHA: '4082e2920146406518ee6d2a8c7d1f9f9da8a480'
+  VANE_CANDIDATE_SHA: '8fdf58834eef8c955128c895cd7f911edfc88c5f'
   VANE_LIBRARY_PAINT_TRACE: '0'
-  VANE_DIAGNOSTIC_FILTER: '^(?:VaneTests\.WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted|VaneTests\.WindowResizeLayoutTests/testProductionParentRefreshKeepsLibraryViewportOwnedAndPainted|VaneTests\.WindowResizeLayoutTests/testWideSidebarLibraryNavigationKeepsTheResponsiveDocumentPainted|VaneTests\.WindowResizeLayoutTests/testFloatingLibraryNavigationKeepsTheResponsiveDocumentPainted|VaneTests\.WindowResizeLayoutTests/testRapidLibraryReversalsKeepTheResponsiveDocumentPainted|VaneTests\.LibraryPageLayoutTests/testLibraryDocumentFollowsTheVisibleCardWithoutAnEndpointWidthJump|VaneTests\.LibraryPageLayoutTests/testFindCannotPushTheRealCardOverLibraryOrBeyondWindow|VaneTests\.LibraryPageLayoutTests/testSplitDocumentsStayInsideTheCardThroughoutLibraryMovement|VaneTests\.LibraryPageLayoutTests/testFloatingLibraryGutterReachesItsEndpointBeforeTheGestureClears|VaneTests\.LibraryPageLayoutTests/testAnimatedDocumentKeepsThePresentedCardInsideTheWindow|VaneTests\.LibraryPageLayoutTests/testClosingLibraryKeepsPageRightEdgeAtWindowInset|VaneTests\.LibrarySwipeTests/testLibraryDragKeepsWebKitFillingTheMovingCard|VaneTests\.LibrarySwipeTests/testFloatingSidebarLibraryLandingKeepsTheDocumentAtTheRightRim|VaneTests\.LibrarySwipeTests/testQuickOpeningReleaseContinuesFromTheLastFingerPosition)$'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]WindowResizeLayoutTests/testRapidLibraryReversalsKeepTheResponsiveDocumentPainted$'
 jobs:
   library-receipt:
     runs-on: macos-26
@@ -31,11 +18,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.VANE_CANDIDATE_SHA }}
-      - name: Verify exact exact Library exposure candidate and actual runner
+      - name: Verify exact diagnostic source and actual runner
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$VANE_CANDIDATE_SHA"
-          sw_vers
+          git log -1 --format=fuller | tee "$RUNNER_TEMP/vane-diag-source.txt"
+          sw_vers | tee -a "$RUNNER_TEMP/vane-diag-source.txt"
+          uname -m | tee -a "$RUNNER_TEMP/vane-diag-source.txt"
           test "$(sw_vers -productVersion | cut -d. -f1)" = 26
       - name: Identify Swift toolchain
         id: toolchain
@@ -65,7 +54,7 @@ jobs:
       - name: Restore unchanged source timestamps
         run: python3 scripts/ci-source-state.py restore
 
-      - name: Build exact exact Library exposure candidate
+      - name: Build unchanged production and temporary fixture observation
         run: swift build -c debug --build-tests --disable-index-store --jobs 3
       - name: Admit actual system motion on this disposable runner
         run: |
@@ -148,6 +137,7 @@ jobs:
           name: public-native-logs
           path: |
             ${{ runner.temp }}/vane-diag-tests.log
+            ${{ runner.temp }}/vane-diag-source.txt
             /tmp/vane-resize-library-*
             ${{ runner.temp }}/profile-boundary-costs
             ${{ runner.temp }}/vane-diag-manifest.json

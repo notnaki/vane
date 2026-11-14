@@ -96,12 +96,11 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
     var body: some View {
         let progress = min(1, max(0, targetProgress))
         let leading = pageLeading(at: progress)
-        let moving = gesture.progress != nil || progress != (libraryOpen ? 1 : 0)
         ZStack(alignment: .leading) {
             HStack(spacing: 0) {
                 Color.clear.frame(width: leading)
                 // Resolve navigation geometry once per surface, rather than per leaf.
-                page.environment(\.libraryNavigationPaintOwner, moving ? paint.owner : nil)
+                page.environment(\.libraryNavigationPaintOwner, paint.owner)
                     .environment(\.libraryPageLeadingInset, 0)
                     .geometryGroup()
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)

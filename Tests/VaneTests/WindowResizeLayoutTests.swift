@@ -384,6 +384,42 @@ import XCTest
         }
 #endif
         let sampler = ResizePixelSampler()
+        // TEMP: observe native submissions without changing the rapid input/paint path.
+        let geometryHost = try XCTUnwrap(web.superview as? WebHost)
+        guard geometryHost.pageResizeOwnershipWillChange == nil else {
+            throw NSError(domain: "LibraryGeometryAdmission", code: 1)
+        }
+        let previousGeometryCallback = geometryHost.pageLayoutDidResize
+        var nativeGeometry: [(time: CFTimeInterval, host: ObjectIdentifier, web: ObjectIdentifier,
+            attached: Bool, window: Bool, nativeOwner: Bool, mask: UInt, hostBounds: NSRect,
+            webFrame: NSRect, webBounds: NSRect, visible: NSRect, hostInWindow: NSRect, webInWindow: NSRect)] = []
+        var droppedNativeGeometry = 0
+        if rapid {
+            geometryHost.pageLayoutDidResize = { [weak geometryHost, weak web, weak window] in
+                previousGeometryCallback?()
+                guard let geometryHost, let web, let window else { return }
+                guard nativeGeometry.count < 512 else { droppedNativeGeometry += 1; return }
+                nativeGeometry.append((CACurrentMediaTime(), ObjectIdentifier(geometryHost), ObjectIdentifier(web),
+                    web.superview === geometryHost && geometryHost.web === web,
+                    geometryHost.window === window && web.window === window,
+                    geometryHost.pageResizeOwnershipWillChange != nil, web.autoresizingMask.rawValue,
+                    geometryHost.bounds, web.frame, web.bounds, web.visibleRect,
+                    geometryHost.convert(geometryHost.bounds, to: nil), web.convert(web.bounds, to: nil)))
+            }
+        }
+        defer {
+            if rapid {
+                geometryHost.pageLayoutDidResize = previousGeometryCallback
+                print("LIBRARY_NATIVE_GEOMETRY count=\(nativeGeometry.count) dropped=\(droppedNativeGeometry)")
+                for g in nativeGeometry {
+                    print("LIBRARY_NATIVE_GEOMETRY t=\(g.time) host=\(g.host) web=\(g.web) attached=\(g.attached) window=\(g.window) nativeOwner=\(g.nativeOwner) mask=\(g.mask) hostBounds=\(g.hostBounds) webFrame=\(g.webFrame) webBounds=\(g.webBounds) visible=\(g.visible) hostInWindow=\(g.hostInWindow) webInWindow=\(g.webInWindow)")
+                }
+                print("LIBRARY_EXISTING_PIXEL count=\(sampler.frames.samples.count) limit=4096")
+                for f in sampler.frames.samples.prefix(4096) {
+                    print("LIBRARY_EXISTING_PIXEL t=\(f.time) gap=\(f.gap) markerGap=\(f.markerGap) left=\(f.left) extent=\(f.extent)")
+                }
+            }
+        }
         try await sampler.start(window)
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
