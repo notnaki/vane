@@ -488,6 +488,20 @@ private struct PageRecoveryView: View {
 /// tinted by the current space. Nothing here is opaque — `WindowGlass` is the only ground,
 /// so the desktop shows through everything the sidebar does not cover.
 struct BrowserWindow: View {
+    // TEMP diagnostic only: remove selected chrome subtrees without changing
+    // the navigation layout, page, paint owner, input or outcome deadlines.
+    private static let diagnosticChrome = ProcessInfo.processInfo.environment["VANE_TEMP_LIBRARY_CHROME"] ?? ""
+
+    @ViewBuilder private var diagnosticSidebar: some View {
+        if Self.diagnosticChrome == "sidebar" || Self.diagnosticChrome == "both" { Color.clear }
+        else { sidebarSurface }
+    }
+
+    @ViewBuilder private var diagnosticPanel: some View {
+        if Self.diagnosticChrome == "panel" || Self.diagnosticChrome == "both" { Color.clear }
+        else { LibraryPanel() }
+    }
+
     // BrowserWindowHost presents search above its native Space-swipe surfaces.
     // Standalone SwiftUI hosts retain the inline presentation.
     var presentsPalette = true
@@ -546,7 +560,7 @@ struct BrowserWindow: View {
                             enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping,
                             libraryNavigationEnabled: !store.spaceGesture.swiping)))
                     .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
-                sidebar: sidebarSurface, panel: LibraryPanel())
+                sidebar: diagnosticSidebar, panel: diagnosticPanel)
             edgeStrip
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
