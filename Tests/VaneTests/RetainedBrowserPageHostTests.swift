@@ -64,6 +64,11 @@ import XCTest
             XCTAssertTrue(owner.hostingView.superview === replacement,
                           "A stale slot cannot steal or dismantle a replacement page")
             XCTAssertEqual(owner.hostingView.frame, replacement.bounds)
+            let newParent = NSView(frame: root.bounds)
+            root.addSubview(newParent)
+            newParent.addSubview(replacement)
+            XCTAssertTrue(owner.hostingView.superview === replacement,
+                          "The current slot must recover its own host when reparented without configure")
             owner.retire()
             replacement.setFrameSize(NSSize(width: 510, height: 350))
             XCTAssertNil(owner.hostingView.superview, "Late native geometry cannot revive a retired page")
@@ -92,7 +97,7 @@ import XCTest
             let owner = RetainedBrowserPageHost(store: store, presentation: presentation)
             defer { owner.retire() }
             var pageBounds: CGRect?
-            func card(retained: Bool) -> AnyView {
+            @MainActor func card(retained: Bool) -> AnyView {
                 AnyView(WebCard(retainedPage: retained ? owner : nil, topGap: 12)
                     .environmentObject(store).environmentObject(ProfileManager.shared)
                     .environmentObject(presentation.downloads)
@@ -152,6 +157,74 @@ import XCTest
                            "Held-at-zero logical gesture invalidates display even before another layout")
             store.libraryGesture.progress = nil
             parent.removeFromSuperview()
+        }
+    }
+
+    private func admitPage(_ store: TabStore, window: NSWindow, root: NSView)
+        async throws -> (RetainedBrowserPageHost, NSHostingView<some View>) {
+        let presentation = BrowserProfilePresentation()
+        let owner = RetainedBrowserPageHost(store: store, presentation: presentation)
+        let parent = NSHostingView(rootView: BrowserWindow(pageHost: owner, presentation: presentation)
+            .environmentObject(store).environmentObject(ProfileManager.shared))
+        parent.frame = root.bounds
+        root.addSubview(parent)
+        do {
+            try await compatibilityWait {
+                parent.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                return owner.layoutForProfileHandoff(in: window)
+            }
+        } catch { owner.retire(); parent.removeFromSuperview(); throw error }
+        return (owner, parent)
+    }
+
+    func testOutOfBandRootResizeCannotRestampAnUnchangedOldNativeSlot() async throws {
+        try await withPage { store, window, root in
+            let (owner, parent) = try await admitPage(store, window: window, root: root)
+            defer { owner.retire(); parent.removeFromSuperview() }
+            let before = root.frame.size
+            let slotFrame = owner.hostingView.superview?.frame
+            root.setFrameSize(NSSize(width: before.width + 80, height: before.height + 40))
+            XCTAssertEqual(owner.hostingView.superview?.frame, slotFrame,
+                           "The fixture must leave the old positive-size page slot unchanged")
+            XCTAssertFalse(owner.layoutForProfileHandoff(in: window),
+                           "Admission cannot mint new root bounds around stale page geometry")
+            root.setFrameSize(before)
+            XCTAssertFalse(owner.layoutForProfileHandoff(in: window),
+                           "Returning to old bounds cannot revive proof without a normal parent commit")
+        }
+    }
+
+    func testNativeGeometryOutAndBackPermanentlyRevokesTheDisplayProof() async throws {
+        try await withPage { store, window, root in
+            let (owner, parent) = try await admitPage(store, window: window, root: root)
+            defer { owner.retire(); parent.removeFromSuperview() }
+            let slot = try XCTUnwrap(owner.hostingView.superview as? NativeBrowserPageSlot)
+            let before = slot.frame.size
+            slot.setFrameSize(NSSize(width: before.width - 20, height: before.height))
+            slot.setFrameSize(before)
+            XCTAssertFalse(owner.displayForProfileHandoff(in: window),
+                           "Equal final coordinates cannot restore a geometry epoch consumed by intervening changes")
+        }
+    }
+
+    func testPendingPresentationAndAttachedSheetRejectBothLayoutAndDisplay() async throws {
+        try await withPage { store, window, root in
+            let (owner, parent) = try await admitPage(store, window: window, root: root)
+            defer { owner.retire(); parent.removeFromSuperview() }
+            store.liveFolderSheet = true
+            XCTAssertFalse(owner.displayForProfileHandoff(in: window),
+                           "A presentation opened after layout must consume the old proof and fall back")
+            XCTAssertFalse(owner.layoutForProfileHandoff(in: window))
+            store.liveFolderSheet = false
+            let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+                                 styleMask: [.titled], backing: .buffered, defer: false)
+            sheet.isReleasedWhenClosed = false
+            window.beginSheet(sheet)
+            defer { window.endSheet(sheet); sheet.close() }
+            XCTAssertFalse(owner.layoutForProfileHandoff(in: window),
+                           "An actual attached native sheet cannot use the page-only layout path")
+            XCTAssertFalse(owner.displayForProfileHandoff(in: window))
         }
     }
 
