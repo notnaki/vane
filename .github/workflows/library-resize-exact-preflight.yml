@@ -6,12 +6,29 @@ permissions:
   contents: read
 env:
   VANE_EXPECTED_TESTS: |
+    VaneTests.LibraryPageMountReceiptTests/testCurrentClosedOwnerCanCaptureAfterColdMarkerReadiness
+    VaneTests.LibraryPageMountReceiptTests/testHeldZeroIsNotIdleAndCannotReviveTheOldReceipt
+    VaneTests.LibraryPageMountReceiptTests/testSynchronousRequestRoundTripInvalidatesBeforeAnyDrain
+    VaneTests.LibraryPageMountReceiptTests/testIdenticalAtRestBridgeReevaluationDoesNotInvalidateItsEpoch
+    VaneTests.LibraryPageMountReceiptTests/testExplicitCommandInvalidatesWithoutAPendingDestination
+    VaneTests.LibraryPageMountReceiptTests/testNativeMarkerDetachAndSameWindowReattachCannotReviveReceipt
+    VaneTests.LibraryPageMountReceiptTests/testPaintReplacementAndCancellationInvalidateOldReceipt
+    VaneTests.LibraryPageMountReceiptTests/testPendingArrivalAndCancelledCallbackCannotAdmitIdle
+    VaneTests.LibraryPageMountReceiptTests/testNativeBufferOwnerRejectsEvenAtZeroPaintProgress
+    VaneTests.LibraryPageMountReceiptTests/testCurrentClosedFinishedMineStillConsumesMomentum
+    VaneTests.LibraryPageMountReceiptTests/testPendingLandingRejectsEvenIfTheModelPresentationWasCleared
+    VaneTests.LibraryPageMountReceiptTests/testProviderAndReceiptDoNotRetainTheActualPaintOwner
+    VaneTests.LibraryPageMountReceiptTests/testStaleSettlementMetadataCannotClearTheNewerActualLanding
+    VaneTests.LibraryPageMountReceiptTests/testBindingReplacementCannotResurrectAnOldReceipt
+    VaneTests.LibraryPageMountReceiptTests/testCheckedEpochExhaustionNeverWraps
+    VaneTests.LibraryPageMountReceiptTests/testExhaustedActualPaintOwnerStaysFailClosedAfterIdleRebinding
     VaneTests.LibraryPageMountReceiptTests/testSynchronousVisibilityRestorationNeverRevivesOldReceipt
     VaneTests.LibraryPageMountReceiptTests/testSynchronousParkingRestorationNeverRevivesOldReceipt
     VaneTests.LibraryPageMountReceiptTests/testSynchronousWindowRestorationNeverRevivesOldReceipt
     VaneTests.LibraryPageMountReceiptTests/testIdenticalOwnerLifecycleAssignmentsPreserveRestingReceipt
-  VANE_CANDIDATE_SHA: 'ca41122b8eab4f7975409a47cdf3c9af841e2020'
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]LibraryPageMountReceiptTests/(testSynchronousVisibilityRestorationNeverRevivesOldReceipt|testSynchronousParkingRestorationNeverRevivesOldReceipt|testSynchronousWindowRestorationNeverRevivesOldReceipt|testIdenticalOwnerLifecycleAssignmentsPreserveRestingReceipt)$'
+    VaneTests.LibraryPageMountReceiptTests/testHiddenParkedOrUnknownOwnerCannotCapture
+  VANE_CANDIDATE_SHA: '5fea685eae8b7e8846fa31caaa9232c41d965f1c'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]LibraryPageMountReceiptTests/.*$'
 jobs:
   library-receipt:
     runs-on: macos-26
@@ -20,7 +37,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.VANE_CANDIDATE_SHA }}
-      - name: Verify exact unfixed receipt source and actual runner
+      - name: Verify exact lifecycle repair and actual runner
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$VANE_CANDIDATE_SHA"
