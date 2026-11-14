@@ -850,7 +850,7 @@ struct WebCard: View {
         let spec = WebCardEnvelopeSpec(topGap: topGap, edgeToEdge: edgeToEdge,
             leading: edgeToEdge ? 0 : libraryPageLeadingInset
                 ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
-        WebCardEnvelope(spec: spec) {
+        WebCardEnvelope(spec: spec, retainedPage: retainedPage) {
             if let retainedPage {
                 RetainedBrowserPageSlot(owner: retainedPage, envelope: spec)
             } else {
@@ -864,6 +864,7 @@ struct WebCard: View {
 /// Its anchor stays with PeekContentTracking in the parent preference graph.
 private struct WebCardEnvelope<Content: View>: View {
     let spec: WebCardEnvelopeSpec
+    let retainedPage: RetainedBrowserPageHost?
     @ViewBuilder let content: () -> Content
     var body: some View {
         content()
@@ -872,6 +873,9 @@ private struct WebCardEnvelope<Content: View>: View {
             .padding(.top, spec.topGap)
             .padding(.trailing, spec.trailing)
             .padding(.bottom, spec.bottom)
+            .background {
+                if let retainedPage { RetainedPageEnvelopeMarker(owner: retainedPage) }
+            }
     }
 }
 
