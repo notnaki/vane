@@ -85,7 +85,7 @@ extension EnvironmentValues {
                     buffer = LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0),
                         navigation: .init(owner: owner, leading: initial, exactRequests: true),
                         apply: { [weak self] _, accepted in
-                            guard let self, let accepted else { return }
+                            guard let self, self.bufferToken == token, let accepted else { return }
                             self.acceptedLeading = accepted
                             let latest = self.startLeading + (self.endLeading - self.startLeading) * self.requestedProgress
                             let phase = accepted == latest || self.startLeading == self.endLeading
@@ -119,7 +119,8 @@ extension EnvironmentValues {
             }
         }
         guard buffer == nil else {
-            if arrival != nil, let window = marker?.window { waitForFrame(in: window) }
+            if arrival != nil || (!holdingGesture && (requestedProgress == 0 || requestedProgress == 1)),
+               let window = marker?.window { waitForFrame(in: window) }
             return
         }
         guard let arrival, let window = marker?.window, window.isVisible,
