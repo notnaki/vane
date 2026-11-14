@@ -87,10 +87,13 @@ def plan(arguments):
 
 
 def verify(arguments):
-    manifest = json.loads(arguments.manifest.read_text())
-    if manifest["schema"] != 1:
-        raise ValueError("unsupported shard manifest schema")
-    tests = manifest["tests"]
+    if arguments.manifest is not None:
+        manifest = json.loads(arguments.manifest.read_text())
+        if manifest["schema"] != 1:
+            raise ValueError("unsupported shard manifest schema")
+        tests = manifest["tests"]
+    else:
+        tests = [arguments.test]
     validate_tests(tests)
     log = arguments.log.read_text()
     if re.search(r"^\*\*\* Signal [0-9]+: Backtracing", log, re.MULTILINE):
@@ -101,7 +104,10 @@ def verify(arguments):
     for match in COMPLETED.finditer(log):
         if match[3] == "failed":
             raise ValueError(f"native test failed: {match[1]}/{match[2]}")
-        finished.add(f"{match[1]}/{match[2]}")
+        identifier = f"{match[1]}/{match[2]}"
+        if arguments.test == identifier and match[3] == "skipped":
+            raise ValueError(f"required probe skipped: {identifier}")
+        finished.add(identifier)
     missing = sorted(set(tests) - finished)
     if missing:
         raise ValueError(f"{len(missing)} selected tests did not finish: " + ", ".join(missing[:10]))
@@ -120,7 +126,9 @@ def main():
     planner.add_argument("--filter-output", type=Path, required=True)
     planner.add_argument("--suite", choices=("all", "required"), default="all")
     checker = commands.add_parser("verify")
-    checker.add_argument("--manifest", type=Path, required=True)
+    selection = checker.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--manifest", type=Path)
+    selection.add_argument("--test", help="exact XCTest identifier for a fresh-process probe")
     checker.add_argument("--log", type=Path, required=True)
     arguments = parser.parse_args()
     try:
