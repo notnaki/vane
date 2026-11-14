@@ -61,7 +61,7 @@ import XCTest
         let url = URL(string: "https://example.test/page")!
         let pattern = try XCTUnwrap(WKWebExtension.MatchPattern(string: "https://example.test/*"))
         for allowed in [false, true] {
-            try await answer(allowed ? .alertFirstButtonReturn : .alertSecondButtonReturn) {
+            try await answer(allowed ? .alertSecondButtonReturn : .alertFirstButtonReturn) {
                 let (permissions, date) = await host.webExtensionController(host.controller, promptForPermissions: [cookie], in: nil, for: context)
                 XCTAssertEqual(permissions, allowed ? [cookie] : [])
                 XCTAssertNil(date)
@@ -84,7 +84,7 @@ import XCTest
             MainActor.assumeIsolated {
                 guard NSApplication.shared.modalWindow != nil else { return }
                 host.remove(context)
-                NSApplication.shared.stopModal(withCode: .alertFirstButtonReturn)
+                NSApplication.shared.stopModal(withCode: .alertSecondButtonReturn)
             }
         }
         RunLoop.main.add(timer, forMode: .modalPanel)
@@ -131,7 +131,7 @@ import XCTest
         let (host, context) = try await load()
         let web = try await options(context)
         for allowed in [false, true] {
-            try await answer(allowed ? .alertFirstButtonReturn : .alertSecondButtonReturn) {
+            try await answer(allowed ? .alertSecondButtonReturn : .alertFirstButtonReturn) {
                 let result = try await web.callAsyncJavaScript(
                     "return await browser.permissions.request({permissions:['cookies'], origins:['https://example.test/*']});",
                     arguments: [:], in: nil, contentWorld: .page)
