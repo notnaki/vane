@@ -7,6 +7,100 @@ import XCTest
 @testable import vane
 
 @MainActor final class WindowResizeLayoutTests: XCTestCase {
+    // Diagnostic calibration of this file's pixel sampler, without SwiftUI,
+    // WebKit, or a main-actor input producer driving the motion.
+    func testNativeLayerCaptureResolvesTheLibraryCadenceBudget() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_NATIVE_CAPTURE_CONTROL"] == "1",
+                          "Opt-in native capture calibration")
+        TestEnvironment.prepare()
+        try XCTSkipIf(Motion.spaceReduced, "Calibration requires normal motion")
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do {
+            let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 900, height: 600),
+                styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.animationBehavior = .none
+            let root = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+            root.wantsLayer = true
+            let layer = try XCTUnwrap(root.layer)
+            layer.masksToBounds = true
+            layer.backgroundColor = NSColor(deviceRed: 45/255, green: 45/255, blue: 45/255, alpha: 1).cgColor
+            let page = CALayer()
+            page.frame = CGRect(x: 228, y: 0, width: 900, height: 600)
+            page.backgroundColor = NSColor(deviceRed: 23/255, green: 50/255, blue: 77/255, alpha: 1).cgColor
+            layer.addSublayer(page)
+            let marker = CALayer()
+            marker.frame = CGRect(x: 800, y: 0, width: 100, height: 600)
+            marker.backgroundColor = NSColor(deviceRed: 240/255, green: 64/255, blue: 32/255, alpha: 1).cgColor
+            layer.addSublayer(marker)
+            window.contentView = root
+            window.makeKeyAndOrderFront(nil)
+            app.activate(ignoringOtherApps: true)
+            defer { window.contentView = nil; window.close() }
+            try await compatibilityWait {
+                window.displayIfNeeded()
+                CATransaction.flush()
+                return app.isRunning && app.isActive && window.isKeyWindow && app.keyWindow === window
+                    && window.occlusionState.contains(.visible) && page.presentation() != nil
+            }
+            let owner = ResizeCaptureOwner(window: window, stage: "native calibration")
+            let observations = [
+                NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
+                    object: window, queue: .main) { _ in MainActor.assumeIsolated { owner.lostForeground("window resigned key") } },
+                NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                    object: app, queue: .main) { _ in MainActor.assumeIsolated { owner.lostForeground("application resigned active") } }
+            ]
+            defer { observations.forEach(NotificationCenter.default.removeObserver) }
+            let sampler = ResizePixelSampler()
+            try await sampler.start(window)
+            do {
+                let baseline = try XCTUnwrap(sampler.frames.last)
+                let began = CACurrentMediaTime()
+                let animation = CAKeyframeAnimation(keyPath: "position.x")
+                let origin = page.position.x
+                animation.values = [origin, origin + 164, origin, origin + 164, origin]
+                animation.keyTimes = [0, 0.25, 0.5, 0.75, 1]
+                animation.calculationMode = .linear
+                animation.duration = 2.624 // 2pt / 8ms, matching the Library input slope.
+                animation.beginTime = page.convertTime(began, from: nil)
+                page.add(animation, forKey: "capture-calibration")
+                CATransaction.flush()
+                try await Task.sleep(for: .seconds(3))
+                try await sampler.stop()
+                let samples = sampler.frames.samples.filter { $0.time >= began }
+                var changes = [ResizePixelFrames.Frame(time: began, gap: baseline.gap,
+                    markerGap: baseline.markerGap, left: baseline.left, extent: baseline.extent)]
+                for sample in samples where abs(sample.left - changes.last!.left) > 0.5 { changes.append(sample) }
+                let pauses = zip(changes, changes.dropFirst()).map { ($1.time - $0.time) * 1000 }.sorted()
+                let steps = zip(changes, changes.dropFirst()).map { abs($1.left - $0.left) }
+                let p95 = pauses.isEmpty ? .infinity : pauses[Int(Double(pauses.count - 1) * 0.95)]
+                print("NATIVE_CAPTURE_CONTROL began=\(began) samples=\(samples.count) changes=\(changes.count) p95=\(p95) max=\(pauses.last ?? .infinity) step=\(steps.max() ?? .infinity)")
+                for sample in samples { print("NATIVE_CAPTURE_FRAME time=\(sample.time) left=\(sample.left)") }
+                XCTAssertFalse(owner.interrupted)
+                XCTAssertGreaterThan(changes.count, 10)
+                for peak in [began + 0.656, began + 1.968] {
+                    let peakSamples = samples.filter { abs($0.time - peak) <= 0.08 }
+                    XCTAssertGreaterThanOrEqual(peakSamples.map(\.left).max() ?? 0, baseline.left + 160,
+                                               "Capture must observe both autonomous strokes")
+                }
+                XCTAssertEqual(try XCTUnwrap(samples.last).left, baseline.left, accuracy: 2)
+                XCTAssertLessThanOrEqual(p95, 25)
+                XCTAssertLessThanOrEqual(pauses.last ?? .infinity, 80)
+                XCTAssertLessThanOrEqual(steps.max() ?? .infinity, 24)
+            } catch { try? await sampler.stop(); throw error }
+        } catch { failure = error }
+        do { try await loop.close() }
+        catch {
+            if failure == nil { failure = error }
+            else { XCTFail("Native calibration loop cleanup also failed: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
     func testHiddenApplicationIsUnhiddenBeforeResizeAdmission() async throws {
         try await resizeFixture(capture: false, hideBeforeAdmission: true)
     }
