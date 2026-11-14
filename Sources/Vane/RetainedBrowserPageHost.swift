@@ -266,6 +266,25 @@ struct WebCardEnvelopeSpec: Equatable {
         commitNormalGeometry()
     }
 
+    fileprivate func normalLayoutProposed(_ candidate: NativeBrowserPageSlot) {
+        guard ownsSlot(candidate), let window = candidate.window,
+              let root = window.contentView else { return }
+        // A native resize can change SwiftUI's proposal without another
+        // updateNSView/environment update. Renew only from that normal proposal;
+        // the actual slot/envelope layout must still agree before commitment.
+        guard normalRevision != revision || normalWindow !== window
+                || normalRoot != ObjectIdentifier(root) || normalBounds != root.bounds
+                || normalScale != window.backingScaleFactor else { return }
+        invalidateGeometry(clearNormalCommit: false)
+        normalRevision = revision
+        normalWindow = window; normalRoot = ObjectIdentifier(root)
+        normalBounds = root.bounds; normalScale = window.backingScaleFactor
+        receiptLayoutRequestedRevision = nil
+        observeGeometry(window: window, root: root)
+        candidate.normalLayoutPassed = false
+        candidate.needsLayout = true
+    }
+
     fileprivate func markerDidLayout(_ candidate: NativePageEnvelopeMarker) {
         guard ownsMarker(candidate) else { return }
         commitNormalGeometry()
@@ -346,6 +365,7 @@ struct WebCardEnvelopeSpec: Equatable {
               normalBounds == root.bounds, normalScale == window.backingScaleFactor,
               marker.window === window, let envelope = slot.envelope,
               let signature = slot.signature, signature == PageLayoutSignature(store),
+              slot.normalProposal == nil || slot.normalProposal == slot.bounds.size,
               slot.bounds.width > 0, slot.bounds.height > 0 else { return }
         let content = slot.convert(slot.bounds, to: root)
         let outer = marker.convert(marker.bounds, to: root)
@@ -491,7 +511,9 @@ struct WebCardEnvelopeSpec: Equatable {
                      context: Context) -> CGSize? {
         guard let width = proposal.width, let height = proposal.height,
               width.isFinite, height.isFinite else { return nil }
-        return CGSize(width: max(0, width), height: max(0, height))
+        let size = CGSize(width: max(0, width), height: max(0, height))
+        nsView.normalLayoutProposed(size)
+        return size
     }
     static func dismantleNSView(_ view: NativeBrowserPageSlot, coordinator: ()) { view.dismantle() }
 }
@@ -504,6 +526,7 @@ struct WebCardEnvelopeSpec: Equatable {
     fileprivate var signature: PageLayoutSignature?
     fileprivate var live = true
     fileprivate var normalLayoutPassed = false
+    fileprivate var normalProposal: CGSize?
 
     init(owner: RetainedBrowserPageHost) {
         self.owner = owner
@@ -516,6 +539,16 @@ struct WebCardEnvelopeSpec: Equatable {
                    transaction: Transaction) {
         guard live else { return }
         owner.configure(self, environment: environment, envelope: envelope, transaction: transaction)
+    }
+    func normalLayoutProposed(_ size: CGSize) {
+        guard live else { return }
+        if normalProposal != size {
+            owner.slotGeometryChanged(self, clearNormalCommit: false)
+            normalLayoutPassed = false
+            needsLayout = true
+        }
+        normalProposal = size
+        owner.normalLayoutProposed(self)
     }
     override func layout() {
         super.layout()
