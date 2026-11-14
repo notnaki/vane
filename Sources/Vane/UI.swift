@@ -189,6 +189,14 @@ final class WebHost: NSView {
         super.setFrameSize(newSize)
         if previous != newSize {
             resizeLayoutAckScheduled = false
+            // Ancestor clips may still describe the previous Library sample.
+            // Prepare exactly the new viewport without enlarging or freezing it.
+            if libraryNavigationPaintOwner != nil, resizeLayout.permitsLibraryNavigation,
+               pageResizeOwnershipWillChange == nil, !offscreen, window != nil,
+               let web, web.superview === self, !web.isHiddenOrHasHiddenAncestor,
+               web.autoresizingMask.contains(.width) {
+                web.prepareContent(in: web.bounds)
+            }
             pageLayoutDidResize?()
         }
         if wasEmpty, !offscreen, let web { PageResizeStyle.warm(web) }
