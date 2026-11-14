@@ -34,6 +34,7 @@ import Combine
 /// me", which is what a page inside a card actually wants.
 struct WebView: NSViewRepresentable {
     @Environment(\.pageResizeLayout) private var resizeLayout
+    @Environment(\.libraryNavigationPaintOwner) private var libraryPaintOwner
     let web: WKWebView
     /// Every page the window still has, so the host can tell a page that is merely not on
     /// screen from one whose tab has been closed. Only the card passes it — see `WebCard`
@@ -59,6 +60,7 @@ struct WebView: NSViewRepresentable {
     func updateNSView(_ host: WebHost, context: Context) {
         if mayMount { host.show(web, keeping: live) } else { host.removePage() }
         host.offscreen = offscreen
+        host.libraryNavigationPaintOwner = libraryPaintOwner
         host.resizeLayout = resizeLayout
         host.resizeFraction = NSSize(width: 1, height: 1)
         if pane, let split = store?.activeSplit,
@@ -96,6 +98,7 @@ struct WebView: NSViewRepresentable {
 /// a page is still a fresh attach, and still arrives a frame late; there is nothing to
 /// unhide that has never been shown.
 final class WebHost: NSView {
+    var libraryNavigationPaintOwner: UUID?
     var resizeLayout = PageResizeLayout()
     var resizeFraction = NSSize(width: 1, height: 1)
     var pageLayoutDidResize: (() -> Void)?
@@ -540,7 +543,8 @@ struct BrowserWindow: View {
                     .modifier(SidebarPageResizeMetadata(sidebarShown: store.sidebarShown,
                         layout: PageResizeLayout(librarySection: store.libraryOpen ? library.section : nil,
                             spaces: spaceCount, isPrivate: store.isPrivate,
-                            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping)))
+                            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping,
+                            libraryNavigationEnabled: !store.spaceGesture.swiping)))
                     .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
                 sidebar: sidebarSurface, panel: LibraryPanel())
             edgeStrip
@@ -854,7 +858,7 @@ struct WebCard: View {
                 LockedFolderPage(folder: folder)
                     .transition(.opacity)
             } else if let split = store.activeSplit {
-                SplitPanes(split: split)
+                documentViewport { SplitPanes(split: split) }
             } else if let tab = store.active {
                 // The list of saved accounts hangs off a field *in this page*, so it is an
                 // overlay on the page and not on the window's card — which is also what puts
@@ -870,7 +874,7 @@ struct WebCard: View {
                 // the one swapped: suspension excludes the active tab on both paths, the
                 // idle timer and memory pressure. Entering a split takes this branch away
                 // altogether and the held pages go with it.
-                TabPage(tab: tab, keepPages: true)
+                documentViewport { TabPage(tab: tab, keepPages: true) }
             } else {
                 // No tabs: the sheet a page will land on, and nothing in it. With nothing
                 // mounted there is also no WKWebView to argue with over a dropped file, so
@@ -885,6 +889,10 @@ struct WebCard: View {
             }
             OffscreenPages()
             if let tab = store.active { LoadingBar(tab: tab, hidden: store.findOpen) }
+        }
+        // Controls float over a viewport; their intrinsic widths must never
+        // enlarge the page's layout proposal (especially next to Library).
+        .overlay(alignment: .topTrailing) {
             VStack(spacing: 8) {
                 if !profileManager.saveFailures.isEmpty {
                     ProfileSaveNotice(manager: profileManager)
@@ -917,10 +925,9 @@ struct WebCard: View {
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: batterySaver.notice?.id)
             .animation(reduceMotion || batterySaver.isActive ? nil : .easeOut(duration: 0.2),
                        value: profileManager.saveFailures)
-            // Last in the stack, so it is above the page: a dragged sidebar tab lands on the
-            // card's edge bands as a new pane. Only in the tree while a drag is in flight.
-            SplitDropWell()
         }
+        // Drag targets stay above the page controls without determining its size.
+        .overlay { SplitDropWell() }
         // The status bar: the hovered link's url, bottom-left, inside the card's clip the
         // way Arc's sits on the page rather than under it.
         .overlay(alignment: .bottomLeading) {
@@ -938,6 +945,15 @@ struct WebCard: View {
         .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
         .padding(.top, topGap)
         .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
+    }
+
+    /// The native viewport and the card share one width. Freezing only the
+    /// document leaves uncovered space while closing and forces a second reflow
+    /// when the gesture clears, after the surrounding card has already landed.
+    private func documentViewport<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                   alignment: .topLeading)
     }
 }
 

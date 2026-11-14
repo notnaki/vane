@@ -16,6 +16,10 @@ import XCTest
         try await responsiveMotion(sidebar: true)
     }
 
+    func testRepositoryLibraryMovementStaysWithinTheFrameBudget() async throws {
+        try await responsiveMotion(sidebar: true, library: true)
+    }
+
     private func observe(_ script: String, in web: WKWebView) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             web.evaluateJavaScript(script, in: nil, in: PageResizeStyle.world) { result in
@@ -29,14 +33,14 @@ import XCTest
         }
     }
 
-    private func baselineSnapshot(_ web: WKWebView) async throws -> (ResizeMotionBaselineSnapshot, String) {
+    private func baselineSnapshot(_ web: WKWebView, library: Bool = false) async throws -> (ResizeMotionBaselineSnapshot, String) {
         let width = web.bounds.width, height = web.bounds.height, zoom = web.pageZoom
         let insets = web.safeAreaInsets
         let json: String = try await withCheckedThrowingContinuation { continuation in
             web.evaluateJavaScript("""
             (()=>{const s=globalThis.__vaneResizeStyle,root=document.documentElement;
               const computed=root?getComputedStyle(root):[];
-              const application=\(ResizeMotionDocumentAdmission.script);
+              const application=\(library ? ResizeMotionDocumentAdmission.repositoryScript : ResizeMotionDocumentAdmission.script);
               return JSON.stringify({visibilityState:document.visibilityState,readyState:document.readyState,
                 visibilityEvents:globalThis.__vaneMotionVisibility??[],observedAt:performance.now(),
                 appReady:application.loaded,pendingRoots:application.pendingRoots,pendingSheets:application.pendingSheets,
@@ -60,14 +64,14 @@ import XCTest
         return (try JSONDecoder().decode(ResizeMotionBaselineSnapshot.self, from: Data(json.utf8)), json)
     }
 
-    private func admitResizeBaseline(_ web: WKWebView, window: NSWindow, sidebar: Bool) async throws {
+    private func admitResizeBaseline(_ web: WKWebView, window: NSWindow, sidebar: Bool, library: Bool = false) async throws {
         // Baseline admission precedes capture timing. No drag or prime starts here.
         // Each eager GitHub application/partial adds .loaded after its initial
         // React commit, visible rAF, and idle callback. The surrounding chrome
         // and its stylesheets can still initialize after the repo root is ready.
         let readyBy = ContinuousClock.now + .seconds(5)
         PageResizeStyle.warm(web)
-        var (snapshot, json) = try await baselineSnapshot(web)
+        var (snapshot, json) = try await baselineSnapshot(web, library: library)
         print("RESPONSIVE_BASELINE sidebar=\(sidebar) stage=initial snapshot=\(json)")
         while true {
             guard ContinuousClock.now < readyBy, NSApp.isActive, window.isKeyWindow, NSApp.keyWindow === window else {
@@ -80,18 +84,32 @@ import XCTest
             // when that actual native viewport differs; otherwise observe its ack.
             if !snapshot.targetMatchesNative { PageResizeStyle.warm(web) }
             try await Task.sleep(for: .milliseconds(10))
-            (snapshot, json) = try await baselineSnapshot(web)
+            (snapshot, json) = try await baselineSnapshot(web, library: library)
         }
         print("RESPONSIVE_BASELINE sidebar=\(sidebar) stage=ready snapshot=\(json)")
     }
 
-    private func responsiveMotion(sidebar: Bool) async throws {
+    private func responsiveMotion(sidebar: Bool, library: Bool = false) async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["VANE_RESIZE_RESPONSIVE_MOTION"] == "1" else { throw XCTSkip("Opt-in real-page motion check") }
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
         defer { app.setActivationPolicy(policy) }
+        // A cold test host must own AppKit before loading or evaluating WebKit,
+        // rather than acquiring the loop only after document observations.
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await measureResponsiveMotion(sidebar: sidebar, library: library) }
+        catch { failure = error }
+        do { try await loop.close() }
+        catch { if failure == nil { failure = error } else { XCTFail("Motion fixture cleanup also failed: \(error)") } }
+        if let failure { throw failure }
+    }
+
+    private func measureResponsiveMotion(sidebar: Bool, library: Bool) async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let app = NSApplication.shared
         let store = TabStore(isPrivate: true)
         let sidebarWidth = SidebarWidth.shared.width
         SidebarWidth.shared.width = 228
@@ -113,7 +131,8 @@ import XCTest
         }
         defer { retireStore() }
         web.setFrameSize(NSSize(width: 661, height: 600))
-        web.load(URLRequest(url: URL(string: "https://github.com/notnaki/vane/pulls")!))
+        web.load(URLRequest(url: URL(string: library ? "https://github.com/notnaki/vane"
+            : "https://github.com/notnaki/vane/pulls")!))
         let loadedBy = ContinuousClock.now + .seconds(45)
         while web.isLoading || web.title?.contains("GitHub") != true {
             guard ContinuousClock.now < loadedBy else { throw NSError(domain: "ResizeMotionPageReadiness", code: 1) }
@@ -156,8 +175,6 @@ import XCTest
             }
         }
         let activeBy = ContinuousClock.now + .seconds(18)
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
-        var failure: (any Error)?
         do {
             let host = BrowserWindowHost(shown: ShownStore(store))
             let window = VaneWindow(contentRect: NSRect(x: 80, y: 80, width: 900, height: 600),
@@ -205,7 +222,7 @@ import XCTest
 #else
             let traceTiming = false
 #endif
-            try await admitResizeBaseline(web, window: window, sidebar: sidebar)
+            try await admitResizeBaseline(web, window: window, sidebar: sidebar, library: library)
             let presented = XCTestExpectation(description: "Initial responsive page presentation")
             let callback: @convention(block) () -> Void = { presented.fulfill() }
             _ = web.perform(NSSelectorFromString("_doAfterNextPresentationUpdate:"), with: callback)
@@ -224,7 +241,7 @@ import XCTest
                 }
                 // Recheck only scalar document state here; do not force a layout
                 // or warm another viewport immediately before timing the drag.
-                let appJSON = try await observe("JSON.stringify(\(ResizeMotionDocumentAdmission.script))", in: web)
+                let appJSON = try await observe("JSON.stringify(\(library ? ResizeMotionDocumentAdmission.repositoryScript : ResizeMotionDocumentAdmission.script))", in: web)
                 print("RESPONSIVE_APP sidebar=\(sidebar) stage=predrag state=\(appJSON)")
                 let documentJSON = try await observe("JSON.stringify([document.visibilityState,document.readyState])", in: web)
                 print("RESPONSIVE_DOCUMENT sidebar=\(sidebar) stage=predrag state=\(documentJSON)")
@@ -248,13 +265,20 @@ import XCTest
 #endif
                 let frameHeight = window.frame.height
                 print("RESPONSIVE_INITIAL frame=\(window.frame.size) content=\(window.contentView?.bounds.size ?? .zero) page=\(web.bounds.size)")
-                if sidebar { window.beginSidebarResize(store) }
+                if library { /* Library owns its viewport preparation. */ }
+                else if sidebar { window.beginSidebarResize(store) }
                 else { window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.midY)) }
 #if DEBUG
                 ResizeTimingDiagnostics.record("fixture.begin.returned")
 #endif
-                let widths = sidebar
-                    ? Array(stride(from: 228, through: 500, by: 2))
+                let libraryWidth = Library.panelWidth(section: Library.shared.section, spaces: 0,
+                    private: store.isPrivate, available: host.bounds.width)
+                let libraryTravel = max(1, Int(libraryWidth - 228))
+                let widths = library
+                    ? Array(stride(from: 0, through: libraryTravel, by: 2))
+                        + [libraryTravel]
+                        + Array(stride(from: libraryTravel, through: 0, by: -2)) + [0]
+                    : sidebar ? Array(stride(from: 228, through: 500, by: 2))
                         + Array(stride(from: 498, through: 164, by: -2))
                         + Array(stride(from: 166, through: 228, by: 2))
                     : Array(stride(from: 900, through: 1350, by: 2))
@@ -265,7 +289,10 @@ import XCTest
 #if DEBUG
                     ResizeTimingDiagnostics.record("fixture.input", width: CGFloat(width))
 #endif
-                    if sidebar {
+                    if library {
+                        Motion.instant { store.librarySwipeProgress = CGFloat(width) / CGFloat(libraryTravel) }
+                        host.layoutSubtreeIfNeeded()
+                    } else if sidebar {
                         if !window.updateSidebarResize(CGFloat(width)) {
                             SidebarWidth.shared.setLiveWidth(CGFloat(width), available: host.bounds.width)
                         }
@@ -282,12 +309,20 @@ import XCTest
 #endif
                     try await ContinuousClock().sleep(until: next)
                 }
-                if sidebar {
+                if library { Motion.instant { store.librarySwipeProgress = nil } }
+                else if sidebar {
                     if !window.endSidebarResize(228, completion: {}) {
                         SidebarWidth.shared.setLiveWidth(228, available: host.bounds.width)
                     }
                 } else { window.endPageResize() }
                 try await compatibilityWait {
+                    if library {
+                        func pending(_ view: NSView) -> Bool {
+                            if let bridge = view as? LibraryPaintView { return !bridge.isSettled }
+                            return view.subviews.contains(where: pending)
+                        }
+                        return !pending(host) && abs(web.bounds.width - 661) < 1
+                    }
                     if sidebar { return !window.isPreparingPageResize && abs(web.bounds.width - 661) < 1 }
                     return !window.isPreparingPageResize && abs(window.frame.width - 900) < 1
                 }
@@ -302,7 +337,7 @@ import XCTest
                     let counts = try await observe("JSON.stringify(globalThis.__vaneMotionProperties)", in: web)
                     print("RESPONSIVE_PROPERTIES sidebar=\(sidebar) samples=\(counts)")
                 }
-                let finalAppJSON = try await observe("JSON.stringify(\(ResizeMotionDocumentAdmission.script))", in: web)
+                let finalAppJSON = try await observe("JSON.stringify(\(library ? ResizeMotionDocumentAdmission.repositoryScript : ResizeMotionDocumentAdmission.script))", in: web)
                 print("RESPONSIVE_APP sidebar=\(sidebar) stage=afterdrag state=\(finalAppJSON)")
                 let samples = sampler.samples.values.filter { $0.time >= began && $0.time <= ended }
                 var changes = [ResponsiveMotionSamples.Frame(time: began, width: baselineWidth)]
@@ -315,10 +350,14 @@ import XCTest
                      from: previous.width, to: next.width)
                 }.sorted { $0.pause > $1.pause }.prefix(5)
                 print("RESPONSIVE_LONGEST \(longest)")
-                print("RESPONSIVE_WINDOWSERVER sidebar=\(sidebar) changes=\(changes.count-1) maxPauseMS=\(pauses.last ?? .infinity) p95PauseMS=\(p95) maxStep=\(steps.max() ?? .infinity)")
+                print("RESPONSIVE_WINDOWSERVER library=\(library) sidebar=\(sidebar) changes=\(changes.count-1) maxPauseMS=\(pauses.last ?? .infinity) p95PauseMS=\(p95) maxStep=\(steps.max() ?? .infinity)")
                 XCTAssertFalse(owner.interrupted, "Actual foreground admission must hold throughout capture")
                 XCTAssertGreaterThan(changes.count, 10)
-                if sidebar {
+                if library {
+                    XCTAssertGreaterThanOrEqual(changes.map(\.width).max() ?? 0, libraryWidth - 3)
+                    XCTAssertLessThanOrEqual(changes.map(\.width).min() ?? 1000, 229)
+                    XCTAssertEqual(window.frame.width, 900)
+                } else if sidebar {
                     XCTAssertGreaterThanOrEqual(changes.map(\.width).max() ?? 0, 490)
                     XCTAssertLessThanOrEqual(changes.map(\.width).min() ?? 1000, 180)
                     XCTAssertEqual(window.frame.width, 900)
@@ -328,10 +367,7 @@ import XCTest
                 XCTAssertLessThanOrEqual(steps.max() ?? .infinity, 24)
                 XCTAssertEqual(web.pageZoom, 1)
             } catch { try? await sampler.stop(); throw error }
-        } catch { failure = error }
-        do { try await loop.close() }
-        catch { if failure == nil { failure = error } else { XCTFail("Motion fixture cleanup also failed: \(error)") } }
-        if let failure { throw failure }
+        }
     }
 }
 
@@ -480,6 +516,10 @@ private final class ResponsiveMotionSamples: @unchecked Sendable {
 
 /// Public page initialization, separate from the resized outcome under test.
 enum ResizeMotionDocumentAdmission {
+    static var repositoryScript: String {
+        script.replacingOccurrences(of: "app-name=\"repo\"", with: "app-name=\"code-view\"")
+            .replacingOccurrences(of: "react-root:commit:repo", with: "react-root:commit:code-view")
+    }
     static let script = """
     (()=>{
       const roots=Array.from(document.querySelectorAll('react-app,react-partial'))
