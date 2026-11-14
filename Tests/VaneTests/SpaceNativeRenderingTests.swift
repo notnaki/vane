@@ -1137,28 +1137,6 @@ import XCTest
         try await compatibilityWait {
             abs(slide.offset - heldDrag) < 0.125 && slide.outgoing.layer?.presentation() != nil
         }
-        #if DEBUG
-        let previousStateSink = ResizeTimingDiagnostics.stateSink
-        var lifecycle: [[String: Any]] = []
-        ResizeTimingDiagnostics.stateSink = { event, time, fields in
-            guard event.hasPrefix("profile."), lifecycle.count < 128 else { return }
-            lifecycle.append(["event": event, "time": time, "fields": fields])
-        }
-        ResizeTimingDiagnostics.recordState("profile.land.source", fields: [
-            "strip": store.spaceGesture.stripView.map { String(describing: ObjectIdentifier($0)) } ?? "nil",
-            "sections": store.spaceGesture.sectionsView.map { String(describing: ObjectIdentifier($0)) } ?? "nil"
-        ])
-        defer {
-            ResizeTimingDiagnostics.stateSink = previousStateSink
-            let owners = TabStore.all.filter { $0.window === window || $0.parkedIn === window }.map { owner in
-                ["profile": owner.profileID.uuidString,
-                 "strip": owner.spaceGesture.stripView.map { String(describing: ObjectIdentifier($0)) } ?? "nil",
-                 "sections": owner.spaceGesture.sectionsView.map { String(describing: ObjectIdentifier($0)) } ?? "nil"]
-            }
-            if let data = try? JSONSerialization.data(withJSONObject: ["events": lifecycle, "owners": owners], options: [.sortedKeys]),
-               let json = String(data: data, encoding: .utf8) { print("PROFILE_ANCHOR_LIFECYCLE \(json)") }
-        }
-        #endif
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
