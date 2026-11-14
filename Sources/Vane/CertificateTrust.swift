@@ -19,8 +19,11 @@ import WebKit
             && (navigationURL.port ?? 443) == (port > 0 ? port : 443)
     }
 
+    /// A proxy's challenge comes from the system's own proxy settings, not from the page, so it
+    /// is always offered; a server's only for the main document's own origin.
     static func shouldOfferLogin(_ space: URLProtectionSpace, navigationURL: URL?) -> Bool {
-        guard !space.isProxy(), let navigationURL,
+        if space.isProxy() { return true }
+        guard let navigationURL,
               let scheme = space.protocol?.lowercased(), ["http", "https"].contains(scheme),
               navigationURL.scheme?.lowercased() == scheme,
               navigationURL.host?.lowercased() == space.host.lowercased() else { return false }

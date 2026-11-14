@@ -16,7 +16,7 @@ import XCTest
             XCTAssertFalse(CertificateTrust.shouldOfferLogin(space, navigationURL: nil))
             let proxy = URLProtectionSpace(proxyHost: "example.test", port: 443, type: NSURLProtectionSpaceHTTPSProxy,
                                            realm: nil, authenticationMethod: method)
-            XCTAssertFalse(CertificateTrust.shouldOfferLogin(proxy, navigationURL: URL(string: "https://example.test")))
+            XCTAssertTrue(CertificateTrust.shouldOfferLogin(proxy, navigationURL: URL(string: "https://other.test")))
         }
         let plain = URLProtectionSpace(host: "example.test", port: 80, protocol: "http", realm: nil,
                                        authenticationMethod: NSURLAuthenticationMethodHTTPBasic)
