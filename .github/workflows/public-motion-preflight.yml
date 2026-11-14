@@ -1,4 +1,4 @@
-name: Public covered profile root layout preflight
+name: Public unchanged profile macOS26 Intel comparison
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -14,12 +14,12 @@ env:
     VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
     VaneTests.SpaceNativeRenderingTests/testProfileHopPublishesOnlyTheCompletedArrivingSidebar
     VaneTests.SpaceNativeRenderingTests/testCachedProfileHopKeepsItsMountedScrollShell
-  VANE_CANDIDATE_SHA: afd8a7773e7ff58395c29b962129d2a09fca611b
+  VANE_CANDIDATE_SHA: 4a8018761475087ec51d610660976e9bf99cb37e
   VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows|testProfileHopPublishesOnlyTheCompletedArrivingSidebar|testCachedProfileHopKeepsItsMountedScrollShell)$'
 jobs:
   diagnostic:
-    name: Original four profiles and covered root regressions
-    runs-on: macos-26
+    name: Unchanged profiles on actual macOS26 Intel
+    runs-on: macos-26-intel
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -36,6 +36,10 @@ jobs:
         id: toolchain
         run: |
           set -euo pipefail
+          sw_vers
+          uname -m
+          [[ "$(sw_vers -productVersion)" == 26.* ]]
+          test "$(uname -m)" = x86_64
           swift --version
           xcodebuild -version
           KEY=$(python3 scripts/ci-build-artifact.py toolchain)
