@@ -333,6 +333,39 @@ struct WebCardEnvelopeSpec: Equatable {
         invalidateGeometry(clearNormalCommit: true)
     }
 
+#if DEBUG
+    // Value-only fixture diagnosis, read AFTER the original outcome completes.
+    // This does not lay out views, capture geometry, or grant mount authority.
+    func nativeAdmissionState(in window: NSWindow) -> String {
+        let root = window.contentView
+        let freshReceipt = slot?.environment?.librarySource?.capture()
+        let state: [String: String] = [
+            "retired": String(retired), "revision": String(revision),
+            "normalRevision": String(describing: normalRevision),
+            "normalWindow": String(normalWindow === window),
+            "normalBounds": String(describing: normalBounds),
+            "rootBounds": String(describing: root?.bounds),
+            "storeVisible": String(describing: store?.profileVisible),
+            "storeWindow": String(store?.window === window),
+            "slot": String(slot != nil), "slotCurrent": String(slot?.generation == slotGeneration),
+            "slotLayout": String(describing: slot?.normalLayoutPassed),
+            "slotWindow": String(slot?.window === window),
+            "hostWindow": String(hostingView.window === window),
+            "hostAttached": String(slot != nil && hostingView.superview === slot),
+            "slotHidden": String(describing: slot?.isHiddenOrHasHiddenAncestor),
+            "slotFrame": String(describing: slot?.frame),
+            "outerFrame": String(describing: outerMarker?.frame),
+            "outerLayout": String(describing: outerMarker?.normalLayoutPassed),
+            "geometry": String(geometry != nil),
+            "committedReceipt": String(geometry?.receipt != nil),
+            "committedReceiptIdle": String(describing: geometry?.receipt?.isCurrentAndIdle()),
+            "freshReceipt": String(freshReceipt != nil),
+            "receiptMatchesPaint": String(freshReceipt?.owner == slot?.environment?.paintOwner)
+        ]
+        return state.keys.sorted().map { "\($0)=\(state[$0]!)" }.joined(separator: " ")
+    }
+#endif
+
     /// Only a normal native slot/envelope layout callback may commit geometry.
     /// Fast-path admission NEVER overwrites a stamp with current window bounds.
     private func commitNormalGeometry() {
