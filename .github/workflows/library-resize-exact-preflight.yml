@@ -6,44 +6,114 @@ permissions:
   contents: read
 env:
   VANE_EXPECTED_TESTS: |
-    VaneTests.LibraryPageMountReceiptTests/testCurrentClosedOwnerCanCaptureAfterColdMarkerReadiness
-    VaneTests.LibraryPageMountReceiptTests/testHeldZeroIsNotIdleAndCannotReviveTheOldReceipt
-    VaneTests.LibraryPageMountReceiptTests/testSynchronousRequestRoundTripInvalidatesBeforeAnyDrain
-    VaneTests.LibraryPageMountReceiptTests/testIdenticalAtRestBridgeReevaluationDoesNotInvalidateItsEpoch
-    VaneTests.LibraryPageMountReceiptTests/testExplicitCommandInvalidatesWithoutAPendingDestination
-    VaneTests.LibraryPageMountReceiptTests/testNativeMarkerDetachAndSameWindowReattachCannotReviveReceipt
-    VaneTests.LibraryPageMountReceiptTests/testPaintReplacementAndCancellationInvalidateOldReceipt
-    VaneTests.LibraryPageMountReceiptTests/testPendingArrivalAndCancelledCallbackCannotAdmitIdle
-    VaneTests.LibraryPageMountReceiptTests/testNativeBufferOwnerRejectsEvenAtZeroPaintProgress
-    VaneTests.LibraryPageMountReceiptTests/testCurrentClosedFinishedMineStillConsumesMomentum
-    VaneTests.LibraryPageMountReceiptTests/testPendingLandingRejectsEvenIfTheModelPresentationWasCleared
-    VaneTests.LibraryPageMountReceiptTests/testProviderAndReceiptDoNotRetainTheActualPaintOwner
-    VaneTests.LibraryPageMountReceiptTests/testStaleSettlementMetadataCannotClearTheNewerActualLanding
-    VaneTests.LibraryPageMountReceiptTests/testBindingReplacementCannotResurrectAnOldReceipt
-    VaneTests.LibraryPageMountReceiptTests/testCheckedEpochExhaustionNeverWraps
-    VaneTests.LibraryPageMountReceiptTests/testExhaustedActualPaintOwnerStaysFailClosedAfterIdleRebinding
-    VaneTests.LibraryPageMountReceiptTests/testSynchronousVisibilityRestorationNeverRevivesOldReceipt
-    VaneTests.LibraryPageMountReceiptTests/testSynchronousParkingRestorationNeverRevivesOldReceipt
-    VaneTests.LibraryPageMountReceiptTests/testSynchronousWindowRestorationNeverRevivesOldReceipt
-    VaneTests.LibraryPageMountReceiptTests/testIdenticalOwnerLifecycleAssignmentsPreserveRestingReceipt
-    VaneTests.LibraryPageMountReceiptTests/testHiddenParkedOrUnknownOwnerCannotCapture
-  VANE_CANDIDATE_SHA: 'fcf77a21777a0f62d33e273a9b424c45f3b05db1'
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]LibraryPageMountReceiptTests/.*$'
+    VaneTests.LibraryPageLayoutTests/testAnimatedDocumentKeepsThePresentedCardInsideTheWindow
+    VaneTests.LibraryPageLayoutTests/testClosingLibraryKeepsPageRightEdgeAtWindowInset
+    VaneTests.LibraryPageLayoutTests/testFindCannotPushTheRealCardOverLibraryOrBeyondWindow
+    VaneTests.LibraryPageLayoutTests/testFloatingLibraryGutterReachesItsEndpointBeforeTheGestureClears
+    VaneTests.LibraryPageLayoutTests/testLibraryDocumentFollowsTheVisibleCardWithoutAnEndpointWidthJump
+    VaneTests.LibraryPageLayoutTests/testSplitDocumentsStayInsideTheCardThroughoutLibraryMovement
+    VaneTests.LibrarySwipeTests/testLibraryDragKeepsWebKitFillingTheMovingCard
+    VaneTests.LivePageResizeBufferTests/testBaselineAdmissionAllowsIntegerCSSViewportRounding
+    VaneTests.LivePageResizeBufferTests/testBaselineAdmissionMapsActualTwentyOnePointInsetAndZoom
+    VaneTests.LivePageResizeBufferTests/testBaselineAdmissionRejectsHiddenOrLoadingDocument
+    VaneTests.LivePageResizeBufferTests/testBaselineAdmissionRejectsPendingNativeViewportAcknowledgement
+    VaneTests.LivePageResizeBufferTests/testBaselineAdmissionRejectsThePagesUncommittedInitialRender
+    VaneTests.LivePageResizeBufferTests/testBaselineAdmissionRequiresAnActualLaidOutDocument
+    VaneTests.LivePageResizeBufferTests/testBaselineAdmissionRequiresTheActiveAdoptedEnabledSheet
+    VaneTests.LivePageResizeBufferTests/testBufferKeepsTheOriginalTopGapDuringPreparationOwnedPublishAndCancellation
+    VaneTests.LivePageResizeBufferTests/testCancellationPreservesOriginallyDisabledNativeFlags
+    VaneTests.LivePageResizeBufferTests/testCancelledWindowPublicationCannotPublishFromALateFrame
+    VaneTests.LivePageResizeBufferTests/testChangedNavigationOrSplitMetadataCancelsTheFixedBaseline
+    VaneTests.LivePageResizeBufferTests/testCoveredShrinkingReleaseWaitsForNativeParentOrWatchdogWithoutRepainting
+    VaneTests.LivePageResizeBufferTests/testCoveredShrinkingSidebarReleaseBoundsSynchronousPresentations
+    VaneTests.LivePageResizeBufferTests/testCoveredShrinkingSidebarReleaseReconcilesDeferredHostBeforeExactPaint
+    VaneTests.LivePageResizeBufferTests/testCoveredSidebarRequestsCoalesceDescendantLayoutUntilExactRelease
+    VaneTests.LivePageResizeBufferTests/testDestinationShowCancelsOldBufferBeforeAssigningItsGeometry
+    VaneTests.LivePageResizeBufferTests/testDiagnosticTimelineCorrelatesTimedOutPrimeWithLateCallbackAndRetirement
+    VaneTests.LivePageResizeBufferTests/testExternallyChangedHostClipCancelsWithoutRestoringOverItsOwner
+    VaneTests.LivePageResizeBufferTests/testFinalPaintWaitsForAsynchronousSidebarParentBeforeRestoringMask
+    VaneTests.LivePageResizeBufferTests/testFinishRetainsLatestEndpointThenRestoresExactNativeSizingOnce
+    VaneTests.LivePageResizeBufferTests/testFirstNearImmediatePointerSampleDoesNotInflateTheMinimumPrime
+    VaneTests.LivePageResizeBufferTests/testFixedNativeAxisDoesNotRefillForeverOrWaitForAnUnrelatedParentDelta
+    VaneTests.LivePageResizeBufferTests/testIdleRootOrPageRemovalRestoresNativeSizingWithoutAnotherPaint
+    VaneTests.LivePageResizeBufferTests/testIdleWindowHideOrProgrammaticFrameChangeRestoresNativeSizing
+    VaneTests.LivePageResizeBufferTests/testInspectorSiblingRejectsAdmissionBeforeMutatingEitherWebView
+    VaneTests.LivePageResizeBufferTests/testLibraryFinishSupersedesObsoleteLookaheadWithoutAcceptingItsCallback
+    VaneTests.LivePageResizeBufferTests/testLibraryPreparationDoesNotStealAnActiveNativeResizeViewport
+    VaneTests.LivePageResizeBufferTests/testMixedAxisPreparationNeverShrinksBelowStillVisibleGeometry
+    VaneTests.LivePageResizeBufferTests/testMovedPageKeepsNewOwnerFlagsWhileOriginalHostClipRestores
+    VaneTests.LivePageResizeBufferTests/testNativeWindowResizeRetiresPendingLibraryViewportBeforeCapturingSizing
+    VaneTests.LivePageResizeBufferTests/testNewCommandCancelsPendingReleaseAndItsSideEffects
+    VaneTests.LivePageResizeBufferTests/testOriginalPageToParentDifferenceSurvivesExactRelease
+    VaneTests.LivePageResizeBufferTests/testOverdueStyleReplyCannotRenewAnUndeliveredInitialDeadline
+    VaneTests.LivePageResizeBufferTests/testOwnedHostClipAndOriginalChildSizingFlagsRestoreOnReleaseAndCancel
+    VaneTests.LivePageResizeBufferTests/testOwnerReplacementRejectsLatePaintWithoutOverwritingNewFrameAndMask
+    VaneTests.LivePageResizeBufferTests/testPreviousGenerationStyleReplyCannotRenewTheCurrentPaint
+    VaneTests.LivePageResizeBufferTests/testPrimingPreparesNativeChildrenBehindHostClipAndOnlyCoveredRequestsCommit
+    VaneTests.LivePageResizeBufferTests/testProgrammaticWindowOrRootReplacementCancelsTheOldDrag
+    VaneTests.LivePageResizeBufferTests/testRefillUsesFixedBaselineAndReversalFitsBothPaintedAndInFlightCoverage
+    VaneTests.LivePageResizeBufferTests/testReleaseWatchdogRunsDeferredSidebarEffectsExactlyOnce
+    VaneTests.LivePageResizeBufferTests/testSameHostReplacementSizingKeepsNewFrameMaskChildFlagAndClip
+    VaneTests.LivePageResizeBufferTests/testShrinkHysteresisCeilingScalesWithEachSplitAxis
+    VaneTests.LivePageResizeBufferTests/testShrinkHysteresisStillRefillsGrowthAndBlocksReversalPastPendingTrim
+    VaneTests.LivePageResizeBufferTests/testShrinkingLibraryViewportDoesNotRetainAWholeResponsiveColumnOutsideTheCard
+    VaneTests.LivePageResizeBufferTests/testSidebarPredictionUsesOriginalNavigationAndWaitsForFinalHostLayout
+    VaneTests.LivePageResizeBufferTests/testSlowSidebarShrinkReusesCoverageWithinTheAbsoluteLeadCeiling
+    VaneTests.LivePageResizeBufferTests/testSplitHostClipsKeepVisibleGeometryCoveredUntilEveryIndependentPaintPresents
+    VaneTests.LivePageResizeBufferTests/testStyleReplyProtectsPendingPaintFromTheSupersededDeadline
+    VaneTests.LivePageResizeBufferTests/testSynchronousPrimeRefillAndExactPresentationCompleteWithoutWatchdog
+    VaneTests.LivePageResizeBufferTests/testTimedOutOwnersLatePaintCannotDisableTransferredPagesNewPreparation
+    VaneTests.LivePageResizeBufferTests/testTopAnchorHandlesFlippedCoordinatesAndNonzeroParentBounds
+    VaneTests.LivePageResizeBufferTests/testUnchangedInitialProposalDoesNotRepublishTheAlreadyVisibleWindow
+    VaneTests.LivePageResizeBufferTests/testUnshownNativeChildLayoutPreparesBothCSSAxesBehindFixedHostClip
+    VaneTests.LivePageResizeBufferTests/testUnshownTitledWindowPrimePreparesNativeChildrenAndBothCSSAxesBehindHostClip
+    VaneTests.LivePageResizeBufferTests/testWatchdogUsesLatestRequestAndLateCallbacksCannotCommitAgain
+    VaneTests.LivePageResizeBufferTests/testWindowDragDoesNotScheduleSidebarMetadataAcknowledgmentLayout
+    VaneTests.LivePageResizeBufferTests/testWindowFrameRevalidatesOwnershipBeforePublishing
+    VaneTests.LivePageResizeBufferTests/testWindowPublicationReleaseDrainsWithoutAnotherDisplayTick
+    VaneTests.LivePageResizeBufferTests/testWindowPublicationsCoalesceAtDisplayFramesAndStillRequirePaint
+    VaneTests.LivePageResizeBufferTests/testWindowWatchdogStopsFrameClockAndRetainsImmediateNativeFallback
+    VaneTests.SidebarResizePublicationTests/testCancelDuringSubmittedParentWaitDropsReleaseAndPreservesNewPageOwner
+    VaneTests.SidebarResizePublicationTests/testCancellationDiscardsQueuedValueAndRejectsLateFrameAndRelease
+    VaneTests.SidebarResizePublicationTests/testCoalescedParentAcknowledgmentClearsSubmittedFloorBeforeExactPaint
+    VaneTests.SidebarResizePublicationTests/testCoalescedReturnToBaselineFinishesWithoutAnyRepresentableUpdateOrWatchdog
+    VaneTests.SidebarResizePublicationTests/testDroppingOwnerInvalidatesDriverWithoutRetainingPublication
+    VaneTests.SidebarResizePublicationTests/testEqualBoundsWithStaleMetadataDoNotAcknowledgeEarlierWiderSubmissionDuringDrag
+    VaneTests.SidebarResizePublicationTests/testFittedEquivalentWidthDoesNotForceNativeLayout
+    VaneTests.SidebarResizePublicationTests/testFrameHookFollowsOneLatestPublicationAndNeverAnEmptyFrameOrRelease
+    VaneTests.SidebarResizePublicationTests/testFrameHookRejectsCancellationFinishAndOwnerReplacementDuringPublish
+    VaneTests.SidebarResizePublicationTests/testFramePublishesOnlyLatestWidthAndDoesNotRepeatIdleValues
+    VaneTests.SidebarResizePublicationTests/testFrameRejectsReplacedStoreRootPageOrWindowBeforePublishing
+    VaneTests.SidebarResizePublicationTests/testLatestUncoveredRequestRetainsOnlyCoveredQueuedGeometryUntilPaint
+    VaneTests.SidebarResizePublicationTests/testNativeFrameLayoutRejectsReplacedRoot
+    VaneTests.SidebarResizePublicationTests/testOlderLargerParentInstalledDuringReleaseFlushKeepsFloorUntilLatestLayout
+    VaneTests.SidebarResizePublicationTests/testOwnerReplacementDiscardsQueuedWidthBeforeFrameOrRelease
+    VaneTests.SidebarResizePublicationTests/testPaintWatchdogStopsClockAndKeepsNativeFallbackImmediate
+    VaneTests.SidebarResizePublicationTests/testPendingShrinkAndReversalNeverPublishPastTheSmallerInFlightViewport
+    VaneTests.SidebarResizePublicationTests/testReentrantEnqueueAndNestedFrameWaitUntilTheNextFrame
+    VaneTests.SidebarResizePublicationTests/testReleaseFlushesSynchronouslyAndLaterExactWidthsAreImmediate
+    VaneTests.SidebarResizePublicationTests/testSameSizeMetadataAcknowledgesOnceThenNormalLayoutsDoNotRepeatIt
+    VaneTests.SidebarResizePublicationTests/testSameSizeNativeLayoutAfterMetadataUpdateClearsFloorDuringDrag
+    VaneTests.SidebarResizePublicationTests/testSizeChangingMetadataUsesOneNativeResizeAckWithoutAnExtraLayout
+    VaneTests.SidebarResizePublicationTests/testSubmittedWiderParentRemainsCoveredThroughShrinkAndReleaseUntilLatestAcknowledgment
+    VaneTests.SidebarResizePublicationTests/testUnacknowledgedSubmittedFloorDoesNotRepeatTheSamePaintDuringDrag
+    VaneTests.SidebarResizePublicationTests/testUnadmittedWindowKeepsImmediateFallbackWithoutStartingClock
+    VaneTests.SidebarResizePublicationTests/testUncoveredReleasePublishesExactWidthWithoutAnotherFrameTick
+    VaneTests.SidebarResizePublicationTests/testUnshownHostingGeometryIsCurrentBeforeFrameReturns
+    VaneTests.WindowResizeLayoutTests/testFloatingLibraryNavigationKeepsTheResponsiveDocumentPainted
+    VaneTests.WindowResizeLayoutTests/testProductionParentRefreshKeepsLibraryViewportOwnedAndPainted
+  VANE_CANDIDATE_SHA: '6e1bf49ff3b18936787391e30245df7fb02d6ec5'
+  VANE_LIBRARY_PAINT_TRACE: '0'
+  VANE_DIAGNOSTIC_FILTER: '^(?:VaneTests\.LibraryPageLayoutTests/testAnimatedDocumentKeepsThePresentedCardInsideTheWindow|VaneTests\.LibraryPageLayoutTests/testClosingLibraryKeepsPageRightEdgeAtWindowInset|VaneTests\.LibraryPageLayoutTests/testFindCannotPushTheRealCardOverLibraryOrBeyondWindow|VaneTests\.LibraryPageLayoutTests/testFloatingLibraryGutterReachesItsEndpointBeforeTheGestureClears|VaneTests\.LibraryPageLayoutTests/testLibraryDocumentFollowsTheVisibleCardWithoutAnEndpointWidthJump|VaneTests\.LibraryPageLayoutTests/testSplitDocumentsStayInsideTheCardThroughoutLibraryMovement|VaneTests\.LibrarySwipeTests/testLibraryDragKeepsWebKitFillingTheMovingCard|VaneTests\.LivePageResizeBufferTests/testBaselineAdmissionAllowsIntegerCSSViewportRounding|VaneTests\.LivePageResizeBufferTests/testBaselineAdmissionMapsActualTwentyOnePointInsetAndZoom|VaneTests\.LivePageResizeBufferTests/testBaselineAdmissionRejectsHiddenOrLoadingDocument|VaneTests\.LivePageResizeBufferTests/testBaselineAdmissionRejectsPendingNativeViewportAcknowledgement|VaneTests\.LivePageResizeBufferTests/testBaselineAdmissionRejectsThePagesUncommittedInitialRender|VaneTests\.LivePageResizeBufferTests/testBaselineAdmissionRequiresAnActualLaidOutDocument|VaneTests\.LivePageResizeBufferTests/testBaselineAdmissionRequiresTheActiveAdoptedEnabledSheet|VaneTests\.LivePageResizeBufferTests/testBufferKeepsTheOriginalTopGapDuringPreparationOwnedPublishAndCancellation|VaneTests\.LivePageResizeBufferTests/testCancellationPreservesOriginallyDisabledNativeFlags|VaneTests\.LivePageResizeBufferTests/testCancelledWindowPublicationCannotPublishFromALateFrame|VaneTests\.LivePageResizeBufferTests/testChangedNavigationOrSplitMetadataCancelsTheFixedBaseline|VaneTests\.LivePageResizeBufferTests/testCoveredShrinkingReleaseWaitsForNativeParentOrWatchdogWithoutRepainting|VaneTests\.LivePageResizeBufferTests/testCoveredShrinkingSidebarReleaseBoundsSynchronousPresentations|VaneTests\.LivePageResizeBufferTests/testCoveredShrinkingSidebarReleaseReconcilesDeferredHostBeforeExactPaint|VaneTests\.LivePageResizeBufferTests/testCoveredSidebarRequestsCoalesceDescendantLayoutUntilExactRelease|VaneTests\.LivePageResizeBufferTests/testDestinationShowCancelsOldBufferBeforeAssigningItsGeometry|VaneTests\.LivePageResizeBufferTests/testDiagnosticTimelineCorrelatesTimedOutPrimeWithLateCallbackAndRetirement|VaneTests\.LivePageResizeBufferTests/testExternallyChangedHostClipCancelsWithoutRestoringOverItsOwner|VaneTests\.LivePageResizeBufferTests/testFinalPaintWaitsForAsynchronousSidebarParentBeforeRestoringMask|VaneTests\.LivePageResizeBufferTests/testFinishRetainsLatestEndpointThenRestoresExactNativeSizingOnce|VaneTests\.LivePageResizeBufferTests/testFirstNearImmediatePointerSampleDoesNotInflateTheMinimumPrime|VaneTests\.LivePageResizeBufferTests/testFixedNativeAxisDoesNotRefillForeverOrWaitForAnUnrelatedParentDelta|VaneTests\.LivePageResizeBufferTests/testIdleRootOrPageRemovalRestoresNativeSizingWithoutAnotherPaint|VaneTests\.LivePageResizeBufferTests/testIdleWindowHideOrProgrammaticFrameChangeRestoresNativeSizing|VaneTests\.LivePageResizeBufferTests/testInspectorSiblingRejectsAdmissionBeforeMutatingEitherWebView|VaneTests\.LivePageResizeBufferTests/testLibraryFinishSupersedesObsoleteLookaheadWithoutAcceptingItsCallback|VaneTests\.LivePageResizeBufferTests/testLibraryPreparationDoesNotStealAnActiveNativeResizeViewport|VaneTests\.LivePageResizeBufferTests/testMixedAxisPreparationNeverShrinksBelowStillVisibleGeometry|VaneTests\.LivePageResizeBufferTests/testMovedPageKeepsNewOwnerFlagsWhileOriginalHostClipRestores|VaneTests\.LivePageResizeBufferTests/testNativeWindowResizeRetiresPendingLibraryViewportBeforeCapturingSizing|VaneTests\.LivePageResizeBufferTests/testNewCommandCancelsPendingReleaseAndItsSideEffects|VaneTests\.LivePageResizeBufferTests/testOriginalPageToParentDifferenceSurvivesExactRelease|VaneTests\.LivePageResizeBufferTests/testOverdueStyleReplyCannotRenewAnUndeliveredInitialDeadline|VaneTests\.LivePageResizeBufferTests/testOwnedHostClipAndOriginalChildSizingFlagsRestoreOnReleaseAndCancel|VaneTests\.LivePageResizeBufferTests/testOwnerReplacementRejectsLatePaintWithoutOverwritingNewFrameAndMask|VaneTests\.LivePageResizeBufferTests/testPreviousGenerationStyleReplyCannotRenewTheCurrentPaint|VaneTests\.LivePageResizeBufferTests/testPrimingPreparesNativeChildrenBehindHostClipAndOnlyCoveredRequestsCommit|VaneTests\.LivePageResizeBufferTests/testProgrammaticWindowOrRootReplacementCancelsTheOldDrag|VaneTests\.LivePageResizeBufferTests/testRefillUsesFixedBaselineAndReversalFitsBothPaintedAndInFlightCoverage|VaneTests\.LivePageResizeBufferTests/testReleaseWatchdogRunsDeferredSidebarEffectsExactlyOnce|VaneTests\.LivePageResizeBufferTests/testSameHostReplacementSizingKeepsNewFrameMaskChildFlagAndClip|VaneTests\.LivePageResizeBufferTests/testShrinkHysteresisCeilingScalesWithEachSplitAxis|VaneTests\.LivePageResizeBufferTests/testShrinkHysteresisStillRefillsGrowthAndBlocksReversalPastPendingTrim|VaneTests\.LivePageResizeBufferTests/testShrinkingLibraryViewportDoesNotRetainAWholeResponsiveColumnOutsideTheCard|VaneTests\.LivePageResizeBufferTests/testSidebarPredictionUsesOriginalNavigationAndWaitsForFinalHostLayout|VaneTests\.LivePageResizeBufferTests/testSlowSidebarShrinkReusesCoverageWithinTheAbsoluteLeadCeiling|VaneTests\.LivePageResizeBufferTests/testSplitHostClipsKeepVisibleGeometryCoveredUntilEveryIndependentPaintPresents|VaneTests\.LivePageResizeBufferTests/testStyleReplyProtectsPendingPaintFromTheSupersededDeadline|VaneTests\.LivePageResizeBufferTests/testSynchronousPrimeRefillAndExactPresentationCompleteWithoutWatchdog|VaneTests\.LivePageResizeBufferTests/testTimedOutOwnersLatePaintCannotDisableTransferredPagesNewPreparation|VaneTests\.LivePageResizeBufferTests/testTopAnchorHandlesFlippedCoordinatesAndNonzeroParentBounds|VaneTests\.LivePageResizeBufferTests/testUnchangedInitialProposalDoesNotRepublishTheAlreadyVisibleWindow|VaneTests\.LivePageResizeBufferTests/testUnshownNativeChildLayoutPreparesBothCSSAxesBehindFixedHostClip|VaneTests\.LivePageResizeBufferTests/testUnshownTitledWindowPrimePreparesNativeChildrenAndBothCSSAxesBehindHostClip|VaneTests\.LivePageResizeBufferTests/testWatchdogUsesLatestRequestAndLateCallbacksCannotCommitAgain|VaneTests\.LivePageResizeBufferTests/testWindowDragDoesNotScheduleSidebarMetadataAcknowledgmentLayout|VaneTests\.LivePageResizeBufferTests/testWindowFrameRevalidatesOwnershipBeforePublishing|VaneTests\.LivePageResizeBufferTests/testWindowPublicationReleaseDrainsWithoutAnotherDisplayTick|VaneTests\.LivePageResizeBufferTests/testWindowPublicationsCoalesceAtDisplayFramesAndStillRequirePaint|VaneTests\.LivePageResizeBufferTests/testWindowWatchdogStopsFrameClockAndRetainsImmediateNativeFallback|VaneTests\.SidebarResizePublicationTests/testCancelDuringSubmittedParentWaitDropsReleaseAndPreservesNewPageOwner|VaneTests\.SidebarResizePublicationTests/testCancellationDiscardsQueuedValueAndRejectsLateFrameAndRelease|VaneTests\.SidebarResizePublicationTests/testCoalescedParentAcknowledgmentClearsSubmittedFloorBeforeExactPaint|VaneTests\.SidebarResizePublicationTests/testCoalescedReturnToBaselineFinishesWithoutAnyRepresentableUpdateOrWatchdog|VaneTests\.SidebarResizePublicationTests/testDroppingOwnerInvalidatesDriverWithoutRetainingPublication|VaneTests\.SidebarResizePublicationTests/testEqualBoundsWithStaleMetadataDoNotAcknowledgeEarlierWiderSubmissionDuringDrag|VaneTests\.SidebarResizePublicationTests/testFittedEquivalentWidthDoesNotForceNativeLayout|VaneTests\.SidebarResizePublicationTests/testFrameHookFollowsOneLatestPublicationAndNeverAnEmptyFrameOrRelease|VaneTests\.SidebarResizePublicationTests/testFrameHookRejectsCancellationFinishAndOwnerReplacementDuringPublish|VaneTests\.SidebarResizePublicationTests/testFramePublishesOnlyLatestWidthAndDoesNotRepeatIdleValues|VaneTests\.SidebarResizePublicationTests/testFrameRejectsReplacedStoreRootPageOrWindowBeforePublishing|VaneTests\.SidebarResizePublicationTests/testLatestUncoveredRequestRetainsOnlyCoveredQueuedGeometryUntilPaint|VaneTests\.SidebarResizePublicationTests/testNativeFrameLayoutRejectsReplacedRoot|VaneTests\.SidebarResizePublicationTests/testOlderLargerParentInstalledDuringReleaseFlushKeepsFloorUntilLatestLayout|VaneTests\.SidebarResizePublicationTests/testOwnerReplacementDiscardsQueuedWidthBeforeFrameOrRelease|VaneTests\.SidebarResizePublicationTests/testPaintWatchdogStopsClockAndKeepsNativeFallbackImmediate|VaneTests\.SidebarResizePublicationTests/testPendingShrinkAndReversalNeverPublishPastTheSmallerInFlightViewport|VaneTests\.SidebarResizePublicationTests/testReentrantEnqueueAndNestedFrameWaitUntilTheNextFrame|VaneTests\.SidebarResizePublicationTests/testReleaseFlushesSynchronouslyAndLaterExactWidthsAreImmediate|VaneTests\.SidebarResizePublicationTests/testSameSizeMetadataAcknowledgesOnceThenNormalLayoutsDoNotRepeatIt|VaneTests\.SidebarResizePublicationTests/testSameSizeNativeLayoutAfterMetadataUpdateClearsFloorDuringDrag|VaneTests\.SidebarResizePublicationTests/testSizeChangingMetadataUsesOneNativeResizeAckWithoutAnExtraLayout|VaneTests\.SidebarResizePublicationTests/testSubmittedWiderParentRemainsCoveredThroughShrinkAndReleaseUntilLatestAcknowledgment|VaneTests\.SidebarResizePublicationTests/testUnacknowledgedSubmittedFloorDoesNotRepeatTheSamePaintDuringDrag|VaneTests\.SidebarResizePublicationTests/testUnadmittedWindowKeepsImmediateFallbackWithoutStartingClock|VaneTests\.SidebarResizePublicationTests/testUncoveredReleasePublishesExactWidthWithoutAnotherFrameTick|VaneTests\.SidebarResizePublicationTests/testUnshownHostingGeometryIsCurrentBeforeFrameReturns|VaneTests\.WindowResizeLayoutTests/testFloatingLibraryNavigationKeepsTheResponsiveDocumentPainted|VaneTests\.WindowResizeLayoutTests/testProductionParentRefreshKeepsLibraryViewportOwnedAndPainted)$'
 jobs:
   library-receipt:
-    strategy:
-      fail-fast: false
-      matrix:
-        reduced: ['false', 'true']
-    env:
-      VANE_REDUCED_MOTION: ${{ matrix.reduced }}
     runs-on: macos-26
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.VANE_CANDIDATE_SHA }}
-      - name: Verify exact receipt fixture and actual runner
+      - name: Verify exact Library layout repair and actual runner
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$VANE_CANDIDATE_SHA"
@@ -86,16 +156,16 @@ jobs:
           import Foundation
           let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
           print("MOTION_ADMISSION reduceMotion=\(reduced) screens=\(NSScreen.screens.map(\.frame))")
-          if CommandLine.arguments.count > 1 && reduced != (CommandLine.arguments[1] == "true") { exit(78) }
+          if CommandLine.arguments.contains("--require-motion") && reduced { exit(78) }
           SWIFT
           swiftc "$RUNNER_TEMP/vane-motion-probe.swift" -o "$RUNNER_TEMP/vane-motion-probe"
           "$RUNNER_TEMP/vane-motion-probe" | tee "$RUNNER_TEMP/vane-motion-admission.log"
-          defaults write com.apple.universalaccess reduceMotion -bool "$VANE_REDUCED_MOTION"
-          defaults -currentHost write com.apple.universalaccess reduceMotion -bool "$VANE_REDUCED_MOTION"
+          defaults write com.apple.universalaccess reduceMotion -bool false
+          defaults -currentHost write com.apple.universalaccess reduceMotion -bool false
           admitted=false
           for attempt in {1..10}; do
             echo "Motion admission attempt $attempt" >> "$RUNNER_TEMP/vane-motion-admission.log"
-            if "$RUNNER_TEMP/vane-motion-probe" "$VANE_REDUCED_MOTION" >> "$RUNNER_TEMP/vane-motion-admission.log"; then admitted=true; break; fi
+            if "$RUNNER_TEMP/vane-motion-probe" --require-motion >> "$RUNNER_TEMP/vane-motion-admission.log"; then admitted=true; break; fi
             sleep 0.5
           done
           cat "$RUNNER_TEMP/vane-motion-admission.log"
@@ -148,10 +218,7 @@ jobs:
               key=f'VaneTests.{cls}/{method}'
               if key in outcomes: outcomes[key].append(status)
           assert all(v==['passed'] for v in outcomes.values()), f'Every selected case must pass once: {outcomes}'
-          reduced=os.environ['VANE_REDUCED_MOTION']
-          mode='immediate' if reduced=='true' else 'animated'
-          assert (r/'vane-diag-tests.log').read_text().count(f'RECEIPT_LANDING_POLICY reduced={reduced} path={mode}')==2
-          print('All exact preflight cases passed once; no skips; both tail controls exercised the admitted policy.')
+          print('All exact preflight cases passed once; no skips.')
           PASSGUARD
           grep -Fxq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-diag-tests.log"
           if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-diag-tests.log"; then exit 1; fi
@@ -159,7 +226,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
-          name: public-native-logs-motion-${{ matrix.reduced }}
+          name: public-native-logs
           path: |
             ${{ runner.temp }}/vane-diag-tests.log
             ${{ runner.temp }}/profile-boundary-costs
