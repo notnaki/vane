@@ -223,6 +223,7 @@ import XCTest
 
     func testPendingLandingRejectsEvenIfTheModelPresentationWasCleared() async throws {
         try await withFixture { f in
+            let beforeGesture = try XCTUnwrap(f.source.capture())
             let panel = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 1))
             panel.wantsLayer = true
             f.root.addSubview(panel)
@@ -232,6 +233,7 @@ import XCTest
             _ = monitor.handle(ReceiptScrollEvent(window: f.window, phase: .began), in: f.store)
             _ = monitor.handle(ReceiptScrollEvent(window: f.window, dx: -150), in: f.store)
             _ = monitor.handle(ReceiptScrollEvent(window: f.window, phase: .ended), in: f.store)
+            if self.verifyImmediateLandingWhenReduced(f, beforeGesture: beforeGesture) { return }
             XCTAssertNotNil(monitor.pageMountPendingSettlement, "The actual gesture must issue a landing tail")
             // Current logical endpoints alone cannot retire an issued landing.
             f.store.libraryOpen = false
@@ -264,6 +266,7 @@ import XCTest
 
     func testStaleSettlementMetadataCannotClearTheNewerActualLanding() async throws {
         try await withFixture { f in
+            let beforeGesture = try XCTUnwrap(f.source.capture())
             let panel = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 1))
             panel.wantsLayer = true
             f.root.addSubview(panel)
@@ -273,6 +276,7 @@ import XCTest
             _ = monitor.handle(ReceiptScrollEvent(window: f.window, phase: .began), in: f.store)
             _ = monitor.handle(ReceiptScrollEvent(window: f.window, dx: -150), in: f.store)
             _ = monitor.handle(ReceiptScrollEvent(window: f.window, phase: .ended), in: f.store)
+            if self.verifyImmediateLandingWhenReduced(f, beforeGesture: beforeGesture) { return }
             let old = try XCTUnwrap(monitor.pageMountPendingSettlement)
             monitor.cancelPendingActivation(toward: true)
             let newer = try XCTUnwrap(monitor.pageMountPendingSettlement)
@@ -287,6 +291,27 @@ import XCTest
             f.store.libraryGesture.progress = nil
             XCTAssertNil(f.source.capture(), "The newer actual tail still owns cleanup")
         }
+    }
+
+    /// Reduced motion completes synchronously, so there is no animated tail to
+    /// supersede. Hosted normal-motion preflights still exercise every original
+    /// pending-tail assertion above; neither policy is skipped or overridden.
+    private func verifyImmediateLandingWhenReduced(_ f: Fixture,
+                                                   beforeGesture: LibraryPageMountReceipt) -> Bool {
+        let reduced = Motion.reduced
+        print("RECEIPT_LANDING_POLICY reduced=\(reduced) path=\(reduced ? "immediate" : "animated")")
+        guard reduced else { return false }
+        XCTAssertFalse(f.store.libraryOpen)
+        XCTAssertNil(f.store.libraryGesture.progress)
+        XCTAssertNil(f.store.librarySwipeMonitor.pageMountPendingSettlement)
+        XCTAssertFalse(beforeGesture.isCurrentAndIdle(), "Immediate settlement also retires the pre-gesture receipt")
+        let settled = f.source.capture()
+        XCTAssertNotNil(settled, "A completed reduced-motion landing must admit a fresh receipt")
+        f.store.librarySwipeMonitor.cancelPendingActivation(toward: true)
+        XCTAssertFalse(settled?.isCurrentAndIdle() ?? true, "A command invalidates even without a pending tail")
+        XCTAssertNil(f.store.librarySwipeMonitor.pageMountPendingSettlement)
+        XCTAssertNotNil(f.source.capture())
+        return true
     }
 
     func testBindingReplacementCannotResurrectAnOldReceipt() async throws {
