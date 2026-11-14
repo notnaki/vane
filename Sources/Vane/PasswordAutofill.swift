@@ -758,19 +758,24 @@ import WebKit
     })();
     """
 
-    static func anchorJS(target: String) -> String {
-        let args = try! JSONSerialization.data(withJSONObject: [target])
-        return "window.__vaneAnchor && window.__vaneAnchor.apply(null, \(String(decoding: args, as: UTF8.self)))"
-    }
+    static func anchorJS(target: String) -> String { call("__vaneAnchor", [target]) }
 
     static func generateJS(password: String, target: String) -> String {
-        let args = try! JSONSerialization.data(withJSONObject: [password, target])
-        return "window.__vaneGenerate && window.__vaneGenerate.apply(null, \(String(decoding: args, as: UTF8.self)))"
+        call("__vaneGenerate", [password, target])
     }
 
+    /// `origin` is the document the secret was read for. The main frame can commit another
+    /// document between that read and this script running, so the script checks first.
     static func fillJS(account: String, password: String, automatic: Bool = false,
-                       target: String? = nil, continuation: Bool = false) -> String {
-        let args = try! JSONSerialization.data(withJSONObject: [account, password, automatic, target as Any? ?? NSNull(), continuation])
-        return "window.__vaneFill && window.__vaneFill.apply(null, \(String(decoding: args, as: UTF8.self)))"
+                       target: String? = nil, continuation: Bool = false, origin: PasswordOrigin? = nil) -> String {
+        let fill = call("__vaneFill", [account, password, automatic, target as Any? ?? NSNull(), continuation])
+        guard let origin else { return fill }
+        return "(location.origin === \(Reader.jsString(origin.url.absoluteString)) && (\(fill)))"
+    }
+
+    /// A call into the isolated script with JSON-encoded arguments; `false` if they cannot be encoded.
+    private static func call(_ name: String, _ args: [Any]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: args) else { return "false" }
+        return "window.\(name) && window.\(name).apply(null, \(String(decoding: data, as: UTF8.self)))"
     }
 }

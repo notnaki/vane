@@ -643,6 +643,17 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         expectEqual(try await js(web, "replacement.value") as? String, "")
     }
 
+    func testFillRefusesADocumentFromAnotherOrigin() async throws {
+        let (web, _) = try await fixture("<form><input autocomplete=username><input id=password type=password></form>")
+        let other = PasswordOrigin(host: "other.example.test")
+        expectFalse(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", origin: other),
+                                 world: Autofill.world) as? Bool == true)
+        expectEqual(try await js(web, "password.value") as? String, "")
+        let own = PasswordOrigin(host: "login.example.test")
+        expectTrue(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", origin: own),
+                                world: Autofill.world) as? Bool == true)
+    }
+
     func testSelectedAccountContinuesAcrossUsernameNavigation() async throws {
         try await exerciseSelectedAccountContinuation(holdSubmission: false)
     }

@@ -491,7 +491,7 @@ import SwiftUI
 
     /// A JS string literal for `s`, via the one encoder already in the stdlib.
     static func jsString(_ s: String) -> String {
-        let d = try! JSONSerialization.data(withJSONObject: [s])
+        guard let d = try? JSONSerialization.data(withJSONObject: [s]) else { return "\"\"" }
         var out = String(decoding: d, as: UTF8.self)
         out.removeFirst()      // [
         out.removeLast()       // ]

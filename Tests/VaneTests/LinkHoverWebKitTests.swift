@@ -3,6 +3,16 @@ import WebKit
 import XCTest
 @testable import vane
 
+extension Previews {
+    /// The hover script with its real-input check lifted, so fixtures can drive it with
+    /// dispatched events.
+    static var syntheticScript: String {
+        let lifted = script.replacingOccurrences(of: "return e.isTrusted;", with: "return true;")
+        precondition(lifted != script, "the preview script's input check moved")
+        return lifted
+    }
+}
+
 @MainActor final class LinkHoverWebKitTests: XCTestCase {
     private final class Capture: NSObject, WKScriptMessageHandler {
         var messages: [Any] = []
@@ -74,7 +84,7 @@ import XCTest
 
     func testOrdinaryNavigationNeverRequestsPreviewWithoutShift() async throws {
         for page in ["https://github.com/notnaki/vane", "https://example.com/article"] {
-            let (web, capture) = try await script(Previews.script, handler: Previews.messageName,
+            let (web, capture) = try await script(Previews.syntheticScript, handler: Previews.messageName,
                                                  baseURL: URL(string: page))
             try await js(web, "document.getElementById('child').dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));")
             try await Task.sleep(for: .milliseconds(700))
@@ -82,8 +92,15 @@ import XCTest
         }
     }
 
+    func testDispatchedEventsNeverRequestPreviews() async throws {
+        let (web, capture) = try await script(Previews.script, handler: Previews.messageName)
+        try await js(web, "var a=document.getElementById('link'); a.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, shiftKey:true})); document.dispatchEvent(new KeyboardEvent('keydown', {key:'Shift', shiftKey:true, bubbles:true}));")
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertTrue(capture.messages.isEmpty, "Only real pointer and key input may start a preview")
+    }
+
     func testSearchResultPreviewsButSearchNavigationDoesNot() async throws {
-        let (web, capture) = try await script(Previews.script, handler: Previews.messageName,
+        let (web, capture) = try await script(Previews.syntheticScript, handler: Previews.messageName,
                                              baseURL: URL(string: "https://www.google.com/search?q=vane"))
         try await js(web, "document.getElementById('link').innerHTML='<h3 id=heading>Result</h3>'; document.getElementById('heading').dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));")
         try await wait { capture.messages.count == 1 }
@@ -94,7 +111,7 @@ import XCTest
     }
 
     func testHackerNewsOnlyPreviewsStoryHeadlines() async throws {
-        let (web, capture) = try await script(Previews.script, handler: Previews.messageName,
+        let (web, capture) = try await script(Previews.syntheticScript, handler: Previews.messageName,
                                              baseURL: URL(string: "https://news.ycombinator.com/"))
         try await js(web, "var a=document.getElementById('link'); var title=document.createElement('span'); title.className='titleline'; a.replaceWith(title); title.appendChild(a); a.dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));")
         try await wait { capture.messages.count == 1 }
@@ -112,7 +129,7 @@ import XCTest
             ("https://www.threads.net/", "<a id=link role=link rel='nofollow noreferrer' target=_blank href='https://example.com/article'>Article</a>", "https://example.com/article")
         ]
         for (page, markup, destination) in cases {
-            let (web, capture) = try await script(Previews.script, handler: Previews.messageName, baseURL: URL(string: page))
+            let (web, capture) = try await script(Previews.syntheticScript, handler: Previews.messageName, baseURL: URL(string: page))
             try await js(web, "document.body.innerHTML=\(String(data: try JSONEncoder().encode(markup), encoding: .utf8)!); document.getElementById('link').dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));")
             try await wait { !capture.messages.isEmpty }
             XCTAssertEqual((capture.messages.first as? [String: Any])?["url"] as? String, destination, page)
@@ -120,7 +137,7 @@ import XCTest
     }
 
     func testStationaryShiftRequestsAndReleasingItDismissesAnOrdinaryLink() async throws {
-        let (web, capture) = try await script(Previews.script, handler: Previews.messageName)
+        let (web, capture) = try await script(Previews.syntheticScript, handler: Previews.messageName)
         try await js(web, "document.getElementById('link').dispatchEvent(new MouseEvent('mouseover', {bubbles:true})); document.dispatchEvent(new KeyboardEvent('keydown', {key:'Shift', shiftKey:true, bubbles:true}));")
         try await wait { capture.messages.count == 1 }
         try await js(web, "document.dispatchEvent(new KeyboardEvent('keyup', {key:'Shift', bubbles:true}));")
@@ -129,14 +146,14 @@ import XCTest
     }
 
     func testDownloadsAndSameDocumentLinksStayQuietEvenWithShift() async throws {
-        let (web, capture) = try await script(Previews.script, handler: Previews.messageName, baseURL: URL(string: "https://example.com/article"))
+        let (web, capture) = try await script(Previews.syntheticScript, handler: Previews.messageName, baseURL: URL(string: "https://example.com/article"))
         try await js(web, "var a=document.getElementById('link'); a.href='#section'; a.dispatchEvent(new MouseEvent('mouseover', {bubbles:true,shiftKey:true})); a.href='https://example.com/file.zip'; a.download='file.zip'; a.dispatchEvent(new MouseEvent('mouseover', {bubbles:true,shiftKey:true}));")
         try await Task.sleep(for: .milliseconds(700))
         XCTAssertTrue(capture.messages.isEmpty)
     }
 
     func testShiftHeldBeforeHoverPreviewsImmediatelyAndCommandCancelsIt() async throws {
-        let (web, capture) = try await script(Previews.script, handler: Previews.messageName)
+        let (web, capture) = try await script(Previews.syntheticScript, handler: Previews.messageName)
         try await js(web, "document.getElementById('link').dispatchEvent(new MouseEvent('mouseover', {bubbles:true, shiftKey:true}));")
         try await wait { !capture.messages.isEmpty }
         XCTAssertEqual((capture.messages.first as? [String: Any])?["shift"] as? Bool, true)

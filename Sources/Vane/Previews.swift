@@ -115,10 +115,23 @@ import WebKit
     ///
     /// `onPage` is the tab's current url: previewing the page you are already looking at is
     /// a whole page load to show the user a picture of what is behind the popover.
-    static func eligible(_ url: URL, onPage: URL?) -> Bool {
+    ///
+    /// `shift` is false for an automatic (dwell) preview, which is limited to the discovery
+    /// surfaces the script's `automatic` filter names. Re-checked here so the native side
+    /// never relies on page script for that limit.
+    static func eligible(_ url: URL, onPage: URL?, shift: Bool) -> Bool {
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
-              let host = url.host, !host.isEmpty else { return false }
-        return key(for: url) != onPage.map(key(for:))
+              let host = url.host?.lowercased(), !host.isEmpty,
+              key(for: url) != onPage.map(key(for:)) else { return false }
+        if shift { return true }
+        guard let page = onPage?.host?.lowercased(), page != host else { return false }
+        let search = onPage?.path == "/search"
+        func social(_ h: String) -> Bool { h.wholeMatch(of: #/(www\.)?(x|twitter)\.com/#) != nil }
+        if page.wholeMatch(of: #/(www\.)?google\.(com|[a-z]{2}|com\.[a-z]{2}|co\.[a-z]{2})/#) != nil
+            || page == "www.bing.com" || page == "bing.com" { return search }
+        if social(page) { return !social(host) }
+        return ["duckduckgo.com", "html.duckduckgo.com", "news.ycombinator.com"].contains(page)
+            || page.wholeMatch(of: #/(www\.)?threads\.(net|com)/#) != nil
     }
 
     // MARK: - Requesting
@@ -230,9 +243,9 @@ import WebKit
 
     /// Start (or instantly re-show) a preview of `url`. Safe to call on every hover event —
     /// the same link twice in a row costs nothing.
-    func request(_ url: URL, from tab: Tab, rect: CGRect = .zero) {
+    func request(_ url: URL, from tab: Tab, rect: CGRect = .zero, shift: Bool = true) {
         guard Previews.enabled, !BatterySaver.shared.isActive else { cancel(); return }
-        guard Previews.eligible(url, onPage: tab.currentURL) else { cancel(); return }
+        guard Previews.eligible(url, onPage: tab.currentURL, shift: shift) else { cancel(); return }
         let revision = UserDefaults.vane.integer(forKey: "aiSettingsRevision")
         if revision != aiSettingsRevision {
             aiSettingsRevision = revision
@@ -689,6 +702,8 @@ import WebKit
     // Injected into every tab; `messageName` is the channel it posts on.
 
     static let messageName = "vanepreview"
+    /// Isolated so the page can neither post on the channel nor see the hover tracker.
+    static let world = WKContentWorld.world(name: "VanePreviewHover")
 
     /// Automatic previews are limited to result/content links on Arc Max's supported
     /// discovery surfaces. Shift explicitly requests other destinations. Filters run
@@ -769,6 +784,8 @@ import WebKit
         announced = false;
         webkit.messageHandlers.\(messageName).postMessage({ gone: true });
       }
+      // Only real input drives previews; page script can dispatch synthetic events.
+      function real(e) { return e.isTrusted; }
       function enter(a) {
         if (a === at) { return; }
         gone();
@@ -780,6 +797,7 @@ import WebKit
       var shifted = false, blocked = false;
 
       document.addEventListener('mouseover', function (e) {
+        if (!real(e)) { return; }
         shifted = !!e.shiftKey;
         blocked = !!(e.metaKey || e.altKey || e.ctrlKey);
         var a = link(e.target);
@@ -803,6 +821,7 @@ import WebKit
       // Modifiers can arrive before the hover or change with the pointer stationary.
       // Command/Option belong to opening hints; they must not also raise a preview.
       function modifiers(e) {
+        if (!real(e)) { return; }
         var shift = !!e.shiftKey, block = !!(e.metaKey || e.altKey || e.ctrlKey);
         if (shift === shifted && block === blocked) { return; }
         shifted = shift; blocked = block;
@@ -1253,22 +1272,37 @@ import WebKit
              hollow.description == "the real one"),
 
             // --- eligibility
-            ("an https link is previewable", eligible(u("https://b.test/x"), onPage: onPage)),
-            ("an http link is previewable", eligible(u("http://b.test/x"), onPage: onPage)),
-            ("javascript: is not", eligible(u("javascript:alert(1)"), onPage: onPage) == false),
-            ("mailto: is not", eligible(u("mailto:ada@example.com"), onPage: onPage) == false),
-            ("file: is not", eligible(u("file:///etc/hosts"), onPage: onPage) == false),
+            ("an https link is previewable", eligible(u("https://b.test/x"), onPage: onPage, shift: true)),
+            ("an http link is previewable", eligible(u("http://b.test/x"), onPage: onPage, shift: true)),
+            ("javascript: is not", eligible(u("javascript:alert(1)"), onPage: onPage, shift: true) == false),
+            ("mailto: is not", eligible(u("mailto:ada@example.com"), onPage: onPage, shift: true) == false),
+            ("file: is not", eligible(u("file:///etc/hosts"), onPage: onPage, shift: true) == false),
             ("data: is not",
-             eligible(u("data:text/html,<b>x</b>"), onPage: onPage) == false),
-            ("a url with no host is not", eligible(u("https:///x"), onPage: onPage) == false),
+             eligible(u("data:text/html,<b>x</b>"), onPage: onPage, shift: true) == false),
+            ("a url with no host is not", eligible(u("https:///x"), onPage: onPage, shift: true) == false),
             ("the page you are already on is not previewable",
-             eligible(onPage, onPage: onPage) == false),
+             eligible(onPage, onPage: onPage, shift: true) == false),
             ("an anchor into the page you are on is not previewable",
-             eligible(u("https://example.com/article#part2"), onPage: onPage) == false),
+             eligible(u("https://example.com/article#part2"), onPage: onPage, shift: true) == false),
             ("a different query on the same path is previewable",
-             eligible(u("https://example.com/article?page=2"), onPage: onPage)),
+             eligible(u("https://example.com/article?page=2"), onPage: onPage, shift: true)),
             ("with no current page everything http is previewable",
-             eligible(u("https://b.test/x"), onPage: nil)),
+             eligible(u("https://b.test/x"), onPage: nil, shift: true)),
+            ("without Shift an ordinary page previews nothing",
+             eligible(u("https://b.test/x"), onPage: onPage, shift: false) == false),
+            ("without Shift a search result on Google previews",
+             eligible(u("https://b.test/x"), onPage: u("https://www.google.com/search?q=a"), shift: false)),
+            ("without Shift Google's own navigation does not",
+             eligible(u("https://b.test/x"), onPage: u("https://www.google.com/maps"), shift: false) == false),
+            ("without Shift a same-site link on a discovery site does not",
+             eligible(u("https://news.ycombinator.com/item?id=1"), onPage: u("https://news.ycombinator.com/"),
+                      shift: false) == false),
+            ("without Shift an external Hacker News story previews",
+             eligible(u("https://b.test/x"), onPage: u("https://news.ycombinator.com/"), shift: false)),
+            ("without Shift an X link to X does not",
+             eligible(u("https://twitter.com/a"), onPage: u("https://x.com/home"), shift: false) == false),
+            ("without Shift and with no current page nothing previews",
+             eligible(u("https://b.test/x"), onPage: nil, shift: false) == false),
 
             // --- cache
             ("the cache key drops the fragment",
