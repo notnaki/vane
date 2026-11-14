@@ -362,16 +362,16 @@ import XCTest
         let previousSink = ResizeTimingDiagnostics.sink
         if trace {
             ResizeTimingDiagnostics.sink = { event, time, width, height in
-                guard events.count < 5000 else { return }
+                guard events.count < 20000 else { return }
                 if event.hasPrefix("library.") || event == "sidebar.body.browser"
-                    || event == "buffer.presentation.callback" || event == "buffer.host.layout" {
+                    || event.hasPrefix("buffer.") {
                     events.append("LIBRARY_TIMING t=\(time) event=\(event) width=\(String(describing: width)) height=\(String(describing: height))")
                 }
             }
             ResizeTimingDiagnostics.stateSink = { event, time, fields in
-                guard events.count < 5000 else { return }
+                guard events.count < 20000 else { return }
                 if event.hasPrefix("library.") || event == "buffer.prepare.before" || event.hasPrefix("buffer.publish") {
-                    events.append("LIBRARY_TRACE t=\(time) event=\(event) fields=\(fields)")
+                    events.append("LIBRARY_TRACE t=\(time) event=\(event) fields=\(fields.filter { ["requestedSidebar", "publishedSidebar", "pending", "ending", "generation", "page.0.desired", "page.0.prepared", "page.0.painted", "page.0.visible"].contains($0.key) })")
                 }
             }
         }
@@ -397,19 +397,31 @@ import XCTest
             let stepsPerStroke = rapid ? 20 : max(1, Int(ceil(abs(travel) / 2)))
             for _ in 0..<3 {
                 for step in 0...stepsPerStroke {
+#if DEBUG
+                    if trace { events.append("LIBRARY_TIMING t=\(CACurrentMediaTime()) event=library.input width=nil height=nil") }
+#endif
                     Motion.instant {
                         store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
                         if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
                     }
                     window.contentView?.layoutSubtreeIfNeeded()
+#if DEBUG
+                    if trace { events.append("LIBRARY_TIMING t=\(CACurrentMediaTime()) event=library.layout.done width=nil height=nil") }
+#endif
                     try await Task.sleep(for:.milliseconds(8))
                 }
                 for step in (0...stepsPerStroke).reversed() {
+#if DEBUG
+                    if trace { events.append("LIBRARY_TIMING t=\(CACurrentMediaTime()) event=library.input width=nil height=nil") }
+#endif
                     Motion.instant {
                         store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
                         if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
                     }
                     window.contentView?.layoutSubtreeIfNeeded()
+#if DEBUG
+                    if trace { events.append("LIBRARY_TIMING t=\(CACurrentMediaTime()) event=library.layout.done width=nil height=nil") }
+#endif
                     try await Task.sleep(for:.milliseconds(8))
                 }
             }
