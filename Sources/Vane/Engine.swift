@@ -3101,18 +3101,11 @@ struct Stash {
     /// joining that Space, restoring its tabs, or changing the page's browsing identity.
     @Published var littleDestinationSpace: Space?
     weak var window: NSWindow? {
-        willSet {
-            if window !== newValue { librarySwipeMonitor.invalidatePageMountOwnerLifecycle() }
-        }
         didSet { mountedAddressEndpoint?.registerOwner() }
     }
     /// Cached roots remain mounted for WebKit continuity, but only the shown profile
     /// may own presentation bindings and window-level gesture monitors.
-    @Published var profileVisible = true {
-        willSet {
-            if profileVisible != newValue { librarySwipeMonitor.invalidatePageMountOwnerLifecycle() }
-        }
-    }
+    @Published var profileVisible = true
     /// The window this store is parked behind while that window shows another profile.
     ///
     /// A window keeps one store per profile it has been in: the one on screen owns `window`,
@@ -3120,11 +3113,7 @@ struct Stash {
     /// Spaces' stashes, so hopping back costs nothing. Nothing that looks for "the window's
     /// store" may find a parked one, which is why the two fields are exclusive rather than
     /// one field and a flag. See `Windows.hop`.
-    weak var parkedIn: NSWindow? {
-        willSet {
-            if parkedIn !== newValue { librarySwipeMonitor.invalidatePageMountOwnerLifecycle() }
-        }
-    }
+    weak var parkedIn: NSWindow?
     /// True while this store is behind another profile's in the same window.
     var isParked: Bool { parkedIn != nil }
     /// Every live store, oldest first — the parked ones included.
