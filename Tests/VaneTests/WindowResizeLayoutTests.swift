@@ -346,6 +346,16 @@ import XCTest
     }
 
     private func captureLibraryPixels(_ window: VaneWindow, store: TabStore, web: WKWebView, rapid: Bool, refreshParent: Bool = false) async throws {
+        let traceInput = ProcessInfo.processInfo.environment["VANE_LIBRARY_INPUT_TRACE"] == "1"
+        var inputTimes: [TimeInterval] = []
+        var inputLayoutCosts: [TimeInterval] = []
+        defer {
+            if traceInput {
+                let gaps = zip(inputTimes, inputTimes.dropFirst()).map { ($1 - $0) * 1000 }.sorted()
+                let layouts = inputLayoutCosts.map { $0 * 1000 }.sorted()
+                print("LIBRARY_INPUT refreshParent=\(refreshParent) inputs=\(inputTimes.count) gap_p50=\(gaps.isEmpty ? 0 : gaps[gaps.count / 2]) gap_p95=\(gaps.isEmpty ? 0 : gaps[Int(Double(gaps.count - 1) * 0.95)]) gap_max=\(gaps.last ?? 0) layout_p95=\(layouts.isEmpty ? 0 : layouts[Int(Double(layouts.count - 1) * 0.95)]) layout_max=\(layouts.last ?? 0)")
+            }
+        }
         try await ResizeNativeWindowAdmission.wait(window, web: web)
         let owner = ResizeCaptureOwner(window: window, stage: "Library navigation")
         let observations = [
@@ -397,19 +407,25 @@ import XCTest
             let stepsPerStroke = rapid ? 20 : max(1, Int(ceil(abs(travel) / 2)))
             for _ in 0..<3 {
                 for step in 0...stepsPerStroke {
+                    if traceInput && inputTimes.count < 4096 { inputTimes.append(CACurrentMediaTime()) }
                     Motion.instant {
                         store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
                         if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
                     }
+                    let layoutBegan = traceInput ? CACurrentMediaTime() : 0
                     window.contentView?.layoutSubtreeIfNeeded()
+                    if traceInput && inputLayoutCosts.count < 4096 { inputLayoutCosts.append(CACurrentMediaTime() - layoutBegan) }
                     try await Task.sleep(for:.milliseconds(8))
                 }
                 for step in (0...stepsPerStroke).reversed() {
+                    if traceInput && inputTimes.count < 4096 { inputTimes.append(CACurrentMediaTime()) }
                     Motion.instant {
                         store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
                         if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
                     }
+                    let layoutBegan = traceInput ? CACurrentMediaTime() : 0
                     window.contentView?.layoutSubtreeIfNeeded()
+                    if traceInput && inputLayoutCosts.count < 4096 { inputLayoutCosts.append(CACurrentMediaTime() - layoutBegan) }
                     try await Task.sleep(for:.milliseconds(8))
                 }
             }
