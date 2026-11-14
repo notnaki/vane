@@ -349,11 +349,14 @@ import XCTest
         let traceInput = ProcessInfo.processInfo.environment["VANE_LIBRARY_INPUT_TRACE"] == "1"
         var inputTimes: [TimeInterval] = []
         var inputLayoutCosts: [TimeInterval] = []
+        var inputTransactionCosts: [TimeInterval] = []
         defer {
             if traceInput {
                 let gaps = zip(inputTimes, inputTimes.dropFirst()).map { ($1 - $0) * 1000 }.sorted()
                 let layouts = inputLayoutCosts.map { $0 * 1000 }.sorted()
+                let transactions = inputTransactionCosts.map { $0 * 1000 }.sorted()
                 print("LIBRARY_INPUT refreshParent=\(refreshParent) inputs=\(inputTimes.count) gap_p50=\(gaps.isEmpty ? 0 : gaps[gaps.count / 2]) gap_p95=\(gaps.isEmpty ? 0 : gaps[Int(Double(gaps.count - 1) * 0.95)]) gap_max=\(gaps.last ?? 0) layout_p95=\(layouts.isEmpty ? 0 : layouts[Int(Double(layouts.count - 1) * 0.95)]) layout_max=\(layouts.last ?? 0)")
+                print("LIBRARY_TRANSACTION refreshParent=\(refreshParent) p95=\(transactions.isEmpty ? 0 : transactions[Int(Double(transactions.count - 1) * 0.95)]) max=\(transactions.last ?? 0)")
             }
         }
         try await ResizeNativeWindowAdmission.wait(window, web: web)
@@ -398,6 +401,18 @@ import XCTest
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
             guard baseline.isPaintedBaseline else { throw NSError(domain:"LibraryPaintAdmission",code:1) }
+            if traceInput {
+                var intervals: [TimeInterval] = []
+                for _ in 0..<32 {
+                    let idleBegan = CACurrentMediaTime()
+                    Motion.instant { }
+                    window.contentView?.layoutSubtreeIfNeeded()
+                    try await Task.sleep(for: .milliseconds(8))
+                    intervals.append((CACurrentMediaTime() - idleBegan) * 1000)
+                }
+                intervals.sort()
+                print("LIBRARY_IDLE_CLOCK refreshParent=\(refreshParent) samples=\(intervals.count) p50=\(intervals[16]) p95=\(intervals[29]) max=\(intervals[31])")
+            }
             let began = CACurrentMediaTime()
             let travel = Library.panelWidth(section: Library.shared.section,
                 spaces: ProfileManager.shared.allSpaces.count, private: store.isPrivate,
@@ -408,10 +423,12 @@ import XCTest
             for _ in 0..<3 {
                 for step in 0...stepsPerStroke {
                     if traceInput && inputTimes.count < 4096 { inputTimes.append(CACurrentMediaTime()) }
+                    let transactionBegan = traceInput ? CACurrentMediaTime() : 0
                     Motion.instant {
                         store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
                         if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
                     }
+                    if traceInput && inputTransactionCosts.count < 4096 { inputTransactionCosts.append(CACurrentMediaTime() - transactionBegan) }
                     let layoutBegan = traceInput ? CACurrentMediaTime() : 0
                     window.contentView?.layoutSubtreeIfNeeded()
                     if traceInput && inputLayoutCosts.count < 4096 { inputLayoutCosts.append(CACurrentMediaTime() - layoutBegan) }
@@ -419,10 +436,12 @@ import XCTest
                 }
                 for step in (0...stepsPerStroke).reversed() {
                     if traceInput && inputTimes.count < 4096 { inputTimes.append(CACurrentMediaTime()) }
+                    let transactionBegan = traceInput ? CACurrentMediaTime() : 0
                     Motion.instant {
                         store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
                         if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
                     }
+                    if traceInput && inputTransactionCosts.count < 4096 { inputTransactionCosts.append(CACurrentMediaTime() - transactionBegan) }
                     let layoutBegan = traceInput ? CACurrentMediaTime() : 0
                     window.contentView?.layoutSubtreeIfNeeded()
                     if traceInput && inputLayoutCosts.count < 4096 { inputLayoutCosts.append(CACurrentMediaTime() - layoutBegan) }
