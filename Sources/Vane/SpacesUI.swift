@@ -2065,7 +2065,7 @@ private struct SpaceSwipe: ViewModifier {
                         return
                     }
                     host.layoutDisplayedProfile()
-                    window.displayIfNeeded()
+                    host.displayDisplayedProfile()
                     CATransaction.flush()
                 }
             } else {

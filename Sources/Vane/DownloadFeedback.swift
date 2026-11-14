@@ -67,7 +67,13 @@ struct DownloadFeedbackAnchor: ViewModifier {
 struct DownloadFeedbackPresentation: ViewModifier {
     @ObservedObject var store: TabStore
     let chrome: Bool
-    @StateObject private var downloadFeedback = DownloadFeedback()
+    @StateObject private var downloadFeedback: DownloadFeedback
+
+    init(store: TabStore, chrome: Bool, feedback: DownloadFeedback? = nil) {
+        self.store = store
+        self.chrome = chrome
+        _downloadFeedback = StateObject(wrappedValue: feedback ?? DownloadFeedback())
+    }
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
