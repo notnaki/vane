@@ -388,6 +388,7 @@ import XCTest
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
             guard baseline.isPaintedBaseline else { throw NSError(domain:"LibraryPaintAdmission",code:1) }
+            let profile = try ResizeMotionProfile.begin(environment: ProcessInfo.processInfo.environment, web: web, sidebar: false)
             let began = CACurrentMediaTime()
             let travel = Library.panelWidth(section: Library.shared.section,
                 spaces: ProfileManager.shared.allSpaces.count, private: store.isPrivate,
@@ -434,6 +435,8 @@ import XCTest
             try await presentation(web)
             try await sampler.captureFinalFrame(window)
             try await sampler.stop()
+            let ended = CACurrentMediaTime()
+            try await profile?.finish(began: began, ended: ended, web: web)
             try sampler.frames.saveImages(prefix:"library-\(ProcessInfo.processInfo.processIdentifier)")
             let samples = sampler.frames.samples.filter { $0.time >= began }
             let maximum = samples.map(\.gap).max() ?? 0

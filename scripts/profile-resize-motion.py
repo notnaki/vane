@@ -124,7 +124,7 @@ def collect(record, directory, launch=subprocess.Popen, identify=runner.process_
 def main(arguments):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True, help="new directory for retained private evidence")
-    parser.add_argument("--motion", choices=("sidebar", "window"), default="sidebar")
+    parser.add_argument("--motion", choices=("sidebar", "window", "library"), default="sidebar")
     options = parser.parse_args(arguments)
     if sys.platform != "darwin": raise SystemExit("native profiling requires macOS")
     root = Path(__file__).resolve().parent.parent
@@ -140,7 +140,9 @@ def main(arguments):
                        VANE_RESIZE_RESPONSIVE_MOTION="1", VANE_RESIZE_TIMING="1",
                        VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT="120")
     kind = "Sidebar" if options.motion == "sidebar" else "Window"
-    selector = f"WindowResizeResponsiveMotionTests.testResponsivePageKeepsVisible{kind}MovementWithinTheFrameBudget"
+    selector = ("WindowResizeLayoutTests.testLibraryNavigationKeepsTheResponsiveDocumentPainted"
+                if options.motion == "library" else
+                f"WindowResizeResponsiveMotionTests.testResponsivePageKeepsVisible{kind}MovementWithinTheFrameBudget")
     command = [sys.executable, str(root / "scripts/run-native-tests.py"), "--skip-build", "--filter", selector]
     print("RESIZE_PROFILE diagnosticOnly=true evidence=" + str(directory), flush=True)
     driver = subprocess.Popen(command, cwd=root, env=environment)
