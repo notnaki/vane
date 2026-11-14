@@ -1153,12 +1153,17 @@ import XCTest
                     task_policy_get(mach_task_self_, task_flavor_t(TASK_CATEGORY_POLICY), $0, &count, &getDefault)
                 }
             }
-            processPolicyEvidence = "PROFILE_PROCESS_POLICY pid=\(getpid()) main=\(Thread.isMainThread)"
-                + " running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window)"
-                + " activation=\(NSApp.activationPolicy().rawValue) categoryRead=\(categoryRead) category=\(category.role) default=\(getDefault)"
-                + " bsdRead=\(bsdRead) bsdSize=\(bsdSize) flags=\(bsd.pbi_flags) nice=\(bsd.pbi_nice)"
-                + " threadQoS=\(qos_class_self()) processQoS=\(ProcessInfo.processInfo.qualityOfService.rawValue)"
-                + " lowPower=\(ProcessInfo.processInfo.isLowPowerModeEnabled)"
+            let identityState: String = "PROFILE_PROCESS_POLICY pid=\(getpid()) main=\(Thread.isMainThread)"
+            let foregroundState: String = " running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window)"
+            let activationState: String = " activation=\(NSApp.activationPolicy().rawValue) categoryRead=\(categoryRead)"
+            let categoryState: String = " category=\(category.role) default=\(getDefault)"
+            let bsdState: String = " bsdRead=\(bsdRead) bsdSize=\(bsdSize)"
+            let bsdFlags: String = " flags=\(bsd.pbi_flags) nice=\(bsd.pbi_nice)"
+            let qosState: String = " threadQoS=\(qos_class_self()) processQoS=\(ProcessInfo.processInfo.qualityOfService.rawValue)"
+            let powerState: String = " lowPower=\(ProcessInfo.processInfo.isLowPowerModeEnabled)"
+            let parts: [String] = [identityState, foregroundState, activationState, categoryState,
+                                   bsdState, bsdFlags, qosState, powerState]
+            processPolicyEvidence = parts.joined(separator: "")
         }
         defer { if let processPolicyEvidence { print(processPolicyEvidence) } }
         #endif
