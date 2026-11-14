@@ -346,19 +346,6 @@ import XCTest
     }
 
     private func captureLibraryPixels(_ window: VaneWindow, store: TabStore, web: WKWebView, rapid: Bool, refreshParent: Bool = false) async throws {
-        let traceInput = ProcessInfo.processInfo.environment["VANE_LIBRARY_INPUT_TRACE"] == "1"
-        var inputTimes: [TimeInterval] = []
-        var inputLayoutCosts: [TimeInterval] = []
-        var inputTransactionCosts: [TimeInterval] = []
-        defer {
-            if traceInput {
-                let gaps = zip(inputTimes, inputTimes.dropFirst()).map { ($1 - $0) * 1000 }.sorted()
-                let layouts = inputLayoutCosts.map { $0 * 1000 }.sorted()
-                let transactions = inputTransactionCosts.map { $0 * 1000 }.sorted()
-                print("LIBRARY_INPUT refreshParent=\(refreshParent) inputs=\(inputTimes.count) gap_p50=\(gaps.isEmpty ? 0 : gaps[gaps.count / 2]) gap_p95=\(gaps.isEmpty ? 0 : gaps[Int(Double(gaps.count - 1) * 0.95)]) gap_max=\(gaps.last ?? 0) layout_p95=\(layouts.isEmpty ? 0 : layouts[Int(Double(layouts.count - 1) * 0.95)]) layout_max=\(layouts.last ?? 0)")
-                print("LIBRARY_TRANSACTION refreshParent=\(refreshParent) p95=\(transactions.isEmpty ? 0 : transactions[Int(Double(transactions.count - 1) * 0.95)]) max=\(transactions.last ?? 0)")
-            }
-        }
         try await ResizeNativeWindowAdmission.wait(window, web: web)
         let owner = ResizeCaptureOwner(window: window, stage: "Library navigation")
         let observations = [
@@ -401,18 +388,6 @@ import XCTest
         do {
             let baseline = try XCTUnwrap(sampler.frames.last)
             guard baseline.isPaintedBaseline else { throw NSError(domain:"LibraryPaintAdmission",code:1) }
-            if traceInput {
-                var intervals: [TimeInterval] = []
-                for _ in 0..<32 {
-                    let idleBegan = CACurrentMediaTime()
-                    Motion.instant { }
-                    window.contentView?.layoutSubtreeIfNeeded()
-                    try await Task.sleep(for: .milliseconds(8))
-                    intervals.append((CACurrentMediaTime() - idleBegan) * 1000)
-                }
-                intervals.sort()
-                print("LIBRARY_IDLE_CLOCK refreshParent=\(refreshParent) samples=\(intervals.count) p50=\(intervals[16]) p95=\(intervals[29]) max=\(intervals[31])")
-            }
             let began = CACurrentMediaTime()
             let travel = Library.panelWidth(section: Library.shared.section,
                 spaces: ProfileManager.shared.allSpaces.count, private: store.isPrivate,
@@ -420,33 +395,14 @@ import XCTest
             // Match the existing resize cadence gate's 2pt / 8ms input. The
             // separate rapid case retains the original 20-sample reversals.
             let stepsPerStroke = rapid ? 20 : max(1, Int(ceil(abs(travel) / 2)))
-            for _ in 0..<3 {
-                for step in 0...stepsPerStroke {
-                    if traceInput && inputTimes.count < 4096 { inputTimes.append(CACurrentMediaTime()) }
-                    let transactionBegan = traceInput ? CACurrentMediaTime() : 0
-                    Motion.instant {
-                        store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
-                        if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
-                    }
-                    if traceInput && inputTransactionCosts.count < 4096 { inputTransactionCosts.append(CACurrentMediaTime() - transactionBegan) }
-                    let layoutBegan = traceInput ? CACurrentMediaTime() : 0
-                    window.contentView?.layoutSubtreeIfNeeded()
-                    if traceInput && inputLayoutCosts.count < 4096 { inputLayoutCosts.append(CACurrentMediaTime() - layoutBegan) }
-                    try await Task.sleep(for:.milliseconds(8))
+            let stroke = Array(0...stepsPerStroke)
+            let steps = (0..<3).flatMap { _ in stroke + Array(stroke.reversed()) }
+            try await LibraryNativeInputClock.deliver(steps) { step in
+                Motion.instant {
+                    store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
+                    if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
                 }
-                for step in (0...stepsPerStroke).reversed() {
-                    if traceInput && inputTimes.count < 4096 { inputTimes.append(CACurrentMediaTime()) }
-                    let transactionBegan = traceInput ? CACurrentMediaTime() : 0
-                    Motion.instant {
-                        store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
-                        if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
-                    }
-                    if traceInput && inputTransactionCosts.count < 4096 { inputTransactionCosts.append(CACurrentMediaTime() - transactionBegan) }
-                    let layoutBegan = traceInput ? CACurrentMediaTime() : 0
-                    window.contentView?.layoutSubtreeIfNeeded()
-                    if traceInput && inputLayoutCosts.count < 4096 { inputLayoutCosts.append(CACurrentMediaTime() - layoutBegan) }
-                    try await Task.sleep(for:.milliseconds(8))
-                }
+                window.contentView?.layoutSubtreeIfNeeded()
             }
             Motion.instant { store.librarySwipeProgress = nil }
             func pending(_ view: NSView) -> Bool {
@@ -724,6 +680,64 @@ import XCTest
         guard await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed else {
             throw NSError(domain: "ResizePresentationTimeout", code: 1)
         }
+    }
+}
+
+/// Deliver native input inside the owned AppKit loop. Resuming a Swift task for
+/// every 8 ms sample added 27–70 ms at idle on the actual hosted runner.
+@MainActor private final class LibraryNativeInputClock {
+    private let steps: [Int]
+    private let apply: @MainActor (Int) -> Void
+    private var index = 0
+    private var timer: Timer?
+    private var continuation: CheckedContinuation<Void, any Error>?
+    private var times: [TimeInterval] = []
+
+    private init(_ steps: [Int], apply: @escaping @MainActor (Int) -> Void) {
+        self.steps = steps; self.apply = apply
+    }
+
+    static func deliver(_ steps: [Int], apply: @escaping @MainActor (Int) -> Void) async throws {
+        let driver = LibraryNativeInputClock(steps, apply: apply)
+        defer { driver.cancel() }
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { continuation in
+                driver.continuation = continuation
+                driver.advance()
+            }
+        } onCancel: {
+            CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+                MainActor.assumeIsolated { driver.cancel() }
+            }
+            CFRunLoopWakeUp(CFRunLoopGetMain())
+        }
+    }
+
+    private func advance() {
+        timer = nil
+        guard index < steps.count else {
+            let gaps = zip(times, times.dropFirst()).map { ($1 - $0) * 1000 }.sorted()
+            print("LIBRARY_NATIVE_INPUT delivered=\(index) expected=\(steps.count) p95=\(gaps.isEmpty ? 0 : gaps[Int(Double(gaps.count - 1) * 0.95)]) max=\(gaps.last ?? 0)")
+            let completion = continuation; continuation = nil
+            completion?.resume()
+            return
+        }
+        times.append(CACurrentMediaTime())
+        apply(steps[index]); index += 1
+        // One shot after each sample: no catch-up bursts, dropped steps or
+        // shortened interval. Preserve the final sample's original 8 ms pause.
+        let next = Timer(timeInterval: 0.008, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.advance() }
+        }
+        timer = next
+        RunLoop.main.add(next, forMode: .common)
+    }
+
+    private func cancel() {
+        timer?.invalidate(); timer = nil
+        let completion = continuation; continuation = nil
+        completion?.resume(throwing: CancellationError())
     }
 }
 
