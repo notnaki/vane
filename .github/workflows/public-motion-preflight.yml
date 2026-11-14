@@ -1,4 +1,4 @@
-name: Public Library header observation RED preflight
+name: Public Library header correction and original profile preflight
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -10,11 +10,11 @@ env:
   VANE_EXPECTED_TESTS: |
     VaneTests.ProfileChromeObservationTests/testActiveProfilePersistenceDoesNotInvalidateWindowMetadata
     VaneTests.SidebarWidthObservationTests/testDefaultProfileChangesDoNotRebuildTheRetainedLibraryHeader
-  VANE_CANDIDATE_SHA: 108aea65ddce15d3b433620898139bf2d805c7f5
+  VANE_CANDIDATE_SHA: a21ca230bc34208e5fb16c883458b911eee3d1fd
   VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](ProfileChromeObservationTests/testActiveProfilePersistenceDoesNotInvalidateWindowMetadata|SidebarWidthObservationTests/testDefaultProfileChangesDoNotRebuildTheRetainedLibraryHeader)$'
 jobs:
   diagnostic:
-    name: Retained Library header observation controls
+    name: Header controls then original six profiles
     runs-on: macos-26
     timeout-minutes: 45
     steps:
@@ -165,6 +165,47 @@ jobs:
           PASSGUARD
           grep -Fxq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-diag-tests.log"
           if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-diag-tests.log"; then exit 1; fi
+      - name: Original profile cases after corrected header controls
+        timeout-minutes: 24
+        env:
+          VANE_EXPECTED_PROFILE_TESTS: |
+            VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
+            VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
+            VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
+            VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
+            VaneTests.SpaceNativeRenderingTests/testProfileHopPublishesOnlyTheCompletedArrivingSidebar
+            VaneTests.SpaceNativeRenderingTests/testCachedProfileHopKeepsItsMountedScrollShell
+          VANE_PROFILE_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows|testProfileHopPublishesOnlyTheCompletedArrivingSidebar|testCachedProfileHopKeepsItsMountedScrollShell)$'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          set -euo pipefail
+          python3 - <<'PROFILE_INVENTORY'
+          import os,pathlib,re,json
+          r=pathlib.Path(os.environ['RUNNER_TEMP'])
+          expected=set(os.environ['VANE_EXPECTED_PROFILE_TESTS'].splitlines())
+          pattern=re.compile(os.environ['VANE_PROFILE_FILTER'])
+          selected=[t.strip() for t in (r/'vane-diag-inventory.txt').read_text().splitlines() if pattern.search(t.strip())]
+          assert len(selected)==6 and set(selected)==expected
+          components=json.loads((r/'vane-diag-manifest.json').read_text())['tests']
+          assert not set(components)&expected and len(components)==2
+          (r/'vane-profile-manifest.json').write_text(json.dumps({'schema':1,'tests':selected},indent=2)+'\n')
+          (r/'vane-combined-manifest.json').write_text(json.dumps({'schema':1,'tests':components+selected},indent=2)+'\n')
+          PROFILE_INVENTORY
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_PROFILE_FILTER" 2>&1 | tee "$RUNNER_TEMP/vane-profile-tests.log"
+          python3 scripts/native-test-shards.py verify --manifest "$RUNNER_TEMP/vane-profile-manifest.json" --log "$RUNNER_TEMP/vane-profile-tests.log"
+          python3 - <<'PROFILE_PASS'
+          import pathlib,os,re
+          r=pathlib.Path(os.environ['RUNNER_TEMP']);expected=set(os.environ['VANE_EXPECTED_PROFILE_TESTS'].splitlines())
+          outcomes={t:[] for t in expected}
+          for c,m,v in re.findall(r"Test Case '-\[VaneTests\.(\w+) (\w+)\]' (passed|failed|skipped)",(r/'vane-profile-tests.log').read_text()):
+              key=f'VaneTests.{c}/{m}'
+              if key in outcomes:outcomes[key].append(v)
+          assert all(v==['passed'] for v in outcomes.values()), outcomes
+          print('All original six profile cases passed once; no skips.')
+          PROFILE_PASS
+          grep -Fxq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-profile-tests.log"
+          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-profile-tests.log"; then exit 1; fi
       - name: Retain diagnostic evidence including failed attempts
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
@@ -172,6 +213,9 @@ jobs:
           name: public-native-logs
           path: |
             ${{ runner.temp }}/vane-diag-tests.log
+            ${{ runner.temp }}/vane-profile-tests.log
+            ${{ runner.temp }}/vane-profile-manifest.json
+            ${{ runner.temp }}/vane-combined-manifest.json
             ${{ runner.temp }}/vane-diag-manifest.json
             ${{ runner.temp }}/vane-diag-inventory.txt
             ${{ runner.temp }}/vane-motion-admission.log
