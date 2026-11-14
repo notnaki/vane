@@ -7,7 +7,7 @@ permissions:
 env:
   VANE_EXPECTED_TESTS: |
     VaneTests.WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted
-  VANE_CANDIDATE_SHA: '9eb5336a5fa712ed7e0af6a2f2e811a48a8905d9'
+  VANE_CANDIDATE_SHA: '140072eeb055bf41696e345d5fb75942f9759d55'
   VANE_LIBRARY_PAINT_TRACE: '1'
   VANE_LIBRARY_LAYOUT_TRACE: '1'
   VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted$'
