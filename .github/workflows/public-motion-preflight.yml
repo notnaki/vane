@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
 env:
-  VANE_CANDIDATE_SHA: 5d59cc950d202955a408a3ac5573ef973a0f3785
+  VANE_CANDIDATE_SHA: b784526e0c1db840b02d762d0ff3c31cfd89eba0
 jobs:
   diagnostic:
     name: Build and diagnose native fixtures

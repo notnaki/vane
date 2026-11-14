@@ -167,6 +167,7 @@ import XCTest
         let parent = NSHostingView(rootView: BrowserWindow(pageHost: owner, presentation: presentation)
             .environmentObject(store).environmentObject(ProfileManager.shared))
         parent.frame = root.bounds
+        parent.autoresizingMask = [.width, .height]
         root.addSubview(parent)
         do {
             try await compatibilityWait {
@@ -182,6 +183,7 @@ import XCTest
         try await withPage { store, window, root in
             let (owner, parent) = try await admitPage(store, window: window, root: root)
             defer { owner.retire(); parent.removeFromSuperview() }
+            parent.autoresizingMask = []
             let before = root.frame.size
             let slotFrame = owner.hostingView.superview?.frame
             root.setFrameSize(NSSize(width: before.width + 80, height: before.height + 40))
@@ -192,6 +194,64 @@ import XCTest
             root.setFrameSize(before)
             XCTAssertFalse(owner.layoutForProfileHandoff(in: window),
                            "Returning to old bounds cannot revive proof without a normal parent commit")
+        }
+    }
+
+    func testNormalNativeResizeCanCommitANewValidPageStampWithoutRootReplacement() async throws {
+        try await withPage { store, window, root in
+            let (owner, parent) = try await admitPage(store, window: window, root: root)
+            defer { owner.retire(); parent.removeFromSuperview() }
+            let oldContentSize = window.contentRect(forFrameRect: window.frame).size
+            window.setContentSize(NSSize(width: oldContentSize.width + 60, height: oldContentSize.height + 30))
+            // Normal native layout, not a rootView assignment or a fabricated
+            // geometry revision, must recover an eligible CURRENT page stamp.
+            try await compatibilityWait {
+                parent.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                return owner.layoutForProfileHandoff(in: window)
+            }
+            XCTAssertTrue(owner.displayForProfileHandoff(in: window))
+        }
+    }
+
+    private func envelopeMarkers(in view: NSView) -> [NativePageEnvelopeMarker] {
+        (view as? NativePageEnvelopeMarker).map { [$0] } ?? view.subviews.flatMap { envelopeMarkers(in: $0) }
+    }
+
+    func testObsoleteSlotAndEnvelopeCallbacksCannotRevokeReplacementProof() async throws {
+        try await withPage { store, window, root in
+            let presentation = BrowserProfilePresentation()
+            let owner = RetainedBrowserPageHost(store: store, presentation: presentation)
+            defer { owner.retire() }
+            let parent = NSHostingView(rootView: RetainedPageFixtureParent(store: store, owner: owner,
+                presentation: presentation, slotIdentity: UUID()))
+            parent.frame = root.bounds
+            root.addSubview(parent)
+            defer { parent.removeFromSuperview() }
+            try await compatibilityWait {
+                parent.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                return owner.layoutForProfileHandoff(in: window)
+            }
+            let oldSlot = try XCTUnwrap(owner.hostingView.superview as? NativeBrowserPageSlot)
+            let oldMarker = try XCTUnwrap(envelopeMarkers(in: parent).first)
+            parent.rootView = RetainedPageFixtureParent(store: store, owner: owner,
+                presentation: presentation, slotIdentity: UUID())
+            try await compatibilityWait {
+                parent.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                return owner.hostingView.superview !== oldSlot && owner.layoutForProfileHandoff(in: window)
+            }
+            let slotSize = oldSlot.frame.size
+            oldSlot.setFrameSize(NSSize(width: slotSize.width + 20, height: slotSize.height))
+            oldSlot.setFrameSize(slotSize)
+            oldSlot.setFrameOrigin(NSPoint(x: oldSlot.frame.minX + 10, y: oldSlot.frame.minY))
+            oldSlot.viewDidHide(); oldSlot.viewDidUnhide(); oldSlot.viewDidMoveToWindow()
+            let markerSize = oldMarker.frame.size
+            oldMarker.setFrameSize(NSSize(width: markerSize.width + 20, height: markerSize.height))
+            oldMarker.setFrameSize(markerSize)
+            oldMarker.setFrameOrigin(NSPoint(x: oldMarker.frame.minX + 10, y: oldMarker.frame.minY))
+            oldMarker.viewDidHide(); oldMarker.viewDidUnhide(); oldMarker.viewDidMoveToWindow()
+            XCTAssertTrue(owner.displayForProfileHandoff(in: window),
+                          "Old native callbacks must neither steal nor revoke the current replacement proof")
         }
     }
 
@@ -220,7 +280,7 @@ import XCTest
             let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
                                  styleMask: [.titled], backing: .buffered, defer: false)
             sheet.isReleasedWhenClosed = false
-            window.beginSheet(sheet)
+            window.beginSheet(sheet, completionHandler: { _ in })
             defer { window.endSheet(sheet); sheet.close() }
             XCTAssertFalse(owner.layoutForProfileHandoff(in: window),
                            "An actual attached native sheet cannot use the page-only layout path")
@@ -274,5 +334,28 @@ import XCTest
     override func displayIfNeeded() {
         displayAttempts += 1
         super.displayIfNeeded()
+    }
+}
+
+
+/// Production Library parent/provider retained while only its page slot is replaced.
+@MainActor private struct RetainedPageFixtureParent: View {
+    @ObservedObject var store: TabStore
+    let owner: RetainedBrowserPageHost
+    let presentation: BrowserProfilePresentation
+    let slotIdentity: UUID
+    var body: some View {
+        LibraryNavigationLayout(gesture: store.libraryGesture, libraryOpen: store.libraryOpen,
+            sidebarShown: store.sidebarShown, floating: store.sidebarFloatingChrome,
+            panelWidth: Library.panelWidth(section: Library.shared.section, spaces: 0,
+                private: store.isPrivate, available: store.window?.contentView?.bounds.width ?? 600),
+            palettePresented: store.palette != nil, monitor: store.librarySwipeMonitor,
+            page: WebCard(retainedPage: owner).id(slotIdentity), sidebar: Color.gray,
+            panel: Color.gray, store: store)
+            .librarySwipe(store)
+            .environmentObject(store).environmentObject(ProfileManager.shared)
+            .modifier(DownloadFeedbackPresentation(store: store, chrome: true,
+                                                   feedback: presentation.downloads))
+            .spaceChrome(store)
     }
 }

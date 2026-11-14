@@ -128,7 +128,7 @@ struct WebCardEnvelopeSpec: Equatable {
 /// sizing/paint policy, Library navigation, or protection/selection publications.
 @MainActor final class RetainedBrowserPageHost {
     let presentation: BrowserProfilePresentation
-    let hostingView: NSHostingView<AnyView>
+    let hostingView: BrowserHostingView<AnyView>
     private weak var store: TabStore?
     private weak var slot: NativeBrowserPageSlot?
     private var slotGeneration = UUID()
@@ -178,7 +178,7 @@ struct WebCardEnvelopeSpec: Equatable {
         self.presentation = presentation
         // The real page root is installed once by its actual slot/context. Do
         // not create and then replace a speculative cold page/FocusStore here.
-        hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+        hostingView = BrowserHostingView(rootView: AnyView(EmptyView()))
         hostingView.sizingOptions = []
         visibilityObservation = store.$profileVisible.dropFirst().sink { [weak self] _ in
             self?.invalidateGeometry(clearNormalCommit: true)
@@ -193,7 +193,7 @@ struct WebCardEnvelopeSpec: Equatable {
 
     fileprivate func configure(_ candidate: NativeBrowserPageSlot, environment: PagePublicEnvironment,
                                envelope: WebCardEnvelopeSpec, transaction: Transaction) {
-        guard !retired, candidate.generation == slotGeneration, let store else { return }
+        guard !retired, candidate.live, candidate.generation == slotGeneration, let store else { return }
         displayAuthorization = nil
         if slot !== candidate {
             hostingView.removeFromSuperview()
@@ -216,7 +216,7 @@ struct WebCardEnvelopeSpec: Equatable {
     }
 
     fileprivate func synchronize(_ candidate: NativeBrowserPageSlot) {
-        guard !retired, candidate.generation == slotGeneration,
+        guard !retired, candidate.live, candidate.generation == slotGeneration,
               candidate.superview != nil, candidate.environment != nil else { return }
         // A valid slot may reparent without another SwiftUI update. Its generation
         // can recover its own host; an obsolete/replaced slot cannot do so.
@@ -231,7 +231,7 @@ struct WebCardEnvelopeSpec: Equatable {
         hostingView.autoresizingMask = [.width, .height]
     }
 
-    fileprivate func invalidateGeometry(clearNormalCommit: Bool) {
+    private func invalidateGeometry(clearNormalCommit: Bool) {
         geometry = nil
         displayAuthorization = nil
         if geometryRevision == .max { retire(); return }
@@ -242,8 +242,36 @@ struct WebCardEnvelopeSpec: Equatable {
         }
     }
 
+    private func ownsSlot(_ candidate: NativeBrowserPageSlot) -> Bool {
+        !retired && candidate.live && candidate.generation == slotGeneration && slot === candidate
+    }
+
+    private func ownsMarker(_ candidate: NativePageEnvelopeMarker) -> Bool {
+        !retired && candidate.live && candidate.generation == outerGeneration && outerMarker === candidate
+    }
+
+    fileprivate func slotGeometryChanged(_ candidate: NativeBrowserPageSlot, clearNormalCommit: Bool) {
+        guard ownsSlot(candidate) else { return }
+        invalidateGeometry(clearNormalCommit: clearNormalCommit)
+    }
+
+    fileprivate func markerGeometryChanged(_ candidate: NativePageEnvelopeMarker, clearNormalCommit: Bool) {
+        guard ownsMarker(candidate) else { return }
+        invalidateGeometry(clearNormalCommit: clearNormalCommit)
+    }
+
+    fileprivate func slotDidLayout(_ candidate: NativeBrowserPageSlot) {
+        guard ownsSlot(candidate) else { return }
+        commitNormalGeometry()
+    }
+
+    fileprivate func markerDidLayout(_ candidate: NativePageEnvelopeMarker) {
+        guard ownsMarker(candidate) else { return }
+        commitNormalGeometry()
+    }
+
     fileprivate func slotWindowChanged(_ candidate: NativeBrowserPageSlot) {
-        guard candidate.generation == slotGeneration else { return }
+        guard ownsSlot(candidate) else { return }
         // First attachment belongs to the pending normal SwiftUI mount. Later
         // detach/reattach requires another normal commit; it cannot revive proof.
         if normalWindow == nil, normalRevision == revision, candidate.window != nil {
@@ -292,7 +320,7 @@ struct WebCardEnvelopeSpec: Equatable {
     }
 
     fileprivate func registerOuterMarker(_ marker: NativePageEnvelopeMarker) {
-        guard !retired, marker.generation == outerGeneration else { return }
+        guard !retired, marker.live, marker.generation == outerGeneration else { return }
         if outerMarker !== marker {
             invalidateGeometry(clearNormalCommit: false)
             outerMarker = marker
@@ -300,14 +328,14 @@ struct WebCardEnvelopeSpec: Equatable {
     }
 
     fileprivate func outerMarkerDetached(_ marker: NativePageEnvelopeMarker) {
-        guard outerMarker === marker, marker.generation == outerGeneration else { return }
+        guard ownsMarker(marker) else { return }
         outerMarker = nil
         invalidateGeometry(clearNormalCommit: true)
     }
 
     /// Only a normal native slot/envelope layout callback may commit geometry.
     /// Fast-path admission NEVER overwrites a stamp with current window bounds.
-    fileprivate func normalLayoutCommitted() {
+    private func commitNormalGeometry() {
         guard !retired, let store, let slot, let marker = outerMarker,
               slot.normalLayoutPassed, marker.normalLayoutPassed,
               slot.generation == slotGeneration, marker.generation == outerGeneration,
@@ -333,14 +361,15 @@ struct WebCardEnvelopeSpec: Equatable {
             receipt: slot.environment?.librarySource?.capture())
     }
 
-    /// Fail closed without a real current Library receipt. A later capture from
-    /// the same destination provider may succeed after cold marker readiness;
-    /// this recaptures CURRENT native geometry, never a departing profile's state.
+    /// Admission only reads a prior NORMAL native commitment. A later normal
+    /// callback may bind a fresh destination receipt after cold marker readiness;
+    /// this method never recaptures geometry or manufactures layout authority.
     func layoutForProfileHandoff(in window: NSWindow) -> Bool {
         displayAuthorization = nil
         guard !retired, let store, store.window === window, store.profileVisible,
               !store.libraryOpen, store.libraryGesture.progress == nil, !hasBlockingPresentation(in: window, store: store),
-              !window.inLiveResize, let slot, let inherited = slot.environment,
+              !window.inLiveResize, (window as? VaneWindow)?.isPreparingPageResize != true,
+              let slot, let inherited = slot.environment,
               let geometry, let receipt = geometry.receipt, receipt.isCurrentAndIdle(),
               receipt.owner == inherited.paintOwner,
               !slot.isHiddenOrHasHiddenAncestor, slot.window === window,
@@ -376,7 +405,7 @@ struct WebCardEnvelopeSpec: Equatable {
               let marker = outerMarker,
               store.window === window, store.profileVisible, !store.libraryOpen,
               store.libraryGesture.progress == nil, !hasBlockingPresentation(in: window, store: store),
-              !window.inLiveResize,
+              !window.inLiveResize, (window as? VaneWindow)?.isPreparingPageResize != true,
               slot.window === window, hostingView.superview === slot,
               !slot.isHiddenOrHasHiddenAncestor, !hasNativeResizeOwner(hostingView),
               authorization.receipt.isCurrentAndIdle() else { return false }
@@ -415,7 +444,7 @@ struct WebCardEnvelopeSpec: Equatable {
     }
 
     fileprivate func detach(_ candidate: NativeBrowserPageSlot) {
-        guard slot === candidate, candidate.generation == slotGeneration else { return }
+        guard ownsSlot(candidate) else { return }
         invalidateGeometry(clearNormalCommit: true)
         hostingView.removeFromSuperview()
         slot = nil
@@ -460,7 +489,7 @@ struct WebCardEnvelopeSpec: Equatable {
     fileprivate var environment: PagePublicEnvironment?
     fileprivate var envelope: WebCardEnvelopeSpec?
     fileprivate var signature: PageLayoutSignature?
-    private var live = true
+    fileprivate var live = true
     fileprivate var normalLayoutPassed = false
 
     init(owner: RetainedBrowserPageHost) {
@@ -480,19 +509,21 @@ struct WebCardEnvelopeSpec: Equatable {
         if live {
             owner.synchronize(self)
             normalLayoutPassed = true
-            owner.normalLayoutCommitted()
+            owner.slotDidLayout(self)
         }
     }
     override func setFrameSize(_ newSize: NSSize) {
-        if frame.size != newSize { owner.invalidateGeometry(clearNormalCommit: false); normalLayoutPassed = false }
+        if frame.size != newSize { owner.slotGeometryChanged(self, clearNormalCommit: false); normalLayoutPassed = false }
+        let changed = frame.size != newSize
         super.setFrameSize(newSize)
-        needsLayout = true
+        if changed { needsLayout = true }
         if live { owner.synchronize(self) }
     }
     override func setFrameOrigin(_ newOrigin: NSPoint) {
-        if frame.origin != newOrigin { owner.invalidateGeometry(clearNormalCommit: false); normalLayoutPassed = false }
+        if frame.origin != newOrigin { owner.slotGeometryChanged(self, clearNormalCommit: false); normalLayoutPassed = false }
+        let changed = frame.origin != newOrigin
         super.setFrameOrigin(newOrigin)
-        needsLayout = true
+        if changed { needsLayout = true }
         if live { owner.synchronize(self) }
     }
     override func viewDidMoveToSuperview() {
@@ -504,12 +535,12 @@ struct WebCardEnvelopeSpec: Equatable {
         super.viewDidMoveToWindow()
         if live { owner.slotWindowChanged(self) }
     }
-    override func viewDidHide() { super.viewDidHide(); owner.invalidateGeometry(clearNormalCommit: true) }
-    override func viewDidUnhide() { super.viewDidUnhide(); owner.invalidateGeometry(clearNormalCommit: true) }
+    override func viewDidHide() { super.viewDidHide(); owner.slotGeometryChanged(self, clearNormalCommit: true) }
+    override func viewDidUnhide() { super.viewDidUnhide(); owner.slotGeometryChanged(self, clearNormalCommit: true) }
     func dismantle() {
         guard live else { return }
-        live = false
         owner.detach(self)
+        live = false
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard live, owner.permitsNativeAccess(self) else { return nil }
@@ -590,7 +621,7 @@ struct WebCardEnvelopeSpec: Equatable {
     private let owner: RetainedBrowserPageHost
     fileprivate let generation: UUID
     fileprivate var normalLayoutPassed = false
-    private var live = true
+    fileprivate var live = true
     private var wasAttached = false
     init(owner: RetainedBrowserPageHost) {
         self.owner = owner
@@ -602,29 +633,33 @@ struct WebCardEnvelopeSpec: Equatable {
     func register() { if live { owner.registerOuterMarker(self); needsLayout = true } }
     override func layout() {
         super.layout()
-        if live { normalLayoutPassed = true; owner.normalLayoutCommitted() }
+        if live { normalLayoutPassed = true; owner.markerDidLayout(self) }
     }
     override func setFrameSize(_ size: NSSize) {
-        if frame.size != size { owner.invalidateGeometry(clearNormalCommit: false); normalLayoutPassed = false }
+        if frame.size != size { owner.markerGeometryChanged(self, clearNormalCommit: false); normalLayoutPassed = false }
+        let changed = frame.size != size
         super.setFrameSize(size)
-        needsLayout = true
+        if changed { needsLayout = true }
     }
     override func setFrameOrigin(_ origin: NSPoint) {
-        if frame.origin != origin { owner.invalidateGeometry(clearNormalCommit: false); normalLayoutPassed = false }
+        if frame.origin != origin { owner.markerGeometryChanged(self, clearNormalCommit: false); normalLayoutPassed = false }
+        let changed = frame.origin != origin
         super.setFrameOrigin(origin)
-        needsLayout = true
+        if changed { needsLayout = true }
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if wasAttached { owner.invalidateGeometry(clearNormalCommit: true) }
+        if wasAttached { owner.markerGeometryChanged(self, clearNormalCommit: true) }
         if window != nil { wasAttached = true }
         register()
     }
+    override func viewDidHide() { super.viewDidHide(); owner.markerGeometryChanged(self, clearNormalCommit: true) }
+    override func viewDidUnhide() { super.viewDidUnhide(); owner.markerGeometryChanged(self, clearNormalCommit: true) }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     func dismantle() {
         guard live else { return }
-        live = false
         owner.outerMarkerDetached(self)
+        live = false
     }
 }
 
