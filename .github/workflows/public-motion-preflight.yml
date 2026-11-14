@@ -23,7 +23,7 @@ env:
     VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
     VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
-  VANE_CANDIDATE_SHA: 50a266e0f58af6936ffa947dd0058722b20f212d
+  VANE_CANDIDATE_SHA: 08874f542a8062705b7588c55f9557c12f06fbae
   VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](RetainedBrowserPageHostTests/.*|SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows))$'
 jobs:
   diagnostic:
