@@ -2064,7 +2064,7 @@ private struct SpaceSwipe: ViewModifier {
                         slide.cancel()
                         return
                     }
-                    host.layoutDisplayedProfile()
+                    host.layoutDisplayedProfile(coveredBy: slide)
                     window.displayIfNeeded()
                     CATransaction.flush()
                 }

@@ -1295,9 +1295,21 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
 
     /// A committed profile already has its captured native rows. Prepare the
     /// displayed roots without walking the parked profiles' pending layouts.
-    func layoutDisplayedProfile() {
+    func layoutDisplayedProfile(coveredBy slide: ProfileSpaceSlide? = nil) {
         guard let current, let host = hosts[current] else { return }
-        host.content.layoutSubtreeIfNeeded()
+        if let slide, let window, spaceSlide === slide, slide.superview === self,
+           slide.isActive, host.content.superview === self, host.content.window === window,
+           let arriving = TabStore.all.first(where: { ObjectIdentifier($0) == current }),
+           arriving.window === window, arriving.profileVisible, slide.isDestination(arriving),
+           arriving.currentSpaceID == slide.completedSpaceID, !arriving.libraryOpen,
+           arriving.libraryGesture.progress == nil, !window.inLiveResize,
+           (window as? VaneWindow)?.isPreparingPageResize != true {
+            // Propagate the selected page through the browser root, as native frame
+            // changes do, without eagerly reflowing every covered row host too.
+            host.content.layout()
+        } else {
+            host.content.layoutSubtreeIfNeeded()
+        }
         host.palette.layoutSubtreeIfNeeded()
     }
 
