@@ -396,8 +396,8 @@ import XCTest
             // separate rapid case retains the original 20-sample reversals.
             let stepsPerStroke = rapid ? 20 : max(1, Int(ceil(abs(travel) / 2)))
             let stroke = Array(0...stepsPerStroke)
-            let steps = (0..<3).flatMap { _ in stroke + Array(stroke.reversed()) }
-            try await LibraryNativeInputClock.deliver(steps) { step in
+            let inputSteps = (0..<3).flatMap { _ in stroke + Array(stroke.reversed()) }
+            try await LibraryNativeInputClock.deliver(inputSteps) { step in
                 Motion.instant {
                     store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
                     if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
