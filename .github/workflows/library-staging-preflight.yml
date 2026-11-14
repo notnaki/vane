@@ -1,4 +1,4 @@
-name: Library native phase geometry
+name: Library cadence boundary diagnostic
 on:
   push:
     branches: [codex/library-staging-preflight-20261114]
@@ -6,14 +6,11 @@ permissions:
   contents: read
 env:
   VANE_EXPECTED_TESTS: |
-    VaneTests.LibraryPageLayoutTests/testAnimatedDocumentKeepsThePresentedCardInsideTheWindow
-    VaneTests.LibraryPageLayoutTests/testSplitDocumentsStayInsideTheCardThroughoutLibraryMovement
-    VaneTests.LivePageResizeBufferTests/testExactLibrarySplitWaitsForNativeLayoutBeforeUsingRoundedWidth
-    VaneTests.LivePageResizeBufferTests/testExactLibraryRejectsAnOlderNativeLayoutWithinOnePixelOfTheNewRequest
-  VANE_CANDIDATE_SHA: 'acafaa41e75f779806d078b67ff0bd32fec64fca'
-  VANE_LIBRARY_PAINT_TRACE: '0'
+    VaneTests.WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted
+  VANE_CANDIDATE_SHA: '9eb5336a5fa712ed7e0af6a2f2e811a48a8905d9'
+  VANE_LIBRARY_PAINT_TRACE: '1'
   VANE_LIBRARY_LAYOUT_TRACE: '1'
-  VANE_DIAGNOSTIC_FILTER: '^(?:VaneTests[.]LibraryPageLayoutTests/testAnimatedDocumentKeepsThePresentedCardInsideTheWindow|VaneTests[.]LibraryPageLayoutTests/testSplitDocumentsStayInsideTheCardThroughoutLibraryMovement|VaneTests[.]LivePageResizeBufferTests/testExactLibrarySplitWaitsForNativeLayoutBeforeUsingRoundedWidth|VaneTests[.]LivePageResizeBufferTests/testExactLibraryRejectsAnOlderNativeLayoutWithinOnePixelOfTheNewRequest)$'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted$'
 jobs:
   library-receipt:
     runs-on: macos-26
@@ -30,6 +27,7 @@ jobs:
           sw_vers | tee -a "$RUNNER_TEMP/vane-diag-source.txt"
           uname -m | tee -a "$RUNNER_TEMP/vane-diag-source.txt"
           test "$(sw_vers -productVersion | cut -d. -f1)" = 26
+          test "$(uname -m)" = arm64
       - name: Identify Swift toolchain
         id: toolchain
         run: |
