@@ -1,4 +1,4 @@
-name: Public completed profile handoff original acceptances
+name: Public simplified Library graph profile handoff acceptances
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -13,11 +13,11 @@ env:
     VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
     VaneTests.SpaceNativeRenderingTests/testProfileHopPublishesOnlyTheCompletedArrivingSidebar
-  VANE_CANDIDATE_SHA: 3d2fb45f2ab7752273ede257cf0a77c4554019b6
+  VANE_CANDIDATE_SHA: 0c7f3abee2378f6518db22f89d3445725b2029e4
   VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows|testProfileHopPublishesOnlyTheCompletedArrivingSidebar)$'
 jobs:
   diagnostic:
-    name: Original four profiles and completed arrival regression
+    name: Original four profiles on immutable simplified Library graph
     runs-on: macos-26
     timeout-minutes: 45
     steps:
