@@ -1,4 +1,4 @@
-name: Public retained page admission state diagnosis
+name: Public page readiness then original profile gate
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -8,13 +8,26 @@ env:
   VANE_EXPERIMENT_SIDEBAR_HOST: '0'
   VANE_LIBRARY_PAINT_TRACE: '0'
   VANE_EXPECTED_TESTS: |
+    VaneTests.RetainedBrowserPageHostTests/testReplacingTheNativeSlotCannotBeUndoneByAnObsoleteSlot
+    VaneTests.RetainedBrowserPageHostTests/testUnknownLibraryAdmissionUsesTheOriginalLayoutFallback
     VaneTests.RetainedBrowserPageHostTests/testRetainedAndInlineCardsKeepTheSamePageEnvelopeAndPixels
     VaneTests.RetainedBrowserPageHostTests/testPageOnlyDisplayProofIsConsumedAndLiveGestureInvalidatesIt
-  VANE_CANDIDATE_SHA: b4c92e2ea5074c2b1fedec3db53185bd02dbf82a
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]RetainedBrowserPageHostTests/(testRetainedAndInlineCardsKeepTheSamePageEnvelopeAndPixels|testPageOnlyDisplayProofIsConsumedAndLiveGestureInvalidatesIt)$'
+    VaneTests.RetainedBrowserPageHostTests/testOutOfBandRootResizeCannotRestampAnUnchangedOldNativeSlot
+    VaneTests.RetainedBrowserPageHostTests/testNormalNativeResizeCanCommitANewValidPageStampWithoutRootReplacement
+    VaneTests.RetainedBrowserPageHostTests/testObsoleteSlotAndEnvelopeCallbacksCannotRevokeReplacementProof
+    VaneTests.RetainedBrowserPageHostTests/testNativeGeometryOutAndBackPermanentlyRevokesTheDisplayProof
+    VaneTests.RetainedBrowserPageHostTests/testPendingPresentationAndAttachedSheetRejectBothLayoutAndDisplay
+    VaneTests.RetainedBrowserPageHostTests/testWindowDisplayWithoutAnAuthorizedProfileCoverUsesTheOriginalFallback
+    VaneTests.RetainedBrowserPageHostTests/testInjectedFeedbackReceivesIntoTheEagerOwnerAndRemovalCancelsIt
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
+    VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
+  VANE_CANDIDATE_SHA: 50a266e0f58af6936ffa947dd0058722b20f212d
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](RetainedBrowserPageHostTests/.*|SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows))$'
 jobs:
   diagnostic:
-    name: Exact two unchanged positive page fixtures
+    name: Exact eleven page controls then four original profiles
     runs-on: macos-26
     timeout-minutes: 45
     steps:
@@ -138,14 +151,22 @@ jobs:
           (r/'vane-diag-manifest.json').write_text(json.dumps({'schema':1,'tests':tests},indent=2)+'\n')
           print('Selected diagnostic methods:',len(tests))
           PYCODE
-      - name: Observe original native outcomes
-        timeout-minutes: 24
+      - name: Verify all page-host controls before profile qualification
+        timeout-minutes: 12
         env:
-          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '600'
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
           set -euo pipefail
-          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER" 2>&1 | tee "$RUNNER_TEMP/vane-diag-tests.log"
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests[.]RetainedBrowserPageHostTests/.*$' 2>&1 | tee "$RUNNER_TEMP/vane-diag-tests.log"
+      - name: Observe unchanged four original profile outcomes after component gate
+        timeout-minutes: 12
+        env:
+          VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '600'
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
+        run: |
+          set -euo pipefail
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter '^VaneTests[.]SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows)$' 2>&1 | tee -a "$RUNNER_TEMP/vane-diag-tests.log"
       - name: Verify completed selection when successful
         run: |
           set -euo pipefail
@@ -163,7 +184,7 @@ jobs:
           assert all(v==['passed'] for v in outcomes.values()), f'Every selected case must pass once: {outcomes}'
           print('All exact preflight cases passed once; no skips.')
           PASSGUARD
-          grep -Fxq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-diag-tests.log"
+          test "$(grep -Fxc 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-diag-tests.log")" = 2
           if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-diag-tests.log"; then exit 1; fi
       - name: Retain diagnostic evidence including failed attempts
         if: ${{ always() }}
