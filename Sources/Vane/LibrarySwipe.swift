@@ -214,6 +214,8 @@ private struct LibrarySwipe: ViewModifier {
     var pageMountEpoch: LibraryPageMountEpoch { pageMountMetadata.epoch }
     var pageMountPendingSettlement: UUID? { pageMountMetadata.pending }
 
+    func invalidatePageMountOwnerLifecycle() { pageMountMetadata.invalidate() }
+
     init(mountEpoch: LibraryPageMountEpoch = .init()) {
         pageMountMetadata = LibraryPageMountSettlement(epoch: mountEpoch)
     }
