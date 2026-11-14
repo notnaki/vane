@@ -158,22 +158,17 @@ extension EnvironmentValues {
                 isCurrent: { [weak self, weak window] in
                     self?.generation == token && self?.marker?.window === window
                 },
-                apply: { [weak self, weak root] _, width in
-                    guard let self, self.generation == token, let root, let width else { return }
+                apply: { [weak self] _, width in
+                    guard let self, self.generation == token, let width else { return }
 #if DEBUG
                     ResizeTimingDiagnostics.record("library.publication.begin", width: width)
 #endif
                     self.buffer?.publishSidebarWidth(width) { _ in
                         Motion.instant {
                             self.progress = self.submitted
-#if DEBUG
-                            ResizeTimingDiagnostics.record("library.root.layout.begin", width: width)
-#endif
-                            root.needsLayout = true
-                            root.layoutSubtreeIfNeeded()
-#if DEBUG
-                            ResizeTimingDiagnostics.record("library.root.layout.end", width: width)
-#endif
+                            // Let SwiftUI commit the covered page and rails together.
+                            // Native layout callbacks acknowledge their actual geometry;
+                            // the buffer still flushes exact layout when settling.
                         }
                     }
 #if DEBUG
