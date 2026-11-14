@@ -45,6 +45,7 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
     let page: Page
     let sidebar: Sidebar
     let panel: Panel
+    var store: TabStore? = nil
 
     private var progress: CGFloat { gesture.progress ?? (libraryOpen ? 1 : 0) }
 
@@ -52,7 +53,7 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
         PaintedLibraryNavigation(gesture: gesture, targetProgress: progress,
             libraryOpen: libraryOpen, sidebarShown: sidebarShown, floating: floating,
             sidebarWidth: sidebarWidth, panelWidth: panelWidth, palettePresented: palettePresented,
-            monitor: monitor, page: page, sidebar: sidebar, panel: panel)
+            monitor: monitor, page: page, sidebar: sidebar, panel: panel, store: store)
     }
 }
 
@@ -71,6 +72,7 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
     let page: Page
     let sidebar: Sidebar
     let panel: Panel
+    let store: TabStore?
     @Environment(\.displayScale) private var displayScale
     @StateObject private var paint: LibraryNavigationPaint
 
@@ -81,11 +83,11 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
 
     init(gesture: LibraryGesture, targetProgress: CGFloat, libraryOpen: Bool, sidebarShown: Bool,
          floating: Bool, sidebarWidth: CGFloat, panelWidth: CGFloat, palettePresented: Bool,
-         monitor: LibrarySwipeMonitor, page: Page, sidebar: Sidebar, panel: Panel) {
+         monitor: LibrarySwipeMonitor, page: Page, sidebar: Sidebar, panel: Panel, store: TabStore?) {
         self.gesture = gesture; self.targetProgress = targetProgress
         self.libraryOpen = libraryOpen; self.sidebarShown = sidebarShown; self.floating = floating
         self.sidebarWidth = sidebarWidth; self.panelWidth = panelWidth; self.palettePresented = palettePresented
-        self.monitor = monitor; self.page = page; self.sidebar = sidebar; self.panel = panel
+        self.monitor = monitor; self.page = page; self.sidebar = sidebar; self.panel = panel; self.store = store
         _paint = StateObject(wrappedValue: LibraryNavigationPaint(progress: targetProgress))
     }
 
@@ -103,6 +105,8 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
                 Color.clear.frame(width: leading)
                 // Resolve navigation geometry once per surface, rather than per leaf.
                 page.environment(\.libraryNavigationPaintOwner, paint.owner)
+                    .environment(\.libraryPageMountReceiptSource,
+                        paint.pageMountReceiptSource(store: store, gesture: gesture, monitor: monitor))
                     .environment(\.libraryPageLeadingInset, 0)
                     .geometryGroup()
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
