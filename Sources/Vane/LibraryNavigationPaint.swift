@@ -125,8 +125,7 @@ extension EnvironmentValues {
             }
         }
         guard buffer == nil else {
-            if requestedProgress == progress,
-               let window = marker?.window { waitForFrame(in: window) }
+            if let window = marker?.window { waitForFrame(in: window) }
             return
         }
         guard let arrival, let window = marker?.window, window.isVisible,
