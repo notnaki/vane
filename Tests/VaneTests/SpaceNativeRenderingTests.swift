@@ -1947,13 +1947,17 @@ import XCTest
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
-        var footerFrames = 0
+        var footerSamples: [(time: Double, active: Bool, drag: CGFloat, expected: CGFloat?)] = []
         let observeFooter: (TabStore) -> AnyCancellable = { arriving in
             arriving.spaceGesture.footer.$drag.dropFirst().sink { drag in
                 guard let drag else { return }
-                footerFrames += 1
-                XCTAssertEqual(drag, slide.offset, accuracy: 2,
-                               "Each arriving footer frame must follow the same native presentation")
+                let active = arriving.window === window
+                // attach seeds a parked destination with the last published
+                // source value; it does not take a fresh compositor sample.
+                let expected = active ? slide.offset : source.spaceGesture.footer.drag
+                footerSamples.append((CACurrentMediaTime(), active, drag, expected))
+                // Failure reporting is synchronous and can consume the remaining
+                // animation. Assert captured values after observation completes.
             }
         }
         // A cached destination already exists. Observe its whole landing rather
@@ -1964,6 +1968,7 @@ import XCTest
         defer { footerObservation?.cancel() }
         let landingStartedAt = CACurrentMediaTime()
         monitor.land(1, to: second, width: fixtureSidebarWidth(in: source), store: source, duration: 0.8)
+        let landingReturnedAt = CACurrentMediaTime()
         try await Task.sleep(for: .milliseconds(100))
         let earlySampleAt = CACurrentMediaTime()
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
@@ -1971,7 +1976,7 @@ import XCTest
             footerObservation = observeFooter(arriving)
             footerSubscribedAt = CACurrentMediaTime()
         }
-        print("EARLY_PROFILE_TIMING cached=\(cached) landing=\(landingStartedAt) sample=\(earlySampleAt) elapsedMS=\((earlySampleAt - landingStartedAt) * 1000) footerSubscribed=\(String(describing: footerSubscribedAt))")
+        print("EARLY_PROFILE_TIMING cached=\(cached) landing=\(landingStartedAt) returned=\(landingReturnedAt) sample=\(earlySampleAt) elapsedMS=\((earlySampleAt - landingStartedAt) * 1000) footerSubscribed=\(String(describing: footerSubscribedAt))")
         XCTAssertEqual(arriving.profileID, secondProfile.id,
                        "Profile activation must not wait for the sidebar animation to finish")
         XCTAssertEqual(arriving.currentSpaceID, second.id)
@@ -2033,7 +2038,7 @@ import XCTest
                        "The arriving footer must keep the gesture's original Space")
         XCTAssertNotNil(arriving.spaceGesture.footer.drag)
         try await Task.sleep(for: .milliseconds(1000))
-        XCTAssertGreaterThan(footerFrames, 2)
+        footerObservation?.cancel()
         if let retained = host.spaceSlide {
             print("EARLY_PROFILE_RETIREMENT cached=\(cached) sameSlide=\(retained === slide) \(retained.retirementDiagnosticString)")
         }
@@ -2042,6 +2047,13 @@ import XCTest
         XCTAssertFalse(source.spaceSwiping)
         XCTAssertFalse(source.spaceGesture.profileSliding)
         XCTAssertEqual(source.spaceDrag, 0, "A parked source must not retain stale native travel")
+        for sample in footerSamples {
+            print("EARLY_PROFILE_FOOTER time=\(sample.time) active=\(sample.active) drag=\(sample.drag) expected=\(String(describing: sample.expected))")
+            XCTAssertEqual(sample.drag, try XCTUnwrap(sample.expected), accuracy: 2,
+                           sample.active ? "Each arriving footer frame must follow the same native presentation"
+                               : "Attachment must preserve the source footer's last published progress")
+        }
+        XCTAssertGreaterThan(footerSamples.filter(\.active).count, 2)
     }
 
     func testQueuedDestinationStartsFromActualArrivingProfileStore() async throws {
