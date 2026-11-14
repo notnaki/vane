@@ -343,6 +343,49 @@ import XCTest
         }
     }
 
+    func testSynchronousVisibilityRestorationNeverRevivesOldReceipt() async throws {
+        try await withFixture { f in
+            let old = try XCTUnwrap(f.source.capture())
+            f.store.profileVisible = false
+            f.store.profileVisible = true
+            // No yield, predicate read, monitor event or SwiftUI update between
+            // the lifecycle edges: invalidation belongs to the actual owner.
+            XCTAssertFalse(old.isCurrentAndIdle())
+            XCTAssertNotNil(f.source.capture(), "A fresh resting receipt may admit after restoration")
+        }
+    }
+
+    func testSynchronousParkingRestorationNeverRevivesOldReceipt() async throws {
+        try await withFixture { f in
+            let old = try XCTUnwrap(f.source.capture())
+            f.store.parkedIn = f.window
+            f.store.parkedIn = nil
+            XCTAssertFalse(old.isCurrentAndIdle())
+            XCTAssertNotNil(f.source.capture())
+        }
+    }
+
+    func testSynchronousWindowRestorationNeverRevivesOldReceipt() async throws {
+        try await withFixture { f in
+            let old = try XCTUnwrap(f.source.capture())
+            f.store.window = nil
+            f.store.window = f.window
+            XCTAssertFalse(old.isCurrentAndIdle())
+            XCTAssertNotNil(f.source.capture())
+        }
+    }
+
+    func testIdenticalOwnerLifecycleAssignmentsPreserveRestingReceipt() async throws {
+        try await withFixture { f in
+            let old = try XCTUnwrap(f.source.capture())
+            f.store.profileVisible = true
+            f.store.parkedIn = nil
+            f.store.window = f.window
+            XCTAssertTrue(old.isCurrentAndIdle(), "Identical owner values must not create an epoch loop")
+            XCTAssertNotNil(f.source.capture())
+        }
+    }
+
     func testHiddenParkedOrUnknownOwnerCannotCapture() async throws {
         try await withFixture { f in
             let old = f.source.capture(); XCTAssertNotNil(old)
