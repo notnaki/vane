@@ -408,7 +408,7 @@ import XCTest
 #if DEBUG
                     if trace { events.append("LIBRARY_TIMING t=\(CACurrentMediaTime()) event=library.layout.done width=nil height=nil") }
 #endif
-                    try await Task.sleep(for:.milliseconds(8), tolerance: .zero)
+                    try await Task.sleep(for:.milliseconds(8))
                 }
                 for step in (0...stepsPerStroke).reversed() {
 #if DEBUG
@@ -422,7 +422,7 @@ import XCTest
 #if DEBUG
                     if trace { events.append("LIBRARY_TIMING t=\(CACurrentMediaTime()) event=library.layout.done width=nil height=nil") }
 #endif
-                    try await Task.sleep(for:.milliseconds(8), tolerance: .zero)
+                    try await Task.sleep(for:.milliseconds(8))
                 }
             }
             Motion.instant { store.librarySwipeProgress = nil }
