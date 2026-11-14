@@ -83,6 +83,7 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         var updating = false
         var currentVersion: String? = nil
         var candidateVersion: String? = nil
+        var verifiedSigner: String? = nil
 
         var needsApproval: Bool {
             installing || updating || !newlySupportedCapabilities.isEmpty || previous.map { !requested.additions(over: $0).isEmpty } ?? true
@@ -124,6 +125,9 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
             + "Allowing website access can let it read and change data on those pages. "
             + (review.installing ? "Cancel leaves it uninstalled."
                : "Don’t Allow keeps the previously accepted version, if available. No new access is granted.")
+        if let signer = review.verifiedSigner {
+            alert.informativeText = signer + "\n\n" + alert.informativeText
+        }
         let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 440, height: 240))
         text.isEditable = false
         text.font = .systemFont(ofSize: NSFont.systemFontSize)

@@ -258,8 +258,6 @@ import WebKit
         case upgrade(URL)
         /// Cancel and show `interstitial(for:)` at this url. https is not available here.
         case block(URL)
-        /// The interstitial's own "continue" link. Ask, and only then load this http url.
-        case confirm(URL)
     }
 
     /// The whole policy, with the WebKit types factored out so it can be asserted offline.
@@ -268,10 +266,6 @@ import WebKit
                        profileID: UUID = ProfileManager.activeProfileID,
                        now: Date = .now) -> Decision {
         guard let url else { return .allow }
-        // Answered before `enabled`: the sentinel only ever comes from a page we rendered
-        // ourselves, and a user who has already clicked through it is owed the alert even if
-        // they flipped the switch off in another window in the meantime.
-        if let target = insecureTarget(url) { return .confirm(target) }
         // One shot, spent immediately: the interstitial we just asked for is allowed to load
         // at the url it is about, and nothing else is.
         if showing == url.absoluteString { showing = nil; return .allow }
@@ -304,26 +298,20 @@ import WebKit
     /// an ordinary web view. So "continue" is a navigation to a scheme nothing else claims,
     /// which comes straight back through `decide`.
     ///
-    /// ponytail: a page could navigate itself here to raise the alert. It cannot get past it —
-    /// the alert defaults to Go Back and the button that proceeds has no key equivalent, same
-    /// as `CertificateTrust` — so the worst a hostile page buys is one modal it cannot answer.
     nonisolated static let insecureScheme = "x-vane-insecure"
 
-    /// Percent-encoded down to alphanumerics, so whatever the url contains is inert in every
-    /// context the interstitial puts it in.
+    /// A fresh capability for this rendering, retained only by its tab.
     static func sentinel(for url: URL) -> URL? {
         guard let body = url.absoluteString
             .addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { return nil }
-        return URL(string: insecureScheme + ":" + body)
+        return URL(string: insecureScheme + ":" + UUID().uuidString + ":" + body)
     }
 
-    static func insecureTarget(_ url: URL) -> URL? {
-        guard url.scheme?.lowercased() == insecureScheme else { return nil }
-        let body = url.absoluteString.dropFirst(insecureScheme.count + 1)
-        guard let decoded = body.removingPercentEncoding,
-              let target = URL(string: decoded),
-              target.scheme?.lowercased() == "http" else { return nil }
-        return target
+    static func continuationTarget(_ url: URL, expected: (target: URL, sentinel: URL)?,
+                                   sourceURL: URL?, isMainFrame: Bool) -> URL? {
+        guard let expected, isMainFrame, url == expected.sentinel,
+              sourceURL == expected.target else { return nil }
+        return expected.target
     }
 
     /// The second gate. The interstitial was the first — its default action is Go Back — so
@@ -362,10 +350,10 @@ import WebKit
     /// they are the same kind of moment and should not look like two different browsers.
     /// The order of the actions is the message: Go Back is the button, continuing is a line
     /// of muted text underneath it.
-    static func interstitial(for url: URL) -> String {
+    static func interstitial(for url: URL, sentinel: URL) -> String {
         let host = url.host ?? url.absoluteString
         let shown = url.absoluteString
-        let go = sentinel(for: url)?.absoluteString ?? ""
+        let go = sentinel.absoluteString
         return """
         <!doctype html>
         <html><head>
@@ -689,18 +677,16 @@ import WebKit
         // The way back out.
         let target = u("http://plain.example/a?b=1&c=2")
         let s = sentinel(for: target)!
-        out.append(("the sentinel round-trips the exact url", insecureTarget(s) == target))
-        out.append(("the sentinel is inert — nothing but alphanumerics after the colon",
-                    s.absoluteString.dropFirst(insecureScheme.count + 1)
-                        .allSatisfy { $0.isLetter || $0.isNumber || $0 == "%" }))
-        out.append(("a sentinel navigation asks rather than loading",
-                    decide(url: s, isMainFrame: true, profileID: p, now: t0) == .confirm(target)))
-        out.append(("a sentinel wrapping a non-http url is refused",
-                    insecureTarget(u(insecureScheme + ":" + "https%3A%2F%2Fx.example")) == nil))
-        out.append(("a sentinel with junk in it is refused",
-                    insecureTarget(u(insecureScheme + ":%%%")) == nil))
-        out.append(("an ordinary url is not mistaken for a sentinel",
-                    insecureTarget(u("http://example.com")) == nil))
+        let expected = (target: target, sentinel: s)
+        out.append(("the current main-frame interstitial can continue",
+                    continuationTarget(s, expected: expected, sourceURL: target, isMainFrame: true) == target))
+        out.append(("an unrelated document or subframe cannot continue",
+                    continuationTarget(s, expected: expected, sourceURL: u("https://other.example"), isMainFrame: true) == nil
+                    && continuationTarget(s, expected: expected, sourceURL: target, isMainFrame: false) == nil))
+        out.append(("sentinels are per rendering and require a pending interstitial",
+                    continuationTarget(sentinel(for: target)!, expected: expected, sourceURL: target, isMainFrame: true) == nil
+                    && continuationTarget(s, expected: nil, sourceURL: target, isMainFrame: true) == nil))
+        out.append(("the sentinel reaches the internal navigation handler", !ExternalApps.isExternal(s.scheme)))
 
         // The interstitial. Two layers between a hostile address and the markup: Foundation
         // percent-encodes what is not legal in a url (angle brackets, quotes), and `escape`
@@ -708,7 +694,8 @@ import WebKit
         // otherwise break the continue link as well as being wrong.
         let hostile = URL(string: "http://evil.example/\"><script>alert(1)</script>?a=1&b=2",
                           encodingInvalidCharacters: true)!
-        let page = interstitial(for: hostile)
+        let hostileSentinel = sentinel(for: hostile)!
+        let page = interstitial(for: hostile, sentinel: hostileSentinel)
         out.append(("the interstitial names the host", page.contains("evil.example")))
         out.append(("the interstitial says https is not supported",
                     page.contains("doesn’t support a secure connection")))
@@ -727,7 +714,7 @@ import WebKit
         out.append(("the quote that would have closed the href never appears raw",
                     !page.contains("\">") || !page.contains("evil.example/\"")))
         out.append(("the continue link carries a sentinel for exactly this url",
-                    page.contains(sentinel(for: hostile)!.absoluteString)))
+                    page.contains(hostileSentinel.absoluteString)))
         out.append(("nothing hostile survives into the link attribute",
                     !page.contains("href=\"\(insecureScheme):http://")))
         out.append(("the interstitial has no script block of its own", !page.contains("<script")))

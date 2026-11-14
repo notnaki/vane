@@ -27,6 +27,7 @@ struct SafariExtensionSource: Codable, Equatable, Sendable {
     struct Candidate: Sendable {
         let source: SafariExtensionSource
         let bundleURL: URL
+        let certificateCommonName: String
     }
 
     private static func validBundleID(_ value: String) -> Bool {
@@ -55,6 +56,7 @@ struct SafariExtensionSource: Codable, Equatable, Sendable {
         let identifier: String
         let team: String
         let hash: String
+        let commonName: String
     }
 
     static func verify(_ url: URL) throws -> Signature {
@@ -89,7 +91,15 @@ struct SafariExtensionSource: Codable, Equatable, Sendable {
               SecStaticCodeCheckValidity(code, flags, teamRequirement) == errSecSuccess else {
             throw ExtensionCodeStore.Problem("The signing Team ID does not match the bundle’s Apple-issued signing certificate.")
         }
-        return Signature(identifier: identifier, team: team, hash: hash.map { String(format: "%02x", $0) }.joined())
+        var commonName: CFString?
+        guard let certificates = values[kSecCodeInfoCertificates as String] as? [SecCertificate],
+              let leaf = certificates.first,
+              SecCertificateCopyCommonName(leaf, &commonName) == errSecSuccess,
+              let commonName, !(commonName as String).isEmpty else {
+            throw ExtensionCodeStore.Problem("The verified signing certificate has no common name.")
+        }
+        return Signature(identifier: identifier, team: team, hash: hash.map { String(format: "%02x", $0) }.joined(),
+                         commonName: commonName as String)
     }
 
     /// Enumerate only immediate embedded Safari web extensions; never discover arbitrary
@@ -122,7 +132,7 @@ struct SafariExtensionSource: Codable, Equatable, Sendable {
             let source = Self(appBundleID: appSignature.identifier, extensionBundleID: signature.identifier,
                 teamID: signature.team, appPath: app.path, signatureHash: signature.hash)
             guard source.isValid else { throw ExtensionCodeStore.Problem("The Safari extension’s verified identity is invalid.") }
-            results.append(Candidate(source: source, bundleURL: url))
+            results.append(Candidate(source: source, bundleURL: url, certificateCommonName: signature.commonName))
         }
         guard !results.isEmpty else { throw ExtensionCodeStore.Problem("This app contains no verified Safari web extensions. Choose an app with a Safari web extension, or install an unpacked folder instead.") }
         guard Set(results.map { $0.source.runtimeID }).count == results.count else {

@@ -3,6 +3,9 @@ import AppKit
 /// One decision for the navigation delegate and the modifier hint. Page scripts can
 /// override a click themselves; this describes the browser's handling of an ordinary link.
 enum LinkInteraction {
+    nonisolated static func allows(_ destination: URL, from source: URL?) -> Bool {
+        !destination.isFileURL || source?.isFileURL == true
+    }
     enum Target: String, Equatable, Sendable { case main, newWindow, subframe }
     enum Action: Equatable, Sendable {
         case navigate, tab(focus: Bool), split, little, peek
@@ -51,6 +54,7 @@ enum LinkInteraction {
         // Control-left-click belongs to the context menu. Custom and script schemes are
         // handled before this table by the navigation delegate, never in a browser tab.
         guard (!modifiers.contains(.control) || button == TabActions.middleButton),
+              allows(url, from: context.source),
               let scheme = url.scheme?.lowercased(),
               ["http", "https", "file"].contains(scheme) else { return .navigate }
         let web = scheme == "http" || scheme == "https"

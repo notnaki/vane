@@ -542,6 +542,7 @@ import WebKit
             mainDocument: window === topWindow });
         }
         credentialListener('submit', function (e) {
+          if (!e.isTrusted) return;
           var form = eventField(e);
           if (!form || form.tagName !== 'FORM' || !safeRoot(form)) return;
           submittedAttempt = {

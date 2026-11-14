@@ -200,7 +200,7 @@ final class GitHubRefreshLock {
     }
 
     private static func request(_ request: URLRequest) async -> Result<GitHubCredential, GitHub.Trouble> {
-        let session = URLSession(configuration: .ephemeral)
+        let session = URLSession(configuration: .ephemeral, delegate: GitHub.Redirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         do {
             let (data, response) = try await session.data(for: request)

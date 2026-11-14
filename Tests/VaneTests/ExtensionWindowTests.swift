@@ -548,6 +548,8 @@ import XCTest
             const requests = [
                 {type:'popup',url:[browser.runtime.getURL('popup.html'),browser.runtime.getURL('options.html')]},
                 {type:'popup',url:'https://example.test/'},
+                {incognito:true},
+                {url:'vane://oauth/github'},
                 {type:'popup',url:browser.runtime.getURL('popup.html'),incognito:true},
                 {type:'popup',url:browser.runtime.getURL('popup.html').replace('://','://user@')},
                 {type:'popup',tabId:(await browser.tabs.query({}))[0].id}
@@ -559,7 +561,17 @@ import XCTest
             }
             return outcomes;
             """, arguments: [:], in: nil, contentWorld: .page) as? [Bool]
-        XCTAssertEqual(rejected, [true, true, true, true, true], "Unsupported popup combinations must fail explicitly")
+        XCTAssertEqual(rejected, [true, true, true, true, true, true, true], "Unsupported popup combinations must fail explicitly")
+        let tabRejected = try await options.callAsyncJavaScript("""
+            const id = (await browser.tabs.query({}))[0].id;
+            const results = [];
+            for (const action of [() => browser.tabs.create({url:'vane://oauth/github'}),
+                                  () => browser.tabs.update(id,{url:'VANE://oauth/github'})]) {
+                try { await action(); results.push(false); } catch (_) { results.push(true); }
+            }
+            return results;
+            """, arguments: [:], in: nil, contentWorld: .page) as? [Bool]
+        XCTAssertEqual(tabRejected, [true, true])
     }
     private final class EmptyPolicyDelegate: NSObject, WKNavigationDelegate {}
 

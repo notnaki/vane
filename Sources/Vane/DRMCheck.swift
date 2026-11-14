@@ -54,7 +54,7 @@ import WebKit
             exit(2)
         }
         NSApplication.shared.run()
-        fatalError("unreachable")
+        exit(2) // The application loop can return after stop(); no probe result was obtained.
     }
 
     private static func play(_ url: URL) -> Never {
@@ -111,7 +111,7 @@ import WebKit
             }
         }
         NSApplication.shared.run()
-        fatalError("unreachable")
+        exit(2) // The application loop can return after stop(); no probe result was obtained.
     }
 
     /// Finds the biggest <video> on the page, nudges it into playing, and reports its state.
