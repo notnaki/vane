@@ -4,10 +4,11 @@ Source for [vane.so](https://vane.so/), kept on the `website` branch of
 [notnaki/vane](https://github.com/notnaki/vane). The native app and technical
 documentation stay on `main`.
 
-The site is plain HTML, CSS, JavaScript and native app media. Serve this branch's
+The site is plain HTML, one stylesheet (`site.css`), one script (`site.js`) and native
+app media. It is dark by default with a light theme behind the nav toggle. Serve this branch's
 root with `python3 -m http.server 8661` to browse it locally.
 
-Run `node tests/galaxy.test.cjs` and `python3 tests/site-links.py` before a website
+Run `node tests/site-metadata.test.cjs` and `python3 tests/site-links.py` before a website
 change. Pull requests target `website`; website CI does not build the native app.
 
 App capture, font and banner provenance is in [media/README.md](media/README.md).
