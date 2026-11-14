@@ -15,8 +15,8 @@ import XCTest
         (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants(type, in: $0) }
     }
 
-    private func browser(width: CGFloat) -> (NSWindow, NSView, TabStore, vane.Tab) {
-        let store = TabStore(isPrivate: true, session: [])
+    private func browser(width: CGFloat, privateWindow: Bool = true) -> (NSWindow, NSView, TabStore, vane.Tab) {
+        let store = TabStore(isPrivate: privateWindow, session: [])
         store.tabs = (0..<4).map { index in
             let tab = store.makeBlankTab(as: .favourite)
             tab.park(url: URL(string: "https://example.test/\(index)")!, Parked(title: "Favorite \(index)"))
@@ -48,6 +48,53 @@ import XCTest
             TabStore.all.removeAll { $0 === store }
         }
         return (window, root, store, page)
+    }
+
+    func testDefaultProfileChangesDoNotRebuildTheRetainedLibraryHeader() throws {
+        TestEnvironment.prepare()
+        let manager = ProfileManager.shared
+        let previousProfile = manager.active
+        let previousFilter = Library.shared.filterSection
+        let source = manager.create(name: "Header window owner")
+        let other = manager.create(name: "Unrelated default profile")
+        let ownedProfiles: Set<UUID> = [source.id, other.id]
+        addTeardownBlock { @MainActor in
+            Library.shared.filterSection = previousFilter
+            manager.active = previousProfile
+            _ = manager.delete(other.id)
+            _ = manager.delete(source.id)
+            try await NativeFixtureProfileCleanup.release(ownedProfiles)
+        }
+        manager.active = source
+        Library.shared.filterSection = .archived
+        let bodies = Bodies()
+        let previousSink = ResizeTimingDiagnostics.sink
+        ResizeTimingDiagnostics.sink = { event, _, _, _ in bodies.record(event) }
+        defer { ResizeTimingDiagnostics.sink = previousSink }
+        let (window, root, store, _) = browser(width: 900, privateWindow: false)
+        XCTAssertEqual(store.profileID, source.id)
+        XCTAssertFalse(store.libraryOpen, "Check the actual retained, offscreen Library header")
+        XCTAssertTrue(root.window === window)
+        root.layout()
+        XCTAssertGreaterThan(bodies.counts["sidebar.body.libraryHead", default: 0], 0,
+                             "The real Library header must render before checking invalidation")
+        bodies.counts.removeAll()
+        manager.active = other
+        root.layout()
+        root.layoutSubtreeIfNeeded()
+        CATransaction.flush()
+        XCTAssertEqual(manager.active.id, other.id)
+        XCTAssertEqual(store.profileID, source.id, "The window keeps its actual profile owner")
+        XCTAssertEqual(bodies.counts["sidebar.body.libraryHead", default: 0], 0,
+                       "Changing only the app-wide default must not rebuild a retained Library header")
+        bodies.counts.removeAll()
+        manager.rename(other.id, to: "Updated header metadata")
+        root.layout()
+        root.layoutSubtreeIfNeeded()
+        CATransaction.flush()
+        XCTAssertEqual(manager.profiles.first { $0.id == other.id }?.name, "Updated header metadata")
+        XCTAssertGreaterThan(bodies.counts["sidebar.body.libraryHead", default: 0], 0,
+                             "Real profile metadata must still reach the retained header")
     }
 
     func testWidthUpdatesNativeGeometryWithoutRebuildingBrowserContent() throws {
