@@ -18,8 +18,12 @@ env:
     VaneTests.LibraryPageMountReceiptTests/testCurrentClosedFinishedMineStillConsumesMomentum
     VaneTests.LibraryPageMountReceiptTests/testPendingLandingRejectsEvenIfTheModelPresentationWasCleared
     VaneTests.LibraryPageMountReceiptTests/testProviderAndReceiptDoNotRetainTheActualPaintOwner
+    VaneTests.LibraryPageMountReceiptTests/testStaleSettlementMetadataCannotClearTheNewerActualLanding
+    VaneTests.LibraryPageMountReceiptTests/testBindingReplacementCannotResurrectAnOldReceipt
+    VaneTests.LibraryPageMountReceiptTests/testCheckedEpochExhaustionNeverWraps
+    VaneTests.LibraryPageMountReceiptTests/testExhaustedActualPaintOwnerStaysFailClosedAfterIdleRebinding
     VaneTests.LibraryPageMountReceiptTests/testHiddenParkedOrUnknownOwnerCannotCapture
-  VANE_CANDIDATE_SHA: '40039c79cad7abb897757f61eb76f9eb25f1608b'
+  VANE_CANDIDATE_SHA: '40134089ac1122c24a2c98632f6160fb5142a5e9'
   VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]LibraryPageMountReceiptTests/.*$'
 jobs:
   library-receipt:
@@ -29,13 +33,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.VANE_CANDIDATE_SHA }}
-      - name: Verify exact receipt scaffold and actual runner
+      - name: Verify exact receipt candidate and actual runner
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$VANE_CANDIDATE_SHA"
           sw_vers
           swift --version
-      - name: Build exact receipt scaffold
+      - name: Build exact receipt candidate
         run: swift build -c debug --build-tests --disable-index-store --jobs 3
       - name: Admit actual system motion on this disposable runner
         run: |

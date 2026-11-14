@@ -69,6 +69,9 @@ import XCTest
         let app = NSApplication.shared
         let previousPolicy = app.activationPolicy()
         defer { app.setActivationPolicy(previousPolicy) }
+        let previousBatteryMode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.off)
+        defer { BatterySaver.shared.setMode(previousBatteryMode) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do {
@@ -229,6 +232,7 @@ import XCTest
             _ = monitor.handle(ReceiptScrollEvent(window: f.window, phase: .began), in: f.store)
             _ = monitor.handle(ReceiptScrollEvent(window: f.window, dx: -150), in: f.store)
             _ = monitor.handle(ReceiptScrollEvent(window: f.window, phase: .ended), in: f.store)
+            XCTAssertNotNil(monitor.pageMountPendingSettlement, "The actual gesture must issue a landing tail")
             // Current logical endpoints alone cannot retire an issued landing.
             f.store.libraryOpen = false
             f.store.libraryGesture.progress = nil
@@ -255,6 +259,87 @@ import XCTest
             XCTAssertNil(weakPaint)
             XCTAssertNil(source.capture())
             XCTAssertFalse(receipt?.isCurrentAndIdle() ?? true)
+        }
+    }
+
+    func testStaleSettlementMetadataCannotClearTheNewerActualLanding() async throws {
+        try await withFixture { f in
+            let panel = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 1))
+            panel.wantsLayer = true
+            f.root.addSubview(panel)
+            let monitor = f.store.librarySwipeMonitor
+            monitor.presentationView = panel
+            f.store.libraryOpen = true
+            _ = monitor.handle(ReceiptScrollEvent(window: f.window, phase: .began), in: f.store)
+            _ = monitor.handle(ReceiptScrollEvent(window: f.window, dx: -150), in: f.store)
+            _ = monitor.handle(ReceiptScrollEvent(window: f.window, phase: .ended), in: f.store)
+            let old = try XCTUnwrap(monitor.pageMountPendingSettlement)
+            monitor.cancelPendingActivation(toward: true)
+            let newer = try XCTUnwrap(monitor.pageMountPendingSettlement)
+            XCTAssertNotEqual(old, newer)
+            let epoch = monitor.pageMountEpoch
+            let progress = f.store.libraryGesture.progress
+            monitor.pageMountSettlementCompleted(old)
+            XCTAssertEqual(monitor.pageMountPendingSettlement, newer)
+            XCTAssertEqual(monitor.pageMountEpoch, epoch)
+            XCTAssertEqual(f.store.libraryGesture.progress, progress, "Metadata cannot run a production completion")
+            f.store.libraryOpen = false
+            f.store.libraryGesture.progress = nil
+            XCTAssertNil(f.source.capture(), "The newer actual tail still owns cleanup")
+        }
+    }
+
+    func testBindingReplacementCannotResurrectAnOldReceipt() async throws {
+        try await withFixture { f in
+            let old = f.source.capture(); XCTAssertNotNil(old)
+            let other = TabStore(isPrivate: true, session: [])
+            defer {
+                other.librarySwipeMonitor.remove(); other.spaceGesture.monitor.remove()
+                other.dropStashes(); TabStore.all.removeAll { $0 === other }
+            }
+            let rebound = f.paint.pageMountReceiptSource(store: other,
+                gesture: other.libraryGesture, monitor: other.librarySwipeMonitor)
+            XCTAssertTrue(rebound === f.source)
+            XCTAssertNil(rebound?.capture())
+            _ = f.paint.pageMountReceiptSource(store: f.store,
+                gesture: f.store.libraryGesture, monitor: f.store.librarySwipeMonitor)
+            XCTAssertFalse(old?.isCurrentAndIdle() ?? true)
+            XCTAssertNotNil(f.source.capture())
+        }
+    }
+
+    func testCheckedEpochExhaustionNeverWraps() {
+        var epoch = LibraryPageMountEpoch(value: .max - 1)
+        epoch.invalidate()
+        XCTAssertEqual(epoch.value, .max)
+        XCTAssertFalse(epoch.exhausted)
+        epoch.invalidate()
+        XCTAssertEqual(epoch.value, .max)
+        XCTAssertTrue(epoch.exhausted)
+        epoch.invalidate()
+        XCTAssertEqual(epoch.value, .max)
+        XCTAssertTrue(epoch.exhausted)
+    }
+
+    func testExhaustedActualPaintOwnerStaysFailClosedAfterIdleRebinding() async throws {
+        try await withFixture { f in
+            let exhausted = LibraryNavigationPaint(progress: 0, mountEpoch: .init(value: .max))
+            f.store.libraryGesture.paint = exhausted
+            f.marker.paint = exhausted
+            let source = try XCTUnwrap(exhausted.pageMountReceiptSource(store: f.store,
+                gesture: f.store.libraryGesture, monitor: f.store.librarySwipeMonitor))
+            exhausted.request(0, sampledAt: nil, marker: f.marker, leading: { _ in 228 })
+            try await compatibilityWait { !exhausted.isPreparing }
+            XCTAssertTrue(exhausted.pageMountEpoch.exhausted)
+            XCTAssertNil(source.capture())
+            exhausted.cancel()
+            _ = exhausted.pageMountReceiptSource(store: f.store,
+                gesture: f.store.libraryGesture, monitor: f.store.librarySwipeMonitor)
+            exhausted.request(0, sampledAt: nil, marker: f.marker, leading: { _ in 228 })
+            try await compatibilityWait { !exhausted.isPreparing }
+            XCTAssertEqual(exhausted.pageMountEpoch.value, .max)
+            XCTAssertTrue(exhausted.pageMountEpoch.exhausted)
+            XCTAssertNil(source.capture())
         }
     }
 
