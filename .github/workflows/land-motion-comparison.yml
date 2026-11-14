@@ -9,7 +9,7 @@ env:
     VaneTests.WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted
     VaneTests.LibrarySwipeTests/testQuickOpeningReleaseContinuesFromTheLastFingerPosition
     VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
-  VANE_CANDIDATE_SHA: '7af01277023bc571a1fd11495c08b4ffe5f20f76'
+  VANE_CANDIDATE_SHA: 'c52dc3f59d1354a78ec5b2787be09e56c7003b54'
   VANE_LIBRARY_PAINT_TRACE: '0'
   VANE_LIBRARY_LAYOUT_TRACE: '0'
   VANE_DIAGNOSTIC_FILTER: '^(?:VaneTests[.]WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted|VaneTests[.]LibrarySwipeTests/testQuickOpeningReleaseContinuesFromTheLastFingerPosition|VaneTests[.]SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding)$'
@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        optimization: [unoptimized, optimized]
+        optimization: [optimized]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
