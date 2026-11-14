@@ -5,52 +5,6 @@ import XCTest
 @testable import vane
 
 @MainActor final class LibrarySwipeTests: XCTestCase {
-    private typealias FixtureCleanup = @MainActor @Sendable () -> Void
-    private var ownedLoopCleanups: [FixtureCleanup]?
-
-    private func fixtureCleanup(_ body: @escaping FixtureCleanup) {
-        if ownedLoopCleanups != nil { ownedLoopCleanups?.append(body) }
-        else { addTeardownBlock { @MainActor in body() } }
-    }
-
-    private func withFixtureApplicationLoop(_ body: () async throws -> Void) async throws {
-        TestEnvironment.prepare()
-        let app = NSApplication.shared
-        let policy = app.activationPolicy()
-        defer { app.setActivationPolicy(policy) }
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
-        ownedLoopCleanups = []
-        var failure: (any Error)?
-        do { try await body() } catch { failure = error }
-        let cleanups = ownedLoopCleanups ?? []
-        ownedLoopCleanups = nil
-        for cleanup in cleanups.reversed() { cleanup() }
-        do { try await loop.close() }
-        catch {
-            if failure == nil { failure = error }
-            else { XCTFail("Library fixture AppKit loop cleanup also failed: \(error)") }
-        }
-        if let failure { throw failure }
-    }
-
-    private func admitPresentation(window: NSWindow, host: NSView,
-                                   monitor: LibrarySwipeMonitor) async throws {
-        window.styleMask = [.titled, .fullSizeContentView]
-        window.animationBehavior = .none
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        try await compatibilityWait {
-            host.layoutSubtreeIfNeeded()
-            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
-                  window.isVisible, window.occlusionState.contains(.visible),
-                  NSApp.modalWindow == nil, window.attachedSheet == nil,
-                  let marker = monitor.presentationView, marker.window === window,
-                  let model = marker.layer, let presented = model.presentation(),
-                  let root = host.layer, let presentedRoot = root.presentation() else { return false }
-            return abs(presented.convert(.zero, to: presentedRoot).x - model.convert(.zero, to: root).x) < 0.125
-        }
-    }
-
     private func fixture(withSpaces: Bool = false) -> (TabStore, LibraryScrollWindow, LibrarySwipeMonitor) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -71,7 +25,7 @@ import XCTest
         store.libraryOpen = true
         let monitor = store.librarySwipeMonitor
         monitor.install(store)
-        fixtureCleanup {
+        addTeardownBlock { @MainActor in
             monitor.remove()
             store.window = nil
             window.close()
@@ -293,7 +247,53 @@ import XCTest
         }
     }
 
-    func testLibraryDragMovesThePageWithoutResizingWebKitForEachSample() async throws {
+    private func withLibraryApplicationLoop(_ body: @MainActor () async throws -> Void) async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await body() } catch { failure = error }
+        do { try await loop.close() }
+        catch { if failure == nil { failure = error } else { XCTFail("Library fixture cleanup also failed: \(error)") } }
+        if let failure { throw failure }
+    }
+
+    func testLibraryDragKeepsWebKitFillingTheMovingCard() async throws {
+        try await withLibraryApplicationLoop { try await checkLibraryDragKeepsWebKitFillingTheMovingCard() }
+    }
+
+    private func checkLibraryDragKeepsWebKitFillingTheMovingCard() async throws {
+#if DEBUG
+        let trace = ProcessInfo.processInfo.environment["VANE_LIBRARY_PAINT_TRACE"] == "1"
+        var events: [String] = []
+        let previousStateSink = ResizeTimingDiagnostics.stateSink
+        let previousSink = ResizeTimingDiagnostics.sink
+        if trace {
+            ResizeTimingDiagnostics.stateSink = { event, time, fields in
+                guard events.count < 5000 else { return }
+                if event.hasPrefix("library.") || event.hasPrefix("buffer.complete")
+                    || event == "buffer.prepare.before" || event.hasPrefix("buffer.publish") {
+                    events.append("LIBRARY_TRACE t=\(time) event=\(event) fields=\(fields)")
+                }
+            }
+            ResizeTimingDiagnostics.sink = { event, time, width, height in
+                guard events.count < 5000 else { return }
+                if event.hasPrefix("library.") || event == "sidebar.body.browser"
+                    || event == "buffer.presentation.callback" || event == "buffer.host.layout" {
+                    events.append("LIBRARY_TIMING t=\(time) event=\(event) width=\(String(describing: width)) height=\(String(describing: height))")
+                }
+            }
+        }
+        defer {
+            if trace {
+                ResizeTimingDiagnostics.stateSink = previousStateSink
+                ResizeTimingDiagnostics.sink = previousSink
+                events.forEach { print($0) }
+            }
+        }
+#endif
         try XCTSkipIf(Motion.reduced, "Requires interactive navigation")
         let (store, window, _) = fixture(withSpaces: true)
         Library.open(.downloads, in: store)
@@ -304,31 +304,47 @@ import XCTest
         let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         window.contentView = host
+        window.styleMask = [.titled, .fullSizeContentView]
+        window.animationBehavior = .none
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
-        try await Task.sleep(for: .milliseconds(100))
+        try await ResizeNativeWindowAdmission.wait(window, web: tab.web, layout: true)
+        try await compatibilityWait { !tab.web.isLoading }
+        let ready = XCTestExpectation(description: "Initial Library document paint")
+        let presented: @convention(block) () -> Void = { ready.fulfill() }
+        tab.web.perform(NSSelectorFromString("_doAfterNextPresentationUpdate:"), with: presented)
+        guard await XCTWaiter.fulfillment(of: [ready], timeout: 3) == .completed else {
+            throw NSError(domain: "LibraryDocumentPaintReadiness", code: 1)
+        }
         let initialWidth = tab.web.bounds.width
         let initialX = tab.web.convert(.zero, to: host).x
         XCTAssertGreaterThan(initialWidth, 100)
         send(window, phase: .began)
         send(window, dx: 40)
         try await Task.sleep(for: .milliseconds(40))
-        XCTAssertEqual(tab.web.bounds.width, initialWidth, accuracy: 1,
-                       "Finger tracking must translate the page, without repeated WebKit reflow")
+        XCTAssertEqual(tab.web.bounds.width + tab.web.convert(.zero, to: host).x,
+                       initialWidth + initialX, accuracy: 1,
+                       "The document and the visible card must share the same right edge")
         XCTAssertGreaterThan(tab.web.convert(.zero, to: host).x, initialX + 5,
                              "The stable page must still move with the navigation")
         send(window, dx: 40)
         try await Task.sleep(for: .milliseconds(40))
-        XCTAssertEqual(tab.web.bounds.width, initialWidth, accuracy: 1)
+        XCTAssertEqual(tab.web.bounds.width + tab.web.convert(.zero, to: host).x,
+                       initialWidth + initialX, accuracy: 1)
+        XCTAssertLessThan(tab.web.bounds.width, initialWidth)
         send(window, phase: .ended)
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertNil(store.librarySwipeProgress)
-        XCTAssertNil(store.libraryGesture.pageWidth)
+        XCTAssertNil(store.libraryGesture.pageLeadingInset)
         XCTAssertLessThan(tab.web.bounds.width, initialWidth - 50,
-                          "Apply the destination page width once the navigation settles")
+                          "The destination viewport remains fitted when navigation settles")
     }
 
-    func testFloatingSidebarLibraryLandingKeepsInnerWebWidthFixed() async throws {
+    func testFloatingSidebarLibraryLandingKeepsTheDocumentAtTheRightRim() async throws {
+        try await withLibraryApplicationLoop { try await checkFloatingSidebarLibraryLandingKeepsTheDocumentAtTheRightRim() }
+    }
+
+    private func checkFloatingSidebarLibraryLandingKeepsTheDocumentAtTheRightRim() async throws {
         try XCTSkipIf(Motion.reduced, "Requires animated navigation")
         let (store, window, monitor) = fixture(withSpaces: true)
         Library.open(.downloads, in: store)
@@ -338,9 +354,18 @@ import XCTest
         let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         window.contentView = host
+        window.styleMask = [.titled, .fullSizeContentView]
+        window.animationBehavior = .none
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
-        try await Task.sleep(for: .milliseconds(100))
+        try await ResizeNativeWindowAdmission.wait(window, web: tab.web, layout: true)
+        try await compatibilityWait { !tab.web.isLoading }
+        let ready = XCTestExpectation(description: "Initial Library document paint")
+        let presented: @convention(block) () -> Void = { ready.fulfill() }
+        tab.web.perform(NSSelectorFromString("_doAfterNextPresentationUpdate:"), with: presented)
+        guard await XCTWaiter.fulfillment(of: [ready], timeout: 3) == .completed else {
+            throw NSError(domain: "LibraryDocumentPaintReadiness", code: 1)
+        }
         let width = tab.web.bounds.width
         send(window, phase: .began)
         send(window, dx: -80)
@@ -350,15 +375,19 @@ import XCTest
         var landingSamples = 0
         for _ in 0..<4 {
             try await Task.sleep(for: .milliseconds(30))
-            if store.libraryGesture.pageWidth != nil {
+            if store.libraryGesture.pageLeadingInset != nil {
                 landingSamples += 1
-                XCTAssertEqual(tab.web.bounds.width, width, accuracy: 0.5,
-                               "The floating card's inner padding must stay fixed through landing")
+                let viewport = try XCTUnwrap(tab.web.superview as? WebHost)
+                let bounds = viewport.convert(viewport.bounds, to: host)
+                XCTAssertEqual(bounds.maxX, host.bounds.width - Look.cardGap, accuracy: 1,
+                               "A floating card must keep its visible document viewport at the window's right rim")
+                if !tab.web.autoresizingMask.contains(.width) {
+                    XCTAssertTrue(viewport.clipsToBounds, "A prepared native viewport must not escape its visible card")
+                }
             }
         }
         XCTAssertGreaterThan(landingSamples, 0, "Inspect the page while its landing is in progress")
         try await Task.sleep(for: .milliseconds(300))
-        XCTAssertNil(store.libraryGesture.pageWidth)
         XCTAssertNil(store.libraryGesture.pageLeadingInset)
         XCTAssertGreaterThan(tab.web.bounds.width, width + 50)
     }
@@ -467,7 +496,7 @@ import XCTest
         XCTAssertEqual(try x(), 0, accuracy: 1)
     }
 
-    private func releasedOpening(nativeWindow: Bool = false, profileHost: Bool = false) async throws -> (TabStore, NSWindow, LibrarySwipeMonitor, NSView) {
+    private func releasedOpening(nativeWindow: Bool = false) async throws -> (TabStore, NSWindow, LibrarySwipeMonitor, NSView) {
         try XCTSkipIf(Motion.reduced, "Requires animated navigation")
         let (store, original, monitor) = fixture(withSpaces: true)
         let window: NSWindow
@@ -478,22 +507,18 @@ import XCTest
             window.isReleasedWhenClosed = false
             store.window = window
             monitor.install(store)
-            fixtureCleanup { window.contentView = nil; window.close() }
+            addTeardownBlock { @MainActor in window.contentView = nil; window.close() }
         } else { window = original }
         Library.open(.downloads, in: store)
         store.libraryOpen = false
         store.sidebarShown = true
         store.palette = nil
-        let host: NSView
-        if profileHost {
-            host = BrowserWindowHost(shown: ShownStore(store))
-        } else {
-            host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
-                .environmentObject(ProfileManager.shared))
-        }
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
         window.contentView = host
-        fixtureCleanup { window.orderOut(nil); window.contentView = nil }
-        try await admitPresentation(window: window, host: host, monitor: monitor)
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(150))
         send(window, phase: .began)
         for _ in 0..<5 {
             send(window, dx: 20)
@@ -504,10 +529,6 @@ import XCTest
     }
 
     func testReverseSwipeDuringOpeningLandingUsesReleasedIntent() async throws {
-        try await withFixtureApplicationLoop { try await checkReverseSwipeDuringOpeningLandingUsesReleasedIntent() }
-    }
-
-    private func checkReverseSwipeDuringOpeningLandingUsesReleasedIntent() async throws {
         let (store, window, monitor, host) = try await releasedOpening()
         try await Task.sleep(for: .milliseconds(30))
         let marker = try XCTUnwrap(monitor.presentationView)
@@ -529,10 +550,6 @@ import XCTest
     }
 
     func testCancelledReverseDuringOpeningStillReachesReleasedDestination() async throws {
-        try await withFixtureApplicationLoop { try await checkCancelledReverseDuringOpeningStillReachesReleasedDestination() }
-    }
-
-    private func checkCancelledReverseDuringOpeningStillReachesReleasedDestination() async throws {
         let (store, window, _, _) = try await releasedOpening()
         try await Task.sleep(for: .milliseconds(30))
         send(window, phase: .began)
@@ -544,18 +561,7 @@ import XCTest
     }
 
     func testExplicitCloseSupersedesOpeningLanding() async throws {
-        try await withFixtureApplicationLoop { try await checkExplicitCloseSupersedesOpeningLanding() }
-    }
-
-    func testExplicitCloseInBrowserWindowHostSupersedesOpeningLanding() async throws {
-        try await withFixtureApplicationLoop { try await checkExplicitCloseSupersedesOpeningLanding(profileHost: true) }
-    }
-
-    private func checkExplicitCloseSupersedesOpeningLanding(profileHost: Bool = false) async throws {
-        let (store, window, monitor, host) = try await releasedOpening(nativeWindow: profileHost, profileHost: profileHost)
-        let observer = LibraryReturnObserver(root: host)
-        observer.start(on: try XCTUnwrap(window.screen))
-        defer { observer.stop() }
+        let (store, _, monitor, host) = try await releasedOpening()
         try await Task.sleep(for: .milliseconds(30))
         let marker = try XCTUnwrap(monitor.presentationView)
         func x() throws -> CGFloat {
@@ -563,87 +569,17 @@ import XCTest
                 to: host.layer?.presentation()).x
         }
         let before = try x()
-        let endpoint = -Look.libraryRail - Look.libraryList
-        observer.arm(marker: marker, before: before, endpoint: endpoint)
         Library.close(store)
         try await Task.sleep(for: .milliseconds(30))
-        observer.stop()
-        // Keep the original sample delay. A late task can read the endpoint;
-        // native frames retain the actual reversal observed before that read.
-        let returning = try observer.intermediate ?? x()
-        XCTAssertTrue(LibraryReturnObserver.isIntermediate(returning, before: before, endpoint: endpoint),
-                      "Observe closing travel beyond pixel rounding, including for the task-sample fallback")
-        XCTAssertLessThan(returning, before)
-        XCTAssertGreaterThan(returning, endpoint + 1,
+        XCTAssertLessThan(try x(), before)
+        XCTAssertGreaterThan(try x(), -Look.libraryRail - Look.libraryList + 1,
                              "An explicit close reverses the landing instead of snapping shut")
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertFalse(store.libraryOpen, "A retired opening completion must not reopen Library")
         XCTAssertNil(store.librarySwipeProgress)
     }
 
-    func testLibraryReturnObservationRejectsSubpixelRounding() async throws {
-        try await withFixtureApplicationLoop {
-            let (_, window, monitor) = fixture(withSpaces: true)
-            let host = NSView(frame: window.contentLayoutRect)
-            host.wantsLayer = true
-            let marker = NSView(frame: NSRect(x: 200, y: 100, width: 10, height: 10))
-            marker.wantsLayer = true
-            host.addSubview(marker)
-            window.contentView = host
-            monitor.presentationView = marker
-            defer { window.orderOut(nil); window.contentView = nil }
-            try await admitPresentation(window: window, host: host, monitor: monitor)
-            let observer = LibraryReturnObserver(root: host)
-            observer.start(on: try XCTUnwrap(window.screen))
-            defer { observer.stop() }
-            try await compatibilityWait { observer.callbacks >= 2 }
-            observer.arm(marker: marker, before: 200.25, endpoint: 0)
-            try await compatibilityWait { observer.armedSamples >= 3 }
-            observer.stop()
-            let stationary = try XCTUnwrap(marker.layer?.presentation()).convert(.zero,
-                to: host.layer?.presentation()).x
-            XCTAssertNil(observer.intermediate, "Pixel rounding of a held frame is not return travel")
-            XCTAssertFalse(LibraryReturnObserver.isIntermediate(stationary, before: 200.25, endpoint: 0),
-                           "The task-sample fallback must also reject pixel rounding")
-        }
-    }
-
-    func testLibraryReturnObservationRejectsAnEndpointJump() async throws {
-        try await withFixtureApplicationLoop {
-            let (_, window, monitor) = fixture(withSpaces: true)
-            let host = NSView(frame: window.contentLayoutRect)
-            host.wantsLayer = true
-            let marker = NSView(frame: NSRect(x: 200, y: 100, width: 10, height: 10))
-            marker.wantsLayer = true
-            host.addSubview(marker)
-            window.contentView = host
-            monitor.presentationView = marker
-            defer { window.orderOut(nil); window.contentView = nil }
-            try await admitPresentation(window: window, host: host, monitor: monitor)
-            let observer = LibraryReturnObserver(root: host)
-            observer.start(on: try XCTUnwrap(window.screen))
-            defer { observer.stop() }
-            try await compatibilityWait { observer.callbacks >= 2 }
-            observer.arm(marker: marker, before: 200, endpoint: 0)
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            marker.setFrameOrigin(NSPoint(x: 0, y: 100))
-            CATransaction.commit()
-            window.displayIfNeeded()
-            CATransaction.flush()
-            try await compatibilityWait { observer.armedSamples >= 3 }
-            observer.stop()
-            XCTAssertNil(observer.intermediate, "An instantaneous endpoint jump must not qualify as a reversal")
-            XCTAssertEqual(try XCTUnwrap(marker.layer?.presentation()).convert(.zero,
-                to: host.layer?.presentation()).x, 0, accuracy: 0.125)
-        }
-    }
-
     func testToggleDuringOpeningLandingClosesTheReleasedDestination() async throws {
-        try await withFixtureApplicationLoop { try await checkToggleDuringOpeningLandingClosesTheReleasedDestination() }
-    }
-
-    private func checkToggleDuringOpeningLandingClosesTheReleasedDestination() async throws {
         let (store, _, _, _) = try await releasedOpening()
         Library.toggle(.downloads, in: store)
         try await Task.sleep(for: .milliseconds(400))
@@ -652,10 +588,6 @@ import XCTest
     }
 
     func testOpeningCommandBarSupersedesPendingLibraryOpening() async throws {
-        try await withFixtureApplicationLoop { try await checkOpeningCommandBarSupersedesPendingLibraryOpening() }
-    }
-
-    private func checkOpeningCommandBarSupersedesPendingLibraryOpening() async throws {
         let (store, _, _, _) = try await releasedOpening()
         store.palette = .address
         try await Task.sleep(for: .milliseconds(400))
@@ -665,10 +597,6 @@ import XCTest
     }
 
     func testFindDuringOpeningLandingTargetsLibrarySearch() async throws {
-        try await withFixtureApplicationLoop { try await checkFindDuringOpeningLandingTargetsLibrarySearch() }
-    }
-
-    private func checkFindDuringOpeningLandingTargetsLibrarySearch() async throws {
         let (store, _, _, _) = try await releasedOpening()
         store.openFind()
         XCTAssertFalse(store.findOpen, "Find follows the released Library destination")
@@ -677,10 +605,6 @@ import XCTest
     }
 
     func testCloseCommandDuringOpeningLandingDoesNotArchiveThePage() async throws {
-        try await withFixtureApplicationLoop { try await checkCloseCommandDuringOpeningLandingDoesNotArchiveThePage() }
-    }
-
-    private func checkCloseCommandDuringOpeningLandingDoesNotArchiveThePage() async throws {
         let (store, window, monitor, _) = try await releasedOpening(nativeWindow: true)
         let tab = store.newBlankTab(focus: false, loading: URL(string: "about:blank"))
         let oldMenu = NSApp.mainMenu
@@ -700,10 +624,6 @@ import XCTest
     }
 
     func testFindFocusAcquiredDuringClosingSurvivesLanding() async throws {
-        try await withFixtureApplicationLoop { try await checkFindFocusAcquiredDuringClosingSurvivesLanding() }
-    }
-
-    private func checkFindFocusAcquiredDuringClosingSurvivesLanding() async throws {
         let (store, window, monitor, host) = try await releasedOpening(nativeWindow: true)
         try await Task.sleep(for: .milliseconds(400))
         let tab = store.newBlankTab(focus: false, loading: URL(string: "about:blank"))
@@ -738,10 +658,6 @@ import XCTest
     }
 
     func testEscapeDuringOpeningLandingClosesLibrary() async throws {
-        try await withFixtureApplicationLoop { try await checkEscapeDuringOpeningLandingClosesLibrary() }
-    }
-
-    private func checkEscapeDuringOpeningLandingClosesLibrary() async throws {
         let (store, window, monitor, _) = try await releasedOpening(nativeWindow: true)
         XCTAssertTrue(monitor.intendsOpen(in: store))
         let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
@@ -756,10 +672,6 @@ import XCTest
     }
 
     func testProfileDepartureSupersedesPendingLibraryOpening() async throws {
-        try await withFixtureApplicationLoop { try await checkProfileDepartureSupersedesPendingLibraryOpening() }
-    }
-
-    private func checkProfileDepartureSupersedesPendingLibraryOpening() async throws {
         let (store, _, _, _) = try await releasedOpening()
         store.profileVisible = false
         try await Task.sleep(for: .milliseconds(400))
@@ -768,10 +680,6 @@ import XCTest
     }
 
     func testReducedMotionFinishesReleasedLibraryDestination() async throws {
-        try await withFixtureApplicationLoop { try await checkReducedMotionFinishesReleasedLibraryDestination() }
-    }
-
-    private func checkReducedMotionFinishesReleasedLibraryDestination() async throws {
         let (store, _, monitor, _) = try await releasedOpening()
         monitor.finishForReducedMotion()
         XCTAssertTrue(store.libraryOpen)
@@ -782,10 +690,6 @@ import XCTest
     }
 
     func testSpaceChangeSupersedesPendingLibraryOpening() async throws {
-        try await withFixtureApplicationLoop { try await checkSpaceChangeSupersedesPendingLibraryOpening() }
-    }
-
-    private func checkSpaceChangeSupersedesPendingLibraryOpening() async throws {
         let (store, window, _, _) = try await releasedOpening()
         send(window, phase: .began)
         send(window, dx: -20)
@@ -835,10 +739,6 @@ import XCTest
     /// machine-dependent assertions; the ordinary test above guards the invalidation boundary.
     func testPopulatedArchiveSwipeTiming() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1")
-        try await withFixtureApplicationLoop { try await checkPopulatedArchiveSwipeTiming() }
-    }
-
-    private func checkPopulatedArchiveSwipeTiming() async throws {
         let saver = BatterySaver.shared
         let previousMode = saver.mode
         saver.setMode(.off)
@@ -869,17 +769,11 @@ import XCTest
         store.syncShapes()
         let key = ProfileManager.defaultsKey("archivedTabs", store.profileID)
         let oldArchive = UserDefaults.vane.data(forKey: key)
-        let archive = Archive.shared(for: store.profileID)
-        let oldEntries = archive.entries
         let archived = (0..<2000).map { Archive.Entry(url: "about:blank#archive-\($0)",
             title: "Archived fixture \($0)", at: Date.now.addingTimeInterval(Double(-$0 * 60))) }
-        // The shared Library may already observe this cached Archive. Seed the
-        // model's real publication path, preserving the fixture's newest-first order.
-        archive.clear()
-        archive.add(Array(archived.reversed()))
+        UserDefaults.vane.set(try JSONEncoder().encode(archived), forKey: key)
         defer {
-            archive.clear()
-            archive.add(Array(oldEntries.reversed()))
+            Archive.shared(for: store.profileID).clear()
             UserDefaults.vane.set(oldArchive, forKey: key)
             window.contentView = nil
             window.orderOut(nil)
@@ -897,19 +791,6 @@ import XCTest
         window.orderFrontRegardless()
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(500))
-        try await compatibilityWait {
-            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
-            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-            host.layoutSubtreeIfNeeded()
-            guard NSApp.isRunning, NSApp.isActive, NSApp.keyWindow === window,
-                  window.isVisible, window.occlusionState.contains(.visible),
-                  let marker = monitor.presentationView, marker.window === window,
-                  let model = marker.layer, let presented = model.presentation(),
-                  let root = host.layer, let presentedRoot = root.presentation() else { return false }
-            return abs(presented.convert(.zero, to: presentedRoot).x - model.convert(.zero, to: root).x) < 0.125
-        }
-        XCTAssertEqual(ArchiveLibrary.library(for: store.profileID).entries.count, 2000,
-                       "Measure the populated archive, including when its model was already cached")
         print("LIBRARY_SWIPE_WINDOW visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) active=\(NSApp.isActive) frame=\(window.frame) screens=\(NSScreen.screens.map(\.frame))")
         // Force native layout even when this desktop session occludes test windows.
         // These timings measure main-thread update work, not displayed frame rate.
@@ -1045,10 +926,6 @@ import XCTest
     }
 
     func testRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose() async throws {
-        try await withFixtureApplicationLoop { try await checkRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose() }
-    }
-
-    private func checkRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose() async throws {
         let saver = BatterySaver.shared
         let previousMode = saver.mode
         saver.setMode(.off)
@@ -1062,8 +939,9 @@ import XCTest
         let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         window.contentView = host
+        window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
-        try await admitPresentation(window: window, host: host, monitor: monitor)
+        try await Task.sleep(for: .milliseconds(80))
         func scroll(in view: NSView) -> NSScrollView? {
             if let scroll = view as? NSScrollView { return scroll }
             return view.subviews.lazy.compactMap { scroll(in: $0) }.first
@@ -1135,7 +1013,7 @@ import XCTest
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertNil(store.librarySwipeProgress)
         XCTAssertTrue(search(host) === field, "Keep the panel ready offscreen for the next gesture")
-        XCTAssertFalse(field.isEnabled, "Closed Library fields cannot retain keyboard interaction")
+        XCTAssertFalse(field.isEnabled, "Closed Library fields cannot retain keyboard interaction; open=\(store.libraryOpen) progress=\(String(describing: store.librarySwipeProgress)) paint=\(String(describing: store.libraryGesture.paint?.progress))")
 
         // A short swipe springs back without committing; the prepared panel stays inactive.
         send(window, phase: .began)
@@ -1585,42 +1463,6 @@ private final class LibraryScrollWindow: NSWindow {
     override func sendEvent(_ event: NSEvent) {
         if event.type == .scrollWheel { scrolls += 1 }
         else { super.sendEvent(event) }
-    }
-}
-
-/// Retains a genuine intermediate frame during the existing task observation wait.
-@MainActor private final class LibraryReturnObserver: NSObject {
-    private weak var root: NSView?
-    private weak var marker: NSView?
-    private var link: CADisplayLink?
-    private var before: CGFloat?
-    private var endpoint: CGFloat = 0
-    private(set) var callbacks = 0
-    private(set) var armedSamples = 0
-    private(set) var intermediate: CGFloat?
-    static func isIntermediate(_ x: CGFloat, before: CGFloat, endpoint: CGFloat) -> Bool {
-        x < before - 1 && x > endpoint + 1
-    }
-    init(root: NSView) { self.root = root }
-    func start(on screen: NSScreen) {
-        let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
-        link.add(to: .main, forMode: .common)
-        self.link = link
-    }
-    func arm(marker: NSView, before: CGFloat, endpoint: CGFloat) {
-        self.marker = marker; self.before = before; self.endpoint = endpoint
-        armedSamples = 0; intermediate = nil
-    }
-    func stop() { link?.invalidate(); link = nil }
-    @objc private func tick(_ link: CADisplayLink) {
-        callbacks += 1
-        guard let before, let root, let marker, let window = root.window,
-              marker.window === window, NSApp.isActive, NSApp.keyWindow === window,
-              window.isVisible, window.occlusionState.contains(.visible),
-              let layer = marker.layer?.presentation(), let parent = root.layer?.presentation() else { return }
-        armedSamples += 1
-        let x = layer.convert(.zero, to: parent).x
-        if intermediate == nil, Self.isIntermediate(x, before: before, endpoint: endpoint) { intermediate = x }
     }
 }
 

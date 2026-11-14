@@ -56,6 +56,104 @@ import XCTest
         return paints.removeFirst()
     }
 
+    func testShrinkingLibraryViewportDoesNotRetainAWholeResponsiveColumnOutsideTheCard() throws {
+        let f = Fixture(); defer { f.close() }
+        let owner = UUID()
+        f.host.libraryNavigationPaintOwner = owner
+        var paints: [@MainActor @Sendable () -> Void] = []
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in },
+            now: { f.time }, navigation: .init(owner: owner, leading: 0), apply: { _, leading in
+                if let leading { f.host.setFrameSize(NSSize(width: 600 - leading, height: 400)) }
+            }))
+        defer { buffer.cancel() }
+        buffer.start(); nextPaint(&paints)()
+        for width in stride(from: 598, through: 450, by: -2) {
+            f.time += 1.0 / 60
+            XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: CGFloat(600 - width)))
+            if !paints.isEmpty { nextPaint(&paints)() }
+            XCTAssertGreaterThanOrEqual(f.web.frame.width, f.host.bounds.width)
+            XCTAssertLessThanOrEqual(f.web.frame.width - f.host.bounds.width, 48.001,
+                "Library shrinking must follow the visible responsive width")
+        }
+    }
+
+    func testLibraryFinishSupersedesObsoleteLookaheadWithoutAcceptingItsCallback() throws {
+        let f = Fixture(); defer { f.close() }
+        let owner = UUID()
+        f.host.libraryNavigationPaintOwner = owner
+        var paints: [@MainActor @Sendable () -> Void] = []
+        var deadlines: [@MainActor @Sendable () -> Void] = []
+        var completions = 0
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in paints.append(callback) },
+            deadline: { _, callback in deadlines.append(callback) },
+            navigation: .init(owner: owner, leading: 228), apply: { _, _ in },
+            completion: { completions += 1 }))
+        defer { buffer.cancel() }
+        buffer.start()
+        let obsoletePaint = nextPaint(&paints)
+        let obsoleteDeadline = try XCTUnwrap(deadlines.first)
+        XCTAssertGreaterThan(f.web.frame.width, f.host.bounds.width)
+        buffer.finish()
+        XCTAssertEqual(f.web.frame.size, f.host.bounds.size,
+                       "An already covered installed clip must replace obsolete lookahead immediately")
+        XCTAssertEqual(paints.count, 1, "Exact geometry needs its own presentation acknowledgement")
+        XCTAssertTrue(buffer.isPreparing)
+        obsoletePaint()
+        obsoleteDeadline()
+        XCTAssertEqual(completions, 0, "An obsolete callback or deadline cannot acknowledge the exact replacement")
+        XCTAssertTrue(buffer.isPreparing)
+        guard paints.count == 1 else { return }
+        nextPaint(&paints)()
+        XCTAssertEqual(completions, 1)
+        XCTAssertFalse(buffer.isPreparing)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+        obsoletePaint(); obsoleteDeadline()
+        XCTAssertEqual(completions, 1)
+    }
+
+    func testNativeWindowResizeRetiresPendingLibraryViewportBeforeCapturingSizing() throws {
+        let f = Fixture(); defer { f.close() }
+        let owner = UUID()
+        f.host.libraryNavigationPaintOwner = owner
+        let originalMask = f.web.autoresizingMask
+        var libraryPaints: [@MainActor @Sendable () -> Void] = []
+        var retired = false
+        let library = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in libraryPaints.append(callback) }, deadline: { _, _ in },
+            navigation: .init(owner: owner, leading: 228), apply: { _, _ in }, completion: { retired = true }))
+        defer { library.cancel() }
+        library.start()
+        let stalePaint = nextPaint(&libraryPaints)
+        XCTAssertEqual(f.web.autoresizingMask, [])
+        let resize = f.buffer
+        XCTAssertTrue(retired, "Retire the old viewport owner before capturing its temporarily frozen flags")
+        resize.start()
+        stalePaint()
+        XCTAssertTrue(f.host.clipsToBounds)
+        f.request(620)
+        for _ in 0..<4 where f.commits.isEmpty { nextPaint(&f.paints)() }
+        resize.finish()
+        for _ in 0..<4 where f.completions == 0 { nextPaint(&f.paints)() }
+        XCTAssertEqual(f.completions, 1)
+        XCTAssertEqual(f.web.bounds.width, 620, accuracy: 1)
+        XCTAssertEqual(f.web.autoresizingMask, originalMask, "Interruption must not permanently freeze the document")
+    }
+
+    func testLibraryPreparationDoesNotStealAnActiveNativeResizeViewport() {
+        let f = Fixture(); defer { f.close() }
+        let owner = UUID()
+        f.host.libraryNavigationPaintOwner = owner
+        f.buffer.start()
+        let library = LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, _ in }, deadline: { _, _ in },
+            navigation: .init(owner: owner, leading: 228), apply: { _, _ in })
+        XCTAssertNil(library, "Navigation waits for the native pointer resize instead of copying its frozen flags")
+        XCTAssertEqual(f.completions, 0)
+        XCTAssertTrue(f.buffer.isPreparing)
+    }
+
     func testWindowPublicationsCoalesceAtDisplayFramesAndStillRequirePaint() {
         var frame: (@MainActor () -> Void)?
         let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }

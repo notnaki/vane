@@ -67,44 +67,45 @@ struct DownloadFeedbackAnchor: ViewModifier {
 struct DownloadFeedbackPresentation: ViewModifier {
     @ObservedObject var store: TabStore
     let chrome: Bool
-    @StateObject private var downloadFeedback = DownloadFeedback()
+    @StateObject private var downloadFeedback: DownloadFeedback
+
+    init(store: TabStore, chrome: Bool, feedback: DownloadFeedback? = nil) {
+        self.store = store
+        self.chrome = chrome
+        _downloadFeedback = StateObject(wrappedValue: feedback ?? DownloadFeedback())
+    }
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
         .overlayPreferenceValue(DownloadFeedbackBounds.self) { bounds in
-            // Keep the page mounted; an idle flight needs no geometry consumer.
-            Group {
-                if let start = downloadFeedback.start {
-                    GeometryReader { geometry in
-                        if let page = bounds[.page],
-                           let target = DownloadFeedbackBounds.destination(
-                            page: geometry[page], bucket: bounds[.bucket].map { geometry[$0] }, chrome: chrome) {
-                            let source = geometry[page]
-                            if !chrome {
-                                Button {
-                                    Motion.list { Library.open(.downloads, in: store) }
-                                } label: {
-                                    LibraryDownloadGlyph(filled: true, hovered: false)
-                                        .offset(y: -4)
-                                        .frame(width: target.width, height: target.height)
-                                        .background(.regularMaterial, in: .rect(cornerRadius: 10))
-                                        .contentShape(.rect)
-                                }
-                                .buttonStyle(TactileButtonStyle())
-                                .foregroundStyle(Look.inkSecondary)
-                                .accessibilityLabel("Download started: \(start.name)")
-                                .accessibilityHint("Open Downloads in Library")
-                                .position(x: target.midX, y: target.midY)
-                                .transition(.opacity)
-                            }
-                            if !downloadFeedback.landed, !reduceMotion, !batterySaver.isActive {
-                                DownloadFlight(source: CGPoint(x: source.midX, y: source.midY),
-                                               destination: CGPoint(x: target.midX, y: target.midY - 4))
-                                    .id(start.id)
-                            }
+            GeometryReader { geometry in
+                if let start = downloadFeedback.start, let page = bounds[.page],
+                   let target = DownloadFeedbackBounds.destination(
+                    page: geometry[page], bucket: bounds[.bucket].map { geometry[$0] }, chrome: chrome) {
+                    let source = geometry[page]
+                    if !chrome {
+                        Button {
+                            Motion.list { Library.open(.downloads, in: store) }
+                        } label: {
+                            LibraryDownloadGlyph(filled: true, hovered: false)
+                                .offset(y: -4)
+                                .frame(width: target.width, height: target.height)
+                                .background(.regularMaterial, in: .rect(cornerRadius: 10))
+                                .contentShape(.rect)
                         }
+                        .buttonStyle(TactileButtonStyle())
+                        .foregroundStyle(Look.inkSecondary)
+                        .accessibilityLabel("Download started: \(start.name)")
+                        .accessibilityHint("Open Downloads in Library")
+                        .position(x: target.midX, y: target.midY)
+                        .transition(.opacity)
+                    }
+                    if !downloadFeedback.landed, !reduceMotion, !batterySaver.isActive {
+                        DownloadFlight(source: CGPoint(x: source.midX, y: source.midY),
+                                       destination: CGPoint(x: target.midX, y: target.midY - 4))
+                            .id(start.id)
                     }
                 }
             }

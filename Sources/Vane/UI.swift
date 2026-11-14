@@ -34,6 +34,7 @@ import Combine
 /// me", which is what a page inside a card actually wants.
 struct WebView: NSViewRepresentable {
     @Environment(\.pageResizeLayout) private var resizeLayout
+    @Environment(\.libraryNavigationPaintOwner) private var libraryPaintOwner
     let web: WKWebView
     /// Every page the window still has, so the host can tell a page that is merely not on
     /// screen from one whose tab has been closed. Only the card passes it — see `WebCard`
@@ -59,6 +60,7 @@ struct WebView: NSViewRepresentable {
     func updateNSView(_ host: WebHost, context: Context) {
         if mayMount { host.show(web, keeping: live) } else { host.removePage() }
         host.offscreen = offscreen
+        host.libraryNavigationPaintOwner = libraryPaintOwner
         host.resizeLayout = resizeLayout
         host.resizeFraction = NSSize(width: 1, height: 1)
         if pane, let split = store?.activeSplit,
@@ -96,6 +98,7 @@ struct WebView: NSViewRepresentable {
 /// a page is still a fresh attach, and still arrives a frame late; there is nothing to
 /// unhide that has never been shown.
 final class WebHost: NSView {
+    var libraryNavigationPaintOwner: UUID?
     var resizeLayout = PageResizeLayout()
     var resizeFraction = NSSize(width: 1, height: 1)
     var pageLayoutDidResize: (() -> Void)?
@@ -488,6 +491,8 @@ struct BrowserWindow: View {
     // BrowserWindowHost presents search above its native Space-swipe surfaces.
     // Standalone SwiftUI hosts retain the inline presentation.
     var presentsPalette = true
+    var pageHost: RetainedBrowserPageHost? = nil
+    var presentation: BrowserProfilePresentation? = nil
     @ObservedObject private var batterySaver = BatterySaver.shared
     @EnvironmentObject var store: TabStore
     @ProfileChromeObserved var profiles = ProfileManager.shared
@@ -536,13 +541,14 @@ struct BrowserWindow: View {
                 floating: store.sidebarFloatingChrome,
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
-                page: WebCard().modifier(DownloadFeedbackAnchor(target: .page))
+                page: WebCard(retainedPage: pageHost).modifier(DownloadFeedbackAnchor(target: .page))
                     .modifier(SidebarPageResizeMetadata(sidebarShown: store.sidebarShown,
                         layout: PageResizeLayout(librarySection: store.libraryOpen ? library.section : nil,
                             spaces: spaceCount, isPrivate: store.isPrivate,
-                            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping)))
+                            enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping,
+                            libraryNavigationEnabled: !store.spaceGesture.swiping)))
                     .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
-                sidebar: sidebarSurface, panel: LibraryPanel())
+                sidebar: sidebarSurface, panel: LibraryPanel(), store: store)
             edgeStrip
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
@@ -560,7 +566,7 @@ struct BrowserWindow: View {
         .ignoresSafeArea()
         .modifier(PeekContentTracking(area: store.peekContent))
         .modifier(SidebarToastPresentation(store: store))
-        .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
+        .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome, feedback: presentation?.downloads))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
         .sheet(isPresented: $store.liveFolderSheet.presented(when: store.profileVisible)) {
@@ -834,14 +840,48 @@ struct SpaceGround: View {
 /// The web view as a rounded card floating on the window's glass, with everything that
 /// hovers over the page (find, the save-password prompt) inside its clip.
 struct WebCard: View {
-    @EnvironmentObject var store: TabStore
+    @EnvironmentObject private var store: TabStore
     @Environment(\.libraryPageLeadingInset) private var libraryPageLeadingInset
+    var retainedPage: RetainedBrowserPageHost? = nil
+    var topGap: CGFloat = Look.cardGap
+    var edgeToEdge = false
+
+    var body: some View {
+        let spec = WebCardEnvelopeSpec(topGap: topGap, edgeToEdge: edgeToEdge,
+            leading: edgeToEdge ? 0 : libraryPageLeadingInset
+                ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
+        WebCardEnvelope(spec: spec) {
+            if let retainedPage {
+                RetainedBrowserPageSlot(owner: retainedPage, envelope: spec)
+            } else {
+                WebCardSurfaceContent(edgeToEdge: edgeToEdge)
+            }
+        }
+    }
+}
+
+/// The same envelope surrounds both the inline and independently retained page.
+/// Its anchor stays with PeekContentTracking in the parent preference graph.
+private struct WebCardEnvelope<Content: View>: View {
+    let spec: WebCardEnvelopeSpec
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        content()
+            .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
+            .padding(.leading, spec.leading)
+            .padding(.top, spec.topGap)
+            .padding(.trailing, spec.trailing)
+            .padding(.bottom, spec.bottom)
+    }
+}
+
+/// Complete page selection and overlays. No page/ownership decision is duplicated
+/// in the native host; standalone WebCard uses this exact same surface.
+struct WebCardSurfaceContent: View {
+    @EnvironmentObject var store: TabStore
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ProfileChromeObserved private var profileManager = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Clearance between the chrome and the page; Little Vane uses no gap.
-    var topGap: CGFloat = Look.cardGap
-    /// Little Vane's document meets the native window edges beneath its toolbar.
     var edgeToEdge = false
     private var radius: CGFloat { edgeToEdge ? 0 : Look.pageRadius }
 
@@ -854,7 +894,7 @@ struct WebCard: View {
                 LockedFolderPage(folder: folder)
                     .transition(.opacity)
             } else if let split = store.activeSplit {
-                SplitPanes(split: split)
+                documentViewport { SplitPanes(split: split) }
             } else if let tab = store.active {
                 // The list of saved accounts hangs off a field *in this page*, so it is an
                 // overlay on the page and not on the window's card — which is also what puts
@@ -870,7 +910,7 @@ struct WebCard: View {
                 // the one swapped: suspension excludes the active tab on both paths, the
                 // idle timer and memory pressure. Entering a split takes this branch away
                 // altogether and the held pages go with it.
-                TabPage(tab: tab, keepPages: true)
+                documentViewport { TabPage(tab: tab, keepPages: true) }
             } else {
                 // No tabs: the sheet a page will land on, and nothing in it. With nothing
                 // mounted there is also no WKWebView to argue with over a dropped file, so
@@ -885,6 +925,10 @@ struct WebCard: View {
             }
             OffscreenPages()
             if let tab = store.active { LoadingBar(tab: tab, hidden: store.findOpen) }
+        }
+        // Controls float over a viewport; their intrinsic widths must never
+        // enlarge the page's layout proposal (especially next to Library).
+        .overlay(alignment: .topTrailing) {
             VStack(spacing: 8) {
                 if !profileManager.saveFailures.isEmpty {
                     ProfileSaveNotice(manager: profileManager)
@@ -917,10 +961,9 @@ struct WebCard: View {
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: batterySaver.notice?.id)
             .animation(reduceMotion || batterySaver.isActive ? nil : .easeOut(duration: 0.2),
                        value: profileManager.saveFailures)
-            // Last in the stack, so it is above the page: a dragged sidebar tab lands on the
-            // card's edge bands as a new pane. Only in the tree while a drag is in flight.
-            SplitDropWell()
         }
+        // Drag targets stay above the page controls without determining its size.
+        .overlay { SplitDropWell() }
         // The status bar: the hovered link's url, bottom-left, inside the card's clip the
         // way Arc's sits on the page rather than under it.
         .overlay(alignment: .bottomLeading) {
@@ -931,13 +974,15 @@ struct WebCard: View {
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
         .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
-        // No inset on the leading edge while the sidebar is docked — its own padding
-        // already leaves the gap, and doubling it reads as a misaligned card. The Library's
-        // column stands in the same place and leaves the same gap.
-        .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
-        .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
-        .padding(.top, topGap)
-        .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
+    }
+
+    /// The native viewport and the card share one width. Freezing only the
+    /// document leaves uncovered space while closing and forces a second reflow
+    /// when the gesture clears, after the surrounding card has already landed.
+    private func documentViewport<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                   alignment: .topLeading)
     }
 }
 
@@ -3469,7 +3514,7 @@ struct SidebarSpaceContent: View {
 }
 
 private struct SidebarSpacePresentation: View {
-    @SidebarRowObserved var store: TabStore
+    @SidebarObserved var store: TabStore
     /// The complete-strip boundary preserves this namespace. Grouped native row
     /// roots must also pass cross-root row/tile morph parity before production.
     @Namespace private var strip
@@ -3488,7 +3533,7 @@ struct SidebarSpaceSections: View {
 }
 
 private struct SidebarSpaceSectionContent: View {
-    @SidebarRowObserved var store: TabStore
+    @SidebarObserved var store: TabStore
     @State private var pinnedRowsCache = Feel02SidebarRowsCache()
     @Environment(\.nativeCachedSidebarBatches) private var groupedNativeRows
 
@@ -3530,7 +3575,7 @@ private struct SidebarSpaceSectionContent: View {
 /// which. What differs is behaviour: a pinned tab never auto-archives, and ⌘W leaves it
 /// exactly where it is.
 private struct PinnedTabs: View {
-    @SidebarRowObserved var store: TabStore
+    @SidebarObserved var store: TabStore
     let snapshot: Feel02SidebarRowsCache.Snapshot
 
     /// One observer of `LiveFolders` for the whole section, rather than one per row: the
@@ -3598,7 +3643,7 @@ private struct PinnedSection: View {
 /// which is exactly how Arc says it. Pinned draws these and so does Today; `shape` is which
 /// of the two, and the only thing that differs between them.
 private struct ShapeRow: View {
-    @SidebarRowObserved var store: TabStore
+    @SidebarObserved var store: TabStore
     let row: Pins.Visible
     let tab: Tab?
     /// Its place among the section's rows, and how many there are — see `TabDrop.row`.
@@ -4342,7 +4387,7 @@ private struct TodayEndDropArea: View {
 }
 
 private struct OpenTabs: View {
-    @SidebarRowObserved var store: TabStore
+    @SidebarObserved var store: TabStore
     @State private var rowsCache = Feel02SidebarRowsCache()
 
     var body: some View {
@@ -4371,7 +4416,7 @@ private struct StripRow: View {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
-    @SidebarRowObserved var store: TabStore
+    @SidebarObserved var store: TabStore
     let tab: Tab
     /// Its place in the section it is drawn in, and how many rows that section draws — see
     /// `TabDrop.row`.
@@ -4459,7 +4504,7 @@ private struct StripRow: View {
 /// last-but-one pane hands the row back to the tab it was. Upgrade path: give `Split` a title
 /// and a `TabKind` of its own and it becomes a fourth kind of strip item.
 private struct SplitRow: View {
-    @SidebarRowObserved var store: TabStore
+    @SidebarObserved var store: TabStore
     let split: Split
     /// The pane whose place in the strip this row stands in — what a drag of the row moves
     /// and what a drop beside it lands next to.
@@ -4586,7 +4631,7 @@ struct LivePRTitle: View {
 }
 
 struct SidebarTabSurface: View {
-    @SidebarRowObserved var store: TabStore
+    @SidebarObserved var store: TabStore
     let tab: Tab
     var held = false
     @Binding var returnHovering: Bool
@@ -4696,7 +4741,7 @@ struct SidebarTabPresentation: View {
 }
 
 private struct TabRow: View {
-    @SidebarRowObserved var store: TabStore
+    @SidebarObserved var store: TabStore
     @ObservedObject var tab: Tab
     /// Its place in the strip, so a drag can say where it started — see `Landing`.
     var spot: Landing.Spot?

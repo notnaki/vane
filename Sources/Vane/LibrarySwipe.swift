@@ -9,11 +9,15 @@ extension Look {
 /// Finger samples affect navigation geometry, not the browser or its tab rows.
 @MainActor final class LibraryGesture: ObservableObject {
     @Published var progress: CGFloat? {
-        didSet { if progress == nil { pageWidth = nil; pageLeadingInset = nil } }
+        didSet {
+            sampledAt = CACurrentMediaTime()
+            if progress == nil { pageLeadingInset = nil }
+        }
     }
-    /// Translate an unchanged page while the fingers move; resize WebKit once at rest.
-    @Published var pageWidth: CGFloat?
+    private(set) var sampledAt = CACurrentMediaTime()
+    /// Capture the initial gutter; floating navigation interpolates it to its endpoint.
     @Published var pageLeadingInset: CGFloat?
+    weak var paint: LibraryNavigationPaint?
 }
 
 private struct LibraryPageLeadingInset: EnvironmentKey {
@@ -41,52 +45,111 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
     let page: Page
     let sidebar: Sidebar
     let panel: Panel
+    var store: TabStore? = nil
 
     private var progress: CGFloat { gesture.progress ?? (libraryOpen ? 1 : 0) }
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                HStack(spacing: 0) {
-                    Color.clear.frame(width: (sidebarShown ? sidebarWidth : 0)
-                        * (1 - progress) + panelWidth * progress)
-                    // Resolve navigation geometry once per surface, rather than per leaf.
-                    page.environment(\.libraryPageLeadingInset, gesture.pageLeadingInset)
-                        .geometryGroup().frame(width: gesture.pageWidth ?? max(0,
-                        geometry.size.width - ((sidebarShown ? sidebarWidth : 0) * (1 - progress)
-                            + panelWidth * progress)))
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .disabled(palettePresented)
-                .accessibilityHidden(palettePresented)
-                // Adjacent surfaces follow the same translation, clipped at the page seam.
-                sidebar
+        PaintedLibraryNavigation(gesture: gesture, targetProgress: progress,
+            libraryOpen: libraryOpen, sidebarShown: sidebarShown, floating: floating,
+            sidebarWidth: sidebarWidth, panelWidth: panelWidth, palettePresented: palettePresented,
+            monitor: monitor, page: page, sidebar: sidebar, panel: panel, store: store)
+    }
+}
+
+/// Interpolate requested navigation first, then publish only geometry whose
+/// document viewport has painted. The page and both rails share that publication.
+private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>: View, @preconcurrency Animatable {
+    @ObservedObject var gesture: LibraryGesture
+    var targetProgress: CGFloat
+    let libraryOpen: Bool
+    let sidebarShown: Bool
+    let floating: Bool
+    let sidebarWidth: CGFloat
+    let panelWidth: CGFloat
+    let palettePresented: Bool
+    let monitor: LibrarySwipeMonitor
+    let page: Page
+    let sidebar: Sidebar
+    let panel: Panel
+    let store: TabStore?
+    @Environment(\.displayScale) private var displayScale
+    @StateObject private var paint: LibraryNavigationPaint
+
+    var animatableData: CGFloat {
+        get { targetProgress }
+        set { targetProgress = newValue }
+    }
+
+    init(gesture: LibraryGesture, targetProgress: CGFloat, libraryOpen: Bool, sidebarShown: Bool,
+         floating: Bool, sidebarWidth: CGFloat, panelWidth: CGFloat, palettePresented: Bool,
+         monitor: LibrarySwipeMonitor, page: Page, sidebar: Sidebar, panel: Panel, store: TabStore?) {
+        self.gesture = gesture; self.targetProgress = targetProgress
+        self.libraryOpen = libraryOpen; self.sidebarShown = sidebarShown; self.floating = floating
+        self.sidebarWidth = sidebarWidth; self.panelWidth = panelWidth; self.palettePresented = palettePresented
+        self.monitor = monitor; self.page = page; self.sidebar = sidebar; self.panel = panel; self.store = store
+        _paint = StateObject(wrappedValue: LibraryNavigationPaint(progress: targetProgress))
+    }
+
+    private func pageLeading(at progress: CGFloat) -> CGFloat {
+        let leading = (sidebarShown ? sidebarWidth : Look.cardGap) * (1 - progress)
+            + panelWidth * progress
+        return (leading * displayScale).rounded() / displayScale
+    }
+
+    var body: some View {
+        let progress = paint.progress
+        let leading = pageLeading(at: progress)
+        ZStack(alignment: .leading) {
+            HStack(spacing: 0) {
+                Color.clear.frame(width: leading)
+                // Resolve navigation geometry once per surface, rather than per leaf.
+                page.environment(\.libraryNavigationPaintOwner, paint.owner)
+                    .environment(\.libraryPageMountReceiptSource,
+                        paint.pageMountReceiptSource(store: store, gesture: gesture, monitor: monitor))
+                    .environment(\.libraryPageLeadingInset, 0)
                     .geometryGroup()
-                    .offset(x: panelWidth * progress)
-                    .frame(width: (sidebarWidth + (floating ? 2 * Look.floatingSidebarGap : 0))
-                        * (1 - progress) + panelWidth * progress, alignment: .leading)
-                    .mask {
-                        Rectangle().padding(floating ? -2 * Look.barShadowRadius * (1 - progress) : 0)
-                    }
-                    .zIndex(1)
-                // Keep the panel laid out offscreen. Mounting its search field and list
-                // during the first directional sample otherwise stalls that frame.
-                panel
-                    .frame(width: panelWidth)
-                    .overlay(alignment: .leading) {
-                        LibrarySwipePosition(monitor: monitor)
-                            .frame(width: 1, height: 1)
-                            .allowsHitTesting(false).accessibilityHidden(true)
-                    }
-                    .geometryGroup()
-                    .offset(x: -panelWidth * (1 - progress))
-                    .opacity(libraryOpen || gesture.progress != nil ? 1 : 0)
-                    .disabled(palettePresented || (!libraryOpen && gesture.progress == nil))
-                    .allowsHitTesting(libraryOpen && !palettePresented)
-                    .accessibilityHidden(!libraryOpen || palettePresented)
-                    .zIndex(1)
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .disabled(palettePresented)
+            .accessibilityHidden(palettePresented)
+            // Adjacent surfaces follow the same translation, clipped at the page seam.
+            sidebar
+                .geometryGroup()
+                .offset(x: panelWidth * progress)
+                .frame(width: (sidebarWidth + (floating ? 2 * Look.floatingSidebarGap : 0))
+                    * (1 - progress) + panelWidth * progress, alignment: .leading)
+                .mask {
+                    Rectangle().padding(floating ? -2 * Look.barShadowRadius * (1 - progress) : 0)
+                }
+                .zIndex(1)
+            // Keep the panel laid out offscreen. Mounting its search field and list
+            // during the first directional sample otherwise stalls that frame.
+            panel
+                .frame(width: panelWidth)
+                .overlay(alignment: .leading) {
+                    LibrarySwipePosition(monitor: monitor)
+                        .frame(width: 1, height: 1)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                }
+                .geometryGroup()
+                .offset(x: -panelWidth * (1 - progress))
+                .opacity(libraryOpen || gesture.progress != nil ? 1 : 0)
+                .disabled(palettePresented || (!libraryOpen && gesture.progress == nil))
+                .allowsHitTesting(libraryOpen && !palettePresented)
+                .accessibilityHidden(!libraryOpen || palettePresented)
+                .zIndex(1)
         }
+        .background {
+            LibraryPaintBridge(paint: paint, target: targetProgress,
+                sampledAt: gesture.progress == targetProgress ? gesture.sampledAt : nil,
+                leading: pageLeading)
+                .frame(width: 0, height: 0)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        .onAppear { gesture.paint = paint }
+        .onDisappear { if gesture.paint === paint { gesture.paint = nil } }
     }
 }
 
@@ -145,6 +208,11 @@ private struct LibrarySwipe: ViewModifier {
               let root = view.window?.contentView?.layer?.presentation() else { return nil }
         return min(1, max(0, 1 + layer.convert(.zero, to: root).x / max(1, panelWidth)))
     }
+    private func panelHasArrived(at target: CGFloat) -> Bool {
+        guard let presentedProgress else { return true }
+        return abs(presentedProgress - target) * panelWidth <= 0.5
+    }
+
     private var watchers: [any NSObjectProtocol] = []
     private enum Claim { case idle, undecided, mine, theirs }
     private enum Action { case close, open(UUID) }
@@ -180,55 +248,6 @@ private struct LibrarySwipe: ViewModifier {
         let keyboard: KeyboardOwner
     }
     private var destination: Destination?
-    private var cleanupLink: CADisplayLink?
-    private var cleanupToken: UUID?
-    private var cleanupTarget: CGFloat = 0
-    private var cleanupRestFrames = 0
-    private var cleanupCompletion: (() -> Void)?
-
-    private func stopCleanupObservation() {
-        cleanupLink?.invalidate()
-        cleanupLink = nil
-        cleanupToken = nil
-        cleanupRestFrames = 0
-        cleanupCompletion = nil
-    }
-
-    private func observeCleanup(token: UUID, target: CGFloat, in store: TabStore,
-                                completion: @escaping () -> Void) {
-        stopCleanupObservation()
-        guard let screen = store.window?.screen ?? NSScreen.main else { return }
-        cleanupToken = token
-        cleanupTarget = target
-        cleanupCompletion = completion
-        let link = screen.displayLink(target: self, selector: #selector(advanceCleanup(_:)))
-        cleanupLink = link
-        link.add(to: .main, forMode: .common)
-    }
-
-    @objc private func advanceCleanup(_ link: CADisplayLink) {
-        guard cleanupLink === link, let token = cleanupToken else { return }
-        guard settlement == token else { stopCleanupObservation(); return }
-        guard let store else { stopCleanupObservation(); return }
-        guard let window = store.window, let marker = presentationView, marker.window === window else {
-            let completion = cleanupCompletion
-            stopCleanupObservation()
-            completion?()
-            return
-        }
-        guard let layer = marker.layer?.presentation(),
-              let root = window.contentView?.layer?.presentation() else {
-            cleanupRestFrames = 0
-            return
-        }
-        let x = layer.convert(.zero, to: root).x
-        let endpoint = (cleanupTarget - 1) * max(1, panelWidth)
-        cleanupRestFrames = abs(x - endpoint) < 0.25 ? cleanupRestFrames + 1 : 0
-        guard cleanupRestFrames >= 2 else { return }
-        let completion = cleanupCompletion
-        stopCleanupObservation()
-        completion?()
-    }
 
     /// Route a second gesture against the released gesture's intent while the
     /// visible layout is still landing. The browser itself changes only at rest.
@@ -249,32 +268,29 @@ private struct LibrarySwipe: ViewModifier {
         settlement = token
         let clear = { [weak self, weak store] in
             guard let self, self.settlement == token, let store else { return }
-            self.stopCleanupObservation()
             Motion.instant { store.librarySwipeProgress = nil }
         }
         if Motion.reduced || presentationView?.window == nil || store.librarySwipeProgress == nil {
             clear()
         } else {
-            // An explicit command takes over the visible panel, not the old
-            // animation's model endpoint. Commit that unanimated origin before
-            // starting the return so the outgoing timing curve cannot keep
-            // carrying the panel forward during the first closing frames.
-            if let progress = presentedProgress {
-                Motion.instant { store.librarySwipeProgress = progress }
-                if let root = presentationView?.window?.contentView as? BrowserWindowHost {
-                    root.layoutDisplayedProfile()
-                } else {
-                    presentationView?.window?.contentView?.layout()
+            // Retarget from the position actually on screen, not the old
+            // animation's model endpoint. Commit that baseline before starting
+            // a new curve so the opening spring cannot carry its velocity on.
+            if let visible = presentedProgress {
+                Motion.instant {
+                    store.librarySwipeProgress = visible
+                    store.window?.contentView?.layoutSubtreeIfNeeded()
                 }
-                CATransaction.flush()
             }
-            // A new command bar can introduce unrelated animations into the
-            // SwiftUI transaction. Retire this transient state when its own
-            // panel has actually reached rest, even if that group stays alive.
-            observeCleanup(token: token, target: target, in: store, completion: clear)
-            withAnimation(Look.appear, completionCriteria: .removed) {
+            withAnimation(Look.librarySlide, completionCriteria: .removed) {
                 store.librarySwipeProgress = target
-            } completion: { clear() }
+            } completion: { [weak self, weak store] in
+                if let paint = store?.libraryGesture.paint {
+                    paint.afterPresentation(of: target, when: { [weak self] in
+                        self?.panelHasArrived(at: target) ?? true
+                    }, clear)
+                } else { clear() }
+            }
         }
     }
 
@@ -324,7 +340,6 @@ private struct LibrarySwipe: ViewModifier {
 
     private func reset(clearPresentation: Bool = true) {
         if clearPresentation {
-            stopCleanupObservation()
             settlement = UUID()
             if let store {
                 Motion.instant {
@@ -343,7 +358,6 @@ private struct LibrarySwipe: ViewModifier {
     }
 
     func finishForReducedMotion() {
-        stopCleanupObservation()
         settlement = UUID()
         if let store {
             Motion.instant {
@@ -382,7 +396,13 @@ private struct LibrarySwipe: ViewModifier {
         } else {
             withAnimation(Look.appear, completionCriteria: .removed) {
                 store.librarySwipeProgress = target
-            } completion: { finish() }
+            } completion: { [weak self, weak store] in
+                if let paint = store?.libraryGesture.paint {
+                    paint.afterPresentation(of: target, when: { [weak self] in
+                        self?.panelHasArrived(at: target) ?? true
+                    }, finish)
+                } else { finish() }
+            }
         }
     }
 
@@ -502,25 +522,8 @@ private struct LibrarySwipe: ViewModifier {
                 dragOrigin = store.librarySwipeProgress == nil ? endpoint
                     : (presentedProgress ?? store.librarySwipeProgress ?? endpoint)
                 settlement = UUID()
-                // Interrupt the released curve at its visible origin before the
-                // first finger delta. Publishing only the delta leaves SwiftUI's
-                // old presentation animation alive on macOS 26.
-                if store.librarySwipeProgress != nil, let origin = dragOrigin {
-                    Motion.instant { store.librarySwipeProgress = origin }
-                    if let root = presentationView?.window?.contentView as? BrowserWindowHost {
-                        root.layoutDisplayedProfile()
-                    } else {
-                        presentationView?.window?.contentView?.layout()
-                    }
-                    CATransaction.flush()
-                }
-                if store.libraryGesture.pageWidth == nil, let window = store.window {
+                if store.libraryGesture.pageLeadingInset == nil {
                     store.libraryGesture.pageLeadingInset = store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap
-                    let origin = dragOrigin ?? endpoint
-                    let leading = (store.sidebarShown ? SidebarWidth.inWindow(store) : 0) * (1 - origin)
-                        + panelWidth * origin
-                    let width = (window.contentView?.bounds.width ?? window.frame.width) - leading
-                    if width > 0 { store.libraryGesture.pageWidth = width }
                 }
             }
             Motion.instant {

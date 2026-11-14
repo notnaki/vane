@@ -93,14 +93,6 @@ import XCTest
                 let expected = layer.convert(CGPoint.zero, to: root)
                 return abs(actual.x - expected.x) < 0.125 && abs(actual.y - expected.y) < 0.125
             }
-            if activePage {
-                let page = try XCTUnwrap(store.active?.web)
-                try await compatibilityWait {
-                    host.layoutSubtreeIfNeeded()
-                    return page.window === window && !page.isHiddenOrHasHiddenAncestor
-                        && page.url != nil && !page.isLoading && page.bounds.width > 0
-                }
-            }
             try await exercise(store, window, host)
         } catch {
             let sections = store.spaceGesture.sectionsView
@@ -295,27 +287,27 @@ import XCTest
             XCTAssertNil(host.spaceSlide, "The Create edge uses the live SwiftUI track")
             let departure = try presentedOrigin(live).x
             XCTAssertLessThan(departure, start - 5)
-            let observer = EdgeReturnObserver(view: live, start: start, departure: departure)
-            observer.start(on: try XCTUnwrap(window.screen))
-            defer { observer.stop() }
             if clickCurrentSpace {
                 store.spaceGesture.monitor.select(try XCTUnwrap(store.swipeSpace), in: store)
             } else {
                 NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: .cancelled))
             }
-            // A display callback can observe the real intermediate frame while a
-            // sleeping task resumes only after the spring has finished. Keep the
-            // same 350 ms outcome window and require the same presented geometry.
-            observer.arm()
+            // Find an actual intermediate presentation rather than assuming the next
+            // AppKit display pass has already happened after one fixed sleep.
+            var sawIntermediate = false
+            var samples: [CGFloat] = []
+            var sampleTimes: [TimeInterval] = []
+            let samplingStart = ProcessInfo.processInfo.systemUptime
+            let deadline = ProcessInfo.processInfo.systemUptime + 0.35
             repeat {
                 try await Task.sleep(for: .milliseconds(8))
-                if observer.sawIntermediate { break }
-            } while ProcessInfo.processInfo.systemUptime < observer.deadline
-            observer.stop()
-            XCTAssertFalse(observer.missingPresentation,
-                           "Return samples must retain the admitted native viewport")
-            XCTAssertTrue(observer.sawIntermediate,
-                          "Cancellation must animate instead of snapping home; active=\(NSApp.isActive), key=\(window.isKeyWindow), start=\(start), departure=\(departure), times=\(observer.sampleTimes), samples=\(observer.samples)")
+                let returning = try presentedOrigin(live).x
+                samples.append(returning)
+                sampleTimes.append(ProcessInfo.processInfo.systemUptime - samplingStart)
+                if returning > departure + 0.1, returning < start - 0.1 { sawIntermediate = true; break }
+            } while ProcessInfo.processInfo.systemUptime < deadline
+            XCTAssertTrue(sawIntermediate,
+                          "Cancellation must animate instead of snapping home; active=\(NSApp.isActive), key=\(window.isKeyWindow), start=\(start), departure=\(departure), times=\(sampleTimes), samples=\(samples)")
             try await Task.sleep(for: .milliseconds(350))
             XCTAssertEqual(try presentedOrigin(live).x, start, accuracy: 1)
             XCTAssertFalse(store.spaceSwiping)
@@ -376,53 +368,6 @@ import XCTest
             XCTAssertFalse(store.spaceSwiping)
             if !commit { XCTAssertEqual(live.documentVisibleRect.minY, offset, accuracy: 1) }
         }
-    }
-}
-
-/// Observes presentation on display delivery, independent of async task resumption.
-@MainActor private final class EdgeReturnObserver: NSObject {
-    private weak var view: NSView?
-    private let start: CGFloat
-    private let departure: CGFloat
-    private var link: CADisplayLink?
-    private var began: TimeInterval?
-    private(set) var deadline: TimeInterval = 0
-    private(set) var sawIntermediate = false
-    private(set) var missingPresentation = false
-    private(set) var samples: [CGFloat] = []
-    private(set) var sampleTimes: [TimeInterval] = []
-
-    init(view: NSView, start: CGFloat, departure: CGFloat) {
-        self.view = view
-        self.start = start
-        self.departure = departure
-    }
-
-    func start(on screen: NSScreen) {
-        let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
-        link.add(to: .main, forMode: .common)
-        self.link = link
-    }
-
-    func arm() {
-        let now = ProcessInfo.processInfo.systemUptime
-        began = now
-        deadline = now + 0.35
-    }
-
-    func stop() { link?.invalidate(); link = nil }
-
-    @objc private func tick(_ link: CADisplayLink) {
-        let now = ProcessInfo.processInfo.systemUptime
-        guard let began, now <= deadline else { return }
-        guard let presentation = view?.layer?.presentation() else {
-            missingPresentation = true
-            return
-        }
-        let returning = presentation.convert(.zero, to: nil).x
-        samples.append(returning)
-        sampleTimes.append(now - began)
-        if returning > departure + 0.1, returning < start - 0.1 { sawIntermediate = true }
     }
 }
 

@@ -82,6 +82,10 @@ struct MaxPane: View {
                     .padding(.top, 12)
                 } label: {
                     Text("AI connections").font(.system(size: 13, weight: .semibold))
+                        .contentShape(.rect)
+                        .onTapGesture {
+                            Motion.animate(Look.quick) { showsConnections.toggle() }
+                        }
                 }
                 .tint(.primary)
 

@@ -19,6 +19,9 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
     func body(content: Content) -> some View {
         content
             .padding(inset)
+            // Translate the resolved sidebar as one surface. Without this boundary,
+            // each interpolated offset places its unchanged content again.
+            .geometryGroup()
             .offset(x: slide)
             .opacity(visibility)
             .background {
