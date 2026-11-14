@@ -54,25 +54,6 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
     }
 }
 
-/// Navigation places whole surfaces by their edges. Their internal text and row
-/// alignment guides must not participate in alignment of the surrounding rails.
-/// Measure the content normally, but stop recursive guide merging at this boundary.
-private struct LibrarySurfaceLayout: Layout {
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        subviews[0].sizeThatFits(proposal)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
-    }
-
-    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect,
-                           proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
-
-    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect,
-                           proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
-}
-
 /// Animation samples request a geometry phase. One accepted phase drives the
 /// card and both rails after the exact document viewport covers that phase.
 private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>: View, @preconcurrency Animatable {
@@ -119,8 +100,7 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
             HStack(spacing: 0) {
                 Color.clear.frame(width: leading)
                 // Resolve navigation geometry once per surface, rather than per leaf.
-                LibrarySurfaceLayout { page }
-                    .environment(\.libraryNavigationPaintOwner, paint.owner)
+                page.environment(\.libraryNavigationPaintOwner, paint.owner)
                     .environment(\.libraryPageLeadingInset, 0)
                     .geometryGroup()
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
@@ -137,7 +117,7 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
             .disabled(palettePresented)
             .accessibilityHidden(palettePresented)
             // Adjacent surfaces follow the same translation, clipped at the page seam.
-            LibrarySurfaceLayout { sidebar }
+            sidebar
                 .geometryGroup()
                 .offset(x: panelWidth * progress)
                 .frame(width: (sidebarWidth + (floating ? 2 * Look.floatingSidebarGap : 0))
@@ -148,7 +128,7 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
                 .zIndex(1)
             // Keep the panel laid out offscreen. Mounting its search field and list
             // during the first directional sample otherwise stalls that frame.
-            LibrarySurfaceLayout { panel }
+            panel
                 .frame(width: panelWidth)
                 .overlay(alignment: .leading) {
                     LibrarySwipePosition(monitor: monitor)
