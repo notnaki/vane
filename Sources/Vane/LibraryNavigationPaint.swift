@@ -21,9 +21,8 @@ extension EnvironmentValues {
 
     func pageMountReceiptSource(store: TabStore?, gesture: LibraryGesture,
                                 monitor: LibrarySwipeMonitor) -> LibraryPageMountReceiptSource? {
-        guard let store else { return nil }
         mountReceiptSource.bind(store: store, gesture: gesture, monitor: monitor)
-        return mountReceiptSource
+        return store == nil ? nil : mountReceiptSource
     }
 
     @Published private(set) var progress: CGFloat
@@ -42,18 +41,41 @@ extension EnvironmentValues {
 
     var isPreparing: Bool { queued || buffer != nil || requested != progress }
 
-    init(progress: CGFloat) {
+    private(set) var pageMountEpoch: LibraryPageMountEpoch
+    private weak var pageMountWindow: NSWindow?
+    var pageMountMarker: LibraryPaintView? { marker as? LibraryPaintView }
+    var pageMountGeneration: UUID { generation }
+    func invalidatePageMountMetadata() { pageMountEpoch.invalidate() }
+    func pageMountIsIdle(in window: NSWindow) -> Bool {
+        !pageMountEpoch.exhausted && pageMountWindow === window
+            && progress == 0 && requested == 0 && submitted == 0
+            && !queued && buffer == nil && !ending && arrival == nil
+            && idle == nil && stopArrivalFrames == nil
+    }
+    func pageMountAttachmentChanged(_ view: LibraryPaintView) {
+        guard marker === view else { return }
+        invalidatePageMountMetadata()
+        pageMountWindow = view.window
+    }
+
+    init(progress: CGFloat, mountEpoch: LibraryPageMountEpoch = .init()) {
+        pageMountEpoch = mountEpoch
         self.progress = progress; requested = progress; submitted = progress
     }
 
     func afterPresentation(of target: CGFloat, when visible: @escaping () -> Bool,
                            _ completion: @escaping () -> Void) {
+        invalidatePageMountMetadata()
         arrival = (target, visible, completion)
         if submitted == target { finish() }
         schedule()
     }
 
     func request(_ value: CGFloat, sampledAt: TimeInterval?, marker: NSView, leading: @escaping (CGFloat) -> CGFloat) {
+        if self.marker !== marker || pageMountWindow !== marker.window || min(1, max(0, value)) != requested {
+            invalidatePageMountMetadata()
+        }
+        pageMountWindow = marker.window
         self.marker = marker
         self.leading = leading
         let value = min(1, max(0, value))
@@ -120,6 +142,7 @@ extension EnvironmentValues {
             }
             if hasResizeOwner(root) { waitForFrame(in: window); return }
             stopArrivalFrames?(); stopArrivalFrames = nil
+            invalidatePageMountMetadata()
             generation = UUID()
             let token = generation
             buffer = LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0),
@@ -195,6 +218,7 @@ extension EnvironmentValues {
     }
 
     private func retireBuffer() {
+        invalidatePageMountMetadata()
         generation = UUID()
         idle?.invalidate(); idle = nil
         let previous = buffer
@@ -203,6 +227,7 @@ extension EnvironmentValues {
     }
 
     func cancel() {
+        invalidatePageMountMetadata()
         stopArrivalFrames?(); stopArrivalFrames = nil
         retireBuffer()
         requested = progress
@@ -211,7 +236,35 @@ extension EnvironmentValues {
 }
 
 final class LibraryPaintView: NSView {
-    weak var paint: LibraryNavigationPaint?
+    weak var paint: LibraryNavigationPaint? {
+        willSet {
+            if paint !== newValue {
+                paint?.invalidatePageMountMetadata()
+                newValue?.invalidatePageMountMetadata()
+            }
+        }
+    }
+    private(set) var pageMountAttachmentChanging = false
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        pageMountAttachmentChanging = true
+        paint?.pageMountAttachmentChanged(self)
+        super.viewWillMove(toWindow: newWindow)
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        paint?.pageMountAttachmentChanged(self)
+        pageMountAttachmentChanging = false
+    }
+    override func viewWillMove(toSuperview newSuperview: NSView?) {
+        pageMountAttachmentChanging = true
+        paint?.pageMountAttachmentChanged(self)
+        super.viewWillMove(toSuperview: newSuperview)
+    }
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        paint?.pageMountAttachmentChanged(self)
+        pageMountAttachmentChanging = false
+    }
     var target: CGFloat = 0
     var isSettled: Bool { paint?.progress == target && paint?.isPreparing == false }
 }

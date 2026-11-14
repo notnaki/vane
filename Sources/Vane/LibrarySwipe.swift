@@ -9,6 +9,7 @@ extension Look {
 /// Finger samples affect navigation geometry, not the browser or its tab rows.
 @MainActor final class LibraryGesture: ObservableObject {
     @Published var progress: CGFloat? {
+        willSet { if progress != newValue { paint?.invalidatePageMountMetadata() } }
         didSet {
             sampledAt = CACurrentMediaTime()
             if progress == nil { pageLeadingInset = nil }
@@ -17,7 +18,14 @@ extension Look {
     private(set) var sampledAt = CACurrentMediaTime()
     /// Capture the initial gutter; floating navigation interpolates it to its endpoint.
     @Published var pageLeadingInset: CGFloat?
-    weak var paint: LibraryNavigationPaint?
+    weak var paint: LibraryNavigationPaint? {
+        willSet {
+            if paint !== newValue {
+                paint?.invalidatePageMountMetadata()
+                newValue?.invalidatePageMountMetadata()
+            }
+        }
+    }
 }
 
 private struct LibraryPageLeadingInset: EnvironmentKey {
@@ -195,13 +203,41 @@ private struct LibrarySwipe: ViewModifier {
 /// Page content, vertical scrolling and other Spaces' gestures keep their recipient.
 @MainActor final class LibrarySwipeMonitor {
     private var monitor: Any?
-    private weak var store: TabStore?
-    private var settlement = UUID()
+    private weak var store: TabStore? {
+        willSet { if store !== newValue { pageMountMetadata.retire() } }
+    }
+    private var settlement = UUID() {
+        willSet { if settlement != newValue { pageMountMetadata.retire() } }
+    }
+    private var pageMountMetadata = LibraryPageMountSettlement()
+    private weak var pageMountWindow: NSWindow?
+    var pageMountEpoch: LibraryPageMountEpoch { pageMountMetadata.epoch }
+    var pageMountPendingSettlement: UUID? { pageMountMetadata.pending }
+
+    init(mountEpoch: LibraryPageMountEpoch = .init()) {
+        pageMountMetadata = LibraryPageMountSettlement(epoch: mountEpoch)
+    }
+
+    func pageMountIsIdle(in store: TabStore, window: NSWindow) -> Bool {
+        self.store === store && pageMountWindow === window && monitor != nil
+            && !pageMountMetadata.epoch.exhausted && pageMountMetadata.pending == nil
+            && destination == nil && !(!finished && (claim == .mine || claim == .undecided))
+    }
+
+    // Mirrors only the successful production completion point. A stale token
+    // cannot clear a newer metadata tail or change any navigation state.
+    func pageMountSettlementCompleted(_ token: UUID) { pageMountMetadata.complete(token) }
+
+    private func recordPageMountWindow(_ window: NSWindow?) {
+        if pageMountWindow !== window { pageMountMetadata.retire(); pageMountWindow = window }
+    }
     private var panelWidth: CGFloat = 1
     private var dragOrigin: CGFloat?
     /// An inert native marker travels with the panel. Read its presentation layer only
     /// when interrupting a landing, so a reverse swipe can take over without a jump.
-    weak var presentationView: NSView?
+    weak var presentationView: NSView? {
+        willSet { if presentationView !== newValue { pageMountMetadata.invalidate() } }
+    }
 
     private var presentedProgress: CGFloat? {
         guard let view = presentationView, let layer = view.layer?.presentation(),
@@ -214,14 +250,18 @@ private struct LibrarySwipe: ViewModifier {
     }
 
     private var watchers: [any NSObjectProtocol] = []
-    private enum Claim { case idle, undecided, mine, theirs }
+    private enum Claim: Equatable { case idle, undecided, mine, theirs }
     private enum Action { case close, open(UUID) }
     private var action: Action?
-    private var claim = Claim.idle
+    private var claim = Claim.idle {
+        willSet { if claim != newValue { pageMountMetadata.invalidate() } }
+    }
     private weak var lastEvent: NSEvent?
     private var lastWasConsumed = false
     private var travel = (x: CGFloat(0), horizontal: CGFloat(0), vertical: CGFloat(0))
-    private var finished = false
+    private var finished = false {
+        willSet { if finished != newValue { pageMountMetadata.invalidate() } }
+    }
     @MainActor private struct KeyboardOwner {
         weak var responder: NSResponder?
         weak var editorDelegate: AnyObject?
@@ -247,7 +287,9 @@ private struct LibrarySwipe: ViewModifier {
         let space: UUID?
         let keyboard: KeyboardOwner
     }
-    private var destination: Destination?
+    private var destination: Destination? {
+        willSet { pageMountMetadata.invalidate() }
+    }
 
     /// Route a second gesture against the released gesture's intent while the
     /// visible layout is still landing. The browser itself changes only at rest.
@@ -256,6 +298,7 @@ private struct LibrarySwipe: ViewModifier {
     /// Explicit commands supersede a pending swipe, including a close issued
     /// before the opening has published its destination.
     func cancelPendingActivation(toward open: Bool? = nil) {
+        pageMountMetadata.invalidate()
         guard destination != nil else { return }
         destination = nil
         guard let store else { return }
@@ -266,9 +309,11 @@ private struct LibrarySwipe: ViewModifier {
            store.librarySwipeProgress == target { return }
         let token = UUID()
         settlement = token
+        pageMountMetadata.begin(token)
         let clear = { [weak self, weak store] in
             guard let self, self.settlement == token, let store else { return }
             Motion.instant { store.librarySwipeProgress = nil }
+            self.pageMountSettlementCompleted(token)
         }
         if Motion.reduced || presentationView?.window == nil || store.librarySwipeProgress == nil {
             clear()
@@ -315,6 +360,8 @@ private struct LibrarySwipe: ViewModifier {
 
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
+        pageMountMetadata.invalidate()
+        recordPageMountWindow(store.window)
         self.store = store
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self, weak store] event in
             guard let self, let store else { return event }
@@ -331,6 +378,7 @@ private struct LibrarySwipe: ViewModifier {
     }
 
     func remove() {
+        pageMountMetadata.invalidate()
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         watchers.forEach(NotificationCenter.default.removeObserver)
@@ -339,6 +387,7 @@ private struct LibrarySwipe: ViewModifier {
     }
 
     private func reset(clearPresentation: Bool = true) {
+        pageMountMetadata.invalidate()
         if clearPresentation {
             settlement = UUID()
             if let store {
@@ -373,6 +422,7 @@ private struct LibrarySwipe: ViewModifier {
     private func settle(in store: TabStore, commit: Bool) {
         let token = UUID()
         settlement = token
+        pageMountMetadata.begin(token)
         var open = intendsOpen(in: store)
         if commit, let action {
             open = switch action { case .open: true; case .close: false }
@@ -388,6 +438,7 @@ private struct LibrarySwipe: ViewModifier {
                 self.activateDestination(in: store)
                 guard self.settlement == token else { return }
                 store.librarySwipeProgress = nil
+                self.pageMountSettlementCompleted(token)
             }
         }
         if Motion.reduced || presentationView?.window == nil
@@ -410,6 +461,7 @@ private struct LibrarySwipe: ViewModifier {
     /// through both, so classify and accumulate each native event exactly once.
     func handle(_ event: NSEvent, in store: TabStore) -> NSEvent? {
         guard !FirstLaunch.isPresenting else { return event }
+        recordPageMountWindow(store.window)
         self.store = store
         if lastEvent === event { return lastWasConsumed ? nil : event }
         let result = process(event, in: store)
