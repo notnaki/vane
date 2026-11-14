@@ -52,6 +52,13 @@ extension EnvironmentValues {
             && !queued && buffer == nil && !ending && arrival == nil
             && idle == nil && stopArrivalFrames == nil
     }
+    func pageMountAttachmentWillChange(_ view: LibraryPaintView) {
+        guard marker === view else { return }
+        invalidatePageMountMetadata()
+        // AppKit can issue the will-move callback from NSWindow.deinit. Its
+        // old window cannot accept a new weak registration at that point.
+        pageMountWindow = nil
+    }
     func pageMountAttachmentChanged(_ view: LibraryPaintView) {
         guard marker === view else { return }
         invalidatePageMountMetadata()
@@ -247,7 +254,7 @@ final class LibraryPaintView: NSView {
     private(set) var pageMountAttachmentChanging = false
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         pageMountAttachmentChanging = true
-        paint?.pageMountAttachmentChanged(self)
+        paint?.pageMountAttachmentWillChange(self)
         super.viewWillMove(toWindow: newWindow)
     }
     override func viewDidMoveToWindow() {
@@ -257,7 +264,7 @@ final class LibraryPaintView: NSView {
     }
     override func viewWillMove(toSuperview newSuperview: NSView?) {
         pageMountAttachmentChanging = true
-        paint?.pageMountAttachmentChanged(self)
+        paint?.pageMountAttachmentWillChange(self)
         super.viewWillMove(toSuperview: newSuperview)
     }
     override func viewDidMoveToSuperview() {
