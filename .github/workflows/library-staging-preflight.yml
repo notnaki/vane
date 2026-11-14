@@ -1,4 +1,4 @@
-name: TEMP Library chrome isolation diagnostic
+name: One owned SwiftUI Library attribution trace
 on:
   push:
     branches: [codex/library-staging-preflight-20261114]
@@ -7,7 +7,7 @@ permissions:
 env:
   VANE_EXPECTED_TESTS: |
     VaneTests.WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted
-  VANE_CANDIDATE_SHA: '56f557e1fdd0f7924d2b18b32946f197458ad876'
+  VANE_CANDIDATE_SHA: '3bcc08e7729bcd7544f9a030499f453feb427cec'
   VANE_LIBRARY_PAINT_TRACE: '0'
   VANE_LIBRARY_LAYOUT_TRACE: '1'
   VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted$'
@@ -28,6 +28,15 @@ jobs:
           uname -m | tee -a "$RUNNER_TEMP/vane-diag-source.txt"
           test "$(sw_vers -productVersion | cut -d. -f1)" = 26
           test "$(uname -m)" = arm64
+      - name: Verify SwiftUI template on the actual ARM26 runner
+        run: |
+          mkdir -p "$RUNNER_TEMP/swiftui-owner"
+          xcrun xctrace list templates > "$RUNNER_TEMP/swiftui-owner/templates.txt" 2>&1
+          python3 - <<'TEMPLATE'
+          import pathlib,os
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'swiftui-owner/templates.txt'
+          assert 'SwiftUI' in [line.strip() for line in p.read_text().splitlines()], 'SwiftUI template unavailable; no capture or fallback'
+          TEMPLATE
       - name: Identify Swift toolchain
         id: toolchain
         run: |
@@ -105,47 +114,126 @@ jobs:
           (r/'vane-diag-manifest.json').write_text(json.dumps({'schema':1,'tests':tests},indent=2)+'\n')
           print('Selected diagnostic methods:',len(tests))
           PYCODE
-      - name: Observe each isolated chrome subtree once (diagnostic only)
+      - name: Record one exact owned UI SwiftUI trace (diagnostic only)
         timeout-minutes: 24
         env:
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
-          python3 - <<'ISOLATION'
-          import datetime,json,os,pathlib,re,subprocess,sys
-          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'chrome-isolation'
-          root.mkdir()
-          records=[]
-          expected=os.environ['VANE_EXPECTED_TESTS'].strip()
-          for mode in ['panel','sidebar','both']:
-              folder=root/mode;folder.mkdir();(folder/'tmp').mkdir()
-              env=os.environ.copy();env['VANE_TEMP_LIBRARY_CHROME']=mode;env['TMPDIR']=str(folder/'tmp')
-              entry={'mode':mode,'source':os.environ['VANE_CANDIDATE_SHA'],'expected':expected,'startedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'diagnosticOnly':True}
-              (folder/'identity.json').write_text(json.dumps(entry,indent=2)+'\n')
-              with (folder/'native.log').open('wb') as log:
-                  result=subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',os.environ['VANE_DIAGNOSTIC_FILTER']],env=env,stdout=log,stderr=subprocess.STDOUT)
-              text=(folder/'native.log').read_text()
-              outcomes=[{'test':f'VaneTests.{c}/{m}','status':v} for c,m,v in re.findall(r"Test Case '-\[VaneTests\.(\w+) (\w+)\]' (passed|failed|skipped)",text) if f'VaneTests.{c}/{m}'==expected]
-              entry.update(returncode=result.returncode,outcomes=outcomes,finishedAt=datetime.datetime.now(datetime.timezone.utc).isoformat(),motion=re.findall(r'LIBRARY_MOTION[^\n]+',text),nativeStatus=re.findall(r'Native suite primary status=(\d+); cleanup status=(\d+)',text))
-              entry['collectionValid']=(len(outcomes)==1 and outcomes[0]['status']!='skipped' and entry['nativeStatus']==[(str(result.returncode),'0')] and not re.search(r'^\*\*\* Signal',text,re.M))
-              records.append(entry);(folder/'summary.json').write_text(json.dumps(entry,indent=2)+'\n')
-              (root/'summary.json').write_text(json.dumps(records,indent=2)+'\n')
-              print(json.dumps(entry),flush=True)
-              if not entry['collectionValid']: break
-          complete=len(records)==3 and all(x['collectionValid'] for x in records)
-          print('CHROME_ISOLATION_COLLECTION status='+str(0 if complete else 1)+' diagnosticOnly=true')
-          sys.exit(0 if complete and all(x['returncode']==0 for x in records) else 1)
-          ISOLATION
-      - name: Verify all three diagnostic outcomes were retained
+          cat > "$RUNNER_TEMP/owned-swiftui-diagnostic.py" <<'OWNED'
+          #!/usr/bin/env python3
+          """Diagnostic-only wrapper: preserve native status; record SwiftUI for one exact owned XCTest.
+          Usage: python3 owned-sample-diagnostic.py EVIDENCE_DIR -- ORIGINAL_NATIVE_COMMAND...
+          One 10-second capture of the original Library method; no retry or fallback.
+          No source hooks or changes to test timing/assertions. Derived from the existing owned-process wrapper.
+          """
+          import datetime,json,os,pathlib,re,subprocess,sys,time
+          out=pathlib.Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
+          assert sys.argv[2]=='--' and len(sys.argv)>3
+          cwd=pathlib.Path.cwd().resolve();build=str(cwd/'.build')+'/'
+          record={'diagnostic_only':True,'collector':'SwiftUI Instruments','duration_seconds':10,'command':sys.argv[3:],'started':datetime.datetime.now(datetime.timezone.utc).isoformat()}
+          sampler=None;sampling_log=None;sample_started=None;sample_status=None
+          with (out/'native.log').open('w') as native:
+           primary=subprocess.Popen(sys.argv[3:],stdout=native,stderr=subprocess.STDOUT)
+           while primary.poll() is None:
+            if sampler is None and not record.get('watch_disabled'):
+             try:
+              rows=[]
+              for line in subprocess.check_output(['ps','-axo','pid=,ppid=,lstart=,command='],text=True).splitlines():
+               match=re.match(r'\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)',line)
+               if match:rows.append((int(match[1]),int(match[2]),match[3],match[4]))
+              owned={primary.pid}
+              for _ in range(8):
+               for pid,ppid,start,command in rows:
+                if ppid in owned:owned.add(pid)
+              candidates=[(pid,start,command) for pid,ppid,start,command in rows if pid in owned and command.startswith('/Applications/Xcode') and '/xctest ' in command and build in command and 'testLibraryNavigationKeepsTheResponsiveDocumentPainted' in command]
+              if candidates:
+               assert len(candidates)==1
+               pid,start,command=candidates[0]
+               verified=subprocess.check_output(['ps','-p',str(pid),'-o','lstart=,command='],text=True).strip()
+               assert verified.startswith(start) and verified.endswith(command)
+               record['sample_host']={'pid':pid,'start':start,'command':command}
+               sampling_log=(out/'recorder.log').open('w')
+               sampler=subprocess.Popen(['xcrun','xctrace','record','--template','SwiftUI','--attach',str(pid),'--time-limit','10s','--output',str(out/'library-owner.trace')],stdout=sampling_log,stderr=subprocess.STDOUT)
+               record['sample_pid']=sampler.pid;sample_started=time.monotonic();record['record_launched_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat()
+             except Exception as error:
+              record.setdefault('watch_errors',[]).append(type(error).__name__+': '+str(error))
+              # Keep the original native wrapper running through its owned cleanup even
+              # if process discovery fails. A diagnostic error must never orphan it.
+              record['watch_disabled']=True
+            elif sampler is not None and sampler.poll() is not None and not record.get('post_checked'):
+             record['post_checked']=True
+             record['record_returned_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat()
+             try:
+              rows=[]
+              for line in subprocess.check_output(['ps','-axo','pid=,ppid=,lstart=,command='],text=True).splitlines():
+               match=re.match(r'\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)',line)
+               if match:rows.append((int(match[1]),int(match[2]),match[3],match[4]))
+              owned={primary.pid}
+              for _ in range(8):
+               for child,parent,began,executable in rows:
+                if parent in owned:owned.add(child)
+              identity=record['sample_host']
+              actual=[(child,began,executable) for child,parent,began,executable in rows if child==identity['pid']]
+              record['sample_host_after']=actual
+              record['ownership_held']=identity['pid'] in owned and actual==[(identity['pid'],identity['start'],identity['command'])]
+             except Exception as error:
+              record['ownership_held']=False
+              record['post_error']=type(error).__name__+': '+str(error)
+            elif sampler is not None and sampler.poll() is None and time.monotonic()-sample_started>60:
+             # Popen retains the unreaped child identity; only this exact owned sampler is stopped.
+             sampler.terminate()
+             try:sampler.wait(timeout=5)
+             except subprocess.TimeoutExpired:sampler.kill();sampler.wait()
+             record['sample_timeout']=True
+            time.sleep(.05)
+           primary_status=primary.wait()
+          if sampler is not None:
+           try:sample_status=sampler.wait(timeout=max(1,60-(time.monotonic()-sample_started)))
+           except subprocess.TimeoutExpired:
+            sampler.terminate()
+            try:sample_status=sampler.wait(timeout=5)
+            except subprocess.TimeoutExpired:sampler.kill();sample_status=sampler.wait()
+            record['sample_timeout']=True
+           sampling_log.close()
+          record['collection_status']=0 if sample_status==0 and (out/'library-owner.trace').exists() and record.get('ownership_held') and not record.get('sample_timeout') and not record.get('watch_errors') else 1
+          record.update(primary_status=primary_status,sample_status=sample_status,sample_exists=(out/'library-owner.trace').exists(),finished=datetime.datetime.now(datetime.timezone.utc).isoformat())
+          (out/'diagnostic-status.json').write_text(json.dumps(record,indent=2)+'\n')
+          print(json.dumps(record))
+          sys.exit(primary_status or (0 if sample_status==0 and record['sample_exists'] and record.get('ownership_held') and not record.get('sample_timeout') and not record.get('watch_errors') else 1))
+          OWNED
+          python3 "$RUNNER_TEMP/owned-swiftui-diagnostic.py" "$RUNNER_TEMP/swiftui-owner" -- python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER"
+      - name: Export retained SwiftUI owner event tables without another recording
         if: ${{ always() }}
         run: |
-          python3 - <<'VERIFY'
-          import json,os,pathlib
-          records=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'chrome-isolation/summary.json').read_text())
-          assert [r['mode'] for r in records]==['panel','sidebar','both']
-          assert all(r['collectionValid'] and r['diagnosticOnly'] for r in records)
-          print('Three distinct chrome-removal modes completed with unchanged original assertions; NOT product qualification.')
-          VERIFY
+          python3 - <<'EXPORT'
+          import json,os,pathlib,subprocess,xml.etree.ElementTree as ET
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'swiftui-owner'
+          result={'diagnosticOnly':True,'sourceAttribution':'PENDING evidence inspection','exports':[]}
+          try:
+              state=json.loads((root/'diagnostic-status.json').read_text())
+              assert state['collection_status']==0, 'Capture unavailable/incomplete; retain without retry'
+              trace=root/'library-owner.trace';toc=root/'toc.xml'
+              subprocess.run(['xcrun','xctrace','export','--input',str(trace),'--toc','--output',str(toc)],check=True,timeout=60)
+              tree=ET.parse(toc)
+              for run in tree.findall('.//run'):
+                  number=run.attrib.get('number','1')
+                  for i,table in enumerate(run.findall('./data/table')):
+                      schema=table.attrib.get('schema','')
+                      if 'swiftui' not in schema.lower(): continue
+                      target=root/f'run-{number}-table-{i}.xml'
+                      query=f'/trace-toc/run[@number="{number}"]/data/table[@schema="{schema}"]'
+                      exported=subprocess.run(['xcrun','xctrace','export','--input',str(trace),'--xpath',query,'--output',str(target)],timeout=60)
+                      result['exports'].append({'run':number,'schema':schema,'file':target.name,'returncode':exported.returncode})
+              assert result['exports'] and all(e['returncode']==0 for e in result['exports']), 'No complete SwiftUI exports; no retry/fallback'
+              result['exportStatus']=0
+          except Exception as error:
+              result.update(exportStatus=1,error=type(error).__name__+': '+str(error))
+          root.mkdir(exist_ok=True)
+          (root/'export-status.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(json.dumps(result))
+          raise SystemExit(result['exportStatus'])
+          EXPORT
       - name: Retain diagnostic evidence including failed attempts
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
@@ -153,7 +241,8 @@ jobs:
           name: public-native-logs
           path: |
             ${{ runner.temp }}/vane-diag-tests.log
-            ${{ runner.temp }}/chrome-isolation
+            ${{ runner.temp }}/swiftui-owner
+            ${{ runner.temp }}/owned-swiftui-diagnostic.py
             ${{ runner.temp }}/vane-diag-source.txt
             /tmp/vane-resize-library-*
             ${{ runner.temp }}/profile-boundary-costs
