@@ -1,4 +1,4 @@
-name: Public cached profile native scroll retention reproduction
+name: Public covered profile root layout preflight
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -8,12 +8,17 @@ env:
   VANE_EXPERIMENT_SIDEBAR_HOST: '0'
   VANE_LIBRARY_PAINT_TRACE: '0'
   VANE_EXPECTED_TESTS: |
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
+    VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
+    VaneTests.SpaceNativeRenderingTests/testProfileHopPublishesOnlyTheCompletedArrivingSidebar
     VaneTests.SpaceNativeRenderingTests/testCachedProfileHopKeepsItsMountedScrollShell
-  VANE_CANDIDATE_SHA: 1e89ad92429be7301ee9f27f34b172cc92f3aa38
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/testCachedProfileHopKeepsItsMountedScrollShell$'
+  VANE_CANDIDATE_SHA: afd8a7773e7ff58395c29b962129d2a09fca611b
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows|testProfileHopPublishesOnlyTheCompletedArrivingSidebar|testCachedProfileHopKeepsItsMountedScrollShell)$'
 jobs:
   diagnostic:
-    name: Actual cached profile native scroll ownership reproduction
+    name: Original four profiles and covered root regressions
     runs-on: macos-26
     timeout-minutes: 45
     steps:
