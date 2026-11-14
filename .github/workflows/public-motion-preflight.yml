@@ -10,7 +10,7 @@ env:
   VANE_PROFILE_PROCESS_POLICY: '1'
   VANE_EXPECTED_TESTS: |
     VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
-  VANE_CANDIDATE_SHA: c94407f3fcd9bd7d9bc227891b44735b98e275db
+  VANE_CANDIDATE_SHA: 7ac0547824b7d7d91ca48ec425e3dc9f2ccbdc98
   VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows$'
 jobs:
   diagnostic:
