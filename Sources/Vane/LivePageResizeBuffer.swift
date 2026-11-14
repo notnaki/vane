@@ -718,6 +718,22 @@ struct LivePageResizeAnchor {
             guard active else { return }
             guard ownsLayout else { cancel(); return }
         }
+        // An older paint may still be pending after a covered Library shrink
+        // reaches its native parent. Retire that generation before trimming;
+        // its late paint/style/deadline cannot certify the replacement viewport.
+        if stagesExactNavigation, !ending, hasCoverage, !pendingPaints.isEmpty,
+           published?.frame == latest.frame, published?.sidebar == latest.sidebar,
+           navigationLayoutReached(latest), navigationParentSizesMatch(nominalSizes(latest)),
+           zip(pages, desired).contains(where: { $0.prepared != $1 }) {
+            generation = UUID()
+            deadlineRevision = UUID()
+            timer?.invalidate(); timer = nil
+            pendingPaints.removeAll()
+            pendingStyleReplies.removeAll()
+            styleReplyDeadline = nil
+            prepare(exact: true)
+            return
+        }
         guard pendingPaints.isEmpty else { return }
         if ending {
             let submittedParentIsLarger = submittedSidebarFloor.map { floor in

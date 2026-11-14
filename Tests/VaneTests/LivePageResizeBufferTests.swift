@@ -58,6 +58,41 @@ import XCTest
         return paints.removeFirst()
     }
 
+    func testExactLibraryInstalledShrinkSupersedesOlderPendingPaint() throws {
+        let f = Fixture(); defer { f.close() }
+        let owner = UUID()
+        f.host.libraryNavigationPaintOwner = owner
+        var paints: [@MainActor @Sendable () -> Void] = []
+        var deadlines: [@MainActor @Sendable () -> Void] = []
+        var installedLeading: CGFloat = 100
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in paints.append(callback) },
+            deadline: { _, callback in deadlines.append(callback) },
+            navigation: .init(owner: owner, leading: 100, exactRequests: true,
+                              layoutLeading: { installedLeading }), apply: { _, _ in }))
+        defer { buffer.cancel() }
+        buffer.start()
+        let oldPaint = nextPaint(&paints)
+        let oldDeadline = try XCTUnwrap(deadlines.last)
+        XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: 200))
+        XCTAssertEqual(f.web.frame.width, 600, "Do not trim before native layout installs the smaller clip")
+        installedLeading = 200
+        XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: 200))
+        XCTAssertEqual(f.web.frame.width, 600, "The marker alone cannot certify the old child geometry")
+        f.host.setFrameSize(NSSize(width: 500, height: 400))
+        XCTAssertEqual(f.web.frame.width, 500, "An installed covered shrink must not wait for the obsolete larger paint")
+        XCTAssertTrue(buffer.isPreparing, "Native sizing is not a paint acknowledgment")
+        oldPaint(); oldDeadline()
+        XCTAssertEqual(f.web.frame.width, 500)
+        XCTAssertTrue(buffer.isPreparing, "Old paint and deadline cannot acknowledge or retire the new viewport")
+        XCTAssertEqual(f.web.autoresizingMask, [])
+        nextPaint(&paints)()
+        XCTAssertFalse(buffer.isPreparing)
+        buffer.finish()
+        XCTAssertEqual(f.web.frame.width, 500)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+    }
+
     func testExactLibraryGrowthPublishesPaintedProgressWhileNewerInputWaits() throws {
         let f = Fixture(); defer { f.close() }
         let owner = UUID()
