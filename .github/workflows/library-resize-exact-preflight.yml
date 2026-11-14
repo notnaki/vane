@@ -6,25 +6,12 @@ permissions:
   contents: read
 env:
   VANE_EXPECTED_TESTS: |
-    VaneTests.LibraryPageMountReceiptTests/testCurrentClosedOwnerCanCaptureAfterColdMarkerReadiness
-    VaneTests.LibraryPageMountReceiptTests/testHeldZeroIsNotIdleAndCannotReviveTheOldReceipt
-    VaneTests.LibraryPageMountReceiptTests/testSynchronousRequestRoundTripInvalidatesBeforeAnyDrain
-    VaneTests.LibraryPageMountReceiptTests/testIdenticalAtRestBridgeReevaluationDoesNotInvalidateItsEpoch
-    VaneTests.LibraryPageMountReceiptTests/testExplicitCommandInvalidatesWithoutAPendingDestination
-    VaneTests.LibraryPageMountReceiptTests/testNativeMarkerDetachAndSameWindowReattachCannotReviveReceipt
-    VaneTests.LibraryPageMountReceiptTests/testPaintReplacementAndCancellationInvalidateOldReceipt
-    VaneTests.LibraryPageMountReceiptTests/testPendingArrivalAndCancelledCallbackCannotAdmitIdle
-    VaneTests.LibraryPageMountReceiptTests/testNativeBufferOwnerRejectsEvenAtZeroPaintProgress
-    VaneTests.LibraryPageMountReceiptTests/testCurrentClosedFinishedMineStillConsumesMomentum
-    VaneTests.LibraryPageMountReceiptTests/testPendingLandingRejectsEvenIfTheModelPresentationWasCleared
-    VaneTests.LibraryPageMountReceiptTests/testProviderAndReceiptDoNotRetainTheActualPaintOwner
-    VaneTests.LibraryPageMountReceiptTests/testStaleSettlementMetadataCannotClearTheNewerActualLanding
-    VaneTests.LibraryPageMountReceiptTests/testBindingReplacementCannotResurrectAnOldReceipt
-    VaneTests.LibraryPageMountReceiptTests/testCheckedEpochExhaustionNeverWraps
-    VaneTests.LibraryPageMountReceiptTests/testExhaustedActualPaintOwnerStaysFailClosedAfterIdleRebinding
-    VaneTests.LibraryPageMountReceiptTests/testHiddenParkedOrUnknownOwnerCannotCapture
-  VANE_CANDIDATE_SHA: '40134089ac1122c24a2c98632f6160fb5142a5e9'
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]LibraryPageMountReceiptTests/.*$'
+    VaneTests.LibraryPageMountReceiptTests/testSynchronousVisibilityRestorationNeverRevivesOldReceipt
+    VaneTests.LibraryPageMountReceiptTests/testSynchronousParkingRestorationNeverRevivesOldReceipt
+    VaneTests.LibraryPageMountReceiptTests/testSynchronousWindowRestorationNeverRevivesOldReceipt
+    VaneTests.LibraryPageMountReceiptTests/testIdenticalOwnerLifecycleAssignmentsPreserveRestingReceipt
+  VANE_CANDIDATE_SHA: 'ca41122b8eab4f7975409a47cdf3c9af841e2020'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]LibraryPageMountReceiptTests/(testSynchronousVisibilityRestorationNeverRevivesOldReceipt|testSynchronousParkingRestorationNeverRevivesOldReceipt|testSynchronousWindowRestorationNeverRevivesOldReceipt|testIdenticalOwnerLifecycleAssignmentsPreserveRestingReceipt)$'
 jobs:
   library-receipt:
     runs-on: macos-26
@@ -33,12 +20,39 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.VANE_CANDIDATE_SHA }}
-      - name: Verify exact receipt candidate and actual runner
+      - name: Verify exact unfixed receipt source and actual runner
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$VANE_CANDIDATE_SHA"
           sw_vers
+      - name: Identify Swift toolchain
+        id: toolchain
+        run: |
+          set -euo pipefail
           swift --version
+          xcodebuild -version
+          KEY=$(python3 scripts/ci-build-artifact.py toolchain)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      # Only checks builds go into this cache. Release builds compile an OAuth secret
+      # into the app, so their build products must never enter a PR-readable cache.
+      # PRs reuse main's cache without leaving a separate archive for every revision.
+      - name: Restore Swift debug build
+        id: swift-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**', 'Tests/**', 'scripts/ci-source-state.py', 'make-app.sh', '.github/workflows/checks.yml') }}
+          restore-keys: |
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+
+      # Checkout gives even unchanged inputs new mtimes. Restore only content-matching
+      # timestamps for Swift, C/Objective-C bridges, headers and resources. Rebuilding
+      # an unchanged bridge can invalidate all dependent Swift compilation.
+      - name: Restore unchanged source timestamps
+        run: python3 scripts/ci-source-state.py restore
+
       - name: Build exact receipt candidate
         run: swift build -c debug --build-tests --disable-index-store --jobs 3
       - name: Admit actual system motion on this disposable runner
