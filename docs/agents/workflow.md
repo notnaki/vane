@@ -1,6 +1,6 @@
 # PR, review, and squash-merge cycle
 
-- Unless the user specifies another stopping point, implement, validate, open/update a PR, review, fix findings, and squash-merge. Use a `codex/` branch, never commit directly to `main`; preserve unrelated local work and include only task changes.
+- Unless the user specifies another stopping point, implement, validate, open/update a PR, review, fix findings, and squash-merge. Work on a task branch (your harness's prefix, e.g. `claude/`, `codex/`, `t3/`), never commit directly to `main`; preserve unrelated local work and include only task changes.
 - After validation, push and open/update the PR with a clear description and results. Obtain independent review of its current diff through a PR reviewer or review subagent; fix actionable findings, push, and recheck using the progress checkpoints below. Unresolved findings remain merge blockers while work continues.
 - Merge only when the latest PR commit is reviewed, required CI passes on its integration with the latest target branch, required approvals are satisfied, and the PR is mergeable. If the target advances, update the PR and validate the combined tree. Keep `main`'s strict required `checks` protection and administrator enforcement enabled. Report pending/unavailable reviews or checks as blockers; never bypass them.
 - Immediately before merging, recheck `main`'s HEAD and CI status and all merge requirements above. Wait for every unfinished `main` CI run; never cancel one to unblock a merge or let a merge cancel/supersede it.
