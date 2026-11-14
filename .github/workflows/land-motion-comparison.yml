@@ -1,4 +1,4 @@
-name: Controlled native motion optimization comparison
+name: Corrected motion oracles and app optimization comparison
 on:
   push:
     branches: [codex/land-final-20261114]
@@ -9,17 +9,18 @@ env:
     VaneTests.WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted
     VaneTests.LibrarySwipeTests/testQuickOpeningReleaseContinuesFromTheLastFingerPosition
     VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
-  VANE_CANDIDATE_SHA: 'c52dc3f59d1354a78ec5b2787be09e56c7003b54'
+    VaneTests.SpaceNativeRenderingTests/testPresentationColourRejectsAnUnpresentedModelEndpoint
+  VANE_CANDIDATE_SHA: 'c6588e27c58b25d1f00765ed19762d3c0d2726ee'
   VANE_LIBRARY_PAINT_TRACE: '0'
   VANE_LIBRARY_LAYOUT_TRACE: '0'
-  VANE_DIAGNOSTIC_FILTER: '^(?:VaneTests[.]WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted|VaneTests[.]LibrarySwipeTests/testQuickOpeningReleaseContinuesFromTheLastFingerPosition|VaneTests[.]SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding)$'
+  VANE_DIAGNOSTIC_FILTER: '^(?:VaneTests[.]WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted|VaneTests[.]LibrarySwipeTests/testQuickOpeningReleaseContinuesFromTheLastFingerPosition|VaneTests[.]SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding|VaneTests[.]SpaceNativeRenderingTests/testPresentationColourRejectsAnUnpresentedModelEndpoint)$'
 jobs:
   library-receipt:
     runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
-        optimization: [optimized]
+        optimization: [unoptimized, app-optimized]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -67,22 +68,45 @@ jobs:
           OPTIMIZATION: ${{ matrix.optimization }}
         run: |
           set -euo pipefail
+          # Only the app changes optimization. Optimizing the entire test suite
+          # encountered unrelated compiler diagnostics before any native test ran.
+          cp Package.swift "$RUNNER_TEMP/vane-original-Package.swift"
+          if [ "$OPTIMIZATION" = app-optimized ]; then
+            python3 - <<'PACKAGE'
+          from pathlib import Path
+          p=Path('Package.swift'); source=p.read_text()
+          anchor='            linkerSettings: [\n'
+          assert source.count(anchor)==1, 'Expected only the vane target linker block'
+          p.write_text(source.replace(anchor, '            swiftSettings: [.unsafeFlags(["-O"])],\n'+anchor, 1))
+          PACKAGE
+          fi
+          cp Package.swift "$RUNNER_TEMP/vane-effective-Package.swift"
+          git diff -- Package.swift > "$RUNNER_TEMP/vane-build-manifest.patch"
           build=(swift build -c debug --build-tests --disable-index-store --jobs 3)
-          if [ "$OPTIMIZATION" = optimized ]; then build+=(-Xswiftc -O); fi
           printf '%s\n' "source=$VANE_CANDIDATE_SHA mode=$OPTIMIZATION config=debug command=${build[*]}" | tee "$RUNNER_TEMP/vane-build-mode.log"
           "${build[@]}"
           python3 - <<'VERIFY'
-          import os,pathlib,re,shutil
+          import os,pathlib,json,shutil,subprocess
           mode=os.environ['OPTIMIZATION']
-          commands=list(pathlib.Path('.build').glob('*/debug/*/output-file-map.json'))
-          assert commands, 'Missing compiled products'
-          desc=pathlib.Path('.build/debug.yaml').read_text()
-          # SwiftPM normally emits -DDEBUG as one argument; accept the compiler's
-          # equivalent split spelling too. Check tokens, not YAML whitespace.
-          tokens=re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', desc)
-          assert '-DDEBUG' in tokens or any(a=='-D' and b=='DEBUG' for a,b in zip(tokens,tokens[1:])), 'Must retain DEBUG fixtures'
-          expected='"-O"' if mode=='optimized' else '"-Onone"'
-          assert expected in desc, f'Missing optimization flag {expected}'
+          description=json.loads(subprocess.check_output([
+              'ruby','-ryaml','-rjson','-e','puts JSON.generate(YAML.load_file(ARGV[0]))','.build/debug.yaml']))
+          seen=set()
+          for key, command in description['commands'].items():
+              if not key.endswith('.module'): continue
+              args=command.get('args',[])
+              if '-module-name' not in args: continue
+              name=args[args.index('-module-name')+1]
+              if name not in ('vane','VaneTests'): continue
+              assert name not in seen, f'Duplicate compile command: {name}'
+              seen.add(name)
+              assert '-DDEBUG' in args or any(a=='-D' and b=='DEBUG' for a,b in zip(args,args[1:])), f'{name}: missing DEBUG'
+              assert '-enable-testing' in args, f'{name}: missing test access'
+              optimization=[a for a in args if a in ('-Onone','-O','-Osize','-Ounchecked')]
+              expected='-O' if name=='vane' and mode=='app-optimized' else '-Onone'
+              assert optimization and optimization[-1]==expected, f'{name}: expected final {expected}, actual {optimization}'
+              if expected=='-Onone': assert set(optimization)=={'-Onone'}, f'{name}: unexpected optimization {optimization}'
+              print('Verified compiler flags:', name, optimization, 'DEBUG')
+          assert seen=={'vane','VaneTests'}, f'Missing target commands: {seen}'
           shutil.copyfile('.build/debug.yaml', pathlib.Path(os.environ['RUNNER_TEMP'])/'vane-build-description.yaml')
           print('Build configuration verified:',mode)
           VERIFY
@@ -120,7 +144,7 @@ jobs:
           grep -Fq 'AppKit loop smoke: delayedHeartbeat=true, completed=true' "$RUNNER_TEMP/vane-motion-smoke.log"
           grep -Fxq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-motion-smoke.log"
           if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-motion-smoke.log"; then exit 1; fi
-      - name: Discover exact original Library and profile methods
+      - name: Discover exact corrected Library and profile methods
         run: |
           set -euo pipefail
           swift test list --skip-build > "$RUNNER_TEMP/vane-diag-inventory.txt"
@@ -133,7 +157,7 @@ jobs:
           (r/'vane-diag-manifest.json').write_text(json.dumps({'schema':1,'tests':tests},indent=2)+'\n')
           print('Selected diagnostic methods:',len(tests))
           PYCODE
-      - name: Observe original native outcomes
+      - name: Observe corrected native outcomes
         timeout-minutes: 24
         env:
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
@@ -168,6 +192,9 @@ jobs:
           path: |
             ${{ runner.temp }}/vane-build-mode.log
             ${{ runner.temp }}/vane-build-description.yaml
+            ${{ runner.temp }}/vane-original-Package.swift
+            ${{ runner.temp }}/vane-effective-Package.swift
+            ${{ runner.temp }}/vane-build-manifest.patch
             ${{ runner.temp }}/vane-diag-tests.log
             ${{ runner.temp }}/vane-diag-source.txt
             /tmp/vane-resize-library-*
