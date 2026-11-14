@@ -54,8 +54,8 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
     }
 }
 
-/// One interpolated phase drives the card and both rails. WebHost autoresizing
-/// follows that actual card proposal; paint observation never retimes geometry.
+/// Animation samples request a geometry phase. One accepted phase drives the
+/// card and both rails after the exact document viewport covers that phase.
 private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>: View, @preconcurrency Animatable {
     @ObservedObject var gesture: LibraryGesture
     var targetProgress: CGFloat
@@ -94,7 +94,7 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
     }
 
     var body: some View {
-        let progress = min(1, max(0, targetProgress))
+        let progress = min(1, max(0, paint.progress))
         let leading = pageLeading(at: progress)
         ZStack(alignment: .leading) {
             HStack(spacing: 0) {
@@ -136,7 +136,9 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
                 .zIndex(1)
         }
         .background {
-            LibraryPaintBridge(paint: paint, target: targetProgress)
+            LibraryPaintBridge(paint: paint, target: targetProgress,
+                startLeading: pageLeading(at: 0), endLeading: pageLeading(at: 1),
+                holding: gesture.progress != nil)
                 .frame(width: 0, height: 0)
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)

@@ -45,6 +45,7 @@ struct LivePageResizeAnchor {
     struct Navigation {
         let owner: UUID
         let leading: CGFloat
+        var exactRequests = false
     }
 
     typealias FrameDriver = (@escaping @MainActor () -> Void) -> (@MainActor () -> Void)
@@ -238,7 +239,13 @@ struct LivePageResizeAnchor {
     private var submittedSidebarSizes: [NSSize]?
     private var submittedSidebarFloor: [NSSize]?
     private var submittedSidebarRevisions: [UInt]?
-    var isPreparing: Bool { active && (ending || !pendingPaints.isEmpty) }
+    private var stagesExactNavigation: Bool { navigation?.exactRequests == true }
+    var isPreparing: Bool {
+        active && (ending || !pendingPaints.isEmpty || (stagesExactNavigation &&
+            (published?.sidebar != latest.sidebar || zip(pages, sizes(latest)).contains {
+                $0.prepared != $1 || $0.painted != $1 || !$0.parentReached($1)
+            })))
+    }
 
 #if DEBUG
     private func trace(_ event: String, token: UUID? = nil, page: ObjectIdentifier? = nil, sidebar: CGFloat? = nil) {
@@ -402,7 +409,7 @@ struct LivePageResizeAnchor {
             }
         }
         if !ending { stopFrames = frameDriver? { [weak self] in self?.advancePublicationFrame() } }
-        prepare(exact: ending)
+        prepare(exact: ending || stagesExactNavigation)
     }
 
     /// True means this buffer owns the proposal, even if it needs more coverage.
@@ -692,6 +699,18 @@ struct LivePageResizeAnchor {
             } else { prepare(exact: true) }
             return
         }
+        if stagesExactNavigation {
+            // Shrink the visible parent under existing coverage before trimming
+            // its backing document. Growth is prepared at exactly the request.
+            guard zip(pages, desired).allSatisfy({
+                $0.currentVisibleSize.width <= $1.width + 0.001 &&
+                $0.currentVisibleSize.height <= $1.height + 0.001
+            }) else { return }
+            if zip(pages, desired).contains(where: { $0.prepared != $1 || $0.painted != $1 }) {
+                prepare(exact: true)
+            }
+            return
+        }
         // Native window/sidebar resizing retains its original adaptive lookahead
         // and submitted-parent floor contract. Only Library navigation trims
         // a shrinking document to the smaller responsive-layout band.
@@ -809,7 +828,7 @@ struct LivePageResizeAnchor {
         ResizeTimingDiagnostics.record("buffer.presentation.groupClosed")
 #endif
         exactPresented = exactPaint
-        if exactPresented { flushFinalLayout() }
+        if exactPresented && (!stagesExactNavigation || ending) { flushFinalLayout() }
         drive()
 #if DEBUG
         ResizeTimingDiagnostics.record("buffer.presentation.drained")
