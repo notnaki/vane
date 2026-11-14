@@ -104,6 +104,14 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
                     .environment(\.libraryPageLeadingInset, 0)
                     .geometryGroup()
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                    .background(alignment: .topLeading) {
+                        // Its native origin acknowledges which page phase AppKit
+                        // installed, including split panes rounded to whole pixels.
+                        LibraryPaintBridge(paint: paint, target: targetProgress,
+                            startLeading: pageLeading(at: 0), endLeading: pageLeading(at: 1),
+                            targetLeading: pageLeading(at: targetProgress), currentLeading: leading)
+                            .frame(width: 0, height: 0)
+                    }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .disabled(palettePresented)
@@ -134,12 +142,6 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
                 .allowsHitTesting(libraryOpen && !palettePresented)
                 .accessibilityHidden(!libraryOpen || palettePresented)
                 .zIndex(1)
-        }
-        .background {
-            LibraryPaintBridge(paint: paint, target: targetProgress,
-                startLeading: pageLeading(at: 0), endLeading: pageLeading(at: 1),
-                targetLeading: pageLeading(at: targetProgress), currentLeading: leading)
-                .frame(width: 0, height: 0)
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .onAppear { gesture.paint = paint }

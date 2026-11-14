@@ -92,7 +92,12 @@ extension EnvironmentValues {
                     let token = UUID()
                     bufferToken = token
                     buffer = LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0),
-                        navigation: .init(owner: owner, leading: initial, exactRequests: true),
+                        navigation: .init(owner: owner, leading: initial, exactRequests: true,
+                            layoutLeading: { [weak marker, weak window] in
+                                guard let marker, let window, marker.window === window,
+                                      let root = window.contentView else { return nil }
+                                return marker.convert(.zero, to: root).x - root.bounds.minX
+                            }),
                         apply: { [weak self] _, accepted in
                             guard let self, self.bufferToken == token, let accepted else { return }
                             self.acceptedLeading = accepted

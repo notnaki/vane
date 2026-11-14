@@ -168,6 +168,12 @@ import XCTest
                 XCTAssertEqual(secondBounds.maxX, bounds.maxX, accuracy: 1)
                 XCTAssertEqual(firstBounds.width + secondBounds.width + Look.splitGap, bounds.width, accuracy: 1)
             } else {
+#if DEBUG
+                if traceLayout, abs(tab.web.bounds.width - bounds.width) > 1 {
+                    print("LIBRARY_LAYOUT_MISMATCH phase=\(progress) document=\(tab.web.bounds.width) card=\(bounds.width)")
+                    layoutEvents.suffix(60).forEach { print($0) }
+                }
+#endif
                 XCTAssertEqual(tab.web.bounds.width, bounds.width, accuracy: 1,
                     "The document must fill the visible card during movement, not jump to its width at release")
             }

@@ -46,6 +46,7 @@ struct LivePageResizeAnchor {
         let owner: UUID
         let leading: CGFloat
         var exactRequests = false
+        var layoutLeading: (@MainActor () -> CGFloat?)? = nil
     }
 
     typealias FrameDriver = (@escaping @MainActor () -> Void) -> (@MainActor () -> Void)
@@ -243,9 +244,10 @@ struct LivePageResizeAnchor {
     private var stagesExactNavigation: Bool { navigation?.exactRequests == true }
     var isPreparing: Bool {
         active && (ending || !pendingPaints.isEmpty || (stagesExactNavigation &&
-            (published?.sidebar != latest.sidebar || zip(pages, sizes(latest)).contains {
+            (published?.sidebar != latest.sidebar ||
+             (navigation?.layoutLeading != nil && !navigationLayoutReached(latest)) || zip(pages, sizes(latest)).contains {
                 $0.prepared != $1 || $0.painted != $1 || !$0.parentReached($1)
-            })))
+            } || !navigationParentSizesMatch(nominalSizes(latest)))))
     }
 
 #if DEBUG
@@ -626,7 +628,36 @@ struct LivePageResizeAnchor {
     }
 
     private func sizes(_ request: Request) -> [NSSize] {
+        let desired = nominalSizes(request)
+        let visible = pages.map(\.currentVisibleSize)
+        guard desired != visible, published?.frame == request.frame,
+              published?.sidebar == request.sidebar, navigationParentSizesMatch(desired),
+              navigationLayoutReached(request) else { return desired }
+        // A split can distribute one point as114/114 rather than114.5/113.5.
+        // Its total extent must already match, as well as the installed page
+        // seam. Neither a stale pane nor a marker that arrived first is enough.
+        return visible
+    }
+
+    private func nominalSizes(_ request: Request) -> [NSSize] {
         pages.map { $0.size(root: viewportRoot(request), baseline: baselineSize, sidebar: request.sidebar) }
+    }
+
+    private func navigationParentSizesMatch(_ desired: [NSSize]) -> Bool {
+        var difference = NSSize.zero
+        for (page, size) in zip(pages, desired) {
+            guard page.parentReached(size) else { return false }
+            let visible = page.currentVisibleSize
+            difference.width += visible.width - size.width
+            difference.height += visible.height - size.height
+        }
+        return abs(difference.width) < 0.001 && abs(difference.height) < 0.001
+    }
+
+    private func navigationLayoutReached(_ request: Request) -> Bool {
+        guard stagesExactNavigation, let leading = request.sidebar,
+              let installed = navigation?.layoutLeading?() else { return false }
+        return abs(installed - leading) < 0.001
     }
 
     private func covered(_ sizes: [NSSize]) -> Bool {
