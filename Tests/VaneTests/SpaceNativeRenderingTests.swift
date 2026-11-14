@@ -1816,7 +1816,8 @@ import XCTest
                   NSApp.modalWindow == nil, window.attachedSheet == nil,
                   sourcePage.window === window, !sourcePage.isHiddenOrHasHiddenAncestor,
                   let anchor = source.spaceGesture.stripView, anchor.window === window,
-                  let surface = self.colourSurface(in: try XCTUnwrap(window.contentView)),
+                  let surface = source.spaceGesture.groundSurface,
+                  surface.window === window, !surface.isHiddenOrHasHiddenAncestor,
                   surface.base.presentation() != nil,
                   let presented = try? self.firstColour(of: surface, presented: true),
                   let model = try? self.firstColour(of: surface),
@@ -1865,7 +1866,13 @@ import XCTest
         } else {
             XCTFail("Page geometry requires the destination page and host in the admitted window")
         }
-        let surface = try XCTUnwrap(colourSurface(in: host))
+        // Parked profile roots remain mounted; traversal order is not paint ownership.
+        // Read the actual arriving wash without waiting for its colour or progress.
+        let surface = try XCTUnwrap(arriving.spaceGesture.groundSurface)
+        XCTAssertTrue(surface.window === window && surface.isDescendant(of: host),
+                      "The sampled wash must belong to the arriving profile in this window")
+        XCTAssertFalse(surface.isHiddenOrHasHiddenAncestor,
+                       "The early colour sample must inspect the drawn destination wash")
         let colour = try firstColour(of: surface, presented: true)
         XCTAssertGreaterThan(colour.redComponent, 0.1,
                              "The background must continue blending after the early profile handoff")
