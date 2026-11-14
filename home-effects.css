@@ -50,3 +50,57 @@
 .scroll-cue:is(:hover,:focus-visible) { animation-play-state:paused; }
 .scroll-cue svg { width:22px; height:22px; fill:none; stroke-width:1.7; }
 @keyframes scroll-cue-bounce { 0%,60%,100% { transform:translateY(0); } 72% { transform:translateY(-6px); } 82% { transform:translateY(0); } 90% { transform:translateY(-2px); } }
+
+/* ——— Homepage: a bright lilac opening over the dark site ——— */
+.wordmark-home { --hero-word-size:clamp(170px,27vw,380px); --page:#111015; }
+.wordmark-home::before { display:none; }
+.wordmark-home { background:var(--page); }
+.wordmark-home main { width:100%; padding:0; }
+
+/* Floating white pill over the opening. */
+.wordmark-home .site-header { position:fixed; left:0; right:0; margin-top:0; }
+@media(min-width:521px) { .wordmark-home .site-header { top:24px; } }
+.wordmark-home .navigation { background:#fffffff2; border-color:#1f172612; box-shadow:0 8px 28px #12081c33; }
+.wordmark-home .navigation .nav-links a,.wordmark-home .site-search-trigger { color:#5f5468; }
+.wordmark-home .navigation .nav-links a:hover,.wordmark-home .site-search-trigger:hover { color:#1f1726; background:#1f17260d; }
+.wordmark-home .site-search-trigger kbd { border-color:#1f17261f; color:#5f5468; }
+.wordmark-home .nav-download { background:#1f1726; color:#fff; }
+.wordmark-home .nav-download:hover { background:#3a2c45; }
+.wordmark-home .has-mobile-menu .nav-menu-toggle { color:#1f1726; }
+
+.wordmark-home .opening { overflow:clip; margin:0 0 72px; padding:120px 0 0; }
+.wordmark-home .opening::before { inset:0; background-color:#9d82bb; background-image:linear-gradient(180deg,#5b3f7a59 0%,#5b3f7a00 45%,#11101500 62%,var(--page) 100%),url('media/sunlight.webp'); background-blend-mode:normal,luminosity; filter:none; mask-image:none; -webkit-mask-image:none; }
+.hero-tagline { margin:0 0 8px; font:400 clamp(26px,3vw,38px)/1.15 var(--display); letter-spacing:-.01em; color:#fbf6ff; text-shadow:0 1px 16px #3a1f5640; }
+.wordmark-home .opening h1 { color:#fbf5ffd9; text-shadow:0 2px 40px #4a2a6a33; }
+.wordmark-home .opening .product-demo { width:min(100%,calc((100svh - 200px)*1.5238),1080px); }
+.wordmark-home .session-video video { filter:drop-shadow(0 30px 50px #12081c80); }
+
+/* Dark sections */
+.wordmark-home .page-content { padding-top:24px; }
+.home-bento { max-width:1160px; margin:0 auto 140px; }
+.home-bento h2 { margin:0 0 40px; font:500 clamp(42px,4.2vw,58px)/1 var(--display); letter-spacing:-.025em; }
+.home-bento h2 em { font-style:normal; color:var(--accent); }
+.bento-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:16px; }
+.bento-card { grid-column:span 2; display:flex; flex-direction:column; overflow:hidden; padding:28px 28px 0; border:1px solid var(--border); border-radius:20px; background:#1a1720; color:var(--foreground); transition:background 200ms,border-color 200ms; }
+.bento-card.wide { grid-column:span 3; }
+.bento-label { font-size:13px; color:var(--muted); }
+.bento-card p { margin:8px 0 24px; font:500 clamp(24px,2.3vw,30px)/1.15 var(--display); letter-spacing:-.01em; }
+.bento-card img { display:block; width:100%; height:auto; margin-top:auto; border-radius:10px 10px 0 0; }
+@media(hover:hover) and (pointer:fine) { .bento-card:hover { background:#211c29; border-color:#dcc9ed3d; } }
+.bento-more { display:flex; align-items:center; gap:10px; width:fit-content; min-height:44px; margin-top:20px; font-size:14px; color:#d5bedf; }
+.bento-more svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; }
+
+@media(max-width:760px) {
+ .wordmark-home .opening { padding-top:96px; min-height:0; display:block; margin-bottom:48px; }
+ .bento-grid { grid-template-columns:1fr; }
+ .bento-card,.bento-card.wide { grid-column:1; }
+ .home-bento { margin-bottom:96px; }
+}
+@media(max-width:520px) {
+ .wordmark-home .site-header { position:absolute; top:12px; padding-inline:12px; }
+ .wordmark-home .navigation { min-height:0; padding:4px 8px; border:1px solid #1f172612; border-radius:16px; background:#fffffff2; }
+ .wordmark-home .navigation.has-mobile-menu .nav-links { background:transparent; }
+ .wordmark-home .opening { padding-top:96px; }
+ .hero-tagline { font-size:24px; }
+}
+@media(prefers-reduced-motion:reduce) { .bento-card { transition:none; } }

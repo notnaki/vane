@@ -148,3 +148,20 @@
  .download-product-icon { width:96px; height:96px; margin-bottom:24px; }
  .download-card h1,.install-steps h2 { font-size:34px; }
 }
+
+/* Floating pill navigation, shared by every page. */
+@media(min-width:521px) {
+ .site-header { position:sticky; top:16px; z-index:20; width:fit-content; max-width:calc(100% - 32px); margin:16px auto 0; padding:0; }
+ .navigation { min-height:0; gap:4px; padding:6px; border:1px solid #f2e9fa1f; border-radius:16px; background:#1b1521d9; -webkit-backdrop-filter:blur(18px) saturate(1.4); backdrop-filter:blur(18px) saturate(1.4); box-shadow:0 10px 30px #06040a40; }
+ .navigation .brand { min-width:40px; min-height:40px; justify-content:center; padding:0 6px; }
+ .navigation .brand span { font-size:17px; }
+ .nav-links { gap:2px; margin:0 4px; }
+ .navigation .nav-links a { min-height:40px; padding:0 12px; border-radius:10px; font-size:14px; text-decoration:none!important; }
+ .navigation .nav-links a:hover { background:#f2e9fa14; }
+ .navigation .nav-links a[aria-current='page'] { background:#f2e9fa1c; color:var(--foreground); }
+ .site-search-trigger { min-height:40px; padding:0 10px; border-radius:10px; }
+ .site-search-trigger:hover { background:#f2e9fa14; }
+ .nav-download { min-height:40px; gap:10px; padding:0 14px; border-radius:11px; background:#e4d7ef; color:#2a1e34; font-weight:500; }
+ .nav-download:hover { background:#f2e7fa; }
+ .inner-page main { padding-top:40px; }
+}
