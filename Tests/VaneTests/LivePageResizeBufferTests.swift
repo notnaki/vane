@@ -56,6 +56,36 @@ import XCTest
         return paints.removeFirst()
     }
 
+    func testExactLibraryGrowthPublishesPaintedProgressWhileNewerInputWaits() throws {
+        let f = Fixture(); defer { f.close() }
+        let owner = UUID()
+        f.host.libraryNavigationPaintOwner = owner
+        var paints: [@MainActor @Sendable () -> Void] = []
+        var accepted: [CGFloat] = []
+        let buffer = try XCTUnwrap(LivePageResizeBuffer(window: f.window, axes: NSSize(width: 1, height: 0),
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in },
+            navigation: .init(owner: owner, leading: 100, exactRequests: true), apply: { _, leading in
+                guard let leading else { return }
+                accepted.append(leading)
+                f.host.setFrameSize(NSSize(width: 700 - leading, height: 400))
+            }))
+        defer { buffer.cancel() }
+        buffer.start(); nextPaint(&paints)()
+        XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: 90))
+        XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: 80))
+        XCTAssertTrue(accepted.isEmpty, "Growth must wait for its own paint")
+        nextPaint(&paints)()
+        XCTAssertEqual(accepted, [90], "An acknowledged viewport must advance the clip even when newer growth is pending")
+        XCTAssertEqual(f.host.bounds.width, 610)
+        XCTAssertTrue(buffer.isPreparing)
+        // Reverse past the in-flight 620pt viewport. Its late acknowledgment
+        // must not pull the clip back toward the obsolete expansion request.
+        XCTAssertTrue(buffer.request(frame: f.window.frame, sidebarWidth: 95))
+        nextPaint(&paints)()
+        XCTAssertEqual(accepted.last, 95)
+        XCTAssertFalse(accepted.contains(80), "Obsolete painted growth must not reverse the current input")
+    }
+
     func testShrinkingLibraryViewportDoesNotRetainAWholeResponsiveColumnOutsideTheCard() throws {
         let f = Fixture(); defer { f.close() }
         let owner = UUID()

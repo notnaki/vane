@@ -221,6 +221,7 @@ struct LivePageResizeAnchor {
     private var active = true
     private var ending = false
     private var exactPaint = false
+    private var preparedRequest: Request?
     private var applying = false
     private var driving = false
     private var driveAgain = false
@@ -635,26 +636,27 @@ struct LivePageResizeAnchor {
         }
     }
 
-    private func publish() {
+    private func publish(_ request: Request? = nil) {
         guard !applying else { return }
-        if let published, published.frame == latest.frame, published.sidebar == latest.sidebar { return }
+        let request = request ?? latest
+        if let published, published.frame == request.frame, published.sidebar == request.sidebar { return }
         // Native frame proposals can outpace the compositor. Keep every input
         // for coverage/velocity, but install only the latest covered geometry at
         // a display boundary. Release drains synchronously without another tick.
         guard frameDriver == nil || ending || publicationAllowed else { return }
         publicationAllowed = false
-        published = latest
+        published = request
 #if DEBUG
-        ResizeTimingDiagnostics.record("buffer.publish.begin", width: latest.frame.width, height: latest.sidebar)
+        ResizeTimingDiagnostics.record("buffer.publish.begin", width: request.frame.width, height: request.sidebar)
         trace("buffer.publish.begin")
 #endif
         applying = true
-        expectedFrame = latest.frame
-        apply(latest.frame, latest.sidebar)
+        expectedFrame = request.frame
+        apply(request.frame, request.sidebar)
         pages.forEach { $0.reanchor() }
         applying = false
 #if DEBUG
-        ResizeTimingDiagnostics.record("buffer.publish.end", width: window?.frame.width, height: latest.sidebar)
+        ResizeTimingDiagnostics.record("buffer.publish.end", width: window?.frame.width, height: request.sidebar)
         trace("buffer.publish.end")
 #endif
     }
@@ -764,6 +766,7 @@ struct LivePageResizeAnchor {
         generation = UUID()
         let token = generation
         exactPaint = exact && targets == desired
+        preparedRequest = exactPaint ? latest : nil
         guard targets.allSatisfy({ $0.width > 0 && $0.height > 0 && $0.width.isFinite && $0.height.isFinite }) else { cancel(); return }
         pendingPaints = Set(pages.map { ObjectIdentifier($0.web) })
         pendingStyleReplies = pendingPaints
@@ -829,6 +832,18 @@ struct LivePageResizeAnchor {
             trace("buffer.paint.acknowledged", token: token, page: page)
 #endif
             if covered(sizes(latest)) { publish() }
+            else if stagesExactNavigation, !ending, let preparedRequest,
+                    preparedRequest.frame == latest.frame,
+                    let accepted = published?.sidebar, let ready = preparedRequest.sidebar,
+                    let requested = latest.sidebar,
+                    ready >= min(accepted, requested), ready <= max(accepted, requested),
+                    covered(sizes(preparedRequest)) {
+                // Continuous input can outrun exact paint. Advance through the
+                // acknowledged request instead of starving every intermediate
+                // frame while waiting for the ever-newer endpoint. A reversal
+                // cannot publish an obsolete request beyond the latest input.
+                publish(preparedRequest)
+            }
         }
 #if DEBUG
         ResizeTimingDiagnostics.record("buffer.presentation.groupClosed")

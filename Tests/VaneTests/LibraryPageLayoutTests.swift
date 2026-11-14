@@ -61,6 +61,28 @@ import XCTest
     }
 
     private func checkDocumentCardBounds(animated: Bool, findOpen: Bool, split: Bool, floating: Bool) async throws {
+#if DEBUG
+        let traceLayout = ProcessInfo.processInfo.environment["VANE_LIBRARY_LAYOUT_TRACE"] == "1"
+        let previousSink = ResizeTimingDiagnostics.stateSink
+        var layoutEvents: [String] = []
+        if traceLayout {
+            ResizeTimingDiagnostics.stateSink = { event, time, fields in
+                let keys = ["buffer", "requestedSidebar", "publishedSidebar", "pending", "ending", "active",
+                            "page.0.desired", "page.0.prepared", "page.0.painted", "page.0.visible",
+                            "page.0.parentBounds", "page.1.desired", "page.1.prepared", "page.1.painted",
+                            "page.1.visible", "page.1.parentBounds"]
+                let values = keys.compactMap { key in fields[key].map { "\(key)=\($0)" } }.joined(separator: " ")
+                layoutEvents.append("LIBRARY_LAYOUT t=\(time) event=\(event) \(values)")
+                if layoutEvents.count > 120 { layoutEvents.removeFirst() }
+            }
+        }
+        defer {
+            if traceLayout {
+                ResizeTimingDiagnostics.stateSink = previousSink
+                layoutEvents.forEach { print($0) }
+            }
+        }
+#endif
         let store = TabStore(isPrivate: true, session: [])
         let tab = store.newBlankTab(loading: URL(string: "about:blank"))
         store.sidebarShown = !floating
