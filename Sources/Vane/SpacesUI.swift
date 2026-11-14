@@ -535,6 +535,16 @@ private struct SpaceStripAnchor: NSViewRepresentable {
     final class Anchor: NSView {
         var readinessScope: SidebarNativeReadinessScope?
         var readinessOwnerID: UUID?
+        #if DEBUG
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            ResizeTimingDiagnostics.recordState("profile.anchor.window", fields: [
+                "anchor": String(describing: ObjectIdentifier(self)),
+                "window": window.map { String($0.windowNumber) } ?? "nil",
+                "parent": superview.map { String(describing: ObjectIdentifier($0)) } ?? "nil"
+            ])
+        }
+        #endif
         func setReadinessScope(_ next: SidebarNativeReadinessScope?, sections: [String: [String]]? = nil,
                                populationOwnerID: UUID? = nil) {
             if readinessScope == next, readinessOwnerID == populationOwnerID {
