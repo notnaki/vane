@@ -1,4 +1,4 @@
-name: Public profile observer delivery diagnosis
+name: Public current-owner early profile oracle preflight
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -8,13 +8,15 @@ env:
   VANE_EXPERIMENT_SIDEBAR_HOST: '0'
   VANE_LIBRARY_PAINT_TRACE: '0'
   VANE_EXPECTED_TESTS: |
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
     VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
-  VANE_CANDIDATE_SHA: f79489164756a6f2da8085c1b6930e9ff72b0fa3
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/(testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows)$'
+  VANE_CANDIDATE_SHA: 993a3bcbd6d211aad187f8d6c27e307b61e19e3d
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows))$'
 jobs:
   diagnostic:
-    name: Exact first visit and reverse unchanged clock observations
+    name: Exact original four profile acceptances
     runs-on: macos-26
     timeout-minutes: 45
     steps:

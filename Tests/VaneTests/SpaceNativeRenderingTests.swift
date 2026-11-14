@@ -3,19 +3,6 @@ import SwiftUI
 import XCTest
 @testable import vane
 
-// Temporary passive clock evidence; no view reads or actions occur in its timer.
-@MainActor private final class ProfileObservationClockProbe {
-    let start = CACurrentMediaTime()
-    var nativeAt: TimeInterval?
-    var taskAt: TimeInterval?
-    var sampleAt: TimeInterval?
-    var polls: [TimeInterval] = []
-    var surface = "not sampled"
-    var summary: String {
-        "native_ms=\(String(describing: nativeAt.map { ($0 - start) * 1000 })) task_ms=\(String(describing: taskAt.map { ($0 - start) * 1000 })) sample_ms=\(String(describing: sampleAt.map { ($0 - start) * 1000 })) polls_ms=\(polls.map { ($0 - start) * 1000 }) \(surface)"
-    }
-}
-
 @MainActor final class SpaceNativeRenderingTests: XCTestCase {
     private func fixture(floatingWindow: Bool = false, coloured: Bool = false, defaultColours: Bool = false, activateWindow: Bool = true, registerTeardown: Bool = true) throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
         TestEnvironment.prepare()
@@ -1151,21 +1138,13 @@ import XCTest
             abs(slide.offset - heldDrag) < 0.125 && slide.outgoing.layer?.presentation() != nil
         }
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
-        let observerClock = ProfileObservationClockProbe()
-        let nativeWake = Timer(timeInterval: 0.02, repeats: false) { _ in
-            MainActor.assumeIsolated { observerClock.nativeAt = CACurrentMediaTime() }
-        }
-        RunLoop.main.add(nativeWake, forMode: .common)
-        defer { nativeWake.invalidate(); print("PROFILE_OBSERVER_CLOCK reverse \(observerClock.summary)") }
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
         try await compatibilityWait {
-            if observerClock.polls.count < 8 { observerClock.polls.append(CACurrentMediaTime()) }
             return slide.isActive && abs(slide.offset) > width * 0.45 && abs(slide.offset) < width * 0.8
                 && TabStore.all.first { $0.window === window }?.currentSpaceID == target.id
                 && slide.outgoing.layer?.animation(forKey: "space-position") != nil
         }
-        observerClock.taskAt = CACurrentMediaTime()
         XCTAssertEqual(TabStore.all.first { $0.window === window }?.currentSpaceID, target.id)
         let originalRows = slide.outgoing
         let presentedX = try XCTUnwrap(originalRows.layer?.presentation()).frame.minX
@@ -1837,7 +1816,8 @@ import XCTest
                   NSApp.modalWindow == nil, window.attachedSheet == nil,
                   sourcePage.window === window, !sourcePage.isHiddenOrHasHiddenAncestor,
                   let anchor = source.spaceGesture.stripView, anchor.window === window,
-                  let surface = self.colourSurface(in: try XCTUnwrap(window.contentView)),
+                  let surface = source.spaceGesture.groundSurface,
+                  surface.window === window, !surface.isHiddenOrHasHiddenAncestor,
                   surface.base.presentation() != nil,
                   let presented = try? self.firstColour(of: surface, presented: true),
                   let model = try? self.firstColour(of: surface),
@@ -1862,14 +1842,7 @@ import XCTest
         let slide = try XCTUnwrap(host.spaceSlide)
         XCTAssertTrue(source.window === window, "Finger tracking must keep the outgoing page")
         monitor.land(1, to: second, width: fixtureSidebarWidth(in: source), store: source, duration: 0.8)
-        let observerClock = ProfileObservationClockProbe()
-        let nativeWake = Timer(timeInterval: 0.1, repeats: false) { _ in
-            MainActor.assumeIsolated { observerClock.nativeAt = CACurrentMediaTime() }
-        }
-        RunLoop.main.add(nativeWake, forMode: .common)
-        defer { nativeWake.invalidate(); print("PROFILE_OBSERVER_CLOCK cached=\(cached) \(observerClock.summary)") }
         try await Task.sleep(for: .milliseconds(100))
-        observerClock.taskAt = CACurrentMediaTime()
         let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
         XCTAssertEqual(arriving.profileID, secondProfile.id,
                        "Profile activation must not wait for the sidebar animation to finish")
@@ -1893,10 +1866,14 @@ import XCTest
         } else {
             XCTFail("Page geometry requires the destination page and host in the admitted window")
         }
-        let surface = try XCTUnwrap(colourSurface(in: host))
+        // Parked profile roots remain mounted; traversal order is not paint ownership.
+        // Read the actual arriving wash without waiting for its colour or progress.
+        let surface = try XCTUnwrap(arriving.spaceGesture.groundSurface)
+        XCTAssertTrue(surface.window === window && surface.isDescendant(of: host),
+                      "The sampled wash must belong to the arriving profile in this window")
+        XCTAssertFalse(surface.isHiddenOrHasHiddenAncestor,
+                       "The early colour sample must inspect the drawn destination wash")
         let colour = try firstColour(of: surface, presented: true)
-        observerClock.sampleAt = CACurrentMediaTime()
-        observerClock.surface = "surfaceHidden=\(surface.isHiddenOrHasHiddenAncestor) surfaceIsArriving=\(surface === arriving.spaceGesture.groundSurface)"
         XCTAssertGreaterThan(colour.redComponent, 0.1,
                              "The background must continue blending after the early profile handoff")
         XCTAssertTrue(host.spaceSlide === slide && slide.isActive,
