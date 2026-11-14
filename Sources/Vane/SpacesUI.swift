@@ -1614,7 +1614,7 @@ private struct SpaceSwipe: ViewModifier {
             if let window, let arriving = TabStore.all.first(where: { $0.window === window }) {
                 (window.contentView as? BrowserWindowHost)?.spaceSlide?.attach(arriving)
             }
-            rebuild()
+            // Windows.hop already rebuilt the menu for the finalized destination.
             return false
         }
         if store.spaceGesture.outgoing == nil, let origin = store.swipeSpace {
@@ -2065,7 +2065,7 @@ private struct SpaceSwipe: ViewModifier {
                         return
                     }
                     host.layoutDisplayedProfile()
-                    host.displayDisplayedProfile()
+                    window.displayIfNeeded()
                     CATransaction.flush()
                 }
             } else {

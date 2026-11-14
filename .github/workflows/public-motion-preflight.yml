@@ -1,4 +1,4 @@
-name: Public actual profile page route diagnosis
+name: Public minimal profile hop and download qualification
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
@@ -8,13 +8,23 @@ env:
   VANE_EXPERIMENT_SIDEBAR_HOST: '0'
   VANE_LIBRARY_PAINT_TRACE: '0'
   VANE_EXPECTED_TESTS: |
+    VaneTests.DownloadFeedbackTests/testBrowserOnlyMeasuresDownloadAnchorsWhileFeedbackIsVisible
+    VaneTests.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithBatterySaver
+    VaneTests.DownloadFeedbackTests/testHiddenSidebarRendersFeedbackAndDismissesWithAnimation
+    VaneTests.DownloadFeedbackTests/testHiddenSidebarGetsVisibleDownloadTargetInsidePage
+    VaneTests.DownloadFeedbackTests/testVisibleSidebarUsesActualLibraryTarget
+    VaneTests.DownloadFeedbackTests/testFeedbackStaysInOriginWindowAndPrivateDownloadsStayPrivate
+    VaneTests.DownloadFeedbackTests/testFastConsecutiveStartsCannotBeLandedOrDismissedByOlderAnimation
+    VaneTests.DownloadFeedbackTests/testReducedMotionShowsFileIconImmediatelyAndDetachedOriginCannotMatch
     VaneTests.SpaceNativeRenderingTests/testCachedProfileChangesPageAtStartOfNativeLanding
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
+    VaneTests.SpaceNativeRenderingTests/testFirstProfileVisitChangesPageAtStartOfNativeLanding
     VaneTests.SpaceNativeRenderingTests/testReverseProfileSwipeTakesOverTheSamePresentedNativeRows
-  VANE_CANDIDATE_SHA: 2a8dc169325e11100857dc43dbec2173513236ba
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows)$'
+  VANE_CANDIDATE_SHA: 17dd878121c358803995ffe0277191baa63f9d16
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.](DownloadFeedbackTests/.*|SpaceNativeRenderingTests/(testCachedProfileChangesPageAtStartOfNativeLanding|testCachedProfileColourStaysContinuousAcrossRepeatedSwipes|testFirstProfileVisitChangesPageAtStartOfNativeLanding|testReverseProfileSwipeTakesOverTheSamePresentedNativeRows))$'
 jobs:
   diagnostic:
-    name: Exact cached and reverse profile route diagnosis
+    name: Exact original four profiles and eight download controls
     runs-on: macos-26
     timeout-minutes: 45
     steps:
