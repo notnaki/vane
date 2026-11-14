@@ -57,7 +57,9 @@ extension EnvironmentValues {
         self.endLeading = endLeading
         requestedLeading = targetLeading
         self.currentLeading = currentLeading
-        schedule()
+        // Ordinary window layout also updates this bridge. An idle Library has
+        // no paint work and must not enqueue another main-thread turn per size.
+        if requestedProgress != progress || buffer != nil || arrival != nil { schedule() }
     }
 
     private func schedule() {
