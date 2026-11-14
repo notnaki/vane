@@ -17,6 +17,15 @@ extension EnvironmentValues {
 
 @MainActor final class LibraryNavigationPaint: ObservableObject {
     let owner = UUID()
+    private lazy var mountReceiptSource = LibraryPageMountReceiptSource(paint: self)
+
+    func pageMountReceiptSource(store: TabStore?, gesture: LibraryGesture,
+                                monitor: LibrarySwipeMonitor) -> LibraryPageMountReceiptSource? {
+        guard let store else { return nil }
+        mountReceiptSource.bind(store: store, gesture: gesture, monitor: monitor)
+        return mountReceiptSource
+    }
+
     @Published private(set) var progress: CGFloat
     private var requested: CGFloat
     private var submitted: CGFloat
