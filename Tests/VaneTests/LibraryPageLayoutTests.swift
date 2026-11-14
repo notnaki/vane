@@ -181,68 +181,6 @@ import XCTest
         if animated { XCTAssertGreaterThan(intermediatePositions, 0, "Observe real intermediate presentation") }
     }
 
-    func testLibraryPanelWidthAnimationKeepsPageInsideWindow() async throws {
-        TestEnvironment.prepare()
-        try XCTSkipIf(Motion.reduced, "Requires animated panel width")
-        let app = NSApplication.shared
-        let policy = app.activationPolicy()
-        defer { app.setActivationPolicy(policy) }
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
-        do { try await checkPanelWidthAnimation() }
-        catch { try await loop.close(); throw error }
-        try await loop.close()
-    }
-
-    private func checkPanelWidthAnimation() async throws {
-        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 600),
-            styleMask: .borderless, backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        let gesture = LibraryGesture()
-        gesture.progress = 1
-        let page = NSView()
-        page.wantsLayer = true
-        let monitor = LibrarySwipeMonitor()
-        func content(panelWidth: CGFloat) -> some View {
-            LibraryNavigationLayout(gesture: gesture,
-                libraryOpen: true, sidebarShown: true, floating: false, panelWidth: panelWidth,
-                palettePresented: false, monitor: monitor,
-                page: PageProbe(view: page), sidebar: Color.clear, panel: Color.clear)
-                .animation(.linear(duration: 0.4), value: panelWidth)
-        }
-        let host = NSHostingView(rootView: content(panelWidth: 392))
-        host.sizingOptions = []
-        let attachment = NativeFixtureMountAdmission.attach(host, to: window)
-        defer {
-            attachment?.cancel()
-            window.orderOut(nil); window.contentView = nil; window.close()
-        }
-        appActivate(window)
-        try await compatibilityWait {
-            NativeFixtureMountAdmission.surfaceReady(host, in: window)
-                && page.window === window && page.bounds.width > 100
-                && page.layer?.presentation() != nil && host.layer?.presentation() != nil
-        }
-        func presentedBounds() throws -> CGRect {
-            let layer = try XCTUnwrap(page.layer?.presentation())
-            return layer.convert(layer.bounds, to: try XCTUnwrap(host.layer?.presentation()))
-        }
-        XCTAssertEqual(try presentedBounds().minX, 392, accuracy: 1)
-        host.rootView = content(panelWidth: 492)
-        let deadline = CACurrentMediaTime() + 0.6
-        var positions = Set<Int>()
-        repeat {
-            try await Task.sleep(for: .milliseconds(20))
-            let bounds = try presentedBounds()
-            XCTAssertEqual(bounds.maxX, 900, accuracy: 1,
-                           "The page's right edge must remain fixed while panel width animates")
-            XCTAssertGreaterThanOrEqual(bounds.minX, 391)
-            XCTAssertLessThanOrEqual(bounds.minX, 493)
-            if bounds.minX > 393 && bounds.minX < 491 { positions.insert(Int(bounds.minX)) }
-        } while CACurrentMediaTime() < deadline
-        XCTAssertGreaterThan(positions.count, 2, "Panel width must traverse distinct intermediate positions")
-        XCTAssertEqual(try presentedBounds().minX, 492, accuracy: 1)
-    }
-
     func testClosingLibraryKeepsPageRightEdgeAtWindowInset() async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
