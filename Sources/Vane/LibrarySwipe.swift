@@ -54,6 +54,34 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
     }
 }
 
+/// The window supplies this viewport's extent. Navigation needs no intrinsic
+/// size or descendant alignment guides to position its three full-height surfaces.
+private struct LibraryNavigationPlacement: Layout {
+    let size: CGSize
+    var leading: CGFloat
+
+    var animatableData: CGFloat {
+        get { leading }
+        set { leading = newValue }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize { size }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews[0].place(at: CGPoint(x: bounds.minX + leading, y: bounds.minY), anchor: .topLeading,
+                          proposal: ProposedViewSize(width: max(0, bounds.width - leading), height: bounds.height))
+        for rail in subviews.dropFirst() {
+            rail.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
+        }
+    }
+
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect,
+                           proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect,
+                           proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+}
+
 /// Animation samples request a geometry phase. One accepted phase drives the
 /// card and both rails after the exact document viewport covers that phase.
 private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>: View, @preconcurrency Animatable {
@@ -96,9 +124,8 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
     var body: some View {
         let progress = min(1, max(0, paint.progress))
         let leading = pageLeading(at: progress)
-        ZStack(alignment: .leading) {
-            HStack(spacing: 0) {
-                Color.clear.frame(width: leading)
+        GeometryReader { viewport in
+            LibraryNavigationPlacement(size: viewport.size, leading: leading) {
                 // Resolve navigation geometry once per surface, rather than per leaf.
                 page.environment(\.libraryNavigationPaintOwner, paint.owner)
                     .environment(\.libraryPageLeadingInset, 0)
@@ -112,36 +139,35 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
                             targetLeading: pageLeading(at: targetProgress), currentLeading: leading)
                             .frame(width: 0, height: 0)
                     }
+                    .disabled(palettePresented)
+                    .accessibilityHidden(palettePresented)
+                // Adjacent surfaces follow the same translation, clipped at the page seam.
+                sidebar
+                    .geometryGroup()
+                    .offset(x: panelWidth * progress)
+                    .frame(width: (sidebarWidth + (floating ? 2 * Look.floatingSidebarGap : 0))
+                        * (1 - progress) + panelWidth * progress, alignment: .leading)
+                    .mask {
+                        Rectangle().padding(floating ? -2 * Look.barShadowRadius * (1 - progress) : 0)
+                    }
+                    .zIndex(1)
+                // Keep the panel laid out offscreen. Mounting its search field and list
+                // during the first directional sample otherwise stalls that frame.
+                panel
+                    .frame(width: panelWidth)
+                    .overlay(alignment: .leading) {
+                        LibrarySwipePosition(monitor: monitor)
+                            .frame(width: 1, height: 1)
+                            .allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                    .geometryGroup()
+                    .offset(x: -panelWidth * (1 - progress))
+                    .opacity(libraryOpen || gesture.progress != nil ? 1 : 0)
+                    .disabled(palettePresented || (!libraryOpen && gesture.progress == nil))
+                    .allowsHitTesting(libraryOpen && !palettePresented)
+                    .accessibilityHidden(!libraryOpen || palettePresented)
+                    .zIndex(1)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .disabled(palettePresented)
-            .accessibilityHidden(palettePresented)
-            // Adjacent surfaces follow the same translation, clipped at the page seam.
-            sidebar
-                .geometryGroup()
-                .offset(x: panelWidth * progress)
-                .frame(width: (sidebarWidth + (floating ? 2 * Look.floatingSidebarGap : 0))
-                    * (1 - progress) + panelWidth * progress, alignment: .leading)
-                .mask {
-                    Rectangle().padding(floating ? -2 * Look.barShadowRadius * (1 - progress) : 0)
-                }
-                .zIndex(1)
-            // Keep the panel laid out offscreen. Mounting its search field and list
-            // during the first directional sample otherwise stalls that frame.
-            panel
-                .frame(width: panelWidth)
-                .overlay(alignment: .leading) {
-                    LibrarySwipePosition(monitor: monitor)
-                        .frame(width: 1, height: 1)
-                        .allowsHitTesting(false).accessibilityHidden(true)
-                }
-                .geometryGroup()
-                .offset(x: -panelWidth * (1 - progress))
-                .opacity(libraryOpen || gesture.progress != nil ? 1 : 0)
-                .disabled(palettePresented || (!libraryOpen && gesture.progress == nil))
-                .allowsHitTesting(libraryOpen && !palettePresented)
-                .accessibilityHidden(!libraryOpen || palettePresented)
-                .zIndex(1)
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .onAppear { gesture.paint = paint }
