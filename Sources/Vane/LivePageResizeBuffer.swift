@@ -42,6 +42,13 @@ struct LivePageResizeAnchor {
 /// A drag suspends parent-driven page sizing behind a native host clip. Painted lookahead lets pointer geometry
 /// move independently of WebKit's presentation clock; only uncovered growth waits.
 @MainActor final class LivePageResizeBuffer {
+    struct Navigation {
+        let owner: UUID
+        let leading: CGFloat
+        var exactRequests = false
+        var layoutLeading: (@MainActor () -> CGFloat?)? = nil
+    }
+
     typealias FrameDriver = (@escaping @MainActor () -> Void) -> (@MainActor () -> Void)
 
     @MainActor private final class Page {
@@ -56,12 +63,14 @@ struct LivePageResizeAnchor {
         let hostClip: Bool
         let layout: PageResizeLayout
         let fraction: NSSize
+        let navigation: Navigation?
         var painted: NSSize
         var prepared: NSSize
         var restored = false
         private var stylePreparation: UUID?
 
-        init(web: WKWebView, host: WebHost) {
+        init(web: WKWebView, host: WebHost, navigation: Navigation? = nil) {
+            self.navigation = navigation
             self.web = web
             self.host = host
             originalSize = web.frame.size
@@ -82,17 +91,19 @@ struct LivePageResizeAnchor {
             return web.superview === host && host.web === web && !host.offscreen
                 && !web.isHiddenOrHasHiddenAncestor && web.frame == expectedFrame && host.isFlipped == anchor.flipped
                 && web.autoresizingMask.isEmpty && web.autoresizesSubviews == autoSubviews && host.clipsToBounds
-                && host.resizeFraction == fraction && host.resizeLayout.enabled
+                && host.resizeFraction == fraction
+                && (navigation == nil ? host.resizeLayout.enabled : host.resizeLayout.permitsLibraryNavigation)
                 && host.resizeLayout.librarySection == layout.librarySection
                 && host.resizeLayout.spaces == layout.spaces
                 && host.resizeLayout.isPrivate == layout.isPrivate
+                && (navigation == nil || host.libraryNavigationPaintOwner == navigation?.owner)
         }
 
         func size(root: NSSize, baseline: NSSize, sidebar: CGFloat?) -> NSSize {
             var nextLayout = layout
             if let sidebar { nextLayout.sidebarWidth = sidebar }
-            let dx = root.width - baseline.width + layout.leadingWidth(at: baseline.width)
-                - nextLayout.leadingWidth(at: root.width)
+            let dx = root.width - baseline.width + (navigation.map { $0.leading - (sidebar ?? $0.leading) }
+                ?? (layout.leadingWidth(at: baseline.width) - nextLayout.leadingWidth(at: root.width)))
             return NSSize(width: originalSize.width + (mask.contains(.width) ? dx * fraction.width : 0),
                           height: originalSize.height + (mask.contains(.height) ? (root.height - baseline.height) * fraction.height : 0))
         }
@@ -189,6 +200,7 @@ struct LivePageResizeAnchor {
     private let presenter: WindowResizePreparation.Presenter?
     private let deadline: WindowResizePreparation.Deadline?
     private let now: @MainActor () -> TimeInterval
+    private let navigation: Navigation?
     private let frameDriver: FrameDriver?
     private var stopFrames: (@MainActor () -> Void)?
     private var inPublicationFrame = false
@@ -198,6 +210,8 @@ struct LivePageResizeAnchor {
     private var lastTime: TimeInterval
     private var sampledVelocity = false
     private var lead = NSSize(width: 48, height: 48)
+    private var shrinkingWidth = false
+    private var shrinkingHeight = false
     private var generation = UUID()
     private var pendingPaints = Set<ObjectIdentifier>()
     private var pendingStyleReplies = Set<ObjectIdentifier>()
@@ -208,6 +222,7 @@ struct LivePageResizeAnchor {
     private var active = true
     private var ending = false
     private var exactPaint = false
+    private var preparedRequest: Request?
     private var applying = false
     private var driving = false
     private var driveAgain = false
@@ -226,7 +241,14 @@ struct LivePageResizeAnchor {
     private var submittedSidebarSizes: [NSSize]?
     private var submittedSidebarFloor: [NSSize]?
     private var submittedSidebarRevisions: [UInt]?
-    var isPreparing: Bool { active && (ending || !pendingPaints.isEmpty) }
+    private var stagesExactNavigation: Bool { navigation?.exactRequests == true }
+    var isPreparing: Bool {
+        active && (ending || !pendingPaints.isEmpty || (stagesExactNavigation &&
+            (published?.sidebar != latest.sidebar ||
+             (navigation?.layoutLeading != nil && !navigationLayoutReached(latest)) || zip(pages, sizes(latest)).contains {
+                $0.prepared != $1 || $0.painted != $1 || !$0.parentReached($1)
+            } || !navigationParentSizesMatch(nominalSizes(latest)))))
+    }
 
 #if DEBUG
     private func trace(_ event: String, token: UUID? = nil, page: ObjectIdentifier? = nil, sidebar: CGFloat? = nil) {
@@ -286,17 +308,23 @@ struct LivePageResizeAnchor {
           deadline: WindowResizePreparation.Deadline? = nil,
           now: @escaping @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
           frameDriver: FrameDriver? = nil,
+          navigation: Navigation? = nil,
           isCurrent: @escaping @MainActor () -> Bool = { true },
           apply: @escaping @MainActor (NSRect, CGFloat?) -> Void,
           completion: @escaping @MainActor () -> Void = {}) {
         guard window.isVisible, !window.styleMask.contains(.fullScreen), let root = window.contentView else { return nil }
-        var pages: [Page] = []
+        var candidates: [(host: WebHost, web: WKWebView)] = []
         var admitted = true
         func visit(_ view: NSView) {
             guard !view.isHiddenOrHasHiddenAncestor else { return }
             if let host = view as? WebHost {
+                if let navigation, host.libraryNavigationPaintOwner != navigation.owner { return }
                 guard !host.offscreen else { return }
-                guard host.resizeLayout.enabled else { admitted = false; return }
+                // A navigation request waits for an active native pointer resize.
+                // Native resize admission below retires the previous viewport owner.
+                if navigation != nil, host.pageResizeOwnershipWillChange != nil { admitted = false; return }
+                guard navigation == nil ? host.resizeLayout.enabled : host.resizeLayout.permitsLibraryNavigation
+                    else { admitted = false; return }
                 let visible = host.subviews.compactMap { $0 as? WKWebView }.filter { !$0.isHiddenOrHasHiddenAncestor }
                 guard !visible.isEmpty else { return }
                 // Docked inspector frontends are WKWebView siblings with their own
@@ -304,19 +332,26 @@ struct LivePageResizeAnchor {
                 guard visible.count == 1, let web = visible.first, host.web === web,
                       web.frame.width > 0, web.frame.height > 0,
                       web.responds(to: NSSelectorFromString("_doAfterNextPresentationUpdate:")) else { admitted = false; return }
-                pages.append(Page(web: web, host: host))
+                candidates.append((host, web))
                 return
             }
             view.subviews.forEach(visit)
         }
         visit(root)
-        guard admitted, !pages.isEmpty else { return nil }
+        guard admitted, !candidates.isEmpty else { return nil }
+        if navigation == nil { candidates.forEach { $0.host.pageResizeOwnershipWillChange?() } }
+        guard window.contentView === root, candidates.allSatisfy({
+            $0.host.web === $0.web && $0.web.superview === $0.host && !$0.host.isHiddenOrHasHiddenAncestor
+        }) else { return nil }
+        // Capture masks and frames only after the previous owner has restored
+        // them. Otherwise a window drag inherits Library's temporary empty mask.
+        let pages = candidates.map { Page(web: $0.web, host: $0.host, navigation: navigation) }
         self.window = window
         self.root = root
         baselineFrame = window.frame
         baselineSize = root.bounds.size
         expectedFrame = window.frame
-        latest = Request(frame: window.frame, sidebar: nil)
+        latest = Request(frame: window.frame, sidebar: navigation?.leading)
         // The admitted baseline is already installed. Publishing its first
         // unchanged proposal would dirty the native window while WebKit is
         // preparing the initial buffer, without moving any visible geometry.
@@ -327,6 +362,7 @@ struct LivePageResizeAnchor {
         self.presenter = presenter
         self.deadline = deadline
         self.now = now
+        self.navigation = navigation
         self.frameDriver = frameDriver
         lastTime = now()
         self.isCurrent = isCurrent
@@ -376,7 +412,7 @@ struct LivePageResizeAnchor {
             }
         }
         if !ending { stopFrames = frameDriver? { [weak self] in self?.advancePublicationFrame() } }
-        prepare(exact: ending)
+        prepare(exact: ending || stagesExactNavigation)
     }
 
     /// True means this buffer owns the proposal, even if it needs more coverage.
@@ -408,10 +444,13 @@ struct LivePageResizeAnchor {
         let oldLeading = pages.first?.layout.leadingWidth(at: lastSize.width) ?? 0
         var layout = pages.first?.layout ?? PageResizeLayout()
         if let sidebarWidth { layout.sidebarWidth = sidebarWidth }
-        let oldSidebar = latest.sidebar.map { SidebarWidth.fitting($0, in: lastSize.width) } ?? oldLeading
-        let horizontal = size.width - lastSize.width + oldSidebar - layout.leadingWidth(at: size.width)
-        if horizontal != 0 { lead.width = min(192, max(48, abs(horizontal) / elapsed * 0.18)); axes.width = 1 }
-        if size.height != lastSize.height { lead.height = min(192, max(48, abs(size.height - lastSize.height) / elapsed * 0.18)); axes.height = 1 }
+        let oldSidebar = navigation.map { latest.sidebar ?? $0.leading }
+            ?? latest.sidebar.map { SidebarWidth.fitting($0, in: lastSize.width) } ?? oldLeading
+        let nextLeading = navigation.map { sidebarWidth ?? latest.sidebar ?? $0.leading }
+            ?? layout.leadingWidth(at: size.width)
+        let horizontal = size.width - lastSize.width + oldSidebar - nextLeading
+        if horizontal != 0 { shrinkingWidth = navigation != nil && horizontal < 0; lead.width = min(navigation == nil ? 192 : 64, max(48, abs(horizontal) / elapsed * 0.18)); axes.width = 1 }
+        if size.height != lastSize.height { shrinkingHeight = navigation != nil && size.height < lastSize.height; lead.height = min(192, max(48, abs(size.height - lastSize.height) / elapsed * 0.18)); axes.height = 1 }
         lastSize = size
         lastTime = now()
         latest = request
@@ -431,9 +470,31 @@ struct LivePageResizeAnchor {
         }
         guard active, !ending else { return }
         endpointCompletion = completion
+        // Exact Library requests already have their native parent acknowledgment.
+        // Retire a settled request without another root layout or paint round trip.
+        if stagesExactNavigation && !isPreparing {
+            complete(exact: true)
+            return
+        }
         ending = true
         stopPublicationFrames()
         if !started { start() }
+        // A paused Library clip is already installed and covered. Supersede
+        // lookahead with its exact native viewport immediately; waiting for the
+        // older paint would leave native sizing ahead after fingers stop.
+        if navigation != nil, ownsLayout, !pendingPaints.isEmpty, covered(sizes(latest)),
+           zip(pages, sizes(latest)).allSatisfy({ $0.parentReached($1) }) {
+            // Retire the obsolete generation before preparing the replacement.
+            // Its paint, style reply and deadline may still arrive afterwards;
+            // none can acknowledge or expire the exact viewport's generation.
+            generation = UUID()
+            deadlineRevision = UUID()
+            timer?.invalidate(); timer = nil
+            pendingPaints.removeAll()
+            pendingStyleReplies.removeAll()
+            styleReplyDeadline = nil
+            prepare(exact: true)
+        }
         drive()
     }
 
@@ -541,6 +602,7 @@ struct LivePageResizeAnchor {
         let rootWidth = viewportRoot(Request(frame: expectedFrame, sidebar: sidebar)).width
         var layout = page.layout
         layout.sidebarWidth = sidebar
+        if navigation != nil { return page.parentReached(target[index]) }
         return (afterEndingFlush || page.host?.resizeLayoutRevision != revisions[index])
             && page.parentReached(target[index])
             && page.host?.resizeLayout.leadingWidth(at: rootWidth) == layout.leadingWidth(at: rootWidth)
@@ -566,7 +628,36 @@ struct LivePageResizeAnchor {
     }
 
     private func sizes(_ request: Request) -> [NSSize] {
+        let desired = nominalSizes(request)
+        let visible = pages.map(\.currentVisibleSize)
+        guard desired != visible, published?.frame == request.frame,
+              published?.sidebar == request.sidebar, navigationParentSizesMatch(desired),
+              navigationLayoutReached(request) else { return desired }
+        // A split can distribute one point as114/114 rather than114.5/113.5.
+        // Its total extent must already match, as well as the installed page
+        // seam. Neither a stale pane nor a marker that arrived first is enough.
+        return visible
+    }
+
+    private func nominalSizes(_ request: Request) -> [NSSize] {
         pages.map { $0.size(root: viewportRoot(request), baseline: baselineSize, sidebar: request.sidebar) }
+    }
+
+    private func navigationParentSizesMatch(_ desired: [NSSize]) -> Bool {
+        var difference = NSSize.zero
+        for (page, size) in zip(pages, desired) {
+            guard page.parentReached(size) else { return false }
+            let visible = page.currentVisibleSize
+            difference.width += visible.width - size.width
+            difference.height += visible.height - size.height
+        }
+        return abs(difference.width) < 0.001 && abs(difference.height) < 0.001
+    }
+
+    private func navigationLayoutReached(_ request: Request) -> Bool {
+        guard stagesExactNavigation, let leading = request.sidebar,
+              let installed = navigation?.layoutLeading?() else { return false }
+        return abs(installed - leading) < 0.001
     }
 
     private func covered(_ sizes: [NSSize]) -> Bool {
@@ -576,26 +667,27 @@ struct LivePageResizeAnchor {
         }
     }
 
-    private func publish() {
+    private func publish(_ request: Request? = nil) {
         guard !applying else { return }
-        if let published, published.frame == latest.frame, published.sidebar == latest.sidebar { return }
+        let request = request ?? latest
+        if let published, published.frame == request.frame, published.sidebar == request.sidebar { return }
         // Native frame proposals can outpace the compositor. Keep every input
         // for coverage/velocity, but install only the latest covered geometry at
         // a display boundary. Release drains synchronously without another tick.
         guard frameDriver == nil || ending || publicationAllowed else { return }
         publicationAllowed = false
-        published = latest
+        published = request
 #if DEBUG
-        ResizeTimingDiagnostics.record("buffer.publish.begin", width: latest.frame.width, height: latest.sidebar)
+        ResizeTimingDiagnostics.record("buffer.publish.begin", width: request.frame.width, height: request.sidebar)
         trace("buffer.publish.begin")
 #endif
         applying = true
-        expectedFrame = latest.frame
-        apply(latest.frame, latest.sidebar)
+        expectedFrame = request.frame
+        apply(request.frame, request.sidebar)
         pages.forEach { $0.reanchor() }
         applying = false
 #if DEBUG
-        ResizeTimingDiagnostics.record("buffer.publish.end", width: window?.frame.width, height: latest.sidebar)
+        ResizeTimingDiagnostics.record("buffer.publish.end", width: window?.frame.width, height: request.sidebar)
         trace("buffer.publish.end")
 #endif
     }
@@ -626,6 +718,22 @@ struct LivePageResizeAnchor {
             guard active else { return }
             guard ownsLayout else { cancel(); return }
         }
+        // An older paint may still be pending after a covered Library shrink
+        // reaches its native parent. Retire that generation before trimming;
+        // its late paint/style/deadline cannot certify the replacement viewport.
+        if stagesExactNavigation, !ending, hasCoverage, !pendingPaints.isEmpty,
+           published?.frame == latest.frame, published?.sidebar == latest.sidebar,
+           navigationLayoutReached(latest), navigationParentSizesMatch(nominalSizes(latest)),
+           zip(pages, desired).contains(where: { $0.prepared != $1 }) {
+            generation = UUID()
+            deadlineRevision = UUID()
+            timer?.invalidate(); timer = nil
+            pendingPaints.removeAll()
+            pendingStyleReplies.removeAll()
+            styleReplyDeadline = nil
+            prepare(exact: true)
+            return
+        }
         guard pendingPaints.isEmpty else { return }
         if ending {
             let submittedParentIsLarger = submittedSidebarFloor.map { floor in
@@ -646,16 +754,34 @@ struct LivePageResizeAnchor {
             } else { prepare(exact: true) }
             return
         }
-        // Refill growth at half the adaptive lead. Shrink keeps useful painted
-        // coverage up to the absolute ceiling, then trims back to the target;
-        // trimming at the target itself repaints every small shrinking step.
+        if stagesExactNavigation {
+            // Shrink the visible parent under existing coverage before trimming
+            // its backing document. Growth is prepared at exactly the request.
+            guard zip(pages, desired).allSatisfy({
+                $0.currentVisibleSize.width <= $1.width + 0.001 &&
+                $0.currentVisibleSize.height <= $1.height + 0.001
+            }) else { return }
+            if zip(pages, desired).contains(where: { $0.prepared != $1 || $0.painted != $1 }) {
+                prepare(exact: true)
+            }
+            return
+        }
+        // Native window/sidebar resizing retains its original adaptive lookahead
+        // and submitted-parent floor contract. Only Library navigation trims
+        // a shrinking document to the smaller responsive-layout band.
         let needsRefill = zip(pages, desired).contains { page, size in
             let horizontal = page.mask.contains(.width) ? axes.width * lead.width * page.fraction.width : 0
             let vertical = page.mask.contains(.height) ? axes.height * lead.height * page.fraction.height : 0
-            return (horizontal > 0 && (page.painted.width - size.width < horizontal / 2
-                || page.painted.width - size.width > 192 * page.fraction.width + 0.001))
-                || (vertical > 0 && (page.painted.height - size.height < vertical / 2
-                    || page.painted.height - size.height > 192 * page.fraction.height + 0.001))
+            // A sidebar publication may still be waiting for SwiftUI's native
+            // parent update. Trimming to that future size would reflow the page
+            // twice while its actual clip has not moved at all.
+            let visible = page.currentVisibleSize
+            let dx = page.painted.width - (shrinkingWidth ? max(size.width, visible.width) : size.width)
+            let dy = page.painted.height - (shrinkingHeight ? max(size.height, visible.height) : size.height)
+            return (horizontal > 0 && (shrinkingWidth ? dx > 48 * page.fraction.width + 0.001
+                : dx < horizontal / 2 || dx > 192 * page.fraction.width + 0.001))
+                || (vertical > 0 && (shrinkingHeight ? dy > 48 * page.fraction.height + 0.001
+                : dy < vertical / 2 || dy > 192 * page.fraction.height + 0.001))
         }
         if needsRefill { prepare(exact: false) }
     }
@@ -673,9 +799,9 @@ struct LivePageResizeAnchor {
             // A mixed-axis proposal can wait for growth while its other axis
             // shrinks. Do not prepare a viewport smaller than the still-visible clip.
             return NSSize(width: max(submitted.width, page.currentVisibleSize.width,
-                                    size.width + (exact || !page.mask.contains(.width) ? 0 : axes.width * lead.width * page.fraction.width)),
+                                    size.width + (exact || !page.mask.contains(.width) || (navigation != nil && shrinkingWidth && !hasPresentedViewport) ? 0 : axes.width * (shrinkingWidth ? 24 : lead.width) * page.fraction.width)),
                           height: max(submitted.height, page.currentVisibleSize.height,
-                                     size.height + (exact || !page.mask.contains(.height) ? 0 : axes.height * lead.height * page.fraction.height)))
+                                     size.height + (exact || !page.mask.contains(.height) ? 0 : axes.height * (shrinkingHeight ? 24 : lead.height) * page.fraction.height)))
         }
         // Deferred native submissions can hold a larger floor through several
         // drag inputs. Repainting the same effective target cannot reduce it.
@@ -687,6 +813,7 @@ struct LivePageResizeAnchor {
         generation = UUID()
         let token = generation
         exactPaint = exact && targets == desired
+        preparedRequest = exactPaint ? latest : nil
         guard targets.allSatisfy({ $0.width > 0 && $0.height > 0 && $0.width.isFinite && $0.height.isFinite }) else { cancel(); return }
         pendingPaints = Set(pages.map { ObjectIdentifier($0.web) })
         pendingStyleReplies = pendingPaints
@@ -752,12 +879,24 @@ struct LivePageResizeAnchor {
             trace("buffer.paint.acknowledged", token: token, page: page)
 #endif
             if covered(sizes(latest)) { publish() }
+            else if stagesExactNavigation, !ending, let preparedRequest,
+                    preparedRequest.frame == latest.frame,
+                    let accepted = published?.sidebar, let ready = preparedRequest.sidebar,
+                    let requested = latest.sidebar,
+                    ready >= min(accepted, requested), ready <= max(accepted, requested),
+                    covered(sizes(preparedRequest)) {
+                // Continuous input can outrun exact paint. Advance through the
+                // acknowledged request instead of starving every intermediate
+                // frame while waiting for the ever-newer endpoint. A reversal
+                // cannot publish an obsolete request beyond the latest input.
+                publish(preparedRequest)
+            }
         }
 #if DEBUG
         ResizeTimingDiagnostics.record("buffer.presentation.groupClosed")
 #endif
         exactPresented = exactPaint
-        if exactPresented { flushFinalLayout() }
+        if exactPresented && (!stagesExactNavigation || ending) { flushFinalLayout() }
         drive()
 #if DEBUG
         ResizeTimingDiagnostics.record("buffer.presentation.drained")

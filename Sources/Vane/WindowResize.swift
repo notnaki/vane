@@ -30,6 +30,11 @@ struct PageResizeLayout: Sendable {
     var spaces = 0
     var isPrivate = false
     var enabled = true
+    // Library owns a moving page edge while native pointer resizing is excluded.
+    // Unspecified callers retain the existing resize permission, including its
+    // disabled state; only the production Library parent opts in separately.
+    var libraryNavigationEnabled: Bool? = nil
+    var permitsLibraryNavigation: Bool { libraryNavigationEnabled ?? enabled }
 
     /// Chrome stops depending on raw window width once both navigation columns
     /// fit. Keep publishing that stable value while the page continues resizing.

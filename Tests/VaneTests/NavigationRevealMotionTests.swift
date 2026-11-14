@@ -69,6 +69,14 @@ private struct NavigationRevealFixture: View {
     }
 
     func testEnabledAndDisabledNavigationKeepTheirSpacingThroughoutReveal() async throws {
+        try await exerciseReveal()
+    }
+
+    func testHiddenOwnerIsAdmittedBeforeSamplingNavigationReveal() async throws {
+        try await exerciseReveal(hideBeforeAdmission: true)
+    }
+
+    private func exerciseReveal(hideBeforeAdmission: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let previousPolicy = app.activationPolicy()
@@ -92,15 +100,29 @@ private struct NavigationRevealFixture: View {
             window.contentView = host
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            if hideBeforeAdmission { window.orderOut(nil) }
             defer { window.orderOut(nil); window.contentView = nil; window.close() }
+            var admitted = false
+            var admissionGlyphs: [CGFloat] = []
+            defer {
+                if !admitted {
+                    print("NAV_REVEAL_ADMISSION running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) owner=\(host.window === window) glyphs=\(admissionGlyphs)")
+                }
+            }
             try await compatibilityWait {
+                if NSApp.isHidden { NSApp.unhide(nil) }
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                if NSApp.keyWindow === window, !window.isKeyWindow { window.orderOut(nil) }
+                if NSApp.keyWindow !== window || !window.isKeyWindow || !window.isVisible { window.makeKeyAndOrderFront(nil) }
                 host.layoutSubtreeIfNeeded()
                 window.displayIfNeeded()
                 CATransaction.flush()
-                guard NSApp.isRunning && NSApp.isActive && window.isKeyWindow
+                guard NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
                     && window.occlusionState.contains(.visible) && host.window === window else { return false }
-                return try await self.glyphCenters(host).count == 3
+                admissionGlyphs = try await self.glyphCenters(host)
+                return admissionGlyphs.count == 3
             }
+            admitted = true
             let initial = try await glyphCenters(host)
             state.revealed = true
             var frames: [[CGFloat]] = []
