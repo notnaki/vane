@@ -1743,6 +1743,46 @@ import XCTest
         XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide)
     }
 
+    func testCachedProfileHopKeepsItsMountedScrollShell() async throws {
+        try await withFixtureApplicationLoop {
+            let manager = ProfileManager.shared
+            let previous = manager.active
+            let profiles = [self.fixtureProfile(named: "Cached shell source"),
+                            self.fixtureProfile(named: "Cached shell destination")]
+            let spaces = profiles.map { manager.createSpace(name: "Cached shell", in: $0.id) }
+            let source = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
+            let window = try XCTUnwrap(source.window)
+            window.animationBehavior = .none
+            defer {
+                self.retireProfileWindow(window)
+                profiles.forEach { _ = manager.delete($0.id) }
+                manager.active = previous
+            }
+            source.palette = nil
+            try await self.admitFixtureSidebar(source, window: window)
+            let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+            let anchor = try XCTUnwrap(source.spaceGesture.stripView)
+            let cachedRoot = try XCTUnwrap(host.subviews.first { anchor.isDescendant(of: $0) })
+            let scroll = try XCTUnwrap(SidebarSectionsViewport.scrollView(in: cachedRoot))
+            XCTAssertTrue(scroll.window === window)
+            source.switchTo(space: spaces[1])
+            let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
+            arriving.palette = nil
+            try await self.admitFixtureSidebar(arriving, window: window)
+            XCTAssertTrue(source.parkedIn === window && !source.profileVisible)
+            XCTAssertTrue(cachedRoot.superview === host,
+                          "Parking must retain the cached browser host")
+            XCTAssertTrue(scroll.window === window && scroll.isDescendant(of: cachedRoot),
+                          "Parking must retain the cached native scroll shell, not only SwiftUI state")
+            arriving.switchTo(space: spaces[0])
+            try await self.admitFixtureSidebar(source, window: window)
+            XCTAssertTrue(cachedRoot.superview === host)
+            XCTAssertTrue(SidebarSectionsViewport.scrollView(in: cachedRoot) === scroll,
+                          "A cached profile return must reuse its mounted scroll/focus shell")
+            XCTAssertTrue(scroll.window === window)
+        }
+    }
+
     func testProfileHopPublishesOnlyTheCompletedArrivingSidebar() async throws {
         try await withFixtureApplicationLoop {
             let manager = ProfileManager.shared
