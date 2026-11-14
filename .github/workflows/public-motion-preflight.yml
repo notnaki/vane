@@ -1,20 +1,19 @@
-name: Public current profile owner stack diagnostic
+name: Public cached profile native scroll retention reproduction
 on:
   push:
     branches: [codex/public-motion-preflight-20261113]
 permissions:
   contents: read
-  actions: read
 env:
   VANE_EXPERIMENT_SIDEBAR_HOST: '0'
   VANE_LIBRARY_PAINT_TRACE: '0'
   VANE_EXPECTED_TESTS: |
-    VaneTests.SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes
-  VANE_CANDIDATE_SHA: 0c7f3abee2378f6518db22f89d3445725b2029e4
-  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/testCachedProfileColourStaysContinuousAcrossRepeatedSwipes$'
+    VaneTests.SpaceNativeRenderingTests/testCachedProfileHopKeepsItsMountedScrollShell
+  VANE_CANDIDATE_SHA: 1e89ad92429be7301ee9f27f34b172cc92f3aa38
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]SpaceNativeRenderingTests/testCachedProfileHopKeepsItsMountedScrollShell$'
 jobs:
   diagnostic:
-    name: Exact original repeated profile current-owner stack
+    name: Actual cached profile native scroll ownership reproduction
     runs-on: macos-26
     timeout-minutes: 45
     steps:
@@ -28,40 +27,68 @@ jobs:
           test "$(git rev-parse HEAD)" = "$VANE_CANDIDATE_SHA"
           test -n "$VANE_DIAGNOSTIC_FILTER"
 
-      - name: Retrieve exact public compiled runtime
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh api repos/notnaki/vane/actions/artifacts/14097512178 > "$RUNNER_TEMP/public-runtime-artifact.json"
-          python3 - <<'PYRUNTIME'
-          import json,os,pathlib
-          a=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'public-runtime-artifact.json').read_text())
-          assert a['name']=='public-debug-runtime' and not a['expired']
-          assert a['workflow_run']['id']==43553715878
-          assert a['workflow_run']['head_sha']=='37afb89bde3ede971026522c014e82d796728ea6'
-          assert a['digest']=='sha256:0bcbbf5ae0cf44214094c36a11e7c7b9d73173bfe5d4e5f0c7f6a05112059c41'
-          PYRUNTIME
-          gh api --allow-escape-sequences repos/notnaki/vane/actions/artifacts/14097512178/zip > "$RUNNER_TEMP/public-runtime.zip"
-          python3 - <<'PYRUNTIME'
-          import hashlib,os,pathlib,zipfile
-          r=pathlib.Path(os.environ['RUNNER_TEMP']);p=r/'public-runtime.zip'
-          assert hashlib.sha256(p.read_bytes()).hexdigest()=='0bcbbf5ae0cf44214094c36a11e7c7b9d73173bfe5d4e5f0c7f6a05112059c41'
-          with zipfile.ZipFile(p) as z:
-              assert z.testzip() is None
-              assert z.namelist()==['vane-debug-runtime.tar.gz'],z.namelist()
-              with z.open('vane-debug-runtime.tar.gz') as src,(r/'vane-debug-runtime.tar.gz').open('wb') as dst:
-                  import shutil
-                  shutil.copyfileobj(src,dst)
-          PYRUNTIME
-      - name: Restore and verify exact source runtime
+      - name: Identify Swift toolchain
+        id: toolchain
         run: |
           set -euo pipefail
           swift --version
           xcodebuild -version
-          python3 scripts/ci-build-artifact.py restore \
-            --revision "$VANE_CANDIDATE_SHA" \
+          KEY=$(python3 scripts/ci-build-artifact.py toolchain)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      # Only checks builds go into this cache. Release builds compile an OAuth secret
+      # into the app, so their build products must never enter a PR-readable cache.
+      # PRs reuse main's cache without leaving a separate archive for every revision.
+      - name: Restore Swift debug build
+        id: swift-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .build
+          key: swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**', 'Tests/**', 'scripts/ci-source-state.py', 'make-app.sh', '.github/workflows/checks.yml') }}
+          restore-keys: |
+            swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+
+      # Checkout gives even unchanged inputs new mtimes. Restore only content-matching
+      # timestamps for Swift, C/Objective-C bridges, headers and resources. Rebuilding
+      # an unchanged bridge can invalidate all dependent Swift compilation.
+      - name: Restore unchanged source timestamps
+        run: python3 scripts/ci-source-state.py restore
+
+      - name: Build app and native tests once
+        run: swift build -c debug --build-tests --disable-index-store
+
+      - name: Bundle
+        env:
+          VANE_CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}
+        run: ./make-app.sh debug --skip-app-build
+
+      - name: Package shared debug runtime
+        run: |
+          set -euo pipefail
+          BIN_PATH=$(swift build -c debug --show-bin-path)
+          python3 scripts/ci-build-artifact.py pack \
+            --bin-path "$BIN_PATH" --revision "$VANE_CANDIDATE_SHA" \
             --archive "$RUNNER_TEMP/vane-debug-runtime.tar.gz"
+
+      - name: Share compiled runtime
+        uses: actions/upload-artifact@v6
+        with:
+          name: public-debug-runtime
+          path: ${{ runner.temp }}/vane-debug-runtime.tar.gz
+          compression-level: 0
+          overwrite: true
+          retention-days: 1
+
+      - name: Save source timestamps for the build cache
+        run: python3 scripts/ci-source-state.py save
+
+      - name: Save Swift debug build
+        if: steps.swift-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .build
+          key: ${{ steps.swift-cache.outputs.cache-primary-key }}
 
       - name: Admit actual system motion on this disposable runner
         run: |
@@ -117,74 +144,7 @@ jobs:
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/owned-sample-diagnostic.py" <<'PYOWNED'
-          #!/usr/bin/env python3
-          """Diagnostic-only wrapper: preserve native status; sample one exact owned XCTest.
-          Usage: python3 owned-sample-diagnostic.py EVIDENCE_DIR -- ORIGINAL_NATIVE_COMMAND...
-          Run with a focused repeated-profile selection so 15 seconds includes several handoffs.
-          No source hooks, no artificial sampling delay, no upfront symbolication (-mayDie).
-          """
-          import datetime,json,os,pathlib,re,subprocess,sys,time
-          out=pathlib.Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
-          assert sys.argv[2]=='--' and len(sys.argv)>3
-          cwd=pathlib.Path.cwd().resolve();build=str(cwd/'.build')+'/'
-          record={'diagnostic_only':True,'command':sys.argv[3:],'started':datetime.datetime.now(datetime.timezone.utc).isoformat()}
-          sampler=None;sampling_log=None;sample_started=None;sample_status=None
-          with (out/'native.log').open('w') as native:
-           primary=subprocess.Popen(sys.argv[3:],stdout=native,stderr=subprocess.STDOUT)
-           while primary.poll() is None:
-            if sampler is None and not record.get('watch_disabled'):
-             try:
-              rows=[]
-              for line in subprocess.check_output(['ps','-axo','pid=,ppid=,lstart=,command='],text=True).splitlines():
-               match=re.match(r'\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)',line)
-               if match:rows.append((int(match[1]),int(match[2]),match[3],match[4]))
-              owned={primary.pid}
-              for _ in range(8):
-               for pid,ppid,start,command in rows:
-                if ppid in owned:owned.add(pid)
-              candidates=[(pid,start,command) for pid,ppid,start,command in rows if pid in owned and command.startswith('/Applications/Xcode') and '/xctest ' in command and build in command and 'testCachedProfileColourStaysContinuousAcrossRepeatedSwipes' in command]
-              if candidates:
-               assert len(candidates)==1
-               pid,start,command=candidates[0]
-               verified=subprocess.check_output(['ps','-p',str(pid),'-o','lstart=,command='],text=True).strip()
-               assert verified.startswith(start) and verified.endswith(command)
-               record['sample_host']={'pid':pid,'start':start,'command':command}
-               sampling_log=(out/'sample.log').open('w')
-               sampler=subprocess.Popen(['/usr/bin/sample',str(pid),'15','5','-file',str(out/'main-thread.sample')],stdout=sampling_log,stderr=subprocess.STDOUT)
-               record['sample_pid']=sampler.pid;sample_started=time.monotonic()
-             except Exception as error:
-              record.setdefault('watch_errors',[]).append(type(error).__name__+': '+str(error))
-              # Keep the original native wrapper running through its owned cleanup even
-              # if process discovery fails. A diagnostic error must never orphan it.
-              record['watch_disabled']=True
-            elif sampler is not None and sampler.poll() is None and time.monotonic()-sample_started>60:
-             # Popen retains the unreaped child identity; only this exact owned sampler is stopped.
-             sampler.terminate()
-             try:sampler.wait(timeout=5)
-             except subprocess.TimeoutExpired:sampler.kill();sampler.wait()
-             record['sample_timeout']=True
-            time.sleep(.05)
-           primary_status=primary.wait()
-          if sampler is not None:
-           try:sample_status=sampler.wait(timeout=max(1,60-(time.monotonic()-sample_started)))
-           except subprocess.TimeoutExpired:
-            sampler.terminate()
-            try:sample_status=sampler.wait(timeout=5)
-            except subprocess.TimeoutExpired:sampler.kill();sample_status=sampler.wait()
-            record['sample_timeout']=True
-           sampling_log.close()
-          record.update(primary_status=primary_status,sample_status=sample_status,sample_exists=(out/'main-thread.sample').exists(),finished=datetime.datetime.now(datetime.timezone.utc).isoformat())
-          (out/'diagnostic-status.json').write_text(json.dumps(record,indent=2)+'\n')
-          print(json.dumps(record))
-          sys.exit(primary_status or (0 if sample_status==0 and record['sample_exists'] and not record.get('sample_timeout') and not record.get('watch_errors') else 1))
-          PYOWNED
-          set +e
-          python3 "$RUNNER_TEMP/owned-sample-diagnostic.py" "$RUNNER_TEMP/profile-owned-stack" -- \
-            python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER"
-          diagnostic_status=$?
-          cat "$RUNNER_TEMP/profile-owned-stack/native.log" | tee "$RUNNER_TEMP/vane-diag-tests.log"
-          exit "$diagnostic_status"
+          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER" 2>&1 | tee "$RUNNER_TEMP/vane-diag-tests.log"
       - name: Verify completed selection when successful
         run: |
           set -euo pipefail
@@ -215,7 +175,5 @@ jobs:
             ${{ runner.temp }}/vane-diag-inventory.txt
             ${{ runner.temp }}/vane-motion-admission.log
             ${{ runner.temp }}/vane-motion-smoke.log
-            ${{ runner.temp }}/profile-owned-stack/
-            ${{ runner.temp }}/public-runtime-artifact.json
           if-no-files-found: ignore
           retention-days: 7
