@@ -1,4 +1,4 @@
-name: Library pending paint shrink preflight
+name: TEMP Library chrome isolation diagnostic
 on:
   push:
     branches: [codex/library-staging-preflight-20261114]
@@ -7,24 +7,10 @@ permissions:
 env:
   VANE_EXPECTED_TESTS: |
     VaneTests.WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted
-    VaneTests.WindowResizeLayoutTests/testProductionParentRefreshKeepsLibraryViewportOwnedAndPainted
-    VaneTests.WindowResizeLayoutTests/testWideSidebarLibraryNavigationKeepsTheResponsiveDocumentPainted
-    VaneTests.WindowResizeLayoutTests/testFloatingLibraryNavigationKeepsTheResponsiveDocumentPainted
-    VaneTests.WindowResizeLayoutTests/testRapidLibraryReversalsKeepTheResponsiveDocumentPainted
-    VaneTests.LibraryPageLayoutTests/testLibraryDocumentFollowsTheVisibleCardWithoutAnEndpointWidthJump
-    VaneTests.LibraryPageLayoutTests/testFindCannotPushTheRealCardOverLibraryOrBeyondWindow
-    VaneTests.LibraryPageLayoutTests/testSplitDocumentsStayInsideTheCardThroughoutLibraryMovement
-    VaneTests.LibraryPageLayoutTests/testFloatingLibraryGutterReachesItsEndpointBeforeTheGestureClears
-    VaneTests.LibraryPageLayoutTests/testAnimatedDocumentKeepsThePresentedCardInsideTheWindow
-    VaneTests.LibraryPageLayoutTests/testClosingLibraryKeepsPageRightEdgeAtWindowInset
-    VaneTests.LibrarySwipeTests/testLibraryDragKeepsWebKitFillingTheMovingCard
-    VaneTests.LibrarySwipeTests/testFloatingSidebarLibraryLandingKeepsTheDocumentAtTheRightRim
-    VaneTests.LibrarySwipeTests/testQuickOpeningReleaseContinuesFromTheLastFingerPosition
-    VaneTests.LivePageResizeBufferTests/testExactLibraryInstalledShrinkSupersedesOlderPendingPaint
-  VANE_CANDIDATE_SHA: '3bcc08e7729bcd7544f9a030499f453feb427cec'
+  VANE_CANDIDATE_SHA: '56f557e1fdd0f7924d2b18b32946f197458ad876'
   VANE_LIBRARY_PAINT_TRACE: '0'
   VANE_LIBRARY_LAYOUT_TRACE: '1'
-  VANE_DIAGNOSTIC_FILTER: '^(?:VaneTests[.]WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted|VaneTests[.]WindowResizeLayoutTests/testProductionParentRefreshKeepsLibraryViewportOwnedAndPainted|VaneTests[.]WindowResizeLayoutTests/testWideSidebarLibraryNavigationKeepsTheResponsiveDocumentPainted|VaneTests[.]WindowResizeLayoutTests/testFloatingLibraryNavigationKeepsTheResponsiveDocumentPainted|VaneTests[.]WindowResizeLayoutTests/testRapidLibraryReversalsKeepTheResponsiveDocumentPainted|VaneTests[.]LibraryPageLayoutTests/testLibraryDocumentFollowsTheVisibleCardWithoutAnEndpointWidthJump|VaneTests[.]LibraryPageLayoutTests/testFindCannotPushTheRealCardOverLibraryOrBeyondWindow|VaneTests[.]LibraryPageLayoutTests/testSplitDocumentsStayInsideTheCardThroughoutLibraryMovement|VaneTests[.]LibraryPageLayoutTests/testFloatingLibraryGutterReachesItsEndpointBeforeTheGestureClears|VaneTests[.]LibraryPageLayoutTests/testAnimatedDocumentKeepsThePresentedCardInsideTheWindow|VaneTests[.]LibraryPageLayoutTests/testClosingLibraryKeepsPageRightEdgeAtWindowInset|VaneTests[.]LibrarySwipeTests/testLibraryDragKeepsWebKitFillingTheMovingCard|VaneTests[.]LibrarySwipeTests/testFloatingSidebarLibraryLandingKeepsTheDocumentAtTheRightRim|VaneTests[.]LibrarySwipeTests/testQuickOpeningReleaseContinuesFromTheLastFingerPosition|VaneTests[.]LivePageResizeBufferTests/testExactLibraryInstalledShrinkSupersedesOlderPendingPaint)$'
+  VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted$'
 jobs:
   library-receipt:
     runs-on: macos-26
@@ -119,33 +105,47 @@ jobs:
           (r/'vane-diag-manifest.json').write_text(json.dumps({'schema':1,'tests':tests},indent=2)+'\n')
           print('Selected diagnostic methods:',len(tests))
           PYCODE
-      - name: Observe original native outcomes
+      - name: Observe each isolated chrome subtree once (diagnostic only)
         timeout-minutes: 24
         env:
           VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
-          set -euo pipefail
-          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER" 2>&1 | tee "$RUNNER_TEMP/vane-diag-tests.log"
-      - name: Verify completed selection when successful
+          python3 - <<'ISOLATION'
+          import datetime,json,os,pathlib,re,subprocess,sys
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'chrome-isolation'
+          root.mkdir()
+          records=[]
+          expected=os.environ['VANE_EXPECTED_TESTS'].strip()
+          for mode in ['panel','sidebar','both']:
+              folder=root/mode;folder.mkdir();(folder/'tmp').mkdir()
+              env=os.environ.copy();env['VANE_TEMP_LIBRARY_CHROME']=mode;env['TMPDIR']=str(folder/'tmp')
+              entry={'mode':mode,'source':os.environ['VANE_CANDIDATE_SHA'],'expected':expected,'startedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'diagnosticOnly':True}
+              (folder/'identity.json').write_text(json.dumps(entry,indent=2)+'\n')
+              with (folder/'native.log').open('wb') as log:
+                  result=subprocess.run(['python3','scripts/run-native-tests.py','--skip-build','--jobs','1','--filter',os.environ['VANE_DIAGNOSTIC_FILTER']],env=env,stdout=log,stderr=subprocess.STDOUT)
+              text=(folder/'native.log').read_text()
+              outcomes=[{'test':f'VaneTests.{c}/{m}','status':v} for c,m,v in re.findall(r"Test Case '-\[VaneTests\.(\w+) (\w+)\]' (passed|failed|skipped)",text) if f'VaneTests.{c}/{m}'==expected]
+              entry.update(returncode=result.returncode,outcomes=outcomes,finishedAt=datetime.datetime.now(datetime.timezone.utc).isoformat(),motion=re.findall(r'LIBRARY_MOTION[^\n]+',text),nativeStatus=re.findall(r'Native suite primary status=(\d+); cleanup status=(\d+)',text))
+              entry['collectionValid']=(len(outcomes)==1 and outcomes[0]['status']!='skipped' and entry['nativeStatus']==[(str(result.returncode),'0')] and not re.search(r'^\*\*\* Signal',text,re.M))
+              records.append(entry);(folder/'summary.json').write_text(json.dumps(entry,indent=2)+'\n')
+              (root/'summary.json').write_text(json.dumps(records,indent=2)+'\n')
+              print(json.dumps(entry),flush=True)
+              if not entry['collectionValid']: break
+          complete=len(records)==3 and all(x['collectionValid'] for x in records)
+          print('CHROME_ISOLATION_COLLECTION status='+str(0 if complete else 1)+' diagnosticOnly=true')
+          sys.exit(0 if complete and all(x['returncode']==0 for x in records) else 1)
+          ISOLATION
+      - name: Verify all three diagnostic outcomes were retained
+        if: ${{ always() }}
         run: |
-          set -euo pipefail
-          python3 scripts/native-test-shards.py verify --manifest "$RUNNER_TEMP/vane-diag-manifest.json" --log "$RUNNER_TEMP/vane-diag-tests.log"
-          python3 - <<'PASSGUARD'
-          import json, pathlib, os, re
-          r=pathlib.Path(os.environ['RUNNER_TEMP'])
-          expected=set(os.environ['VANE_EXPECTED_TESTS'].splitlines())
-          manifest=json.loads((r/'vane-diag-manifest.json').read_text())['tests']
-          assert set(manifest)==expected and len(manifest)==len(expected)
-          outcomes={t:[] for t in expected}
-          for cls,method,status in re.findall(r"Test Case '-\[VaneTests\.(\w+) (\w+)\]' (passed|failed|skipped)", (r/'vane-diag-tests.log').read_text()):
-              key=f'VaneTests.{cls}/{method}'
-              if key in outcomes: outcomes[key].append(status)
-          assert all(v==['passed'] for v in outcomes.values()), f'Every selected case must pass once: {outcomes}'
-          print('All exact preflight cases passed once; no skips.')
-          PASSGUARD
-          grep -Fxq 'Native suite primary status=0; cleanup status=0' "$RUNNER_TEMP/vane-diag-tests.log"
-          if grep -Eq '^\*\*\* Signal [0-9]+: Backtracing' "$RUNNER_TEMP/vane-diag-tests.log"; then exit 1; fi
+          python3 - <<'VERIFY'
+          import json,os,pathlib
+          records=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'chrome-isolation/summary.json').read_text())
+          assert [r['mode'] for r in records]==['panel','sidebar','both']
+          assert all(r['collectionValid'] and r['diagnosticOnly'] for r in records)
+          print('Three distinct chrome-removal modes completed with unchanged original assertions; NOT product qualification.')
+          VERIFY
       - name: Retain diagnostic evidence including failed attempts
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
@@ -153,6 +153,7 @@ jobs:
           name: public-native-logs
           path: |
             ${{ runner.temp }}/vane-diag-tests.log
+            ${{ runner.temp }}/chrome-isolation
             ${{ runner.temp }}/vane-diag-source.txt
             /tmp/vane-resize-library-*
             ${{ runner.temp }}/profile-boundary-costs
