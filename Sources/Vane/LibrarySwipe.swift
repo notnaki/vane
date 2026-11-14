@@ -9,23 +9,13 @@ extension Look {
 /// Finger samples affect navigation geometry, not the browser or its tab rows.
 @MainActor final class LibraryGesture: ObservableObject {
     @Published var progress: CGFloat? {
-        willSet { if progress != newValue { paint?.invalidatePageMountMetadata() } }
         didSet {
-            sampledAt = CACurrentMediaTime()
             if progress == nil { pageLeadingInset = nil }
         }
     }
-    private(set) var sampledAt = CACurrentMediaTime()
     /// Capture the initial gutter; floating navigation interpolates it to its endpoint.
     @Published var pageLeadingInset: CGFloat?
-    weak var paint: LibraryNavigationPaint? {
-        willSet {
-            if paint !== newValue {
-                paint?.invalidatePageMountMetadata()
-                newValue?.invalidatePageMountMetadata()
-            }
-        }
-    }
+    weak var paint: LibraryNavigationPaint?
 }
 
 private struct LibraryPageLeadingInset: EnvironmentKey {
@@ -53,7 +43,6 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
     let page: Page
     let sidebar: Sidebar
     let panel: Panel
-    var store: TabStore? = nil
 
     private var progress: CGFloat { gesture.progress ?? (libraryOpen ? 1 : 0) }
 
@@ -61,12 +50,12 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
         PaintedLibraryNavigation(gesture: gesture, targetProgress: progress,
             libraryOpen: libraryOpen, sidebarShown: sidebarShown, floating: floating,
             sidebarWidth: sidebarWidth, panelWidth: panelWidth, palettePresented: palettePresented,
-            monitor: monitor, page: page, sidebar: sidebar, panel: panel, store: store)
+            monitor: monitor, page: page, sidebar: sidebar, panel: panel)
     }
 }
 
-/// Interpolate requested navigation first, then publish only geometry whose
-/// document viewport has painted. The page and both rails share that publication.
+/// One interpolated phase drives the card and both rails. WebHost autoresizing
+/// follows that actual card proposal; paint observation never retimes geometry.
 private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>: View, @preconcurrency Animatable {
     @ObservedObject var gesture: LibraryGesture
     var targetProgress: CGFloat
@@ -80,7 +69,6 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
     let page: Page
     let sidebar: Sidebar
     let panel: Panel
-    let store: TabStore?
     @Environment(\.displayScale) private var displayScale
     @StateObject private var paint: LibraryNavigationPaint
 
@@ -91,11 +79,11 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
 
     init(gesture: LibraryGesture, targetProgress: CGFloat, libraryOpen: Bool, sidebarShown: Bool,
          floating: Bool, sidebarWidth: CGFloat, panelWidth: CGFloat, palettePresented: Bool,
-         monitor: LibrarySwipeMonitor, page: Page, sidebar: Sidebar, panel: Panel, store: TabStore?) {
+         monitor: LibrarySwipeMonitor, page: Page, sidebar: Sidebar, panel: Panel) {
         self.gesture = gesture; self.targetProgress = targetProgress
         self.libraryOpen = libraryOpen; self.sidebarShown = sidebarShown; self.floating = floating
         self.sidebarWidth = sidebarWidth; self.panelWidth = panelWidth; self.palettePresented = palettePresented
-        self.monitor = monitor; self.page = page; self.sidebar = sidebar; self.panel = panel; self.store = store
+        self.monitor = monitor; self.page = page; self.sidebar = sidebar; self.panel = panel
         _paint = StateObject(wrappedValue: LibraryNavigationPaint(progress: targetProgress))
     }
 
@@ -106,15 +94,13 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
     }
 
     var body: some View {
-        let progress = paint.progress
+        let progress = min(1, max(0, targetProgress))
         let leading = pageLeading(at: progress)
         ZStack(alignment: .leading) {
             HStack(spacing: 0) {
                 Color.clear.frame(width: leading)
                 // Resolve navigation geometry once per surface, rather than per leaf.
                 page.environment(\.libraryNavigationPaintOwner, paint.owner)
-                    .environment(\.libraryPageMountReceiptSource,
-                        paint.pageMountReceiptSource(store: store, gesture: gesture, monitor: monitor))
                     .environment(\.libraryPageLeadingInset, 0)
                     .geometryGroup()
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
@@ -150,9 +136,7 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
                 .zIndex(1)
         }
         .background {
-            LibraryPaintBridge(paint: paint, target: targetProgress,
-                sampledAt: gesture.progress == targetProgress ? gesture.sampledAt : nil,
-                leading: pageLeading)
+            LibraryPaintBridge(paint: paint, target: targetProgress)
                 .frame(width: 0, height: 0)
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
@@ -203,43 +187,17 @@ private struct LibrarySwipe: ViewModifier {
 /// Page content, vertical scrolling and other Spaces' gestures keep their recipient.
 @MainActor final class LibrarySwipeMonitor {
     private var monitor: Any?
-    private weak var store: TabStore? {
-        willSet { if store !== newValue { pageMountMetadata.retire() } }
-    }
+    private weak var store: TabStore?
     private var settlement = UUID() {
-        willSet { if settlement != newValue { pageMountMetadata.retire() } }
-    }
-    private var pageMountMetadata = LibraryPageMountSettlement()
-    private weak var pageMountWindow: NSWindow?
-    var pageMountEpoch: LibraryPageMountEpoch { pageMountMetadata.epoch }
-    var pageMountPendingSettlement: UUID? { pageMountMetadata.pending }
-
-    func invalidatePageMountOwnerLifecycle() { pageMountMetadata.invalidate() }
-
-    init(mountEpoch: LibraryPageMountEpoch = .init()) {
-        pageMountMetadata = LibraryPageMountSettlement(epoch: mountEpoch)
-    }
-
-    func pageMountIsIdle(in store: TabStore, window: NSWindow) -> Bool {
-        self.store === store && pageMountWindow === window && monitor != nil
-            && !pageMountMetadata.epoch.exhausted && pageMountMetadata.pending == nil
-            && destination == nil && !(!finished && (claim == .mine || claim == .undecided))
-    }
-
-    // Mirrors only the successful production completion point. A stale token
-    // cannot clear a newer metadata tail or change any navigation state.
-    func pageMountSettlementCompleted(_ token: UUID) { pageMountMetadata.complete(token) }
-
-    private func recordPageMountWindow(_ window: NSWindow?) {
-        if pageMountWindow !== window { pageMountMetadata.retire(); pageMountWindow = window }
+        willSet {
+            if settlement != newValue { store?.libraryGesture.paint?.cancel() }
+        }
     }
     private var panelWidth: CGFloat = 1
     private var dragOrigin: CGFloat?
     /// An inert native marker travels with the panel. Read its presentation layer only
     /// when interrupting a landing, so a reverse swipe can take over without a jump.
-    weak var presentationView: NSView? {
-        willSet { if presentationView !== newValue { pageMountMetadata.invalidate() } }
-    }
+    weak var presentationView: NSView?
 
     private var presentedProgress: CGFloat? {
         guard let view = presentationView, let layer = view.layer?.presentation(),
@@ -252,18 +210,14 @@ private struct LibrarySwipe: ViewModifier {
     }
 
     private var watchers: [any NSObjectProtocol] = []
-    private enum Claim: Equatable { case idle, undecided, mine, theirs }
+    private enum Claim { case idle, undecided, mine, theirs }
     private enum Action { case close, open(UUID) }
     private var action: Action?
-    private var claim = Claim.idle {
-        willSet { if claim != newValue { pageMountMetadata.invalidate() } }
-    }
+    private var claim = Claim.idle
     private weak var lastEvent: NSEvent?
     private var lastWasConsumed = false
     private var travel = (x: CGFloat(0), horizontal: CGFloat(0), vertical: CGFloat(0))
-    private var finished = false {
-        willSet { if finished != newValue { pageMountMetadata.invalidate() } }
-    }
+    private var finished = false
     @MainActor private struct KeyboardOwner {
         weak var responder: NSResponder?
         weak var editorDelegate: AnyObject?
@@ -289,9 +243,7 @@ private struct LibrarySwipe: ViewModifier {
         let space: UUID?
         let keyboard: KeyboardOwner
     }
-    private var destination: Destination? {
-        willSet { pageMountMetadata.invalidate() }
-    }
+    private var destination: Destination?
 
     /// Route a second gesture against the released gesture's intent while the
     /// visible layout is still landing. The browser itself changes only at rest.
@@ -300,7 +252,6 @@ private struct LibrarySwipe: ViewModifier {
     /// Explicit commands supersede a pending swipe, including a close issued
     /// before the opening has published its destination.
     func cancelPendingActivation(toward open: Bool? = nil) {
-        pageMountMetadata.invalidate()
         guard destination != nil else { return }
         destination = nil
         guard let store else { return }
@@ -311,11 +262,9 @@ private struct LibrarySwipe: ViewModifier {
            store.librarySwipeProgress == target { return }
         let token = UUID()
         settlement = token
-        pageMountMetadata.begin(token)
         let clear = { [weak self, weak store] in
             guard let self, self.settlement == token, let store else { return }
             Motion.instant { store.librarySwipeProgress = nil }
-            self.pageMountSettlementCompleted(token)
         }
         if Motion.reduced || presentationView?.window == nil || store.librarySwipeProgress == nil {
             clear()
@@ -332,6 +281,7 @@ private struct LibrarySwipe: ViewModifier {
             withAnimation(Look.librarySlide, completionCriteria: .removed) {
                 store.librarySwipeProgress = target
             } completion: { [weak self, weak store] in
+                guard let self, self.settlement == token else { return }
                 if let paint = store?.libraryGesture.paint {
                     paint.afterPresentation(of: target, when: { [weak self] in
                         self?.panelHasArrived(at: target) ?? true
@@ -362,8 +312,6 @@ private struct LibrarySwipe: ViewModifier {
 
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
-        pageMountMetadata.invalidate()
-        recordPageMountWindow(store.window)
         self.store = store
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self, weak store] event in
             guard let self, let store else { return event }
@@ -380,7 +328,6 @@ private struct LibrarySwipe: ViewModifier {
     }
 
     func remove() {
-        pageMountMetadata.invalidate()
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         watchers.forEach(NotificationCenter.default.removeObserver)
@@ -389,7 +336,6 @@ private struct LibrarySwipe: ViewModifier {
     }
 
     private func reset(clearPresentation: Bool = true) {
-        pageMountMetadata.invalidate()
         if clearPresentation {
             settlement = UUID()
             if let store {
@@ -424,7 +370,6 @@ private struct LibrarySwipe: ViewModifier {
     private func settle(in store: TabStore, commit: Bool) {
         let token = UUID()
         settlement = token
-        pageMountMetadata.begin(token)
         var open = intendsOpen(in: store)
         if commit, let action {
             open = switch action { case .open: true; case .close: false }
@@ -440,7 +385,6 @@ private struct LibrarySwipe: ViewModifier {
                 self.activateDestination(in: store)
                 guard self.settlement == token else { return }
                 store.librarySwipeProgress = nil
-                self.pageMountSettlementCompleted(token)
             }
         }
         if Motion.reduced || presentationView?.window == nil
@@ -450,6 +394,7 @@ private struct LibrarySwipe: ViewModifier {
             withAnimation(Look.appear, completionCriteria: .removed) {
                 store.librarySwipeProgress = target
             } completion: { [weak self, weak store] in
+                guard let self, self.settlement == token else { return }
                 if let paint = store?.libraryGesture.paint {
                     paint.afterPresentation(of: target, when: { [weak self] in
                         self?.panelHasArrived(at: target) ?? true
@@ -463,7 +408,6 @@ private struct LibrarySwipe: ViewModifier {
     /// through both, so classify and accumulate each native event exactly once.
     func handle(_ event: NSEvent, in store: TabStore) -> NSEvent? {
         guard !FirstLaunch.isPresenting else { return event }
-        recordPageMountWindow(store.window)
         self.store = store
         if lastEvent === event { return lastWasConsumed ? nil : event }
         let result = process(event, in: store)

@@ -395,14 +395,23 @@ import XCTest
             // Match the existing resize cadence gate's 2pt / 8ms input. The
             // separate rapid case retains the original 20-sample reversals.
             let stepsPerStroke = rapid ? 20 : max(1, Int(ceil(abs(travel) / 2)))
-            let stroke = Array(0...stepsPerStroke)
-            let inputSteps = (0..<3).flatMap { _ in stroke + Array(stroke.reversed()) }
-            try await LibraryNativeInputClock.deliver(inputSteps) { step in
-                Motion.instant {
-                    store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
-                    if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
+            for _ in 0..<3 {
+                for step in 0...stepsPerStroke {
+                    Motion.instant {
+                        store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
+                        if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
+                    }
+                    window.contentView?.layoutSubtreeIfNeeded()
+                    try await Task.sleep(for:.milliseconds(8))
                 }
-                window.contentView?.layoutSubtreeIfNeeded()
+                for step in (0...stepsPerStroke).reversed() {
+                    Motion.instant {
+                        store.librarySwipeProgress = CGFloat(step) / CGFloat(stepsPerStroke)
+                        if refreshParent && step == stepsPerStroke / 2 { store.findOpen.toggle() }
+                    }
+                    window.contentView?.layoutSubtreeIfNeeded()
+                    try await Task.sleep(for:.milliseconds(8))
+                }
             }
             Motion.instant { store.librarySwipeProgress = nil }
             func pending(_ view: NSView) -> Bool {
@@ -680,64 +689,6 @@ import XCTest
         guard await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed else {
             throw NSError(domain: "ResizePresentationTimeout", code: 1)
         }
-    }
-}
-
-/// Deliver native input inside the owned AppKit loop. Resuming a Swift task for
-/// every 8 ms sample added 27–70 ms at idle on the actual hosted runner.
-@MainActor private final class LibraryNativeInputClock {
-    private let steps: [Int]
-    private let apply: @MainActor (Int) -> Void
-    private var index = 0
-    private var timer: Timer?
-    private var continuation: CheckedContinuation<Void, any Error>?
-    private var times: [TimeInterval] = []
-
-    private init(_ steps: [Int], apply: @escaping @MainActor (Int) -> Void) {
-        self.steps = steps; self.apply = apply
-    }
-
-    static func deliver(_ steps: [Int], apply: @escaping @MainActor (Int) -> Void) async throws {
-        let driver = LibraryNativeInputClock(steps, apply: apply)
-        defer { driver.cancel() }
-        try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            try await withCheckedThrowingContinuation { continuation in
-                driver.continuation = continuation
-                driver.advance()
-            }
-        } onCancel: {
-            CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
-                MainActor.assumeIsolated { driver.cancel() }
-            }
-            CFRunLoopWakeUp(CFRunLoopGetMain())
-        }
-    }
-
-    private func advance() {
-        timer = nil
-        guard index < steps.count else {
-            let gaps = zip(times, times.dropFirst()).map { ($1 - $0) * 1000 }.sorted()
-            print("LIBRARY_NATIVE_INPUT delivered=\(index) expected=\(steps.count) p95=\(gaps.isEmpty ? 0 : gaps[Int(Double(gaps.count - 1) * 0.95)]) max=\(gaps.last ?? 0)")
-            let completion = continuation; continuation = nil
-            completion?.resume()
-            return
-        }
-        times.append(CACurrentMediaTime())
-        apply(steps[index]); index += 1
-        // One shot after each sample: no catch-up bursts, dropped steps or
-        // shortened interval. Preserve the final sample's original 8 ms pause.
-        let next = Timer(timeInterval: 0.008, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.advance() }
-        }
-        timer = next
-        RunLoop.main.add(next, forMode: .common)
-    }
-
-    private func cancel() {
-        timer?.invalidate(); timer = nil
-        let completion = continuation; continuation = nil
-        completion?.resume(throwing: CancellationError())
     }
 }
 
