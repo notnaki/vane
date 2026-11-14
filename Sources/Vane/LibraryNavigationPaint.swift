@@ -35,7 +35,8 @@ extension EnvironmentValues {
     private var buffer: LivePageResizeBuffer?
     private var finishingBuffer = false
     private var bufferToken = UUID()
-    private var holdingGesture = false
+    private var requestedLeading: CGFloat = 0
+    private var currentLeading: CGFloat = 0
     var isPreparing: Bool { arrival != nil || requestedProgress != progress || buffer?.isPreparing == true }
 
     init(progress: CGFloat) { self.progress = progress; requestedProgress = progress }
@@ -47,14 +48,15 @@ extension EnvironmentValues {
         schedule()
     }
 
-    func request(_ value: CGFloat, marker: NSView, startLeading: CGFloat, endLeading: CGFloat, holding: Bool) {
+    func request(_ value: CGFloat, marker: NSView, startLeading: CGFloat, endLeading: CGFloat, targetLeading: CGFloat, currentLeading: CGFloat) {
         let value = min(1, max(0, value))
         if self.marker !== marker || requestedProgress != value { retirePaint() }
         self.marker = marker
         requestedProgress = value
         self.startLeading = startLeading
         self.endLeading = endLeading
-        holdingGesture = holding
+        requestedLeading = targetLeading
+        self.currentLeading = currentLeading
         schedule()
     }
 
@@ -75,10 +77,10 @@ extension EnvironmentValues {
 
     private func drain() {
         if !finishingBuffer, let window = marker?.window, window.isVisible {
-            let leading = startLeading + (endLeading - startLeading) * requestedProgress
+            let leading = requestedLeading
             if requestedProgress != progress || buffer != nil {
                 if buffer == nil {
-                    let initial = startLeading + (endLeading - startLeading) * progress
+                    let initial = currentLeading
                     acceptedLeading = initial
                     let token = UUID()
                     bufferToken = token
@@ -87,7 +89,7 @@ extension EnvironmentValues {
                         apply: { [weak self] _, accepted in
                             guard let self, self.bufferToken == token, let accepted else { return }
                             self.acceptedLeading = accepted
-                            let latest = self.startLeading + (self.endLeading - self.startLeading) * self.requestedProgress
+                            let latest = self.requestedLeading
                             let phase = accepted == latest || self.startLeading == self.endLeading
                                 ? self.requestedProgress : (accepted - self.startLeading) / (self.endLeading - self.startLeading)
                             Motion.instant { self.progress = phase }
@@ -110,8 +112,7 @@ extension EnvironmentValues {
                     if acceptedLeading == leading, !buffer.isPreparing, progress != requestedProgress {
                         Motion.instant { progress = requestedProgress }
                     }
-                    let atRest = !holdingGesture && (requestedProgress == 0 || requestedProgress == 1)
-                    if (arrival != nil || atRest), requestedProgress == progress, !buffer.isPreparing {
+                    if requestedProgress == progress, !buffer.isPreparing {
                         finishingBuffer = true
                         buffer.finish()
                     }
@@ -119,7 +120,7 @@ extension EnvironmentValues {
             }
         }
         guard buffer == nil else {
-            if arrival != nil || (!holdingGesture && (requestedProgress == 0 || requestedProgress == 1)),
+            if requestedProgress == progress,
                let window = marker?.window { waitForFrame(in: window) }
             return
         }
@@ -240,11 +241,12 @@ struct LibraryPaintBridge: NSViewRepresentable {
     let target: CGFloat
     let startLeading: CGFloat
     let endLeading: CGFloat
-    let holding: Bool
+    let targetLeading: CGFloat
+    let currentLeading: CGFloat
     func makeNSView(context: Context) -> LibraryPaintView { LibraryPaintView() }
     func updateNSView(_ view: LibraryPaintView, context: Context) {
         view.paint = paint; view.target = min(1, max(0, target))
-        paint.request(target, marker: view, startLeading: startLeading, endLeading: endLeading, holding: holding)
+        paint.request(target, marker: view, startLeading: startLeading, endLeading: endLeading, targetLeading: targetLeading, currentLeading: currentLeading)
     }
     func makeCoordinator() -> LibraryNavigationPaint { paint }
     static func dismantleNSView(_ view: LibraryPaintView, coordinator: LibraryNavigationPaint) { coordinator.cancel() }

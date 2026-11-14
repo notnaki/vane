@@ -467,6 +467,12 @@ struct LivePageResizeAnchor {
         }
         guard active, !ending else { return }
         endpointCompletion = completion
+        // Exact Library requests already have their native parent acknowledgment.
+        // Retire a settled request without another root layout or paint round trip.
+        if stagesExactNavigation && !isPreparing {
+            complete(exact: true)
+            return
+        }
         ending = true
         stopPublicationFrames()
         if !started { start() }

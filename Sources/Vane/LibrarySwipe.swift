@@ -138,7 +138,7 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
         .background {
             LibraryPaintBridge(paint: paint, target: targetProgress,
                 startLeading: pageLeading(at: 0), endLeading: pageLeading(at: 1),
-                holding: gesture.progress != nil)
+                targetLeading: pageLeading(at: targetProgress), currentLeading: leading)
                 .frame(width: 0, height: 0)
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
