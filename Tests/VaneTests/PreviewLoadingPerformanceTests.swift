@@ -134,6 +134,62 @@ private final class PreviewServer: @unchecked Sendable {
         }
     }
 
+    func testDeferredFirstPaintStillProducesOneCompletedImage() async throws {
+        try await withApplicationLoop {
+            let server = try PreviewServer(body: """
+            <title>Deferred article</title><body style='margin:0;background:white'><script>
+            setTimeout(() => { document.body.innerHTML = '<div style="height:240px;background:#1976d2">Deferred article</div><div style="height:240px;background:#e53935"></div><div style="height:240px;background:#43a047"></div>'; }, 1000);
+            </script></body>
+            """)
+            let base = try await server.start(), previews = Previews(), tab = Tab(isPrivate: true)
+            let enabled = Previews.enabled
+            Previews.enabled = true
+            defer { previews.cancel(); tab.tearDown(); server.stop(); Previews.enabled = enabled }
+            previews.request(base, from: tab)
+            let deadline = ContinuousClock.now + .seconds(6)
+            while previews.current?.image == nil, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertNotNil(previews.current?.image, "A blank first capture must retry while the page can still paint within its budget")
+            XCTAssertEqual(previews.current?.loading, false)
+        }
+    }
+
+    func testSnapshotFromBeforeAClientRedirectCannotPublishOrCache() async throws {
+        try await withApplicationLoop {
+            let server = try PreviewServer(body: "<title>Redirect fixture</title><body>Article</body>")
+            let base = try await server.start()
+            let final = base.appendingPathComponent("final")
+            func image(_ first: NSColor) -> NSImage {
+                let image = NSImage(size: .init(width: 120, height: 120))
+                image.lockFocus()
+                for (index, color) in [first, NSColor.systemGreen, NSColor.systemBlue].enumerated() {
+                    color.setFill(); NSRect(x: 0, y: index * 40, width: 120, height: 40).fill()
+                }
+                image.unlockFocus()
+                return image
+            }
+            let oldImage = image(.systemRed), finalImage = image(.systemOrange)
+            var captures = 0
+            let previews = Previews(snapshotCapture: { web in
+                captures += 1
+                if captures == 1 {
+                    web.load(URLRequest(url: final))
+                    try? await compatibilityWait { web.url == final && !web.isLoading }
+                    return oldImage
+                }
+                return finalImage
+            })
+            let tab = Tab(isPrivate: true), enabled = Previews.enabled
+            Previews.enabled = true
+            defer { previews.cancel(); tab.tearDown(); server.stop(); Previews.enabled = enabled }
+            previews.request(base.appendingPathComponent("first"), from: tab)
+            try await compatibilityWait { previews.current?.image != nil }
+            XCTAssertTrue(previews.current?.image === finalImage, "A redirect during capture must reject the previous document's pixels")
+            XCTAssertEqual(captures, 2)
+        }
+    }
+
     func testPreviewHostCannotAppearOrInterceptClicksWhenMovedOntoScreen() async throws {
         try await withApplicationLoop { try await checkPreviewHost() }
     }

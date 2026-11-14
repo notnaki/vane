@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 
 WORKFLOW = '.github/workflows/checks.yml'
 REQUIRED_JOBS = {
-    'Change scope and diff checks', 'Website and routing fixtures',
+    'Change scope and diff checks', 'CI routing fixtures',
     'Source fixtures', 'Shared debug build', 'Packaging and integrations', 'checks',
     *(f'Native regressions ({index}/4)' for index in range(1, 5)),
 }

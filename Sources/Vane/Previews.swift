@@ -1,35 +1,10 @@
 import AppKit
 import WebKit
 
-/// Hover a link, see where it goes — as a live mini render of the destination plus the
-/// metadata the page already ships, with the on-device summary layered on top when it
-/// arrives.
-///
-/// The shape of this file is decided by three measurements, all taken on this machine
-/// through this class against real urls, not guessed:
-///
-///   * **The mini render is the content.** An offscreen WKWebView at a real viewport, with
-///     the profile's data store and the content blocker attached, hands back its first
-///     non-blank `takeSnapshot` 320ms–4.1s after `request` — typically under 2s. A re-hover
-///     comes out of the cache in 0–2ms. That is inside the window where a hover still feels
-///     like a hover, so the picture is what fills the card.
-///   * **The metadata is free.** `og:description` arrives at documentEnd, measured at
-///     420ms–2.7s, at or before the first paint. On a large slice of the web it is a better
-///     one-liner than anything a 3B model will write about the same page, and it costs one
-///     small string over the script bridge.
-///   * **The model is a passenger, and it is not something you can promise a time for.**
-///     First streamed element measured at 6–15s after the hover. That is not this file
-///     being slow: the same two-sentence summary of the same 777-character text, run
-///     standalone in a process with no WebKit in it, measured anywhere from **0.70s to
-///     10.26s** across a dozen consecutive runs. The on-device model's latency on this Mac
-///     varies by more than an order of magnitude for identical input, so the summary is
-///     started promptly (220ms debounce), streamed as it grows, and announced honestly via
-///     `summarizing` — but nothing is ever allowed to wait on it.
-///
-/// ponytail: no prefetch, no speculative warming of the *next* link, no disk cache. Hover
-/// previews are speculative work paid for by pointer movement; the budget here is one web
-/// view, one load at a time, one in-memory cache, and aggressive cancellation. Ceiling: a
-/// second hover on a *different* profile rebuilds the web view and pays a process launch.
+/// Intentional link previews: one ephemeral renderer, one bounded memory cache,
+/// and cancellation when the source pointer or document leaves. The hover script
+/// filters discovery links before native work begins. Metadata and optional AI
+/// summaries arrive independently; the card receives one settled page image.
 @MainActor final class Previews: ObservableObject {
     static let shared = Previews()
 
@@ -101,7 +76,7 @@ import WebKit
     /// page load and model request for each one; short enough to still feel like a hover.
     /// 220ms is roughly one deliberate pause.
     static let summaryDebounce = Duration.milliseconds(220)
-    /// The page script already required 190ms of intent. Prepare the image before the
+    /// The page script already required 550ms of intent. Prepare the image before the
     /// model's longer gate, while direct/native callers still get a cancellable pause.
     static let loadDebounce = Duration.milliseconds(140)
     /// Stop asking for snapshots after this. A page that has painted nothing by now is
@@ -181,13 +156,20 @@ import WebKit
     private var showing: String?
     private weak var source: Tab?
 
+    private let snapshotCapture: @MainActor (WKWebView) async -> NSImage?
     private let debounceSleep: @MainActor (Duration) async throws -> Void
 
     init(sessionObserverFactory: @escaping (UUID, @escaping @MainActor () -> Void) -> Feel04PreviewSessionObserver? = {
         Feel04PreviewSessionObserver(profileID: $0, changed: $1)
-    }, debounceSleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+    }, debounceSleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+       snapshotCapture: @escaping @MainActor (WKWebView) async -> NSImage? = { web in
+           let configuration = WKSnapshotConfiguration()
+           configuration.snapshotWidth = NSNumber(value: Previews.snapshotWidth)
+           return try? await web.takeSnapshot(configuration: configuration)
+       }) {
         self.sessionObserverFactory = sessionObserverFactory
         self.debounceSleep = debounceSleep
+        self.snapshotCapture = snapshotCapture
     }
 
     isolated deinit { sessionTask?.cancel(); metadataTask?.cancel() }
@@ -468,45 +450,37 @@ import WebKit
         return w
     }
 
-    /// Poll for a snapshot until one of them is not a blank rectangle, then keep refreshing
-    /// it while the page is still arriving. Polling rather than waiting for didFinish is
-    /// most of the win: measured across five real urls, the first usable frame landed at
-    /// 320ms–4.1s while didFinish was 0.6–2.2s behind it on the slower ones. Pages paint
-    /// long before they finish, and the first thing painted is the thing worth showing.
+    /// Publish one settled frame, retrying only blank/failed captures within the
+    /// paint budget. Document identity must survive every await: a client redirect
+    /// can replace the document without changing the hovered request's identity.
     private func paint(id: Int, web: WKWebView) async {
         let deadline = ContinuousClock.now + Previews.paintDeadline
-        while ContinuousClock.now < deadline, !Task.isCancelled {
-            try? await Task.sleep(for: Previews.paintInterval)
-            guard !Task.isCancelled, latest == id else { return }
-            // Not until this request's own page is on screen — see `committed`.
-            guard committed == id, let img = await snapshot(of: web),
-                  Previews.meaningful(img) else { continue }   // still a white box
-            if current?.image == nil, source?.isPrivate != true {
-                guard let unchanged = await sessionUnchanged(id) else { return }
-                if !unchanged { retireSession(); return }
+        while !Task.isCancelled, latest == id {
+            if committed == id, !web.isLoading || ContinuousClock.now >= deadline,
+               let document = navigation, let url = web.url {
+                do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+                guard !Task.isCancelled, latest == id else { return }
+                if owns(web, navigation: document), committed == id, web.url == url {
+                    let image = await snapshotCapture(web)
+                    guard !Task.isCancelled, latest == id else { return }
+                    if owns(web, navigation: document), committed == id, web.url == url,
+                       let image, Previews.meaningful(image) {
+                        if source?.isPrivate != true {
+                            guard let unchanged = await sessionUnchanged(id) else { return }
+                            if !unchanged { retireSession(); return }
+                        }
+                        guard !Task.isCancelled, latest == id else { return }
+                        if owns(web, navigation: document), committed == id, web.url == url {
+                            edit(id) { $0.image = image; $0.loading = false }
+                            return
+                        }
+                    }
+                }
             }
-            edit(id) { $0.image = img }
-            // One more once the page says it is done, to catch web fonts and hero images
-            // that land right after the first paint. Then stop — this is a preview.
-            if !web.isLoading { break }
+            if ContinuousClock.now >= deadline { break }
+            do { try await Task.sleep(for: Previews.paintInterval) } catch { return }
         }
-        try? await Task.sleep(for: .milliseconds(350))
-        guard !Task.isCancelled, latest == id, committed == id, let img = await snapshot(of: web),
-              Previews.meaningful(img) else {
-            edit(id) { $0.loading = false }
-            return
-        }
-        if source?.isPrivate != true {
-            guard let unchanged = await sessionUnchanged(id) else { return }
-            if !unchanged { retireSession(); return }
-        }
-        edit(id) { $0.image = img; $0.loading = false }
-    }
-
-    private func snapshot(of web: WKWebView) async -> NSImage? {
-        let cfg = WKSnapshotConfiguration()
-        cfg.snapshotWidth = NSNumber(value: Previews.snapshotWidth)
-        return try? await web.takeSnapshot(configuration: cfg)
+        edit(id) { $0.loading = false }
     }
 
     /// "Usable" means "not one flat colour". A snapshot taken before the first paint is a
@@ -716,34 +690,64 @@ import WebKit
 
     static let messageName = "vanepreview"
 
-    /// A hover, reported after a short dwell, or immediately with Shift held.
-    ///
-    /// Two shapes on the wire:
-    ///   `{url, shift, x, y, w, h}`  — preview this, the rect is viewport coordinates
-    ///   `{gone: true}`              — the pointer left; cancel
-    ///
-    /// Shift is the "preview *any* link" variant: it skips the dwell and drops the filters
-    /// that normally keep the popover out of the way — in-page anchors and links back to the
-    /// page you are already on. Those still can't be previewed (see `eligible`), but the
-    /// app gets told about them, which is what lets a UI say "you are already here" instead
-    /// of silently doing nothing.
-    ///
-    /// ponytail: two document-level listeners in the capture phase and one timer. No
-    /// per-link binding, no MutationObserver — a page that rewrites its links is handled for
-    /// free because the lookup happens at mouseover time. Ceiling: a link inside a
-    /// cross-origin iframe is never seen (this is main-frame only), and a link inside a
-    /// closed shadow root is not reachable from `closest()`.
+    /// Automatic previews are limited to result/content links on Arc Max's supported
+    /// discovery surfaces. Shift explicitly requests other destinations. Filters run
+    /// before the native bridge, so ordinary navigation starts no speculative work.
+    /// One document-level pointer tracker and timer also cover dynamically added links.
     static let script = """
     (function () {
-      var DWELL = 190;
-      var timer = null, at = null, announced = false;
+      var DWELL = 550;
+      var timer = null, at = null, hovered = null, announced = false;
 
       function link(node) {
         while (node && node.nodeType !== 1) { node = node.parentNode; }
         return node && node.closest ? node.closest('a[href]') : null;
       }
       // `a.href` is resolved and normalised by the DOM, so this is the real destination.
-      function web(a) { return /^https?:/i.test(a.href); }
+      function web(a) { return /^https?:/i.test(a.href) && !a.hasAttribute('download'); }
+      function destination(a) {
+        var url = new URL(a.href), host = url.hostname.toLowerCase(), value = null;
+        // Search engines wrap result URLs. Preview the article, not the redirect page.
+        if (/^(www\\.)?google\\.(com|[a-z]{2}|com\\.[a-z]{2}|co\\.[a-z]{2})$/.test(host) && url.pathname === '/url') {
+          value = url.searchParams.get('q') || url.searchParams.get('url');
+        } else if ((host === 'duckduckgo.com' || host === 'html.duckduckgo.com') && url.pathname === '/l/') {
+          value = url.searchParams.get('uddg');
+        } else if (/^(www\\.)?bing\\.com$/.test(host) && url.pathname === '/ck/a') {
+          var encoded = url.searchParams.get('u');
+          if (encoded && encoded.slice(0, 2) === 'a1') {
+            try { value = atob(encoded.slice(2).replace(/-/g, '+').replace(/_/g, '/')); } catch (_) {}
+          }
+        }
+        try { if (value && /^https?:/i.test(value)) { return new URL(value); } } catch (_) {}
+        return url;
+      }
+      function automatic(a) {
+        var host = location.hostname.toLowerCase(), path = location.pathname;
+        var target = destination(a);
+        // Controls and same-site navigation never need a speculative page load.
+        if (a.closest('nav,header,footer,[role=navigation],[role=menu],[role=button]')) { return false; }
+        if (target.hostname === host) { return false; }
+        if (/^(www\\.)?google\\.(com|[a-z]{2}|com\\.[a-z]{2}|co\\.[a-z]{2})$/.test(host)) {
+          return path === '/search' && !!a.querySelector('h3,[role=heading]');
+        }
+        if (host === 'duckduckgo.com' || host === 'html.duckduckgo.com') {
+          return a.matches('[data-testid=result-title-a],.result__a');
+        }
+        if (host === 'www.bing.com' || host === 'bing.com') {
+          return path === '/search' && !!a.closest('.b_algo h2');
+        }
+        if (host === 'news.ycombinator.com') {
+          return a.matches('.titleline > a') && !a.closest('.sitebit');
+        }
+        if (/^(www\\.)?(x\\.com|twitter\\.com)$/.test(host)) {
+          if (/^(www\\.)?(x\\.com|twitter\\.com)$/.test(target.hostname)) { return false; }
+          return a.matches('[data-testid=tweetText] a[role=link][target=_blank], [data-testid="card.wrapper"] a[role=link]');
+        }
+        if (/^(www\\.)?threads\\.(net|com)$/.test(host)) {
+          return a.matches('a[role=link][rel="nofollow noreferrer"][target=_blank]');
+        }
+        return false;
+      }
       function samePage(a) {
         if ((a.getAttribute('href') || '').charAt(0) === '#') { return true; }
         return a.href.split('#')[0] === location.href.split('#')[0];
@@ -752,7 +756,7 @@ import WebKit
         var r = a.getBoundingClientRect();
         announced = true;
         webkit.messageHandlers.\(messageName).postMessage({
-          url: a.href, shift: !!shifted,
+          url: destination(a).href, shift: !!shifted,
           x: r.left, y: r.top, w: r.width, h: r.height
         });
       }
@@ -778,19 +782,21 @@ import WebKit
       document.addEventListener('mouseover', function (e) {
         shifted = !!e.shiftKey;
         blocked = !!(e.metaKey || e.altKey || e.ctrlKey);
-        if (blocked) { gone(); return; }
         var a = link(e.target);
-        if (!a || !web(a)) { return; }
-        if (!shifted && samePage(a)) { return; }
+        hovered = a;
+        if (blocked) { gone(); return; }
+        if (!a || !web(a) || samePage(a)) { gone(); return; }
+        if (!shifted && !automatic(a)) { gone(); return; }
         enter(a);
       }, true);
 
       document.addEventListener('mouseout', function (e) {
         var a = link(e.target);
-        if (!a || a !== at) { return; }
+        if (!a || a !== hovered) { return; }
         // Moving between two children of the same <a> is not leaving it.
         var to = link(e.relatedTarget);
-        if (to === at) { return; }
+        if (to === hovered) { return; }
+        hovered = null;
         gone();
       }, true);
 
@@ -802,19 +808,18 @@ import WebKit
         shifted = shift; blocked = block;
         gone();
         if (blocked) { return; }
-        var hovered = document.querySelector('a[href]:hover');
-        if (hovered && web(hovered) && (shifted || !samePage(hovered))) { enter(hovered); }
+        if (hovered && web(hovered) && !samePage(hovered) && (shifted || automatic(hovered))) { enter(hovered); }
       }
       document.addEventListener('keydown', modifiers, true);
       document.addEventListener('keyup', modifiers, true);
 
       // Anything that moves the page out from under the popover retracts it.
-      window.addEventListener('scroll', gone, true);
-      window.addEventListener('blur', gone);
-      window.addEventListener('pagehide', gone);
-      document.addEventListener('mousedown', gone, true);
+      window.addEventListener('scroll', function () { hovered = null; gone(); }, true);
+      window.addEventListener('blur', function () { hovered = null; gone(); });
+      window.addEventListener('pagehide', function () { hovered = null; gone(); });
+      document.addEventListener('mousedown', function () { hovered = null; gone(); }, true);
       document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') { gone(); }
+        if (e.key === 'Escape') { hovered = null; gone(); }
       }, true);
     })();
     """

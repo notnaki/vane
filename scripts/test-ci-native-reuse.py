@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -55,7 +56,7 @@ class ReuseTests(unittest.TestCase):
                     'created_at': '2026-11-07T09:00:00Z',
                     'updated_at': '2026-11-07T09:15:00Z'}
         self.jobs = [{'name': name, 'status': 'completed', 'conclusion': 'success', 'run_attempt': 1}
-                     for name in ('Change scope and diff checks', 'Website and routing fixtures',
+                     for name in ('Change scope and diff checks', 'CI routing fixtures',
                                   'Source fixtures', 'Shared debug build',
                                   'Native regressions (1/4)', 'Native regressions (2/4)',
                                   'Native regressions (3/4)', 'Native regressions (4/4)',
@@ -97,6 +98,32 @@ class ReuseTests(unittest.TestCase):
     def test_identical_squash_tree_reuses_successful_full_pr_run(self):
         self.assertNotEqual(self.sha, self.head)
         self.assertEqual(self.decide(), 100)
+
+    def test_required_job_names_match_the_checked_in_workflow(self):
+        # Read actual job headers, not a second copy of the reuse allowlist.
+        # GitHub defaults an unnamed job's display name to its job ID.
+        workflow = (ROOT / '.github/workflows/checks.yml').read_text()
+        jobs = re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:|\Z)',
+                          workflow.split('\njobs:\n', 1)[1], re.M | re.S)
+        aggregate = dict(jobs)['checks']
+        dependencies = re.search(r'^    needs: \[([\w, -]+)\]$', aggregate, re.M)
+        self.assertIsNotNone(dependencies)
+        required_ids = {'checks', *map(str.strip, dependencies.group(1).split(','))}
+        self.assertTrue(required_ids <= dict(jobs).keys())
+        names = set()
+        for job_id, body in jobs:
+            if job_id not in required_ids:
+                continue
+            match = re.search(r'^    name: (.+)$', body, re.M)
+            name = match.group(1) if match else job_id
+            if '${{ matrix.shard }}' in name:
+                shards = re.search(r'^        shard: \[([\d, ]+)\]$', body, re.M)
+                self.assertIsNotNone(shards, 'Keep matrix expansion tied to the actual workflow')
+                names.update(name.replace('${{ matrix.shard }}', value.strip())
+                             for value in shards.group(1).split(','))
+            else:
+                names.add(name)
+        self.assertEqual(self.module.REQUIRED_JOBS, names)
 
     def test_other_events_and_refs_never_reuse(self):
         for key, value in (('GITHUB_EVENT_NAME', 'pull_request'),
