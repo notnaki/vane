@@ -1297,6 +1297,10 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     /// displayed roots without walking the parked profiles' pending layouts.
     func layoutDisplayedProfile() {
         guard let current, let host = hosts[current] else { return }
+        #if DEBUG
+        ResizeTimingDiagnostics.recordState("profile.layout.begin", fields: ["root": String(describing: ObjectIdentifier(host.content))])
+        defer { ResizeTimingDiagnostics.recordState("profile.layout.end", fields: ["root": String(describing: ObjectIdentifier(host.content))]) }
+        #endif
         host.content.layoutSubtreeIfNeeded()
         host.palette.layoutSubtreeIfNeeded()
     }
