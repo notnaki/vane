@@ -188,7 +188,11 @@ private struct LibrarySwipe: ViewModifier {
 @MainActor final class LibrarySwipeMonitor {
     private var monitor: Any?
     private weak var store: TabStore?
-    private var settlement = UUID()
+    private var settlement = UUID() {
+        willSet {
+            if settlement != newValue { store?.libraryGesture.paint?.cancel() }
+        }
+    }
     private var panelWidth: CGFloat = 1
     private var dragOrigin: CGFloat?
     /// An inert native marker travels with the panel. Read its presentation layer only
@@ -277,6 +281,7 @@ private struct LibrarySwipe: ViewModifier {
             withAnimation(Look.librarySlide, completionCriteria: .removed) {
                 store.librarySwipeProgress = target
             } completion: { [weak self, weak store] in
+                guard let self, self.settlement == token else { return }
                 if let paint = store?.libraryGesture.paint {
                     paint.afterPresentation(of: target, when: { [weak self] in
                         self?.panelHasArrived(at: target) ?? true
@@ -389,6 +394,7 @@ private struct LibrarySwipe: ViewModifier {
             withAnimation(Look.appear, completionCriteria: .removed) {
                 store.librarySwipeProgress = target
             } completion: { [weak self, weak store] in
+                guard let self, self.settlement == token else { return }
                 if let paint = store?.libraryGesture.paint {
                     paint.afterPresentation(of: target, when: { [weak self] in
                         self?.panelHasArrived(at: target) ?? true
