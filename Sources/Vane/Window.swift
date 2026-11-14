@@ -1157,19 +1157,11 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     private struct ProfileHosts {
         let content: NSView
         let palette: BrowserPaletteHost
-        let page: RetainedBrowserPageHost
         var views: [NSView] { [content, palette] }
     }
     private var hosts: [ObjectIdentifier: ProfileHosts] = [:]
     private let paletteLayer = BrowserPaletteLayer()
     private var current: ObjectIdentifier?
-    private struct PageDisplayAuthorization {
-        weak var window: NSWindow?
-        weak var slide: ProfileSpaceSlide?
-        let slideGeneration: UUID
-        let store: ObjectIdentifier
-    }
-    private var pageDisplayAuthorization: PageDisplayAuthorization?
     private var subscription: AnyCancellable?
     private(set) var spaceSlide: ProfileSpaceSlide?
     private var queuedSpaceSelection: (slide: ProfileSpaceSlide, target: Space)?
@@ -1192,7 +1184,6 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     }
 
     func beginSpaceSlide(_ slide: ProfileSpaceSlide, preservingGround: Bool = false) {
-        pageDisplayAuthorization = nil
         // Capture before cancel resolves the old selection's final wash. The replacement
         // sidebar continues its presentation, so its background must continue it too.
         let ground = preservingGround ? spaceSlide.flatMap { $0.isActive ? $0.captureGroundPresentation() : nil } : nil
@@ -1235,7 +1226,6 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     }
 
     func cancelSpaceSlide() {
-        pageDisplayAuthorization = nil
         clearQueuedSpaceSelection()
         spaceSlide?.cancel()
         spaceSlide = nil
@@ -1254,10 +1244,7 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     private func profileHosts(for store: TabStore) -> ProfileHosts {
         let id = ObjectIdentifier(store)
         if let existing = hosts[id] { return existing }
-        let presentation = BrowserProfilePresentation()
-        let page = RetainedBrowserPageHost(store: store, presentation: presentation)
-        let content = BrowserHostingView(rootView: BrowserWindow(presentsPalette: false,
-            pageHost: page, presentation: presentation)
+        let content = BrowserHostingView(rootView: BrowserWindow(presentsPalette: false)
             .environmentObject(store)
             .environmentObject(ProfileManager.shared)
             .environment(\.spaceFooterPresentation, footerPresentation)
@@ -1274,7 +1261,7 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
             .ignoresSafeArea()))
         palette.store = store
         palette.sizingOptions = []
-        let host = ProfileHosts(content: content, palette: palette, page: page)
+        let host = ProfileHosts(content: content, palette: palette)
         hosts[id] = host
         return host
     }
@@ -1303,52 +1290,19 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
     /// A committed profile already has its captured native rows. Prepare the
     /// displayed roots without walking the parked profiles' pending layouts.
     func layoutDisplayedProfile() {
-        pageDisplayAuthorization = nil
         guard let current, let host = hosts[current] else { return }
-        // Only a live cross-profile native cover can use current destination
-        // page geometry. Unknown Library ownership retains the full-root path.
-        if let window, let slide = spaceSlide, slide.isActive,
-           let slideGeneration = slide.pageDisplayGeneration,
-           let store = TabStore.all.first(where: { $0.window === window }),
-           slide.isDestination(store), host.page.layoutForProfileHandoff(in: window) {
-            host.palette.layoutSubtreeIfNeeded()
-            pageDisplayAuthorization = PageDisplayAuthorization(window: window, slide: slide,
-                slideGeneration: slideGeneration, store: current)
-            return
-        }
         host.content.layoutSubtreeIfNeeded()
         host.palette.layoutSubtreeIfNeeded()
     }
 
-    /// Preserve the original window display for every unsupported/stale route.
-    /// Authorization is single-use and is consumed before native callbacks run.
-    func displayDisplayedProfile() {
-        let authorization = pageDisplayAuthorization
-        pageDisplayAuthorization = nil
-        guard let authorization, let window, authorization.window === window,
-              let current, current == authorization.store, let host = hosts[current],
-              let slide = spaceSlide, authorization.slide === slide, slide.isActive,
-              slide.pageDisplayGeneration == authorization.slideGeneration,
-              let store = TabStore.all.first(where: { $0.window === window }),
-              ObjectIdentifier(store) == current, slide.isDestination(store),
-              host.page.displayForProfileHandoff(in: window) else {
-            window?.displayIfNeeded()
-            return
-        }
-    }
-
     private func show(_ store: TabStore) {
-        pageDisplayAuthorization = nil
         let id = ObjectIdentifier(store)
         footerPresentation.activate(store)
         guard current != id else { return }
         // Profile deletion can release a parked store. Do not keep its interface alive.
         let kept = Set(TabStore.all.map(ObjectIdentifier.init)).union([id])
         for stale in Array(hosts.keys) where !kept.contains(stale) {
-            if let removed = hosts.removeValue(forKey: stale) {
-                removed.page.retire()
-                removed.views.forEach { $0.removeFromSuperview() }
-            }
+            hosts.removeValue(forKey: stale)?.views.forEach { $0.removeFromSuperview() }
         }
         let host = profileHosts(for: store)
         let departing = current.flatMap { hosts[$0] }
@@ -1684,7 +1638,6 @@ private struct NativeSpacePreview: View {
     }
     private var finishGround: ((Space?) -> Void)?
     private var animationID: UUID?
-    var pageDisplayGeneration: UUID? { animationID }
     private(set) var hasStartedLanding = false
     private var committedTrackingVelocity: CGFloat?
 

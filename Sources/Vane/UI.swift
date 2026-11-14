@@ -491,8 +491,6 @@ struct BrowserWindow: View {
     // BrowserWindowHost presents search above its native Space-swipe surfaces.
     // Standalone SwiftUI hosts retain the inline presentation.
     var presentsPalette = true
-    var pageHost: RetainedBrowserPageHost? = nil
-    var presentation: BrowserProfilePresentation? = nil
     @ObservedObject private var batterySaver = BatterySaver.shared
     @EnvironmentObject var store: TabStore
     @ProfileChromeObserved var profiles = ProfileManager.shared
@@ -541,7 +539,7 @@ struct BrowserWindow: View {
                 floating: store.sidebarFloatingChrome,
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
-                page: WebCard(retainedPage: pageHost).modifier(DownloadFeedbackAnchor(target: .page))
+                page: WebCard().modifier(DownloadFeedbackAnchor(target: .page))
                     .modifier(SidebarPageResizeMetadata(sidebarShown: store.sidebarShown,
                         layout: PageResizeLayout(librarySection: store.libraryOpen ? library.section : nil,
                             spaces: spaceCount, isPrivate: store.isPrivate,
@@ -566,7 +564,7 @@ struct BrowserWindow: View {
         .ignoresSafeArea()
         .modifier(PeekContentTracking(area: store.peekContent))
         .modifier(SidebarToastPresentation(store: store))
-        .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome, feedback: presentation?.downloads))
+        .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
         .sheet(isPresented: $store.liveFolderSheet.presented(when: store.profileVisible)) {
@@ -840,52 +838,14 @@ struct SpaceGround: View {
 /// The web view as a rounded card floating on the window's glass, with everything that
 /// hovers over the page (find, the save-password prompt) inside its clip.
 struct WebCard: View {
-    @EnvironmentObject private var store: TabStore
-    @Environment(\.libraryPageLeadingInset) private var libraryPageLeadingInset
-    var retainedPage: RetainedBrowserPageHost? = nil
-    var topGap: CGFloat = Look.cardGap
-    var edgeToEdge = false
-
-    var body: some View {
-        let spec = WebCardEnvelopeSpec(topGap: topGap, edgeToEdge: edgeToEdge,
-            leading: edgeToEdge ? 0 : libraryPageLeadingInset
-                ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
-        WebCardEnvelope(spec: spec, retainedPage: retainedPage) {
-            if let retainedPage {
-                RetainedBrowserPageSlot(owner: retainedPage, envelope: spec)
-            } else {
-                WebCardSurfaceContent(edgeToEdge: edgeToEdge)
-            }
-        }
-    }
-}
-
-/// The same envelope surrounds both the inline and independently retained page.
-/// Its anchor stays with PeekContentTracking in the parent preference graph.
-private struct WebCardEnvelope<Content: View>: View {
-    let spec: WebCardEnvelopeSpec
-    let retainedPage: RetainedBrowserPageHost?
-    @ViewBuilder let content: () -> Content
-    var body: some View {
-        content()
-            .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
-            .padding(.leading, spec.leading)
-            .padding(.top, spec.topGap)
-            .padding(.trailing, spec.trailing)
-            .padding(.bottom, spec.bottom)
-            .background {
-                if let retainedPage { RetainedPageEnvelopeMarker(owner: retainedPage) }
-            }
-    }
-}
-
-/// Complete page selection and overlays. No page/ownership decision is duplicated
-/// in the native host; standalone WebCard uses this exact same surface.
-struct WebCardSurfaceContent: View {
     @EnvironmentObject var store: TabStore
+    @Environment(\.libraryPageLeadingInset) private var libraryPageLeadingInset
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ProfileChromeObserved private var profileManager = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Clearance between the chrome and the page; Little Vane uses no gap.
+    var topGap: CGFloat = Look.cardGap
+    /// Little Vane's document meets the native window edges beneath its toolbar.
     var edgeToEdge = false
     private var radius: CGFloat { edgeToEdge ? 0 : Look.pageRadius }
 
@@ -978,6 +938,13 @@ struct WebCardSurfaceContent: View {
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
         .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
+        // No inset on the leading edge while the sidebar is docked — its own padding
+        // already leaves the gap, and doubling it reads as a misaligned card. The Library's
+        // column stands in the same place and leaves the same gap.
+        .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
+        .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
+        .padding(.top, topGap)
+        .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
     }
 
     /// The native viewport and the card share one width. Freezing only the
