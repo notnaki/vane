@@ -546,7 +546,7 @@ struct BrowserWindow: View {
                             enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping,
                             libraryNavigationEnabled: !store.spaceGesture.swiping)))
                     .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
-                sidebar: sidebarSurface, panel: LibraryPanel(), store: store)
+                sidebar: sidebarSurface, panel: LibraryPanel())
             edgeStrip
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
