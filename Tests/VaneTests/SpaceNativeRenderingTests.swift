@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import SwiftUI
 import XCTest
 @testable import vane
@@ -1137,6 +1138,30 @@ import XCTest
         try await compatibilityWait {
             abs(slide.offset - heldDrag) < 0.125 && slide.outgoing.layer?.presentation() != nil
         }
+        #if DEBUG
+        var processPolicyEvidence: String?
+        if ProcessInfo.processInfo.environment["VANE_PROFILE_PROCESS_POLICY"] == "1" {
+            var bsd = proc_bsdinfo()
+            let bsdSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+            let bsdRead = proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &bsd, bsdSize)
+            var category = task_category_policy_data_t()
+            var count = mach_msg_type_number_t(MemoryLayout.size(ofValue: category) / MemoryLayout<integer_t>.size)
+            var getDefault: boolean_t = 0
+            let capacity = Int(count)
+            let categoryRead = withUnsafeMutablePointer(to: &category) { pointer in
+                pointer.withMemoryRebound(to: integer_t.self, capacity: capacity) {
+                    task_policy_get(mach_task_self_, task_flavor_t(TASK_CATEGORY_POLICY), $0, &count, &getDefault)
+                }
+            }
+            processPolicyEvidence = "PROFILE_PROCESS_POLICY pid=\(getpid()) main=\(Thread.isMainThread)"
+                + " running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(NSApp.keyWindow === window)"
+                + " activation=\(NSApp.activationPolicy().rawValue) categoryRead=\(categoryRead) category=\(category.role) default=\(getDefault)"
+                + " bsdRead=\(bsdRead) bsdSize=\(bsdSize) flags=\(bsd.pbi_flags) nice=\(bsd.pbi_nice)"
+                + " threadQoS=\(qos_class_self()) processQoS=\(ProcessInfo.processInfo.qualityOfService.rawValue)"
+                + " lowPower=\(ProcessInfo.processInfo.isLowPowerModeEnabled)"
+        }
+        defer { if let processPolicyEvidence { print(processPolicyEvidence) } }
+        #endif
         monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
