@@ -1,4 +1,4 @@
-name: Library cadence boundary diagnostic
+name: Library owned CPU diagnostic
 on:
   push:
     branches: [codex/library-staging-preflight-20261114]
@@ -7,8 +7,8 @@ permissions:
 env:
   VANE_EXPECTED_TESTS: |
     VaneTests.WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted
-  VANE_CANDIDATE_SHA: '140072eeb055bf41696e345d5fb75942f9759d55'
-  VANE_LIBRARY_PAINT_TRACE: '1'
+  VANE_CANDIDATE_SHA: 'ed519dd7c6e8b16fd01c9bed8867d0d6dcc034f9'
+  VANE_LIBRARY_PAINT_TRACE: '0'
   VANE_LIBRARY_LAYOUT_TRACE: '1'
   VANE_DIAGNOSTIC_FILTER: '^VaneTests[.]WindowResizeLayoutTests/testLibraryNavigationKeepsTheResponsiveDocumentPainted$'
 jobs:
@@ -112,7 +112,7 @@ jobs:
           SWIFT_BACKTRACE: enable=yes,interactive=no,color=no,threads=crashed,registers=none,images=none,limit=48,top=0,sanitize=yes,output-to=stderr,timeout=10s,warnings=suppressed
         run: |
           set -euo pipefail
-          python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$VANE_DIAGNOSTIC_FILTER" 2>&1 | tee "$RUNNER_TEMP/vane-diag-tests.log"
+          python3 scripts/profile-resize-motion.py --motion library --output-dir "$RUNNER_TEMP/library-cpu-profile" 2>&1 | tee "$RUNNER_TEMP/vane-diag-tests.log"
       - name: Verify completed selection when successful
         run: |
           set -euo pipefail
@@ -142,6 +142,7 @@ jobs:
             ${{ runner.temp }}/vane-diag-source.txt
             /tmp/vane-resize-library-*
             ${{ runner.temp }}/profile-boundary-costs
+            ${{ runner.temp }}/library-cpu-profile
             ${{ runner.temp }}/vane-diag-manifest.json
             ${{ runner.temp }}/vane-diag-inventory.txt
             ${{ runner.temp }}/vane-motion-admission.log
