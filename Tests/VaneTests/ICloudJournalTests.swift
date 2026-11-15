@@ -12,6 +12,71 @@ final class ICloudJournalTests: XCTestCase {
         ICloudItem(category: .bookmarks, id: "bookmark-1", profileID: nil, parentID: nil,
                    fields: ["title": Data(title.utf8), "url": Data(url.utf8)])
     }
+    func testNearExhaustedRemoteClocksAreRejectedWithoutChangingJournal() async throws {
+        let journal = try ICloudJournal(directory: root(), deviceID: "local")
+        try await journal.capture([item("kept")], enabled: [.bookmarks])
+        let before = await journal.pending(enabled: [.bookmarks])
+        for counter in [UInt64.max - 1, UInt64.max] {
+            let version = ICloudVersion(vector: ["remote": counter], writer: "remote", counter: counter)
+            XCTAssertFalse(version.isValid)
+            var record = before[0]
+            record.fields["title"] = ICloudField(value: Data("poison".utf8), version: version)
+            do { _ = try await journal.merge([record]); XCTFail("Exhausted remote clock accepted") }
+            catch is ICloudFailure { }
+        }
+        let after = await journal.pending(enabled: [.bookmarks])
+        XCTAssertEqual(after, before)
+        try await journal.capture([item("next")], enabled: [.bookmarks])
+    }
+
+    func testLoadedExhaustedCounterIsRejectedWithoutOverwritingJournal() async throws {
+        let directory = try root(), file = directory.appendingPathComponent("icloud-journal.json")
+        let journal = try ICloudJournal(directory: directory)
+        try await journal.checkpoint()
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        object["counter"] = NSNumber(value: UInt64.max - 1)
+        let poisoned = try JSONSerialization.data(withJSONObject: object)
+        try poisoned.write(to: file)
+        XCTAssertThrowsError(try ICloudJournal(directory: directory))
+        XCTAssertEqual(try Data(contentsOf: file), poisoned)
+    }
+
+    func testRemoteVectorCannotHideExhaustionInAnotherWriter() {
+        let version = ICloudVersion(vector: ["writer": 1, "poison": UInt64.max - 1], writer: "writer", counter: 1)
+        XCTAssertFalse(version.isValid)
+    }
+
+    func testLocalClockExhaustionKeepsTheLastDurableCheckpoint() async throws {
+        let directory = try root(), file = directory.appendingPathComponent("icloud-journal.json")
+        let journal = try ICloudJournal(directory: directory)
+        try await journal.checkpoint()
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        object["counter"] = NSNumber(value: ICloudVersion.maximumCounter - 1)
+        let checkpoint = try JSONSerialization.data(withJSONObject: object)
+        try checkpoint.write(to: file)
+        let reopened = try ICloudJournal(directory: directory)
+        var second = item("second"); second.id = "bookmark-2"
+        do {
+            try await reopened.capture([item("first"), second], enabled: [.bookmarks])
+            XCTFail("The second edit must pause sync without committing the first")
+        } catch ICloudFailure.clockExhausted { }
+        XCTAssertEqual(try Data(contentsOf: file), checkpoint)
+        let pending = await reopened.pending(enabled: [.bookmarks])
+        XCTAssertTrue(pending.isEmpty)
+        try await reopened.capture([item("last tick")], enabled: [.bookmarks])
+        let lastCheckpoint = try Data(contentsOf: file)
+        do { try await reopened.capture([], enabled: [.bookmarks]); XCTFail("Deletion must use checked arithmetic") }
+        catch ICloudFailure.clockExhausted { }
+        do { try await reopened.markApplied([item("late edit")], enabled: [.bookmarks]); XCTFail("Readback must use checked arithmetic") }
+        catch ICloudFailure.clockExhausted { }
+        let profile = UUID()
+        do {
+            try await reopened.mergeFences([ICloudDeletionFence(kind: .profile, profileID: profile, id: profile.uuidString)])
+            XCTFail("Fences must use checked arithmetic")
+        } catch ICloudFailure.clockExhausted { }
+        XCTAssertEqual(try Data(contentsOf: file), lastCheckpoint)
+    }
+
     func testSensitiveDefaultsAndNoFileCategory() {
         XCTAssertFalse(ICloudCategory.history.defaultEnabled)
         XCTAssertFalse(ICloudCategory.passwords.defaultEnabled)

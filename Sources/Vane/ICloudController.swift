@@ -292,6 +292,10 @@ import Foundation
             guard admitted(token) else { return }
             try library?.setAccountNamespace(account)
             secrets?.setAccountNamespace(account)
+            for adapter in adapters.compactMap({ $0 as? ICloudExtensionStorageAdapter }) {
+                try await adapter.bindAccount(account)
+                guard admitted(token) else { return }
+            }
             try await capture(enabled, into: journal, admitted: token)
             guard admitted(token) else { return }
             if enabled.contains(where: { !$0.isSecret }) {
@@ -397,6 +401,14 @@ import Foundation
             guard generation == token else { return }
             let account = try await transport.rebindAccount()
             guard generation == token else { return }
+            // Quarantine the previous account's extension cache before the journal commits
+            // the switch: if this stops halfway, the journal still names the old account and
+            // a retry repeats it, rather than adopting an unbound cache for the new one.
+            if await journal.resets(for: account) {
+                for adapter in adapters.compactMap({ $0 as? ICloudExtensionStorageAdapter }) {
+                    try await adapter.bindAccount(account, fresh: true)
+                }
+            }
             try await journal.bindAccount(account, allowMerge: true)
             guard generation == token else { return }
             needsAccountConsent = false; masterEnabled = true; stopped = false; saveSwitches()

@@ -42,12 +42,13 @@ enum ICloudCategory: String, Codable, CaseIterable, Sendable {
 }
 
 enum ICloudFailure: LocalizedError, Equatable {
-    case unavailable(String), accountChanged, invalid(String), storage(String), unsupportedSchema, limitExceeded
+    case unavailable(String), accountChanged, invalid(String), storage(String), unsupportedSchema, limitExceeded, clockExhausted
     var errorDescription: String? {
         switch self {
         case .unavailable(let message), .invalid(let message), .storage(let message): message
         case .accountChanged: "Your Apple Account changed. Review which local data to merge before resuming iCloud sync."
         case .unsupportedSchema: "This iCloud data needs a newer version of Vane. Update Vane to continue syncing."
+        case .clockExhausted: "The iCloud edit clock is exhausted. Sync is paused; your local data and pending changes have been kept."
         case .limitExceeded: "This sync contains an item larger than the supported limit. Your local data and pending changes have been kept."
         }
     }
@@ -105,10 +106,13 @@ struct ICloudVersion: Codable, Equatable, Sendable {
     var vector: [String: UInt64]
     var writer: String
     var counter: UInt64
+    // Reject remote clocks in the final million ticks as well as guarding every
+    // local advance. A corrupt writer must not bring a journal near overflow.
+    static let maximumCounter = UInt64.max - 1_000_000
     var isValid: Bool {
-        !writer.isEmpty && writer.utf8.count <= 128 && counter > 0 && counter < UInt64.max
+        !writer.isEmpty && writer.utf8.count <= 128 && counter > 0 && counter <= Self.maximumCounter
             && vector.count <= 1000 && vector[writer] == counter
-            && vector.allSatisfy { !$0.key.isEmpty && $0.key.utf8.count <= 128 && $0.value > 0 && $0.value < UInt64.max }
+            && vector.allSatisfy { !$0.key.isEmpty && $0.key.utf8.count <= 128 && $0.value > 0 && $0.value <= Self.maximumCounter }
     }
     func dominates(_ other: Self) -> Bool { other.vector.allSatisfy { vector[$0.key, default: 0] >= $0.value } }
     static func preferred(_ a: Self, _ b: Self) -> Self {

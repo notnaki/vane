@@ -689,6 +689,8 @@ struct Space: Identifiable, Codable, Equatable {
         let nextActiveID = activeID == id ? remaining[0].id : activeID
         guard persist(Disk(profiles: remaining, activeID: nextActiveID), deleting: true) else { return false }
         deletedProfileIDs.insert(id)
+        if !sandboxed { Store.retire(id) }
+        WebsitePopupWindow.forget(profileID: id)
         profiles = remaining
         activeID = nextActiveID
         forgetLibraryPreferences(for: id)
@@ -698,7 +700,6 @@ struct Space: Identifiable, Codable, Equatable {
         if !sandboxed {
             // Close the sqlite connection and drop the cached objects before the files go.
             Favicons.forget(id, retiring: true)
-            Store.forget(id)
             Task { await ExtensionHost.removePersistentData(for: id) }
             ExtensionHost.forget(id)
             do { try ExtensionCodeStore.removeProfile(id, directory: directory) }
@@ -750,6 +751,8 @@ struct Space: Identifiable, Codable, Equatable {
         guard persist(Disk(profiles: remaining, activeID: nextActiveID), deleting: true) else { return false }
         deletedProfileIDs.insert(id)
         let faviconRetirement = sandboxed ? nil : Favicons.forget(id, retiring: true)
+        if !sandboxed { Store.retire(id) }
+        WebsitePopupWindow.forget(profileID: id)
         profiles = remaining
         activeID = nextActiveID
         forgetLibraryPreferences(for: id)
@@ -1157,7 +1160,7 @@ struct Space: Identifiable, Codable, Equatable {
         let destinationSpaces = spaces(for: destination)
         guard !destinationSpaces.contains(where: { $0.id == id }) else { return nil }
 
-        let state = Suspension.SpaceState.load(space: id, profileID: source, in: directory)
+        let state = Suspension.SpaceState.load(space: id, profileID: source, in: directory).mapValues(\.withoutInteractionState)
         guard Suspension.SpaceState.save(state, space: id, profileID: destination,
                                          in: directory) else { return nil }
         var moved = original
@@ -1209,7 +1212,7 @@ struct Space: Identifiable, Codable, Equatable {
         let destinationSpaces = spaces(for: destination)
         guard !destinationSpaces.contains(where: { $0.id == id }) else { return nil }
 
-        let state = Suspension.SpaceState.load(space: id, profileID: source, in: directory)
+        let state = Suspension.SpaceState.load(space: id, profileID: source, in: directory).mapValues(\.withoutInteractionState)
         guard await Suspension.SpaceState.saveAsync(state, space: id, profileID: destination,
                                          in: directory) else { return nil }
         // Recheck both inventories after IO before publishing either list. Another
@@ -1462,8 +1465,8 @@ struct Space: Identifiable, Codable, Equatable {
                    && transferManager.spaces(for: defaultID).filter { $0.id == transferring.id }.count == 1)
             let transferredState = Suspension.SpaceState.load(space: transferring.id,
                                                                profileID: defaultID, in: transferRoot)[home]
-            assert("a moved Space keeps its saved page state under the new profile",
-                   transferredState?.title == state.title && transferredState?.state == state.state)
+            assert("a moved Space keeps its title but drops opaque state under the new profile",
+                   transferredState?.title == state.title && transferredState?.state == nil)
             assert("a moved Space keeps both folder shapes under the new profile",
                    defaults.data(forKey: TabStore.shapeKey(.pinned, space: transferring.id,
                                                             profileID: defaultID)) == pinData

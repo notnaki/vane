@@ -348,7 +348,8 @@ import SwiftUI
     /// placed, which is why that is the caller's job and this is not.
     static func hand(_ page: (url: URL, snapshot: Parked), into moved: Tab,
                      of target: TabStore, from store: TabStore, saying: String) {
-        moved.park(url: page.url, page.snapshot)
+        let snapshot = store.profileID == moved.profileID ? page.snapshot : page.snapshot.withoutInteractionState
+        moved.park(url: page.url, snapshot)
         moved.resume()
         target.current = moved.id
         target.window?.makeKeyAndOrderFront(nil)

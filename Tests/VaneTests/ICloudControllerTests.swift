@@ -10,6 +10,32 @@ import XCTest
         addTeardownBlock { try? FileManager.default.removeItem(at: directory); UserDefaults.standard.removePersistentDomain(forName: name) }
         return (directory, defaults)
     }
+    func testAccountRebindQuarantinesUnappliedExtensionValues() async throws {
+        let (directory, defaults) = try fixture()
+        let profile = UUID()
+        let namespace = ICloudExtensionNamespace(profileID: profile, extensionID: UUID().uuidString.lowercased())
+        let incoming = try ICloudExtensionStorageAdapter.item(namespace: namespace, key: "secret", value: Data("123".utf8))
+        let donor = try ICloudJournal(directory: directory.appendingPathComponent("donor"))
+        try await donor.capture([incoming], enabled: [.extensionSyncData])
+        let transport = ControllerCloud()
+        transport.received = await donor.pending(enabled: [.extensionSyncData])
+        let adapter = ICloudExtensionStorageAdapter(directory: directory, profileIDs: { [profile] },
+            installed: { [] }, open: { _ in nil })
+        let controller = ICloudController(directory: directory, defaults: defaults, transport: transport,
+            adapters: [adapter], recovery: {})
+        controller.setEnabled(true, for: .extensionSyncData)
+        await controller.setMasterEnabled(true)
+        XCTAssertNil(controller.lastError)
+        XCTAssertEqual(adapter.pendingExtensionCount, 1)
+        transport.received = []
+        transport.accountName = "another-account"
+        transport.sent = []
+        await controller.mergeWithCurrentAccount()
+        XCTAssertNil(controller.lastError)
+        XCTAssertTrue(transport.sent.isEmpty, "Unapplied values from the old account must not be uploaded")
+        XCTAssertEqual(adapter.pendingExtensionCount, 0)
+    }
+
     func testMasterDefaultsOffAndDoesNotContactCloud() async throws {
         let (directory, defaults) = try fixture()
         let transport = ControllerCloud()
@@ -157,6 +183,9 @@ import XCTest
 
 @MainActor private final class ControllerCloud: ICloudTransport {
     var calls = 0
+    var accountName = "test-account"
+    var received: [ICloudRecord] = []
+    var sent: [ICloudRecord] = []
     var enabled: Set<ICloudCategory> = []
     var onExchange: (() -> Void)?
     var onRemove: (() async -> Void)?
@@ -169,11 +198,11 @@ import XCTest
         if failResume { throw ICloudFailure.storage("Earlier library removal is still pending") }
         pendingRemoval = false
     }
-    func account() async throws -> String { calls += 1; return "test-account" }
+    func account() async throws -> String { calls += 1; return accountName }
     func exchange(pending: [ICloudRecord], enabled: Set<ICloudCategory>, state: Data?, epochs: [ICloudCategory: String],
                   persistState: @escaping @Sendable (Data) async throws -> Void) async throws -> ICloudExchange {
-        calls += 1; self.enabled = enabled; onExchange?()
-        return ICloudExchange(received: [], acknowledged: pending, state: Data("saved".utf8))
+        calls += 1; self.enabled = enabled; sent += pending; onExchange?()
+        return ICloudExchange(received: received, acknowledged: pending, state: Data("saved".utf8))
     }
     func remove(_ categories: Set<ICloudCategory>) async throws { calls += 1; await onRemove?() }
 }

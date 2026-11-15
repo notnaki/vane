@@ -23,6 +23,12 @@ import SwiftUI
         return live.first { $0.window === window }?.tab
     }
 
+    static func forget(profileID: UUID) {
+        for controller in live.filter({ $0.tab.profileID == profileID }) {
+            controller.window?.close()
+        }
+    }
+
     @discardableResult
     static func open(_ tab: Tab, origin: TabStore?, opener: Tab.ID?,
                      features: WKWindowFeatures? = nil, focus: Bool = true) -> WebsitePopupWindow {

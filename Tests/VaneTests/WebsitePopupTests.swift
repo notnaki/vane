@@ -10,6 +10,30 @@ import XCTest
         WebKitStartup.prepare()
     }
 
+    func testDeletingProfileClosesOnlyItsWebsitePopups() async throws {
+        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let manager = ProfileManager(directory: directory, sandboxed: true)
+        let victim = manager.create(name: "Delete")
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let tab = Tab(popup: config, isPrivate: false, profileID: victim.id)
+        let popup = WebsitePopupWindow.open(tab, origin: nil, opener: nil, focus: false)
+        let otherConfig = WKWebViewConfiguration()
+        otherConfig.websiteDataStore = .nonPersistent()
+        let other = Tab(popup: otherConfig, isPrivate: false, profileID: manager.active.id)
+        let kept = WebsitePopupWindow.open(other, origin: nil, opener: nil, focus: false)
+        let deleted = await manager.deleteAsync(victim.id)
+        XCTAssertTrue(deleted)
+        XCTAssertNil(tab.existingWeb)
+        XCTAssertFalse(popup.window?.isVisible ?? false)
+        XCTAssertNotNil(other.existingWeb)
+        popup.window?.close(); kept.window?.close()
+        try? FileManager.default.removeItem(at: directory)
+        try await loop.close()
+    }
+
     func testDialogPopupHasNoLittleVaneStoreAndManualClosePreservesOpener() throws {
         let store = TabStore(isPrivate: true, urls: [], isLittle: false, session: [])
         let opener = store.newBlankTab()
