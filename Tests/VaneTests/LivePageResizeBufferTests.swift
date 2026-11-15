@@ -24,7 +24,7 @@ import XCTest
         lazy var buffer = LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0),
             presenter: { [unowned self] _, callback in paints.append(callback) },
             deadline: { [unowned self] interval, callback in
-                XCTAssertEqual(interval, 0.25)
+                XCTAssertEqual(interval, LivePageResizeBuffer.paintBudget)
                 deadlines.append(callback)
             }, now: { [unowned self] in time }, frameDriver: frameDriver, apply: { [unowned self] frame, _ in
                 commits.append(frame.size)
@@ -489,7 +489,7 @@ import XCTest
         let f = Fixture(); defer { f.close() }
         f.buffer.start()
         f.request(640)
-        f.time = 1
+        f.time = LivePageResizeBuffer.paintBudget + 1
         try await compatibilityWait { f.buffer.bypassForDrag }
         XCTAssertEqual(f.deadlines.count, 1, "An overdue reply cannot grant another paint budget")
         XCTAssertEqual(f.window.frame.width, 640)
@@ -945,7 +945,7 @@ import XCTest
                     guard presentations <= 8 else { XCTFail("A deferred native parent cannot trigger a synchronous paint loop"); return }
                     callback()
                 }, deadline: { interval, callback in
-                    XCTAssertEqual(interval, 0.25)
+                    XCTAssertEqual(interval, LivePageResizeBuffer.paintBudget)
                     deadlines.append(callback)
                 }, now: { f.time }, apply: { _, width in
                     if let width { f.host.resizeLayout.sidebarWidth = width }

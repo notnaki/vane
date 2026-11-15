@@ -51,6 +51,12 @@ struct LivePageResizeAnchor {
 
     typealias FrameDriver = (@escaping @MainActor () -> Void) -> (@MainActor () -> Void)
 
+    /// How long a pending paint holds geometry before the native fallback lets it move
+    /// unpainted. A logged-in GitHub page on a real profile measured past 0.25s for a wide
+    /// jump, and that fallback is the grey strip beside a stale page. Waiting is the lesser
+    /// evil; the bound remains only for a WebContent process that has actually stalled.
+    static let paintBudget: TimeInterval = 1
+
     @MainActor private final class Page {
         let web: WKWebView
         weak var host: WebHost?
@@ -844,7 +850,7 @@ struct LivePageResizeAnchor {
 #if DEBUG
         trace("buffer.prepare.after")
 #endif
-        styleReplyDeadline = now() + 0.25
+        styleReplyDeadline = now() + Self.paintBudget
         armDeadline(token)
         for page in pages {
 #if DEBUG
@@ -964,9 +970,9 @@ struct LivePageResizeAnchor {
             guard let self, self.deadlineRevision == revision else { return }
             self.timedOut(token)
         }
-        if let deadline { deadline(0.25, timeout) }
+        if let deadline { deadline(Self.paintBudget, timeout) }
         else {
-            let timer = Timer(timeInterval: 0.25, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
+            let timer = Timer(timeInterval: Self.paintBudget, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
             self.timer = timer
             RunLoop.main.add(timer, forMode: .common)
         }
