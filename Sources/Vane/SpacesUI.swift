@@ -697,7 +697,15 @@ struct SpacePreviewList: View, Equatable {
         favoriteItems = favoriteTabs.isEmpty ? favorites.map { ($0, nil) }
             : favoriteTabs.map { ($0.pinnedURL, $0) }
         self.unlocked = unlocked
-        self.splits = state?.splits ?? []
+        // A mixed split must fall back to separate public rows, just as the live
+        // sidebar does. Use this set for both lead suppression and pane rendering.
+        self.splits = (state?.splits ?? []).filter { split in
+            split.tabs.allSatisfy { id in
+                [state?.pins, state?.todayShape].compactMap { $0 }.allSatisfy {
+                    $0.lockedFolders(for: id.uuidString, unlocked: unlocked).isEmpty
+                }
+            }
+        }
         let last = Spaces.lastTab(in: space.id)
         let tabs = state?.tabs ?? liveTabs
         // A cached profile already showing this Space keeps its selection on hop,

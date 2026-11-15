@@ -36,6 +36,7 @@ struct ICloudSettings: View {
                     .disabled(!controller.masterEnabled && (controller.busy || !controller.canEnable))
                 }
                 Footnote("Uses this Mac’s Apple Account. Review the categories below before enabling. Your first sync saves a local recovery point and merges your saved library with iCloud.")
+                Footnote("With sync enabled, deletions and changes made on other Macs also apply on this Mac. Deleting a profile removes its passwords and website data here too. Changes to locked folders and their contents also sync, without another confirmation on this Mac.")
                 SettingsRow(controller.status, icon: "arrow.triangle.2.circlepath", tint: .blue) {
                     if controller.busy { ProgressView().controlSize(.small) }
                     Button("Sync Now") { Task { await controller.syncNow() } }

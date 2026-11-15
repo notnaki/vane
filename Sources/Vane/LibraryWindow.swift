@@ -333,14 +333,16 @@ extension Library {
     /// The same walk as `TabStore.pinOrder`, but keeping the folders: the card is a
     /// miniature of that Space's sidebar, and a sidebar without its folders is a flat list
     /// of pages that does not look like the Space you left.
-    nonisolated static func cardRows(shape: Pins?, urls: [URL]) -> [CardRow] {
+    nonisolated static func cardRows(shape: Pins?, urls: [URL], tabIDs: [UUID]? = nil) -> [CardRow] {
         guard let shape, !shape.entries.isEmpty else {
-            return urls.enumerated().map { CardRow(id: "\($0.offset)", url: $0.element) }
+            return urls.enumerated().map { CardRow(id: "\($0.offset)", url: $0.element, sourceIndex: $0.offset) }
         }
         // Counted, not a Set: two pinned tabs can sit on the same page, and matching by
         // membership alone either drops the second one or invents one that is not there.
-        var left: [String: Int] = [:]
-        for u in urls { left[u.absoluteString, default: 0] += 1 }
+        let names = tabIDs?.map(\.uuidString) ?? urls.map(\.absoluteString)
+        guard names.count == urls.count else { return [] }
+        var left: [String: [Int]] = [:]
+        for (index, name) in names.enumerated().reversed() { left[name, default: []].append(index) }
         var out: [CardRow] = []
         for (i, entry) in shape.entries.enumerated() {
             switch entry.row {
@@ -349,19 +351,28 @@ extension Library {
                 out.append(CardRow(id: folder.id.uuidString, folder: folder,
                                    parent: entry.parent, depth: shape.depth(of: i)))
             case .tab(let name):
-                guard let n = left[name], n > 0, let url = URL(string: name) else { continue }
-                left[name] = n - 1
-                guard shape.lockedFolders(for: entry.id, unlocked: []).isEmpty else { continue }
+                guard let index = left[name]?.popLast() else { continue }
+                let url = urls[index]
+                guard shape.ancestors(of: i).allSatisfy({ shape.folder($0)?.requiresAuthentication != true }) else { continue }
                 out.append(CardRow(id: "\(out.count)|\(name)", url: url,
-                                   parent: entry.parent, depth: shape.depth(of: i)))
+                                   parent: entry.parent, depth: shape.depth(of: i), sourceIndex: index))
             }
         }
-        for url in urls {
-            guard let n = left[url.absoluteString], n > 0 else { continue }
-            left[url.absoluteString] = n - 1
-            out.append(CardRow(id: "\(out.count)|\(url.absoluteString)", url: url))
+        for (index, url) in urls.enumerated() {
+            guard left[names[index]]?.contains(index) == true else { continue }
+            out.append(CardRow(id: "\(out.count)|\(url.absoluteString)", url: url, sourceIndex: index))
         }
         return out
+    }
+
+    nonisolated static func cardRows(space: Space, kind: TabKind, shape: Pins?) -> [CardRow] {
+        let urls = kind == .pinned ? space.pinnedTabURLs ?? [] : space.tabURLs
+        if let layout = space.layout, layout.matches(space), (try? layout.validate()) != nil {
+            let pages = layout.tabs.filter { $0.kind == kind }
+            return cardRows(shape: kind == .pinned ? layout.pins : layout.today,
+                            urls: urls, tabIDs: pages.map(\.id))
+        }
+        return cardRows(shape: shape, urls: urls)
     }
 
     /// The rows left once the shut folders have swallowed theirs. A folder is shut when its
@@ -409,6 +420,14 @@ struct CardRow: Identifiable, Equatable, Sendable {
     var url: URL?
     var parent: UUID?
     var depth: Int = 0
+    var sourceIndex: Int? = nil
+}
+
+/// Live rows carry a tab identity. Legacy saved rows bind their position to the exact
+/// metadata and protection snapshot that produced the card, so stale actions fail closed.
+enum LibraryOccurrence: Equatable {
+    case live(UUID)
+    case saved(space: Space, index: Int, shape: Pins?)
 }
 
 /// Where each picture goes in a masonry: two columns of their own natural heights, packed
@@ -502,8 +521,101 @@ extension Library {
     /// A profile id rather than a `TabStore`: nothing here belongs to the window the drag
     /// started in, and a drop's payload arrives on a background queue, where a store is not
     /// something that can be carried.
+    static func liveTab(_ url: URL, kind: TabKind, occurrence: LibraryOccurrence?, in store: TabStore) -> Tab? {
+        let id: UUID?
+        switch occurrence {
+        case .live(let value): id = value
+        case .saved(let space, let index, _):
+            if let layout = space.layout {
+                let pages = layout.tabs.filter { $0.kind == kind }
+                guard pages.indices.contains(index) else { return nil }
+                id = pages[index].id
+            } else {
+                let urls = kind == .pinned ? space.pinnedTabURLs ?? [] : space.tabURLs
+                guard urls.indices.contains(index), urls[index] == url else { return nil }
+                let ordinal = urls[..<index].filter { $0 == url }.count
+                let matches = store.tabs.filter { $0.kind == kind && $0.currentURL == url }
+                guard matches.indices.contains(ordinal) else { return nil }
+                id = matches[ordinal].id
+            }
+        case nil:
+            let matches = store.tabs.filter { $0.kind == kind && $0.currentURL == url }
+            guard matches.count == 1 else { return nil }
+            id = matches[0].id
+        }
+        return store.accessibleTabs.first { $0.id == id && $0.kind == kind && $0.currentURL == url && !store.isTabLocked($0.id) }
+    }
+
+    static func cardTitle(_ url: URL, kind: TabKind, occurrence: LibraryOccurrence?, in store: TabStore?) -> String {
+        if let store, let tab = liveTab(url, kind: kind, occurrence: occurrence, in: store), !tab.title.isEmpty {
+            return TidyTitles.title(for: tab)
+        }
+        return label(for: url)
+    }
+
+    private struct Removal {
+        var space: Space
+        var shape: Pins?
+    }
+
+    private static func removing(_ url: URL, kind: TabKind, from space: Space,
+                                 occurrence: LibraryOccurrence?) -> Removal? {
+        let shape = TabStore.savedShape(kind, space: space.id, profileID: space.profileID)
+        var urls = kind == .pinned ? space.pinnedTabURLs ?? [] : space.tabURLs
+        let index: Int
+        switch occurrence {
+        case .saved(let captured, let position, let capturedShape):
+            guard captured == space, capturedShape == shape else { return nil }
+            index = position
+        case .live: return nil // The live occurrence has disappeared; never substitute a URL match.
+        case nil:
+            let matches = urls.indices.filter { urls[$0] == url }
+            guard matches.count == 1,
+                  shape?.lockedFolders(for: url.absoluteString, unlocked: []).isEmpty ?? true else { return nil }
+            index = matches[0]
+        }
+        guard urls.indices.contains(index), urls[index] == url else { return nil }
+        var out = space
+        var remainingShape = shape
+        if var layout = space.layout, layout.matches(space), (try? layout.validate()) != nil {
+            let pages = layout.tabs.filter { $0.kind == kind }
+            let page = pages[index]
+            let outline = kind == .pinned ? layout.pins : layout.today
+            guard outline.lockedFolders(for: page.id.uuidString, unlocked: []).isEmpty else { return nil }
+            layout.tabs.removeAll { $0.id == page.id }
+            out.layout = layout
+        } else {
+            out.layout = nil
+            if let shape {
+            // Legacy outlines name URLs. Match the nth occurrence, never remove all
+            // equal rows or let another protected occurrence be reconciled away.
+            let ordinal = urls[..<index].filter { $0 == url }.count
+            let entries = shape.entries.indices.filter { shape.entries[$0].tab == url.absoluteString }
+            if entries.indices.contains(ordinal) {
+                let entry = entries[ordinal]
+                guard shape.ancestors(of: entry).allSatisfy({ shape.folder($0)?.requiresAuthentication != true }) else { return nil }
+                remainingShape?.entries.remove(at: entry)
+            }
+            }
+        }
+        urls.remove(at: index)
+        if kind == .pinned { out.pinnedTabURLs = urls } else { out.tabURLs = urls }
+        if let layout = out.layout { out.layout = layout.reconciled(with: out) }
+        return Removal(space: out, shape: remainingShape)
+    }
+
+    private static func commit(_ removal: Removal, kind: TabKind) -> Bool {
+        guard ProfileManager.shared.updateSpace(removal.space) else { return false }
+        if removal.space.layout == nil, let shape = removal.shape,
+           let data = try? JSONEncoder().encode(shape) {
+            UserDefaults.vane.set(data, forKey: TabStore.shapeKey(kind, space: removal.space.id,
+                                                               profileID: removal.space.profileID))
+        }
+        return true
+    }
+
     static func move(_ url: URL, from source: UUID, to target: UUID,
-                     pinned: Bool, profile: UUID) {
+                     pinned: Bool, profile: UUID, occurrence: LibraryOccurrence? = nil) {
         guard canMove(from: source, to: target, profile: profile) else { return }
         let kind: TabKind = pinned ? .pinned : .today
         let into = owner(of: target)
@@ -512,8 +624,8 @@ extension Library {
         // writes down — or the target window's strip would put the wander back on disk.
         var opens = url
 
-        if let live = owner(of: source), let tab = live.tabs.first(where: { $0.currentURL == url }) {
-            guard !live.isTabLocked(tab.id) else { return }
+        if let live = owner(of: source) {
+            guard let tab = liveTab(url, kind: kind, occurrence: occurrence, in: live) else { return }
             // The source is on screen: hand the live tab to the code that already moves one,
             // which carries its scroll position and back/forward list across. That also
             // writes the target's list — harmless when the target is on screen too, because
@@ -522,17 +634,17 @@ extension Library {
             Spaces.move(tab.id, to: target, as: kind, from: live)
         } else {
             let spaces = ProfileManager.shared.spaces(for: profile)
-            guard var from = spaces.first(where: { $0.id == source }),
-                  TabStore.savedShape(kind, space: source, profileID: profile)?
-                    .lockedFolders(for: url.absoluteString, unlocked: []).isEmpty ?? true else { return }
-            from.tabURLs.removeAll { $0 == url }
-            from.pinnedTabURLs?.removeAll { $0 == url }
-            ProfileManager.shared.updateSpace(from)
+            guard let from = spaces.first(where: { $0.id == source }),
+                  let removal = removing(url, kind: kind, from: from, occurrence: occurrence),
+                  commit(removal, kind: kind) else { return }
             // The row leaves the source's sidecar with the page; what crosses into the
             // target is stripped down to its title — see below.
             var parked = Suspension.SpaceState.load(space: source, profileID: profile,
                                                     in: Store.directory)
-            let carried = parked.removeValue(forKey: url.absoluteString)
+            let carried = parked[url.absoluteString]
+            if !(removal.space.tabURLs + (removal.space.pinnedTabURLs ?? [])).contains(url) {
+                parked.removeValue(forKey: url.absoluteString)
+            }
             Suspension.SpaceState.save(parked, space: source, profileID: profile,
                                        in: Store.directory)
             if into == nil, var to = spaces.first(where: { $0.id == target }) {
@@ -570,7 +682,7 @@ extension Library {
     /// UI transfers persist the destination before removing the source row. The synchronous
     /// counterpart above remains available to offline layout checks.
     static func moveAsync(_ url: URL, from source: UUID, to target: UUID,
-                          pinned: Bool, profile: UUID) async {
+                          pinned: Bool, profile: UUID, occurrence: LibraryOccurrence? = nil) async {
         guard !AppLifecycle.shared.persistenceExitInProgress,
               canMove(from: source, to: target, profile: profile), movingProfiles.insert(profile).inserted else { return }
         defer {
@@ -578,20 +690,19 @@ extension Library {
             if movingProfiles.isEmpty { let waiting = moveWaiters; moveWaiters = []; waiting.forEach { $0.resume() } }
         }
         let kind: TabKind = pinned ? .pinned : .today
-        if let live = owner(of: source), let tab = live.tabs.first(where: { $0.currentURL == url }) {
-            guard !live.isTabLocked(tab.id) else { return }
+        if let live = owner(of: source) {
+            guard let tab = liveTab(url, kind: kind, occurrence: occurrence, in: live) else { return }
             await Spaces.moveAsync(tab.id, to: target, as: kind, from: live)
             return
         }
         await Suspension.SpaceState.prepare(profiles: [profile], in: Store.directory)
         let manager = ProfileManager.shared
         let original = manager.spaces(for: profile)
-        guard var from = original.first(where: { $0.id == source }),
+        guard let from = original.first(where: { $0.id == source }),
               var to = original.first(where: { $0.id == target }),
-              TabStore.savedShape(kind, space: source, profileID: profile)?
-                .lockedFolders(for: url.absoluteString, unlocked: []).isEmpty ?? true else { return }
+              removing(url, kind: kind, from: from, occurrence: occurrence) != nil else { return }
         var parked = Suspension.SpaceState.load(space: source, profileID: profile, in: Store.directory)
-        let carried = parked.removeValue(forKey: url.absoluteString)
+        let carried = parked[url.absoluteString]
         let into = owner(of: target)
         if let into {
             into.newTab(url)
@@ -624,8 +735,12 @@ extension Library {
               manager.spaces(for: profile).first(where: { $0.id == source }) == from else {
             Toasts.show("The source Space changed during the move. Its original tab was kept."); return
         }
-        from.tabURLs.removeAll { $0 == url }; from.pinnedTabURLs?.removeAll { $0 == url }
-        guard manager.updateSpace(from) else { return }
+        // Protection can change independently of Space metadata during either await.
+        guard let removal = removing(url, kind: kind, from: from, occurrence: occurrence),
+              commit(removal, kind: kind) else { return }
+        if !(removal.space.tabURLs + (removal.space.pinnedTabURLs ?? [])).contains(url) {
+            parked.removeValue(forKey: url.absoluteString)
+        }
         if !(await Suspension.SpaceState.saveAsync(parked, space: source, profileID: profile, in: Store.directory)) {
             Toasts.show("The tab moved, but its old saved state could not be removed. Try saving again.")
         }
@@ -646,8 +761,9 @@ extension Library {
     @Published var url: URL?
     @Published var from: UUID?
     @Published var pinned = false
+    var occurrence: LibraryOccurrence?
 
-    func clear() { url = nil; from = nil; pinned = false }
+    func clear() { url = nil; from = nil; pinned = false; occurrence = nil }
 }
 
 // MARK: - Restoring
@@ -1942,20 +2058,34 @@ private struct SpaceCard: View {
     /// shut one's shapes arrive together from the catalog's worker.
     private var pinned: [CardRow] {
         if let live {
-            let byID = Dictionary(live.tabs.map { ($0.id.uuidString, $0) },
-                                  uniquingKeysWith: { a, _ in a })
-            let shape = live.pins.mapped { byID[$0]?.currentURL?.absoluteString }
-            return Library.cardRows(shape: shape,
-                                    urls: live.tabs.filter { $0.kind == .pinned }
-                                        .compactMap(\.currentURL))
+            let tabs = live.tabs.filter { $0.kind == .pinned && $0.currentURL != nil }
+            return Library.cardRows(shape: live.pins, urls: tabs.compactMap(\.currentURL), tabIDs: tabs.map(\.id))
         }
         guard let snapshot else { return [] }
-        return Library.cardRows(shape: snapshot.pinned, urls: space.pinnedTabURLs ?? [])
+        return Library.cardRows(space: snapshot.space, kind: .pinned, shape: snapshot.pinned)
     }
 
-    private var today: [URL] {
-        if let live { return live.accessibleTabs.filter { $0.kind == .today }.compactMap(\.currentURL) }
-        return snapshot?.visibleToday ?? []
+    private var today: [CardRow] {
+        if let live {
+            return live.tabs.filter { $0.kind == .today }.enumerated().compactMap { index, tab in
+                guard !live.isTabLocked(tab.id), let url = tab.currentURL else { return nil }
+                return CardRow(id: tab.id.uuidString, url: url, sourceIndex: index)
+            }
+        }
+        guard let snapshot else { return [] }
+        return Library.cardRows(space: snapshot.space, kind: .today, shape: snapshot.today).filter { $0.url != nil }
+    }
+
+    private func occurrence(for row: CardRow, kind: TabKind) -> LibraryOccurrence? {
+        guard let index = row.sourceIndex else { return nil }
+        if let live {
+            let tabs = live.tabs.filter { $0.kind == kind && (kind != .pinned || $0.currentURL != nil) }
+            guard tabs.indices.contains(index) else { return nil }
+            return .live(tabs[index].id)
+        }
+        guard let snapshot else { return nil }
+        return .saved(space: snapshot.space, index: index,
+                      shape: kind == .pinned ? snapshot.pinned : snapshot.today)
     }
 
     private var waitingForSavedRows: Bool { live == nil && snapshot == nil }
@@ -1986,7 +2116,8 @@ private struct SpaceCard: View {
                             FolderCardRow(folder: folder, depth: row.depth,
                                           shut: shut.contains(folder.id)) { toggle(folder) }
                         } else if let url = row.url {
-                            PageRow(space: space, url: url, pinned: true, destinations: destinations, depth: row.depth)
+                            PageRow(space: space, url: url, pinned: true, destinations: destinations,
+                                    occurrence: occurrence(for: row, kind: .pinned), depth: row.depth)
                         }
                     }
                     if !pinned.isEmpty && !today.isEmpty {
@@ -1994,8 +2125,11 @@ private struct SpaceCard: View {
                     }
                     // By position, not by url: the same page can be open in two tabs of one
                     // Space, and two rows sharing an id is a list that scrolls to nowhere.
-                    ForEach(Array(today.enumerated()), id: \.offset) { _, url in
-                        PageRow(space: space, url: url, pinned: false, destinations: destinations, depth: 0)
+                    ForEach(today) { row in
+                        if let url = row.url {
+                            PageRow(space: space, url: url, pinned: false, destinations: destinations,
+                                    occurrence: occurrence(for: row, kind: .today), depth: 0)
+                        }
                     }
                     if pinned.isEmpty && today.isEmpty {
                         if waitingForSavedRows {
@@ -2145,6 +2279,7 @@ private struct SpaceCard: View {
         guard let from = LibraryDragging.shared.from, from != space.id,
               let provider = providers.first else { return false }
         let pinned = LibraryDragging.shared.pinned
+        let occurrence = LibraryDragging.shared.occurrence
         guard Library.canMove(from: from, to: space.id, profile: space.profileID) else { return false }
         let target = space.id, name = space.name, profile = space.profileID
         _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier) { data, _ in
@@ -2152,9 +2287,10 @@ private struct SpaceCard: View {
                   let url = URL(string: text) else { return }
             Task { @MainActor in
                 guard LibraryDragging.shared.url == url,
-                      LibraryDragging.shared.from == from else { return }
+                      LibraryDragging.shared.from == from,
+                      LibraryDragging.shared.occurrence == occurrence else { return }
                 LibraryDragging.shared.clear()
-                Task { @MainActor in await Library.moveAsync(url, from: from, to: target, pinned: pinned, profile: profile) }
+                Task { @MainActor in await Library.moveAsync(url, from: from, to: target, pinned: pinned, profile: profile, occurrence: occurrence) }
                 axAnnounce("Moved to \(name).")
             }
         }
@@ -2214,6 +2350,7 @@ private struct PageRow: View {
     let url: URL
     let pinned: Bool
     let destinations: [Space]
+    let occurrence: LibraryOccurrence?
     var depth: Int = 0
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -2222,10 +2359,8 @@ private struct PageRow: View {
     /// a pinned tab that has been restored but not loaded, which is most of them in a window
     /// that has just come up. Either way the address is what the row falls back to.
     private var title: String {
-        if let tab = Library.owner(of: space.id)?.tabs.first(where: { $0.currentURL == url }), !tab.title.isEmpty {
-            return TidyTitles.title(for: tab)
-        }
-        return Library.label(for: url)
+        Library.cardTitle(url, kind: pinned ? .pinned : .today, occurrence: occurrence,
+                          in: Library.owner(of: space.id))
     }
 
     var body: some View {
@@ -2252,7 +2387,7 @@ private struct PageRow: View {
                 ForEach(destinations) { other in
                     Button(other.name) {
                         Task { @MainActor in
-                            await Library.moveAsync(url, from: space.id, to: other.id, pinned: pinned, profile: space.profileID)
+                            await Library.moveAsync(url, from: space.id, to: other.id, pinned: pinned, profile: space.profileID, occurrence: occurrence)
                         }
                     }
                 }
@@ -2276,11 +2411,11 @@ private struct PageRow: View {
     /// Space it does not belong to would be a tab in the wrong list.
     private func open() {
         guard let target = Library.show(space, from: store) else { return }
-        if let tab = target.tabs.first(where: { $0.currentURL == url }) {
+        if let tab = Library.liveTab(url, kind: pinned ? .pinned : .today, occurrence: occurrence, in: target) {
             target.current = tab.id
-        } else {
+        } else if occurrence == nil {
             target.newTab(url)
-        }
+        } else { return }
         Library.close(store)
         if target !== store { Library.close(target) }
     }
@@ -2289,11 +2424,12 @@ private struct PageRow: View {
         // Published on the next turn, not now: a state change inside the drag's own start
         // re-renders the row under the pointer and SwiftUI drops the drag with it. Same
         // reason as `dragPayload`. Every drag start overwrites what the last one left.
-        let url = url, from = space.id, pinned = pinned
+        let url = url, from = space.id, pinned = pinned, occurrence = occurrence
         DispatchQueue.main.async {
             LibraryDragging.shared.url = url
             LibraryDragging.shared.from = from
             LibraryDragging.shared.pinned = pinned
+            LibraryDragging.shared.occurrence = occurrence
         }
         return NSItemProvider(object: url.absoluteString as NSString)
     }

@@ -303,15 +303,37 @@ enum Spaces {
     ///
     /// A profile may have no Spaces. Windows leave the deleted Space, switching to a
     /// survivor when there is one or clearing its tabs when the profile is empty.
+    /// Include cold shapes and every in-memory copy, including empty protected folders.
+    @MainActor private static func protectedFolders(in id: UUID, profile: UUID) -> [Folder] {
+        var shapes = [TabStore.savedShape(.pinned, space: id, profileID: profile),
+                      TabStore.savedShape(.today, space: id, profileID: profile)].compactMap { $0 }
+        for store in TabStore.all where store.profileID == profile {
+            if store.currentSpaceID == id { shapes += [store.pins, store.todayShape] }
+            if let stash = store.stashes[id] { shapes += [stash.pins, stash.todayShape] }
+        }
+        var seen = Set<UUID>()
+        return shapes.flatMap(\.entries).compactMap(\.folder).filter {
+            $0.requiresAuthentication == true && seen.insert($0.id).inserted
+        }
+    }
+
+    @MainActor private static func canDelete(_ id: UUID, profile: UUID,
+                                             authentication: FolderAuthentication) -> Bool {
+        let grants = authentication.grants(for: profile)
+        return protectedFolders(in: id, profile: profile).allSatisfy { grants.contains($0.id) }
+    }
+
     @discardableResult
     @MainActor static func delete(_ id: UUID, in profileID: UUID) -> Bool {
         let showing = TabStore.all.filter { $0.profileID == profileID && $0.currentSpaceID == id }
         // Flush the shared live tabs before reading the saved Space.
-        guard showing.allSatisfy({ $0.saveCurrentSpace() }) else { return false }
+        guard canDelete(id, profile: profileID, authentication: .shared),
+              showing.allSatisfy({ $0.saveCurrentSpace() }) else { return false }
         let all = ProfileManager.shared.spaces(for: profileID)
         // Read the Space back rather than trusting the caller's copy: what is on disk is
         // what is about to be deleted, and it is newer than the copy a menu was built from.
         guard let space = all.first(where: { $0.id == id }),
+              canDelete(id, profile: profileID, authentication: .shared),
               ProfileManager.shared.deleteSpace(id, in: profileID) else { return false }
         archiveContents(of: space)
         TabStore.forgetShape(space: id, profileID: profileID)
@@ -327,13 +349,26 @@ enum Spaces {
     }
 
     @discardableResult
-    @MainActor static func deleteAsync(_ id: UUID, in profileID: UUID) async -> Bool {
+    @MainActor static func deleteAsync(_ id: UUID, in profileID: UUID,
+                                       authentication: FolderAuthentication = .shared) async -> Bool {
         PendingSessionTransactions.begin()
         defer { PendingSessionTransactions.end() }
         let showing = TabStore.all.filter { $0.profileID == profileID && $0.currentSpaceID == id }
-        // Flush the shared live tabs before reading the saved Space.
+        // Authentication is required before protected URLs can enter the unprotected Archive.
+        for folder in protectedFolders(in: id, profile: profileID) {
+            let granted = await withCheckedContinuation { continuation in
+                authentication.unlock(folder.id, profile: profileID,
+                    reason: "Delete the Space containing locked folder “\(folder.name)”.") {
+                    continuation.resume(returning: $0)
+                }
+            }
+            guard granted else { return false }
+        }
+        // Flush the shared live tabs before reading the saved Space. Grants and folder
+        // topology may change during authentication or the disk barrier.
         guard showing.allSatisfy({ $0.saveCurrentSpace() }),
-              await SessionPersistence.shared.flush() else { return false }
+              await SessionPersistence.shared.flush(),
+              canDelete(id, profile: profileID, authentication: authentication) else { return false }
         let all = ProfileManager.shared.spaces(for: profileID)
         // Read the Space back rather than trusting the caller's copy: what is on disk is
         // what is about to be deleted, and it is newer than the copy a menu was built from.
