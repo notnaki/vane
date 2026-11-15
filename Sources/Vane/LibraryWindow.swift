@@ -88,6 +88,29 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// showing: it is the same box in the same place, and a query left behind from the
     /// section before would silently hide rows.
     @Published var query = ""
+
+    /// Private searches belong to their originating window and never enter the normal query.
+    @Published private var privateQueries: [ObjectIdentifier: String] = [:]
+
+    func query(in store: TabStore) -> String {
+        store.isPrivate ? privateQueries[ObjectIdentifier(store), default: ""] : query
+    }
+
+    func setQuery(_ value: String, in store: TabStore) {
+        guard store.isPrivate else { if query != value { query = value }; return }
+        let key = ObjectIdentifier(store)
+        guard privateQueries[key, default: ""] != value else { return }
+        privateQueries[key] = value.isEmpty ? nil : value
+    }
+
+    func queryBinding(in store: TabStore) -> Binding<String> {
+        Binding(get: { self.query(in: store) }, set: { self.setQuery($0, in: store) })
+    }
+
+    func forgetPrivateQuery(in store: TabStore) {
+        guard store.isPrivate, privateQueries[ObjectIdentifier(store)] != nil else { return }
+        privateQueries.removeValue(forKey: ObjectIdentifier(store))
+    }
     /// The filter panel's toggle on Archived Tabs: only the tabs that were archived out of
     /// a Little Vane window.
     @Published var littleArcOnly = false
@@ -137,7 +160,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
         }
         // …and the one search field is shared by every section, so a query typed at the
         // downloads must not still be filtering the archive a click later.
-        if (!store.libraryOpen || shared.section != section), !shared.query.isEmpty { shared.query = "" }
+        if !store.libraryOpen || shared.section != section { shared.setQuery("", in: store) }
         if shared.section != section { shared.section = section }
         // The find bar searches the page, and the page is about to be covered by this. A bar
         // left open would be invisible, would still be eating Escape, and would have nothing
@@ -158,6 +181,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// to the page, so the next keystroke is the page's rather than falling on a rail that is
     /// not there any more.
     static func close(_ store: TabStore) {
+        shared.forgetPrivateQuery(in: store)
         store.librarySwipeMonitor.cancelPendingActivation(toward: false)
         // The prepared panel stays mounted through its exit. Relinquish its responder
         // before publishing the close, so focusPage can restore the page immediately.
@@ -1425,14 +1449,14 @@ private struct ArchivedTabsPane: View {
         let profileIDs: Set<UUID>
     }
     private var request: Request {
-        Request(revision: archives.revision, query: library.query, littleOnly: library.littleArcOnly,
+        Request(revision: archives.revision, query: library.query(in: store), littleOnly: library.littleArcOnly,
                 profileIDs: store.isPrivate ? [] : library.profileFilters[.archived, default: []])
     }
 
     var body: some View {
         LibraryColumn {
             LibraryHead(section: .archived, filtering: library.littleArcOnly,
-                        query: $library.query) {
+                        query: library.queryBinding(in: store)) {
                 Toggle("Little Vane only", isOn: $library.littleArcOnly)
                     .help("Only tabs archived from a Little Vane window")
             } actions: {
@@ -1563,9 +1587,9 @@ private struct BoostsPane: View {
 
     var body: some View {
         let entries = entries
-        let filtered = entries.filter { Library.matches([$0.origin, $0.profileName], library.query) }
+        let filtered = entries.filter { Library.matches([$0.origin, $0.profileName], library.query(in: store)) }
         LibraryColumn {
-            LibraryHead(section: .boosts, filtering: false, query: $library.query) {
+            LibraryHead(section: .boosts, filtering: false, query: library.queryBinding(in: store)) {
                 EmptyView()
             } actions: { EmptyView() }
         } content: {
@@ -1648,14 +1672,14 @@ private struct DownloadsPane: View {
     }
 
     private func refresh() {
-        groups = presentation.groups(query: library.query, completedOnly: library.completedOnly,
+        groups = presentation.groups(query: library.query(in: store), completedOnly: library.completedOnly,
                                      profileIDs: store.isPrivate ? [] : library.profileFilters[.downloads, default: []])
     }
 
     var body: some View {
         LibraryColumn {
             LibraryHead(section: .downloads, filtering: library.completedOnly,
-                        query: $library.query) {
+                        query: library.queryBinding(in: store)) {
                 Toggle("Completed only", isOn: $library.completedOnly)
                     .help("Hide the downloads that are still arriving or went wrong")
             } actions: {
@@ -1681,7 +1705,7 @@ private struct DownloadsPane: View {
             if store.libraryOpen { downloads.refreshMissing(); presentation.refresh(); refresh() }
         }
         .onChange(of: presentation.rows) { refresh() }
-        .onChange(of: library.query) { refresh() }
+        .onChange(of: library.query(in: store)) { refresh() }
         .onChange(of: library.completedOnly) { refresh() }
         .onChange(of: library.profileFilters[.downloads]) { refresh() }
     }
@@ -1780,7 +1804,7 @@ private struct MediaPane: View {
     }
 
     private func refresh() {
-        items = presentation.media(query: library.query)
+        items = presentation.media(query: library.query(in: store))
         var columns = [[Cell]](repeating: [], count: Look.mediaColumns)
         for (index, item) in items.enumerated() {
             columns[index % Look.mediaColumns].append(Cell(item: item, height: Look.mediaColumn, order: index))
@@ -1790,7 +1814,7 @@ private struct MediaPane: View {
 
     var body: some View {
         LibraryColumn {
-            LibraryHead(section: .media, filtering: false, query: $library.query) {
+            LibraryHead(section: .media, filtering: false, query: library.queryBinding(in: store)) {
                 EmptyView()
             } actions: {
                 EmptyView()
@@ -1828,7 +1852,7 @@ private struct MediaPane: View {
             if store.libraryOpen { downloads.refreshMissing(); presentation.refresh(); refresh() }
         }
         .onChange(of: presentation.rows) { refresh() }
-        .onChange(of: library.query) { refresh() }
+        .onChange(of: library.query(in: store)) { refresh() }
     }
 
     /// One picture's place on the wall. `order` is where it came in the list, which is what

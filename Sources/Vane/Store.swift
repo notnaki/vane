@@ -659,6 +659,7 @@ private final class StoreConnection {
 
     init(path: String, initialize: Bool = true) {
         sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI, nil)
+        exec("PRAGMA secure_delete=ON")
         if !initialize { sqlite3_busy_timeout(db, 1_000); return }
         exec("""
         PRAGMA journal_mode=WAL;
@@ -884,7 +885,16 @@ private final class StoreConnection {
     /// `since: nil` is "all time", which is a DELETE with no WHERE rather than a very old
     /// date — a stored visit with a broken timestamp must not survive "clear everything".
     @discardableResult func clearHistory(since: Date? = nil) -> Bool {
-        guard let since else { return historyWritten { exec("DELETE FROM visits") } }
+        guard let since else {
+            guard historyWritten({ exec("DELETE FROM visits") }) else { return false }
+            // DELETE scrubs current pages; old WAL frames still hold earlier copies.
+            // The C API reports SQLITE_BUSY when a reader prevents truncation, unlike
+            // sqlite3_exec on the checkpoint PRAGMA, which can succeed with a busy row.
+            guard sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil) == SQLITE_OK else {
+                return historyFailure()
+            }
+            return true
+        }
         return historyWritten { run("DELETE FROM visits WHERE at >= ?", [since.timeIntervalSince1970]) }
     }
 

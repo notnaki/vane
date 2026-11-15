@@ -316,6 +316,7 @@ import WebKit
         }
         guard let store = TabStore.all.first(where: { $0.window === window }) else { return }
         store.tabs.forEach { $0.tearDown() }
+        Library.shared.forgetPrivateQuery(in: store)
         TabStore.all.removeAll { $0 === store }
     }
 
