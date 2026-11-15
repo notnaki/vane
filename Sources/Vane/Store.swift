@@ -1412,6 +1412,13 @@ extension Store {
 }
 
 private extension StoreConnection {
+    func iCloudTimestamp(_ row: OpaquePointer, _ column: Int32) throws -> Double {
+        let value = sqlite3_column_double(row, column)
+        guard [SQLITE_INTEGER, SQLITE_FLOAT].contains(sqlite3_column_type(row, column)), value.isFinite else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return value
+    }
     func prepareICloudIdentities(namespace: String) -> Bool {
         guard namespace.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return false }
         let aliasTable = "icloud_bookmark_aliases" + namespace
@@ -1427,6 +1434,7 @@ private extension StoreConnection {
     func captureICloud(_ enabled: Set<ICloudCategory>, profile: UUID, namespace: String = "") throws -> [ICloudItem] {
         guard prepareICloudIdentities(namespace: namespace) else { throw CocoaError(.fileReadCorruptFile) }
         var result: [ICloudItem] = []
+        var serializationError: Error?
         guard transaction({
             for (category, table) in [(ICloudCategory.bookmarks, "bookmarks"), (.history, "visits")] where enabled.contains(category) {
                 var missing: [Int64] = []
@@ -1436,19 +1444,24 @@ private extension StoreConnection {
                 }
                 let folder = category == .bookmarks ? "folder_id" : "NULL"
                 guard self.run("SELECT sync_id,url,title,at,\(folder) FROM \(table)", [], { row in
-                    let fields: [String: Any] = ["url": self.text(row, 1), "title": self.text(row, 2), "at": sqlite3_column_double(row, 3), "kind": "page", "folderID": sqlite3_column_type(row, 4) == SQLITE_NULL ? NSNull() : self.text(row, 4)]
-                    let encoded = fields.mapValues { try! JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed, .sortedKeys]) }
-                    result.append(ICloudItem(category: category, id: self.text(row, 0), profileID: profile, parentID: nil, fields: encoded))
-                }) else { return false }
+                    do {
+                        let fields: [String: Any] = ["url": self.text(row, 1), "title": self.text(row, 2), "at": try self.iCloudTimestamp(row, 3), "kind": "page", "folderID": sqlite3_column_type(row, 4) == SQLITE_NULL ? NSNull() : self.text(row, 4)]
+                        let encoded = try fields.mapValues { try JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed, .sortedKeys]) }
+                        result.append(ICloudItem(category: category, id: self.text(row, 0), profileID: profile, parentID: nil, fields: encoded))
+                    } catch { serializationError = error }
+                }), serializationError == nil else { return false }
                 if category == .bookmarks {
                     guard self.run("SELECT id,name,position FROM bookmark_folders", [], { row in
                         let fields: [String: Any] = ["name": self.text(row, 1), "position": Int(sqlite3_column_int64(row, 2)), "kind": "folder"]
-                        result.append(ICloudItem(category: .bookmarks, id: "folder:" + self.text(row, 0), profileID: profile, parentID: nil, fields: fields.mapValues { try! JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }))
-                    }) else { return false }
+                        do {
+                            let encoded = try fields.mapValues { try JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }
+                            result.append(ICloudItem(category: .bookmarks, id: "folder:" + self.text(row, 0), profileID: profile, parentID: nil, fields: encoded))
+                        } catch { serializationError = error }
+                    }), serializationError == nil else { return false }
                 }
             }
             return true
-        }) else { throw CocoaError(.fileWriteUnknown) }
+        }) else { throw serializationError ?? CocoaError(.fileWriteUnknown) }
         return result
     }
 
@@ -1495,10 +1508,14 @@ private extension StoreConnection {
             let table = item.category == .bookmarks ? "bookmarks" : "visits"
             let folder = item.category == .bookmarks ? "folder_id" : "NULL"
             var previous: [String: Data] = [:]
+            var serializationError: Error?
             guard run("SELECT url,title,at,\(folder) FROM \(table) WHERE sync_id = ?", [item.id], { row in
-                let object: [String: Any] = ["url": self.text(row, 0), "title": self.text(row, 1), "at": sqlite3_column_double(row, 2), "folderID": sqlite3_column_type(row, 3) == SQLITE_NULL ? NSNull() : self.text(row, 3)]
-                previous = object.mapValues { try! JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }
+                do {
+                    let object: [String: Any] = ["url": self.text(row, 0), "title": self.text(row, 1), "at": try self.iCloudTimestamp(row, 2), "folderID": sqlite3_column_type(row, 3) == SQLITE_NULL ? NSNull() : self.text(row, 3)]
+                    previous = try object.mapValues { try JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }
+                } catch { serializationError = error }
             }) else { throw CocoaError(.fileReadCorruptFile) }
+            if let serializationError { throw serializationError }
             if previous.isEmpty, ICloudApplyContext.baseline[source.key] != nil { return }
             let patch = ICloudApplyContext.reconcile(source, current: previous)
             item.fields = previous.merging(patch.fields) { _, incoming in incoming }
@@ -1516,9 +1533,13 @@ private extension StoreConnection {
                     && run("DELETE FROM bookmark_folders WHERE id = ?", [ownedID])
             } else {
                 var current: [String: Data] = [:]
+                var serializationError: Error?
                 guard run("SELECT name,position FROM bookmark_folders WHERE id = ?", [folderAliases[id] ?? id], { row in
-                    current = ["name": try! JSONEncoder().encode(self.text(row, 0)), "position": try! JSONEncoder().encode(Int(sqlite3_column_int64(row, 1))), "kind": try! JSONEncoder().encode("folder")]
+                    do {
+                        current = ["name": try JSONEncoder().encode(self.text(row, 0)), "position": try JSONEncoder().encode(Int(sqlite3_column_int64(row, 1))), "kind": try JSONEncoder().encode("folder")]
+                    } catch { serializationError = error }
                 }) else { throw CocoaError(.fileReadCorruptFile) }
+                if let serializationError { throw serializationError }
                 if current.isEmpty, ICloudApplyContext.baseline[source.key] != nil { return }
                 item.fields = current.merging(ICloudApplyContext.reconcile(source, current: current).fields) { _, incoming in incoming }
                 let name = try value("name", String.self)

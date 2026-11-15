@@ -161,7 +161,8 @@ final class BackupRestore {
         }
         for file in files {
             if ReadingQueueFiles.parseOwnedName(file.name) != nil { try ReadingQueueFiles.prepareOwnedParents(file.name, in: library.directory) }
-            try BackupIO.write(file.data, library.directory.appendingPathComponent(file.name))
+            let data = !exactPreferences && file.name.hasSuffix(".db") ? try BackupSQLite.rebuild(file.data) : file.data
+            try BackupIO.write(data, library.directory.appendingPathComponent(file.name))
             try checkpoint("installed:\(file.name)")
         }
         try ReadingQueueFiles.removeEmptyDirectories(in: library.directory)
