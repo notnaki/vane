@@ -892,7 +892,7 @@ struct TitleReveal: Equatable, Sendable {
                 let title = web.title
                 let sourceWeb = web
                 let origin = DownloadFeedback.Origin(window: web.window)
-                sourceWeb.startDownload(using: URLRequest(url: url)) { download in
+                sourceWeb.startDownload(using: HTTPSOnly.downloadRequest(url, profileID: profileID)) { download in
                     TidyDownloads.remember(download, pageTitle: title)
                     manager.attach(download, alwaysAsk: true, suggestedFilename: filename, from: sourceWeb, in: origin.window)
                 }

@@ -199,6 +199,13 @@ import WebKit
         return r
     }
 
+    /// Explicit downloads bypass navigation policy. Upgrade before WebKit sends either
+    /// the initial request or a fresh retry, with the same local and profile exceptions.
+    static func downloadRequest(_ url: URL, profileID: UUID) -> URLRequest {
+        guard enabled, let secure = upgrade(url, profileID: profileID) else { return URLRequest(url: url) }
+        return request(secure)
+    }
+
     /// The second loop, and the one that is easy to miss. `loadSimulatedRequest` — how the
     /// interstitial (and `ErrorPage`) gets rendered at the failing url — is a real navigation
     /// and comes straight back through `decidePolicyFor`. Without this latch, `.block` renders

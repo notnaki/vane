@@ -37,12 +37,10 @@ import WebKit
     ///
     /// `suffix` is the extension taken **verbatim** — not sanitised, not chosen, not
     /// re-derived. It is what decides how the file opens, so the only safe thing to do with
-    /// it is put back exactly what was already there. A query string is cut off first,
-    /// because `download.php?id=887494876` is a filename a real CDN will hand you.
+    /// it is put back exactly what was already there. This is a filesystem component:
+    /// question marks and hashes are literal characters, not URL query/fragment delimiters.
     static func parts(of suggested: String) -> (stem: String, suffix: String) {
-        var name = suggested
-        if let cut = name.firstIndex(where: { $0 == "?" || $0 == "#" }) { name = String(name[..<cut]) }
-        name = (name as NSString).lastPathComponent
+        let name = (suggested as NSString).lastPathComponent
         return ((name as NSString).deletingPathExtension, (name as NSString).pathExtension)
     }
 
@@ -287,7 +285,8 @@ import WebKit
               safe == newName else { return false }
 
         let to = Downloads.uniqueDestination(in: from.deletingLastPathComponent(), suggested: safe)
-        guard (try? fm.moveItem(at: from, to: to)) != nil else { return false }
+        guard to.pathExtension == from.pathExtension,
+              (try? fm.moveItem(at: from, to: to)) != nil else { return false }
         undoLog[item.id] = (now: to, was: from)
         item.url = to
         item.name = to.lastPathComponent
@@ -402,9 +401,9 @@ import WebKit
                    == "quarterly-report.pdf")
         assert("a junk name with no extension stays without one",
                clean(suggested: "887494876", pageTitle: title, sourceURL: navan) == "Navan Itinerary")
-        assert("a query string on the suggested name is cut before naming",
+        assert("a literal query-like suffix in a filename is preserved",
                clean(suggested: "download.php?id=887494876", pageTitle: title, sourceURL: navan)
-                   == "Navan Itinerary.php")
+                   == "Navan Itinerary.php?id=887494876")
         assert("a title that is itself junk is refused, and the url used instead",
                clean(suggested: "887494876.pdf", pageTitle: "404", sourceURL: navan) == "Itinerary.pdf")
         assert("a title that is already the name the server sent is not a rename",
