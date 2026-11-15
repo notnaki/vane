@@ -32,7 +32,7 @@ struct ThemeWash: VectorArithmetic {
         var palette = space.map(Spaces.palette(of:)) ?? []
         if palette.isEmpty {
             let owner = space.flatMap { item in profiles.first { $0.id == item.profileID } } ?? fallback
-            palette = [ThemeColor(hex: owner.colorHex)!]
+            palette = [ThemeColor(hex: owner.colorHex) ?? ThemeColor(red: 0.5, green: 0.5, blue: 0.5)]
         }
         let strength = space?.tint ?? Look.defaultTint
         return Self(colors: palette, strength: strength,

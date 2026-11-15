@@ -59,6 +59,35 @@ struct BackupLibrary: @unchecked Sendable {
             !Self.isLocalPreference($0.key) && !Self.isRememberedSecurityDecision($0.key)
         }
         if !includeLocal {
+            var connections = try aiConnections(incoming)
+            let local = defaults.data(forKey: AIConnections.preferenceKey)
+                .flatMap { try? JSONDecoder().decode(AIConnections.self, from: $0) } ?? AIConnections()
+            for index in connections.connections.indices {
+                var connection = connections.connections[index]
+                if let old = local.connections.first(where: { $0.id == connection.id }),
+                   old.credentialEndpointScope == connection.credentialEndpointScope {
+                    connection.legacyCredentialAccount = old.legacyCredentialAccount
+                    connection.credentialUsesEndpointScope = old.credentialUsesEndpointScope
+                    connection.registration = old.registration
+                } else {
+                    // Even a known orphaned Keychain slot must remain inaccessible to
+                    // an imported definition. A fresh identity has no saved credential.
+                    let oldID = connection.id
+                    connection.id = UUID()
+                    connection.legacyCredentialAccount = nil
+                    connection.credentialUsesEndpointScope = true
+                    connection.registration = nil
+                    for feature in AIFeature.allCases where connections.connection(for: feature)?.id == oldID {
+                        connections.route(feature, to: connection.id)
+                    }
+                }
+                connections.connections[index] = connection
+            }
+            // Write only what the backup carried (or its materialized legacy settings);
+            // an absent key restores as absent.
+            if incoming[AIConnections.preferenceKey] != nil || !connections.connections.isEmpty {
+                incoming[AIConnections.preferenceKey] = try JSONEncoder().encode(connections)
+            }
             // A backup can carry code, but cannot grant permission to run it in the
             // destination profile. Exact rollback retains the user's original approval.
             let boostKey = SiteBoostStore.key(ProfileManager.defaultID)
@@ -77,6 +106,28 @@ struct BackupLibrary: @unchecked Sendable {
         }
         defaults.setPersistentDomain(incoming, forName: domain)
         guard defaults.synchronize() else { throw BackupError.storage("Could not persist restored settings.") }
+    }
+    private func aiConnections(_ preferences: [String: Any]) throws -> AIConnections {
+        var state = AIConnections()
+        if let value = preferences[AIConnections.preferenceKey] {
+            guard let data = value as? Data,
+                  let decoded = try? JSONDecoder().decode(AIConnections.self, from: data),
+                  decoded.connections.count <= 256,
+                  Set(decoded.connections.map(\.id)).count == decoded.connections.count else {
+                throw BackupError.invalid("Invalid saved AI connections.")
+            }
+            state = decoded
+        } else if let provider = AIProvider(rawValue: preferences["aiProvider"] as? String ?? ""),
+                  provider != .apple, provider != .chatGPT {
+            // Materialize old settings here so the normal legacy migration cannot
+            // select a preexisting provider credential after restore.
+            var connection = AIConnection(provider: provider)
+            connection.baseURL = provider == .custom ? preferences["aiBaseURL"] as? String ?? "" : provider.baseURL
+            connection.model = preferences["aiModel." + provider.rawValue] as? String ?? provider.defaultModel
+            state.connections = [connection]
+            for feature in [AIFeature.tabTitles, .tabGroups, .downloads] { state.route(feature, to: connection.id) }
+        }
+        return state
     }
     func ownedNames(includeJournals: Bool = false) throws -> [String] {
         let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
@@ -206,6 +257,10 @@ struct BackupLibrary: @unchecked Sendable {
         let ids = Set(disk.profiles.map(\.id))
         guard !disk.profiles.isEmpty, disk.profiles.count <= 1000, ids.count == disk.profiles.count,
               !ids.contains(Profile.incognito.id), ids.contains(disk.activeID) else { throw BackupError.invalid("Invalid profile identities.") }
+        guard disk.profiles.allSatisfy({ profile in
+            let hex = profile.colorHex.hasPrefix("#") ? profile.colorHex.dropFirst() : profile.colorHex[...]
+            return hex.count == 6 && hex.allSatisfy(\.isHexDigit)
+        }) else { throw BackupError.invalid("Invalid profile color.") }
         let allowed = disk.profiles.reduce(into: Set(["profiles.json"])) { $0.formUnion(BackupPaths.names(for: $1.id)) }
         guard files.keys.allSatisfy({ allowed.contains($0) || $0.hasPrefix("FilterLists/") || ReadingQueueFiles.parseOwnedName($0).map { ids.contains($0.profileID) } == true }) else {
             throw BackupError.invalid("A saved file belongs to an unknown profile.")
@@ -214,6 +269,7 @@ struct BackupLibrary: @unchecked Sendable {
             throw BackupError.invalid("Invalid preferences.")
         }
         guard !preferences.keys.contains(where: Self.isLocalPreference) else { throw BackupError.invalid("Local startup metadata cannot be restored.") }
+        _ = try aiConnections(preferences)
         let imported = preferences["blockerImportedLists"] as? [String] ?? []
         for name in imported {
             guard BackupPaths.isOwned("FilterLists/" + name), let data = files["FilterLists/" + name],
