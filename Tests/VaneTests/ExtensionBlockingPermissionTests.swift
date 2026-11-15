@@ -18,22 +18,6 @@ import XCTest
         XCTAssertTrue(observer.requestedPermissions.contains(.init(rawValue: "webRequest")))
         XCTAssertFalse(ExtensionFilterBridge.recognizes(observer))
         let blocker = try await extensionFixture(blocking: true)
-        XCTAssertTrue(ExtensionAccess(blocker).permissions.contains("webRequestBlocking"))
-        XCTAssertTrue(ExtensionAccess.phrase("webRequestBlocking").contains("native static filters"))
         XCTAssertTrue(ExtensionFilterBridge.recognizes(blocker))
-    }
-
-    func testBlockingGrantIsRecheckedAfterRevocation() async throws {
-        let access = ExtensionAccess(try await extensionFixture(blocking: true))
-        XCTAssertFalse(ExtensionFilterBridge.hasBlockingPermission(required: access, approvedCapabilities: nil),
-                       "Legacy approval never authorized native blocking")
-        var approved: Set<String> = ["storage", "webRequest"]
-        XCTAssertFalse(ExtensionFilterBridge.hasBlockingPermission(required: access, approvedCapabilities: approved))
-        approved.insert("webRequestBlocking")
-        XCTAssertTrue(ExtensionFilterBridge.hasBlockingPermission(required: access, approvedCapabilities: approved))
-        approved.remove("webRequestBlocking")
-        XCTAssertFalse(ExtensionFilterBridge.hasBlockingPermission(required: access, approvedCapabilities: approved))
-        let observer = ExtensionAccess(try await extensionFixture(blocking: false))
-        XCTAssertFalse(ExtensionFilterBridge.hasBlockingPermission(required: observer, approvedCapabilities: ["webRequestBlocking"]))
     }
 }

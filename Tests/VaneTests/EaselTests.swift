@@ -132,17 +132,14 @@ import SwiftUI
         defer { HTTPSOnly.defaults = previous; UserDefaults.dropScratchSuite(suite) }
         let delegate = EaselLiveView.Delegate(profileID: UUID())
         let plain = URL(string: "http://example.com/a")!
-        delegate.source = plain
         XCTAssertEqual(delegate.policy(url: plain, mainFrame: true), .upgrade(URL(string: "https://example.com/a")!))
         XCTAssertEqual(delegate.policy(url: plain, mainFrame: true), .cancel)
         delegate.finished(url: URL(string: "https://example.com/a")!)
         XCTAssertEqual(delegate.policy(url: URL(string: "http://example.com/next")!, mainFrame: true),
                        .upgrade(URL(string: "https://example.com/next")!))
-        delegate.source = URL(string: "http://localhost:8080")!
-        XCTAssertEqual(delegate.policy(url: delegate.source!, mainFrame: true), .allow)
+        XCTAssertEqual(delegate.policy(url: URL(string: "http://localhost:8080")!, mainFrame: true), .allow)
         XCTAssertEqual(delegate.policy(url: URL(string: "javascript:alert(1)")!, mainFrame: true), .cancel)
         HTTPSOnly.allow(host: "allowed.example", profileID: delegate.profileID)
-        delegate.source = URL(string: "http://allowed.example")!
         XCTAssertEqual(delegate.policy(url: URL(string: "http://allowed.example")!, mainFrame: true), .allow)
     }
     func testPNGExportIncludesItemsAtTheFarCanvasEdge() throws {

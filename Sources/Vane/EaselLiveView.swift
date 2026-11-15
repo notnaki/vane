@@ -40,7 +40,6 @@ struct EaselLiveView: NSViewRepresentable {
         enum Policy: Equatable { case allow, cancel, upgrade(URL) }
         func policy(url: URL, mainFrame: Bool) -> Policy {
             guard EaselItem.webURL(url.absoluteString) != nil else { return .cancel }
-            if mainFrame, !allowsMainFrame(url) { return .cancel }
             // Preview-local retry state avoids granting an interstitial's one-shot HTTP
             // allowance to a browser tab. The owner's explicit host exceptions still apply.
             if mainFrame, HTTPSOnly.enabled, let upgraded = HTTPSOnly.upgrade(url, profileID: profileID) {
@@ -48,16 +47,6 @@ struct EaselLiveView: NSViewRepresentable {
                 return .upgrade(upgraded)
             }
             return .allow
-        }
-
-        // Anchor identity to the saved source, allowing only the browser's HTTPS upgrade.
-        // Check both actions and responses: a server redirect may skip action policy.
-        func allowsMainFrame(_ url: URL) -> Bool {
-            guard let source, let origin = PasswordOrigin(url: source),
-                  let destination = PasswordOrigin(url: url) else { return false }
-            if destination == origin { return true }
-            guard HTTPSOnly.enabled, let upgraded = HTTPSOnly.upgrade(source, profileID: profileID) else { return false }
-            return destination == PasswordOrigin(url: upgraded)
         }
 
         func finished(url: URL?) {
@@ -81,16 +70,7 @@ struct EaselLiveView: NSViewRepresentable {
         func webView(_ web: WKWebView, decidePolicyFor response: WKNavigationResponse,
                      decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
             let attachment = (response.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased().hasPrefix("attachment") == true
-            decisionHandler(responsePolicy(url: response.response.url, mainFrame: response.isForMainFrame,
-                                           displayable: response.canShowMIMEType && !attachment))
-        }
-        func responsePolicy(url: URL?, mainFrame: Bool, displayable: Bool) -> WKNavigationResponsePolicy {
-            guard displayable else { return .cancel }
-            if mainFrame {
-                guard let url, allowsMainFrame(url) else { return .cancel }
-                if HTTPSOnly.enabled, HTTPSOnly.upgrade(url, profileID: profileID) != nil { return .cancel }
-            }
-            return .allow
+            decisionHandler(response.canShowMIMEType && !attachment ? .allow : .cancel)
         }
         func webView(_ web: WKWebView, didReceive challenge: URLAuthenticationChallenge,
                      completionHandler: @escaping @MainActor (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {

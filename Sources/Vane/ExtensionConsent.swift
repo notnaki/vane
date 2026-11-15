@@ -9,11 +9,7 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
     let sites: Set<String>
 
     @MainActor init(_ ext: WKWebExtension) {
-        var permissions = Set(ext.requestedPermissions.map(\.rawValue))
-        // WebKit omits this unsupported API permission. Vane's native compatibility
-        // still needs a separately described, installation-scoped blocking approval.
-        if ExtensionFilterBridge.recognizes(ext) { permissions.insert(ExtensionFilterBridge.blockingCapability) }
-        self.permissions = permissions
+        permissions = Set(ext.requestedPermissions.map(\.rawValue))
         sites = Set(ext.requestedPermissionMatchPatterns.union(ext.allRequestedMatchPatterns).map(\.string))
     }
 
@@ -54,7 +50,6 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         case "unlimitedStorage": "Store extension data without the normal quota"
         case "webNavigation": "Observe browser navigation"
         case "webRequest": "Observe website requests"
-        case "webRequestBlocking": "Block website requests using Vane’s native static filters"
         default: permission
         }
     }

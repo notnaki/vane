@@ -13,16 +13,12 @@ import WebKit
         init(_ profileID: UUID, _ lists: [WKContentRuleList]) { self.profileID = profileID; self.lists = lists }
     }
 
-    static let blockingCapability = "webRequestBlocking"
-
     static func recognizes(_ ext: WKWebExtension) -> Bool {
         ext.manifestVersion == 2 && ext.displayName == "uBlock Origin"
             && ext.requestedPermissions.contains(WKWebExtension.Permission(rawValue: "webRequest"))
-            && (ext.manifest["permissions"] as? [String] ?? []).contains(blockingCapability)
-    }
-
-    static func hasBlockingPermission(required: ExtensionAccess, approvedCapabilities: Set<String>?) -> Bool {
-        required.permissions.contains(blockingCapability) && approvedCapabilities?.contains(blockingCapability) == true
+            // The display name is spoofable; native blocking also needs the manifest to ask
+            // for blocking, not just request observation.
+            && (ext.manifest["permissions"] as? [String] ?? []).contains("webRequestBlocking")
     }
 
     static func apply(to controller: WKUserContentController, profileID: UUID) {
@@ -49,7 +45,6 @@ import WebKit
     private weak var context: WKWebExtensionContext?
     private weak var background: WKWebView?
     private let changed: () -> Void
-    private let blockingApproved: () -> Bool
     private var timer: Timer?
     private var task: Task<Void, Never>?
     private var invalidated = false
@@ -59,10 +54,8 @@ import WebKit
     private let cachePrefix: String
     private(set) var status = "Static filter compatibility is preparing."
 
-    init(profileID: UUID, context: WKWebExtensionContext, background: WKWebView?,
-         blockingApproved: @escaping () -> Bool, changed: @escaping () -> Void) {
+    init(profileID: UUID, context: WKWebExtensionContext, background: WKWebView?, changed: @escaping () -> Void) {
         self.profileID = profileID; self.context = context; self.background = background; self.changed = changed
-        self.blockingApproved = blockingApproved
         cachePrefix = "vane-mv2-" + profileID.uuidString.lowercased() + "-"
             + SHA256.hash(data: Data(context.uniqueIdentifier.utf8)).map { String(format: "%02x", $0) }.joined() + "-"
         super.init()
@@ -77,8 +70,7 @@ import WebKit
         guard !invalidated, profileID != Profile.incognito.id, let context, context.isLoaded,
               context.hasAccessToAllHosts,
               context.hasPermission(WKWebExtension.Permission(rawValue: "storage")),
-              context.hasPermission(WKWebExtension.Permission(rawValue: "webRequest")),
-              blockingApproved() else { return false }
+              context.hasPermission(WKWebExtension.Permission(rawValue: "webRequest")) else { return false }
         let patterns = Set(context.grantedPermissionMatchPatterns.filter { $0.value > Date() }.keys.map(\.string))
         guard patterns.contains("<all_urls>") || patterns.contains("*://*/*")
             || patterns.isSuperset(of: ["http://*/*", "https://*/*"]) else { return false }
@@ -89,7 +81,7 @@ import WebKit
     func permissionsChanged() {
         if !canApply {
             task?.cancel()
-            clear(); setStatus("Static filter compatibility is paused until all website access and native request-blocking approval are allowed.")
+            clear(); setStatus("Static filter compatibility is paused until all website access is allowed.")
         }
         schedule()
     }
@@ -152,7 +144,7 @@ import WebKit
 
     private func refresh() async {
         guard canApply else {
-            clear(); setStatus("Static filter compatibility is paused until all website access and native request-blocking approval are allowed."); return
+            clear(); setStatus("Static filter compatibility is paused until all website access is allowed."); return
         }
         var created: [WKContentRuleList] = []
         do {
