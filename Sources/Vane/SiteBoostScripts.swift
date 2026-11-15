@@ -122,6 +122,7 @@ import WebKit
         return el;
       };
       const hover = event => {
+        if (!event.isTrusted) return;
         const el = elementAt(event);
         // Highlighting needs eligibility and geometry. Build and validate the unique
         // selector only on pick, against the DOM as it exists at click time.
@@ -131,12 +132,14 @@ import WebKit
         Object.assign(overlay.style, {display:'block', left:r.x+'px', top:r.y+'px', width:r.width+'px', height:r.height+'px'});
       };
       const pick = event => {
+        if (!event.isTrusted) return;
         event.preventDefault(); event.stopImmediatePropagation();
         const key = selector(elementAt(event));
         if (key) { post('pick', {selector:key}); overlay.style.display = 'none'; selected = null; }
       };
-      const block = event => { event.preventDefault(); event.stopImmediatePropagation(); };
+      const block = event => { if (!event.isTrusted) return; event.preventDefault(); event.stopImmediatePropagation(); };
       const key = event => {
+        if (!event.isTrusted) return;
         if (event.key === 'Escape') { block(event); zap(false); post('done'); }
       };
       const zap = on => {

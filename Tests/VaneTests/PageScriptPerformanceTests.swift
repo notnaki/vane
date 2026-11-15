@@ -276,13 +276,28 @@ import XCTest
         let (web, capture) = try await fixture(script: SiteBoostScripts.runtime,
                                                name: SiteBoostScripts.messageName,
                                                world: SiteBoostScripts.world,
-                                               html: "<body><div id='root'><span id='duplicate'>First</span><span id='duplicate'>Second</span></div></body>")
+                                               html: "<body><div id='root'><span id='duplicate'>First</span><span id='duplicate'>Second</span></div></body>",
+                                               // Zap ignores untrusted (script-dispatched) input, and a page cannot
+                                               // forge isTrusted. Capture the runtime's own listeners to drive them.
+                                               tracking: """
+                                               window.__zapListeners = {};
+                                               const __add = EventTarget.prototype.addEventListener;
+                                               EventTarget.prototype.addEventListener = function(type, fn, options) {
+                                                   if (this === window) __zapListeners[type] = fn;
+                                                   return __add.call(this, type, fn, options);
+                                               };
+                                               window.__trusted = el => {
+                                                   const r = el.getBoundingClientRect();
+                                                   return {isTrusted: true, target: el, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2,
+                                                           preventDefault() {}, stopImmediatePropagation() {}};
+                                               };
+                                               """)
         let queries = try await js(web, """
         __vaneBoost.zap(true);
         const leaf = document.getElementById('root').lastElementChild;
         __queries = 0;
         for (let i = 0; i < 100; i++) {
-            leaf.dispatchEvent(new PointerEvent('pointermove', {bubbles: true}));
+            __zapListeners.pointermove(__trusted(leaf));
         }
         return __queries;
         """, world: SiteBoostScripts.world) as? Int
@@ -290,7 +305,7 @@ import XCTest
         _ = try await js(web, """
         // A framework can change the path between highlighting and clicking.
         document.getElementById('root').prepend(document.createElement('span'));
-        document.getElementById('root').lastElementChild.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+        __zapListeners.click(__trusted(document.getElementById('root').lastElementChild));
         return true;
         """, world: SiteBoostScripts.world)
         let deadline = Date.now.addingTimeInterval(3)

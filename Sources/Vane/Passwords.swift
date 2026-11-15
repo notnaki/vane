@@ -647,11 +647,16 @@ enum Passwords {
         case review(PendingSave)
     }
 
+    struct SaveOriginChanged: LocalizedError {
+        var errorDescription: String? { "A submitted password can only be saved for the website where it was captured." }
+    }
+
     static func reviewedSave(_ offer: PendingSave, origin: PasswordOrigin, account: String,
                              password: String, profileID: UUID,
                              operations: ReviewOperations = .init()) throws -> SaveDecision {
         return try serviceLane.sync {
             guard offersSaving(profileID: profileID) else { throw SavingDisabled() }
+            guard origin == offer.origin else { throw SaveOriginChanged() }
             let (existing, revision) = try operations.snapshot(origin, account, profileID)
             guard offersSaving(profileID: profileID) else { throw SavingDisabled() }
             let sameIdentity = origin == offer.origin && account == offer.account

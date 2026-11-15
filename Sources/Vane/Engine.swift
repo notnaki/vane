@@ -2599,6 +2599,7 @@ struct TitleReveal: Equatable, Sendable {
         let origin = reviewedOrigin ?? p.origin, account = reviewedAccount ?? p.account
         let password = reviewedPassword ?? p.password
         guard origin.scheme == "https", !password.isEmpty else { return }
+        guard origin == p.origin else { passwordSaveProblem = Passwords.SaveOriginChanged().localizedDescription; return }
         do {
             applyPasswordSave(try Passwords.reviewedSave(p, origin: origin, account: account,
                 password: password, profileID: profileID), offer: p)
@@ -2615,6 +2616,7 @@ struct TitleReveal: Equatable, Sendable {
         guard !isPrivate, let offer = pendingSave, passwordCommitOffer != offer.id else { return }
         let origin = reviewedOrigin ?? offer.origin, account = reviewedAccount ?? offer.account
         let password = reviewedPassword ?? offer.password
+        guard origin == offer.origin else { passwordSaveProblem = Passwords.SaveOriginChanged().localizedDescription; return }
         guard origin.scheme == "https", !password.isEmpty,
               let operation = Passwords.beginUIOperation() else { return }
         let profile = profileID, reader = passwordReader

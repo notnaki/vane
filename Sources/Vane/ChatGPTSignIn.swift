@@ -7,7 +7,11 @@ import Network
 /// sign-in inside Vane's website stores or borrows another application's registration.
 @MainActor final class ChatGPTSignIn {
     private var listener: NWListener?
-    private var connections: [NWConnection] = []
+    private(set) var connections: [NWConnection] = []
+    private var readDeadlines: [ObjectIdentifier: Task<Void, Never>] = [:]
+    private let readTimeout: Duration
+
+    init(readTimeout: Duration = .seconds(5)) { self.readTimeout = readTimeout }
     private var ready: CheckedContinuation<UInt16, Error>?
     private var callback: CheckedContinuation<ChatGPTOAuth.Pending.Callback, Error>?
     private var pending: ChatGPTOAuth.Pending?
@@ -30,7 +34,7 @@ import Network
                 callback = continuation
                 if !NSWorkspace.shared.open(attempt.authorizationURL) { stop(ChatGPTFailure.invalidCallback) }
             }
-            listener?.cancel(); connections.forEach { $0.cancel() }; connections.removeAll()
+            listener?.cancel(); closeConnections()
             let data = try await ChatGPTHTTP.data(attempt.exchange(result), limit: 128000)
             let credentials = try ChatGPTOAuth.grant(data)
             let keys = try await ChatGPTSession.keys()
@@ -41,7 +45,7 @@ import Network
             return (registration, credentials)
         } onCancel: { Task { @MainActor [weak self] in self?.cancel() } }
     }
-    private func start() async throws -> UInt16 {
+    func start() async throws -> UInt16 {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         let listener = try NWListener(using: parameters)
@@ -62,6 +66,19 @@ import Network
             MainActor.assumeIsolated {
                 guard let self, !self.ended, self.connections.count < 8 else { connection.cancel(); return }
                 self.connections.append(connection)
+                connection.stateUpdateHandler = { [weak self, weak connection] state in
+                    MainActor.assumeIsolated {
+                        guard let connection else { return }
+                        switch state {
+                        case .failed, .cancelled: self?.close(connection)
+                        default: break
+                        }
+                    }
+                }
+                self.readDeadlines[ObjectIdentifier(connection)] = Task { [weak self, weak connection] in
+                    do { try await Task.sleep(for: self?.readTimeout ?? .seconds(5)) } catch { return }
+                    if let connection { self?.close(connection) }
+                }
                 connection.start(queue: .main)
                 self.receive(connection, data: Data())
             }
@@ -74,11 +91,14 @@ import Network
     private func receive(_ connection: NWConnection, data: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] chunk, _, complete, error in
             MainActor.assumeIsolated {
-                guard let self, !self.ended, error == nil else { connection.cancel(); return }
+                guard let self else { connection.cancel(); return }
+                guard !self.ended, self.connections.contains(where: { $0 === connection }), error == nil else {
+                    self.close(connection); return
+                }
                 let data = data + (chunk ?? Data())
-                guard data.count < 32768 else { connection.cancel(); return }
+                guard data.count < 32768 else { self.close(connection); return }
                 guard let request = String(data: data, encoding: .utf8), request.contains("\r\n\r\n") else {
-                    if complete { connection.cancel() } else { self.receive(connection, data: data) }
+                    if complete { self.close(connection) } else { self.receive(connection, data: data) }
                     return
                 }
                 let first = request.components(separatedBy: "\r\n").first?.split(separator: " ").map(String.init) ?? []
@@ -102,14 +122,25 @@ import Network
         }
     }
     private func respond(_ connection: NWConnection, success: Bool) {
-        connection.send(content: ChatGPTSignInResponse.data(success: success), completion: .contentProcessed { _ in connection.cancel() })
+        close(connection, response: ChatGPTSignInResponse.data(success: success))
+    }
+    private func close(_ connection: NWConnection, response: Data? = nil) {
+        readDeadlines.removeValue(forKey: ObjectIdentifier(connection))?.cancel()
+        connection.stateUpdateHandler = nil
         connections.removeAll { $0 === connection }
+        if let response {
+            // Detach before resuming OAuth so attempt cleanup cannot truncate the reply.
+            connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+        } else { connection.cancel() }
+    }
+    private func closeConnections() {
+        for connection in connections { close(connection) }
     }
     private func stop(_ error: Error) {
         ended = true
         timeout?.cancel(); timeout = nil
         listener?.cancel(); listener = nil
-        connections.forEach { $0.cancel() }; connections.removeAll()
+        closeConnections()
         ready?.resume(throwing: error); ready = nil
         callback?.resume(throwing: error); callback = nil
         pending = nil

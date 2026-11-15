@@ -45,11 +45,16 @@ import XCTest
         func screenBounds(_ view: NSView) throws -> CGRect {
             try XCTUnwrap(view.window).convertToScreen(view.convert(view.bounds, to: nil))
         }
+        // The card is the origin bar plus the page, so the page sits below the card's centre
+        // by a fixed amount. Tracking means that amount never changes.
+        var verticalOffset: CGFloat?
         func assertCentered() throws {
             let content = try screenBounds(XCTUnwrap(source.existingWeb?.superview))
             let peek = try screenBounds(XCTUnwrap(Peek.live?.store.active?.existingWeb?.superview))
             XCTAssertEqual(peek.midX, content.midX, accuracy: 1)
-            XCTAssertEqual(peek.midY, content.midY, accuracy: 1)
+            let offset = content.midY - peek.midY
+            XCTAssertLessThan(abs(offset), 40, "Only the origin bar may offset the page")
+            if let verticalOffset { XCTAssertEqual(offset, verticalOffset, accuracy: 1) } else { verticalOffset = offset }
             XCTAssertTrue(content.contains(peek))
         }
 

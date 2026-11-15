@@ -28,6 +28,32 @@ import WebKit
 /// Reopen Last Peek brings back.
 @MainActor enum Peek {
 
+    struct Identity: Equatable {
+        let origin: String
+        let fullURL: String
+        let glyph: String
+        let connection: String
+    }
+
+    /// Derived from the document on screen, never a page title or an editable address.
+    static func identity(url: URL?, secureContent: Bool, trusted: Bool, failed: Bool) -> Identity {
+        var site = SiteControlModel()
+        site.host = url?.host(percentEncoded: true) ?? ""
+        site.scheme = url?.scheme
+        site.secureContent = secureContent
+        site.certificateTrusted = trusted
+        site.navigationFailed = failed
+        var origin = URLComponents()
+        origin.scheme = url?.scheme
+        origin.host = url?.host(percentEncoded: true)
+        origin.port = url?.port
+        let label = site.host.isEmpty ? (url?.scheme.map { $0 + ":" } ?? "No page loaded")
+            : (origin.url?.absoluteString ?? "No page loaded")
+        return Identity(origin: label,
+                        fullURL: url?.absoluteString ?? "No page loaded",
+                        glyph: site.glyph, connection: site.connection)
+    }
+
     /// Where the Settings › Links toggle is written. `Prefs.peekLinks` reads it; the pane's
     /// `@AppStorage` writes it. One spelling, so the two cannot drift.
     static let prefKey = "peekLinks"
@@ -504,7 +530,11 @@ private struct PeekView: View {
     private var card: some View {
         Group {
             if let tab = store.active {
-                WebView(web: tab.web).id(tab.id)
+                VStack(spacing: 0) {
+                    PeekOriginBar(tab: tab)
+                    Divider()
+                    WebView(web: tab.web).id(tab.id)
+                }
             } else {
                 Color.clear
             }
@@ -524,6 +554,42 @@ private struct PeekView: View {
         // reader that is a sheet, and reading the page under it as if it were still in play
         // would be a lie about what a click does.
         .accessibilityAddTraits(.isModal)
+    }
+}
+
+/// A browser-owned strip outside the page's drawing area, including after redirects.
+private struct PeekOriginBar: View {
+    @ObservedObject var tab: Tab
+    @State private var showingDetails = false
+
+    var body: some View {
+        let identity = Peek.identity(url: tab.currentURL, secureContent: tab.secureContent,
+                                     trusted: tab.certificateTrusted, failed: tab.displayingNavigationError)
+        Button { showingDetails.toggle() } label: {
+            HStack(spacing: Look.inset) {
+                Image(systemName: identity.glyph)
+                Text(identity.origin).lineLimit(1).truncationMode(.middle).layoutPriority(1)
+                Spacer(minLength: 0)
+                Text(identity.connection).font(Look.caption).lineLimit(1)
+            }
+            .font(Look.small)
+            .foregroundStyle(Look.inkPrimary)
+            .padding(Look.inset)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .background(Look.barMaterial)
+        .help(identity.fullURL + "\n" + identity.connection)
+        .accessibilityLabel(identity.origin + ", " + identity.connection)
+        .popover(isPresented: $showingDetails, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: Look.inset) {
+                Text(identity.fullURL).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                SiteControlPopover(tab: tab)
+            }
+            .padding(Look.inset)
+            .frame(width: 340)
+        }
+        .onChange(of: identity.fullURL) { showingDetails = false }
     }
 }
 

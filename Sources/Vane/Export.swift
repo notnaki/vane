@@ -368,6 +368,15 @@ enum Export {
         return f
     }
 
+    /// Spreadsheet importers can evaluate syntax-quoted text. History is untrusted:
+    /// prefix risky cells with an apostrophe; JSON remains the exact-value export.
+    private static func historyText(_ value: String) -> String {
+        let significant = value.drop(while: { $0.isWhitespace })
+        let formula = significant.first.map { "=+-@".contains($0) } ?? false
+        let control = value.prefix(while: { $0.isWhitespace }).contains { $0 == "\t" || $0 == "\r" || $0 == "\n" || $0 == "\r\n" }
+        return formula || control ? "'" + value : value
+    }
+
     /// Two date columns on purpose: `visited_at` is for the human reading the file, `epoch`
     /// is the one that survives a round trip — Swift prints a Double in its shortest
     /// round-trippable form, so `Double(epoch)!` is bit-for-bit the date that went in, which
@@ -375,14 +384,14 @@ enum Export {
     static func historyCSVRows(_ rows: [Row]) -> [[String]] {
         let formatter = iso
         return [["url", "title", "visited_at", "epoch"]] + rows.map {
-            [$0.url, $0.title, formatter.string(from: $0.at), String($0.at.timeIntervalSince1970)]
+            [historyText($0.url), historyText($0.title), formatter.string(from: $0.at), String($0.at.timeIntervalSince1970)]
         }
     }
 
     static func historyCSV(_ rows: [Row]) -> String { csv(historyCSVRows(rows)) }
 
-    /// The inverse of `historyCSV`, over the existing RFC 4180 reader. Used by `check()` to
-    /// prove a Vane export reads back as a Vane import.
+    /// Read history CSV with the existing RFC 4180 reader. Formula-neutralizing
+    /// apostrophes are retained; JSON preserves exact original text.
     static func parseHistoryCSV(_ text: String) -> [Row] {
         CSV.rows(text).dropFirst().compactMap { row in
             guard row.count >= 4, let epoch = Double(row[3]) else { return nil }

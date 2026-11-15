@@ -16,6 +16,9 @@ import WebKit
     static func recognizes(_ ext: WKWebExtension) -> Bool {
         ext.manifestVersion == 2 && ext.displayName == "uBlock Origin"
             && ext.requestedPermissions.contains(WKWebExtension.Permission(rawValue: "webRequest"))
+            // The display name is spoofable; native blocking also needs the manifest to ask
+            // for blocking, not just request observation.
+            && (ext.manifest["permissions"] as? [String] ?? []).contains("webRequestBlocking")
     }
 
     static func apply(to controller: WKUserContentController, profileID: UUID) {
