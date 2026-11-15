@@ -82,6 +82,11 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
     private var stopRequested = false
     private var closing = false
     private var closed = false
+    private var interactionPolicyMismatchSince: ContinuousClock.Instant?
+    /// CI AppKit has reported a transient wrong policy during unhide/activation
+    /// while every lifecycle sample showed the required one. Only the pending
+    /// interaction poll tolerates it; verifyRunning stays immediate.
+    static let interactionPolicyGrace: Duration = .seconds(1)
 
     private init(activationPolicy: NSApplication.ActivationPolicy?,
                  afterPolicyRequest: (@MainActor @Sendable () -> Void)?,
@@ -314,8 +319,11 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
         if let firstFailure { return firstFailure }
         guard isCurrent, enteredRun, !runReturned, NSApplication.shared.isRunning else { return .loopNotRunning }
         guard NSRunningApplication.current.isFinishedLaunching && launchReadiness() else { return .incompleteHeartbeat }
-        guard NSApplication.shared.activationPolicy() == requiredPolicy else {
-            return requestedPolicy != nil && !admissionSucceeded ? .incompleteHeartbeat : .policyChanged
+        let policy = NSApplication.shared.activationPolicy()
+        guard policy == requiredPolicy else {
+            if requestedPolicy != nil && !admissionSucceeded { return .incompleteHeartbeat }
+            logPolicyMismatch("running", policy)
+            return .policyChanged
         }
         return nil
     }
@@ -336,9 +344,17 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
             record(.loopNotRunning)
             throw firstFailure!
         }
-        guard NSApplication.shared.activationPolicy() == requiredPolicy else {
-            record(.policyChanged)
+        let policy = NSApplication.shared.activationPolicy()
+        guard policy == requiredPolicy else {
+            let since = interactionPolicyMismatchSince ?? .now
+            interactionPolicyMismatchSince = since
+            guard since.duration(to: .now) >= Self.interactionPolicyGrace else { return false }
+            recordPolicyChanged("interaction", policy)
             throw firstFailure!
+        }
+        if let since = interactionPolicyMismatchSince {
+            print("Native fixture AppKit loop: transientPolicyMismatch site=interaction duration=\(since.duration(to: .now))")
+            interactionPolicyMismatchSince = nil
         }
         return NSRunningApplication.current.isFinishedLaunching && launchReadiness()
     }
@@ -417,6 +433,16 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
             gate.cancel(token)
             Self.enqueue { self.cancelOrExpire(.cancelled) }
         }
+    }
+
+    private func logPolicyMismatch(_ site: String, _ policy: NSApplication.ActivationPolicy) {
+        guard firstFailure == nil else { return }
+        print("Native fixture AppKit loop: policyMismatch site=\(site) app=\(policy.rawValue) ls=\(NSRunningApplication.current.activationPolicy.rawValue) required=\(requiredPolicy.rawValue) requested=\(requestedPolicy.map { String($0.rawValue) } ?? "nil") admitted=\(admissionSucceeded) hidden=\(NSApplication.shared.isHidden) active=\(NSApplication.shared.isActive)")
+    }
+
+    private func recordPolicyChanged(_ site: String, _ policy: NSApplication.ActivationPolicy) {
+        logPolicyMismatch(site, policy)
+        record(.policyChanged)
     }
 
     private func record(_ failure: NativeApplicationLoopFailure) {
@@ -517,7 +543,7 @@ private final class NativeApplicationLoopEntryGate: @unchecked Sendable {
                 record(.timerUnavailable)
             }
         }
-        if policy != requiredPolicy { record(.policyChanged) }
+        if policy != requiredPolicy { recordPolicyChanged("join", policy) }
         closed = true
         pendingLaunchAdmission = nil
         invalidatePolicyPoll()

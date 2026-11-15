@@ -20,7 +20,10 @@ import XCTest
     func testProductionPublicBridgeUsesSelectedKeysAndRejectsRevokedLease() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        // Never inherit a pending or prohibited policy from an earlier fixture.
+        let callerPolicy = NSApp.activationPolicy()
+        defer { NSApp.setActivationPolicy(callerPolicy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("vane-storage-bridge-\(UUID())")
         var owner: WKWebExtensionController?
         var context: WKWebExtensionContext?

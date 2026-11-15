@@ -14,9 +14,15 @@ final class NativeFixtureLaunchAdmissionTests: XCTestCase {
             readiness.ready = false
             app.setActivationPolicy(.regular)
             try await compatibilityWait { app.activationPolicy() == .regular }
-            XCTAssertThrowsError(try loop.isReadyForInteraction()) {
-                XCTAssertEqual(String(describing: $0), "policyChanged")
+            // A persistent change stays fatal past the bounded transient grace,
+            // even though pending launch readiness alone would only return false.
+            var thrown: String?
+            let start = ContinuousClock.now
+            while thrown == nil, start.duration(to: .now) < .seconds(5) {
+                do { let ready = try loop.isReadyForInteraction(); XCTAssertFalse(ready) } catch { thrown = String(describing: error) }
+                if thrown == nil { try await Task.sleep(for: .milliseconds(20)) }
             }
+            XCTAssertEqual(thrown, "policyChanged")
         } catch { setupFailure = error }
         // Even a failed negative-control setup must restore and join its loop.
         app.setActivationPolicy(.accessory)

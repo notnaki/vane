@@ -145,7 +145,9 @@ import QuartzCore
         // This geometry fixture requires a visible compositor owner, not keyboard
         // focus. CLI XCTest hosts may remain inactive even with a visible window.
         try await compatibilityWait {
-            window.isVisible && window.occlusionState.contains(.visible)
+            let ready = window.isVisible && window.occlusionState.contains(.visible)
+            if !ready { reassertForeground(window, key: false) }
+            return ready
         }
         let viewport = try await admitRestingViewport(in: host)
         let dockedHeight = viewport.bounds.height

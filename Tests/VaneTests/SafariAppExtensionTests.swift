@@ -368,7 +368,10 @@ import XCTest
 
     #if DEBUG
     func testDisabledModeChangeInvalidatesEarlierVerifiedSafariDiscovery() async throws {
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        // Never inherit a pending or prohibited policy from an earlier fixture.
+        let callerPolicy = NSApp.activationPolicy()
+        defer { NSApp.setActivationPolicy(callerPolicy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         let host = ExtensionHost.host(for: profile)
         let gate = VerifiedSafariDiscoveryGate()
         var discovery: Task<Bool, any Error>?

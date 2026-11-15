@@ -139,6 +139,35 @@ import XCTest
         XCTAssertFalse(NSApp.isRunning)
     }
 
+    func testInteractionPollTreatsBriefPolicyMismatchAsPendingAndPersistentAsFatal() async throws {
+        let previous = try await prepareAccessory()
+        defer { NSApp.setActivationPolicy(previous) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .regular)
+        var failure: (any Error)?
+        do {
+            _ = NSApp.setActivationPolicy(.accessory)
+            XCTAssertEqual(NSApp.activationPolicy(), .accessory, "The real mismatch must be present")
+            let briefReady = try loop.isReadyForInteraction()
+            XCTAssertFalse(briefReady, "A brief mismatch is pending, not fatal")
+            _ = NSApp.setActivationPolicy(.regular)
+            try await compatibilityWait { try loop.isReadyForInteraction() }
+            _ = NSApp.setActivationPolicy(.accessory)
+            let start = ContinuousClock.now
+            var thrown: String?
+            while thrown == nil, start.duration(to: .now) < .seconds(5) {
+                do { _ = try loop.isReadyForInteraction() } catch { thrown = String(describing: error) }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertEqual(thrown, "policyChanged")
+            XCTAssertGreaterThanOrEqual(start.duration(to: .now), NativeFixtureApplicationLoop.interactionPolicyGrace)
+            _ = NSApp.setActivationPolicy(.regular)
+        } catch { failure = error }
+        do { try await loop.close(); XCTFail("Closing retains the persistent mismatch") }
+        catch { XCTAssertEqual(String(describing: error), "policyChanged") }
+        if let failure { throw failure }
+        XCTAssertFalse(NSApp.isRunning)
+    }
+
     func testDefaultPolicyDriftDuringStartupStillFailsImmediately() async throws {
         let previous = try await prepareAccessory()
         defer { NSApp.setActivationPolicy(previous) }

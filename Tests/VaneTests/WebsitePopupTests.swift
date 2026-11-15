@@ -11,7 +11,10 @@ import XCTest
     }
 
     func testDeletingProfileClosesOnlyItsWebsitePopups() async throws {
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        // Never inherit a pending or prohibited policy from an earlier fixture.
+        let callerPolicy = NSApp.activationPolicy()
+        defer { NSApp.setActivationPolicy(callerPolicy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let manager = ProfileManager(directory: directory, sandboxed: true)

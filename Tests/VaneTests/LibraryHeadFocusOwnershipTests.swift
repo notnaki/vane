@@ -93,7 +93,9 @@ import XCTest
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         try await wait("empty window foreground", in: window) {
-            NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
+            let ready = NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
+            if !ready { reassertForeground(window) }
+            return ready
         }
     }
 

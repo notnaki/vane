@@ -58,7 +58,10 @@ import XCTest
     func testSettingsWindowSnapshotsWhenRequested() async throws {
         guard let path = ProcessInfo.processInfo.environment["VANE_SETTINGS_WINDOW_SNAPSHOTS"] else { return }
         TestEnvironment.prepare()
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        // Never inherit a pending or prohibited policy from an earlier fixture.
+        let callerPolicy = NSApp.activationPolicy()
+        defer { NSApp.setActivationPolicy(callerPolicy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         do {
             try await captureSettingsWindows(at: URL(fileURLWithPath: path))
         } catch {
@@ -91,7 +94,10 @@ import XCTest
 
     func testNativeDisclosureExpandsAndCollapsesItsControls() async throws {
         TestEnvironment.prepare()
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        // Never inherit a pending or prohibited policy from an earlier fixture.
+        let callerPolicy = NSApp.activationPolicy()
+        defer { NSApp.setActivationPolicy(callerPolicy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         do {
             try await exerciseDisclosure()
         } catch {
@@ -118,7 +124,11 @@ import XCTest
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
-        try await compatibilityWait { window.isVisible && host.window === window }
+        try await compatibilityWait {
+            let ready = window.isVisible && host.window === window
+            if !ready { reassertForeground(window) }
+            return ready
+        }
         host.layoutSubtreeIfNeeded()
         let collapsedHeight = host.fittingSize.height
         // The native header moves upward as its centered content grows.
