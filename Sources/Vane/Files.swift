@@ -241,6 +241,9 @@ extension Tab {
     /// that root and do not load. Upgrade path is `NSOpenPanel` on the folder, which is the
     /// only way the sandbox hands one over.
     func go(_ url: URL) {
+        // WebKit can execute these without asking the navigation delegate. Guard before
+        // recovery, page-state changes, or creating/loading the web view.
+        guard !Search.isJavaScriptURL(url.absoluteString) else { return }
         // Address-bar and home actions are explicit navigation too. Clear crash state
         // without assigning the old interactionState (which may contain a POST).
         if needsRecovery { navigate(to: url); return }
