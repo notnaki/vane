@@ -296,7 +296,7 @@ import XCTest
             buffer = LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0),
                 presenter: { [unowned self] _, callback in paints.append(callback) },
                 deadline: { [unowned self] interval, callback in
-                    XCTAssertEqual(interval, LivePageResizeBuffer.paintBudget)
+                    XCTAssertTrue([LivePageResizeBuffer.paintBudget, LivePageResizeBuffer.layoutBudget].contains(interval))
                     deadlines.append(callback)
                 }, now: { [unowned self] in time }, isCurrent: { [unowned self] in current },
                 apply: { [unowned self] _, width in

@@ -56,6 +56,8 @@ struct LivePageResizeAnchor {
     /// jump, and that fallback is the grey strip beside a stale page. Waiting is the lesser
     /// evil; the bound remains only for a WebContent process that has actually stalled.
     static let paintBudget: TimeInterval = 1
+    /// A release waiting only for SwiftUI's native host layout keeps the original bound.
+    static let layoutBudget: TimeInterval = 0.25
 
     @MainActor private final class Page {
         let web: WKWebView
@@ -777,8 +779,15 @@ struct LivePageResizeAnchor {
         // visible width now instead of at release; lookahead centres and clips a
         // responsive page off the window edge. The next pointer sample refills it.
         // ponytail: fixed 0.15s hold, measured from pointer samples, not velocity.
-        if frameDriver != nil, hasPresentedViewport, now() - lastTime >= 0.15 {
-            if zip(pages, desired).contains(where: { $0.prepared != $1 || $0.painted != $1 }) {
+        // Only after a real pointer sample: a press held before moving keeps the prime.
+        if frameDriver != nil, hasPresentedViewport, sampledVelocity, now() - lastTime >= 0.15 {
+            // Exact preparation never shrinks below the visible clip, which a split pane's
+            // pixel rounding can leave wider than nominal. Compare with what it prepares.
+            let fitted = zip(pages, desired).map { page, size in
+                let visible = page.currentVisibleSize
+                return NSSize(width: max(visible.width, size.width), height: max(visible.height, size.height))
+            }
+            if zip(pages, fitted).contains(where: { $0.prepared != $1 || $0.painted != $1 }) {
                 prepare(exact: true)
             }
             return
@@ -940,7 +949,7 @@ struct LivePageResizeAnchor {
         awaitingFinalLayout = true
         // The completed paint's deadline must not expire this separate phase.
         generation = UUID()
-        armDeadline(generation)
+        armDeadline(generation, after: Self.layoutBudget)
     }
 
     private func layoutChanged() {
@@ -959,7 +968,7 @@ struct LivePageResizeAnchor {
         drive()
     }
 
-    private func armDeadline(_ token: UUID) {
+    private func armDeadline(_ token: UUID, after interval: TimeInterval = paintBudget) {
 #if DEBUG
         trace("buffer.deadline.armed", token: token)
 #endif
@@ -970,9 +979,9 @@ struct LivePageResizeAnchor {
             guard let self, self.deadlineRevision == revision else { return }
             self.timedOut(token)
         }
-        if let deadline { deadline(Self.paintBudget, timeout) }
+        if let deadline { deadline(interval, timeout) }
         else {
-            let timer = Timer(timeInterval: Self.paintBudget, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
+            let timer = Timer(timeInterval: interval, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
             self.timer = timer
             RunLoop.main.add(timer, forMode: .common)
         }
