@@ -1502,14 +1502,9 @@ struct TitleReveal: Equatable, Sendable {
         go(target)
     }
 
+    /// Never routes to an assistant: a row labelled "Search" must search. "claude …" asking
+    /// Claude is the palette's job — it leads with an explicit "Ask Claude" row instead.
     func go(_ input: String) {
-        // "claude how do actors work" opens Claude rather than searching for that sentence.
-        if let (assistant, question) = AIChat.match(input),
-           let target = AIChat.url(for: question, using: assistant) {
-            editing = false
-            go(target)
-            return
-        }
         guard let target = Search.url(for: input) else { return }
         editing = false
         go(target)

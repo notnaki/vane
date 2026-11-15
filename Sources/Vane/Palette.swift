@@ -1587,9 +1587,14 @@ struct PaletteSizing {
                 let ordered = strong + weak
                 let lead = min(strong.count, 1)
                 let commands = Palette.commandSections(typed, commands: commandRows(), title: \.title)
-                fresh.leading = Array(ordered.prefix(lead)) + [typedRow] + commands.leading
+                // "chatgpt news" names an assistant, so asking it is what Return does — but as
+                // its own "Ask ChatGPT" row, with a real "Search" row right under it.
+                let ai = aiRow()
+                let asked = AIChat.match(query) != nil ? ai : nil
+                fresh.leading = Array(ordered.prefix(lead)) + (asked.map { [$0] } ?? []) + [typedRow]
+                    + commands.leading
                 fresh.trailing = Array((Array(ordered.dropFirst(lead)) + places + commands.trailing).prefix(24))
-                fresh.assistant = aiRow()
+                fresh.assistant = asked == nil ? ai : nil
                 fresh.acceptsSuggestions = true
             } else {
                 // Nothing typed (ref 2): Arc's bar at rest is the handful of tabs you are most
@@ -1697,7 +1702,7 @@ struct PaletteSizing {
         let text = typed
         return PaletteRow(id: "typed", icon: icon, title: text, trailing: trailing,
                           kind: trailing) { target in
-            // go() resolves bangs, assistants, urls and searches — all of it, in that order.
+            // go() resolves bangs, urls and searches. Never assistants: this row says "Search".
             target().go(text)
         }
     }
