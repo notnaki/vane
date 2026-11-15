@@ -16,17 +16,20 @@ import XCTest
         XCTAssertEqual(WindowMotion.progress(easeOut, 0.5) + WindowMotion.progress(easeIn, 0.5), 1, accuracy: 1e-4)
     }
 
-    func testReplacementRunsSupersededCompletionAndZeroDurationApplies() {
+    func testReplacementKeepsOmittedTargetsAndCompletesAsynchronously() async {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
                               styleMask: .borderless, backing: .buffered, defer: true)
         window.alphaValue = 0
         var finished = 0
         WindowMotion.animate(window, alpha: 1, duration: 10) { finished += 1 }
-        XCTAssertEqual(finished, 0)
+        // A frame-only retarget must not strand the arriving fade.
         WindowMotion.animate(window, frame: NSRect(x: 5, y: 6, width: 70, height: 80),
-                             alpha: 0.5, duration: 0) { finished += 1 }
-        XCTAssertEqual(finished, 2)
-        XCTAssertEqual(window.alphaValue, 0.5, accuracy: 0.01)
+                             duration: 0) { finished += 1 }
+        XCTAssertEqual(finished, 0)
+        XCTAssertEqual(window.alphaValue, 1, accuracy: 0.01)
         XCTAssertEqual(window.frame, NSRect(x: 5, y: 6, width: 70, height: 80))
+        await Task.yield()
+        for _ in 0..<10 where finished < 2 { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(finished, 2)
     }
 }

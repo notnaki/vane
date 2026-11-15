@@ -6,8 +6,9 @@ import QuartzCore
 /// `NSWindow.animator()` steps window geometry and alpha from an AppKit timer, which
 /// presents at 60 Hz on a 120 Hz display. This applies one value per display refresh
 /// instead, like the Picture in Picture entry. A newer animation of the same window
-/// takes over from its current values; the superseded completion still runs, as
-/// AppKit's does for an interrupted group.
+/// takes over from its current values and keeps the superseded target of any property
+/// it leaves out. Completions run asynchronously, also when superseded or cancelled,
+/// as AppKit's do for an interrupted group.
 @MainActor final class WindowMotion: NSObject {
     private static var running: [ObjectIdentifier: WindowMotion] = [:]
 
@@ -36,14 +37,21 @@ import QuartzCore
                         duration: TimeInterval,
                         timing: CAMediaTimingFunction = CAMediaTimingFunction(name: .default),
                         completion: (() -> Void)? = nil) {
+        let superseded = running[ObjectIdentifier(window)]
         cancel(window)
-        let motion = WindowMotion(window, frame: frame, alpha: alpha, duration: duration,
+        let motion = WindowMotion(window, frame: frame ?? superseded?.toFrame,
+                                  alpha: alpha ?? superseded?.toAlpha, duration: duration,
                                   timing: timing, completion: completion)
         guard duration > 0, let screen = window.screen ?? NSScreen.main else {
             motion.apply(1); motion.finish(); return
         }
         running[motion.key] = motion
         motion.started = CACurrentMediaTime()
+        // An unplugged or sleeping display stops its link. Land and complete anyway.
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.25) { [weak motion] in
+            guard let motion, running[motion.key] === motion else { return }
+            motion.apply(1); motion.finish()
+        }
         // A screen link keeps ticking while the window is hidden or between displays.
         let link = screen.displayLink(target: motion, selector: #selector(WindowMotion.tick(_:)))
         let rate = Float(screen.maximumFramesPerSecond)
@@ -81,9 +89,9 @@ import QuartzCore
     private func finish() {
         link?.invalidate(); link = nil
         if Self.running[key] === self { Self.running[key] = nil }
-        let completion = self.completion
+        guard let completion else { return }
         self.completion = nil
-        completion?()
+        DispatchQueue.main.async { completion() }
     }
 
     /// Solves the timing function's cubic Bézier for `time`, as Core Animation does.
