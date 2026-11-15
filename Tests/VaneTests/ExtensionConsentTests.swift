@@ -372,6 +372,17 @@ import XCTest
         XCTAssertEqual(host.pins, [valid.path], "An earlier failed restore must not prune a still-pending pin")
     }
 
+    func testInstallAndUpdateNeverGrantAccessOnReturn() {
+        for installing in [true, false] {
+            var review = ExtensionConsent.Review(name: "Fixture", requested: .init(permissions: ["tabs"], sites: []),
+                                                 previous: nil, installing: installing)
+            review.updating = !installing
+            let alert = ExtensionConsent.makePrompt(review)
+            XCTAssertEqual(alert.buttons.first?.keyEquivalent, "")
+            XCTAssertEqual(alert.buttons.last?.keyEquivalent, "\r")
+        }
+    }
+
     func testReviewShowsNewAndFullAccessAndExplicitEmptyAccess() throws {
         let old = ExtensionAccess(permissions: ["tabs"], sites: ["https://example.com/*"])
         let review = ExtensionConsent.Review(name: "Fixture", requested: ExtensionAccess(permissions: ["tabs", "cookies"], sites: ["<all_urls>"]),
@@ -384,7 +395,7 @@ import XCTest
         XCTAssertTrue(text.string.contains("All requested access"))
         XCTAssertTrue(text.string.contains("tabs"))
         XCTAssertEqual(alert.buttons.map(\.title), ["Allow and Enable", "Don’t Allow"])
-        XCTAssertEqual(alert.buttons.last?.keyEquivalent, "\u{1b}")
+        XCTAssertEqual(alert.buttons.last?.keyEquivalent, "\r")
         XCTAssertTrue(ExtensionAccess(permissions: [], sites: []).description.contains("None requested"))
     }
 }

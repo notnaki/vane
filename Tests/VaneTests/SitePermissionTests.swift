@@ -137,8 +137,8 @@ import XCTest
         XCTAssertEqual(result, .deny)
     }
 
-    func testPopoverKeyboardShortcutsResolveAllowAndDismissal() async throws {
-        for (key, code, expected) in [("\r", UInt16(36), WKPermissionDecision.grant),
+    func testPopoverReturnAndEscapeNeverGrantPermission() async throws {
+        for (key, code, expected) in [("\r", UInt16(36), WKPermissionDecision.deny),
                                        ("\u{1b}", UInt16(53), WKPermissionDecision.deny)] {
             let host = window(), id = tabID(), s = scope()
             let task = Task { await SitePermissions.request(scope: s, type: .camera, tabID: id,
@@ -154,6 +154,22 @@ import XCTest
             XCTAssertEqual(result, expected)
             XCTAssertNil(SitePermissions.remembered(scope: s, type: .camera))
         }
+    }
+
+    func testShowingPermissionPreservesThePageResponder() async throws {
+        let host = window(), id = tabID()
+        let field = NSTextField(frame: NSRect(x: 10, y: 10, width: 200, height: 24))
+        host.contentView!.addSubview(field)
+        host.makeKeyAndOrderFront(nil)
+        host.makeFirstResponder(field)
+        let responder = host.firstResponder
+        let task = Task { await SitePermissions.request(scope: scope(), type: .camera, tabID: id,
+                                                       window: host, isCurrent: { true }) }
+        let prompt = try await waitForPrompt(host)
+        XCTAssertTrue(host.isKeyWindow)
+        XCTAssertTrue(host.firstResponder === responder)
+        prompt.finish(.abort)
+        _ = await task.value
     }
 
     func testNotNowDeniesWithoutRememberingAndCanAskAgain() async throws {

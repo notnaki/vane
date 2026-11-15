@@ -155,8 +155,10 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         scroll.hasVerticalScroller = true
         scroll.documentView = text
         alert.accessoryView = scroll
-        alert.addButton(withTitle: review.installing ? "Install Extension" : review.updating ? "Update Extension" : "Allow and Enable")
-        alert.addButton(withTitle: review.installing ? "Cancel" : "Don’t Allow").keyEquivalent = "\u{1b}"
+        alert.addButton(withTitle: review.installing ? "Install Extension" : review.updating ? "Update Extension" : "Allow and Enable").keyEquivalent = ""
+        let deny = alert.addButton(withTitle: review.installing ? "Cancel" : "Don’t Allow")
+        deny.keyEquivalent = "\r"
+        alert.window.defaultButtonCell = deny.cell as? NSButtonCell
         return alert
     }
 

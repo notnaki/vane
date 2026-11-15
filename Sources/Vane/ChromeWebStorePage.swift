@@ -13,6 +13,12 @@ import WebKit
         return current
     }
 
+    static func canReview(tab: Tab, web: WKWebView, document: URL?) -> Bool {
+        tab.existingWeb === web && !tab.isPrivate && !tab.suspended && web.url == document
+            && web.window?.isKeyWindow == true && !web.isHiddenOrHasHiddenAncestor
+            && TabStore.all.contains { $0.active === tab && $0.profileVisible }
+    }
+
     static func receive(_ message: WKScriptMessage, tab: Tab) {
         guard let id = message.body as? String, let web = tab.existingWeb,
               message.webView === web, message.frameInfo.securityOrigin.protocol == "https",
@@ -25,7 +31,7 @@ import WebKit
             var result = "cancelled"
             do {
                 let accepted = try await host.installStore(source, review: { [weak tab, weak web] review in
-                    guard let tab, let web, tab.existingWeb === web, !tab.isPrivate, web.url == document else { return false }
+                    guard let tab, let web, canReview(tab: tab, web: web, document: document) else { return false }
                     return ExtensionConsent.ask(review)
                 })
                 result = accepted || host.entries.contains(where: { $0.storeID == id }) ? "added" : "cancelled"

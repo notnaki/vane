@@ -148,6 +148,7 @@ import WebKit
         let app: URL?
         /// Its display name — "Zoom", not "zoom.us.app".
         let name: String?
+        var embeddedOn: String? = nil
     }
 
     /// What the buttons say, in the order they are read.
@@ -171,8 +172,13 @@ import WebKit
     /// The line under it: who is asking. With no app to open there is nothing to want, so
     /// the sentence says what happened instead of promising something that cannot follow.
     /// Pure.
-    nonisolated static func body(host: String, app: String?) -> String {
-        let who = host.isEmpty ? "This page" : "\u{201C}\(host)\u{201D}"
+    nonisolated static func body(host: String, app: String?, embeddedOn: String? = nil) -> String {
+        let who: String
+        if let embeddedOn {
+            who = "An embedded page on “\(embeddedOn)”" + (host.isEmpty ? "" : " (from “\(host)”)")
+        } else {
+            who = host.isEmpty ? "A page with an opaque origin" : "\u{201C}\(host)\u{201D}"
+        }
         return named(app) == nil
             ? "\(who) linked to an app that isn\u{2019}t installed."
             : "\(who) wants to open this application."
@@ -200,7 +206,7 @@ import WebKit
 
     /// Only WebKit's security origin is authority. Frame request URLs can retain
     /// about:blank or name an opaque/sandboxed document's untrusted source URL.
-    static func offer(_ url: URL, from frame: WKFrameInfo, tab: Tab) {
+    static func offer(_ url: URL, from frame: WKFrameInfo, tab: Tab, userInitiated: Bool) {
         guard let web = tab.existingWeb, frame.webView === web, !tab.suspended,
               let store = TabStore.all.first(where: { $0.active === tab && $0.profileVisible }),
               store.externalApp == nil else { return }
@@ -213,10 +219,14 @@ import WebKit
         case .refuse: return
         case .open: NSWorkspace.shared.open(url)
         case .ask:
+            guard userInitiated else { return }
             let app = handler(for: url)
+            let topOrigin = Scope(url: web.backForwardList.currentItem?.url ?? web.url,
+                                  profileID: tab.profileID)?.origin ?? "an unknown origin"
             store.externalApp = Prompt(url: url, scope: scope, tabID: tab.id,
                                        documentID: tab.readingDocumentGeneration,
-                                       scheme: scheme, app: app, name: name(of: app))
+                                       scheme: scheme, app: app, name: name(of: app),
+                                       embeddedOn: frame.isMainFrame ? nil : topOrigin)
         }
     }
 
@@ -303,7 +313,7 @@ import WebKit
              body(host: "zoom.us", app: "Zoom")
                 == "\u{201C}zoom.us\u{201D} wants to open this application."),
             ("a page with no host does not name an empty one",
-             body(host: "", app: "Zoom") == "This page wants to open this application."),
+             body(host: "", app: "Zoom") == "A page with an opaque origin wants to open this application."),
             ("with nothing installed the line does not promise an app is about to open",
              body(host: "zoom.us", app: nil)
                 == "\u{201C}zoom.us\u{201D} linked to an app that isn\u{2019}t installed."),
@@ -360,7 +370,7 @@ struct ExternalAppCard: View {
                     Text(ExternalApps.title(app: prompt.name, scheme: prompt.scheme))
                         .font(Look.heading).foregroundStyle(Look.inkPrimary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(ExternalApps.body(host: prompt.originLabel, app: prompt.name))
+                    Text(ExternalApps.body(host: prompt.originLabel, app: prompt.name, embeddedOn: prompt.embeddedOn))
                         .font(Look.footnote).foregroundStyle(Look.inkQuiet)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -383,16 +393,23 @@ struct ExternalAppCard: View {
                                 .accessibilityHidden(true)
                         }
                 } else {
-                    Button("Cancel") { answer(.cancel) }.keyboardShortcut(.cancelAction)
+                    Button("Cancel") { answer(.cancel) }
+                        .keyboardShortcut(.defaultAction)
+                        .background {
+                            Button("Cancel") { answer(.cancel) }
+                                .keyboardShortcut(.cancelAction)
+                                .frame(width: 0, height: 0).opacity(0)
+                                .accessibilityHidden(true)
+                        }
                     // Not the default action: "never ask me again" is not what Return
                     // should mean, and it is the one answer that cannot be taken back by
                     // simply clicking Cancel next time.
                     Button(prompt.scope?.privateTabID == nil ? "Always Allow" : "Allow for This Private Tab") { answer(.always) }
                         .disabled(prompt.scope == nil)
                         .help(prompt.scope == nil
-                              ? "This page has no site to remember an answer for."
+                              ? "This request has no origin to remember an answer for."
                               : "Opens \(prompt.scheme): links from \(prompt.originLabel) in this profile without asking.")
-                    Button("Allow") { answer(.once) }.keyboardShortcut(.defaultAction)
+                    Button("Allow") { answer(.once) }
                 }
             }
         }
@@ -400,7 +417,7 @@ struct ExternalAppCard: View {
         .frame(width: Look.appPrompt)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(ExternalApps.title(app: prompt.name, scheme: prompt.scheme))
-        .accessibilityValue(ExternalApps.body(host: prompt.originLabel, app: prompt.name))
+        .accessibilityValue(ExternalApps.body(host: prompt.originLabel, app: prompt.name, embeddedOn: prompt.embeddedOn))
     }
 
     /// The handler's own icon, which is the fastest way to see whether the app about to

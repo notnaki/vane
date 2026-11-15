@@ -6,6 +6,36 @@ import XCTest
 @MainActor final class ChromeWebStorePageTests: XCTestCase {
     private let id = "eimadpbcbfnmbkopoojfekhnkhdbieeh"
 
+    func testInstallConsentRequiresItsTabToRemainActive() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let profile = UUID()
+        let store = TabStore(profileID: profile, session: [])
+        let tab = store.newBlankTab(focus: false)
+        store.current = tab.id
+        let web = tab.web
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = web
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            store.tabs.forEach { $0.tearDown() }
+            TabStore.all.removeAll { $0 === store }
+            window.close()
+        }
+        let document = URL(string: "https://chromewebstore.google.com/detail/fixture/\(id)")!
+        web.loadHTMLString("<title>Consent owner fixture</title>", baseURL: document)
+        try await compatibilityWait { window.isKeyWindow && web.title == "Consent owner fixture" && !web.isLoading }
+        XCTAssertTrue(ChromeWebStorePage.canReview(tab: tab, web: web, document: web.url))
+        _ = store.newBlankTab()
+        XCTAssertFalse(ChromeWebStorePage.canReview(tab: tab, web: web, document: web.url))
+        store.tabs.forEach { $0.tearDown() }
+        TabStore.all.removeAll { $0 === store }
+        window.close()
+        try await NativeFixtureProfileCleanup.release([profile])
+    }
+
     func testInstallMessagesRequireCurrentMainFrameStoreDocument() throws {
         let url = URL(string: "https://chromewebstore.google.com/detail/dark-reader/\(id)")!
         XCTAssertNotNil(ChromeWebStorePage.authorizedSource(id: id, frameURL: url, currentURL: url, mainFrame: true, privateTab: false))

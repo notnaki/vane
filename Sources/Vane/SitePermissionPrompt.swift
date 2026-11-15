@@ -44,10 +44,6 @@ import SwiftUI
         return await withCheckedContinuation { continuation in
             self.continuation = continuation
             popover.show(relativeTo: rect, of: positioningView, preferredEdge: .minY)
-            if window.isKeyWindow, let bubble = controller.view.window {
-                bubble.makeKey()
-                bubble.makeFirstResponder(controller.view)
-            }
             if !popover.isShown { finish(.abort) }
         }
     }
@@ -88,12 +84,17 @@ private struct PermissionPromptContent: View {
                     Text("Not Now")
                 }
                 .buttonStyle(PermissionButtonStyle())
-                .keyboardShortcut(.cancelAction)
+                .keyboardShortcut(.defaultAction)
+                .background {
+                    Button("Not Now") { respond(.abort) }
+                        .keyboardShortcut(.cancelAction)
+                        .frame(width: 0, height: 0).opacity(0)
+                        .accessibilityHidden(true)
+                }
                 Button { respond(.alertFirstButtonReturn) } label: {
                     Text("Allow")
                 }
                 .buttonStyle(PermissionButtonStyle(emphasized: true))
-                .keyboardShortcut(.defaultAction)
                 .help("Allow Once, until this tab navigates or closes. More choices are available in the context menu.")
                 .contextMenu {
                     Button("Allow Once") { respond(.alertFirstButtonReturn) }
