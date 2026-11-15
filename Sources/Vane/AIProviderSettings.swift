@@ -135,9 +135,10 @@ private struct AIConnectionEditor: View {
     @State private var operationID = UUID()
     @State private var signIn: ChatGPTSignIn?
     // Keychain reads: refreshed on appear, when the connection's credential inputs change
-    // (not its name), and after this view saves or removes a key.
+    // (not its name), on any settings revision (iCloud key sync), and after this view acts.
     @State private var saved = false
     @State private var unavailable = true
+    @AppStorage("aiSettingsRevision") private var revision = 0
     private var credentialInputs: AIConnection { var copy = connection; copy.name = ""; return copy }
     private func refreshCredentials() {
         saved = BrowserAI.hasKey(connection)
@@ -259,6 +260,7 @@ private struct AIConnectionEditor: View {
         // Changing the selected account cancels its in-flight operation.
         .onAppear { refreshCredentials(); if connection.provider == .chatGPT, saved { refreshModels() } }
         .onChange(of: credentialInputs) { refreshCredentials() }
+        .onChange(of: revision) { refreshCredentials() }
         .onDisappear { cancel() }
     }
     private func changeEndpoint(_ value: String) {
