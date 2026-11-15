@@ -9,15 +9,18 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
     var name: String
     var queryTemplate: String
 
-    /// Scheme + host of the template, used as the default homepage and as the landing page
-    /// for a bang with nothing after it. String surgery, not URLComponents — the raw
-    /// template contains `%s`, which is not a legal percent-escape and parses as nil.
+    /// Validated origin of the template, also used when a bang has no search words.
     var home: URL? {
-        guard let r = queryTemplate.range(of: "://") else { return nil }
-        let rest = queryTemplate[r.upperBound...]
-        let end = rest.firstIndex { $0 == "/" || $0 == "?" } ?? rest.endIndex
-        return URL(string: String(queryTemplate[..<r.upperBound] + rest[..<end]))
+        guard Search.validTemplate(queryTemplate),
+              let url = Search.webURL(queryTemplate.replacingOccurrences(of: "%s", with: "vane")),
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        var origin = URLComponents()
+        origin.scheme = parts.scheme
+        origin.host = parts.host
+        origin.port = parts.port
+        return origin.url
     }
+
 }
 
 /// Everything the address bar does with what was typed into it.
@@ -66,14 +69,17 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
     static var current: SearchEngine {
         get {
             let id = defaults.string(forKey: "searchEngine")
-            return all.first { $0.id == id } ?? defaultEngine
+            // A custom engine saved before validation existed falls back rather than
+            // leaving Return dead with no explanation.
+            return all.first { $0.id == id && validTemplate($0.queryTemplate) } ?? defaultEngine
         }
         set { defaults.set(newValue.id, forKey: "searchEngine") }
     }
 
     /// Same id replaces rather than duplicates, so editing a custom engine is add-again.
     static func add(_ engine: SearchEngine) {
-        guard !builtIn.contains(where: { $0.id == engine.id }) else { return }
+        guard validTemplate(engine.queryTemplate),
+              !builtIn.contains(where: { $0.id == engine.id }) else { return }
         var list = custom
         list.removeAll { $0.id == engine.id }
         list.append(engine)
@@ -89,11 +95,10 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
 
     // MARK: - The address bar decision
 
-    /// nil only for an input with nothing in it — everything else is either a url or a
-    /// search, and the point of this function is deciding which.
+    /// A URL or search destination; empty input and executable JavaScript URLs are refused.
     static func url(for input: String) -> URL? {
         let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !s.isEmpty else { return nil }
+        guard !s.isEmpty, !isJavaScriptURL(s) else { return nil }
         // A leading ? is the user overriding the guess: search this, verbatim. It is tested
         // before bangs on purpose — "?!g swift" means search for the string "!g swift".
         if s.hasPrefix("?") { return search(String(s.dropFirst())) }
@@ -116,7 +121,39 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return nil }
         let template = (engine ?? current).queryTemplate
-        return URL(string: template.replacingOccurrences(of: "%s", with: encode(q)))
+        guard validTemplate(template) else { return nil }
+        return webURL(template.replacingOccurrences(of: "%s", with: encode(q)))
+    }
+
+    /// Shared by Settings, add, and use-time validation of already persisted engines.
+    nonisolated static func validTemplate(_ template: String) -> Bool {
+        // Engines have always filled every %s; only the scheme and authority are new rules.
+        template.contains("%s")
+            && webURL(template.replacingOccurrences(of: "%s", with: "vane")) != nil
+    }
+
+    nonisolated static func webURL(_ string: String) -> URL? {
+        guard let url = URL(string: string, encodingInvalidCharacters: false),
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = parts.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = parts.host, !host.isEmpty,
+              parts.user == nil, parts.password == nil else { return nil }
+        return url
+    }
+
+    /// Browsers can discard tabs and line breaks inside a pasted scheme. Refuse those
+    /// spellings too, before either URL parsing or the current page can interpret them.
+    nonisolated static func isJavaScriptURL(_ input: String) -> Bool {
+        let text = input.filter { $0 != "\t" && !$0.isNewline }
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
+        return text.lowercased().hasPrefix("javascript:")
+    }
+
+    /// Uses the address bar's own rules, without consulting the chosen search engine.
+    nonisolated static func isExplicitNavigation(_ input: String) -> Bool {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !text.hasPrefix("?") else { return false }
+        return explicitScheme(text) != nil || filePath(text) != nil || looksLikeHost(text)
     }
 
     /// RFC 3986 unreserved set: everything else escapes, so a query holding &, =, # or +
@@ -128,12 +165,12 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
 
     // MARK: - The individual tests
 
-    private static let schemesWithoutSlashes: Set<String> =
-        ["mailto", "about", "data", "javascript", "tel", "sms", "view-source", "file"]
+    nonisolated private static let schemesWithoutSlashes: Set<String> =
+        ["mailto", "about", "data", "tel", "sms", "view-source", "file"]
 
     /// `//` after the colon settles it. Without it the scheme has to be one we know, or
     /// `localhost:3000` and `swift:generics` would both parse as a scheme.
-    private static func explicitScheme(_ s: String) -> URL? {
+    nonisolated private static func explicitScheme(_ s: String) -> URL? {
         guard let colon = s.firstIndex(of: ":") else { return nil }
         let scheme = s[..<colon].lowercased()
         guard let first = scheme.first, first.isLetter,
@@ -148,7 +185,7 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
 
     /// ponytail: a leading / or ~/ is only a file if the file is actually there. Otherwise
     /// "/r/swift" would open a file url that cannot load instead of searching for it.
-    private static func filePath(_ s: String) -> URL? {
+    nonisolated private static func filePath(_ s: String) -> URL? {
         guard s.hasPrefix("/") || s.hasPrefix("~/") else { return nil }
         let path = (s as NSString).expandingTildeInPath
         guard FileManager.default.fileExists(atPath: path) else { return nil }
@@ -166,20 +203,20 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
         return local ? "http://" : "https://"
     }
 
-    private static func authority(_ s: String) -> String {
+    nonisolated private static func authority(_ s: String) -> String {
         let head = s.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
         guard let at = head.lastIndex(of: "@") else { return String(head) }
         return String(head[head.index(after: at)...])       // strip user:pass@
     }
 
-    private static func isIPv4(_ host: String) -> Bool {
+    nonisolated private static func isIPv4(_ host: String) -> Bool {
         let parts = host.split(separator: ".", omittingEmptySubsequences: false)
         return parts.count == 4 && parts.allSatisfy { Int($0).map { 0...255 ~= $0 } ?? false }
     }
 
     /// The branchy one. True for `example.com`, `localhost:3000`, `192.168.1.1`, `[::1]:80`,
     /// `example.com:8080/path`; false for `swift 6.2 concurrency`, `6.2`, `3000`, `hello`.
-    private static func looksLikeHost(_ s: String) -> Bool {
+    nonisolated private static func looksLikeHost(_ s: String) -> Bool {
         let auth = authority(s)
         guard !auth.isEmpty else { return false }
         var host = Substring(auth)

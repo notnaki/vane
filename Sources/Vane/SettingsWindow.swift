@@ -1145,8 +1145,8 @@ private struct SearchPane: View {
     @State private var bangError: String?
 
     private var engineIsValid: Bool {
-        !newName.trimmingCharacters(in: .whitespaces).isEmpty && newTemplate.contains("%s")
-            && newTemplate.contains("://")
+        !newName.trimmingCharacters(in: .whitespaces).isEmpty
+            && Search.validTemplate(newTemplate.trimmingCharacters(in: .whitespaces))
     }
 
     var body: some View {
@@ -1208,7 +1208,7 @@ private struct SearchPane: View {
                 Footnote("Search suggestions send what you type in the address bar to your "
                          + "search engine as you type it. Never in a private window, and never "
                          + "for anything that looks like an address. A custom engine's address "
-                         + "needs %s where the search words go.")
+                         + "needs an http or https address with a host, no credentials, and one %s where the search words go.")
             }
 
             SettingsCard {

@@ -1509,7 +1509,7 @@ private struct PillBody: View {
                     Image(systemName: "magnifyingglass").accessibilityHidden(true)
                     Text("Search").font(Look.heading).lineLimit(1).accessibilityHidden(true)
                 } else {
-                    Text(host).font(Look.text).lineLimit(1)
+                    Text(host).font(Look.text).lineLimit(1).truncationMode(.head)
                     .accessibilityHidden(true)
                     .vaneTooltip(address)
                 }
@@ -1553,7 +1553,7 @@ private struct PillBody: View {
 
             Text(address.isEmpty ? "Search or Enter URL…" : host)
                 .accessibilityHidden(true)
-                .font(Look.text).lineLimit(1).truncationMode(.middle)
+                .font(Look.text).lineLimit(1).truncationMode(.head)
                 .vaneTooltip(address)
             HStack(spacing: Look.pillGlyphGap) {
                 if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
@@ -1616,7 +1616,7 @@ private struct PillBody: View {
                     }
                     .transition(.offset(x: -Look.pillPromptTravel).combined(with: .opacity))
                 } else {
-                    Text(host).font(Look.text).lineLimit(1)
+                    Text(host).font(Look.text).lineLimit(1).truncationMode(.head)
                         .vaneTooltip(address)
                         .transition(.opacity)
                 }

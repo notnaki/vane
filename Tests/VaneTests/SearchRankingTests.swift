@@ -58,6 +58,25 @@ import SwiftUI
         XCTAssertGreaterThan(Palette.score("doc", "mydoc doc")!, Palette.score("doc", "mydocdoc")!)
     }
 
+    func testTypedURLCannotBeDisplacedByATabTitle() {
+        for query in ["https://bank.example/login", "bank.example/login", "http://localhost:8080/login",
+                      "[::1]:8080/login", "mailto:ada@example.com"] {
+            XCTAssertFalse(Palette.strong(query, title: query, url: "https://attacker.example/"), query)
+        }
+        XCTAssertFalse(Palette.strong("https://bank.example/login", title: "Bank",
+                                     url: "https://bank.example/login"),
+                       "Even a real matching tab leaves explicit navigation first")
+    }
+
+    func testTabSubtitleShowsItsActualOriginWithoutCredentialsOrPageMetadata() {
+        XCTAssertEqual(Palette.tabSubtitle(address: "https://user:pass@attacker.example:8443/login?q=bank#name",
+                                           place: "Window 2"), "Window 2 — https://attacker.example:8443")
+        XCTAssertEqual(Palette.tabSubtitle(address: "https://attacker.example/login", place: ""),
+                       "https://attacker.example")
+        XCTAssertEqual(Palette.tabSubtitle(address: "http://[::1]:8080/page", place: ""), "http://[::1]:8080")
+        XCTAssertEqual(Palette.tabSubtitle(address: "about:blank", place: ""), "about:blank")
+    }
+
     func testInlineCompletionFillsOnlyTheStartOfAVisitedHost() {
         let urls = ["https://docs.google.com/x", "https://www.deepseek.com/chat"]
         XCTAssertEqual(Palette.completeHost("d", urls: urls)?.text, "docs.google.com")
@@ -86,7 +105,7 @@ import SwiftUI
         XCTAssertEqual(store.suggest("example.com/docs").first?.url, url.absoluteString)
         XCTAssertEqual(store.suggest("www.example.com/docs").first?.url, url.absoluteString)
         XCTAssertEqual(store.suggest("https://www.example.com/docs").first?.url, url.absoluteString)
-        XCTAssertTrue(Palette.strong("https://www.example.com/docs", title: "Reference", url: url.absoluteString))
+        XCTAssertFalse(Palette.strong("https://www.example.com/docs", title: "Reference", url: url.absoluteString))
         XCTAssertTrue(store.suggest("100%").isEmpty)
         store.record(URL(string: "https://cafe.example")!, title: "Café handbook")
         XCTAssertEqual(store.suggest("cafe handbook").first?.title, "Café handbook")

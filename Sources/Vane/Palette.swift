@@ -53,12 +53,30 @@ enum Palette {
     /// query is how the title, the host, or a word of the title begins (a word only once the
     /// query is three characters, so a single letter does not claim every tab).
     static func strong(_ query: String, title: String, url: String) -> Bool {
+        // A page controls its title. It must never displace a destination the user typed,
+        // even when that title is an exact copy of the requested URL.
+        guard !Search.isExplicitNavigation(query), !Search.isJavaScriptURL(query) else { return false }
         let match = SearchMatch(query)
         guard !match.query.isEmpty,
               let score = match.page(title: title, url: url, fuzzy: false) else { return false }
         return score >= SearchMatch.prefixFloor
             || (match.query.count >= 3 && score >= SearchMatch.wordFloor)
 
+    }
+
+    /// Visible tab metadata comes from the actual address, never from the page title.
+    /// Put the origin last so head truncation retains its domain when space is tight.
+    static func tabSubtitle(address: String, place: String) -> String {
+        var origin = address
+        if let parts = URLComponents(string: address), let scheme = parts.scheme,
+           let host = parts.host, !host.isEmpty {
+            var components = URLComponents()
+            components.scheme = scheme
+            components.host = host
+            components.port = parts.port
+            origin = components.url?.absoluteString ?? address
+        }
+        return [place, origin].filter { !$0.isEmpty }.joined(separator: " — ")
     }
 
     /// What to show while a query's results are still arriving. History and the engine
@@ -513,8 +531,7 @@ private struct PaletteScrimSurface: NSViewRepresentable {
 /// "Ask Claude", "Open". Both are what make a row readable without reading it.
 ///
 /// `detail` is matched against and spoken, but never drawn: Arc's rows are a title and a
-/// verb, and a url after every tab title is what made the list read as a log. `subtitle`
-/// is the part of it worth drawing when there is one — "Window 2", a history item's host.
+/// verb. `subtitle` draws a tab's actual origin and window, or a history item's host.
 struct PaletteRow: Identifiable {
     let id: String
     let icon: String
@@ -845,6 +862,7 @@ struct CommandField: NSViewRepresentable {
                 .foregroundStyle(on ? Look.barSelectedText : Look.barText)
             if !row.subtitle.isEmpty {
                 Text(row.subtitle).font(Look.text).foregroundStyle(Look.barTrailing).lineLimit(1)
+                    .truncationMode(.head).layoutPriority(1)
             }
             Spacer(minLength: Look.inset)
             // Forgetting a suggestion is a hover affordance, the way Arc's is: it appears on
@@ -1638,7 +1656,14 @@ struct PaletteSizing {
     /// is decided by asking the same functions that will run — `Bangs` then `Search.url`,
     /// the address bar's own decision table — rather than by a second copy of the heuristic.
     private func typedRow() -> PaletteRow? {
-        if let activeBang, let url = Bangs.scopedURL(typed, using: activeBang) {
+        if let activeBang {
+            // Never fall through to the default engine with words meant for this bang.
+            guard let url = Bangs.scopedURL(typed, using: activeBang) else {
+                return PaletteRow(id: "typed", icon: "exclamationmark.triangle", title: typed.isEmpty ? activeBang.name : typed,
+                                  trailing: "Blocked", kind: "\(activeBang.name) address is not valid") { _ in
+                    axAnnounce("\(activeBang.name) has an address Vane cannot open. Edit it in Settings.")
+                }
+            }
             return PaletteRow(id: "typed", icon: "magnifyingglass",
                               title: typed.isEmpty ? "Open \(activeBang.name)" : typed,
                               kind: "\(typed.isEmpty ? "Open" : "Search") \(activeBang.name)") { target in
@@ -1646,6 +1671,12 @@ struct PaletteSizing {
             }
         }
         guard !typed.isEmpty else { return nil }
+        if Search.isJavaScriptURL(typed) {
+            return PaletteRow(id: "typed", icon: "exclamationmark.triangle", title: typed,
+                              trailing: "Blocked", kind: "JavaScript URL blocked") { _ in
+                axAnnounce("JavaScript URLs cannot be opened from the address bar.")
+            }
+        }
         // An inline completion is what the field shows, so it is what Return opens — its
         // origin, not the text re-parsed.
         if let site = completion ?? Palette.carriedCompletion(acceptedCompletion, completion: nil,
@@ -1736,7 +1767,9 @@ struct PaletteSizing {
         let detail = [tab.address, place].filter { !$0.isEmpty }.joined(separator: " — ")
         let isCurrent = owner === store && tab.id == store.current
         return PaletteRow(id: Feel03TabContent.rowID(tab.id, owner: owner), icon: "square.on.square",
-                          image: tab.favicon, title: tab.title, detail: detail, matchURL: tab.address, subtitle: place,
+                          image: tab.favicon, title: tab.title, detail: detail, matchURL: tab.address,
+                          subtitle: Palette.tabSubtitle(address: tab.currentURL?.absoluteString ?? tab.address,
+                                                        place: place),
                           trailing: isCurrent ? "" : "Switch to Tab", kind: "Open tab") { [weak tab, weak owner] _ in
             guard let tab, let owner else { return }
             Windows.reveal(tab, in: owner)
