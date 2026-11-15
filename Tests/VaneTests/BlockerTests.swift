@@ -5,6 +5,43 @@ import WebKit
 @MainActor final class BlockerTests: XCTestCase {
     override func setUp() async throws { TestEnvironment.prepare() }
 
+    func testHostAnchorsMatchSchemesAndUserinfoAtStrictHostnameBoundaries() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try XCTUnwrap(WKContentRuleListStore(url: directory))
+        for source in ["||blocked.example^", "@@||blocked.example^",
+                       "||blocked.example^$websocket", "||blocked.example^$match-case"] {
+            let converted = Blocker.convert(source)
+            XCTAssertEqual(converted.rules, 1, source)
+            XCTAssertEqual(converted.skipped, 0, source)
+            let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(converted.json.utf8)) as? [[String: Any]])
+            let trigger = try XCTUnwrap(rules.first?["trigger"] as? [String: Any])
+            let regex = try NSRegularExpression(pattern: XCTUnwrap(trigger["url-filter"] as? String))
+            for scheme in ["http", "https", "ws", "wss"] {
+                for authority in ["blocked.example", "sub.blocked.example", "a.b.blocked.example:8443",
+                                  "u@blocked.example", "u:p@blocked.example:8443",
+                                  "u:p@a.b.blocked.example", "u%40name:p%2Fword@blocked.example"] {
+                    let url = "\(scheme)://\(authority)/ads?x=1"
+                    XCTAssertNotNil(regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)), "\(source): \(url)")
+                }
+                for suffix in ["blocked.example.evil.com/", "sub.blocked.example.evil.com/",
+                               "evilblocked.example/", "blocked.example-evil.com/", "blocked.example%2eevil.com/",
+                               "u@blocked.example.evil.com/",
+                               "evil.com/?u@blocked.example/", "evil.com/#u@blocked.example/",
+                               "evil.com/u@blocked.example/", "evil.com/?u@sub.blocked.example/",
+                               "evil.com/#u@sub.blocked.example/"] {
+                    let url = "\(scheme)://\(suffix)"
+                    XCTAssertNil(regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)), "\(source): \(url)")
+                }
+            }
+            let id = "vane-host-anchor-test-\(UUID())"
+            let compiled = try await store.compileContentRuleList(forIdentifier: id, encodedContentRuleList: converted.json)
+            XCTAssertNotNil(compiled, source)
+            try await store.removeContentRuleList(forIdentifier: id)
+        }
+    }
+
     func testDiagnosticsKeepLineNumbersAndCountReasons() {
         let result = Blocker.convert("! comment\n\n||ads.example^\n/(regex|alternative)/\nexample.com##+js(foo)\n||x.example^$redirect=noop\n")
         XCTAssertEqual(result.rules, 1)

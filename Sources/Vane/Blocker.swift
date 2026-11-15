@@ -874,15 +874,18 @@ private struct BlockRule: Codable, Equatable {
         if p.hasPrefix("||") {
             p = String(p.dropFirst(2))
             guard let first = p.first, first != "*", first != "|" else { return nil }
-            // The optional `([^/]+\.)?` is what makes this match subdomains without also
-            // matching `evilads.example.com` — the group has to end on a dot.
-            out = "^https?://([^/]+\\.)?"
+            // Host anchors apply across URL schemes (including ws/wss). Keep optional
+            // userinfo separate from subdomains, and neither may cross the authority.
+            out = "^[a-z][a-z0-9+.-]*://([^/?#@]*@)?([^/?#:@]+\\.)?"
         } else if p.hasPrefix("|") {
             p = String(p.dropFirst())
             out = "^"
         }
         var tail = ""
         if p.hasSuffix("|") { p = String(p.dropLast()); tail = "$" }
+        // ponytail: `^` stays the cheap separator class. A stricter authority-end tail
+        // (`(:[0-9]+)?[/?#]`) made WebKit compile ~80x slower; its only gain was not
+        // over-blocking `host@other` userinfo URLs, which is not a bypass.
         // A `|` left in the middle is alternation-ish syntax this does not handle.
         guard !p.isEmpty, !p.contains("|") else { return nil }
 
@@ -986,7 +989,7 @@ private struct BlockRule: Codable, Equatable {
 
         let block = rule(for: "||ads.example.com^")
         assert("||domain^ anchors to the host and allows subdomains",
-               block?.trigger.urlFilter == "^https?://([^/]+\\.)?ads\\.example\\.com[^a-z0-9_.%-]")
+               block?.trigger.urlFilter == "^[a-z][a-z0-9+.-]*://([^/?#@]*@)?([^/?#:@]+\\.)?ads\\.example\\.com[^a-z0-9_.%-]")
         assert("||domain^ blocks", block?.action.type == "block")
         assert("a plain block rule carries no trigger it does not need",
                block?.trigger.resourceType == nil && block?.trigger.loadType == nil
@@ -995,7 +998,7 @@ private struct BlockRule: Codable, Equatable {
         let allow = rule(for: "@@||good.example.com^")
         assert("@@ becomes ignore-previous-rules", allow?.action.type == "ignore-previous-rules")
         assert("@@ keeps the same url-filter as the block form",
-               allow?.trigger.urlFilter == "^https?://([^/]+\\.)?good\\.example\\.com[^a-z0-9_.%-]")
+               allow?.trigger.urlFilter == "^[a-z][a-z0-9+.-]*://([^/?#@]*@)?([^/?#:@]+\\.)?good\\.example\\.com[^a-z0-9_.%-]")
 
         assert("$third-party sets load-type",
                rule(for: "||ads.example.com^$third-party")?.trigger.loadType == ["third-party"])
@@ -1032,7 +1035,7 @@ private struct BlockRule: Codable, Equatable {
                == "^https://example\\.com/ads$")
         assert("* becomes .*",
                rule(for: "||example.com^*/ads/")?.trigger.urlFilter
-               == "^https?://([^/]+\\.)?example\\.com[^a-z0-9_.%-].*/ads/")
+               == "^[a-z][a-z0-9+.-]*://([^/?#@]*@)?([^/?#:@]+\\.)?example\\.com[^a-z0-9_.%-].*/ads/")
 
         assert("a safe /regex/ rule converts", rule(for: "/ad[0-9]+\\.js/") != nil)
         // Unsupported rules must be skipped, not half-translated: one malformed rule
