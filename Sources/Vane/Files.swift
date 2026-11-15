@@ -79,7 +79,7 @@ import WebKit
             // `isPrivate` passed, never defaulted: a Little Vane floated off a Private Window
             // would otherwise quietly take the persistent store and write the file into
             // history — the one thing that window exists not to do. See `LittleArc.open`.
-            files.dropFirst().forEach { LittleArc.open($0, isPrivate: store.isPrivate) }
+            files.dropFirst().forEach { LittleArc.open($0, isPrivate: store.isPrivate, profileID: store.profileID) }
         } else {
             for url in files { store.newBlankTab(loading: url) }
         }

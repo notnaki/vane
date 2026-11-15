@@ -500,9 +500,18 @@ enum Export {
     }
 
     @MainActor static func chooseAndExport(_ kind: Kind,
-                                profileID: UUID = ProfileManager.activeProfileID) {
-        if kind == .passwords, !confirmPlaintext() { return }
+                                profileID: UUID = ProfileManager.activeProfileID,
+                                authenticate: @MainActor (String, @escaping @MainActor (Bool) -> Void) -> Void
+                                    = Passwords.authenticate) {
+        // Every password in the clear asks the Mac who you are first, like revealing one does.
+        guard kind == .passwords else { return save(kind, profileID: profileID) }
+        authenticate("export your saved passwords") { ok in
+            guard ok, confirmPlaintext() else { return }
+            save(kind, profileID: profileID)
+        }
+    }
 
+    @MainActor private static func save(_ kind: Kind, profileID: UUID) {
         let panel = NSSavePanel()
         panel.title = "Export"
         panel.nameFieldStringValue = defaultName(kind)

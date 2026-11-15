@@ -186,3 +186,12 @@ import XCTest
     }
 
 }
+
+@MainActor final class ExtensionAccessPromptTests: XCTestCase {
+    func testReturnDeniesRuntimeAccess() {
+        let buttons = ExtensionHost.accessAlert("Fixture", ["tabs"]).buttons
+        XCTAssertEqual(buttons.map(\.title), ["Deny", "Allow"])
+        XCTAssertEqual(buttons[0].keyEquivalent, "\r")
+        XCTAssertNotEqual(buttons[1].keyEquivalent, "\r")
+    }
+}

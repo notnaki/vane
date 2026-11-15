@@ -643,6 +643,17 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         expectEqual(try await js(web, "replacement.value") as? String, "")
     }
 
+    func testFillRefusesADocumentFromAnotherOrigin() async throws {
+        let (web, _) = try await fixture("<form><input autocomplete=username><input id=password type=password></form>")
+        let other = PasswordOrigin(host: "other.example.test")
+        expectFalse(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", origin: other),
+                                 world: Autofill.world) as? Bool == true)
+        expectEqual(try await js(web, "password.value") as? String, "")
+        let own = PasswordOrigin(host: "login.example.test")
+        expectTrue(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", origin: own),
+                                world: Autofill.world) as? Bool == true)
+    }
+
     func testSelectedAccountContinuesAcrossUsernameNavigation() async throws {
         try await exerciseSelectedAccountContinuation(holdSubmission: false)
     }
@@ -1528,7 +1539,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                          "A fresh profile must have no receipt before its only explicit fill")
             let hold = control == .none ? nil : try PasswordFillCompletionHold(web: web,
                 script: Autofill.fillJS(account: "bob", password: "bob-secret", automatic: false,
-                                       target: target, continuation: false))
+                                       target: target, continuation: false, origin: origin))
             defer {
                 do { try hold?.close(); try hold?.dispose() }
                 catch { XCTFail("Explicit-fill callback cleanup failed: \(error)") }
@@ -1708,7 +1719,7 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 let target = try XCTUnwrap(anchor?["target"] as? String)
                 let hold = try PasswordFillCompletionHold(web: tab.web,
                     script: Autofill.fillJS(account: "bob", password: "bob-secret", automatic: true,
-                                           target: target, continuation: true), expectedReply: firstReplyValue)
+                                           target: target, continuation: true, origin: origin), expectedReply: firstReplyValue)
                 heldReply = hold
                 secretRelease.signal()
                 try await wait(for: "real continuation reply to be held") {

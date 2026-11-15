@@ -1812,14 +1812,19 @@ import WebKit
     /// One modal for all three permission prompts. Returns what the user allowed.
     private func ask(_ context: WKWebExtensionContext, _ what: [String]) -> Bool {
         guard !what.isEmpty, !invalidated, installed.contains(where: { $0 === context }) else { return false }
+        let allowed = Self.accessAlert(context.webExtension.displayName, what).runModal() == .alertSecondButtonReturn
+        return allowed && !invalidated && installed.contains(where: { $0 === context })
+    }
+
+    /// Deny first, so it is the default button: Return never grants access.
+    static func accessAlert(_ name: String?, _ what: [String]) -> NSAlert {
         let a = NSAlert()
-        a.messageText = "“\(context.webExtension.displayName ?? "An extension")” wants more access."
+        a.messageText = "“\(name ?? "An extension")” wants more access."
         a.informativeText = what.sorted().joined(separator: "\n")
             + "\n\nAllowed access lasts until the extension is reloaded, disabled, or Vane quits. Manage Extensions can revoke additional access."
+        a.addButton(withTitle: "Deny")
         a.addButton(withTitle: "Allow")
-        a.addButton(withTitle: "Deny").keyEquivalent = "\u{1b}"
-        let allowed = a.runModal() == .alertFirstButtonReturn
-        return allowed && !invalidated && installed.contains(where: { $0 === context })
+        return a
     }
 
     // MARK: Adapters

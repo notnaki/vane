@@ -816,7 +816,8 @@ struct TitleReveal: Equatable, Sendable {
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: true, in: Autofill.world))
         c.addUserScript(
-            WKUserScript(source: Previews.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+            WKUserScript(source: Previews.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true,
+                         in: Previews.world))
         // All frames, unlike the password script: an embedded player lives in an iframe.
         // Its own content world: `__vanePiP` is then not on the page's `window` at all.
         c.addUserScript(
@@ -890,7 +891,8 @@ struct TitleReveal: Equatable, Sendable {
                                                     name: PictureInPicture.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: MeetCall.world,
                                                     name: MeetCall.messageName)
-        web.configuration.userContentController.add(WeakHandler(self), name: Previews.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: Previews.world,
+                                                    name: Previews.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: MediaTray.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: StatusBar.messageName)
@@ -1262,7 +1264,8 @@ struct TitleReveal: Equatable, Sendable {
         old.navigationDelegate = nil
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: "vanepw", contentWorld: Autofill.world)
-        old.configuration.userContentController.removeScriptMessageHandler(forName: Previews.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(
+            forName: Previews.messageName, contentWorld: Previews.world)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PictureInPicture.messageName, contentWorld: PictureInPicture.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: MeetCall.messageName, contentWorld: MeetCall.world)
@@ -1529,7 +1532,9 @@ struct TitleReveal: Equatable, Sendable {
     /// Names only until something is chosen: deciding *whether* to ask decrypts nothing.
     func fillPassword(announcing: Bool = false, automatic: Bool = false,
                       target: String? = nil, accountHint: String? = nil, continuation: PasswordContinuation? = nil) {
-        guard !isPrivate, let origin = secureOrigin else {
+        // While a main-frame load is pending, WebKit's url already names the destination
+        // but the outgoing document is still the one on screen.
+        guard !isPrivate, !provisional, let origin = secureOrigin else {
             if announcing { axAnnounce("No saved password for this page.") }
             return
         }
@@ -1611,7 +1616,7 @@ struct TitleReveal: Equatable, Sendable {
     /// The password is read here and nowhere else, and lives exactly as long as the call.
     func fill(_ login: Passwords.Login, automatic: Bool = false, target: String? = nil,
               continuation: PasswordContinuation? = nil) {
-        guard !isPrivate, secureOrigin == login.origin else { return }
+        guard !isPrivate, !provisional, secureOrigin == login.origin else { return }
         if let continuation, !permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) { return }
         guard let target else {
             let page = web, pageURL = page.url, document = readingDocumentGeneration
@@ -1644,13 +1649,14 @@ struct TitleReveal: Equatable, Sendable {
                 guard let self, let page, !Task.isCancelled, !self.tornDown, !self.suspended,
                       !self.isPrivate, self.profileID == profile, self.existingWeb === page,
                       page.url == pageURL, self.readingDocumentGeneration == document,
-                      self.secureOrigin == login.origin, self.passwordReadRequest == request else { return }
+                      !self.provisional, self.secureOrigin == login.origin, self.passwordReadRequest == request else { return }
                 if let continuation, !self.permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) { return }
                 if let continuation {
                     self.passwordContinuationFill = (continuation.id, request, document, nil)
                 }
                 page.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password,
-                                                     automatic: automatic, target: target, continuation: continuation != nil),
+                                                     automatic: automatic, target: target, continuation: continuation != nil,
+                                                     origin: login.origin),
                                        in: nil, in: Autofill.world) { [weak self, weak page] result in
                     guard let self else { return }
                     var retryRejectedTarget = false
@@ -2327,8 +2333,8 @@ struct TitleReveal: Equatable, Sendable {
             MediaState.shared.handle(m.body, for: self, from: m.frameInfo)
             return
         }
-        // Both scripts are main-frame only, and these handlers live in the page world, so
-        // a message from any other frame is an embedded page speaking for the tab.
+        // Both scripts are main-frame only, so a message from any other frame is an
+        // embedded page speaking for the tab.
         if m.name == StatusBar.messageName || m.name == Previews.messageName,
            !m.frameInfo.isMainFrame { return }
         if m.name == StatusBar.messageName { hoveredLink = StatusBar.hover(from: m.body); return }
@@ -2341,7 +2347,7 @@ struct TitleReveal: Equatable, Sendable {
             if body["gone"] as? Bool == true { Previews.shared.cancel(from: self); return }
             guard let raw = body["url"] as? String, let url = URL(string: raw) else { return }
             let rect = Previews.rect(from: body, pageZoom: m.webView?.pageZoom ?? 1) ?? .zero
-            Previews.shared.request(url, from: self, rect: rect)
+            Previews.shared.request(url, from: self, rect: rect, shift: body["shift"] as? Bool == true)
             return
         }
         if m.name == PictureInPicture.messageName {
@@ -3361,7 +3367,7 @@ struct Stash {
         // this window for a tab gets another Little Arc instead of a second page hidden
         // behind the first. With no url it comes up empty with the search bar over it,
         // which is what a new window does.
-        if isLittle { LittleArc.open(url, isPrivate: isPrivate); return }
+        if isLittle { LittleArc.open(url, isPrivate: isPrivate, profileID: profileID); return }
         if let url {
             newBlankTab(loading: url)
         } else {
@@ -3505,7 +3511,7 @@ struct Stash {
         // be beside, and a page that escaped into the sidebar is not what was clicked.
         t.onOpenBeside = { [weak self] u, focus in
             guard let self else { return }
-            if isLittle { LittleArc.open(u, isPrivate: isPrivate) } else { openBeside(u, focus: focus) }
+            if isLittle { LittleArc.open(u, isPrivate: isPrivate, profileID: profileID) } else { openBeside(u, focus: focus) }
         }
         t.onOpenLinkInBackground = { [weak self] url in
             guard let self else { return }

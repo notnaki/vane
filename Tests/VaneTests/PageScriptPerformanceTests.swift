@@ -94,7 +94,7 @@ import XCTest
         let scripts: [(String, String, WKContentWorld)] = [
             ("autofill", Autofill.script, Autofill.world),
             ("media", MediaTray.script, .page), ("audio", TabAudio.script, .page),
-            ("hover", StatusBar.script, .page), ("previews", Previews.script, .page),
+            ("hover", StatusBar.script, .page), ("previews", Previews.syntheticScript, Previews.world),
             ("drafts", DraftProtection.script, DraftProtection.world),
             ("boosts", SiteBoostScripts.runtime, SiteBoostScripts.world)
         ]
@@ -304,7 +304,7 @@ import XCTest
     }
 
     func testBriefHoversDoNotCancelUnrequestedPreviews() async throws {
-        let (web, capture) = try await fixture(script: Previews.script, name: Previews.messageName,
+        let (web, capture) = try await fixture(script: Previews.syntheticScript, name: Previews.messageName,
                                                html: "<body><a id='link' href='https://other.test/'><span id='leaf'>Link</span></a></body>")
         _ = try await js(web, """
         const leaf = document.getElementById('leaf');

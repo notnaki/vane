@@ -403,7 +403,7 @@ import XCTest
                 deniedPrompts.count += 1
                 Self.recordNativeWindow("Extension URL denial owners: popupID=\(window.windowNumber), popupFrame=\(window.frame), modalID=\(modal.windowNumber), modalFrame=\(modal.frame), modalVisible=\(modal.isVisible), modalKey=\(modal.isKeyWindow)")
                 print("Extension window fixture: denied additional synthetic-origin URL prompt \(deniedPrompts.count)")
-                NSApp.stopModal(withCode: .alertSecondButtonReturn)
+                NSApp.stopModal(withCode: .alertFirstButtonReturn)
             }
         }
         RunLoop.main.add(denyAdditionalURLAccess, forMode: .modalPanel)

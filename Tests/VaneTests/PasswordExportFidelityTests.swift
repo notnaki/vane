@@ -109,3 +109,14 @@ import Security
     }
 
 }
+
+@MainActor final class PasswordExportAuthenticationTests: XCTestCase {
+    func testPlaintextExportStopsWhenTheOwnerIsNotAuthenticated() {
+        var reasons: [String] = []
+        // A refusal returns before any confirmation or save panel could appear.
+        Export.chooseAndExport(.passwords, profileID: UUID()) { reason, done in
+            reasons.append(reason); done(false)
+        }
+        XCTAssertEqual(reasons, ["export your saved passwords"])
+    }
+}
