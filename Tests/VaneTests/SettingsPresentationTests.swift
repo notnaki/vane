@@ -124,6 +124,10 @@ import XCTest
         // The native header moves upward as its centered content grows.
         func trianglePoint() -> NSPoint {
             host.layoutSubtreeIfNeeded()
+            // Keep the host exactly its fitting size: if the expanded content outgrows a
+            // window the system did not resize (CI), centring pushes the header off-screen.
+            window.setContentSize(host.fittingSize)
+            host.layoutSubtreeIfNeeded()
             let offset = host.fittingSize.height / 2 - 20 - Look.settingsRow / 2
             let y = host.bounds.midY + (host.isFlipped ? -offset : offset)
             return host.convert(NSPoint(x: 25, y: y), to: nil)
