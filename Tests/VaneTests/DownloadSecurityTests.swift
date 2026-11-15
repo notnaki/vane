@@ -154,4 +154,25 @@ import XCTest
         HTTPSOnly.enabled = false
         XCTAssertFalse(HTTPSOnly.blocksDownload(plain, profileID: profile))
     }
+
+    func testResumeChecksTheRedirectedTransferAndKeepsItOnDisk() throws {
+        let suite = "vane-download-transfer-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let previous = HTTPSOnly.defaults
+        HTTPSOnly.defaults = defaults
+        defer { HTTPSOnly.defaults = previous; defaults.removePersistentDomain(forName: suite) }
+        let profile = UUID()
+        let source = URL(string: "https://a.example/file")!
+        let transfer = URL(string: "http://b.example/file")!
+        HTTPSOnly.enabled = true
+        HTTPSOnly.allow(host: "b.example", profileID: profile)
+        XCTAssertFalse(Downloads.resumeBlocked(source: source, transfer: transfer, profileID: profile))
+        HTTPSOnly.forget(host: "b.example", profileID: profile)
+        XCTAssertTrue(Downloads.resumeBlocked(source: source, transfer: transfer, profileID: profile))
+        XCTAssertFalse(Downloads.resumeBlocked(source: source, transfer: nil, profileID: profile))
+        var record = Downloads.Record(name: "f", state: "paused")
+        record.transfer = transfer
+        let decoded = try JSONDecoder().decode(Downloads.Record.self, from: JSONEncoder().encode(record))
+        XCTAssertEqual(decoded.transfer, transfer)
+    }
 }

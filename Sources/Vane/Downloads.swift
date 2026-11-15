@@ -149,6 +149,8 @@ import Darwin
         /// Destination on disk. Kept spelled `url` because UI.swift and `reveal` read it.
         @Published var url: URL?
         @Published var source: URL?
+        /// The last redirect target the transfer followed; resume data replays it.
+        fileprivate var transfer: URL?
         fileprivate var sourceMethod: String?
         @Published fileprivate(set) var retryPending = false
         fileprivate weak var sourceWeb: WKWebView?
@@ -211,6 +213,7 @@ import Darwin
             url = record.destination
             source = record.source
             sourceMethod = record.sourceMethod
+            transfer = record.transfer
             partialIdentity = record.partialIdentity
             total = record.total
             received = record.received
@@ -246,7 +249,7 @@ import Darwin
                           destinationBookmark: destinationBookmark,
                           destinationBookmarkIsFile: destinationBookmarkIsFile,
                           started: started, sourceMethod: sourceMethod, partialIdentity: partialIdentity,
-                          resumeChecksum: resumeChecksum)
+                          resumeChecksum: resumeChecksum, transfer: transfer)
         }
 
         fileprivate func watch(_ d: WKDownload) {
@@ -322,6 +325,7 @@ import Darwin
         var sourceMethod: String?
         var partialIdentity: FileIdentity?
         var resumeChecksum: String?
+        var transfer: URL?
     }
 
     struct FileIdentity: Codable, Equatable, Sendable {
@@ -875,7 +879,9 @@ import Darwin
                   newRequest request: URLRequest,
                   decisionHandler: @escaping @MainActor (WKDownload.RedirectPolicy) -> Void) {
         guard acceptsRetryOrigin(download), let url = request.url else { decisionHandler(.cancel); return }
-        decisionHandler(Self.redirectPolicy(for: url, profileID: profileID))
+        let policy = Self.redirectPolicy(for: url, profileID: profileID)
+        if policy == .allow, let item = item(for: download) { item.transfer = url; save() }
+        decisionHandler(policy)
     }
 
     static func redirectPolicy(for url: URL, profileID: UUID) -> WKDownload.RedirectPolicy {
@@ -1278,9 +1284,14 @@ import Darwin
         return true
     }
 
+    /// Resume data replays the transfer's last request (after any redirect) without
+    /// navigation or redirect policy, so both it and the original source must pass.
+    static func resumeBlocked(source: URL?, transfer: URL?, profileID: UUID) -> Bool {
+        [source, transfer].compactMap { $0 }.contains { HTTPSOnly.blocksDownload($0, profileID: profileID) }
+    }
+
     private func startResume(_ item: Item, data: Data, operation: UUID) {
-        // Resume data replays the original request without navigation or redirect policy.
-        if let source = item.source, HTTPSOnly.blocksDownload(source, profileID: profileID) {
+        if Self.resumeBlocked(source: item.source, transfer: item.transfer, profileID: profileID) {
             item.status = .failed
             item.state = .failed("HTTPS-Only blocks resuming this download over HTTP. Download it again.")
             save()
